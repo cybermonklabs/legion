@@ -30,16 +30,24 @@ func (bedrockShaped) Identity() string     { return embed.BedrockModel }
 func (bedrockShaped) Limits() embed.Limits { return new(embed.BedrockClient).Limits() }
 
 // fakeEmbedder is a controllable stand-in for Cohere: Embed answers vectors or err, and records
-// every call so a test can assert how many batches ran.
+// every call so a test can assert how many batches ran. When called is set, each call also sends
+// on it without blocking, so a test can wait for a call rather than for a span.
 type fakeEmbedder struct {
 	bedrockShaped
 	vector func(text string) []float32
 	err    error
 	calls  [][]string
+	called chan struct{}
 }
 
 func (f *fakeEmbedder) Embed(_ context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
 	f.calls = append(f.calls, append([]string(nil), texts...))
+	if f.called != nil {
+		select {
+		case f.called <- struct{}{}:
+		default:
+		}
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -1401,16 +1409,18 @@ func (e *syncEmbedder) canaryCalls() int {
 	return e.canaries
 }
 
-// eventually polls done until it reports true, failing once within passes.
-func eventually(t *testing.T, within time.Duration, what string, done func() bool) {
+// eventually polls done every 50 ms until it reports true. Its one bound is the test binary's
+// deadline less testwait's margin, where it fails naming what.
+func eventually(t *testing.T, what string, done func() bool) {
 	t.Helper()
-	if !testwait.Holds(within, 50*time.Millisecond, done) {
-		t.Fatalf("%s: not within %v", what, within)
-	}
+	testwait.UntilPolling(t, 50*time.Millisecond, what, func() (bool, bool) {
+		held := done()
+		return held, held
+	})
 }
 
-// runQueue runs Run with deps until the test ends, and fails the test if Run does not return
-// promptly once its context ends.
+// runQueue runs Run with deps until the test ends, and fails the test if Run does not return once
+// its context ends.
 func runQueue(t *testing.T, deps Deps) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1421,11 +1431,7 @@ func runQueue(t *testing.T, deps Deps) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("Run did not return within 10s of its context ending")
-		}
+		testwait.Receive(t, "Run to return once its context ended", done)
 	})
 }
 
@@ -1460,9 +1466,12 @@ func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 
 // Once Run has embedded what was pending at boot and its coverage pass has run, nothing
 // changes, so Run makes no statement between one identity recheck and the next: no scan timer,
-// no due time, no further pass. The window is longer than the 5-second period the scan ticker
-// ran at before, and far shorter than identityRecheckInterval, which this test leaves at its
-// ten minutes.
+// no due time, no further pass. The row waits for a calm longer than retryInterval, the 5-second
+// period the scan ticker ran at before and the scan loop's MinGap, and far shorter than
+// identityRecheckInterval, which this test leaves at its ten minutes. It waits for that calm
+// rather than measuring a window after a shorter one: the boot work's own statements end when
+// they end, and a stall inside the boot pass on a loaded machine only delays the calm, while a
+// loop that scans on a timer never leaves one and fails by name at the test binary's deadline.
 func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "IDLE", "IDLE-1", "Enqueued by its trigger")
@@ -1470,19 +1479,19 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity)})
-	eventually(t, 15*time.Second, "both items current", func() bool {
+	eventually(t, "both items current", func() bool {
 		items, current, _, _, _ := coverage(t, database, configuredIdentity)
 		return items == 2 && current == 2
 	})
-	storetest.AwaitQuiet(t, counter, time.Second)
-	storetest.RequireNoStatements(t, counter, 7*time.Second, "Run with nothing pending and nothing changing")
+	storetest.AwaitQuiet(t, counter, retryInterval+2*time.Second)
 }
 
 // A write's notification wakes the idle queue, through a real pglisten.Hub on WakeChannel: the
 // window of a comment written once the queue has drained, and once the scan the hub's catch-up
-// signal after its LISTEN earned has run, is embedded within 6 seconds, and nothing else would
-// have scanned for it. embeddings_enqueue_window announces on the same channel as
-// embeddings_enqueue, so a window wakes the queue exactly as a whole-text row did.
+// signal after its LISTEN earned has run, is embedded, and nothing else would have scanned for it:
+// an idle queue holds no timer, so without the wake the comment stays pending and the wait below
+// fails by name. embeddings_enqueue_window announces on the same channel as embeddings_enqueue, so
+// a window wakes the queue exactly as a whole-text row did.
 func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "NTFY", "NTFY-1", "Written before the queue started")
@@ -1495,12 +1504,8 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	started := time.Now()
 	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity), Wake: wake})
-	select {
-	case <-connected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the hub did not connect within 10s")
-	}
-	eventually(t, 10*time.Second, "NTFY-1 embedded at boot", func() bool { return pendingCount(t, database) == 0 })
+	testwait.Receive(t, "the hub to connect", connected)
+	eventually(t, "NTFY-1 embedded at boot", func() bool { return pendingCount(t, database) == 0 })
 	// The catch-up signal earns a scan no sooner than retryInterval after the boot scan began.
 	time.Sleep(time.Until(started.Add(retryInterval + time.Second)))
 	storetest.AwaitQuiet(t, counter, 500*time.Millisecond)
@@ -1509,7 +1514,7 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	if got := pendingCount(t, database); got != 1 {
 		t.Fatalf("pending after the comment = %d, want 1", got)
 	}
-	eventually(t, 6*time.Second, "the comment embedded after its notification", func() bool { return pendingCount(t, database) == 0 })
+	eventually(t, "the comment embedded after its notification", func() bool { return pendingCount(t, database) == 0 })
 }
 
 // A claim another process left on a row - it crashed before embedding it - is taken once the
@@ -1531,7 +1536,7 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 		t.Fatalf("move the claim's lapse: %v", err)
 	}
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
-	eventually(t, 15*time.Second, "CLAM-1 embedded", func() bool { return pendingCount(t, database) == 0 })
+	eventually(t, "CLAM-1 embedded", func() bool { return pendingCount(t, database) == 0 })
 	var embeddedAt time.Time
 	if err := database.Pool.QueryRow(ctx, `select embedded_at from embeddings where id = 'CLAM-1'`).Scan(&embeddedAt); err != nil {
 		t.Fatalf("read embedded_at: %v", err)
@@ -1593,16 +1598,27 @@ func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
 }
 
 // A throttled batch waits retryInterval plus its backoff before the next one, so a throttle
-// episode never sends calls more often than the scan ticker did.
+// episode never sends calls more often than the scan ticker did. The window opens at the scan's
+// first call, which a loaded machine can reach late; a correct scan makes no second call for
+// retryInterval after it, so a loaded machine cannot fail the window, it can only shorten what a
+// wrong scan has to show.
 func TestAThrottledScanWaitsAtLeastRetryIntervalBeforeItsNextBatch(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "THSC", "THSC-1", "A title")
-	embedder := &fakeEmbedder{err: embedtest.FakeThrottleError{Code: "ThrottlingException"}}
-	ctx, cancel := context.WithTimeout(context.Background(), retryInterval-500*time.Millisecond)
-	defer cancel()
-	scan(ctx, Deps{Store: database, Embedder: embedder})
+	embedder := &fakeEmbedder{err: embedtest.FakeThrottleError{Code: "ThrottlingException"}, called: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	scanned := make(chan struct{})
+	go func() {
+		defer close(scanned)
+		scan(ctx, Deps{Store: database, Embedder: embedder})
+	}()
+	testwait.Receive(t, "the scan's first embed call", embedder.called)
+	window := retryInterval - 500*time.Millisecond
+	time.Sleep(window)
+	cancel()
+	testwait.Receive(t, "the scan to return once its context ended", scanned)
 	if len(embedder.calls) != 1 {
-		t.Errorf("%d embed calls in %v of throttling, want 1", len(embedder.calls), retryInterval-500*time.Millisecond)
+		t.Errorf("%d embed calls in the %v after the first throttled one, want 1", len(embedder.calls), window)
 	}
 }
 
@@ -1619,13 +1635,20 @@ func TestEnqueueNotifiesOnlyWhenItWritesARow(t *testing.T) {
 	if _, err := listener.Exec(ctx, "listen "+WakeChannel); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	notified := func(within time.Duration) bool {
+	// notified waits for a notification when want is true, until the test binary's deadline less
+	// testwait's margin (testwait.Context). When want is false it watches a 500 ms window: a correct
+	// enqueue of an unchanged text never notifies, so a loaded machine cannot fail that window.
+	notified := func(want bool) bool {
 		t.Helper()
-		waitCtx, cancel := context.WithTimeout(ctx, within)
-		defer cancel()
+		waitCtx := testwait.Context(t)
+		if !want {
+			var cancel context.CancelFunc
+			waitCtx, cancel = context.WithTimeout(ctx, 500*time.Millisecond)
+			defer cancel()
+		}
 		notification, err := listener.WaitForNotification(waitCtx)
 		if err != nil {
-			if waitCtx.Err() == nil {
+			if want || waitCtx.Err() == nil {
 				t.Fatalf("wait for a notification: %v", err)
 			}
 			return false
@@ -1644,11 +1667,7 @@ func TestEnqueueNotifiesOnlyWhenItWritesARow(t *testing.T) {
 		{"Changed text", true},
 	} {
 		mustExec(t, database.Pool, `select embeddings_enqueue('issue', 'NOTE-1', $1)`, step.text)
-		within := 5 * time.Second
-		if !step.want {
-			within = 500 * time.Millisecond
-		}
-		if got := notified(within); got != step.want {
+		if got := notified(step.want); got != step.want {
 			t.Errorf("enqueue %q: notified %t, want %t", step.text, got, step.want)
 		}
 	}

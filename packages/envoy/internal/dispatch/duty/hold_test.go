@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdName is the name every hold test takes; each test runs on a database of its own.
@@ -43,14 +44,11 @@ func holdRow(t *testing.T, db duty.Holds) (holder uuid.UUID, token string, expir
 	return holder, token, expiresAt
 }
 
-// waitLost waits up to within for hold's Lost to close and fails the test when it does not.
-func waitLost(t *testing.T, hold *duty.Hold, within time.Duration) {
+// waitLost waits for hold's Lost to close. Its one bound is the test binary's deadline less
+// testwait's margin, where it fails naming the wait (testwait.Receive).
+func waitLost(t *testing.T, hold *duty.Hold) {
 	t.Helper()
-	select {
-	case <-hold.Lost():
-	case <-time.After(within):
-		t.Fatalf("Lost did not close within %s", within)
-	}
+	testwait.Receive(t, "the hold's Lost to close", hold.Lost())
 }
 
 // Two processes, each with a pool of its own: the second cannot take a hold the first holds live,
@@ -103,15 +101,15 @@ func TestHoldTakesOverWithinASecondAfterTheLapse(t *testing.T) {
 		t.Fatalf("Expiry before the lapse = %s, held %v, error %v; want a positive remainder of a held name", remaining, held, err)
 	}
 	time.Sleep(remaining)
-	var taken *duty.Hold
-	for give := time.Now().Add(3 * time.Second); taken == nil; time.Sleep(20 * time.Millisecond) {
-		if time.Now().After(give) {
-			t.Fatal("the standby did not take the hold within 3 s of its expiry")
-		}
-		if taken, err = duty.TryHold(ctx, database.Pool, holdName, standby, opts); err != nil {
+	// The take-over is measured on the database's clock below; this wait only ends on it, so a
+	// loaded machine that runs the standby's tries late does not fail the row here.
+	taken := testwait.UntilPolling(t, 20*time.Millisecond, "the standby to take the lapsed hold", func() (*duty.Hold, bool) {
+		taken, err := duty.TryHold(ctx, database.Pool, holdName, standby, opts)
+		if err != nil {
 			t.Fatalf("the standby's try: %v", err)
 		}
-	}
+		return taken, taken != nil
+	})
 	t.Cleanup(func() { _ = taken.Release(context.Background()) })
 
 	holder, _, expiresAt := holdRow(t, database.Pool)
@@ -160,7 +158,7 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	}
 	storetest.WaitForLockWaitersFrom(t, locker, 1, renewingApplication)
 
-	waitLost(t, hold, 2*opts.TTL)
+	waitLost(t, hold)
 	var (
 		lapsed bool
 		named  uuid.UUID
@@ -214,9 +212,7 @@ func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
 		t.Fatalf("Expiry after Release: held %v, error %v; want no row", held, err)
 	}
 
-	waiting, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	notice, err := listener.WaitForNotification(waiting)
+	notice, err := listener.WaitForNotification(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("wait for the release notification: %v", err)
 	}
@@ -257,9 +253,7 @@ func TestHoldLapseFreesAtOnceAndKeepsTheToken(t *testing.T) {
 		t.Fatalf("HoldToken after Lapse = %q, held %v, error %v; want %q, not held", token, held, err, "deliver.pending")
 	}
 
-	waiting, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	notice, err := listener.WaitForNotification(waiting)
+	notice, err := listener.WaitForNotification(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("wait for the lapse notification: %v", err)
 	}
@@ -286,7 +280,7 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 		t.Fatalf("take the row over for another holder: %v", err)
 	}
 	deadline := hold.Deadline()
-	waitLost(t, hold, 3*time.Second)
+	waitLost(t, hold)
 	if !time.Now().Before(deadline) {
 		t.Fatal("Lost closed at the deadline rather than on the zero-row renewal")
 	}

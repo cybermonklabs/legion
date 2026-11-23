@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestBothIntakesKeepTheirSubscriptions starts the two intakes as cmd/dispatch does (StartIntakes,
@@ -74,7 +75,7 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, durable)
 		return err == nil && info.PushBound
 	}
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		return pushBound(bus.DispatchDeliveryDurable) && pushBound(bus.DispatchJobDurable)
 	}, func() string {
 		return "the intakes' durables are not both push-bound: " + consumers()
@@ -94,18 +95,18 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})
 	publishGitHubEnvelope(t, publisher, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		settings, err := GetSettings(ctx, pool)
 		return err == nil && settings.LastEventAt != nil
 	}, func() string {
 		return "the intake never handled the pull request published to it: " + consumers()
 	})
-	waitFor(t, 20*time.Second, func() bool { return fake.calls.Load() == 1 }, func() string {
+	waitFor(t, func() bool { return fake.calls.Load() == 1 }, func() string {
 		return fmt.Sprintf("the job intake read the run's jobs %d times, want 1: %s", fake.calls.Load(), consumers())
 	})
 	for _, durable := range durables {
 		var info *natsgo.ConsumerInfo
-		waitFor(t, 20*time.Second, func() bool {
+		waitFor(t, func() bool {
 			info, err = publisher.JS().ConsumerInfo(bus.Stream, durable)
 			return err == nil && info.NumPending == 0 && info.NumAckPending == 0 && info.Delivered.Consumer > 0
 		}, func() string {
@@ -174,15 +175,11 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	publishPullRequestEnvelope(t, publisher, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})
-	select {
-	case <-entered:
-	case <-time.After(20 * time.Second):
-		t.Fatalf("the intake never fetched the merged pull request: %s", consumer())
-	}
+	testwait.Receive(t, "the intake to fetch the merged pull request", entered)
 	cancel()
 	// The intake stops delivering as ctx ends: the durable loses its subscriber at once, while the
 	// message in its handler is still running.
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && !info.PushBound
 	}, func() string {
@@ -199,7 +196,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 		}
 		return failed
 	}
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.Delivered.Consumer == 1 && info.AckFloor.Consumer == 1 && info.NumAckPending == 0
 	}, func() string {
@@ -253,7 +250,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 			waited, intakeStopBudget, within)
 	}
 	// The fake records the end once it sees the request cancelled, a moment after the client did.
-	waitFor(t, 5*time.Second, func() bool { return slices.Equal(held.of("1"), []string{"start 1", "end 1"}) }, func() string {
+	waitFor(t, func() bool { return slices.Equal(held.of("1"), []string{"start 1", "end 1"}) }, func() string {
 		return fmt.Sprintf("pull request 1's events once stop returned = %q, want the held fetch given up", held.of("1"))
 	})
 
@@ -279,11 +276,7 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 		stop()
 		close(stopped)
 	}()
-	select {
-	case <-stopped:
-	case <-time.After(5 * time.Second):
-		t.Fatal("stopping intakes with no GitHub App did not return")
-	}
+	testwait.Receive(t, "the stop of intakes with no GitHub App to return", stopped)
 }
 
 // TestIntakesWhoseSecondConnectFailsStartNeither: the job intake's connect failing returns its
@@ -343,14 +336,14 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 		stopJobs()
 		<-jobsDone
 	})
-	waitFor(t, 20*time.Second, func() bool { return pushBound(bus.DispatchJobDurable) }, func() string {
+	waitFor(t, func() bool { return pushBound(bus.DispatchJobDurable) }, func() string {
 		return "the job intake never bound its durable"
 	})
 
 	seedDeliverySettings(t, ctx, pool)
 	startIntake(t, newIntake(shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 	var refusal map[string]any
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		for _, record := range logs() {
 			message, _ := record["error"].(string)
 			if record["msg"] == "dispatch delivery: bind NATS consumer" && record["name"] == bus.DispatchDeliveryDurable &&

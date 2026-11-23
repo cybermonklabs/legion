@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // latestChange is the change log's newest seq, which a test reads after its setup so its
@@ -115,10 +116,24 @@ func listenConn(t *testing.T, ctx context.Context, pool *store.Pool, channel str
 	return conn
 }
 
-// nextNotification is the next notification conn receives within wait, or nil.
-func nextNotification(t *testing.T, ctx context.Context, conn *pgx.Conn, wait time.Duration) *pgconn.Notification {
+// awaitNotification is the next notification conn receives, waited for under testwait.Context(t),
+// which ends testwait's margin before the test binary's deadline: a notification that is merely
+// slow on a loaded machine is still taken, and one that never comes fails the test naming what.
+func awaitNotification(t *testing.T, conn *pgx.Conn, what string) *pgconn.Notification {
 	t.Helper()
-	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	notification, err := conn.WaitForNotification(testwait.Context(t))
+	if err != nil {
+		t.Fatalf("wait for %s: %v", what, err)
+	}
+	return notification
+}
+
+// notificationWithin is a notification conn receives within window, or nil. Each caller asserts
+// that none arrives, one a correct run never sends at all (a second for one write, or one before
+// the commit), so a loaded machine only makes the window quieter and cannot fail a correct run.
+func notificationWithin(t *testing.T, ctx context.Context, conn *pgx.Conn, window time.Duration) *pgconn.Notification {
+	t.Helper()
+	waitCtx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
 	notification, err := conn.WaitForNotification(waitCtx)
 	if err != nil {
@@ -290,10 +305,7 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 		if err := write.write(); err != nil {
 			t.Fatalf("%s: %v", write.name, err)
 		}
-		notification := nextNotification(t, ctx, conn, 5*time.Second)
-		if notification == nil {
-			t.Fatalf("%s notified nothing", write.name)
-		}
+		notification := awaitNotification(t, conn, write.name+"'s notification")
 		var payload freshnessPayload
 		if err := json.Unmarshal([]byte(notification.Payload), &payload); err != nil {
 			t.Fatalf("%s's payload %q: %v", write.name, notification.Payload, err)
@@ -301,7 +313,7 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 		if !write.want(payload) {
 			t.Fatalf("%s notified %s", write.name, notification.Payload)
 		}
-		if extra := nextNotification(t, ctx, conn, 200*time.Millisecond); extra != nil {
+		if extra := notificationWithin(t, ctx, conn, 200*time.Millisecond); extra != nil {
 			t.Fatalf("%s notified twice: %s", write.name, extra.Payload)
 		}
 	}
@@ -389,10 +401,7 @@ func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 		if err := RecordReconcileError(ctx, pool, message); err != nil {
 			t.Fatalf("RecordReconcileError with 5,000 %s: %v", name, err)
 		}
-		notification := nextNotification(t, ctx, conn, 5*time.Second)
-		if notification == nil {
-			t.Fatalf("5,000 %s notified nothing", name)
-		}
+		notification := awaitNotification(t, conn, "the notification of 5,000 "+name)
 		if size := len(notification.Payload); size >= 8000 {
 			t.Fatalf("5,000 %s notified %d bytes, want under 8,000", name, size)
 		}
@@ -415,16 +424,14 @@ func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if early := nextNotification(t, ctx, conn, 300*time.Millisecond); early != nil {
+	if early := notificationWithin(t, ctx, conn, 300*time.Millisecond); early != nil {
 		t.Fatalf("notified before commit: %+v", early)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	if nextNotification(t, ctx, conn, 5*time.Second) == nil {
-		t.Fatal("the commit notified nothing")
-	}
-	if extra := nextNotification(t, ctx, conn, 300*time.Millisecond); extra != nil {
+	awaitNotification(t, conn, "the commit's notification")
+	if extra := notificationWithin(t, ctx, conn, 300*time.Millisecond); extra != nil {
 		t.Fatalf("one change notified twice: %+v", extra)
 	}
 }

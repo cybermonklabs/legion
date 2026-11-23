@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A document's mentions are owed an excerpt until one is recorded at its latest version; once
@@ -281,7 +282,18 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 	if _, err := listener.Exec(ctx, `listen dispatch_excerpts_owed`); err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	notified := func() bool {
+	// notification waits for the next notification until the test binary's deadline less
+	// testwait's margin (testwait.Context), and fails naming what was to send it.
+	notification := func(what string) {
+		t.Helper()
+		if _, err := listener.WaitForNotification(testwait.Context(t)); err != nil {
+			t.Fatalf("%s sent no notification: %v", what, err)
+		}
+	}
+	// notifiedInAWindow reports whether a notification arrives within 300 ms. It is asked only
+	// after a write that must not notify, which a correct trigger never does, so a loaded machine
+	// cannot fail it; every notification an earlier step sent was taken by notification first.
+	notifiedInAWindow := func() bool {
 		t.Helper()
 		waitCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 		defer cancel()
@@ -290,9 +302,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 	}
 
 	document := owedDocument(t, database, "design")
-	if !notified() {
-		t.Fatal("an inserted mention owed an excerpt sent no notification")
-	}
+	notification("an inserted mention owed an excerpt")
 	for name, write := range map[string]func() error{
 		"recording its excerpt": func() error { _, err := RecordExcerpts(ctx, database.Pool, document, 1, nil); return err },
 		"a comment's mention": func() error {
@@ -303,7 +313,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 		if err := write(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if notified() {
+		if notifiedInAWindow() {
 			t.Fatalf("%s sent a notification; want none", name)
 		}
 	}
@@ -320,9 +330,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 		if err := clear(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if !notified() {
-			t.Fatalf("%s left a mention owed and sent no notification", name)
-		}
+		notification(name + ", which left a mention owed,")
 	}
 }
 

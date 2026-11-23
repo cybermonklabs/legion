@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 var censusBase = fstest.MapFS{
@@ -1409,20 +1410,28 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 		report, err := census(ctx, url, set, pgmigrate.CensusOptions{})
 		done <- result{report, err}
 	}()
-	// Wait until the census is queued on blocker, which it reaches only after reading others' holders.
-	deadline := time.Now().Add(pgmigrate.LockTimeout - time.Second)
-	for {
+	// Wait until the census is queued on blocker, which it reaches only after reading others'
+	// holders, or until it answers first, as a census that never reads blocker does. Once queued,
+	// it waits on blocker under pgmigrate.LockTimeout, the lock_timeout it reads under, and the
+	// three statements below run inside that wait.
+	type seen struct {
+		got   result
+		early bool
+	}
+	queued := testwait.UntilPolling(t, 20*time.Millisecond, "the census to queue on blocker, or to answer", func() (seen, bool) {
+		select {
+		case got := <-done:
+			return seen{got: got, early: true}, true
+		default:
+		}
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted)").Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if waiting {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the census never queued on blocker")
-		}
-		time.Sleep(20 * time.Millisecond)
+		return seen{}, waiting
+	})
+	if queued.early {
+		t.Fatalf("the census answered (error %v) before it queued on blocker", queued.got.err)
 	}
 	held, err := holder.Begin(ctx)
 	if err != nil {

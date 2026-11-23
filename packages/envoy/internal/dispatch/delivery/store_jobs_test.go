@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestJobsReadBeforeARunEndsLeaveItForTheBackfill: jobs read while the run was still running leave
@@ -248,9 +248,8 @@ func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
 // that write's backend (storetest.WaitForQueuedBehind), so no other backend queued behind the gate
 // ends either wait, and the run write starts only once the jobs write has queued.
 func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	pool, _ := deliveryTestPool(t)
+	ctx := testwait.Context(t)
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	run := changeTestRun(803, DeliveryRunKindDeploy, started, started)
 	if err := UpsertRun(ctx, pool, run); err != nil {

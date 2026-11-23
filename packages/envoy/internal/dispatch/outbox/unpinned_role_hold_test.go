@@ -172,7 +172,7 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of this comment names the thread root's author, and the hold an unpinned mention puts on the role's holder delays no other session's copy",
 			reached, authorSubject)
 	}
-	waitFor(t, 10*time.Second, "the author's copy", func() bool { return len(wrote.received()) > 0 })
+	waitFor(t, "the author's copy", func() bool { return len(wrote.received()) > 0 })
 	copies := wrote.received()
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key",

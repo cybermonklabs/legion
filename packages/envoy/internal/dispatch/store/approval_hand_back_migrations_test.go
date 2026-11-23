@@ -3,34 +3,32 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // waitForQueuedLock waits until some session is queued, not yet granted, for mode on relation: a
-// migration the test started, which the test then holds up or races. It fails t after 20 s.
+// migration the test started, which the test then holds up or races. Its one bound is the test
+// binary's deadline less testwait's margin, so a migration that is merely slow to queue on a
+// loaded machine is waited for, and one that never queues fails by name.
 func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
+	testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("a session to queue, not yet granted, for %s's %s", relation, mode), func() (bool, bool) {
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, `
 			select exists(select 1 from pg_locks where relation = $1::regclass and mode = $2 and not granted)
 		`, relation, mode).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_locks: %v", err)
 		}
-		if waiting {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no session was seen waiting for %s's %s", relation, mode)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting, waiting
+	})
 }
 
 // 0064 backfills the version every existing approval request was shown to, then keeps an older

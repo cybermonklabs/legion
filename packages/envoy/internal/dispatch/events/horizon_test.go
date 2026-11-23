@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The xmax hole, scripted with the counterexample the package documentation names. T2 took
@@ -242,9 +243,11 @@ func TestHorizonStallWarningNamesTheHolderAndNeverFailsSafe(t *testing.T) {
 			t.Fatalf("Safe at step %d = %d, %v; want 0 and no error", step, safe, err)
 		}
 		want := []int{0, 1, 1, 2}[step]
-		if got := waitForStallWarnings(logged, want); got != want {
+		if got := waitForStallWarnings(t, logged, want); got != want {
 			t.Fatalf("stall warnings after step %d = %d, want %d; log:\n%s", step, got, want, logged.String())
 		}
+		// Step 3 warns only once the diagnosis of step 1 has cleared its flag.
+		waitForNoStallDiagnosis(t, horizon, fmt.Sprintf("the stall diagnosis of step %d to clear its in-flight flag", step))
 	}
 	lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
 	if !strings.Contains(lines[0], "diagnosis_error=") || !strings.Contains(lines[0], "pending_for=6s") {
@@ -303,30 +306,21 @@ func TestHorizonRunsOneStallDiagnosisAtATime(t *testing.T) {
 			t.Fatalf("Safe at step %d, while a diagnosis is in flight, = %d, %v; want 0 and no error", step, safe, err)
 		}
 	}
+	// This window asserts that nothing happens: a diagnosis spawned by either observation above
+	// would reach its query within it. A correct Horizon spawns none while the first is in flight,
+	// so a loaded machine cannot fail a correct run; it can only let a faulty second diagnosis
+	// reach its query after the window has closed.
 	select {
 	case <-entered:
 		t.Fatalf("a second stall diagnosis started while the first was in flight; %d have run", diagnoses.Load())
-	case <-time.After(100 * time.Millisecond): // let a diagnosis spawned by either observation reach its query
+	case <-time.After(100 * time.Millisecond):
 	}
 
 	close(release)
-	if got := waitForStallWarnings(logged, 1); got != 1 {
+	if got := waitForStallWarnings(t, logged, 1); got != 1 {
 		t.Fatalf("stall warnings once the first diagnosis ended = %d, want 1; log:\n%s", got, logged.String())
 	}
-	// The flag is cleared in warnStall's defer, after the line is logged, so the next
-	// observation waits on the flag rather than on the log.
-	for ended := time.Now().Add(10 * time.Second); ; {
-		horizon.mu.Lock()
-		diagnosing := horizon.diagnosing
-		horizon.mu.Unlock()
-		if !diagnosing {
-			break
-		}
-		if time.Now().After(ended) {
-			t.Fatal("the first stall diagnosis logged its warning but never cleared the flag")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForNoStallDiagnosis(t, horizon, "the first stall diagnosis to clear its in-flight flag once it logged its warning")
 	// Suppression while one stands, not one warning for the whole stall: the next observation
 	// diagnoses again.
 	now = now.Add(time.Second)
@@ -334,7 +328,7 @@ func TestHorizonRunsOneStallDiagnosisAtATime(t *testing.T) {
 		t.Fatalf("Safe once the first diagnosis ended = %d, %v; want 0 and no error", safe, err)
 	}
 	<-entered
-	if got := waitForStallWarnings(logged, 2); got != 2 {
+	if got := waitForStallWarnings(t, logged, 2); got != 2 {
 		t.Fatalf("stall warnings over %d stalled observations = %d, want 2; log:\n%s", observations, got, logged.String())
 	}
 	if got := diagnoses.Load(); got != 2 {
@@ -350,8 +344,7 @@ func TestHorizonRunsOneStallDiagnosisAtATime(t *testing.T) {
 // clock a second: five failures, one success that proves nothing, then failures, of which Await
 // must return the first one horizonAwaitFailFor after the first since the success.
 func TestHorizonAwaitReturnsAnObservationErrorThatPersists(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	refused := errors.New("horizon pool: dial refused")
 	const tick = time.Second
 	failFor := int(horizonAwaitFailFor / tick)
@@ -372,8 +365,8 @@ func TestHorizonAwaitReturnsAnObservationErrorThatPersists(t *testing.T) {
 	horizon.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	safe, err := horizon.Await(ctx)
-	if !errors.Is(err, refused) || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Await while every observation fails = %d, %v; want the observation's error before ctx's deadline", safe, err)
+	if !errors.Is(err, refused) || ctx.Err() != nil {
+		t.Fatalf("Await while every observation fails = %d, %v; want the observation's error before ctx ended", safe, err)
 	}
 	if want := 5 + 1 + failFor + 1; observations != want {
 		t.Fatalf("Await returned its error after %d observations, want %d: five failures, a success, then %d s of failures",
@@ -425,8 +418,7 @@ func TestHorizonLogsAFailedObservationAtMostOnceEveryWarnEvery(t *testing.T) {
 // asks, while a higher id beside it has committed; once it commits, Await reaches past both.
 func TestHorizonStaysBelowAnOpenLowerWrite(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 	if _, err := horizon.Await(ctx); err != nil {
 		t.Fatalf("await the empty log: %v", err)
@@ -460,16 +452,23 @@ func TestHorizonStaysBelowAnOpenLowerWrite(t *testing.T) {
 // Transaction ids are instance-wide, so another test's write (another package's tests share the
 // Postgres instance and run beside this one), or this process's background database drops, can
 // hold one while the observation runs and leave a snapshot that proves nothing. The quiet case is
-// therefore built again, pausing between attempts so those transactions can end, for up to
-// thirty seconds, and the test logs the attempt it took. Twenty attempts back to back were not
-// enough when the module's packages ran together on two CPUs.
+// therefore built again, pausing between attempts so those transactions can end, until one
+// observation proves itself, and the test logs the attempt it took. Twenty attempts back to back
+// were not enough when the module's packages ran together on two CPUs: how soon the instance is
+// quiet is the machine's load, not the Horizon's doing, so the attempts end only on that proof, or
+// at testwait's margin before the test binary's deadline.
 func TestHorizonProvesItsOwnObservationOnAQuietInstance(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 
-	deadline := time.Now().Add(30 * time.Second)
-	for attempt := 1; ; attempt++ {
+	type attempt struct {
+		number   int
+		safe, id int64
+		gap      Gap
+	}
+	attempts := 0
+	proved := testwait.UntilPolling(t, 20*time.Millisecond, "one observation to prove itself on a quiet instance (the last attempt)", func() (attempt, bool) {
+		attempts++
 		horizon := NewHorizon(database.Pool)
 		id := commitHorizonEvent(ctx, t, database)
 		safe, err := horizon.Safe(ctx)
@@ -477,16 +476,9 @@ func TestHorizonProvesItsOwnObservationOnAQuietInstance(t *testing.T) {
 			t.Fatalf("observe: %v", err)
 		}
 		gap := horizon.Gap()
-		if safe >= id && gap == GapNone {
-			t.Logf("one observation proved itself on attempt %d: H = %d after committing id %d", attempt, safe, id)
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after %d attempts over 30 s no single observation proved itself: Safe = %d after committing id %d, Gap = %d",
-				attempt, safe, id, gap)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return attempt{number: attempts, safe: safe, id: id, gap: gap}, safe >= id && gap == GapNone
+	})
+	t.Logf("one observation proved itself on attempt %d: H = %d after committing id %d", proved.number, proved.safe, proved.id)
 }
 
 // A session holding a transaction id takes the shortcut away: the observer's snapshot lists that
@@ -495,8 +487,7 @@ func TestHorizonProvesItsOwnObservationOnAQuietInstance(t *testing.T) {
 // later observation runs.
 func TestHorizonDoesNotProveItsOwnObservationWhileAnotherSessionHoldsAnID(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 
 	id := commitHorizonEvent(ctx, t, database)
@@ -531,8 +522,7 @@ func TestHorizonDoesNotProveItsOwnObservationWhileAnotherSessionHoldsAnID(t *tes
 // stays below the event until the open session ends.
 func TestHorizonDoesNotProveAnObservationTakenBesideAnOpenLowerID(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 
 	holder, holderXid := openEventWriter(ctx, t, database)
@@ -600,8 +590,7 @@ func snapshotShape(ctx context.Context, t *testing.T, database *store.Store) (ui
 // hole, and the test logs whether it did.
 func TestHorizonDoesNotPassAWriterAboveTheSnapshotXmax(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 	if _, err := horizon.Await(ctx); err != nil {
 		t.Fatalf("await the empty log: %v", err)
@@ -666,8 +655,7 @@ func TestHorizonDoesNotPassAWriterAboveTheSnapshotXmax(t *testing.T) {
 // the new head.
 func TestHorizonAwaitCoversEveryIDCommittedBeforeTheCall(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 	for range 4 {
 		id := commitHorizonEvent(ctx, t, database)
@@ -681,8 +669,7 @@ func TestHorizonAwaitCoversEveryIDCommittedBeforeTheCall(t *testing.T) {
 // kept its old H would tell a reader that ids it has not yet seen are final, and skip them.
 func TestHorizonResetForgetsTheOldLog(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 	for range 3 {
 		commitHorizonEvent(ctx, t, database)
@@ -711,8 +698,7 @@ func TestHorizonResetForgetsTheOldLog(t *testing.T) {
 // after it: a later observation would prove it safe and raise H back to the old log's head.
 func TestHorizonResetDiscardsAnObservationInFlight(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	gated := &gatedHorizonDB{HorizonDB: database.Pool, observed: make(chan struct{}), release: make(chan struct{})}
 	horizon := NewHorizon(gated)
 	for range 3 {
@@ -749,8 +735,7 @@ func TestHorizonResetDiscardsAnObservationInFlight(t *testing.T) {
 // the call has parked on it, so the call always finds it in flight, however slowly it gets there.
 func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	gated := &gatedHorizonDB{HorizonDB: database.Pool, observed: make(chan struct{}), release: make(chan struct{})}
 	horizon := NewHorizon(gated)
 	first := commitHorizonEvent(ctx, t, database)
@@ -1385,8 +1370,7 @@ func TestHorizonAwaitBacksOffOnceForObservationsItsGapCheckRead(t *testing.T) {
 // is open. The holder named may be another test's on the same instance, which is older.
 func TestHorizonStallWarningNamesAnOpenTransaction(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	commitHorizonEvent(ctx, t, database)
 	holder, _ := openEventWriter(ctx, t, database)
 	if _, err := holder.Exec(ctx, `set local application_name = 'horizon-stall-holder'`); err != nil {
@@ -1399,7 +1383,7 @@ func TestHorizonStallWarningNamesAnOpenTransaction(t *testing.T) {
 	if _, err := horizon.Safe(ctx); err != nil {
 		t.Fatalf("Safe: %v", err)
 	}
-	waitForStallWarnings(logged, 1)
+	waitForStallWarnings(t, logged, 1)
 	warning := logged.Lines(StallWarning)
 	if warning == "" || strings.Contains(warning, "diagnosis_error") || !strings.Contains(warning, "pid=") {
 		t.Fatalf("stall warning does not name an open transaction:\n%s", logged.String())
@@ -1407,21 +1391,36 @@ func TestHorizonStallWarningNamesAnOpenTransaction(t *testing.T) {
 	t.Log(strings.TrimSpace(warning))
 }
 
-// waitForStallWarnings waits up to ten seconds for logged to hold want stall warnings, which a
-// Horizon logs on a goroutine of its own, and returns how many it holds.
-func waitForStallWarnings(logged *storetest.LockedLog, want int) int {
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+// waitForStallWarnings waits for logged to hold want stall warnings, which a Horizon logs on a
+// goroutine of its own, and returns how many it holds then, so a caller also sees a warning past
+// want that came with the last one awaited. Its one bound is the test binary's deadline less
+// testwait's margin, where it fails naming the count it waited for and the count it read last.
+func waitForStallWarnings(t *testing.T, logged *storetest.LockedLog, want int) int {
+	t.Helper()
+	return testwait.Until(t, fmt.Sprintf("%d stall warnings in the log (the count last read)", want), func() (int, bool) {
 		got := strings.Count(logged.String(), StallWarning)
-		if got >= want || time.Now().After(deadline) {
-			return got
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return got, got >= want
+	})
+}
+
+// waitForNoStallDiagnosis waits until no stall diagnosis of horizon is in flight. warnStall clears
+// its flag in a defer, after it logs its line, so a test that saw the line and observes again waits
+// on the flag rather than on the log: an observation that found the diagnosis still in flight
+// would rightly start none, and the warning the test waits for next would never come.
+func waitForNoStallDiagnosis(t *testing.T, horizon *Horizon, what string) {
+	t.Helper()
+	testwait.Until(t, what+" (whether a diagnosis was in flight, last read)", func() (bool, bool) {
+		horizon.mu.Lock()
+		defer horizon.mu.Unlock()
+		return horizon.diagnosing, !horizon.diagnosing
+	})
 }
 
 // requireHorizonBelow asserts that Safe stays below id however often it is asked, and that Await
-// does not return within a short wait, while the write holding id is open.
+// does not return within a short wait, while the write holding id is open. The short wait is a
+// context Await must honour, whose deadline is the answer wanted, not a wait for a fact: a correct
+// Await never returns while the write is open, so a loaded machine only lets it observe fewer times
+// before that deadline.
 func requireHorizonBelow(ctx context.Context, t *testing.T, horizon *Horizon, id int64) {
 	t.Helper()
 	for range 10 {
@@ -1616,8 +1615,7 @@ func (r *gatedResults) Close() error {
 // than it, the floor is H alone.
 func TestWriterFloorTakesTheNewestMarkOlderThanEveryEventInsert(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 
 	first := commitHorizonEvent(ctx, t, database)
@@ -1651,8 +1649,7 @@ func TestWriterFloorTakesTheNewestMarkOlderThanEveryEventInsert(t *testing.T) {
 // transaction id in another database on the instance, which holds H back, leaves every mark good.
 func TestWriterFloorIgnoresATransactionInAnotherDatabase(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 
 	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
@@ -1690,8 +1687,7 @@ func TestWriterFloorIgnoresATransactionInAnotherDatabase(t *testing.T) {
 // is gone or carries another created_at.
 func TestWriterFloorPassesOverAMarkFromBeforeAReset(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 
 	commitHorizonEvent(ctx, t, database)
@@ -1720,8 +1716,7 @@ func TestWriterFloorPassesOverAMarkFromBeforeAReset(t *testing.T) {
 // another table, an operator's open session).
 func TestWriterFloorIgnoresATransactionThatHasInsertedNoEvent(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 
 	holder, _ := openEventWriter(ctx, t, database)
@@ -1744,26 +1739,22 @@ func TestWriterFloorIgnoresATransactionThatHasInsertedNoEvent(t *testing.T) {
 // value of a log since reset is not read: its event is gone, or carries another created_at.
 func TestAPersistedHorizonIsReadByALaterProcessAndNotAcrossAReset(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	first := NewHorizon(database.Pool)
 	first.PersistProven()
 	later := NewHorizon(database.Pool)
 
 	newest := commitHorizonEvent(ctx, t, database)
-	persisted := int64(0)
-	for deadline := time.Now().Add(30 * time.Second); persisted < newest; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the persisted horizon = %d after %s, want at least %d", persisted, 30*time.Second, newest)
-		}
+	testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("the later process to read a persisted horizon of at least %d (the value last read)", newest), func() (int64, bool) {
 		if _, err := first.Safe(ctx); err != nil {
 			t.Fatalf("observe: %v", err)
 		}
-		var err error
-		if persisted, err = later.Persisted(ctx); err != nil {
+		persisted, err := later.Persisted(ctx)
+		if err != nil {
 			t.Fatalf("read the persisted horizon: %v", err)
 		}
-	}
+		return persisted, persisted >= newest
+	})
 	if later.Proven() != 0 {
 		t.Fatalf("the later process proved %d itself, so this test proves nothing", later.Proven())
 	}
@@ -1801,8 +1792,7 @@ func (db *persistCountingDB) SendBatch(ctx context.Context, batch *pgx.Batch) pg
 // a reader up at every observation.
 func TestAFailedPersistIsTriedAgainOnlyOnceEveryPersistInterval(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	db := &persistCountingDB{HorizonDB: database.Pool, fail: true}
 	horizon := NewHorizon(db)
 	horizon.PersistProven()
@@ -1847,8 +1837,7 @@ func TestAFailedPersistIsTriedAgainOnlyOnceEveryPersistInterval(t *testing.T) {
 // the H it carries is the old log's.
 func TestAPersistDecidedBeforeAResetWritesNothing(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	db := &persistCountingDB{HorizonDB: database.Pool}
 	horizon := NewHorizon(db)
 	newest := commitHorizonEvent(ctx, t, database)
@@ -1881,8 +1870,7 @@ func TestAPersistDecidedBeforeAResetWritesNothing(t *testing.T) {
 // that a later process would trust (Persisted).
 func TestAPersistOfAnOldLogsHorizonWritesNothingAfterTheLogIsReset(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 	newest := commitHorizonEvent(ctx, t, database)
 	for horizon.Proven() < newest {

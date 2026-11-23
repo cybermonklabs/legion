@@ -194,27 +194,25 @@ func (r *roleRig) sessionBucket(t *testing.T) (natsgo.KeyValue, error) {
 }
 
 // waitForExpiredSessionKey waits until the session bucket holds no record for sessionID: its
-// maximum age passed and the server dropped the record it stored.
+// maximum age passed and the server dropped the record it stored. It reads the bucket every 50 ms
+// and fails t by name, with the record it last read, when the record is still there at testwait's
+// margin before the test binary's deadline.
 func (r *roleRig) waitForExpiredSessionKey(t *testing.T, sessionID string) {
 	t.Helper()
 	kv, err := r.sessionBucket(t)
 	if err != nil {
 		t.Fatalf("open the session bucket: %v", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		_, err := kv.Get(sessionID)
+	testwait.UntilPolling(t, 50*time.Millisecond, sessionID+"'s record to leave the session bucket once its maximum age passed", func() (string, bool) {
+		entry, err := kv.Get(sessionID)
 		if errors.Is(err, natsgo.ErrKeyNotFound) {
-			return
+			return "no record", true
 		}
 		if err != nil {
 			t.Fatalf("read %s's record: %v", sessionID, err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's record is still in the session bucket well past its maximum age", sessionID)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return "a record created " + entry.Created().Format(time.RFC3339Nano), false
+	})
 }
 
 // roleClaim is role's claim as the role bucket holds it now.
@@ -361,12 +359,13 @@ func (m *markers) took(msg *natsgo.Msg) bool {
 // miss a copy it sent.
 //
 // await publishes a marker on client's connection, the one the outbox's sends went out on, and
-// waits under the shared bound for the subscription to take it. NATS hands one connection's
-// messages to a subscription in the order they were published, and the subscription takes them
-// one at a time, so once it has taken the marker it has taken every copy sent before it, a copy
-// the outbox sent twice or out of order included. The marker names a stream that does not exist
-// (Nats-Expected-Stream), so the stream, which captures the agent subjects, refuses to store it
-// and a read of the stream does not see it; the subscription is handed it all the same.
+// waits for the subscription to take it, failing t by name when it has not by testwait's margin
+// before the test binary's deadline. NATS hands one connection's messages to a subscription in the
+// order they were published, and the subscription takes them one at a time, so once it has taken
+// the marker it has taken every copy sent before it, a copy the outbox sent twice or out of order
+// included. The marker names a stream that does not exist (Nats-Expected-Stream), so the stream,
+// which captures the agent subjects, refuses to store it and a read of the stream does not see it;
+// the subscription is handed it all the same.
 func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 	t.Helper()
 	m.mu.Lock()
@@ -379,13 +378,11 @@ func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 	if err := client.Connection().PublishMsg(msg); err != nil {
 		t.Fatalf("publish a marker to %s: %v", subject, err)
 	}
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	testwait.Until(t, "the subscription to "+subject+" to take the marker published behind the outbox's sends", func() (bool, bool) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		return m.taken[id]
-	}) {
-		t.Fatalf("the subscription to %s never took the marker published behind the outbox's sends", subject)
-	}
+		return m.taken[id], m.taken[id]
+	})
 }
 
 // narrowAgentCapture has the stream capture the agent subjects of holders alone, in place of every
@@ -507,12 +504,7 @@ func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAck
 
 	holding(t, rig.deps()).scan(context.Background(), unfenced{})
 
-	var forward contracts.Envelope
-	select {
-	case forward = <-recv.arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the holder received no forward")
-	}
+	forward := testwait.Receive(t, "the holder to receive the forward", recv.arrived)
 	if forward.Topic != contracts.RoleTopicPrefix+role || forward.DedupeKey != contracts.RoleForwardDedupePrefix+fmt.Sprintf("dispatch-%d", event.ID) ||
 		forward.EventID != fmt.Sprintf("dispatch-%d", event.ID) {
 		t.Fatalf("the holder received topic %q dedupe key %q event id %q, want the role forward of event %d",
@@ -2132,7 +2124,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the other owner's comment reached %v, want %s among them: a session no attempt of that comment names takes its claimant copy as if it had not been mentioned",
 				reached, contracts.LegacyAgentSubject(bystander))
 		}
-		waitFor(t, 10*time.Second, "the other owner's claimant copy", func() bool {
+		waitFor(t, "the other owner's claimant copy", func() bool {
 			return len(other.received()) > 0
 		})
 		copies := other.received()
@@ -2182,7 +2174,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the comment reached %v, want %s among them: the mention of %s failed, so the session it was pinned to is owed the outbox's copy and nothing else delivers it",
 				reached, holderSubject, target)
 		}
-		waitFor(t, 10*time.Second, "the copy owed to the session whose mention failed", func() bool {
+		waitFor(t, "the copy owed to the session whose mention failed", func() bool {
 			return len(pinned.received()) > 0
 		})
 		for _, item := range pinned.received() {

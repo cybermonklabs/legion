@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The identities the coverage tests configure: one place's, and another's a row may carry from
@@ -299,24 +300,13 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 		defer close(done)
 		Run(ctx, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
 	}()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	type reading struct{ items, current, lacking, failed int64 }
+	testwait.UntilPolling(t, 100*time.Millisecond, "Run to make every item current", func() (reading, bool) {
 		items, current, lacking, failed, oldest := coverage(t, database, configuredIdentity)
-		if items == int64(seeded) && current == items && lacking == 0 && failed == 0 && oldest == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("after 30s of Run: items %d current %d lacking %d failed %d oldest %v, want every item current", items, current, lacking, failed, oldest)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return reading{items, current, lacking, failed}, items == int64(seeded) && current == items && lacking == 0 && failed == 0 && oldest == nil
+	})
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not return after its context ended")
-	}
+	testwait.Receive(t, "Run to return once its context ended", done)
 }
 
 // The row the pass adds for an issue that has none carries that issue's project, as the row
@@ -861,9 +851,23 @@ func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 	requireUnchanged("a pass while the deployment is missing")
 	requireOneCanary("a pass while the deployment is missing")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	Run(ctx, deps)
-	cancel()
+	// Run's coverage pass sends its canary at start, which a loaded machine can reach late, so the
+	// window below begins once the fake has seen it. A correct Run then sends nothing more until
+	// identityRecheckInterval, ten minutes on, and changes no row, so a loaded machine cannot fail
+	// the window: it only gives a wrong Run less time to show a second canary or a change.
+	runCtx, stopRun := context.WithCancel(context.Background())
+	runReturned := make(chan struct{})
+	go func() {
+		defer close(runReturned)
+		Run(runCtx, deps)
+	}()
+	testwait.Until(t, "Run's coverage pass to send its canary", func() (int, bool) {
+		seen := fake.seen()
+		return seen, seen > 0
+	})
+	time.Sleep(2 * time.Second)
+	stopRun()
+	testwait.Receive(t, "Run to return once its context ended", runReturned)
 	requireUnchanged("Run while the deployment is missing")
 	requireOneCanary("Run while the deployment is missing")
 
@@ -1032,11 +1036,11 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 	shortenIdentityRecheck(t, 3*time.Second)
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
 	// The boot pass has dropped ROLL-2's vector, and the queue has embedded ROLL-1 here.
-	eventually(t, 10*time.Second, "the boot pass and the boot drain", func() bool {
+	eventually(t, "the boot pass and the boot drain", func() bool {
 		return modelOf(t, database, "ROLL-1") == configuredIdentity && modelOf(t, database, "ROLL-2") != foreignIdentity
 	})
 	commitForeignVector(t, database, "ROLL-1")
-	eventually(t, 15*time.Second, "ROLL-1 dropped by the recheck and embedded again here", func() bool {
+	eventually(t, "ROLL-1 dropped by the recheck and embedded again here", func() bool {
 		return modelOf(t, database, "ROLL-1") == configuredIdentity
 	})
 }
@@ -1054,17 +1058,20 @@ func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testi
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
 	// The boot drain embeds the issue here, so the boot pass's look for rows of another identity
 	// finds none: the database holds one row and this process made its vector.
-	eventually(t, 15*time.Second, "the boot pass and the boot drain", func() bool {
+	eventually(t, "the boot pass and the boot drain", func() bool {
 		return modelOf(t, database, "CLEAN-1") == configuredIdentity
 	})
 	commitForeignVector(t, database, "CLEAN-1")
-	eventually(t, 20*time.Second, "CLEAN-1's foreign vector dropped and embedded again here", func() bool {
+	eventually(t, "CLEAN-1's foreign vector dropped and embedded again here", func() bool {
 		return modelOf(t, database, "CLEAN-1") == configuredIdentity
 	})
 }
 
 // A boot pass that skipped the identity steps because the embedder had not answered its canary
-// runs them as soon as the queue's first embed succeeds, not identityRecheckInterval later.
+// runs them as soon as the queue's first embed succeeds, not identityRecheckInterval later. The
+// wait for the drop ends on the drop itself; what tells the two apart is how long after the
+// embedder answered it came, read against identityRecheckInterval's ten minutes, which no loaded
+// machine takes for the one embed between them.
 func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "ANSR", "ANSR-1", "Pending here")
@@ -1075,14 +1082,18 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	embedder.setErr(errors.New("simulated: the deployment does not answer yet"))
 	runQueue(t, Deps{Store: database, Embedder: embedder})
 	// Two canaries fail: the boot pass's, and the one confirming ANSR-1's own failed embed.
-	eventually(t, 10*time.Second, "the boot pass's canary", func() bool { return embedder.canaryCalls() >= 2 })
+	eventually(t, "the boot pass's canary", func() bool { return embedder.canaryCalls() >= 2 })
 	if got := modelOf(t, database, "ANSR-2"); got != foreignIdentity {
 		t.Fatalf("ANSR-2 holds %q before the embedder answered, want the foreign vector left in place", got)
 	}
+	answered := time.Now()
 	embedder.setErr(nil)
-	eventually(t, 20*time.Second, "ANSR-2's foreign vector dropped and embedded again here", func() bool {
+	eventually(t, "ANSR-2's foreign vector dropped and embedded again here", func() bool {
 		return modelOf(t, database, "ANSR-2") == configuredIdentity
 	})
+	if took := time.Since(answered); took >= identityRecheckInterval {
+		t.Fatalf("ANSR-2's foreign vector was dropped %v after the embedder answered, not before identityRecheckInterval (%v): the identity steps waited for the recheck rather than running on the first embed", took, identityRecheckInterval)
+	}
 }
 
 // Coverage over every state an item can be in: no row (aging from when it was written), stale
@@ -1444,11 +1455,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 		<-done
 	}()
 
-	select {
-	case <-proxy.paused:
-	case <-time.After(15 * time.Second):
-		t.Fatal("the scan loop's claim of SIDE-2 never reached the client")
-	}
+	testwait.Receive(t, "the scan loop's claim of SIDE-2 to reach the client", proxy.paused)
 	// The pass's insert of SIDE-1's row is the one backend of Run's pool queued behind the insert
 	// this test holds (storetest.WaitForLockWaitersFrom): a count of every backend waiting on a
 	// transaction would end on another backend's wait as well.
@@ -1460,15 +1467,9 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	time.Sleep(500 * time.Millisecond)
 	releaseProxy()
 
-	deadline := time.Now().Add(20 * time.Second)
-	for {
+	type reading struct{ items, current, lacking, failed int64 }
+	testwait.UntilPolling(t, 100*time.Millisecond, "Run to make all 3 items current: a pass that stops short stopped before the issue no trigger saw", func() (reading, bool) {
 		items, current, lacking, failed, _ := coverage(t, database, configuredIdentity)
-		if items == 3 && current == 3 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after Run: items %d current %d lacking %d failed %d, want all 3 current: the coverage pass stopped before the issue no trigger saw", items, current, lacking, failed)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return reading{items, current, lacking, failed}, items == 3 && current == 3
+	})
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deniedIntakeServer is a server whose intake user may publish anything but deny
@@ -55,20 +56,15 @@ func TestATakeOverStepTheGrantRefusesGivesUpAtOnce(t *testing.T) {
 			}
 			startIntakeProcess(t, pool, uri, nil)
 
-			var given map[string]any
-			deadline := time.Now().Add(30 * time.Second)
-			for given == nil && time.Now().Before(deadline) {
+			logged := fmt.Sprintf("the intake to log the ERROR %q for %s", "dispatch delivery: "+row.step, bus.DispatchDeliveryDurable)
+			given := testwait.UntilPolling(t, 50*time.Millisecond, logged, func() (map[string]any, bool) {
 				for _, record := range logs() {
 					if record["level"] == "ERROR" && record["msg"] == "dispatch delivery: "+row.step && record["name"] == bus.DispatchDeliveryDurable {
-						given = record
-						break
+						return record, true
 					}
 				}
-				time.Sleep(50 * time.Millisecond)
-			}
-			if given == nil {
-				t.Fatalf("no ERROR %q within 30s", "dispatch delivery: "+row.step)
-			}
+				return nil, false
+			})
 			if errText := fmt.Sprint(given["error"]); !strings.Contains(errText, `Permissions Violation for Publish to "`) {
 				t.Fatalf("the step's ERROR carries %q, want the server's refusal", errText)
 			}

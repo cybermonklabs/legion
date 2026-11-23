@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // errCutOff is every statement of a process the test has cut off from Postgres.
@@ -346,7 +347,7 @@ func consumerState(publisher *bus.Client) string {
 // subscriber: delivered to it, and not yet acknowledged.
 func awaitAckPending(t *testing.T, publisher *bus.Client, want int) {
 	t.Helper()
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.NumAckPending == want
 	}, func() string {
@@ -361,7 +362,7 @@ func awaitAckPending(t *testing.T, publisher *bus.Client, want int) {
 // each process has handled no longer changes.
 func awaitEverythingAcknowledged(t *testing.T, publisher *bus.Client) {
 	t.Helper()
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.NumAckPending == 0 && info.NumPending == 0 && info.AckFloor.Consumer == info.Delivered.Consumer
 	}, func() string {
@@ -392,7 +393,7 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 
 	publishMergedPullRequest(t, publisher, inFlight)
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	for range queued {
@@ -407,16 +408,21 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	// while the runner still ran, and the runner would hand it the next queued message of the
 	// same key rather than leaving it to the standby. The wait for the handler cannot return
 	// while that fetch is held, so waiting for the runner here cannot deadlock.
-	waitFor(t, 20*time.Second, holder.keyedRunnerStopped, func() string {
+	waitFor(t, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
 	// The message in the holder's handler finishes as the stop waits for it.
 	holder.release()
 
-	waitFor(t, 10*time.Second, func() bool { return standby.fetches(inFlight) == queued }, func() string {
-		return fmt.Sprintf("the standby has not handled the stopped holder's %d queued messages of pull request %d within 10s: standby %d, holder %d; %s",
+	// The bound is the row's subject, so it stays a span: a stop that hands the queued messages
+	// back and releases its hold has the standby handle them within seconds, where a stop that left
+	// its hold to lapse (intakeHoldTTL, 15 s) or the messages to the ack wait (intakeAckWait,
+	// intakeMaxAckPending 5 times the shrunk intakeMessageTimeout of 5 s plus a minute, 85 s here)
+	// would not. A wait to the test binary's deadline would pass both.
+	if !testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return standby.fetches(inFlight) == queued }) {
+		t.Fatalf("the standby has not handled the stopped holder's %d queued messages of pull request %d within 10s: standby %d, holder %d; %s",
 			queued, inFlight, standby.fetches(inFlight), holder.fetches(inFlight), consumerState(publisher))
-	})
+	}
 	t.Logf("the standby handled the queued messages %s after the holder's stop", time.Since(stopped))
 	if got := holder.fetches(inFlight); got != 1 {
 		t.Errorf("the stopping holder fetched pull request %d %d times; want the one its handler held, the rest handed back", inFlight, got)
@@ -514,7 +520,7 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 
 	publishMergedPullRequest(t, publisher, inFlight)
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
 	})
 	for range queued {
@@ -527,18 +533,18 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 	// lapses, and the holder stops delivering.
 	cut := time.Now()
 	holder.leases.cut.Store(true)
-	waitFor(t, 30*time.Second, holder.keyedRunnerStopped, func() string {
+	waitFor(t, holder.keyedRunnerStopped, func() string {
 		return "the holder never began stopping, though its hold is no longer renewed: " + consumerState(publisher)
 	})
 	// The stop hands the messages it held back once the handler it gave up has returned, which
 	// is a margin past the loss deadline, so every one of those hand-backs is withheld.
-	waitFor(t, 30*time.Second, holder.heldListReleased, func() string {
+	waitFor(t, holder.heldListReleased, func() string {
 		return "the holder's stop never released the messages it held: " + consumerState(publisher)
 	})
 
-	// 60 s: the handler given up when the stop's budget ends, the hold's lapse (intakeHoldTTL,
-	// 15 s), the standby's poll (durableBindInterval, 2 s) and its take-over.
-	waitFor(t, 60*time.Second, func() bool { return standby.fetches(inFlight) == 1+queued }, func() string {
+	// The standby handles them after the handler given up when the stop's budget ends, the hold's
+	// lapse (intakeHoldTTL, 15 s), its poll (durableBindInterval, 2 s) and its take-over.
+	waitFor(t, func() bool { return standby.fetches(inFlight) == 1+queued }, func() string {
 		return fmt.Sprintf("the standby handled %d of the lapsed holder's %d messages: holder %d; %s",
 			standby.fetches(inFlight), 1+queued, holder.fetches(inFlight), consumerState(publisher))
 	})
@@ -631,7 +637,7 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 	// cut the holder off from Postgres and left its packets to the server crawling does: its
 	// stop drains, and the deadline passes while that drain still has the server delivering to
 	// it.
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		deadline := holder.holdDeadline()
 		return !deadline.IsZero() && time.Until(deadline) <= stopBeforeLapse
 	}, func() string {
@@ -640,14 +646,14 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 	relay.SlowTo(holderLinkLatency)
 	go holder.stop()
 
-	waitFor(t, 30*time.Second, func() bool { return holder.heldListReleased() && holder.holdLapsed() }, func() string {
+	waitFor(t, func() bool { return holder.heldListReleased() && holder.holdLapsed() }, func() string {
 		return "the holder's stop never released its held list with the hold's deadline behind it: " + consumerState(publisher)
 	})
 	publishMergedPullRequest(t, publisher, lateNumber)
 
-	// 60 s: the hold's lapse on the database's clock (intakeHoldTTL, 15 s), the standby's poll
-	// (durableBindInterval, 2 s) and its take-over.
-	waitFor(t, 60*time.Second, func() bool { return standby.fetches(lateNumber) == 1 }, func() string {
+	// The standby handles it after the hold's lapse on the database's clock (intakeHoldTTL, 15 s),
+	// its poll (durableBindInterval, 2 s) and its take-over.
+	waitFor(t, func() bool { return standby.fetches(lateNumber) == 1 }, func() string {
 		return fmt.Sprintf("the standby handled the message published to the stopped holder %d times, want it once: holder %d; %s",
 			standby.fetches(lateNumber), holder.fetches(lateNumber), consumerState(publisher))
 	})
@@ -657,8 +663,8 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 	// answered: nats.go writes one connection's publishes in the order they were made and the
 	// relay hands on what it reads in that same order, so a hand-back published for that
 	// message is there to be read below rather than still crossing the link. The flush crosses
-	// it too, which is what it costs.
-	if err := holder.client.Conn.FlushTimeout(4 * holderLinkLatency); err != nil {
+	// it too, which is what it costs, and is waited for until untilTheBinaryDeadline.
+	if err := holder.client.Conn.FlushTimeout(untilTheBinaryDeadline(t)); err != nil {
 		t.Fatalf("wait for what the stopped holder's client sent to reach the server: %v", err)
 	}
 	awaitEverythingAcknowledged(t, publisher)
@@ -706,7 +712,7 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 // A holder abandoned without a stop, as a SIGKILL leaves it -- its NATS connection gone and its hold
 // no longer renewed -- strands the messages it had been delivered. The standby takes the durable
 // over once the hold lapses and is redelivered every one of them at once: within the hold's 15 s
-// TTL, a 2 s bind interval and a margin, not after the 85 s ack wait.
+// TTL, a 2 s bind interval and a margin, not after the ack wait (intakeAckWait, 80 s here).
 func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing.T) {
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
@@ -728,17 +734,21 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 	holder.leases.cut.Store(true)
 	holder.client.Close()
 
-	waitFor(t, 25*time.Second, func() bool {
+	// The bound is the row's subject, so it stays a span: intakeHoldTTL (15 s), durableBindInterval
+	// (2 s) and a margin, well inside the ack wait (intakeAckWait, intakeMaxAckPending 4 times the
+	// shrunk intakeMessageTimeout of 5 s plus a minute, 80 s) after which NATS would redeliver the
+	// stranded messages without any take-over. A wait to the test binary's deadline would pass that.
+	if !testwait.Holds(25*time.Second, 50*time.Millisecond, func() bool {
 		for _, number := range stranded {
 			if standby.fetches(number) == 0 {
 				return false
 			}
 		}
 		return true
-	}, func() string {
-		return fmt.Sprintf("the standby has not handled the abandoned holder's messages %v within 25s: standby %v; %s",
+	}) {
+		t.Fatalf("the standby has not handled the abandoned holder's messages %v within 25s: standby %v; %s",
 			stranded, fetchesOf(standby, stranded), consumerState(publisher))
-	})
+	}
 	t.Logf("the standby handled the stranded messages %s after the holder was abandoned", time.Since(abandoned))
 }
 
@@ -761,7 +771,7 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	relay.Cut()
 	holder.leases.cut.Store(true)
 	cut := time.Now()
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound
 	}, func() string {
@@ -771,7 +781,7 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 
 	relay.Restore()
 	holder.leases.cut.Store(false)
-	waitFor(t, 20*time.Second, holder.client.Connected, func() string {
+	waitFor(t, holder.client.Connected, func() string {
 		return "the holder's NATS connection did not come back"
 	})
 	// Time for the holder's client to send its subscriptions again.
@@ -782,7 +792,7 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 		later[i] = 200 + i
 		publishMergedPullRequest(t, publisher, later[i])
 	}
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		for _, number := range later {
 			if standby.fetches(number)+holder.fetches(number) == 0 {
 				return false
@@ -845,13 +855,9 @@ func TestATakeOverCreatesTheDurableAlreadyBound(t *testing.T) {
 
 	_, slowURL := startNATSCut(t, natsURL, 500*time.Millisecond)
 	startIntakeProcess(t, pool, slowURL, nil)
-	select {
-	case first := <-lookups:
-		if !first.bound {
-			t.Fatalf("a lookup the moment the take-over created the durable found it unbound (error %v): a process that binds by lookup would have bound it too", first.err)
-		}
-	case <-time.After(60 * time.Second):
-		t.Fatal("the take-over never created the durable")
+	first := testwait.Receive(t, "the take-over to create the durable", lookups)
+	if !first.bound {
+		t.Fatalf("a lookup the moment the take-over created the durable found it unbound (error %v): a process that binds by lookup would have bound it too", first.err)
 	}
 }
 
@@ -937,7 +943,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 		t.Fatalf("release the newer build's hold: %v", err)
 	}
 	var taken *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		taken, err = publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && taken.PushBound && taken.Config.DeliverSubject != newer.DeliverSubject
 	}, func() string {
@@ -948,7 +954,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 			taken.Config.AckWait, taken.Config.MaxAckPending, taken.Config.Metadata[generationKey], newer.AckWait, newer.MaxAckPending, "2")
 	}
 	publishMergedPullRequest(t, publisher, 5)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(5) == 1 }, func() string {
+	waitFor(t, func() bool { return standby.fetches(5) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 }
@@ -995,7 +1001,7 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	standby := startIntakeProcess(t, pool, natsURL, nil)
 	time.Sleep(3 * durableBindInterval)
 	publishMergedPullRequest(t, publisher, 1)
-	waitFor(t, 20*time.Second, func() bool { return received.Load() == 1 }, func() string {
+	waitFor(t, func() bool { return received.Load() == 1 }, func() string {
 		return "the previous build's process stopped receiving while the standby stood by: " + consumerState(publisher)
 	})
 	after, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
@@ -1013,14 +1019,14 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	if err := held.Unsubscribe(); err != nil {
 		t.Fatalf("unsubscribe the previous build's process: %v", err)
 	}
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.DeliverSubject != previous.DeliverSubject
 	}, func() string {
 		return "the standby never took the durable over on a deliver subject of its own once the previous build let go: " + consumerState(publisher)
 	})
 	publishMergedPullRequest(t, publisher, 2)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(2) == 1 }, func() string {
+	waitFor(t, func() bool { return standby.fetches(2) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 	if got := received.Load(); got != 1 {
@@ -1080,7 +1086,7 @@ func durablePartWayThrough(t *testing.T, ctx context.Context, publisher *bus.Cli
 	if err != nil {
 		t.Fatalf("look up the durable: %v", err)
 	}
-	batch, err := consumer.Fetch(acknowledged, jetstream.FetchMaxWait(10*time.Second))
+	batch, err := consumer.Fetch(acknowledged, jetstream.FetchMaxWait(untilTheBinaryDeadline(t)))
 	if err != nil {
 		t.Fatalf("fetch from the durable: %v", err)
 	}
@@ -1112,7 +1118,7 @@ func requireDeliveredFromTheFloor(t *testing.T, publisher *bus.Client, process *
 			unacked = append(unacked, number)
 		}
 	}
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		for _, number := range unacked {
 			if process.fetches(number) == 0 {
 				return false
@@ -1188,7 +1194,7 @@ func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 	failing.Store(true)
 	attempts := failCreatesWhile(t, failing.Load)
 	first := startIntakeProcess(t, pool, natsURL, nil)
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		_, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return attempts.Load() > 0 && errors.Is(err, natsgo.ErrConsumerNotFound)
 	}, func() string {
@@ -1298,7 +1304,7 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconcile
 			natsgo.DeliverByStartSequencePolicy, start, consumerConfigGeneration)
 	}
 	before := present.Load()
-	waitFor(t, 10*time.Second, func() bool { return present.Load() > before }, func() string {
+	waitFor(t, func() bool { return present.Load() > before }, func() string {
 		return "the previous build's process did not find the durable present after the take-over: " + consumerState(publisher)
 	})
 }

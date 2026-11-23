@@ -1,9 +1,12 @@
 package delivery
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent: a read that does not fit while another
@@ -16,6 +19,9 @@ func TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent(t *testing.T) {
 	}
 	second := make(chan bool, 1)
 	go func() { second <- budget.reserve(6) }()
+	// A correct budget never answers the second reservation while the first holds 6 of 10, so
+	// this window looks for an answer that never comes: a loaded machine only makes it quieter,
+	// and cannot fail a correct run.
 	select {
 	case got := <-second:
 		t.Fatalf("the second reservation answered %v while the first held 6 of 10; want it to wait", got)
@@ -24,26 +30,16 @@ func TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent(t *testing.T) {
 
 	// The first read made 2 calls: 8 are left, so the waiting read takes its 6.
 	budget.settle(6, 2)
-	select {
-	case got := <-second:
-		if !got {
-			t.Fatal("the second reservation was refused once the first gave 4 back (8 left)")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the second reservation still waited after the first settled")
+	if got := testwait.Receive(t, "the second reservation to answer once the first settled", second); !got {
+		t.Fatal("the second reservation was refused once the first gave 4 back (8 left)")
 	}
 
 	// It made all 6: 2 are left and nothing is in flight, so a third read gives up at once.
 	budget.settle(6, 6)
 	third := make(chan bool, 1)
 	go func() { third <- budget.reserve(6) }()
-	select {
-	case got := <-third:
-		if got {
-			t.Fatal("a third reservation of 6 was granted with 2 of 10 left")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("a third reservation waited with nothing in flight to give calls back")
+	if got := testwait.Receive(t, "a third reservation to answer with nothing in flight to give calls back", third); got {
+		t.Fatal("a third reservation of 6 was granted with 2 of 10 left")
 	}
 	if budget.spent != 8 {
 		t.Fatalf("spent = %d, want 8", budget.spent)
@@ -76,16 +72,13 @@ func TestConcurrentReadsNeverOverspendACallBudget(t *testing.T) {
 	}
 
 	// The first three to ask fit (18 of 20). Nothing settles until the gate opens, so every other
-	// read is waiting on a reservation and none may answer.
+	// read is waiting on a reservation and none may answer: a correct budget answers none of them
+	// in the window below at all, so a loaded machine only makes that window quieter.
 	held := allowance / cost
 	for i := range held {
-		select {
-		case granted := <-answered:
-			if !granted {
-				t.Fatalf("reservation %d of %d was refused with %d of %d calls free", i+1, held, allowance-i*cost, allowance)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("only %d of %d reservations answered before any settled", i, held)
+		granted := testwait.Receive(t, fmt.Sprintf("reservation %d of %d to answer before any settled", i+1, held), answered)
+		if !granted {
+			t.Fatalf("reservation %d of %d was refused with %d of %d calls free", i+1, held, allowance-i*cost, allowance)
 		}
 	}
 	select {

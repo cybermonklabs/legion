@@ -302,7 +302,10 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	}
 	stop()
 	// A read on the pass's context would end at the cancel: pgx sets the socket's deadline to now,
-	// and the gate returns within milliseconds while duty_passes is still held.
+	// and the gate returns within milliseconds while duty_passes is still held. A correct gate does
+	// not return at all while this test holds duty_passes, so a loaded machine cannot fail it here;
+	// it can only let a wrong gate that returns late pass this window, which the read of the gate's
+	// own backend below then catches.
 	select {
 	case <-answered:
 		t.Fatalf("the gate returned while its period read still waited on duty_passes: the cancel ended the read\n%s", logs.String())
@@ -317,13 +320,8 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 		t.Fatalf("release duty_passes: %v", err)
 	}
 
-	select {
-	case ran := <-answered:
-		if ran {
-			t.Error("a gate stopped while it read its period reported a pass that ran")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the gate stopped while it read its period did not return")
+	if ran := testwait.Receive(t, "the gate stopped while it read its period to return once duty_passes was released", answered); ran {
+		t.Error("a gate stopped while it read its period reported a pass that ran")
 	}
 	if passRan {
 		t.Error("the gate started its pass after shutdown")

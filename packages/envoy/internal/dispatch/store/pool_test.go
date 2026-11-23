@@ -9,12 +9,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The pool refuses a second connection to a caller that already holds one of its transactions:
@@ -311,11 +311,12 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		t.Fatalf("shared pool holds %d of %d connections, want all", stat.AcquiredConns(), stat.MaxConns())
 	}
 
+	// The test's context ends a call that queues behind the shared pool at the test binary's
+	// deadline less testwait's margin, rather than at a span a loaded machine could outlast.
+	waitCtx := testwait.Context(t)
 	for round := range 2 {
-		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		listener, err := database.Pool.Listener(waitCtx)
 		if err != nil {
-			cancel()
 			t.Fatalf("round %d: Listener with the shared pool fully acquired: %v", round, err)
 		}
 		if _, err := listener.Exec(waitCtx, "listen pool_listener_test"); err != nil {
@@ -331,7 +332,6 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		if err := listener.Close(waitCtx); err != nil {
 			t.Fatalf("round %d: close: %v", round, err)
 		}
-		cancel()
 	}
 }
 
@@ -426,14 +426,10 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 		database.Pool.Close()
 	}()
 	// Close refuses the other separate pools from the moment it begins.
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := database.Pool.Rooms(); errors.Is(err, ErrPoolClosed) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Close never began")
-		}
-	}
+	testwait.Until(t, "Close to begin, refusing the rooms pool", func() (error, bool) {
+		_, err := database.Pool.Rooms()
+		return err, errors.Is(err, ErrPoolClosed)
+	})
 	if _, err := database.Pool.Healthy(ctx); err != nil {
 		t.Fatalf("health probe while Close waits for a connection in use: %v, want an answer", err)
 	}
@@ -448,11 +444,7 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 
 	held.Release()
 	released = true
-	select {
-	case <-closed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Close did not return once the connection in use came back")
-	}
+	testwait.Receive(t, "Close to return once the connection in use came back", closed)
 	if _, err := database.Pool.Healthy(ctx); !errors.Is(err, ErrPoolClosed) {
 		t.Fatalf("health probe after Close: %v, want ErrPoolClosed", err)
 	}
@@ -494,8 +486,10 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the horizon pool: %v", err)
 	}
+	// The test's context ends an observation that queues behind the shared pool at the test
+	// binary's deadline less testwait's margin, rather than at a span a loaded machine could outlast.
+	waitCtx := testwait.Context(t)
 	for round := range 2 {
-		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		batch := &pgx.Batch{}
 		batch.Queue(`begin`)
 		batch.Queue(`select pg_snapshot_xmin(pg_current_snapshot())::text, pg_current_xact_id()::text`)
@@ -513,15 +507,12 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 			err = closeErr
 		}
 		if err != nil {
-			cancel()
 			t.Fatalf("round %d: observation with the shared pool fully acquired: %v", round, err)
 		}
 		var backends int
 		if err := horizon.QueryRow(waitCtx, "select count(*) from pg_stat_activity").Scan(&backends); err != nil {
-			cancel()
 			t.Fatalf("round %d: diagnosis read with the shared pool fully acquired: %v", round, err)
 		}
-		cancel()
 	}
 }
 

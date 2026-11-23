@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // busyPoolSize is the shared pool's size in the busy case. A full pool is what the case needs, of
@@ -526,7 +527,6 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 		// among the 60 non-burst readings of the loaded campaign at head 844b43ec05b2 on
 		// 2026-11-09; every other reading of it was 50, 55 or 60.
 		minOutstanding = 20
-		waitTime       = 3 * time.Minute
 	)
 	for _, load := range []struct {
 		name string
@@ -588,21 +588,20 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					sends := &outstandingSends{Publisher: rig.client}
 					stop := runOutboxThrough(t, outboxStore, rig.client, sends, rig.broker)
 					defer stop()
-					deadline := started.Add(waitTime)
-					for unpublishedCount(t, rig.database) > 0 && time.Now().Before(deadline) {
-						time.Sleep(10 * time.Millisecond)
-					}
+					// The drain is waited for, not bounded: what the row reads is the peak and the
+					// drain time below, and a drain that never finishes fails by name at testwait's
+					// margin before the test binary's deadline, with what was left and the peak so far.
+					testwait.UntilPolling(t, 10*time.Millisecond, name+": every event published", func() (string, bool) {
+						left := unpublishedCount(t, rig.database)
+						return fmt.Sprintf("%d of %d events left unpublished, %d sends outstanding at the peak", left, count, sends.peakOutstanding()), left == 0
+					})
 					elapsed := time.Since(started)
-					left := unpublishedCount(t, rig.database)
-					rate := float64(count-left) / elapsed.Seconds()
+					rate := float64(count) / elapsed.Seconds()
 					peak := sends.peakOutstanding()
 					if tc.burst {
-						t.Logf("%s: drained %d of %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
+						t.Logf("%s: drained %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count, elapsed.Round(time.Millisecond), rate, peak)
 					} else {
-						t.Logf("%s: published %d of %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
-					}
-					if left > 0 {
-						t.Fatalf("%s: %d of %d events left unpublished after %s", name, left, count, waitTime)
+						t.Logf("%s: published %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count, elapsed.Round(time.Millisecond), rate, peak)
 					}
 					// One issue is one chain, so a burst holds a send or three at once whatever
 					// the drain does, and reads nothing here.
@@ -709,5 +708,5 @@ func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, p
 	}
 	holders := roles.NewBuckets(client, roles.Windows{})
 	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
-		RoleClaims: holders, Sessions: holders}, 10*time.Second)
+		RoleClaims: holders, Sessions: holders})
 }

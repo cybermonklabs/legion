@@ -114,7 +114,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 			rows)
 	}
 
-	waitFor(t, 10*time.Second, "the comment's forward and the owner's later event at the holder",
+	waitFor(t, "the comment's forward and the owner's later event at the holder",
 		func() bool { return len(recv.received()) > 1 })
 	time.Sleep(time.Second)
 	copies := recv.received()

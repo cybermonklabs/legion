@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const refsGrammarServer = "https://dispatch.example"
@@ -222,9 +223,9 @@ func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 		t.Fatalf("hold the comment's owner lock as an edit does: %v", err)
 	}
 
-	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	indexed, err := ReindexScopeSource(bounded, database.Pool, "comment", quiet, refsGrammarServer)
+	// A drain that waited for the edit would wait until this context ends, at the test binary's
+	// deadline less testwait's margin, and fail by name below; a correct one passes over at once.
+	indexed, err := ReindexScopeSource(testwait.Context(t), database.Pool, "comment", quiet, refsGrammarServer)
 
 	if err != nil || indexed {
 		t.Fatalf("the scope drain of a comment an edit holds = %v (%v), want it passed over without waiting", indexed, err)
@@ -291,14 +292,10 @@ func TestTheScopeDrainReadsACitingSourceAgainUnderItsOwnerLock(t *testing.T) {
 	if err := edit.Commit(ctx); err != nil {
 		t.Fatalf("commit the edit: %v", err)
 	}
-	select {
-	case answer := <-drained:
-		if answer.err != nil || answer.indexed {
-			t.Fatalf("the scope drain after the edit = indexed %v (%v), want nothing indexed: the edited text writes no `#id`, "+
-				"so a drain that indexed it read the text before its owner lock", answer.indexed, answer.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the scope drain never finished after the edit released the owner lock")
+	answer := testwait.Receive(t, "the scope drain to finish after the edit released the owner lock", drained)
+	if answer.err != nil || answer.indexed {
+		t.Fatalf("the scope drain after the edit = indexed %v (%v), want nothing indexed: the edited text writes no `#id`, "+
+			"so a drain that indexed it read the text before its owner lock", answer.indexed, answer.err)
 	}
 }
 

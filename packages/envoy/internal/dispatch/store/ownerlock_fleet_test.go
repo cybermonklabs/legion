@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (OwnerLockProtocol). A build before this one serialises
@@ -284,17 +286,15 @@ var earlierBuildArrivals = []earlierBuildArrival{
 	}},
 }
 
-// arriveOn runs arrival for key in a transaction of its own on conn, bounded by a lock timeout so
-// a wait that never ends fails rather than hangs, and commits it.
+// arriveOn runs arrival for key in a transaction of its own on conn and commits it. ctx is the
+// test's (testwait.Context): pgx cancels a statement still waiting when it ends, so a wait that
+// never ends fails rather than hangs, and one that is merely slow is waited for.
 func arriveOn(ctx context.Context, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return err
-	}
 	if err := arrival.arrive(ctx, tx, key); err != nil {
 		return err
 	}
@@ -311,25 +311,28 @@ func arrive(ctx context.Context, s *Store, arrival earlierBuildArrival, key stri
 	return arriveOn(ctx, conn, arrival, key)
 }
 
-// awaitGateWait waits up to ten seconds for backend pid to wait for the owner lock gate
-// exclusively, as an earlier build's arrival waits for it, and fails the test when what it runs,
-// named what, ends first (ended).
+// awaitGateWait waits for backend pid to wait for the owner lock gate exclusively, as an earlier
+// build's arrival waits for it, and fails the test when what it runs, named what, ends first
+// (ended). Its one bound is the test binary's deadline less testwait's margin.
 func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	type seen struct {
+		err   error
+		early bool
+	}
+	got := testwait.UntilPolling(t, 5*time.Millisecond, what+" to wait for the owner lock gate exclusively, or to end", func() (seen, bool) {
 		if gate, granted := gateLock(t, s, pid); gate == "ExclusiveLock" && !granted {
-			return
+			return seen{}, true
 		}
 		select {
 		case err := <-ended:
-			t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, err)
+			return seen{err: err, early: true}, true
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s did not wait for the gate within 10s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
+		return seen{}, false
+	})
+	if got.early {
+		t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, got.err)
 	}
 }
 
@@ -353,16 +356,14 @@ const (
 // earlier build in the fleet (fleetModeWriter alone; false for the others), and the transaction's
 // error. This build's writers take their write phase's row locks in touch's order, an order of the
 // handler's appends, which no rule fixes since the advisory locks they hold already exclude each
-// other; the earlier build's take theirs sorted by `<kind>:<key>` up front.
+// other; the earlier build's take theirs sorted by `<kind>:<key>` up front. ctx is the test's
+// (testwait.Context), which ends a lock wait that never would.
 func raceWriter(ctx context.Context, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return false, err
-	}
 	switch shape {
 	case legacyModeWriter:
 		if err := LockOwners(ctx, tx, owners...); err != nil {
@@ -532,16 +533,14 @@ func randomOwners(all []Owner) (subset, touch []Owner) {
 }
 
 // heartbeatAsThisBuild stamps instance's heartbeat as processes' heartbeat does: under the
-// registry's lock, in a transaction of its own.
+// registry's lock, in a transaction of its own. ctx is the test's (testwait.Context), which ends a
+// wait for the registry's lock that never would.
 func heartbeatAsThisBuild(ctx context.Context, s *Store, instance string) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, registryLockKey); err != nil {
 		return err
 	}
