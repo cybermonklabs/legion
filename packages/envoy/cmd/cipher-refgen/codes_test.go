@@ -53,3 +53,44 @@ func dispatch() int {
 		})
 	}
 }
+
+// TestTheGcloudSupervisorsStatusIsNoExitCode: runGcloudSupervisor's returns are the gcloud
+// supervisor's status, read only by its parent, so checkExitCodes neither checks them nor takes the
+// function as an exit-code one: a return of 127 passes, os.Exit may take its call, and a command
+// that returns its call is refused, as is the same body under any other name.
+func TestTheGcloudSupervisorsStatusIsNoExitCode(t *testing.T) {
+	const source = `package main
+import "os"
+func init() { os.Exit(runGcloudSupervisor(nil)) }
+func runGcloudSupervisor(args []string) int { if len(args) == 0 { return 2 }; return 127 }
+func dispatch() int { return 0 }
+`
+	for _, tc := range []struct{ name, before, after, want string }{
+		{"the supervisor's own statuses", "", "", ""},
+		{"a command that returns the supervisor's status", "return 0 }\n", "return runGcloudSupervisor(nil) }\n", "exit code runGcloudSupervisor(nil)"},
+		{"the same body under another name", "runGcloudSupervisor(args []string)", "superviseAgain(args []string)", "exit code 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, cliDir)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			text := source
+			if tc.before != "" {
+				text = strings.Replace(text, tc.before, tc.after, 1)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+			err := checkExitCodes(root, nil)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}

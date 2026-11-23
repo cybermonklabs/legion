@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  `agent-secrets` on Linux: a gcloud call still running when the command is killed by SIGKILL
+  now ends with the command behind a setuid or file-capability launcher too, such as a snap
+  install's `/snap/bin/gcloud`, and so does what gcloud started in its process group. The
+  parent-death signal gcloud started with is cleared at such a launcher's exec, so that gcloud
+  still ran to its own end. The command now runs gcloud under a small supervisor, a second run of
+  its own binary that leads gcloud's process group, kills that whole group when the command dies,
+  and gives gcloud a parent-death signal of its own, so a gcloud that a launcher moves into a
+  session or process group of its own (`setsid`, `setpgid`) without a fork ends too.
+time: 2026-11-22T05:18:42Z
+custom:
+    Issue: gcloud-capability-launcher

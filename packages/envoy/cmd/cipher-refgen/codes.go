@@ -60,10 +60,22 @@ func checkHelperRefusals(root string, codes []docConst) error {
 	return refusedAt(problems)
 }
 
+// notAgentSecretsExits names the functions of the CLI's package that return an int which is no
+// exit code of agent-secrets, with the reason. checkExitCodes neither checks their returns nor
+// takes them as exit-code functions, and accepts a call to one only as os.Exit's argument.
+var notAgentSecretsExits = map[string]string{
+	// The gcloud supervisor's run: its process is agent-secrets' own binary re-executed to
+	// supervise one gcloud call (secret_gcp_linux.go), and its exit status - gcloud's, 128 + a
+	// signal's number, 127 for a gcloud it could not start - is read only by the agent-secrets
+	// that started it, as runGcloud's error, never as the command's own exit.
+	"runGcloudSupervisor": "the gcloud supervisor's status is read only by its parent agent-secrets, as runGcloud's error",
+}
+
 // checkExitCodes refuses an agent-secrets exit code the error page cannot list: every function in
 // the CLI's package that returns one int, which is what run and each command it dispatches to
 // return as the process's exit code, may return only 0, 1, one of the documented exit constants in
 // codes, or what another such function returns; so may os.Exit be called only with one of those.
+// The functions notAgentSecretsExits names are not such functions.
 func checkExitCodes(root string, codes []docConst) error {
 	src, err := parseDir(root, cliDir)
 	if err != nil {
@@ -83,7 +95,7 @@ func checkExitCodes(root string, codes []docConst) error {
 	exitFuncs := map[string]bool{}
 	for _, f := range src.files {
 		for _, d := range f.Decls {
-			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && returnsInt(fn.Type) {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && returnsInt(fn.Type) && notAgentSecretsExits[fn.Name.Name] == "" {
 				exitFuncs[fn.Name.Name] = true
 			}
 		}
@@ -140,7 +152,7 @@ func checkExitCodes(root string, codes []docConst) error {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			if fn.Recv == nil && returnsInt(fn.Type) {
+			if fn.Recv == nil && returnsInt(fn.Type) && notAgentSecretsExits[fn.Name.Name] == "" {
 				checkBody(fn.Body)
 			}
 		}
@@ -151,6 +163,11 @@ func checkExitCodes(root string, codes []docConst) error {
 			}
 			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Exit" {
 				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
+					if arg, ok := call.Args[0].(*ast.CallExpr); ok {
+						if fun, ok := arg.Fun.(*ast.Ident); ok && notAgentSecretsExits[fun.Name] != "" {
+							return true
+						}
+					}
 					allowed(call.Args[0])
 				}
 			}

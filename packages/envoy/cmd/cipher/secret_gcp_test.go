@@ -1279,28 +1279,36 @@ func TestGCPSecretPipeCommandKeepsTheGcloudAccountChoice(t *testing.T) {
 
 // TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline: an expired gcloud token is
 // refreshed through gcloudToken.Token, which runs `gcloud auth print-access-token`. A gcloud that
-// never answers - here a script whose child holds its output open, as the real gcloud's Python does
-// under its shell wrapper - ends at the deadline on each store call (storeCallDeadline), so a stalled
-// refresh cannot outlast the store call it serves; the error names the account and the deadline.
-// The refresh is timed against that deadline, less the time this process was held up
-// (endsByItsDeadline).
+// never answers ends at the deadline on each store call (storeCallDeadline), so a stalled refresh
+// cannot outlast the store call it serves; the error names the account and the deadline. The stub
+// replaces itself with a sleep that leaves gcloud's output alone, so the end of gcloud's supervisor
+// is the last end the call waits on; a child that holds the output is
+// TestGcloudTokenRefreshAtItsDeadlineKillsGcloudsChild's. The refresh is timed against that
+// deadline plus the time from its kill to that end, another process's work
+// (gcloudCall.inAnotherProcess), less the time this process was held up (requireOnTime).
 func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	dir := t.TempDir()
 	gcloud := filepath.Join(dir, "gcloud")
-	if err := os.WriteFile(gcloud, []byte("#!/bin/sh\nsleep 3600\n"), 0o755); err != nil {
+	if err := os.WriteFile(gcloud, []byte("#!/bin/sh\nexec sleep 3600 </dev/null >/dev/null 2>&1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	expired := &oauth2.Token{AccessToken: "old", TokenType: "Bearer", Expiry: time.Now().Add(-time.Minute)}
 	source := oauth2.ReuseTokenSource(expired, gcloudToken{ctx: context.Background(), gcloud: gcloudCommand{path: gcloud}, account: "ada@example.com"})
 	done := make(chan error, 1)
+	calls := recordGcloudCalls(t)
 	meter := startStallMeter(t)
 	start := time.Now()
 	go func() {
 		_, err := source.Token()
 		done <- err
 	}()
-	err := endsByItsDeadline(t, meter, "the refresh of an expired token whose gcloud never answers", start, 300*time.Millisecond, done)
+	err, ok := received(t, done)
+	if !ok {
+		t.Fatalf("the refresh of an expired token whose gcloud never answers had not ended %s after it started, past its 300ms deadline, %s before the test binary's deadline", time.Since(start).Round(time.Millisecond), waitMargin)
+	}
+	inGcloud := inAnotherProcessAll(requireGcloudCallsKilled(t, calls(), 1, 0))
+	requireOnTime(t, meter, fmt.Sprintf("the refresh of an expired token whose gcloud never answers, its kill's %s in another process allowed", inGcloud), start, 300*time.Millisecond+inGcloud)
 	if err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "did not answer within 300ms") {
 		t.Fatalf("Token() = %v; want a failure naming the account and the 300ms deadline", err)
 	}
@@ -1310,7 +1318,8 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 // account, answers `auth print-access-token` with stubTokenPrefix + account, and answers
 // `auth list` (account, active) and `config list` (no auth property) as authList and configList
 // say: "" answers, "fail" fails as gcloud does, naming the failure on its standard error, and
-// "hang" answers nothing for 30 s. It first clears every other source, as useNoADC does.
+// "hang" answers nothing for 30 s, the stub replaced by a sleep that leaves gcloud's output alone.
+// It first clears every other source, as useNoADC does.
 func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 	t.Helper()
 	sleep, err := exec.LookPath("sleep")
@@ -1323,7 +1332,7 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 		case "fail":
 			return `echo 'ERROR: (gcloud.` + command + `) the test fails it' >&2; exit 1`
 		case "hang":
-			return "exec " + shellWord(sleep) + " 30"
+			return "exec " + shellWord(sleep) + " 30 </dev/null >/dev/null 2>&1"
 		}
 		return "printf '%s\\n' " + shellWord(answer)
 	}
@@ -1349,8 +1358,14 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 // to name whom its token acts as (R2), so a `gcloud config list` that fails, or that does not
 // answer within gcloudSettingsDeadline, never stops the command: the form runs under the login's
 // token, and the using line names the login with the principal unknown. The form is timed against
-// gcloudSettingsDeadline where the read hangs, and against no deadline where it fails, less the
-// time this process was held up (requireOnTime).
+// gcloudSettingsDeadline where the read hangs, and against no deadline where it fails, plus the
+// time its gcloud calls spent on another process's work (gcloudCall.inAnotherProcess: an answered
+// call from its start to its supervisor's end, the hung one from its deadline's kill to that end,
+// each end seen as it happens), less the time this process was held up (requireOnTime). On Linux
+// each call starts this test binary again as gcloud's supervisor (superviseGcloud), whose start,
+// end and kill take hundreds of milliseconds on a loaded machine and which the stall meter,
+// counting only this process, does not see; the stub answers each call at once. What is left,
+// the form's own code and its reaping of each call, is held to the slack of code in this process.
 func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 	for _, mode := range []string{"fail", "hang"} {
 		t.Run(mode, func(t *testing.T) {
@@ -1358,14 +1373,18 @@ func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 			startFakeSecretManager(t, fake)
 			useGcloudThatAnswers(t, "ada@example.com", "", mode)
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-			waits := time.Duration(0)
+			// The form's three calls, in order: `auth list`, `config list`, `auth
+			// print-access-token`. Where the read hangs, its deadline kills the second.
+			waits, killed := time.Duration(0), -1
 			if mode == "hang" {
-				waits = gcloudSettingsDeadline
+				waits, killed = gcloudSettingsDeadline, 1
 			}
+			calls := recordGcloudCalls(t)
 			meter := startStallMeter(t)
 			started := time.Now()
 			_, stderr, code := runSecret("list")
-			took := requireOnTime(t, meter, "the form whose gcloud settings read "+mode+"s", started, waits)
+			inGcloud := inAnotherProcessAll(requireGcloudCallsKilled(t, calls(), 3, killed))
+			took := requireOnTime(t, meter, fmt.Sprintf("the form whose gcloud settings read %ss, its gcloud calls' %s in another process allowed", mode, inGcloud), started, waits+inGcloud)
 			if code != 0 {
 				t.Fatalf("exit %d after %s, stderr %q; want 0", code, took, stderr)
 			}
@@ -1379,20 +1398,39 @@ func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 	}
 }
 
+// requireGcloudCallsKilled answers calls, failing t unless there are want of them and only the one
+// at index killed (none where killed is -1) was killed at its deadline.
+func requireGcloudCallsKilled(t *testing.T, calls []gcloudCall, want, killed int) []gcloudCall {
+	t.Helper()
+	if len(calls) != want {
+		t.Fatalf("the form made %d gcloud calls (%+v); want %d", len(calls), calls, want)
+	}
+	for i, c := range calls {
+		if wasKilled := !c.killed.IsZero(); wasKilled != (i == killed) {
+			t.Fatalf("gcloud call %d of %d killed at its deadline: %v; want only call %d killed (0 for none)", i+1, want, wasKilled, killed+1)
+		}
+	}
+	return calls
+}
+
 // TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline: `gcloud auth list`, which
 // decides whether the gcloud source is present, runs under storeCallDeadline as the token's
 // refresh does, so a gcloud that never answers stops the command at the deadline, naming it,
-// before any Secret Manager call, timed against that deadline (requireOnTime).
+// before any Secret Manager call, timed against that deadline plus the time from its kill to the
+// end of gcloud's supervisor, another process's work (gcloudCall.inAnotherProcess), less the time
+// this process was held up (requireOnTime).
 func TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGcloudThatAnswers(t, "ada@example.com", "hang", "")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	calls := recordGcloudCalls(t)
 	meter := startStallMeter(t)
 	started := time.Now()
 	_, stderr, code := runSecret("list")
-	took := requireOnTime(t, meter, "the form whose `gcloud auth list` never answers", started, 300*time.Millisecond)
+	inGcloud := inAnotherProcessAll(requireGcloudCallsKilled(t, calls(), 1, 0))
+	took := requireOnTime(t, meter, fmt.Sprintf("the form whose `gcloud auth list` never answers, its kill's %s in another process allowed", inGcloud), started, 300*time.Millisecond+inGcloud)
 	if code != 1 || !strings.Contains(stderr, "`gcloud auth list` did not answer within 300ms") {
 		t.Fatalf("exit %d after %s, stderr %q; want 1 naming the 300ms deadline", code, took, stderr)
 	}

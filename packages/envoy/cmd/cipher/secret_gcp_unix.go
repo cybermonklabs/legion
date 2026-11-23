@@ -17,14 +17,15 @@ import (
 // runs gcloud's Python as its child, and a kill of the script alone leaves that child running. A
 // group that is gone already answers os.ErrProcessDone, as exec.Cmd's own kill does for a process
 // that is done, so a gcloud that ended by itself keeps its own exit status. Call it on a Cmd from
-// exec.CommandContext, before Start, and replace cmd.SysProcAttr nowhere after it: without
-// Setpgid the kill finds no group and nothing is killed at the deadline.
+// exec.CommandContext, after its Env is set and before Start, and replace cmd.SysProcAttr, Path,
+// Args or Env nowhere after it: without Setpgid the kill finds no group and nothing is killed at
+// the deadline.
 // In a group of its own gcloud does not get a signal sent to this command's group, such as a
 // terminal's interrupt, so an end by such a signal kills the group itself (exitBySignal,
-// killGcloudGroup). An end this command cannot handle, a SIGKILL, kills gcloud's process too where
-// the platform can (gcloudProcAttr): nothing of this command is left to kill the group then.
+// killGcloudGroup). An end this command cannot handle, a SIGKILL, ends the group too where the
+// platform can (superviseGcloud, gcloudProcAttr): nothing of this command is left to kill it then.
 func killGroupOnCancel(cmd *exec.Cmd) {
-	cmd.SysProcAttr = gcloudProcAttr()
+	cmd.SysProcAttr = gcloudProcAttr(superviseGcloud(cmd))
 	cmd.Cancel = func() error {
 		err := signalGroup(cmd.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {

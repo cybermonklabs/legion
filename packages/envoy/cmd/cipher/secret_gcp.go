@@ -482,10 +482,11 @@ const (
 	gcloudWaited  = "waited"  // gcloud has been waited for; what it left is not killed yet
 )
 
-// onGcloudStep runs in runRecorded at each of gcloudStarted and gcloudWaited. A test replaces it
-// to send a signal at one of those moments, which no timing of the test's own can hit on every
-// run.
-var onGcloudStep = func(step string) {}
+// onGcloudStep runs in runRecorded at each of gcloudStarted and gcloudWaited, with the pid of the
+// process cmd started (gcloud's supervisor, or gcloud where there is none). A test replaces it to
+// send a signal at one of those moments, which no timing of the test's own can hit on every run,
+// or to watch that process end.
+var onGcloudStep = func(step string, pid int) {}
 
 // runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
 // has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
@@ -497,10 +498,13 @@ var onGcloudStep = func(step string) {}
 // gcloud that exits by itself can leave a child holding its output, which gcloudWaitDelay stops
 // the wait for and does not kill. The group is gcloud's own, so nothing else is in it, and while
 // a process is left in it its id names no other group.
-// It runs on one OS thread from before cmd starts until cmd has been waited for: where gcloud's
-// parent-death signal is set (gcloudProcAttr), the kernel sends it when the thread that started
-// gcloud ends, not this process, and the Go runtime ends a thread only when a goroutine locked to
-// it returns locked.
+// It runs on one OS thread from before cmd starts until cmd has been waited for. The process cmd
+// starts carries a parent-death signal (gcloudProcAttr: gcloud's supervisor, or gcloud where there
+// is none), which the kernel sends when the thread that started it ends, not when this process
+// does; the Go runtime ends a thread when a goroutine locked to it returns locked. Unheld, this
+// goroutine could move to another thread after the start, and a goroutine of any package that
+// locks its thread and returns could then run on the starting thread and end it, killing gcloud
+// mid-call (TestGcloudLivesWhileOtherThreadsEndDuringItsCall).
 func runRecorded(cmd *exec.Cmd) error {
 	stop := watchSignalsWhileGcloudRuns()
 	defer stop()
@@ -512,11 +516,11 @@ func runRecorded(cmd *exec.Cmd) error {
 		return err
 	}
 	pid := cmd.Process.Pid
-	onGcloudStep(gcloudStarted)
+	onGcloudStep(gcloudStarted, pid)
 	runningGcloud.pids[pid] = true
 	runningGcloud.Unlock()
 	err := cmd.Wait()
-	onGcloudStep(gcloudWaited)
+	onGcloudStep(gcloudWaited, pid)
 	killGroupLeft(pid)
 	runningGcloud.Lock()
 	delete(runningGcloud.pids, pid)
