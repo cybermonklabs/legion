@@ -370,6 +370,18 @@ type appCallBounds struct {
 	retry bootprobe.Retry
 	// rateLimits is how the start waits for GitHub's rate limit (rateLimitPolicy).
 	rateLimits rateLimitPolicy
+	// clock is the time the start's waits for GitHub's rate limit read and wait on (waitClock): nil
+	// is the wall clock. A test's clock moves on by each wait at once, so a wait for GitHub's reset
+	// or for the minute a refusal that names no time asks costs the test nothing.
+	clock bootprobe.Clock
+}
+
+// waitClock is the clock the start's waits read and wait on: clock, or the wall clock.
+func (b appCallBounds) waitClock() bootprobe.Clock {
+	if b.clock != nil {
+		return b.clock
+	}
+	return bootprobe.WallClock{}
 }
 
 // productionAppCalls are the bounds a daemon's start runs on. An attempt lasts 15 s. The wait
@@ -463,11 +475,11 @@ func appAttempt(waits *startWaits, call string, attempt func(context.Context) er
 // have reached their end, a refusal naming the call, the time the start waited, and GitHub's last
 // answer with its message. limited is false for every other err.
 func limitOutcome(err error, waits *startWaits, call string) (outcome bootprobe.Outcome, limited bool) {
-	answer, githubWait, limited := bootLimit(err)
+	answer, limited := bootLimit(err)
 	if !limited {
 		return bootprobe.Outcome{}, false
 	}
-	until, waited, ended := waits.wait(call, answer, githubWait)
+	until, waited, ended := waits.wait(call, answer)
 	if ended {
 		return bootprobe.Outcome{Refusal: fmt.Errorf("the %s waited %s for GitHub's rate limit, the most a start waits, and GitHub still refuses it: GitHub answered %s %s with %s: %s: %w",
 			call, bootprobe.ShownWait(waited), answer.Method, answer.Path, limitSummary(answer), answer.Body, err)}, true
@@ -486,17 +498,17 @@ func limitSummary(answer *githubrest.Answer) string {
 
 // bootLimit is GitHub's answer to an App call of the start that failed with err — the App logins
 // read or the key proof, whose error carries the answer appauth read (appauth.AnswerError) — when
-// that answer is GitHub's rate limit (answerLimit), with how long GitHub asks the start to wait.
-func bootLimit(err error) (*githubrest.Answer, time.Duration, bool) {
+// that answer is GitHub's rate limit (answerLimit). How long GitHub asks the start to wait the
+// start reads from the answer's headers at its own time (startWaits.wait).
+func bootLimit(err error) (*githubrest.Answer, bool) {
 	var refused *appauth.AnswerError
 	if !errors.As(err, &refused) {
-		return nil, 0, false
+		return nil, false
 	}
-	wait, limited := answerLimit(refused.Answer)
-	if !limited {
-		return nil, 0, false
+	if _, limited := answerLimit(refused.Answer); !limited {
+		return nil, false
 	}
-	return refused.Answer, wait, true
+	return refused.Answer, true
 }
 
 // rateLimitPolicy is how the start waits for GitHub's rate limit (dispatch://INFRA-2597/spec R4):
@@ -508,8 +520,8 @@ type rateLimitPolicy struct {
 }
 
 // startWaits is one start's waits for GitHub's rate limit on one start's bounds (their
-// rateLimits) and one clock, now: the App logins read and then the key proof, which openWorkflow
-// runs one after the other (wait). end
+// rateLimits) and one clock, now, which bootprobe.RunOn waits on too (appCallBounds.waitClock): the
+// App logins read and then the key proof, which openWorkflow runs one after the other (wait). end
 // is the start's end, zero until its first wait sets it Bound after that wait begins; noTime is the
 // last wait each App call took for a refusal that named no time; and waited is the time the start
 // has spent in its waits. bounds are the start's App-call bounds, whose attempt and retry the
@@ -528,18 +540,20 @@ func newStartWaits(bounds appCallBounds, now func() time.Time) *startWaits {
 }
 
 // wait is the wait for GitHub's rate limit on the start's App call call (the logins read, the key
-// proof), asked as soon as the call's attempt returned with answer, GitHub's refusal, from which
-// answerLimit read githubWait. Where GitHub named a time (namesTime), the wait is githubWait with
-// at most Max; where it named none, NoTime for the call's first such refusal of the start and two
-// times its wait before for each further one. It says until when, at the start's end at the
+// proof), asked as soon as the call's attempt returned with answer, GitHub's refusal. Where GitHub
+// named a time (namesTime), the wait is the one its headers ask for at now (LimitHeaders.WaitAt)
+// with at most Max; where it named none, NoTime for the call's first such refusal of the start and
+// two times its wait before for each further one. It says until when, at the start's end at the
 // latest, and the time the start has waited so far, this wait included (register); or, once now is
-// at or past the start's end, ended, with no wait: the call then ends the start.
-func (s *startWaits) wait(call string, answer *githubrest.Answer, githubWait time.Duration) (until time.Time, waited time.Duration, ended bool) {
+// at or past the start's end, ended, with no wait: the call then ends the start. GitHub's wait is
+// read at now rather than taken from answer.RetryAfter, which githubrest read on the host's clock,
+// so the wait, its until and the start's end are on one clock.
+func (s *startWaits) wait(call string, answer *githubrest.Answer) (until time.Time, waited time.Duration, ended bool) {
 	now := s.now()
 	if !s.end.IsZero() && !now.Before(s.end) {
 		return now, s.waited, true
 	}
-	wait := min(githubWait, s.bounds.rateLimits.Max)
+	wait := min(answer.Limit.WaitAt(now), s.bounds.rateLimits.Max)
 	if !namesTime(answer.Limit, now) {
 		wait = s.bounds.rateLimits.NoTime
 		if last, ok := s.noTime[call]; ok {
@@ -593,7 +607,7 @@ func namesTime(limit githubrest.LimitHeaders, now time.Time) bool {
 func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits, log *slog.Logger) (string, error) {
 	const call = "GitHub App logins read"
 	logins := map[appauth.AppRole]string{}
-	err := bootprobe.Run(ctx, call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
+	err := bootprobe.RunOn(ctx, waits.bounds.waitClock(), call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, read := logins[role]; read {
 				continue
@@ -637,7 +651,7 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits
 func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installed *appauth.Installed, waits *startWaits, log *slog.Logger) error {
 	const call = "GitHub App key proof"
 	owners := make(map[appauth.AppRole][]string, len(appauth.Roles))
-	err := bootprobe.Run(ctx, call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
+	err := bootprobe.RunOn(ctx, waits.bounds.waitClock(), call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, proved := owners[role]; proved {
 				continue
@@ -751,7 +765,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	log.Info("legion workflow boot stage", "stage", "appauth")
 	// One policy and one clock for every wait of the start for GitHub's rate limit: the App logins
 	// read, then the key proof (appCallBounds.rateLimits).
-	waits := newStartWaits(w.callBounds(), time.Now)
+	calls := w.callBounds()
+	waits := newStartWaits(calls, calls.waitClock().Now)
 	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, waits, log)
 	if err != nil {
 		return nil, err

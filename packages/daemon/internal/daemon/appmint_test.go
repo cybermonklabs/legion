@@ -149,6 +149,61 @@ func quickAppMints() *appCallBounds {
 	return &calls
 }
 
+// limitClock is a test's clock for the start's waits for GitHub's rate limit (appCallBounds.clock)
+// and for the GitHub stand-in that refuses the start for it (spentUntil): the time of day moved on
+// by every wait the start has slept, each sleep returning at once, so a wait for a reset or for the
+// minute a refusal naming no time asks costs the test nothing, while the start, the stand-in and
+// the test's checks all read one time. The start waits for nothing else on it: its waits between
+// transient attempts are 10 ms (quickAppMints). Once holdAfter sleeps have moved it on (holdAfter
+// above 0), a sleep holds until its ctx ends instead, so a test stops the start inside a wait.
+type limitClock struct {
+	mu        sync.Mutex
+	ahead     time.Duration
+	sleeps    int
+	holdAfter int
+}
+
+// Now is the time of day moved on by every wait slept so far.
+func (c *limitClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Add(c.ahead)
+}
+
+// Sleep moves the clock on by d and returns, or, past holdAfter sleeps, holds until ctx ends.
+func (c *limitClock) Sleep(ctx context.Context, d time.Duration) error {
+	c.mu.Lock()
+	c.sleeps++
+	hold := c.holdAfter > 0 && c.sleeps > c.holdAfter
+	if !hold && d > 0 {
+		c.ahead += d
+	}
+	c.mu.Unlock()
+	if hold {
+		<-ctx.Done()
+	}
+	return ctx.Err()
+}
+
+// limitCalls are quickAppMints making the start's waits on a limitClock of the test's own, which
+// it returns with them.
+func limitCalls() (*appCallBounds, *limitClock) {
+	calls, clock := quickAppMints(), &limitClock{}
+	calls.clock = clock
+	return calls, clock
+}
+
+// clockedLogger is a JSON logger to logs whose lines carry clock's time when written, so a test
+// compares a line's time with the waits the start decided on that clock (loggedAt).
+func clockedLogger(logs io.Writer, clock bootprobe.Clock) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
+		if len(groups) == 0 && attr.Key == slog.TimeKey {
+			return slog.Time(slog.TimeKey, clock.Now())
+		}
+		return attr
+	}}))
+}
+
 func installed(w http.ResponseWriter) {
 	fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
 }
@@ -451,15 +506,16 @@ func discoveredOnAcme(w http.ResponseWriter, _ *http.Request, _ string, _ int) {
 
 // spentUntil is an answer for appTokensWith or commandTokens: each request refused names is
 // answered with GitHub's 403 for a spent rate limit (spentLimit) until the limit's reset, ahead of
-// the first such request, which it stores in reset; every request after the reset, and every
-// other request, is left to the stand-in.
-func spentUntil(ahead time.Duration, reset *atomic.Int64, refused func(r *http.Request) bool) func(w http.ResponseWriter, r *http.Request) bool {
+// the first such request on the clock now, which it stores in reset; every request after the
+// reset, and every other request, is left to the stand-in. A test whose start waits on a
+// limitClock reads the reset on that clock too.
+func spentUntil(now func() time.Time, ahead time.Duration, reset *atomic.Int64, refused func(r *http.Request) bool) func(w http.ResponseWriter, r *http.Request) bool {
 	return func(w http.ResponseWriter, r *http.Request) bool {
 		if !refused(r) {
 			return false
 		}
-		reset.CompareAndSwap(0, time.Now().Add(ahead).Unix())
-		if !time.Now().Before(time.Unix(reset.Load(), 0)) {
+		reset.CompareAndSwap(0, now().Add(ahead).Unix())
+		if !now().Before(time.Unix(reset.Load(), 0)) {
 			return false
 		}
 		spentLimit(w, reset.Load())
@@ -757,18 +813,19 @@ func TestABootStopsAtOnceWhenGitHubRefusesTheTokenTheLoginsReadKept(t *testing.T
 // GitHub names and serves after it (c-boot-mint-rate-limit case 1, on the key proof), saying so in
 // one line that names the call, the time it waits until and the total waited. The refusals outlast
 // the three quick attempts, which the wait does not spend: before, the start exited once they were
-// spent, before the reset.
+// spent, before the reset. The start waits on a clock of the test's own (limitClock), on which the
+// stand-in names its reset, so the wait costs the test nothing.
 func TestABootWaitsOutARateLimitOnTheAppKeyProofAndServesAfterTheReset(t *testing.T) {
 	t.Parallel()
-	calls := quickAppMints()
+	calls, clock := limitCalls()
 	var reset atomic.Int64
-	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, keyProofRead))
+	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(clock.Now, 3*time.Second, &reset, keyProofRead))
 	logs := &syncBuffer{}
 	if err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
 		t.Fatalf("boot = %v, want it to wait out GitHub's rate limit on the key proof and serve after the reset", err)
 	}
 	resetAt := time.Unix(reset.Load(), 0)
-	if served := time.Now(); served.Before(resetAt) {
+	if served := clock.Now(); served.Before(resetAt) {
 		t.Fatalf("the daemon served at %s, before GitHub's reset at %s", served, resetAt)
 	}
 	wait := oneRateLimitWait(t, logs.String(), "GitHub App key proof")
@@ -783,10 +840,11 @@ func TestABootWaitsOutARateLimitOnTheAppKeyProofAndServesAfterTheReset(t *testin
 // GitHub's 403 naming its rate limit in its message alone, with calls left in its headers, is a
 // rate limit to the start's key proof too (c-boot-mint-rate-limit case 2, on the key proof). It
 // names no time, so the start waits a minute, says so, and serves after it. Before, the start read
-// it as GitHub's answer about the App and exited at the first attempt.
+// it as GitHub's answer about the App and exited at the first attempt. The minute is on a clock of
+// the test's own (limitClock).
 func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing.T) {
 	t.Parallel()
-	calls := quickAppMints()
+	calls, clock := limitCalls()
 	var refusals atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
 		if !keyProofRead(r) || refusals.Add(1) > 1 {
@@ -800,11 +858,11 @@ func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing
 		return true
 	})
 	logs := &syncBuffer{}
-	started := time.Now()
+	started := clock.Now()
 	if err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 90*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
 		t.Fatalf("boot = %v, want it to wait out the rate limit GitHub's message names and serve", err)
 	}
-	if took := time.Since(started); took < time.Minute {
+	if took := clock.Now().Sub(started); took < time.Minute {
 		t.Errorf("the daemon served %s after it started, want after the minute's wait", took)
 	}
 	// The line gives the wait left when it is written, to a tenth of a second, so a slow runner
@@ -816,18 +874,18 @@ func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing
 
 // A start whose read of the Apps' logins GitHub refuses for a spent rate limit waits until the reset
 // and serves after it (c-boot-mint-rate-limit case 3). Before, the start exited once the three quick
-// attempts were spent, before the reset.
+// attempts were spent, before the reset. The reset is on a clock of the test's own (limitClock).
 func TestABootWaitsOutARateLimitOnTheAppLoginsRead(t *testing.T) {
 	t.Parallel()
-	calls := quickAppMints()
+	calls, clock := limitCalls()
 	var reset atomic.Int64
-	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, func(r *http.Request) bool { return r.URL.Path == "/app" }))
+	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(clock.Now, 3*time.Second, &reset, func(r *http.Request) bool { return r.URL.Path == "/app" }))
 	logs := &syncBuffer{}
 	if err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
 		t.Fatalf("boot = %v, want it to wait out GitHub's rate limit on the logins read and serve after the reset", err)
 	}
 	resetAt := time.Unix(reset.Load(), 0)
-	if served := time.Now(); served.Before(resetAt) {
+	if served := clock.Now(); served.Before(resetAt) {
 		t.Fatalf("the daemon served at %s, before GitHub's reset at %s", served, resetAt)
 	}
 	if wait := oneRateLimitWait(t, logs.String(), "GitHub App logins read"); wait["until"] != resetAt.UTC().Format(time.RFC3339) {
@@ -840,11 +898,12 @@ func TestABootWaitsOutARateLimitOnTheAppLoginsRead(t *testing.T) {
 // under the token the command releases for every installation, and serves after the reset
 // (c-boot-mint-rate-limit case 4, on the logins read). The limit refuses the implement App's token
 // so released. Before, the start exited once the three quick attempts were spent, before the reset.
+// The reset is on a clock of the test's own (limitClock).
 func TestABootWaitsOutARateLimitOnATokenCommandsAppRead(t *testing.T) {
 	t.Parallel()
-	calls := quickAppMints()
+	calls, clock := limitCalls()
 	var reset atomic.Int64
-	tokens := commandTokens(t, spentUntil(3*time.Second, &reset, func(r *http.Request) bool {
+	tokens := commandTokens(t, spentUntil(clock.Now, 3*time.Second, &reset, func(r *http.Request) bool {
 		return r.URL.Path == "/graphql" && r.Header.Get("Authorization") == "token ghs_implement_any_write"
 	}))
 	logs := &syncBuffer{}
@@ -852,7 +911,7 @@ func TestABootWaitsOutARateLimitOnATokenCommandsAppRead(t *testing.T) {
 		t.Fatalf("boot = %v, want it to wait out GitHub's rate limit on the released token's App read and serve after the reset", err)
 	}
 	resetAt := time.Unix(reset.Load(), 0)
-	if served := time.Now(); served.Before(resetAt) {
+	if served := clock.Now(); served.Before(resetAt) {
 		t.Fatalf("the daemon served at %s, before GitHub's reset at %s", served, resetAt)
 	}
 	if wait := oneRateLimitWait(t, logs.String(), "GitHub App logins read"); wait["until"] != resetAt.UTC().Format(time.RFC3339) {
@@ -863,14 +922,19 @@ func TestABootWaitsOutARateLimitOnATokenCommandsAppRead(t *testing.T) {
 // bootStoppedWhen runs the daemon on cfg with tokens, logging to logs as JSON, until ready reads
 // what the test waits for in the log, then stops it, and says how long run took to return after the
 // stop. The test fails if ready does not hold within within, if run returns before the stop, or if
-// it returns an error after it.
+// it returns an error after it. With calls on a clock of the test's own (limitCalls), each line
+// carries that clock's time (clockedLogger).
 func bootStoppedWhen(t *testing.T, cfg config.Config, tokens appauth.Source, calls *appCallBounds, logs *syncBuffer, within time.Duration, ready func(logs string) bool) time.Duration {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	log := slog.New(slog.NewJSONHandler(logs, nil))
+	if calls.clock != nil {
+		log = clockedLogger(logs, calls.clock)
+	}
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(logs, nil)), overrides{
+		done <- run(ctx, cfg, log, overrides{
 			listen:         heldListen,
 			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 			clock:          stillClock{},
@@ -920,11 +984,11 @@ func bootStoppedWhen(t *testing.T, cfg config.Config, tokens appauth.Source, cal
 // wait past the line and less than a second short of the wait past the refused read, which the
 // start answered after. One bound still follows the clock: the second read at most 3 s past the
 // wait, the bound on a wait that runs past its until. An earlier version held the wait left to
-// equal the wait decided; with a 1 s delay injected before the line, it failed.
+// equal the wait decided; with a 1 s delay injected before the line, it failed. The clock is the
+// test's own (limitClock): the start waits on it, the stand-in stamps its reads with it, and the
+// daemon's lines carry its time (clockedLogger), so no wait costs the test its seconds.
 func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 	t.Parallel()
-	calls := quickAppMints()
-	calls.rateLimits.Max = 2 * time.Second
 	for _, tc := range []struct {
 		name       string
 		retryAfter string
@@ -934,6 +998,8 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 		{name: "a Retry-After above the maximum", retryAfter: "30", want: 2 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			calls, clock := limitCalls()
+			calls.rateLimits.Max = 2 * time.Second
 			var mu sync.Mutex
 			var reads []time.Time
 			tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
@@ -941,7 +1007,7 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 					return false
 				}
 				mu.Lock()
-				reads = append(reads, time.Now())
+				reads = append(reads, clock.Now())
 				first := len(reads) == 1
 				mu.Unlock()
 				if !first {
@@ -953,7 +1019,7 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 				return true
 			})
 			logs := &syncBuffer{}
-			if err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
+			if err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, clockedLogger(logs, clock)); err != nil {
 				t.Fatalf("boot = %v, want it to wait out GitHub's Retry-After and serve", err)
 			}
 			wait := oneRateLimitWait(t, logs.String(), "GitHub App key proof")
@@ -995,10 +1061,13 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 // the start may take to return after its stop. The 90 s is the only bound on how long the first wait
 // runs past its until. An earlier version also held the second line to between 60 and 70 s after
 // the first, and each wait left to within 1 s of the wait decided; with a 1 s delay injected before
-// each line, both failed.
+// each line, both failed. The waits are on a clock of the test's own (limitClock), whose lines the
+// daemon stamps with its time (bootStoppedWhen): the first wait moves it on by the minute at once,
+// and the second holds on it until the stop, so the test waits out neither.
 func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing.T) {
 	t.Parallel()
-	calls := quickAppMints()
+	calls, clock := limitCalls()
+	clock.holdAfter = 1
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
 		if !keyProofRead(r) {
 			return false
@@ -1045,16 +1114,17 @@ func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing
 // case 6, on the key proof, the bound shortened to 3 s): GitHub refuses every read of the App's
 // installations with a reset ten seconds ahead, the one wait ends at the bound, and the refusal
 // after it ends the start, naming the call, GitHub's last answer with its headers and message, the
-// 3 s waited and the App whose key the read proves.
+// 3 s waited and the App whose key the read proves. The bound and the reset are on a clock of the
+// test's own (limitClock).
 func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 	t.Parallel()
-	calls := quickAppMints()
+	calls, clock := limitCalls()
 	calls.rateLimits.Bound = 3 * time.Second
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
 		if !keyProofRead(r) {
 			return false
 		}
-		spentLimit(w, time.Now().Add(10*time.Second).Unix())
+		spentLimit(w, clock.Now().Add(10*time.Second).Unix())
 		return true
 	})
 	logs := &syncBuffer{}
@@ -1062,9 +1132,9 @@ func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 	// a server of the package's pool, which every test holding one at the same moment delays, and
 	// that wait is no part of the start the bound ends.
 	cfg := workflowConfig(t, workflowNATS(t))
-	started := time.Now()
+	started := clock.Now()
 	err := bootsOn(t, cfg, tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
-	took := time.Since(started)
+	took := clock.Now().Sub(started)
 	for _, want := range []string{
 		"the GitHub App key proof waited 3s for GitHub's rate limit, the most a start waits, and GitHub still refuses it: ",
 		"GitHub answered GET /app/installations with 403",
@@ -1086,12 +1156,13 @@ func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 
 // A stop that arrives while the start waits out GitHub's rate limit ends the start at once and
 // cleanly (c-boot-mint-rate-limit case 9, on the key proof): the App's installations are refused
-// until a reset a minute ahead, and run returns nil within a second of the stop.
+// until a reset a minute ahead, and run returns nil within a second of the stop. The start waits on
+// the wall clock here: the test needs a wait that holds until the stop.
 func TestABootStoppedWhileItWaitsOutARateLimitEndsAtOnce(t *testing.T) {
 	t.Parallel()
 	calls := quickAppMints()
 	var reset atomic.Int64
-	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(time.Minute, &reset, keyProofRead))
+	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(time.Now, time.Minute, &reset, keyProofRead))
 	logs := &syncBuffer{}
 	took := bootStoppedWhen(t, workflowConfig(t, workflowNATS(t)), tokens, calls, logs, 30*time.Second, func(logs string) bool {
 		return strings.Contains(logs, rateLimitWaitLine)
