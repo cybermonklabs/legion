@@ -600,6 +600,28 @@ rerunsRun(
 );
 // Recorded the fail with no run of c1's command before it.
 rerunsRun("carried-own-pass", 3, [failedAtH1("32", "48")], []);
+// In implementer-pass-broken, where c1's exit 1 is what a run at H1 shows: command lines Bun
+// refuses before it runs any test also exit 1, and are no run of c1. `--timeout=oops` is a value Bun
+// refuses; in `--timeout --help` the value is an option; `--reporter=junit` is an option the score
+// no longer drops, so its command line matches no check either.
+for (const [n, argv] of [
+  [4, ["test", "--timeout=oops", "limits.test.ts"]],
+  [5, ["test", "--timeout", "--help", "limits.test.ts"]],
+  [6, ["test", "--reporter=junit", "limits.test.ts"]],
+] as const)
+  rerunsRun(
+    "implementer-pass-broken",
+    n,
+    [failedAtH1("320", "32")],
+    [ranC1(1, undefined, [...argv])]
+  );
+// `--timeout=60000`, a whole number of milliseconds, leaves c1's command as it is.
+rerunsRun(
+  "implementer-pass-broken",
+  7,
+  [failedAtH1("320", "32")],
+  [ranC1(1, undefined, ["test", "--timeout=60000", "limits.test.ts"])]
+);
 /** clean-push's pass of this run at H1, reading the output that c1 prints at H0 and at H1 alike. */
 const passedAtH1 = rerunsResult({
   verdict: "pass",
@@ -3705,8 +3727,23 @@ test("tester-reruns: a bun test call that prints help, the option before c1's ta
     );
 });
 
+test("tester-reruns: a bun test call whose options Bun refuses, or that the score does not drop, is no run of c1", () => {
+  for (const n of [4, 5, 6])
+    expect(rowOf(`tester-reruns-implementer-pass-broken-rr-${n}`)).toMatch(
+      new RegExp(
+        `^tester-reruns-implementer-pass-broken-rr-${n}\\tpass=false\\t.* kept=false .* runs=0 atH1=0 `
+      )
+    );
+});
+
+test("tester-reruns: --timeout=N with a whole number of milliseconds leaves c1's command as it is", () => {
+  expect(rowOf("tester-reruns-implementer-pass-broken-rr-7")).toMatch(
+    /^tester-reruns-implementer-pass-broken-rr-7\tpass=true\t.* kept=true .* runs=1 atH1=1 /
+  );
+});
+
 test("tester-reruns: the counts are per case and label", () => {
-  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t1/3\t0/3\t0\t0\n");
+  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t2/7\t0/7\t0\t0\n");
   expect(out).toContain("tester-reruns:carried-own-pass\trr\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("tester-reruns:clean-push\trr\t2/9\t0/9\t0\t0\n");
 });
