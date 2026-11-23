@@ -4077,6 +4077,12 @@ a `401` is the one early answer that stands, since a caller nobody resolves is r
 Both reads wait at most a minute for a body: one that stops arriving is given its answer with `Connection: close`.
 An `Expect: 100-continue` request answered early is never asked for its body: Dispatch sends no `100 Continue`, sends the answer and closes the connection.
 
+While Dispatch reads a keyed request's body, it counts the bytes it has read, and `GET /api/v1/request-keys/{key}/received` answers that count to the caller the key belongs to: `{received, length}`, `length` being the request's `Content-Length` (-1 for none), for the newest body under the key.
+A client holds each attempt of a write to a silence bound, and an upload's connection takes the body into buffers that hold megabytes ahead of a slow line, so the client's own view of its upload stops long before Dispatch has it: measured at 128 KiB/s, a 12 MiB upload's last read by the client came with 7.81 MiB that the server had not read.
+So the `dispatch` command and the page ask this route while an upload attempt waits for its answer, each time the attempt has had no other progress for a quarter of its bound, and count an increase as progress, dated at the ask before it.
+The count is kept in the memory of the process reading the body and of no other: an ask that reaches another process is answered `404 KEY_NOT_RECEIVING`, as is one before the body began, after it has arrived whole or ended, or under another caller's key, and a client so answered holds its upload to its own view of it, as it did before the route.
+With more than one process behind a proxy that does not send a client's requests to one process, a slow upload can be cut off and sent again while its bytes still arrive.
+
 Each item below names a status and code, then its meaning.
 
 - The first answer, with `Idempotency-Replayed: ?1`

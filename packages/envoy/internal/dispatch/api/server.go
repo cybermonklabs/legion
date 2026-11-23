@@ -425,6 +425,9 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
+	// receiving counts the bodies of keyed requests as they arrive, for
+	// GET /api/v1/request-keys/{key}/received (request_key_received.go).
+	receiving receivingBodies
 	// readOnlyRefusal is the message every route the read list does not name answers a read-only
 	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
 	// builds it once, before it wraps the first row, so the rows share one text rather than each

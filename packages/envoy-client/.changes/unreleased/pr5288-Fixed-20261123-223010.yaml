@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+    An upload of a megabyte or more is no longer cut off for silence while Dispatch still receives
+    its bytes. fetch reads the body into the connection's buffers, which hold megabytes ahead of a
+    slow line, so its reads stopped long before Dispatch had the body, and a 12 MiB upload at
+    128 KiB/s or 64 KiB/s was cut off on every attempt. While an attempt waits for its answer and
+    has not moved for a quarter of its 20 s bound, the client now asks Dispatch how much of the body
+    it has read (`GET /api/v1/request-keys/{key}/received`), and an answer larger than the one
+    before restarts the bound, dated at the ask before it; a line that stops is still cut off
+    within 20 s of the last byte Dispatch read. A 404, a failed ask or one that does not answer
+    within 5 s changes nothing, so against an older Dispatch or another replica the attempt keeps
+    the bound it had. The call's 60 s deadline is unchanged: an upload through the `dispatch`
+    command must finish within it.
+time: 2026-11-23T22:30:10Z
+custom:
+    Issue: pr5288

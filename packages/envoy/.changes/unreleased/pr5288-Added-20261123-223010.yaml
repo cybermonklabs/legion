@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  `GET /api/v1/request-keys/{key}/received` answers the caller a key belongs to with
+  `{received, length}`: how many bytes of the newest keyed request body under that key this Dispatch
+  process has read so far, and the request's `Content-Length` (-1 for none). It answers
+  `404 KEY_NOT_RECEIVING` before the body began, once it has arrived whole or ended, under another
+  caller's key, and in any process other than the one reading the body. The `dispatch` command and
+  the page ask it while an upload attempt waits for its answer, and count a larger number than the
+  one before as progress, so an upload on a slow line is no longer cut off for silence while its
+  bytes still arrive. The page's upload, which stopped hearing of its body once the connection's
+  buffers took it, now counts that number beside the browser's progress events. The count is kept
+  per process and no state is shared, so with more than one replica an ask that reaches another
+  replica gets 404 and the client keeps the rule it had before.
+time: 2026-11-23T22:30:10Z
+custom:
+  Issue: pr5288

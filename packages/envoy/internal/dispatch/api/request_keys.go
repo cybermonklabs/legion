@@ -270,6 +270,11 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			return
 		}
 		login := requestKeyLogin(actor, human)
+		// The body is counted as it arrives, for its client to ask how much of it has
+		// (getRequestKeyReceived): a repeat's drained body as much as a first request's spooled one.
+		counted, stopCounting := s.receiving.start(login, key, r.Body, r.ContentLength)
+		defer stopCounting()
+		r.Body = counted
 		// A repeat whose first request still runs is not spooled: a slow upload's repeats would
 		// each be written to disk again only to be told to wait. Its body is read off the
 		// connection and discarded, and the repeat is judged once it has arrived.

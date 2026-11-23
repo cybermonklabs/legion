@@ -248,8 +248,14 @@ is down, and again at once when Dispatch is reachable again; while Dispatch keep
 change with an error, or the change keeps failing on its way while the rest of Dispatch answers,
 the tries spread out, up to 30 seconds apart; when Dispatch answers that it is too busy and says
 how long to leave it, the page waits exactly that, for a change and for what the page reads alike.
-A change Dispatch is slow to finish is waited
-for and made once, and an upload still going up is never cut off, however long a slow link takes.
+A change Dispatch is slow to finish is waited for and made once. A try that gets no answer and
+shows no progress for 15 seconds is given up and made again under the same name. For an upload,
+progress is the browser sending more of the file, or Dispatch saying it has received more of it:
+the browser counts a piece as sent once your computer holds it ready to go, megabytes ahead of a
+slow link, so Dispatch's count is what keeps a slow upload going. An upload is not given up while
+Dispatch receives more of it at least every 7.5 seconds. Each Dispatch process keeps that count
+for the uploads it receives itself, so where more than one Dispatch process serves the page, a
+slow upload can still be given up and tried again while it is going up.
 
 A corner of the screen accounts for the ones still out: **Saving 2 changes…**, and once one has
 gone 30 seconds unconfirmed, **Dispatch has not confirmed 2 changes — still trying**, with **Stop

@@ -2925,6 +2925,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/request-keys/{key}/received": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description How much of the body of the caller's own keyed request under {key} (its Idempotency-Key) this Dispatch process has read so far: {received, length}, length the request's Content-Length (-1 for none). A client that holds an upload's attempt to a silence bound asks it while it waits, since its connection takes the body into buffers that hold megabytes ahead of the line; a number that grew is the upload still arriving. 404 KEY_NOT_RECEIVING once the body has arrived whole or ended, before it began, under another caller's key, or where another process reads it; 400 KEY_INVALID for a key that is not one. */
+    get: operations["getApiV1RequestKeysByKeyReceived"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/results/{id}/retract": {
     parameters: {
       query?: never;
@@ -6411,6 +6428,12 @@ export interface components {
       project: string;
       renamed_to: null | string;
       repo: string;
+    };
+    RequestKeyReceived: {
+      /** Format: int64 */
+      length: number;
+      /** Format: int64 */
+      received: number;
     };
     RequirementCoverage: {
       block_id: string;
@@ -14422,6 +14445,40 @@ export interface operations {
       };
     };
   };
+  getApiV1RequestKeysByKeyReceived: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RequestKeyReceived"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1ResultsByIdRetract: {
     parameters: {
       query?: {
@@ -15346,6 +15403,7 @@ export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
 export type RenameArtifactInput = components["schemas"]["RenameArtifactInput"];
 export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];
+export type RequestKeyReceived = components["schemas"]["RequestKeyReceived"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
 export type ResolveAskInput = components["schemas"]["ResolveAskInput"];

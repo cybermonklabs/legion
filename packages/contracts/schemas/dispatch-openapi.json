@@ -11941,6 +11941,53 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/request-keys/{key}/received": {
+      "get": {
+        "description": "How much of the body of the caller's own keyed request under {key} (its Idempotency-Key) this Dispatch process has read so far: {received, length}, length the request's Content-Length (-1 for none). A client that holds an upload's attempt to a silence bound asks it while it waits, since its connection takes the body into buffers that hold megabytes ahead of the line; a number that grew is the upload still arriving. 404 KEY_NOT_RECEIVING once the body has arrived whole or ended, before it began, under another caller's key, or where another process reads it; 400 KEY_INVALID for a key that is not one.",
+        "operationId": "getApiV1RequestKeysByKeyReceived",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestKeyReceived"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/results/{id}/retract": {
       "post": {
         "description": "Retract one recorded result, with the reason it is wrong: {reason, actor?}. {id} is the result's own id. The retraction is a record of its own: the result is neither updated nor deleted, and both records stay readable with the reason and the actor who wrote it. No surface counts a retracted result as evidence. Three callers are admitted and every other is 403 RETRACTION_FORBIDDEN: the session that recorded the result, a session holding the Dispatch claim of the issue the result was recorded on, and a caller whose credential carries a person, which is a personal token or a signed-in person's own session. A closed issue and a check of any when are retracted here, which is what recording refuses. A blank reason is 400 RETRACTION_INPUT, an id no result has is 404 RESULT_NOT_FOUND, and a result a retraction already stands against is 409 RESULT_RETRACTED. The answer is the retraction: {result_id, reason, session, actor, created_at, event_seq}. It is appended as result.retracted on the check's issue.",
@@ -26993,6 +27040,23 @@
           "renamed_to",
           "created_by",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "RequestKeyReceived": {
+        "properties": {
+          "length": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "received": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "received",
+          "length"
         ],
         "type": "object"
       },

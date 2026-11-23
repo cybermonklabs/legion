@@ -107,8 +107,8 @@ test("a GET past the deadline fails with RequestTimeoutError", async () => {
 });
 
 // The deadline is the wait for Dispatch's answer, not the download of it: headers that arrive in
-// time start a body that may take as long as the line needs, so a large read on a slow line is
-// never cut off and asked again from the start.
+// time start a body that is read for as long as a piece of it arrives within each deadline, so a
+// large read on a slow line is not given up and asked again from the start while it still arrives.
 test("a GET whose headers arrive at 29 s reads a body that streams for another 20 s", async () => {
   await onFakeClock(async () => {
     const stub = heldFetch();
@@ -144,8 +144,8 @@ test("a GET whose headers arrive at 29 s reads a body that streams for another 2
   });
 });
 
-// W13. The deadline is on Dispatch's silence, not on the download: a body that keeps arriving is
-// read however long it takes, so a slow line is never cut off and asked for again from the start.
+// W13. The deadline is on Dispatch's silence, not on the download: a body of which a piece arrives
+// within each deadline is read however long it takes, and not asked for again from the start.
 test("a GET whose body streams a chunk every 10 s for a minute is read in full", async () => {
   await onFakeClock(async () => {
     const stub = heldFetch();
@@ -383,6 +383,192 @@ test("an upload that streams for 60 s lands, and one silent for 16 s is cut off"
     jest.advanceTimersByTime(16_000);
     expect(await silent).toBeInstanceOf(RequestTimeoutError);
     expect(transport.uploads).toBe(2);
+  });
+});
+
+/** The route an upload asks of how much of its body Dispatch has read (`askReceived`). */
+const RECEIVED_PATH = "/api/v1/request-keys/upload-3/received";
+
+/** Moves the fake clock `ms` on, 250 ms at a time, letting each step's continuations run - an ask
+ *  sent, its answer read - before the next: the asks of an upload chain promises across a real
+ *  turn of the event loop, which `settle`'s microtask turns alone do not cross. */
+async function step(ms: number): Promise<void> {
+  for (let left = ms; left > 0; left -= 250) {
+    jest.advanceTimersByTime(Math.min(250, left));
+    await settle();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    await promise;
+    await settle();
+  }
+}
+
+/** A keyed upload of a 15 s attempt bound through `transport`, whose body the browser reports as
+ *  gone up at once and then reports nothing more of: what a slow line does once the connection's
+ *  buffers have taken the body. */
+function bufferedUpload(fetch: FetchImplementation) {
+  const transport = heldUpload();
+  const api = createApiClient(fetch, transport.upload);
+  const file = new File(["x".repeat(1024)], "big.bin");
+  const uploaded = outcome(
+    api.uploadArtifact(
+      { issue: "CORE-1" },
+      { file, name: "big.bin" },
+      { ...keyed("upload-3"), deadlineMs: 15_000 }
+    )
+  );
+  transport.progress();
+  return { transport, uploaded };
+}
+
+// W23b. The browser reports an upload's body as gone up once the connection's buffers take it,
+// megabytes ahead of a slow line, so its progress events stop long before Dispatch has the body.
+// While the attempt waits, the page asks Dispatch how much of the body it has read, and a larger
+// number than the one before restarts the attempt's 15 s: here Dispatch reads more on every ask
+// for 60 s, with no progress event after the first, and the upload lands in one attempt.
+test("an upload whose progress events stop lands while Dispatch reports more of its body read", async () => {
+  await onFakeClock(async () => {
+    let read = 0;
+    const stub = stubFetch((request) => {
+      if (request.path !== RECEIVED_PATH) return Response.json({});
+      read += 1_000;
+      return Response.json({ length: 1_000_000, received: read });
+    });
+    const { transport, uploaded } = bufferedUpload(stub.fetch);
+
+    await step(60_000);
+    transport.answer(
+      Response.json({ artifact: { id: "a" }, version: { number: 1 } }, { status: 201 })
+    );
+
+    expect(await uploaded).toMatchObject({ artifact: { id: "a" } });
+    expect(transport.uploads).toBe(1);
+    const asks = stub.requests.filter((request) => request.path === RECEIVED_PATH);
+    // One ask each 3.75 s the attempt does not move, and nothing else is sent.
+    expect(asks.length).toBeGreaterThanOrEqual(15);
+    expect(stub.requests).toHaveLength(asks.length);
+    for (const ask of asks) {
+      expect(ask.init?.method ?? "GET").toBe("GET");
+      expect(ask.init?.credentials).toBe("same-origin");
+    }
+  });
+});
+
+// A line that goes silent: Dispatch's count stops growing, so the attempt is given up within the
+// 15 s bound of the last increase it saw, and no sooner than 7.5 s after it, since an increase is
+// dated at the ask before it and the asks go out each quarter of the bound.
+test("an upload whose count stops growing is given up within 15 s of the last increase", async () => {
+  await onFakeClock(async () => {
+    let read = 0;
+    let grewAt = 0;
+    const stub = stubFetch((request) => {
+      if (request.path !== RECEIVED_PATH) return Response.json({});
+      if (read < 5_000) {
+        read += 1_000;
+        grewAt = performance.now();
+      }
+      return Response.json({ length: 1_000_000, received: read });
+    });
+    const { uploaded } = bufferedUpload(stub.fetch);
+    let endedAt: number | undefined;
+    void uploaded.then(() => {
+      endedAt = performance.now();
+    });
+
+    await step(60_000);
+
+    expect(await uploaded).toBeInstanceOf(RequestTimeoutError);
+    expect((endedAt as number) - grewAt).toBeLessThanOrEqual(15_000);
+    expect((endedAt as number) - grewAt).toBeGreaterThanOrEqual(7_500);
+  });
+});
+
+// A Dispatch without the route (its 404 for no route), a replica that is not reading the body, an
+// ask that fails at the connection and one Dispatch never answers each tell the page nothing: the
+// attempt keeps its 15 s on the progress events alone, as before the route, and a no-route answer
+// is not sent again.
+for (const [how, answer] of [
+  [
+    "answered 404 for no route",
+    () =>
+      Response.json(
+        { code: "NOT_FOUND", error: `no route for GET ${RECEIVED_PATH}` },
+        { status: 404 }
+      ),
+  ],
+  [
+    "answered 404 KEY_NOT_RECEIVING",
+    () => Response.json({ code: "KEY_NOT_RECEIVING", error: "not receiving" }, { status: 404 }),
+  ],
+  [
+    "failed at the connection",
+    () => {
+      throw new TypeError("Failed to fetch");
+    },
+  ],
+] as const) {
+  test(`an upload whose ask is ${how} is given up at 15 s as before the route`, async () => {
+    await onFakeClock(async () => {
+      const stub = stubFetch((request) =>
+        request.path === RECEIVED_PATH ? answer() : Response.json({})
+      );
+      const started = performance.now();
+      const { uploaded } = bufferedUpload(stub.fetch);
+      let endedAt: number | undefined;
+      void uploaded.then(() => {
+        endedAt = performance.now();
+      });
+
+      await step(20_000);
+
+      expect(await uploaded).toBeInstanceOf(RequestTimeoutError);
+      expect((endedAt as number) - started).toBeGreaterThanOrEqual(15_000);
+      expect((endedAt as number) - started).toBeLessThan(15_500);
+      // An ask each 3.75 s of the 15: three before the bound ends, none sent again.
+      expect(stub.requests.filter((request) => request.path === RECEIVED_PATH)).toHaveLength(3);
+    });
+  });
+}
+
+test("an upload whose ask Dispatch never answers is given up at 15 s, each ask ended", async () => {
+  await onFakeClock(async () => {
+    const stub = heldFetch();
+    const started = performance.now();
+    const { uploaded } = bufferedUpload(stub.fetch);
+    let endedAt: number | undefined;
+    void uploaded.then(() => {
+      endedAt = performance.now();
+    });
+
+    await step(20_000);
+
+    expect(await uploaded).toBeInstanceOf(RequestTimeoutError);
+    expect((endedAt as number) - started).toBeGreaterThanOrEqual(15_000);
+    expect((endedAt as number) - started).toBeLessThan(15_500);
+    expect(stub.requests.length).toBeGreaterThan(0);
+    for (const ask of stub.requests) {
+      expect(ask.path).toBe(RECEIVED_PATH);
+      expect(ask.init?.signal?.aborted).toBe(true);
+    }
+  });
+});
+
+// The ask is for an upload under a key whose progress events have stopped: while the browser
+// reports the body going up within each quarter of the bound, the page asks nothing.
+test("an upload whose progress events keep coming asks nothing", async () => {
+  await onFakeClock(async () => {
+    const stub = stubFetch();
+    const { transport, uploaded } = bufferedUpload(stub.fetch);
+    for (let second = 0; second < 30; second += 3) {
+      await step(3_000);
+      transport.progress();
+    }
+    transport.answer(
+      Response.json({ artifact: { id: "a" }, version: { number: 1 } }, { status: 201 })
+    );
+
+    expect(await uploaded).toMatchObject({ artifact: { id: "a" } });
+    expect(stub.requests).toHaveLength(0);
   });
 });
 
@@ -1320,10 +1506,12 @@ test("a PUT or a DELETE without its press's bounds does not type-check", () => {
 });
 
 /** The client's own plumbing, which every write method goes through and which takes no argument a
- *  census could fill: not a write a page makes. */
+ *  census could fill: not a write a page makes. `askReceived` is an upload's ask of how much of its
+ *  body Dispatch has read, a GET that `exchange` starts while an upload waits for its answer. */
 const CLIENT_PLUMBING = new Set([
   "constructor",
   "exchange",
+  "askReceived",
   "answered",
   "response",
   "json",

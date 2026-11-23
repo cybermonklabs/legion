@@ -59,8 +59,8 @@ export type FetchImplementation = (
  * How an upload reaches Dispatch: `init` (its body a multipart form) sent to `path`, answered with
  * Dispatch's response, and `progress` called as each piece of the body goes up - with how much of
  * it has gone (`sent`), when the transport knows - and as the answer comes back. The browser's
- * `fetch` reports no upload progress, so a large file on a slow line would look silent for as long
- * as it uploads; `xhrUpload` is the one that reports it.
+ * `fetch` reports no upload progress, so a large file would look silent for as long as it uploads;
+ * `xhrUpload` is the one that reports it.
  */
 export type UploadImplementation = (
   path: string,
@@ -148,11 +148,11 @@ export type ReferenceSourceKind = NonNullable<
 >;
 
 /** How long the page lets Dispatch go silent on a request - no response headers yet, no piece of
- *  its body, and for an upload no piece of the request body sent either - before it gives the
- *  request up (`RequestTimeoutError`). A read Dispatch never answers, or stops answering halfway,
- *  would otherwise hold its page loading for good; given up, it is retried by the queries' shared
- *  policy, as a dropped connection is. A body that keeps moving, either way, goes on however long
- *  it takes: the deadline is on the silence, not the transfer. */
+ *  its body, and for an upload no piece of the request body sent and no more of it read by
+ *  Dispatch either - before it gives the request up (`RequestTimeoutError`). A read Dispatch never
+ *  answers, or stops answering halfway, would otherwise hold its page loading for good; given up,
+ *  it is retried by the queries' shared policy, as a dropped connection is. A response body that
+ *  keeps arriving goes on however long it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
 
 /** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
@@ -702,10 +702,14 @@ function headersOf(xhr: XMLHttpRequest): Headers {
 
 /**
  * An upload through `XMLHttpRequest`, the one transport whose upload progress every engine the
- * suite runs reports (`upload.onprogress`), so a file on a slow line is never mistaken for a
- * silent Dispatch: `progress` runs as each piece of the body goes up, as the response's headers
- * arrive, and as each piece of the answer does. The request fails as `fetch` does - a `TypeError`
- * for a connection that failed, the signal's reason once `init.signal` aborts.
+ * suite runs reports (`upload.onprogress`): `progress` runs as each piece of the body goes up, as
+ * the response's headers arrive, and as each piece of the answer does. The browser reports a piece
+ * as gone up once the connection's buffers take it, and they hold megabytes ahead of a slow line
+ * (measured in Chromium 156 at 128 KiB/s: the last event said 12 MiB sent with 6.9 MiB read by the
+ * server), so on such a line its events stop long before Dispatch has the body, and the upload's
+ * deadline also counts Dispatch reporting more of it read (`exchange`). The request fails as
+ * `fetch` does - a `TypeError` for a connection that failed, the signal's reason once `init.signal`
+ * aborts.
  */
 export function xhrUpload(
   makeXhr: () => XMLHttpRequest = () => new XMLHttpRequest()
@@ -780,8 +784,8 @@ function watchBody(response: Response, arrived: () => void): Response {
 
 export class DispatchApiClient {
   /** `upload` is the transport of a multipart form; left out, it goes by `fetchImpl`, which
-   *  reports no upload progress, so an upload's deadline then runs from its send. `wait` is how
-   *  a no-route retry waits (`answered`). */
+   *  reports no upload progress, so an upload's deadline then runs from its send, and no ask of
+   *  what Dispatch has read goes out. `wait` is how a no-route retry waits (`answered`). */
   constructor(
     private readonly fetchImpl: FetchImplementation,
     private readonly upload?: UploadImplementation,
@@ -790,9 +794,14 @@ export class DispatchApiClient {
 
   /** One request to Dispatch, answered with what `read` makes of its response. It is held to a
    *  deadline on Dispatch's silence - `deadlineMs`, or `REQUEST_DEADLINE_MS` for a GET that names
-   *  none, and none for any other method that names none - that starts over as the request's body
-   *  goes up (an upload's), as the response's headers arrive and as each piece of its body does,
-   *  `read` included: a transfer that keeps moving goes on however slowly, either way, and one
+   *  none, and none for any other method that names none - that starts over as the upload
+   *  transport reports the request's body going up, as the response's headers arrive and as each
+   *  piece of its body does, `read` included, and, for an upload under a key, as Dispatch reports
+   *  more of the body read (`askReceived`). The browser reports a body as gone up once the
+   *  connection's buffers take it, megabytes ahead of a slow line, so Dispatch's report is what
+   *  keeps such an upload; against a Dispatch that cannot report (an earlier build, or a replica
+   *  other than the one reading the body, which answer 404), a slow upload can be given up while
+   *  its bytes are still going out. A response that keeps arriving goes on however slowly, and one
    *  that stops fails as headers that never come do. A caller's `init.signal` still aborts the
    *  request, as itself. */
   private async exchange<T>(
@@ -811,15 +820,26 @@ export class DispatchApiClient {
     if (limit === null) return read(await this.answered(path, init, undefined, uploaded));
     const deadline = new AbortController();
     let timer = setTimeout(() => deadline.abort(), limit);
-    const caller = init.signal ?? undefined;
-    const arrived = () => {
+    // The latest moment the request is known to have moved; the deadline is `limit` after it.
+    let movedAt = performance.now();
+    const moved = (at: number) => {
+      if (at <= movedAt) return;
+      movedAt = at;
       clearTimeout(timer);
-      timer = setTimeout(() => deadline.abort(), limit);
+      timer = setTimeout(() => deadline.abort(), Math.max(0, at + limit - performance.now()));
     };
+    const caller = init.signal ?? undefined;
+    const signal =
+      caller === undefined ? deadline.signal : AbortSignal.any([caller, deadline.signal]);
+    const key = new Headers(init.headers).get(IDEMPOTENCY_KEY_HEADER);
+    const asking =
+      init.body instanceof FormData && this.upload !== undefined && key !== null
+        ? this.askReceived(key, limit, signal, () => movedAt, moved)
+        : undefined;
     try {
-      const signal =
-        caller === undefined ? deadline.signal : AbortSignal.any([caller, deadline.signal]);
-      return await read(await this.answered(path, { ...init, signal }, arrived, uploaded));
+      return await read(
+        await this.answered(path, { ...init, signal }, () => moved(performance.now()), uploaded)
+      );
     } catch (error) {
       // An answer Dispatch gave stays its answer and the caller's abort stays the caller's: only
       // what the deadline cut short is a timeout.
@@ -831,7 +851,63 @@ export class DispatchApiClient {
       throw error;
     } finally {
       clearTimeout(timer);
+      asking?.abort();
     }
+  }
+
+  /** While an upload under `key` waits for its answer, asks Dispatch how much of the key's body it
+   *  has read (`GET /api/v1/request-keys/{key}/received`) each time the request has not moved for a
+   *  quarter of `limit`, one ask at a time, each given that quarter to answer. The first answer is
+   *  the baseline; each answer larger than the one before is progress, told to `moved` at the
+   *  moment the ask before it went out, since Dispatch read the new bytes after it answered that
+   *  ask: an upload whose bytes stop reaching Dispatch still fails within `limit` of the last byte
+   *  Dispatch read. An ask refused (a Dispatch without the route, or a replica that is not reading
+   *  the body, answers 404), failed or unanswered tells nothing. It goes straight to `fetchImpl`,
+   *  so it marks no route reachable or unreachable and is never sent again after a no-route
+   *  answer. Answers the controller that stops the asking. */
+  private askReceived(
+    key: string,
+    limit: number,
+    request: AbortSignal,
+    movedAt: () => number,
+    moved: (at: number) => void
+  ): AbortController {
+    const stop = new AbortController();
+    const asking = AbortSignal.any([request, stop.signal]);
+    const everyMs = limit / 4;
+    const path = routeUrl("/api/v1/request-keys/{key}/received", { key });
+    void (async () => {
+      let earlier: { readonly received: number; readonly at: number } | undefined;
+      for (;;) {
+        try {
+          await sleep(everyMs, asking);
+        } catch {
+          return;
+        }
+        // Moving on its own: the bound is the transport's to restart.
+        if (performance.now() - movedAt() < everyMs) continue;
+        const at = performance.now();
+        let received: unknown;
+        try {
+          const response = await this.fetchImpl(path, {
+            credentials: "same-origin",
+            headers: { Accept: "application/json" },
+            signal: AbortSignal.any([asking, AbortSignal.timeout(everyMs)]),
+          });
+          const answer: unknown = response.ok ? await response.json() : undefined;
+          if (typeof answer === "object" && answer !== null && "received" in answer) {
+            received = answer.received;
+          }
+        } catch {
+          received = undefined;
+        }
+        if (asking.aborted) return;
+        if (typeof received !== "number") continue;
+        if (earlier !== undefined && received > earlier.received) moved(earlier.at);
+        earlier = { received, at };
+      }
+    })();
+    return stop;
   }
 
   /** Dispatch's response to one request, or its refusal as an `ApiError`; a connection that

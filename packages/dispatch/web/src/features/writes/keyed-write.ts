@@ -26,11 +26,15 @@ import { keyMintedAt } from "../../lib/send-key";
  */
 export const SEND_DEADLINE_MS = 30_000;
 
-/** How long one attempt of a write may go silent - no piece of its body sent, no piece of its
- *  answer received - before it is given up and made again under the same key. A write that keeps
- *  moving, a large upload on a slow line, is never cut off; Dispatch finishes a write whose
- *  attempt was given up, so the attempt after it is answered `409 KEY_IN_FLIGHT`, then with the
- *  first's answer. */
+/** How long one attempt of a write may go silent - no piece of its body sent, no more of an
+ *  upload's body read by Dispatch, no piece of its answer received - before it is given up and
+ *  made again under the same key. An upload on a slow line is kept while Dispatch reports more of
+ *  its body read (`exchange` in `api/client.ts`), which it must do at least once in each 7.5 s;
+ *  against a Dispatch that cannot report (an earlier build, or a replica other than the one
+ *  reading the body) the attempt counts the browser's progress events alone, which stop megabytes
+ *  ahead of the line, so a slow upload can then be given up while it is still going out.
+ *  Dispatch finishes a write whose attempt was given up, so the attempt after it is answered
+ *  `409 KEY_IN_FLIGHT`, then with the first's answer. */
 export const KEYED_SEND_ATTEMPT_MS = 15_000;
 
 /** The wait before a write's first retry, doubling after each attempt that ends without Dispatch's

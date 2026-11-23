@@ -526,12 +526,14 @@ test("a comment Dispatch takes 20 s to make lands once from the page, every repe
 
 // An attempt is cut off only after 15 s with no progress, and a body still going up is progress:
 // an upload the page sees take twice that long is one attempt, and lands once. Chromium's
-// DevTools protocol paces the page's own upload (`Network.emulateNetworkConditions`), so the body
-// goes up at the throttle's rate and the page sees its progress as it goes; no other engine the
-// suite runs can be throttled that way, so the row runs on Chromium's projects. The transfer is
-// real and the deadline is the page's own: the body is sized to four throttled seconds, and the
-// page's clock is jumped over the 15 s between two pieces of it, so the row proves the reset
-// without spending thirty seconds on it.
+// DevTools protocol paces the page's own upload (`Network.emulateNetworkConditions`) before the
+// body reaches the socket, so the connection's buffers stay empty and each progress event is a
+// piece that left; no other engine the suite runs can be throttled that way, so the row runs on
+// Chromium's projects. A real slow line fills those buffers instead, and the page then counts
+// Dispatch's report of what it has read (`askReceived` in `web/src/api/client.ts`), which this row
+// does not reach. The transfer is real and the deadline is the page's own: the body is sized to
+// four throttled seconds, and the page's clock is jumped over the 15 s between two pieces of it, so
+// the row proves the reset without spending thirty seconds on it.
 // SLOW(>=2s): The upload must really keep moving while the page's clock crosses
 // `KEYED_SEND_ATTEMPT_MS`; a throttled 4 s transfer is the shortest one that still emits progress
 // across the fast-forwards.

@@ -442,11 +442,16 @@ function requestSignal(signal: AbortSignal | undefined, deadlineMs: number): Abo
  * `pausesMs` is the wait before each retry in turn, so the write makes at most one attempt more than
  * it has entries, and no retry starts once `withinMs` has passed since the first attempt began. An
  * answer's `Retry-After` longer than the scheduled pause is waited instead. An attempt that goes
- * `silenceMs` without progress before its answer begins - none of its body taken by the connection
- * in that time - is cut off and asked again like one that failed in transport, so a write Dispatch
- * is slow to finish is asked again under its key (and answered `409 KEY_IN_FLIGHT`, then replayed)
- * rather than waited on for the call's whole deadline, while an upload still going out is never
- * cut. Once an attempt of a body under `STREAMED_BODY_MIN` was cut off for silence or answered
+ * `silenceMs` without progress before its answer begins is cut off and asked again like one that
+ * failed in transport, so a write Dispatch is slow to finish is asked again under its key (and
+ * answered `409 KEY_IN_FLIGHT`, then replayed) rather than waited on for the call's whole
+ * deadline. Progress is fetch reading a chunk of a streamed body (`STREAMED_BODY_MIN` or more) and,
+ * for such a body under a key, Dispatch reporting that it has read more of it (`#askReceived`):
+ * fetch reads the next chunk once the connection's buffers have room, and they hold megabytes
+ * ahead of the line, so on a slow line its reads stop long before Dispatch has the body. Against a
+ * Dispatch that cannot report (an earlier build, or a replica other than the one reading the body)
+ * only the reads count, and a slow upload can be cut off while it is still going out. Once an
+ * attempt of a body under `STREAMED_BODY_MIN` was cut off for silence or answered
  * `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed layer finishes that
  * run whatever the client does, so the write keeps asking until it gets the run's stored answer:
  * every `inFlightPauseMs` at most, unless a shorter pause of the schedule's or a longer
@@ -523,17 +528,19 @@ interface EncodedBody {
 
 /**
  * The size from which an attempt's body goes out as a stream read a chunk at a time
- * (`STREAMED_BODY_CHUNK`), so the connection taking each chunk counts as the attempt's progress.
- * A smaller body leaves in one write to the connection, so there is no progress of it to see.
+ * (`STREAMED_BODY_CHUNK`), so each read of a chunk counts as the attempt's progress, and from which
+ * the attempt asks Dispatch how much of the body it has read (`#askReceived`). A smaller body
+ * leaves in one write to the connection, so there is no progress of it to see.
  */
 const STREAMED_BODY_MIN = 1 << 20;
 const STREAMED_BODY_CHUNK = 64 << 10;
 
 /**
  * What one attempt sends for `body`: its bytes as they are when they are smaller than
- * `STREAMED_BODY_MIN`, or else a stream of them that calls `progress` each time the connection reads
- * a chunk (fetch reads a stream body only as the connection takes it), with the `Content-Length`
- * they add up to, so the request on the wire is the one the bytes make.
+ * `STREAMED_BODY_MIN`, or else a stream of them that calls `progress` each time fetch reads a chunk
+ * (fetch reads a stream body only as the connection's buffers take it, which they do megabytes
+ * ahead of the line), with the `Content-Length` they add up to, so the request on the wire is the
+ * one the bytes make.
  */
 function attemptBody(
   body: EncodedBody,
@@ -2482,9 +2489,12 @@ export class DispatchClient {
 
   /**
    * One attempt of a write, under `limit` (the call's signal and the client's) and a silence bound
-   * of its own: once `silenceMs` pass before its answer begins with none of its body taken by the
-   * connection in that time, it is cut off and fails as `WriteAttemptSilent`. The bound ends with
-   * the answer's headers; its body is read under `limit` alone.
+   * of its own: once `silenceMs` pass before its answer begins with no progress in that time, it is
+   * cut off and fails as `WriteAttemptSilent`. Progress is fetch reading a chunk of the body and,
+   * for an upload (a streamed body under a key), Dispatch reporting that it has read more of the
+   * body (`#askReceived`): fetch reads into buffers that hold megabytes ahead of the line, so its
+   * reads stop long before Dispatch has the body, and only Dispatch can say the bytes still arrive.
+   * The bound ends with the answer's headers; its body is read under `limit` alone.
    */
   async #attempt(
     url: string,
@@ -2498,24 +2508,103 @@ export class DispatchClient {
     const silent = (): void => cut.abort(new WriteAttemptSilent(silenceMs));
     let timer = setTimeout(silent, silenceMs);
     let answered = false;
-    // A stream body read after the answer came (an early refusal) starts no timer of its own.
-    const progress = (): void => {
-      if (answered) return;
+    // The latest moment the attempt is known to have moved: the bound runs out `silenceMs` after
+    // it. A stream body read after the answer came (an early refusal) moves nothing.
+    let movedAt = performance.now();
+    const moved = (at: number): void => {
+      if (answered || at <= movedAt) return;
+      movedAt = at;
       clearTimeout(timer);
-      timer = setTimeout(silent, silenceMs);
+      timer = setTimeout(silent, Math.max(0, at + silenceMs - performance.now()));
     };
+    const signal = AbortSignal.any([limit, cut.signal]);
+    const sent =
+      body === undefined ? { headers } : attemptBody(body, headers, () => moved(performance.now()));
+    const key = headers[IDEMPOTENCY_KEY_HEADER];
+    const stopAsking =
+      sent.body instanceof ReadableStream && key !== undefined
+        ? this.#askReceived(key, silenceMs, signal, () => movedAt, moved)
+        : () => {};
     try {
-      return await this.#fetch(url, {
-        method,
-        signal: AbortSignal.any([limit, cut.signal]),
-        ...(body === undefined ? { headers } : attemptBody(body, headers, progress)),
-      });
+      return await this.#fetch(url, { method, signal, ...sent });
     } catch (error) {
       if (cut.signal.aborted && !limit.aborted) throw cut.signal.reason;
       throw error;
     } finally {
       answered = true;
       clearTimeout(timer);
+      stopAsking();
+    }
+  }
+
+  /**
+   * While an upload attempt under `key` waits for its answer, asks Dispatch how much of the key's
+   * body it has read (`GET /api/v1/request-keys/{key}/received`) each time the attempt has not
+   * moved for a quarter of `silenceMs`, one ask at a time, each given that quarter to answer. The
+   * first answer is the baseline. Each answer larger than the one before is progress, dated at the
+   * moment the ask before it went out: Dispatch read the new bytes after it answered that ask, so
+   * an upload whose bytes stop reaching Dispatch is still cut off within `silenceMs` of the last
+   * byte Dispatch read. An ask refused (a Dispatch without the route, or a replica that is not
+   * reading the body, answers 404), failed or unanswered tells nothing, and the attempt's bound
+   * runs on as it would without it. Returns the stop, which the attempt calls once it ends.
+   */
+  #askReceived(
+    key: string,
+    silenceMs: number,
+    attempt: AbortSignal,
+    movedAt: () => number,
+    moved: (at: number) => void
+  ): () => void {
+    const stop = new AbortController();
+    const asking = AbortSignal.any([attempt, stop.signal]);
+    const everyMs = silenceMs / 4;
+    const url = this.#url(["api", "v1", "request-keys", key, "received"]);
+    void (async () => {
+      let earlier: { readonly received: number; readonly at: number } | undefined;
+      for (;;) {
+        try {
+          await pauseFor(everyMs, asking);
+        } catch {
+          return;
+        }
+        // Moving on its own: the bound is the connection's to restart.
+        if (performance.now() - movedAt() < everyMs) continue;
+        const at = performance.now();
+        const received = await this.#received(
+          url,
+          AbortSignal.any([asking, AbortSignal.timeout(everyMs)])
+        );
+        if (asking.aborted) return;
+        if (received === undefined) continue;
+        if (earlier !== undefined && received > earlier.received) moved(earlier.at);
+        earlier = { received, at };
+      }
+    })();
+    return () => stop.abort();
+  }
+
+  /** How many bytes of an upload's body Dispatch says it has read (`#askReceived`), or undefined
+   *  where it says nothing a number can be read from. */
+  async #received(url: string, signal: AbortSignal): Promise<number | undefined> {
+    try {
+      const presented = await this.#credential.headers("GET", url, undefined, signal);
+      this.#sent.note(presented);
+      const response = await this.#fetch(url, {
+        headers: { Accept: "application/json", ...presented },
+        signal,
+      });
+      if (!response.ok) {
+        await response.body?.cancel();
+        return undefined;
+      }
+      const answer: unknown = await response.json();
+      const received =
+        typeof answer === "object" && answer !== null && "received" in answer
+          ? answer.received
+          : undefined;
+      return typeof received === "number" && Number.isSafeInteger(received) ? received : undefined;
+    } catch {
+      return undefined;
     }
   }
 

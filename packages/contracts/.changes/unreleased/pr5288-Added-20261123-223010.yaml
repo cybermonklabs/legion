@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry
+  `GET /api/v1/request-keys/{key}/received` and its `RequestKeyReceived` answer, `{received, length}`:
+  how much of the newest keyed request body under the caller's key the Dispatch process answering
+  has read so far.
+time: 2026-11-23T22:30:10Z
+custom:
+  Issue: pr5288

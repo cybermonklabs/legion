@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { type AddressInfo, createServer, type Socket } from "node:net";
 import {
   BrokerRefusedError,
@@ -14,6 +14,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_PATTERN,
 } from "@legion/contracts";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -46,20 +47,47 @@ type Answer =
   | ((signal: AbortSignal | null | undefined) => Response | Promise<Response>)
   | Error;
 
+/** The path of an upload's ask of how much of its body Dispatch has read (`#askReceived`). */
+const RECEIVED_PATH = /^\/api\/v1\/request-keys\/([^/]+)\/received$/;
+
+/** One ask of `RECEIVED_PATH` a fake was sent: the key it named, its headers, and when it came. */
+interface Asked {
+  readonly key: string;
+  readonly headers: Record<string, string>;
+  readonly at: number;
+}
+
 /**
  * A fetch that answers each write with the next of `answers`, recording what it was sent. A JSON
  * answer stands for one of Dispatch's own; an HTML page stands for a gateway's. A request the
- * script has no answer for fails the row.
+ * script has no answer for fails the row. An upload's ask of how much of its body Dispatch has
+ * read is no write: it is recorded in `asked` and answered by `received`, given how many asks came
+ * before it and the ask's signal, and by a 404 where the row names no `received`, as a Dispatch
+ * without the route answers it.
  */
 function scripted(
   answers: readonly Answer[],
-  options: { readonly echo?: boolean | ((request: number) => boolean) } = {}
+  options: {
+    readonly echo?: boolean | ((request: number) => boolean);
+    readonly received?: (
+      asks: number,
+      signal: AbortSignal | null | undefined
+    ) => Response | Promise<Response>;
+  } = {}
 ) {
   const sent: Sent[] = [];
+  const asked: Asked[] = [];
   const echo = options.echo ?? true;
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input);
     const headers = { ...(init?.headers as Record<string, string>) };
+    const ask = RECEIVED_PATH.exec(new URL(url).pathname);
+    if (ask !== null && (init?.method ?? "GET") === "GET") {
+      asked.push({ key: decodeURIComponent(ask[1] ?? ""), headers, at: performance.now() });
+      return options.received === undefined
+        ? refusal(404, "NOT_FOUND", `no route for GET ${new URL(url).pathname}`)
+        : options.received(asked.length - 1, init?.signal);
+    }
     sent.push({ method: init?.method ?? "GET", url, headers, body: init?.body });
     const answer = answers[sent.length - 1];
     if (answer === undefined) throw new Error(`unexpected request ${sent.length}: ${url}`);
@@ -72,7 +100,7 @@ function scripted(
     echoed.headers.set("Idempotency-Key", key);
     return echoed;
   };
-  return { fetchImpl: fetchImpl as typeof fetch, sent };
+  return { fetchImpl: fetchImpl as typeof fetch, sent, asked };
 }
 
 /** Whether a scripted answer stands for Dispatch's own (JSON) rather than a gateway's page. */
@@ -1954,13 +1982,15 @@ interface Taken {
   readonly key: string | undefined;
   readonly length: number;
   received: number;
+  answered: boolean;
 }
 
 /** Answers `socket` with `status` and a JSON `body`, carrying back `key`, and closes it. */
 function answerOn(socket: Socket, status: number, body: unknown, key?: string): void {
   const text = JSON.stringify(body);
+  const reason = status === 201 ? "Created" : status === 404 ? "Not Found" : "OK";
   socket.end(
-    `HTTP/1.1 ${status} ${status === 201 ? "Created" : "OK"}\r\n` +
+    `HTTP/1.1 ${status} ${reason}\r\n` +
       "Content-Type: application/json\r\n" +
       (key === undefined ? "" : `Idempotency-Key: ${key}\r\n`) +
       `Content-Length: ${Buffer.byteLength(text)}\r\nConnection: close\r\n\r\n${text}`
@@ -1971,7 +2001,9 @@ function answerOn(socket: Socket, status: number, body: unknown, key?: string): 
  * A Dispatch on a real socket, so a request's body goes out at the pace the connection takes it.
  * Each write's connection takes its body as the next of `intakes` says - at once, in a fixed number
  * of paced steps, or nothing past the first of it - and answers 201 carrying back its key once it
- * holds all of it.
+ * holds all of it. It answers an upload's ask of how much of its body it has read as Dispatch does
+ * (`getRequestKeyReceived`): what it has read of the newest write under the key while that write
+ * is unanswered, and 404 otherwise.
  */
 async function socketDispatch(intakes: readonly Intake[]) {
   const writes: Taken[] = [];
@@ -1998,10 +2030,21 @@ async function socketDispatch(intakes: readonly Intake[]) {
             .find((line) => line.toLowerCase().startsWith(`${name}:`))
             ?.slice(name.length + 1)
             .trim();
+        const [method, target] = (lines[0] ?? "").split(" ");
+        const ask = method === "GET" ? RECEIVED_PATH.exec(target ?? "") : null;
+        if (ask !== null) {
+          const key = decodeURIComponent(ask[1] ?? "");
+          const newest = writes.filter((write) => write.key === key).at(-1);
+          if (newest !== undefined && !newest.answered) {
+            answerOn(socket, 200, { received: newest.received, length: newest.length });
+          } else answerOn(socket, 404, { code: "KEY_NOT_RECEIVING", error: "not receiving" });
+          return;
+        }
         taken = {
           key: header("idempotency-key"),
           length: Number(header("content-length")),
           received: 0,
+          answered: false,
         };
         intake = intakes[writes.length] ?? "full";
         writes.push(taken);
@@ -2016,6 +2059,7 @@ async function socketDispatch(intakes: readonly Intake[]) {
         return;
       }
       if (taken.received >= taken.length) {
+        taken.answered = true;
         answerOn(socket, 201, { artifact: { id: "artifact-1" } }, taken.key);
       } else if (typeof intake === "object") {
         // A step of the body, not a rate: what must stay under the write's silence bound is the
@@ -2047,11 +2091,211 @@ async function socketDispatch(intakes: readonly Intake[]) {
   };
 }
 
-// An attempt's silence bound counts the connection taking its body as progress, so an upload is
-// bounded by how long it goes unheard, never by how long it takes; one whose connection stops
-// taking it is cut off and sent again under its key. Only a real socket shows that: the pace is
-// the kernel's backpressure on the connection, which no fake clock drives, so these run in real
-// time.
+/**
+ * A Dispatch whose connection's buffers take an upload's whole body at once, as a slow line's do,
+ * so fetch reads the body to its end and the client hears nothing more of it. The Dispatch behind
+ * them then reads the body evenly over `readMs`, and reads nothing more once it has read `stopAt`
+ * bytes, a line that went silent. Each attempt starts its read afresh; an attempt read whole is
+ * answered 201, and one whose signal aborts fails with the signal's reason, the moment recorded.
+ * It answers an ask of how much of the body it has read as `ask` says: `report`, what it has read
+ * of the newest attempt under the key while that attempt is unanswered and 404 otherwise, as
+ * Dispatch does (`getRequestKeyReceived`); `404`, a Dispatch without the route; `fail`, a
+ * transport failure; `hang`, an ask never answered. Its clock is the row's.
+ */
+function bufferedDispatch(options: {
+  readonly readMs: number;
+  readonly stopAt?: number;
+  readonly ask: "report" | "404" | "fail" | "hang";
+}) {
+  interface Attempt {
+    readonly key: string | undefined;
+    readonly length: number;
+    readonly started: number;
+    /** When Dispatch read its last byte: the body's end, or `stopAt`. */
+    readonly lastByteAt: number;
+    cutAt?: number;
+    answeredAt?: number;
+  }
+  const attempts: Attempt[] = [];
+  const asked: (Asked & { readonly signal: AbortSignal | null | undefined })[] = [];
+  const read = (attempt: Attempt): number =>
+    Math.min(
+      options.stopAt ?? attempt.length,
+      Math.floor((attempt.length * (performance.now() - attempt.started)) / options.readMs)
+    );
+  const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const headers = { ...(init?.headers as Record<string, string>) };
+    const ask = RECEIVED_PATH.exec(new URL(String(input)).pathname);
+    if (ask !== null) {
+      const key = decodeURIComponent(ask[1] ?? "");
+      asked.push({ key, headers, at: performance.now(), signal: init?.signal });
+      if (options.ask === "fail") throw new TypeError("fetch failed");
+      if (options.ask === "hang") return hang(init?.signal);
+      const newest = attempts.filter((attempt) => attempt.key === key).at(-1);
+      if (options.ask === "404" || newest === undefined || newest.answeredAt !== undefined) {
+        return refusal(404, "KEY_NOT_RECEIVING", "not receiving");
+      }
+      return json({ received: read(newest), length: newest.length });
+    }
+    // The connection's buffers take the whole body before Dispatch reads any of it.
+    const length = (await new Response(init?.body).arrayBuffer()).byteLength;
+    const started = performance.now();
+    const end = Math.min(length, options.stopAt ?? length);
+    const attempt: Attempt = {
+      key: headers["Idempotency-Key"],
+      length,
+      started,
+      lastByteAt: started + Math.ceil((options.readMs * end) / length),
+    };
+    attempts.push(attempt);
+    const { promise, resolve, reject } = Promise.withResolvers<Response>();
+    const signal = init?.signal;
+    const answer =
+      end < length
+        ? undefined
+        : setTimeout(() => {
+            attempt.answeredAt = performance.now();
+            resolve(json({ artifact: { id: "artifact-1" } }, 201));
+          }, attempt.lastByteAt - started);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(answer);
+        attempt.cutAt = performance.now();
+        reject(signal.reason);
+      },
+      { once: true }
+    );
+    return promise;
+  };
+  return { fetchImpl: fetchImpl as typeof fetch, attempts, asked };
+}
+
+// fetch reads an upload's body into the connection's buffers, which hold megabytes ahead of a slow
+// line, so its reads stop long before Dispatch has the body. While the attempt waits for its
+// answer, the client asks Dispatch how much of the body it has read, and an answer larger than the
+// one before is progress, dated at the ask before it. Each row runs on Bun's fake clock, which the
+// attempt's silence bound, the asks' waits and timeouts and the fake Dispatch's reads all keep time
+// by, so what a row reads of the bound is the client's own, to the millisecond. The bound is
+// 2,000 ms, so an ask goes out each 500 ms the attempt does not move.
+describe("DispatchClient's uploads asking Dispatch how much of the body it has read", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  // A fake clock left behind stops the timers of every file the same worker runs after this one.
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const silenceMs = 2_000;
+  /** The upload, sent, with the fake clock moved 5 ms at a time until it settles; what it settled
+   *  with, a value or an error. */
+  const send = async (fetchImpl: typeof fetch, size = 2 << 20): Promise<unknown> => {
+    let settled: { value: unknown } | undefined;
+    void new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
+      writeRetry: { ...DISPATCH_WRITE_RETRY, silenceMs },
+    })
+      .artifact("DSP-1", {
+        name: "build.tar",
+        file: new Blob([new Uint8Array(size).fill(97)]),
+        actor,
+      })
+      .then(
+        (value: unknown) => {
+          settled = { value };
+        },
+        (error: unknown) => {
+          settled = { value: error };
+        }
+      );
+    await turnsUntil(() => settled !== undefined, "the upload settled", {
+      each: () => jest.advanceTimersByTime(5),
+    });
+    return settled?.value;
+  };
+
+  // The body is read over more than two and a half bounds after fetch took it whole, so fetch's own
+  // reads are silent for longer than the bound, and Dispatch's reports are what keep the attempt.
+  // 5,250 ms is no multiple of the 500 ms between asks, so no ask falls on the answer's moment.
+  test("an upload whose bytes wait in the connection's buffers lands in one attempt while Dispatch reports more of it read", async () => {
+    const dispatch = bufferedDispatch({ readMs: 5_250, ask: "report" });
+
+    expect(await send(dispatch.fetchImpl)).toEqual({ artifact: { id: "artifact-1" } });
+
+    expect(dispatch.attempts).toHaveLength(1);
+    const [attempt] = dispatch.attempts as [(typeof dispatch.attempts)[number]];
+    expect(attempt.cutAt).toBeUndefined();
+    expect(attempt.answeredAt).toBeGreaterThanOrEqual(attempt.lastByteAt);
+    expect(dispatch.asked.length).toBeGreaterThan(1);
+    for (const ask of dispatch.asked) {
+      expect(ask.key).toBe(attempt.key as string);
+      expect(ask.headers.Authorization).toBe("Bearer secret");
+      // Every ask ended with the attempt, and none went out after its answer.
+      expect(ask.signal?.aborted).toBe(true);
+      expect(ask.at).toBeLessThanOrEqual(attempt.answeredAt as number);
+    }
+  });
+
+  // A line that goes silent part way: Dispatch reports the same count on every ask after its last
+  // byte, so the attempt is cut off within the bound of that byte, and no sooner than half a bound
+  // after it, since an increase is dated at the ask before it and asks go out each quarter bound.
+  // The write then asks again under its key, and each attempt is cut off the same way.
+  test("an upload whose bytes stop reaching Dispatch is cut off within the bound of its last byte and sent again under its key", async () => {
+    const dispatch = bufferedDispatch({ readMs: 5_000, stopAt: 1 << 20, ask: "report" });
+
+    const error = await send(dispatch.fetchImpl);
+
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as Error).message).toContain(`made no progress for ${silenceMs / 1_000} s`);
+    expect(dispatch.attempts.length).toBeGreaterThan(1);
+    for (const attempt of dispatch.attempts) {
+      const after = (attempt.cutAt as number) - attempt.lastByteAt;
+      expect(after).toBeLessThanOrEqual(silenceMs);
+      expect(after).toBeGreaterThanOrEqual(silenceMs / 2);
+    }
+    expect(new Set(dispatch.attempts.map((attempt) => attempt.key)).size).toBe(1);
+  });
+
+  // A Dispatch without the route, a replica that is not reading the body, an ask that fails and an
+  // ask never answered each tell the client nothing: the attempt's bound counts fetch's reads alone,
+  // as it did before the route, and the buffered upload is cut off a bound after fetch read it.
+  for (const [ask, how] of [
+    ["404", "answered 404"],
+    ["fail", "failed in transport"],
+    ["hang", "never answered"],
+  ] as const) {
+    test(`an upload whose ask is ${how} is cut off as it was before the route`, async () => {
+      const dispatch = bufferedDispatch({ readMs: 60_000, ask });
+
+      const error = await send(dispatch.fetchImpl);
+
+      expect((error as Error).message).toContain(`made no progress for ${silenceMs / 1_000} s`);
+      // The bound ran from fetch's last read of the body, which came as it took the body whole.
+      const [first] = dispatch.attempts as [(typeof dispatch.attempts)[number]];
+      expect((first.cutAt as number) - first.started).toBeGreaterThanOrEqual(silenceMs);
+      expect((first.cutAt as number) - first.started).toBeLessThan(silenceMs + silenceMs / 4);
+      expect(dispatch.asked.length).toBeGreaterThan(0);
+      for (const asked of dispatch.asked) expect(asked.signal?.aborted).toBe(true);
+    });
+  }
+
+  // A body under `STREAMED_BODY_MIN` leaves in one write, so there is nothing of it to report.
+  test("an upload under a megabyte asks nothing", async () => {
+    const dispatch = bufferedDispatch({ readMs: 60_000, ask: "report" });
+
+    await send(dispatch.fetchImpl, 512 << 10);
+
+    expect(dispatch.attempts.length).toBeGreaterThan(0);
+    expect(dispatch.asked).toHaveLength(0);
+  });
+});
+
+// An attempt's silence bound counts fetch reading its body and Dispatch reporting more of it read
+// as progress, so an upload is bounded by how long it goes unheard, never by how long it takes; one
+// whose connection stops taking it is cut off and sent again under its key. Only a real socket
+// shows that: the pace is the kernel's backpressure on the connection, which no fake clock drives,
+// so these run in real time. The stand-in answers the ask as Dispatch does.
 describe("DispatchClient's uploads on a real connection", () => {
   const opened: { close(): void }[] = [];
 

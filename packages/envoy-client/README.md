@@ -751,11 +751,26 @@ pace: at most five attempts, 1, 2, 4 and 8 s apart, a longer `Retry-After` waite
 attempt started more than 30 s after the first. An attempt that goes 20 s without progress before
 its answer begins (`silenceMs`) is cut off and asked again the same way, so a write Dispatch is
 slow to finish is answered `409 KEY_IN_FLIGHT` and then replayed rather than waited on for the
-whole deadline. Progress is the connection taking the body: a body of a megabyte or more goes out
-as a stream read 64 KiB at a time, with its `Content-Length`, and each read restarts the bound, so
-an upload on a slow line is never cut off while it is still going out; a smaller body leaves in
-one write. Once an attempt was cut off for silence or answered `409 KEY_IN_FLIGHT`, Dispatch may
-still be running the write, and its keyed layer finishes that run whatever the client does, so the
+whole deadline. Progress is a read of the body or Dispatch reporting more of it read. A body of a
+megabyte or more goes out as a stream read 64 KiB at a time, with its `Content-Length`, and each
+read restarts the bound; a smaller body leaves in one write, and its bound runs from the send.
+Fetch reads the next 64 KiB only once the connection's buffers have room, and they hold megabytes
+ahead of the line: measured in build pods at 128 KiB/s, the client's last read of a 12 MiB upload
+came with 7.81 MiB the server had not read yet. So while such an upload waits for its answer and
+has not moved for a quarter of the bound (5 s), the client asks Dispatch how much of the body it
+has read (`GET /api/v1/request-keys/{key}/received`, one ask at a time, each given 5 s to
+answer). A number larger than the one before restarts the bound, dated at the moment the ask
+before it went out, since Dispatch read the new bytes after it answered that ask: an upload whose
+bytes keep reaching Dispatch at least once every 10 s is not cut off, and one whose bytes stop is
+still cut off within 20 s of the last byte Dispatch read. Dispatch keeps that count in the memory
+of the process reading the body, so an ask that reaches another replica, or a Dispatch older than
+the route, is answered 404, and the bound then counts the reads alone, as before the route: a slow
+upload can then be cut off while its bytes are still going out. The `dispatch` command's client
+ends every call, an upload's included, at its 60 s deadline (`DISPATCH_TOOL_DEADLINE_MS`), so an
+upload through the command must finish within 60 s: 5 MiB at 128 KiB/s takes 40 s, and 12 MiB
+takes 96 s, which no attempt bound can save. Once an attempt was cut off for silence or answered
+`409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed layer finishes that
+run whatever the client does, so the
 write keeps asking every 3 s at most (`inFlightPauseMs`; a longer `Retry-After` is still waited),
 with no attempt started more than 55 s after the first (`inFlightWithinMs`), until the run's stored
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
