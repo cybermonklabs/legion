@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The places of today's fixed phases where a step runs (workflow's stepOf), which a start
@@ -79,7 +80,7 @@ func (r *awaitRig) made() []streamWait {
 func (r *awaitRig) runs(t *testing.T, issue string, place record.StepPlace, agent claim.Token) {
 	t.Helper()
 	at := time.Now().UTC().Truncate(time.Microsecond)
-	if err := r.h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := record.NewStore().RaiseStepStarts(context.Background(), tx, issue, place, func(starts int64) record.StepRecord {
 			return record.StepRecord{Task: place.Task, Step: place.Place, Kind: place.Kind, Agent: string(agent), StartedAt: &at}
 		})

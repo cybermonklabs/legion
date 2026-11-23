@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+    A person's edit of the repository of an issue the daemon has not recorded yet is no longer lost
+    when it lands while a listing of Dispatch, read before it, waits to be applied: a recovery of a
+    repository GitHub answered for again, or a listing the boot held for the Dispatch consumer.
+    Before, that listing recorded the issue on the repository it showed, the edit reached no
+    record, and nothing on the issue said that Legion kept the old repository. A listing older
+    than an event of the issue the daemon has applied now records nothing, and the issue is
+    recorded where Dispatch resolves it at that event or later.
+
+    An issue the daemon has not recorded yet is no longer left unrecorded when Dispatch's sequence
+    of it moves with no event the daemon decides on (a comment, a document edit, an ask or a claim)
+    and the controller's periodic turn then reads it, because a recorded issue waits on it. Before,
+    that reading held back the daemon's own view of the issue's next admission event, so the event
+    recorded nothing. The daemon now compares such a view, and a listing, only with the events of
+    the issue it applied, which it keeps in `dispatch_issues.applied_seq`, a column migration
+    `20261121170714_dispatch_issue_applied_seq` adds.
+time: 2026-11-21T15:47:50Z
+custom:
+    Issue: pr4903

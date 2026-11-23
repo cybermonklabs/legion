@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -88,7 +88,7 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 	// The record, the tree's lifecycle and the claims the holder is judged against are read in
 	// one transaction, so they are one state of the record.
 	verdict := claimLeft
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		recorded, err := r.records.Issue(ctx, tx, row.Issue)
 		if err != nil || recorded == nil {
 			return err
@@ -227,7 +227,7 @@ func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, sc
 		if err := w.records.Enqueue(ctx, tx, row); err != nil {
 			return fmt.Errorf("queue the Dispatch claim release of %s: %w", key, err)
 		}
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			w.log.Info("workflow: boot queues a Dispatch claim release for an issue out of the workflow",
 				"issue", issue.Key, "tree", issue.Tree, "status", issue.Status)
 		})

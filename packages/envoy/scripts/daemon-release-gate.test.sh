@@ -490,14 +490,15 @@ check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 check "envoy's two platforms agree and are compared" "$(has_line "PASS: envoy runs ${ahead_rev} (ahead of ${commit})")"
 check "envoy-cluster's are" "$(has_line "PASS: envoy-cluster runs ${identical_rev} (identical to ${commit})")"
 check "dispatch's listener is read from listenerImage" "$(has_line "PASS: dispatch runs ${ahead_rev} (ahead of ${commit})")"
-check "dispatch's server image is never read" "$(lacks "$server_pin" "$calls")"
+check "dispatch's server is read from envoyImage, under its own key" "$(has_line "PASS: dispatch-server runs ${server_rev} (identical to ${commit})")"
 check "each real platform is read, and no attestation entry" \
   "$(grep -qF '(index .Image "linux/arm64")' "$calls" && grep -qF '(index .Image "linux/amd64")' "$calls" && lacks '(index .Image "unknown/unknown")' "$calls")"
 
 # The deployment requires dispatch's listenerImage (its dispatch/main.go loadSettings; its
 # pinListenerImage reads that key and no other), so a stack that sets none runs no listener this
 # gate can read. Reading the server's envoyImage in its place would open the gate on an image the
-# listener does not run, and for a configuration the deployment itself refuses.
+# listener does not run, and for a configuration the deployment itself refuses; the server's image
+# is judged under dispatch-server alone.
 echo "case: --listeners, a dispatch stack with no listenerImage is UNKNOWN, never the server's image"
 new_case listeners-no-listener-pin
 listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin"
@@ -509,7 +510,8 @@ run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the key it needs" \
   "$(has_line "UNKNOWN: dispatch: dispatch/Pulumi.prod.yaml sets no ${dispatch_project}:listenerImage")"
-check "never reads dispatch's server image" "$(lacks "$server_pin" "$calls")"
+check "judges the server's image under dispatch-server" "$(has_line "PASS: dispatch-server runs ${ahead_rev} (ahead of ${commit})")"
+check "never passes dispatch's listener on the server's image" "$(lacks "PASS: dispatch runs" "$out")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: --listeners, a stack whose Pulumi.yaml declares no name, or is missing, is UNKNOWN by name"
@@ -805,6 +807,7 @@ listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pi
 index "$envoy_pin" "$legion" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 index "$cluster_pin" "$legion" "abcdef"
 index "$dispatch_listener_pin" "$legion" "${ahead_rev}a"
+index "$server_pin" "$legion" "main"
 compare "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" ahead 0
 compare "abcdef" ahead 0
 compare "${ahead_rev}a" ahead 0
@@ -814,6 +817,7 @@ check "refuses upper-case hex" \
   "$(has_line "UNKNOWN: envoy: ${envoy_pin} names revision AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, which is no commit id")"
 check "refuses 6 hex digits" "$(has_line "UNKNOWN: envoy-cluster: ${cluster_pin} names revision abcdef, which is no commit id")"
 check "refuses 41 hex digits" "$(has_line "UNKNOWN: dispatch: ${dispatch_listener_pin} names revision ${ahead_rev}a, which is no commit id")"
+check "refuses a ref name" "$(has_line "UNKNOWN: dispatch-server: ${server_pin} names revision main, which is no commit id")"
 check "makes no compare call" "$(lacks "/compare/" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
