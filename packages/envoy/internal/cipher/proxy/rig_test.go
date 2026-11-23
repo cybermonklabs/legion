@@ -85,7 +85,7 @@ func TestMain(m *testing.M) {
 	code := 0
 	for _, protocol := range []string{protocolHTTP1, protocolH2} {
 		suiteProtocol = protocol
-		fmt.Printf("airlockproxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
+		fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
 		if run := m.Run(); run != 0 {
 			code = run
 		}
@@ -576,8 +576,9 @@ func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	if o.Rules.Secrets == nil {
 		o.Rules = testRules()
 	}
-	// A row that puts the broker's own request machine behind the proxy gives it here
-	// (slack_test.go's newSlackBroker); every other row reads the fake.
+	// The fake grants, unless the row gives a grant source of its own: a real broker's
+	// requests.Machine (profile_test.go, and slack_test.go's newSlackBroker), whose reads no map a
+	// row writes stands in for. r.grants is then a fake nothing reads.
 	if o.Grants == nil {
 		o.Grants = r.grants
 	}

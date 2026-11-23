@@ -35,17 +35,25 @@ var _ runtime.IssuePodReplacer = (*Runtime)(nil)
 // round over the pod is over and no role process runs in it (Options.RoundPodEnds), the launch
 // replaces the pod as that round's replacement, under the round's mark, rather than start a role
 // the round would end a moment later. A pod no round covers has no such round to wait for, so its
-// launch replaces it for every kind of drift, as every launch did before the round existed.
+// launch replaces it for every kind of drift, as every launch did before the round existed — save
+// a launch installing a stale-plugin pair, which replaces such a pod for its shape only where the
+// pod was built on another image (podImageDrift).
 
 // roundCovers is whether an update round can be opened over a pod of kind: the one predicate that
 // says who replaces such a pod when it has drifted, read by both sides of that answer. PodDrift
 // answers nothing for a pod it excludes, so no round is ever opened over one; a launch into a live
 // pod it excludes replaces that pod for the facets its roles' addresses carry, for the
-// ServiceAccount it runs as and, unless the launch is installing a stale-plugin pair, for the
-// shape its template was built from (relaunch, movedInPod, accountDrift, shapeDrift), where a
-// launch into a pod it covers keeps the pod — for the account as for every other kind of drift —
-// and leaves it to its round, unless that round is over with no role process in the pod, when the
-// launch makes the round's own replacement (Options.RoundPodEnds).
+// ServiceAccount it runs as and for the shape its template was built from (relaunch, movedInPod,
+// accountDrift, shapeDrift), where a launch into a pod it covers keeps the pod — for the account
+// and the image as for every other kind of drift — and leaves it to its round, unless that round
+// is over with no role process in the pod, when the launch makes the round's own replacement
+// (Options.RoundPodEnds). A launch installing a stale-plugin pair reads one key of an excluded
+// pod's shape alone, the image (podImageDrift): it replaces a controller pod built on another
+// image, and keeps a controller pod whose other facets alone drifted — its reservation, an
+// operator volume or mount, its disk — and installs the pair into it. A drifted pod a round
+// covers, every issue pod, it keeps as every launch does, whatever of the shape moved, the image
+// included, and installs the pair into it; where that pod's round is over with no role process
+// in it, it makes the round's replacement as every launch does, and installs nothing.
 //
 // A round covers every issue pod and nothing else. The project controller's pod is the one kind it
 // excludes: the controller holds no issue workspace and has nothing to push, so there is nobody in
@@ -87,21 +95,28 @@ type podShapeRecord struct {
 	Sandbox   *sandboxShape               `json:"sandbox,omitempty"`
 }
 
-// sandboxShape is the sandbox a microVM issue pod runs in, as its shape records it: the
-// RuntimeClass (microVMRuntimeClass), the ComputeClass whose nodes run it, the StorageClass its
-// disk is on (diskSpec), whether it keeps its volume (keptVolume), and the metadata endpoint its
-// launcher serves, nil for none — each runtime.kubernetes.sandbox.microvm's own (MicroVM). A gVisor
-// pod records none (podShapeRecord.Sandbox), so every gVisor shape encodes byte for byte as it did
-// before the setting existed and the setting's arrival opens no round over a gVisor pod, and the
-// gVisor pods' storage class stays out of every shape as it always was. KeepVolume is written only
-// when it is true, so a shape with keep_volume off encodes byte for byte as it did before that
-// setting existed. A change of the microVM block's storage class, keep_volume or metadata endpoint
-// opens a round over each microVM pod and no other, and a change of an issue's sandbox one over
-// that issue's pod, from null to a microVM or back.
+// sandboxShape is the sandbox a microVM pod runs in, as its shape records it: the RuntimeClass
+// (microVMRuntimeClass), the ComputeClass whose nodes run it, the StorageClass its disk is on
+// (diskSpec), whether it keeps its volume (keptVolume), and the metadata endpoint its launcher
+// serves, nil for none — each runtime.kubernetes.sandbox.microvm's own (MicroVM). The StorageClass
+// is a microVM issue pod's alone: the controller's disk stays on runtime.kubernetes.storage_class
+// in either sandbox (diskSpec), so the controller's shape records none, and the key is left out of
+// its encoding (omitempty), which changes no issue pod's, whose class is never empty (New refuses
+// an empty one while an issue pod runs in a microVM). A gVisor pod records none
+// (podShapeRecord.Sandbox), so every gVisor shape encodes byte for byte as it did before the
+// setting existed and the setting's arrival opens no round over a gVisor pod, and the gVisor pods'
+// storage class stays out of every shape as it always was. KeepVolume is written only when it is
+// true, so a shape with keep_volume off, and the controller's, which ignores the setting
+// (keptVolume), encodes byte for byte as it did before that setting existed. A change of the
+// microVM block's storage class, keep_volume or metadata endpoint opens a round over each microVM
+// issue pod and no other, and a change of an issue's sandbox one over that issue's pod, from null
+// to a microVM or back; a change of the block's metadata endpoint or compute class, or of the
+// project's type, has the controller's next launch that installs nothing replace its pod, and a
+// change of the block's storage class or keep_volume alone does not (relaunch, roundCovers).
 type sandboxShape struct {
 	RuntimeClass string                `json:"runtime_class"`
 	ComputeClass string                `json:"compute_class"`
-	StorageClass string                `json:"storage_class"`
+	StorageClass string                `json:"storage_class,omitempty"`
 	KeepVolume   bool                  `json:"keep_volume,omitempty"`
 	Metadata     *sandboxMetadataShape `json:"metadata,omitempty"`
 }
@@ -117,9 +132,9 @@ type sandboxMetadataShape struct {
 // records it: the image every container runs, the kind's own reservation (podKind.resources), the
 // operator's volumes and mounts, the size of the pod's disk, and, for a pod that runs in a
 // microVM, where that microVM runs and whether the pod keeps its volume (microVM, launch.microVM;
-// nil for a gVisor pod, which records no sandbox). An encoding failure is unreachable — every field
-// is an API object, a string or a bool — and is logged and recorded as no shape, compared by image
-// alone.
+// nil for a gVisor pod, which records no sandbox), its disk's class an issue pod's alone
+// (microVMDiskClass). An encoding failure is unreachable — every field is an API object, a string
+// or a bool — and is logged and recorded as no shape, compared by image alone.
 //
 // Every field is settled when the runtime is built and never written again, so the runtime calls
 // this once per kind and sandbox, as it is built, and keeps what it answers (podShapes,
@@ -129,7 +144,7 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 	var where *sandboxShape
 	if microVM != nil {
 		where = &sandboxShape{
-			RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass,
+			RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass, StorageClass: microVMDiskClass(kind, microVM),
 			KeepVolume: keptVolume(kind, microVM),
 		}
 		if endpoint := microVM.Metadata; endpoint != nil {
@@ -152,8 +167,8 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 }
 
 // podShapeKey is what picks the shape a pod is built from and compared with (r.podShapes): its
-// kind, and the sandbox it runs in. An issue pod has one shape per sandbox, the controller's pod
-// one, in gVisor, whatever the configuration names.
+// kind, and the sandbox it runs in. An issue pod has one shape per sandbox, and so has the
+// controller's pod, whose sandbox is the project's type (SandboxConfig.Controller).
 type podShapeKey struct {
 	kind    podKind
 	sandbox SandboxType
@@ -161,7 +176,10 @@ type podShapeKey struct {
 
 // podShapes are the shapes the runtime's pods are built from now, each encoded once (podShape):
 // an issue pod's in gVisor and, where the configuration names a microvm block, in a microVM, and
-// the controller's pod's in gVisor.
+// the controller's pod's in gVisor and, where the project's type is microvm
+// (SandboxConfig.Controller), in a microVM. Without that last key a microVM controller's template
+// would record no shape, which podShapeDrift reads as no drift, so no launch would ever move the
+// controller's pod into or out of a microVM.
 func podShapes(r *Runtime) map[podShapeKey]string {
 	shapes := map[podShapeKey]string{
 		{kind: issuePod{}, sandbox: SandboxGVisor}:      podShape(r, issuePod{}, nil),
@@ -169,12 +187,16 @@ func podShapes(r *Runtime) map[podShapeKey]string {
 	}
 	if microVM := r.sandboxConfig.MicroVM; microVM != nil {
 		shapes[podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}] = podShape(r, issuePod{}, microVM)
+		if r.sandboxConfig.Controller() == SandboxMicroVM {
+			shapes[podShapeKey{kind: controllerPod{}, sandbox: SandboxMicroVM}] = podShape(r, controllerPod{}, microVM)
+		}
 	}
 	return shapes
 }
 
 // shapeKey is the key of the shape l's pod is built from: its kind, in the sandbox prepare decided
-// for it from its issue (launch.microVM).
+// for it (launch.microVM), an issue pod's from its issue and the controller's from the project's
+// type.
 func (l launch) shapeKey() podShapeKey {
 	if l.microVM != nil {
 		return podShapeKey{kind: l.kind, sandbox: SandboxMicroVM}
@@ -182,16 +204,14 @@ func (l launch) shapeKey() podShapeKey {
 	return podShapeKey{kind: l.kind, sandbox: SandboxGVisor}
 }
 
-// storedShapeKey is the key of the shape the pod of the stored Sandbox u, a pod of kind, is
-// compared with now: an issue pod's in the sandbox the configuration now gives the issue the
-// Sandbox is labelled with (labelIssue, SandboxConfig.ofIssueLabel), the issue a launch decides its
-// pod's sandbox from (prepare), and the controller's pod's in gVisor.
-func (r *Runtime) storedShapeKey(kind podKind, u *unstructured.Unstructured) podShapeKey {
-	if _, issue := kind.(issuePod); !issue {
-		return podShapeKey{kind: kind, sandbox: SandboxGVisor}
-	}
+// storedShapeKey is the key of the shape the issue pod of the stored Sandbox u is compared with
+// now: the issue pod's in the sandbox the configuration now gives the issue the Sandbox is labelled
+// with (labelIssue, SandboxConfig.ofIssueLabel), the issue a launch decides its pod's sandbox from
+// (prepare). PodDrift, its one caller, asks it only of a pod a round covers (roundCovers), an issue
+// pod.
+func (r *Runtime) storedShapeKey(u *unstructured.Unstructured) podShapeKey {
 	label, _, _ := unstructured.NestedString(u.Object, "metadata", "labels", labelIssue)
-	return podShapeKey{kind: kind, sandbox: r.sandboxConfig.ofIssueLabel(label)}
+	return podShapeKey{kind: issuePod{}, sandbox: r.sandboxConfig.ofIssueLabel(label)}
 }
 
 // ofIssueLabel is Of for the issue whose legion.dev/issue label holds label. The label holds an
@@ -303,11 +323,51 @@ func templateImageDrift(s *sandbox, image string) []string {
 //
 // It is the one reading of a pod's shape, which both sides of a drifted pod's replacement take:
 // the round names its reasons in the task it opens with (PodDrift, storedShapeKey), and a launch
-// into a live pod no round covers replaces that pod when it answers anything (relaunch,
-// launch.shapeKey, roundCovers). So the two can never disagree about whether a pod's shape has
-// moved, or about which kind's shape, in which sandbox, it is compared with.
+// into a live pod no round covers that installs nothing replaces that pod when it answers anything
+// (relaunch, launch.shapeKey, roundCovers). So the two can never disagree about whether a pod's
+// shape has moved, or about which kind's shape, in which sandbox, it is compared with. A launch
+// installing a stale-plugin pair into such a pod reads the image key of that same shape alone
+// (podImageDrift).
 func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
 	return podShapeDrift(s, r.podShapes[key])
+}
+
+// podImageDrift is whether the pod of the Sandbox read as s was built from an image other than the
+// one want names, want being the shape a pod of its kind is built from now (podShape,
+// r.podShapes): the image its recorded shape holds, or, for a Sandbox whose template records no
+// shape, the image a container of that template runs, read as templateImageDrift reads it
+// (imageOtherThan). It is podShapeDrift's image key, read from the shape as data and never from
+// the phrase podShapeDrift names it in.
+//
+// It is what a launch installing a stale-plugin pair into a live pod no round covers, the project
+// controller's, replaces that pod for (relaunch). The install puts the release's plugins under the
+// agent and nothing more: a pod built on another image would go on running another release's
+// legion launcher as its process 1 and another release's Oh My Pi, where a fresh pod on the
+// configured image carries the release's own launcher, Oh My Pi and plugins. A pod whose other
+// facets alone drifted answers false, and that launch keeps it and installs into it.
+//
+// A recorded shape this daemon cannot read answers false as well: it names no image, and this
+// reading guesses none. Such a launch then goes on as it did before this was asked: keptBy reads
+// that same record, cannot read it either, and the launch replaces the pod as it replaces any pod
+// whose template says nothing it can read.
+func podImageDrift(s *sandbox, want string) bool {
+	held := s.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]
+	if held == want {
+		return false
+	}
+	var now podShapeRecord
+	if err := json.Unmarshal([]byte(want), &now); err != nil {
+		return false
+	}
+	if held == "" {
+		_, drifted := imageOtherThan(&s.Spec.PodTemplate.Spec, now.Image)
+		return drifted
+	}
+	var was podShapeRecord
+	if err := json.Unmarshal([]byte(held), &was); err != nil {
+		return false
+	}
+	return was.Image != now.Image
 }
 
 // PodDrift satisfies runtime.Runtime: why the pod k's process runs in no longer matches the
@@ -349,10 +409,10 @@ func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
 // The sweep asks this of every claim of the deployment at every tick, so the steady state — a
 // Sandbox running and a pod built from the configuration the runtime still has — costs one read
 // of the operating mode, one of the issue the Sandbox is labelled with and one of the annotation
-// the stored template records, against the shape the runtime holds for that kind in that issue's
-// sandbox (r.podShapes, storedShapeKey), all strings of the object this call already holds. The
-// Sandbox itself is decoded only where the two shapes differ, which is the pod a round is about to
-// be opened over.
+// the stored template records, against the shape the runtime holds for an issue pod in that
+// issue's sandbox (r.podShapes, storedShapeKey), all strings of the object this call already
+// holds. The Sandbox itself is decoded only where the two shapes differ, which is the pod a round
+// is about to be opened over.
 func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
 	if err := k.Validate(); err != nil {
 		return nil, fmt.Errorf("sandbox runtime: pod drift: %w", err)
@@ -390,7 +450,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		return nil, nil
 	}
 	var drifted []string
-	shape := r.storedShapeKey(kind, u)
+	shape := r.storedShapeKey(u)
 	if held, _, _ := unstructured.NestedString(u.Object, "spec", "podTemplate", "metadata", "annotations", podShapeAnnotation); held != r.podShapes[shape] {
 		// Only a template whose recorded shape differs is decoded, which is the pod a round is
 		// about to be opened over; shapeDrift reads that same recorded shape against that same

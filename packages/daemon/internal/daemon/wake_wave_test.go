@@ -138,6 +138,9 @@ type waveRuntime struct {
 	clock *waveClock
 	mu    sync.Mutex
 	runs  []waveLaunch
+	// held, while it is open, is what every launch waits for before it reaches the runtime
+	// (holdLaunches); nil lets every launch straight through.
+	held chan struct{}
 }
 
 // waveLaunch is one launch the runtime was asked for: whose claim, when on the test clock, and
@@ -155,14 +158,61 @@ func newWaveRuntime(clock *waveClock) *waveRuntime {
 // fake is the runtime underneath, for the calls and the observations a test drives through it.
 func (r *waveRuntime) fake() *fake.Runtime { return r.Runtime.(*fake.Runtime) }
 
+// Spawn and Resume record the launch before they await the hold (record, then await), so a held
+// launch is counted the moment the runtime is asked for it, while the hold still waits. The check
+// that no claim in a turn was relaunched (TestAStaleClaimInATurnIs…'s launchesOf loop) reads
+// after release(), and with the reverse order (await, then record) the record would race that
+// check after release().
 func (r *waveRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	r.record(spec.Claim, false)
+	r.await(ctx)
 	return r.Runtime.Spawn(ctx, spec)
 }
 
 func (r *waveRuntime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	r.record(spec.Claim, true)
+	r.await(ctx)
 	return r.Runtime.Resume(ctx, prev, spec)
+}
+
+// ReconcileOrphans holds the sweep's reconciliation on the same hold as launches when grace is
+// above zero: reconcileOrphans passes orphanGrace, and reconcileBootOrphans passes 0. The sweep
+// goes from ReconcileOrphans to refreshStalePlugins, which calls the same refreshGate.Correct
+// and Admit as the boot pass. Without this hold, a sweep that runs while launches are held
+// changes the shared gate, and the boot pass's count is wrong.
+func (r *waveRuntime) ReconcileOrphans(ctx context.Context, known []runtime.Known, grace time.Duration) error {
+	if grace > 0 {
+		r.await(ctx)
+	}
+	return r.Runtime.ReconcileOrphans(ctx, known, grace)
+}
+
+// holdLaunches makes every launch the runtime is asked for from now on wait until release is
+// called, or until the launch's own context ends. A launch the burst lets out runs inside the
+// decision that raised it, so the hold also holds that decision's end, which is where the
+// decision gives its refresh credit back (supervise's endRefreshLane). release may be called more
+// than once.
+func (r *waveRuntime) holdLaunches() (release func()) {
+	held := make(chan struct{})
+	r.mu.Lock()
+	r.held = held
+	r.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(held) }) }
+}
+
+// await is the wait holdLaunches set up, or nothing.
+func (r *waveRuntime) await(ctx context.Context) {
+	r.mu.Lock()
+	held := r.held
+	r.mu.Unlock()
+	if held == nil {
+		return
+	}
+	select {
+	case <-held:
+	case <-ctx.Done():
+	}
 }
 
 func (r *waveRuntime) record(token claim.Token, resumed bool) {
@@ -1424,6 +1474,20 @@ func gateFullLines(t *testing.T, logged *syncBuffer) []map[string]any {
 	return lines
 }
 
+// bootRefusal is the boot pass's own "gate is full" line, the one whose trigger is "boot", or nil
+// when it has not been written yet. It reads by trigger rather than by position: a sweep that runs
+// while the boot pass stalls can write its own line first, and reading refusals[0] would then
+// read the sweep's count.
+func bootRefusal(t *testing.T, logged *syncBuffer) map[string]any {
+	t.Helper()
+	for _, line := range gateFullLines(t, logged) {
+		if line["trigger"] == "boot" {
+			return line
+		}
+	}
+	return nil
+}
+
 // claimsOfWakes is the claims a reading of the queue names, as a set.
 func claimsOfWakes(waiting []api.WakeWaiting) map[claim.Token]bool {
 	claims := map[claim.Token]bool{}
@@ -1452,8 +1516,8 @@ func claimsOfWakes(waiting []api.WakeWaiting) map[claim.Token]bool {
 // wave it is reading.
 //
 // The negative control is the gate's own ask removed from the pass (every claim posted
-// admitted): the whole fleet is then in the pacing at once, which this test reads at the
-// refreshes waiting after the boot.
+// admitted): the whole fleet is then in the pacing at once, and the boot-line wait times out,
+// since the gate never refuses any claim and writes no "gate is full" line.
 func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHolds(t *testing.T) {
 	cfg := waveConfig(t)
 	// The daemon supervises the controller's own claim only where it launches it; an operator's
@@ -1470,20 +1534,27 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 	controller := staleController(t, cfg)
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
+	// The hold keeps the first admitted claim's relaunch and the sweep's refresh pass from running
+	// while the boot pass walks the claims. Without the hold on launches, the first admitted
+	// claim's relaunch gives its credit back mid-pass and hands the pass a ninth credit. Without
+	// the hold on the sweep, its refresh pass changes the shared gate (ReconcileOrphans's comment).
+	release := rt.holdLaunches()
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
+	t.Cleanup(release)
 
 	// The boot pass posted the rate: the one line it wrote for the rest names every claim it
 	// left, and the lane holds no more than the rate in the pacing at any reading after it.
+	testwait.Eventually(t, "the boot pass to say it left claims to a later sweep", func() bool {
+		return bootRefusal(t, logged) != nil
+	})
+	release()
+	boot := bootRefusal(t, logged)
+	if boot["claims"] != float64(stale-testWakeRate) {
+		t.Fatalf("the boot pass left %v claims, want %d: it posts the rate and no more",
+			boot["claims"], stale-testWakeRate)
+	}
 	first := awaitGate(t, d, testWakeRate)
-	refusals := gateFullLines(t, logged)
-	if len(refusals) == 0 {
-		t.Fatal("no pass said it had left claims to a later sweep, want one line for each pass that refused any")
-	}
-	if boot := refusals[0]; boot["trigger"] != "boot" || boot["claims"] != float64(stale-testWakeRate) {
-		t.Fatalf("the boot pass left %v claims of trigger %v, want %d of \"boot\": it posts the rate and no more",
-			boot["claims"], boot["trigger"], stale-testWakeRate)
-	}
 	sweeps := len(rt.fake().CallsOf("ReconcileOrphans"))
 	testwait.Eventually(t, "three sweeps over the claims the boot pass left", func() bool {
 		return len(rt.fake().CallsOf("ReconcileOrphans")) >= sweeps+3
@@ -1579,20 +1650,28 @@ func TestAStaleClaimInATurnIsPostedWithNoCreditWhileTheIdleClaimsTakeTheRate(t *
 	})
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
+	// The hold keeps the first admitted claim's relaunch and the sweep's refresh pass from running
+	// while the boot pass walks the claims. Without the hold on launches, the first admitted
+	// claim's relaunch gives its credit back mid-pass and hands the pass a ninth credit. Without
+	// the hold on the sweep, its refresh pass changes the shared gate (ReconcileOrphans's comment).
+	release := rt.holdLaunches()
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, func(o *overrides) { o.orphanSweep = 100 * time.Millisecond })
+	// Registered after the daemon's own cleanup, so it runs first: a test that ends before the
+	// pass's line lets the held launch go before the daemon is stopped.
+	t.Cleanup(release)
 
 	// The boot pass left exactly the idle claims it had no credit for: a claim in a turn is in
 	// none of that count, since nothing refused it. It is read before the pacing is, because it
 	// is the first thing a pass that spent its credits on claims in turns says of itself.
-	var refusals []map[string]any
 	testwait.Eventually(t, "the boot pass to say how many claims it left to a later sweep", func() bool {
-		refusals = gateFullLines(t, logged)
-		return len(refusals) > 0
+		return bootRefusal(t, logged) != nil
 	})
-	if boot := refusals[0]; boot["trigger"] != "boot" || boot["claims"] != float64(len(idle)-testWakeRate) {
-		t.Fatalf("the boot pass left %v claims of trigger %v, want %d of \"boot\": the %d claims in a turn take no admission, so the %d idle ones less the rate are all it leaves",
-			boot["claims"], boot["trigger"], len(idle)-testWakeRate, len(inATurn), len(idle))
+	release()
+	boot := bootRefusal(t, logged)
+	if boot["claims"] != float64(len(idle)-testWakeRate) {
+		t.Fatalf("the boot pass left %v claims, want %d: the %d claims in a turn take no admission, so the %d idle ones less the rate are all it leaves",
+			boot["claims"], len(idle)-testWakeRate, len(inATurn), len(idle))
 	}
 
 	// Every credit the pass granted went to a claim the lane can relaunch now.
@@ -1615,6 +1694,9 @@ func TestAStaleClaimInATurnIsPostedWithNoCreditWhileTheIdleClaimsTakeTheRate(t *
 			}
 			return false
 		})
+		// A wrongful relaunch of this claim, one the hold keeps from completing, is counted here
+		// because the runtime records a launch before it awaits the hold (record, then await). With
+		// the reverse order the record would race this check after release().
 		if got := rt.launchesOf(token); got != 0 {
 			t.Fatalf("%s was relaunched %d times while its turn runs, want none: the turn's end is what raises its relaunch", token, got)
 		}

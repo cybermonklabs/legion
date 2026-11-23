@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -700,9 +701,9 @@ func (r PullRequestReview) LegionSession() string {
 
 // LegionHead is the head the review says it read: the head field of the last Legion footer in the
 // review's body (lastLegionFooter). It is "" when the body carries no footer, the footer's JSON
-// cannot be parsed, it names no head, or the head it names is not a full commit SHA
-// (fullCommitSHA) - a short SHA or a branch name names no commit, since only the whole of it says
-// which code was read.
+// cannot be parsed, it names no head, or the head it names is not spelled as a head is
+// (reviewround.IsHead) - a short SHA or a branch name names no commit, since only the whole of it
+// says which code was read.
 //
 // The workflow holds a review the review App submitted to this rather than to CommitID because
 // GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
@@ -712,7 +713,7 @@ func (r PullRequestReview) LegionSession() string {
 // heads apart.
 func (r PullRequestReview) LegionHead() string {
 	head := r.lastLegionFooter().Head
-	if !fullCommitSHA(head) {
+	if !reviewround.IsHead(head) {
 		return ""
 	}
 	return head
@@ -741,21 +742,6 @@ func (r PullRequestReview) LegionEntry() int64 {
 		return 0
 	}
 	return int64(entry)
-}
-
-// fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
-// characters. Nothing shorter is compared with a head, since a prefix names a commit only by
-// chance and GitHub spells every head it reports this way.
-func fullCommitSHA(s string) bool {
-	if len(s) != 40 {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // Order is where the review falls among the pull request's reviews (record.ReviewOrder): when it
@@ -1221,6 +1207,30 @@ type MemoryGuardKill struct {
 
 func (f MemoryGuardKill) namedIssue() (string, bool) { return f.Issue, true }
 
+// ControllerMemoryGuardKill is one process the memory guard of a gVisor controller pod ended with
+// SIGKILL because the pod was near its memory limit, or one that a microVM controller pod's own
+// kernel stopped because the pod ran out of memory (the report's Cause,
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the controller's session), as that pod's launcher reported it on the controller's
+// connection (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's
+// frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per report under
+// the id MemoryGuardKill's are applied under, `memory-guard-kill:<guard>:<sequence>`, which names
+// the kill once, so a report the launcher sent twice is applied once. For the kernel's kill,
+// <guard> is the id of the launcher's guest watch (memoryguard.Guest).
+//
+// Token and PodUID are the launcher session's own (the claim the connection authenticated for and
+// its pod), never anything the report says. The controller's pod is of no issue, so the fact names
+// none. The workflow tells the project's controller, in a controller notice of its own for each
+// kill, which of its programs was ended and why, in the note the report's Cause chooses
+// (workflow's controllerMemoryGuardKill).
+type ControllerMemoryGuardKill struct {
+	Token  claim.Token
+	PodUID string
+	Report shimwire.LauncherMemoryKill
+}
+
+func (ControllerMemoryGuardKill) namedIssue() (string, bool) { return "", false }
+
 // VolumeNearFull is one sweep of an issue pod's volume as its launcher reported it: the cache
 // trimmer in that pod's launcher process swept the cache roots and the volume was still above
 // its low mark when it stopped, or the trimmer has switched itself off after three faults. It is
@@ -1271,9 +1281,9 @@ type ClaimReady struct {
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
-// delivery started (supervise's confirm). The workflow changes nothing on it; admission takes it
-// as every other fact, so a root whose wait was held because its architect had not yet taken its
-// task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
+// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission
+// takes it as every other fact, so a root whose wait was held because its architect had not yet
+// taken its task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
 type TaskConfirmed struct {
 	Issue      string
 	Role       claim.Role

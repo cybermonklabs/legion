@@ -48,8 +48,8 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 	"ping_max: 2\n"
 
 // privateProjectsTagLines are the lines core renders after the ping lines beside privateProjects:
-// the server tag the auth service reads off each authorization request.
-const privateProjectsTagLines = "# this hub is rendered with privateProjects: the auth service admits Dispatch's hub-admission proof only on a request that carries this tag, and there admits a listener only in required privacy mode\n" +
+// the server tag nats-server copies into each authorization request.
+const privateProjectsTagLines = "# this hub is rendered with privateProjects: nats-server names this tag in each authorization request it sends the auth service\n" +
 	`server_tags: ["envoy-private-projects"]` + "\n"
 
 func otherXKey(t *testing.T) string {
@@ -91,10 +91,11 @@ func TestAHubWithoutTheCalloutRendersNoCalloutLine(t *testing.T) {
 // A hub behind the auth service runs no listener of its own until the listener has a service
 // identity to connect through the auth service with, which arrives with dispatch://INFRA-840's
 // t-e-13: today the listener connects as a NATS user whose seed the hub stores. So listener
-// (gcp:NatsHub) and tailnet.listener (gcp:ClusteredNatsHub, whose tailnet always runs one) beside
-// authCallout are refused, naming both inputs, and nothing registers. The refusal is this slice's
-// stated behaviour until t-e-13 lands, and the task that sets the listener's service identity
-// removes it.
+// (gcp:NatsHub) beside authCallout is refused, and so is gcp:ClusteredNatsHub's session listener
+// wherever it is declared: tailnet.listener, whose tailnet always runs one, or the hub's own
+// listener input, which the last subtest declares with no tailnet. Each refusal names both inputs,
+// and nothing registers. The refusal is this slice's stated behaviour until t-e-13 lands, and the
+// task that sets the listener's service identity removes it.
 func TestAHubBehindTheAuthServiceRunsNoListenerOfItsOwn(t *testing.T) {
 	t.Run("gcp:NatsHub", func(t *testing.T) {
 		args := calloutNatsHub()
@@ -121,6 +122,21 @@ func TestAHubBehindTheAuthServiceRunsNoListenerOfItsOwn(t *testing.T) {
 		require.ErrorContains(t, err, "its service identity arrives with dispatch://INFRA-840 (t-e-13)")
 		m, err := runClustered(t, "example-clustered-hub", args, nil)
 		require.ErrorContains(t, err, "tailnet.listener and authCallout:")
+		require.Empty(t, m.Registrations(), "nothing registered")
+	})
+	t.Run("gcp:ClusteredNatsHub's own listener", func(t *testing.T) {
+		args := clusteredArgs()
+		standaloneListener(args)
+		args.Users = append(args.Users, authServiceUser())
+		args.AuthCallout = authCallout()
+		_, err := gcp.ResolveClusteredNatsHub(args)
+		var input *core.InputError
+		require.ErrorAs(t, err, &input)
+		require.Equal(t, "listener", input.Input)
+		require.ErrorContains(t, err, "listener and authCallout:")
+		require.NotContains(t, err.Error(), "tailnet.listener")
+		m, err := runClustered(t, "example-clustered-hub", args, nil)
+		require.ErrorContains(t, err, "listener and authCallout:")
 		require.Empty(t, m.Registrations(), "nothing registered")
 	})
 }
@@ -195,11 +211,12 @@ func TestClusteredNatsHubRollsThePodsForACalloutChange(t *testing.T) {
 	require.Equal(t, before, annotation(t, args), "a grant change alone leaves the callout's lines, and the pods, as they were")
 
 	// The server tag and the accounts block are callout lines, so setting privateProjects rolls
-	// every pod and removing it rolls them back: nats-server reloads server_tags, but a reload of the
-	// tags alone decides no connection again, so a server kept by a reload would keep each connection
-	// the tag's absence or presence admitted; and it refuses to reload the callout, which a private
-	// render runs in the client account. The private lines are cut from the hub's own auth.conf:
-	// the accounts block, then the auth_callout block inside the authorization block, then the tail.
+	// every pod and removing it rolls them back: nats-server refuses to reload the callout, which a
+	// private render runs in the client account, so the tag, which comes with it, reaches a server
+	// only as it restarts, and the roll is what brings a change of these lines to every server at
+	// one known moment, its restart, after the ConfigMap is applied. The private lines are cut from
+	// the hub's own auth.conf: the accounts block, then the auth_callout block inside the
+	// authorization block, then the tail.
 	public := privateClusteredHub()
 	public.PrivateProjects = false
 	untagged := annotation(t, public)

@@ -552,7 +552,7 @@ func TestAStepRecordHoldsNoStatusWrite(t *testing.T) {
 		return slices.Equal(client.statusWrites(), []string{"icebox"})
 	})
 	var left int
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
 		left = outboxRowsOf(t, pool, claimIssue)
 		return left == 1
 	}) {

@@ -103,8 +103,8 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 	dispatchCall(t, baseURL, http.MethodPost, "/api/v1/projects",
 		map[string]string{"key": cfg.Project, "name": "Blocked issues"}, nil)
-	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": cfg.Project, "default": true}, nil)
+	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository",
+		map[string]any{"repo": "acme/widgets"}, nil)
 
 	rt := fake.NewRuntime()
 	// A pods runtime provisions each claim's workspace itself, so the daemon clones nothing: these
@@ -870,7 +870,7 @@ func settled(t *testing.T, d *daemon, what string, want func(api.State) bool) (a
 	t.Helper()
 	var state api.State
 	var body []byte
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, 20*time.Second), 20*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
 		status, read := d.request(http.MethodGet, "/legion/v1/state", nil, false)
 		body = read
 		if status != http.StatusOK {

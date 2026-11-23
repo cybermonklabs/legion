@@ -1,10 +1,14 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { act, render, waitFor } from "@testing-library/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 
+import { api } from "../../../api/client";
+import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { presetPath } from "../issue-address";
 import { CONTROL_LABELS } from "../page-words";
 import { FailedReadLine } from "./failed-read-line";
-import { ViewStage } from "./stage";
+import { SLOT_FILLED, VIEW_SLOTS, type ViewSlotProps, ViewStage } from "./stage";
+import { drawAtBrowserEntry, drawnSlot } from "./stage-fixtures";
 
 /**
  * Where the focus lands when the page opens at a view's address, which the tester found landing
@@ -102,5 +106,69 @@ test("a view whose read is refused puts the focus on its Retry", async () => {
     );
   } finally {
     view.unmount();
+  }
+});
+
+/** What the stand-in view says of the address's node on each render (`drawn`), and the call the
+ *  stage last handed it (`tell`), which the case calls itself as a later word of the view. */
+const saying: { drawn: boolean; tell?: (drawn: boolean) => void } = { drawn: false };
+
+/** A stand-in for a view whose reads have settled: it says `saying.drawn` to the stage from an
+ *  effect on every render, as `ViewSlotProps.onAddressDrawn` lets a view, and draws its mark. */
+function SayingView({ onAddressDrawn }: ViewSlotProps): ReactNode {
+  saying.tell = onAddressDrawn;
+  useLayoutEffect(() => onAddressDrawn(saying.drawn));
+  return <div data-stand-in-view="" />;
+}
+
+// The stage takes the first thing a view says for each following of an address beside it
+// (`ViewSlotProps.onAddressDrawn`), so a view may say it on every render. The body's reads never
+// answer here: the case reads which slot the stage draws, not what the body draws.
+test("the stage takes the first thing a view says for each following of an address beside it, and an address not beside the view keeps the view whatever the view says", () => {
+  const reads = (
+    [
+      "getArtifactBlocks",
+      "getIssueCoverage",
+      "getIssueDecisions",
+      "getIssueReferences",
+      "getIssueResults",
+      "getReferenceTargets",
+      "listComments",
+      "listIssueAsks",
+      "listIssueMessages",
+      "whoAmI",
+    ] as const
+  ).map((read) => spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise));
+  const decisions = presetPath(KEY, "decisions");
+  try {
+    // The view says first that it draws no node: the body is drawn in its place, and a later
+    // word in that following that it does draw the node never undoes that first word.
+    saying.drawn = false;
+    const stage = drawAtBrowserEntry(`${decisions}?comment=reply-b`, issueDetails(), {
+      filled: { ...SLOT_FILLED, decisions: true },
+      views: { ...VIEW_SLOTS, decisions: SayingView },
+    });
+    expect(drawnSlot(stage), "the view said it draws no node").toBe("the body");
+    act(() => saying.tell?.(true));
+    expect(drawnSlot(stage), "a later word that the view draws the node undid its first").toBe(
+      "the body"
+    );
+    // A new following asks the view again: it says first that it draws the node, and the view
+    // stays when its call says later in that following that it does not.
+    saying.drawn = true;
+    stage.follow(`${decisions}?comment=head-b`);
+    expect(drawnSlot(stage), "a new following did not ask the view again").toBe("the view");
+    act(() => saying.tell?.(false));
+    expect(drawnSlot(stage), "a later word in the same following drew the body").toBe("the view");
+    // An address not beside the view keeps the view whatever the view says, here that it draws no
+    // node.
+    saying.drawn = false;
+    stage.follow(decisions);
+    expect(drawnSlot(stage), "an address not beside the view drew the body in its place").toBe(
+      "the view"
+    );
+    stage.unmount();
+  } finally {
+    for (const read of reads) read.mockRestore();
   }
 });

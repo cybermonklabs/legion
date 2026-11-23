@@ -130,11 +130,12 @@ var settingsEmitted = map[string]string{
 	"MetadataConfig.IdentityProvider":                "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
 	"Kubernetes.MemoryGuard":                         "runtime.kubernetes.memory_guard",
 	"MemoryGuardConfig.IssuePods":                    "runtime.kubernetes.memory_guard.issue_pods",
-	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.issue_pods.enabled",
-	"MemoryGuardPodConfig.ActPercent":                "runtime.kubernetes.memory_guard.issue_pods.act_percent",
-	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.issue_pods.floor_percent",
-	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.issue_pods.wait_seconds",
-	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.issue_pods.interval_milliseconds",
+	"MemoryGuardConfig.ControllerPod":                "runtime.kubernetes.memory_guard.controller_pod",
+	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.<pod>.enabled",
+	"MemoryGuardPodConfig.ActPercent":                "runtime.kubernetes.memory_guard.<pod>.act_percent",
+	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.<pod>.floor_percent",
+	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.<pod>.wait_seconds",
+	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.<pod>.interval_milliseconds",
 	"Kubernetes.VolumeTrim":                          "runtime.kubernetes.volume_trim",
 	"VolumeTrimConfig.Enabled":                       "runtime.kubernetes.volume_trim.enabled",
 	"VolumeTrimConfig.HighPercent":                   "runtime.kubernetes.volume_trim.high_percent",
@@ -289,6 +290,23 @@ func TestTheTmuxSettingsShowTheTakeOver(t *testing.T) {
 	}
 }
 
+// The memory_guard block shows each pod kind's own settled block under its own key: different
+// numbers in the two come out each under its kind, and one kind off leaves the other on.
+func TestTheMemoryGuardSettingsShowEachPodKindsOwnBlock(t *testing.T) {
+	encoded, err := json.Marshal(kubernetesSettingsOf(&config.Kubernetes{MemoryGuard: config.MemoryGuardConfig{
+		IssuePods:     config.MemoryGuardPodConfig{Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250},
+		ControllerPod: config.MemoryGuardPodConfig{Enabled: false, ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 400},
+	}}).MemoryGuard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"issue_pods":{"enabled":true,"act_percent":80,"floor_percent":15,"wait_seconds":8,"interval_milliseconds":250},` +
+		`"controller_pod":{"enabled":false,"act_percent":70,"floor_percent":20,"wait_seconds":9,"interval_milliseconds":400}}`
+	if string(encoded) != want {
+		t.Errorf("settings.runtime.kubernetes.memory_guard = %s, want %s", encoded, want)
+	}
+}
+
 // settingsFixturePlanted is every value of settingsFixtureFile that is a credential, the source of
 // one, the path of a file holding one, the userinfo of an address, or an operator pod piece: each
 // is in the file (so the list cannot go stale) and none is in the settings' bytes.
@@ -371,10 +389,12 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"idle_minutes", "backstop_minutes",
 	})
 	memoryGuardKeys := keysOf(t, kubernetesKeys["memory_guard"])
-	assertKeys(t, "settings.runtime.kubernetes.memory_guard", memoryGuardKeys, []string{"issue_pods"})
-	assertKeys(t, "settings.runtime.kubernetes.memory_guard.issue_pods", keysOf(t, memoryGuardKeys["issue_pods"]), []string{
-		"enabled", "act_percent", "floor_percent", "wait_seconds", "interval_milliseconds",
-	})
+	assertKeys(t, "settings.runtime.kubernetes.memory_guard", memoryGuardKeys, []string{"issue_pods", "controller_pod"})
+	for _, kind := range []string{"issue_pods", "controller_pod"} {
+		assertKeys(t, "settings.runtime.kubernetes.memory_guard."+kind, keysOf(t, memoryGuardKeys[kind]), []string{
+			"enabled", "act_percent", "floor_percent", "wait_seconds", "interval_milliseconds",
+		})
+	}
 	assertKeys(t, "settings.runtime.kubernetes.repository_cache", keysOf(t, kubernetesKeys["repository_cache"]), []string{
 		"volume", "refresh_minutes", "retain_hours", "resources",
 	})

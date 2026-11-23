@@ -113,7 +113,7 @@ func TestAVisibilityDispatchDoesNotKnowReleasesNothing(t *testing.T) {
 			m, enr, key, dispatch := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 			_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 			m.Projects = c.access(dispatch)
-			values, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+			values, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 			if !errors.Is(err, ErrProjectAccessUnavailable) {
 				t.Fatalf("Values of TEAM_TOKEN with TEAM's visibility unread = %+v, %v; want ErrProjectAccessUnavailable, never a release read as public", values, err)
 			}
@@ -121,7 +121,7 @@ func TestAVisibilityDispatchDoesNotKnowReleasesNothing(t *testing.T) {
 				t.Fatalf("TEAM_TOKEN was released with TEAM's visibility unread: %+v", values)
 			}
 			answerFrom(t, m, dispatchRows(publicTeam))
-			if again, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil || again.Values["TEAM_TOKEN"] != "team-v1" {
+			if again, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil || again.Values["TEAM_TOKEN"] != "team-v1" {
 				t.Fatalf("Values once Dispatch answers TEAM public again = %+v, %v; want team-v1: an unread answer ends no grant", again, err)
 			}
 		})
@@ -142,7 +142,7 @@ func TestAnApprovalOfASecretWhoseProjectTurnedPrivateIsRecordedAsADenial(t *test
 	publicPriv := dispatchRows(publicTeam)
 	publicPriv[privProject] = projectaccesstest.Row{Visibility: "public", Owner: otherPerson}
 	answerFrom(t, m, publicPriv)
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "", nil)
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) while PRIV is public = %+v, %v; want it pending for anyone to decide", req, err)
 	}

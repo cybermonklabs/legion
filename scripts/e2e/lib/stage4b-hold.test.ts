@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { scriptFunctions } from "./script-functions";
+import { scriptAssignments, scriptFunctions } from "./script-functions";
 
 // Stage 4b's hold loops end a worker's launch while its task is outstanding and count on the daemon
 // charging the death. death_charge reads how the daemon charged one end from its log, and
@@ -12,13 +12,14 @@ import { scriptFunctions } from "./script-functions";
 const scriptPath = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const script = readFileSync(scriptPath, "utf8");
 const fn = scriptFunctions(scriptPath);
+const assignment = scriptAssignments(scriptPath);
 const dir = temporaryDirectory("stage4b-hold-test");
 
-/** The value the script assigns NAME at the start of a line. */
+/** The number the script assigns NAME at the start of a line. */
 function scriptNumber(name: string): number {
-  const found = new RegExp(`^${name}=(\\d+)$`, "m").exec(script);
-  if (found === null) throw new Error(`stage4b-sandbox-tree.sh assigns no ${name}`);
-  return Number(found[1]);
+  const value = assignment(name).slice(name.length + 1);
+  if (!/^\d+$/.test(value)) throw new Error(`stage4b-sandbox-tree.sh assigns ${name} no number`);
+  return Number(value);
 }
 const launchFailureLimit = scriptNumber("launch_failure_limit");
 const rearmLimit = scriptNumber("hold_rearm_limit");

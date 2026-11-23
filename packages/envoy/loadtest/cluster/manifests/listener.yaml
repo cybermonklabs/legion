@@ -4,7 +4,8 @@
 # run's Secret. ENVOY_NATS_REPLICAS=3 makes the listener create ENVOY_NOTIFICATIONS on three
 # replicas; cluster.sh starts it before Dispatch and checks the stream's replicas. The
 # Deployment starts at 0 replicas; cluster.sh scales it. cluster.sh fills every placeholder,
-# __OIDC_ISSUER__ with the cluster's ServiceAccount token issuer it read at `up`.
+# __OIDC_ISSUER__ with the copy's own token issuer, served inside the namespace
+# (manifests/oidc-issuer.yaml), since the namespace's pods reach nothing outside it.
 apiVersion: v1
 kind: Service
 metadata:
@@ -72,9 +73,9 @@ spec:
                 secretKeyRef:
                   name: listener-credentials
                   key: ENVOY_API_TOKEN
-            # Dispatch's identity: the projected token of the namespace's default ServiceAccount,
-            # which manifests/dispatch.yaml mounts, verified against the cluster's issuer. The
-            # listener takes a send's role mark from that account alone.
+            # Dispatch's identity: the token cluster.sh up minted for the namespace's default
+            # ServiceAccount, which manifests/dispatch.yaml mounts, verified against the copy's own
+            # issuer. The listener takes a send's role mark from that account alone.
             - name: ENVOY_OIDC_ISSUER
               value: __OIDC_ISSUER__
             - name: ENVOY_OIDC_AUDIENCE

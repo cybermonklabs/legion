@@ -1,0 +1,5 @@
+kind: Removed
+body: The `legion` tool no longer has `park_child`. An architect ends a child that it owns with its own status write in Dispatch, and restarts a running child with `backlog`, then `rerun_child`. The plugin declares daemon API contract 205.
+time: 2026-11-20T05:00:01.683967159Z
+custom:
+    Issue: pr4573

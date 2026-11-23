@@ -516,7 +516,7 @@ func testReleaseClaimLane(t *testing.T) {
 	// the wait above saw, so the count is waited for rather than read once: read once, it can run
 	// between the two and find a delivered row still there.
 	var left int
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
 		left = outboxRowsOf(t, pool, claimIssue)
 		return left == 1
 	}) {

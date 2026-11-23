@@ -470,7 +470,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
 		plan.cacheRepositories = workflow.cacheRepositories
-		plan.rootTask = workflow.rootTask
+		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		// From here on, a claim write that changes a role holder queues its issue's publication in
@@ -884,12 +884,13 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
-	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
+	// phaseHolds, rootHears, rootTask, designNews and treeClosable are the workflow's answers to
+	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
 	// queued and every tree closes.
 	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
-	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
+	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
 	// cacheRepositories is the repositories the runtime keeps a repository cache of: those of the
 	// project's live issue records and of the launches since their last read
@@ -1477,6 +1478,10 @@ type supervision struct {
 	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
 	// grants every refresh.
 	refreshGate supervise.RefreshAdmitter
+	// afterRefreshAdmit is a test's seam between Admit and supervisor.post in
+	// refreshStalePlugins, run for each admitted claim with no lock held; nil runs nothing. A
+	// test sets it on the supervision it builds by hand, and no production path sets it.
+	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
 	// project is paused (start).
@@ -1487,6 +1492,12 @@ type supervision struct {
 	// passed (kubernetes), so the image rows of the capability report read present.
 	imageReport bootprobe.ImageReport
 	probed      bool
+	// cacheStatuses is the runtime's repository caches, each with its last health read, which the
+	// tick's capability report reads their room from (caches) and the state route reads once a
+	// request (source.caches): repositoryCachesOf(runtime), nil under any runtime but the Sandbox
+	// runtime, which alone keeps caches. A field, so that a test gives the report caches of its own
+	// without a cluster.
+	cacheStatuses func() []sandbox.CacheStatus
 	// reportMu guards reportedGaps and reports: the tick's reads, the API's readies and boot's run
 	// on different goroutines. reportedGaps are the open capabilities the last report logged
 	// (reportCapabilities). reports is each claim's latest capability report (LEGION-663), as its
@@ -1778,7 +1789,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.launchRepository, owner: p.owner,
 			appOwners:   p.appOwners(cfg.Runtime.Name),
-			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
@@ -1791,6 +1802,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
+		DesignNews:              p.designNews,
 		TreeClosable:            p.treeClosable,
 		ClaimActivity:           st.ClaimActivity,
 		TaskConfirmed:           p.taskConfirmed,
@@ -1836,7 +1848,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
-		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
+		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops, cacheStatuses: repositoryCachesOf(rt),
 	}
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
 	// after their deps: the one callback whose receiver is supervision itself, set here before
@@ -2260,27 +2272,25 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // admissions have had their turns — posts the next K. Nothing of the refresh is lost by a
 // refusal, since this pass re-reads every stale claim at every sweep, which is why the refused
 // claim is passed over in silence rather than remembered anywhere. The admission is taken
-// before the post, never after the machine has decided, so a refresh in flight is counted: that
-// is what the gate's own floor is for (Correct). The gate is put right before any of this, from
-// the refresh wakes the machines really hold — the lane's own kind, the one kind only this lane
-// parks (supervise.WakePluginRefresh, parkedWakes). That correction is what takes back a credit
-// lost to a path that returns none, which the gate itself names: a machine gives its credit
-// back at the end of the decision that holds it, unless a refresh wake of its own is waiting,
-// and what is left to the correction is a post to a claim this daemon stopped supervising
-// (supervise.RefreshGate, supervise's endRefreshLane). It is the pass's own first act rather
-// than part of the read it counts from, because it resets the gate's admission window: a second
-// caller asking which claims hold a wake — a question parkedWakes is named for and nothing of
-// the gate's — would reset that window mid-sweep and let the lane admit a second K. The boot
-// pass corrects an empty gate, which is what a restart leaves: no machine of this daemon holds
-// a wake yet, so the reading is zero and the fleet's refresh starts with every credit free
-// (supervise.RefreshGate.Correct, which states what each half of it costs).
+// before the post, never after the machine has decided, so a refresh in flight is counted: the
+// gate counts every credit it has granted and not had back (supervise.RefreshGate, its rule of
+// return). The pass gives back the credit of a post the supervisor drops, because no machine ever
+// decides that post (supervisor.post). Before any of this the gate is corrected: it takes back
+// each credit, granted before its previous correction, that the machine holding it no longer
+// holds for a refresh wake of its own, which is the backstop for a credit lost to a path
+// that gives none back, and then sets its count from the refresh wakes the machines really hold
+// — the lane's own kind, the one kind only this lane parks (supervise.WakePluginRefresh,
+// parkedWakes) — which raises the count when the lane holds wakes no admission is behind, and
+// otherwise leaves it at the credits out. The boot pass corrects an empty gate, which is what a
+// restart leaves: no machine of this daemon holds a wake yet, so the reading is zero and the
+// fleet's refresh starts with every credit free (supervise.RefreshGate.Correct).
 //
 // A claim whose machine already holds a waiting wake is passed over before the gate is asked at
 // all, read from the same snapshot the correction counts (parkedWakes). The machine decides such
 // a claim nothing — refreshPlugin returns over a claim that already holds a wake of any kind, and
 // gives back whatever credit the post carried — so asking for one here would spend an admission
-// on a claim that raises no relaunch, and spend it for the whole of the pass, since the machine's
-// release lands after the pass has walked every claim. At a fleet's worth of stale claims that is
+// on a claim that raises no relaunch, and spend it for most of the pass, since the machine's
+// release lands only when its own goroutine decides the post. At a fleet's worth of stale claims that is
 // the lane admitting the K claims it already has waiting and none of the ones it has not, which
 // is the drain this change exists to shorten standing still for a sweep.
 //
@@ -2343,11 +2353,17 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 			s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger})
 			continue
 		}
-		if !s.refreshGate.Admit() {
+		credit := s.refreshGate.Admit()
+		if credit == nil {
 			refused++
 			continue
 		}
-		s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Admitted: true})
+		if s.afterRefreshAdmit != nil {
+			s.afterRefreshAdmit(c.Token, credit)
+		}
+		if !s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Credit: credit}) {
+			credit.Release()
+		}
 	}
 	if refused > 0 {
 		s.log.Info("supervise: the stale-plugin refresh gate is full; these claims are left to a later sweep",
@@ -2804,11 +2820,11 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			startedAt:    startedAt,
 			now:          p.clock.Now,
 			secretsLogin: p.secretsLogin,
-			deployment:   s.deployment,
+			deployment:   s.deploymentWith,
 			reports:      s.capabilityReports,
 			wakes:        s.waitingWakes,
 			repositories: p.repositories,
-			caches:       repositoryCachesOf(s.runtime),
+			caches:       s.cacheStatuses,
 			gatedSteps:   cfg.Gates.Steps(),
 			experiments:  cfg.ExperimentsDeclared(),
 			settings:     api.SettingsOf(cfg),
@@ -2971,9 +2987,9 @@ type source struct {
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
 	secretsLogin *cipher.Client
-	// deployment is the deployment's capabilities as this boot knows them (supervision.deployment),
-	// whose report the state carries.
-	deployment func() capabilities.Deployment
+	// deployment is the deployment's capabilities as this boot knows them with the repository
+	// caches it is handed (supervision.deploymentWith), whose report the state carries.
+	deployment func([]sandbox.CacheStatus) capabilities.Deployment
 	// reports is each claim's latest capability report (supervision.capabilityReports), which the
 	// projection shows on the claim's view whatever process reported it.
 	reports func() map[claim.Token]capabilities.Report
@@ -2984,10 +3000,13 @@ type source struct {
 	// workflow, whose state serves no repository.
 	repositories *repositories
 	// caches is the Kubernetes runtime's repository caches with their last health reads
-	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
+	// (supervision.cacheStatuses, sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps
+	// none. State reads it once and hands that read to deployment and to the repositories' view
+	// alike, so the capability row and `repositories` describe one read.
 	caches func() []sandbox.CacheStatus
-	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
-	// root of the state answers its own state of; the empty list gates none.
+	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps). Every root
+	// of the state answers the steps its tree is gated on, which these steps and the root's gate
+	// rows make (record.TreeSteps); the empty list gates none.
 	gatedSteps []record.DesignStep
 	// experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// whose order every issue's `assignments` ride in; the empty list declares none. It is read
@@ -3455,7 +3474,11 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.secretsLogin != nil {
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}
-	state.Capabilities = api.CapabilityStatesOf(s.deployment().Report())
+	var caches []sandbox.CacheStatus
+	if s.caches != nil {
+		caches = s.caches()
+	}
+	state.Capabilities = api.CapabilityStatesOf(s.deployment(caches).Report())
 	if s.repositories != nil {
 		// The repositories the block lists are those of the live records this same transaction
 		// reads, so the list and the issues the body shows agree by construction rather than
@@ -3467,10 +3490,6 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		live, err := repositoriesOf(issues)
 		if err != nil {
 			return api.State{}, nil, err
-		}
-		var caches []sandbox.CacheStatus
-		if s.caches != nil {
-			caches = s.caches()
 		}
 		state.Repositories = s.repositories.view(live, caches)
 	}

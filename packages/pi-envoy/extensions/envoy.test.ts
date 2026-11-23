@@ -50,7 +50,7 @@ import type {
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import { natsFailureReason } from "@legion/envoy-client/errors";
-import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
+import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
@@ -215,6 +215,23 @@ Object.defineProperty(globalThis, "fetch", {
     if (next !== recordingFetch) installedFetch = next;
   },
 });
+
+/**
+ * The row a session's own work runs for. `bootDirectSession` starts its session inside this
+ * scope, so what the session goes on to do (a delivery, a person's `!command` and its answer)
+ * carries the row that booted it; the file's `beforeEach` makes each row a new one. Bun fails a
+ * row at its timeout and starts the next while that row's session still runs (bun kills the
+ * row's dangling child, and the command it was running then answers), so what such a session
+ * writes afterwards, a reply on Dispatch or a frame on NATS, is dropped rather than read as the
+ * next row's.
+ */
+const rowScope = new AsyncLocalStorage<symbol>();
+let currentRow = Symbol("row");
+/** Whether the code running now is the work of a session whose row has ended. */
+function fromEndedRow(): boolean {
+  const row = rowScope.getStore();
+  return row !== undefined && row !== currentRow;
+}
 
 test("a row's fetch that hands on through globalThis.fetch fails at once, naming rowFetch", async () => {
   // The mistake that recursed without end: the row's wrapper takes `globalThis.fetch`, which is
@@ -470,6 +487,7 @@ const natsStandInConnect = async (options: {
         natsState.failPublishes -= 1;
         throw new Error("PUBLISH_FAILED");
       }
+      if (fromEndedRow()) return;
       natsState.published.push({ subject, data });
       natsState.onPublish?.(subject);
     },
@@ -716,6 +734,7 @@ beforeAll(() => setNatsConnectForTests(natsStandInConnect));
 afterAll(() => resetNatsConnectForTests());
 
 beforeEach(() => {
+  currentRow = Symbol("row");
   // `bun test` runs every file in one process: a Legion suite's bootstrapped-session record on
   // the process-wide interface would otherwise make every transcript here look like a
   // subagent's, the top-level session one test publishes would be the reply address the next
@@ -1280,7 +1299,10 @@ async function bootDirectSession(
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
       // that read answers it itself, and every other call is recorded and refused, so a
-      // read-back would keep the card.
+      // read-back would keep the card. Such a call from a session whose row has ended
+      // (`fromEndedRow`), its reply to a command that ran on past the row, is answered as Dispatch
+      // answers a reply and recorded nowhere: it is that row's, not this one's.
+      if (fromEndedRow()) return new Response(JSON.stringify({}), { status: 201 });
       posts.push(`${init?.method ?? "GET"} ${url.pathname}`);
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/reply")) {
         replies.push({ body: JSON.parse(init?.body?.toString() ?? "null"), path: url.pathname });
@@ -1365,7 +1387,10 @@ async function bootDirectSession(
       ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
     },
   };
-  await fixture.handlers.get("session_start")?.({}, context);
+  // Inside the row's scope, so the session's work carries this row (`rowScope`).
+  await rowScope.run(currentRow, async () => {
+    await fixture.handlers.get("session_start")?.({}, context);
+  });
   const agent = natsState.controls.get("notifications.agent.ses_delivery");
   if (agent === undefined) throw new Error("agent subject was not subscribed");
   const delivered = (count: number): Promise<void> => {
@@ -2168,9 +2193,20 @@ async function settle(): Promise<void> {
 // clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
 // than on this process's own work passes a longer bound: starting a shell and killing its group
 // is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-async function until(condition: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
+// A row whose wait can still be parked when the row ends (bun fails a row at its timeout and
+// goes on to the next while the row's own code waits on a turn of `settle`) passes `ended`, which
+// its teardown aborts: once it is aborted the wait reads the condition no more and returns, so it
+// neither polls on after the row nor throws into a later one.
+async function until(
+  condition: () => boolean,
+  what: string,
+  timeoutMs = 2_000,
+  ended?: AbortSignal
+): Promise<void> {
   const deadline = performance.now() + timeoutMs;
-  while (!condition()) {
+  for (;;) {
+    if (ended?.aborted === true) return;
+    if (condition()) return;
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await settle();
   }
@@ -15096,11 +15132,43 @@ console.log(JSON.stringify(args));
     describe("a person's shell command", () => {
       /** The working directories these rows ran their commands in. */
       const workDirectories: string[] = [];
+      /** Each row's end, which its waits take (`until`'s `ended`). The teardown aborts it, whether
+       *  the row returned or bun failed it at its timeout with a wait still parked. */
+      const rowEnds: AbortController[] = [];
       afterEach(() => {
+        for (const ended of rowEnds.splice(0)) ended.abort();
         for (const directory of workDirectories.splice(0)) {
           rmSync(directory, { recursive: true, force: true });
         }
       });
+
+      /** The timeout bun holds each row that waits on its command to, and how long before it the
+       *  row's wait gives up (`rowWait`). */
+      const SHELL_ROW_TIMEOUT_MS = 20_000;
+      const SHELL_ROW_MARGIN_MS = 1_000;
+      /**
+       * Starts the waits of a row on its command, measured from this call, which is the row's
+       * first line. The row's one clock is its own timeout: a wait gives up `SHELL_ROW_MARGIN_MS`
+       * before `SHELL_ROW_TIMEOUT_MS`, so a command that never does what the row waits for fails by
+       * the wait's own name rather than by bun's timeout line. A wait held past both (a turn of
+       * the event loop that came back late) is still parked when bun fails the row and runs the
+       * teardown, which aborts the row's end (`rowEnds`): the wait then returns without reading
+       * and answers false, and the row returns, so nothing of it polls or throws after it ended.
+       */
+      const rowWait = () => {
+        const started = performance.now();
+        const ended = new AbortController();
+        rowEnds.push(ended);
+        return async (condition: () => boolean, what: string): Promise<boolean> => {
+          await until(
+            condition,
+            what,
+            SHELL_ROW_TIMEOUT_MS - SHELL_ROW_MARGIN_MS - (performance.now() - started),
+            ended.signal
+          );
+          return !ended.signal.aborted;
+        };
+      };
 
       /** The user messages this session's live stream carried. */
       const streamFrames = () =>
@@ -15404,6 +15472,7 @@ console.log(JSON.stringify(args));
       // session the host moved to must not be handed it as its own, while the person is answered
       // and the live view of the session that ran it still shows the report.
       test("hands the agent no copy when the session moved on while the command ran", async () => {
+        const wait = rowWait();
         const { agent, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-switched",
           {
@@ -15415,7 +15484,9 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-switched"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+          return;
+        }
 
         // A `/new` while the command runs. The viewer follows the session the host moved to, as
         // the relay's watch does, so the publisher is armed again and the frame this command
@@ -15449,7 +15520,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // The same move, with no session event for it: the host moves its session manager first
       // and emits `session_switch` after its resets, and a move the host makes without an event
@@ -15458,6 +15529,7 @@ console.log(JSON.stringify(args));
       // is already on another conversation. The agent's copy follows the host's live id, so the
       // conversation the host is on is handed nothing here either.
       test("hands the agent no copy when the host moved on with no session event", async () => {
+        const wait = rowWait();
         let live = "ses_delivery";
         const { agent, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-host-moved",
@@ -15471,7 +15543,9 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-host-moved"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+          return;
+        }
 
         // The host is on another conversation now. No handler is fired for it, so the plugin's
         // own `sessionID` still reads ses_delivery.
@@ -15498,7 +15572,7 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
@@ -16147,6 +16221,7 @@ console.log(JSON.stringify(args));
       // second message with the first session's command, which was neither this session's
       // command nor a command this session was running.
       test("runs a command for the session the host moved to while another session's still runs", async () => {
+        const wait = rowWait();
         const other = otherSessionDirectory();
         const { agent, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-busy-other-session",
@@ -16162,11 +16237,14 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-busy-other-1"));
-        await until(
-          () => existsSync(join(work, "running")),
-          "the first session's command to be running",
-          10_000
-        );
+        if (
+          !(await wait(
+            () => existsSync(join(work, "running")),
+            "the first session's command to be running"
+          ))
+        ) {
+          return;
+        }
 
         // A `/new` to a conversation of its own, with ses_delivery's command still running.
         await moveHost(fixture, other);
@@ -16199,13 +16277,14 @@ console.log(JSON.stringify(args));
           attempt: 1,
           body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // The agent's copy is withheld where the session the command was asked of is not the one
       // open here by the time the report is ready, and the person is told so: the reply and the
       // live view's frame carry the sentence, so neither reads as output the agent went on to
       // act on.
       test("says the agent was handed no output when the session moved on while the command ran", async () => {
+        const wait = rowWait();
         const other = otherSessionDirectory();
         const { agent, fixture, replied, replies, sends, work } = await bootShellSession(
           "shell-command-withheld-copy",
@@ -16218,7 +16297,9 @@ console.log(JSON.stringify(args));
         );
 
         agent.push(directDispatchEnvelope("steer", "shell-command-withheld-copy"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+        if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+          return;
+        }
 
         await moveHost(fixture, other);
         writeFileSync(join(work, "go"), "");
@@ -16241,7 +16322,7 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         expect(movedSessionFrames()).toEqual([]);
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
@@ -16250,6 +16331,7 @@ console.log(JSON.stringify(args));
       // the kill ends the group is `src/typed-shell.ts`'s own contract, proven in its own rows,
       // one of which starts a real shell in a process that exits and shows nothing survives it.
       test("ends a running command when the session shuts down", async () => {
+        const wait = rowWait();
         const { agent, context, fixture, replied, replies, work } = await bootShellSession(
           "shell-command-shutdown-kill",
           // Written in the session's own working directory, which the command runs in: the pid
@@ -16260,10 +16342,20 @@ console.log(JSON.stringify(args));
 
         agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
         // The command itself, not the agent's copy of its report: nothing is sent until the
-        // command ends, and this one would run for ten minutes.
-        await until(() => existsSync(pidFile), "the command to be running", 10_000);
-        const pid = Number(readFileSync(pidFile, "utf8").trim());
-        expect(Number.isInteger(pid)).toBe(true);
+        // command ends, and this one would run for ten minutes. The shell creates `pid` when it
+        // opens it for `echo`, before `echo` writes to it, so the file can be there and empty; the
+        // pid is read once the file holds it as one whole line, as `echo` writes it. An empty read
+        // is pid 0, and `alive(0)` asks about this process's own group, not the command: Linux
+        // answers that it is there, and gVisor, which answers kill(0, 0) with the last answer of
+        // the group, can answer EPERM.
+        let written = "";
+        const read = await wait(() => {
+          written = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
+          return /^\d+\n$/u.test(written);
+        }, "the command to write its pid");
+        if (!read) return;
+        const pid = Number(written);
+        expect(pid).toBeGreaterThan(0);
         // The command is still running: nothing but the shutdown below ends it.
         expect(alive(pid)).toBe(true);
 
@@ -16275,7 +16367,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
-      }, 20_000);
+      }, SHELL_ROW_TIMEOUT_MS);
 
       // A session shutting down runs no command: one started now would outlive the session it
       // was asked of. The message is answered saying so rather than left with no answer. The
@@ -18134,7 +18226,7 @@ console.log(JSON.stringify(args));
     });
 
     // An ACP host serves several top-level sessions in one process, each with its own pi-envoy,
-    // and its fork opens the source session in a new one before forking it (acp-agent.ts:1922-1943
+    // and its fork opens the source session in a new one before forking it (acp-agent.ts:1950-1971
     // at the pin). The fork's instance leaving the source id must not forget the turns the source
     // session's own instance sent in: that instance still serves the id and still asks under it.
     test("a typed turn's note survives another instance in the process passing through its session", async () => {
@@ -18483,6 +18575,241 @@ console.log(JSON.stringify(args));
       expect([...shownPictures("ses_pictures_restarted")].sort()).toEqual(
         [addresses.card, addresses.read, addresses.turn].sort()
       );
+    });
+
+    /**
+     * `entry` with its body, a message entry's `message` or a custom message entry's `content`,
+     * behind a getter: while `cut` answers true (always, by default) the entry stands before the
+     * live context's cut, and a read of its body is recorded in `reads` and throws.
+     */
+    const withBody = (
+      entry: Record<string, unknown>,
+      field: "message" | "content",
+      body: unknown,
+      reads: string[],
+      cut: () => boolean = () => true
+    ): Record<string, unknown> =>
+      Object.defineProperty(entry, field, {
+        enumerable: true,
+        get: () => {
+          if (!cut()) return body;
+          reads.push(`${String(entry.id)}.${field}`);
+          throw new Error(`the ${field} of ${String(entry.id)}, before the cut, was read`);
+        },
+      });
+
+    /** A person's turn whose image block shows `address`, as Oh My Pi keeps it. */
+    const pictureTurn = (address: string) => ({
+      role: "user",
+      content: [{ type: "text", text: `Look:\n\n![shot.png](${address})` }, image],
+    });
+    const assistantReply = { role: "assistant", content: [{ type: "text", text: "Seen." }] };
+
+    // A long session's start read every message of its branch for the pictures it was shown:
+    // about 28,600 bodies for a controller, which raised its resume's peak from 924.7 MiB to
+    // 1,564.4 MiB, and it counted as shown the pictures a compaction had taken from the model.
+    // Only the live context counts (`liveContext`), so a picture before the cut is sent again.
+    // The rest of the restore reads custom entries, and the `details` of the Envoy cards the
+    // plugin wrote, on both sides of the cut, so no body before it is read.
+    test("a session started on a compacted transcript counts only its live context's pictures as shown, and restores its ledger and handled attempts from both sides of the cut without reading a body before it", async () => {
+      const earlySlug = "live-context-early";
+      const early = `dispatch://LEGION-1/artifact/${earlySlug}@v1`;
+      const kept = "dispatch://LEGION-1/artifact/live-context-kept@v1";
+      const late = "dispatch://LEGION-1/artifact/live-context-late@v1";
+      const handledBefore = "66666666-6666-4666-8666-666666666666";
+      const handledAfter = "88888888-8888-4888-8888-888888888888";
+      const handled = (id: string, messageID: string) => ({
+        type: "custom",
+        id,
+        customType: "envoy-dispatch-handled-attempt",
+        data: { attempt: 1, message_id: messageID },
+      });
+      const recorded = (id: string, key: string) => ({
+        type: "custom",
+        id,
+        customType: REPLAY_DELIVERED_ENTRY,
+        data: { event_id: `dispatch-${key}`, dedupe_key: key, at: Date.now() },
+      });
+      const reads: string[] = [];
+      const file = [
+        withBody({ type: "message", id: "e0" }, "message", pictureTurn(early), reads),
+        handled("e1", handledBefore),
+        // A card the host wrote, whose `details` name its frame as `handCard` writes them.
+        withBody(
+          {
+            type: "custom_message",
+            id: "e2",
+            customType: "envoy-message",
+            display: true,
+            details: { event_id: "dispatch-live-context-card", dedupe_key: "live-context-card" },
+            timestamp: new Date().toISOString(),
+          },
+          "content",
+          [{ type: "text", text: "envoy:\n  id: dispatch-live-context-card" }],
+          reads
+        ),
+        withBody(
+          { type: "custom_message", id: "e3", customType: "legion-notice", display: true },
+          "content",
+          "Another extension's message.",
+          reads
+        ),
+        recorded("e4", "live-context-recorded-before"),
+        withBody({ type: "message", id: "e5" }, "message", assistantReply, reads),
+        // The compaction's first kept entry: the model still sees the picture it shows.
+        {
+          type: "message",
+          id: "e6",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "dispatch_read",
+            content: [
+              {
+                type: "text",
+                text: `Pictures:\n- image 1: ${kept} (kept.png, image/png, 10 bytes)`,
+              },
+              image,
+            ],
+          },
+        },
+        {
+          type: "compaction",
+          id: "e7",
+          summary: "The session so far.",
+          firstKeptEntryId: "e6",
+          tokensBefore: 150_000,
+        },
+        handled("e8", handledAfter),
+        recorded("e9", "live-context-recorded-after"),
+        { type: "message", id: "e10", message: pictureTurn(late) },
+      ];
+      // A new process: it knows no picture any session was shown.
+      forgetShownPictures("ses_delivery");
+      const { accepts, agent, fixture } = await bootDirectSession("live-context-start", {
+        accept: () => ({ accepted: true }),
+        dispatch: pictureRoutes(earlySlug),
+        entries: file,
+      });
+
+      expect([...shownPictures("ses_delivery")].sort()).toEqual([kept, late].sort());
+
+      const carded = (key: string) =>
+        fixture.deliveries.filter((delivery) =>
+          JSON.stringify(delivery.content).includes(`dispatch-${key}`)
+        );
+      // Frames the ledger holds, from the card and the records on either side of the cut.
+      for (const key of [
+        "live-context-card",
+        "live-context-recorded-before",
+        "live-context-recorded-after",
+      ]) {
+        agent.push(commentNotification(key, `Comment ${key}`));
+      }
+      // Attempts recorded handled on either side of the cut.
+      agent.push(
+        directDispatchEnvelope("steer", "live-context-handled-before", {
+          messageID: handledBefore,
+        })
+      );
+      agent.push(
+        directDispatchEnvelope("steer", "live-context-handled-after", { messageID: handledAfter })
+      );
+      agent.push(
+        commentNotification(
+          "live-context-pictures",
+          `Look:\n\n![shot.png](${early})\n![kept.png](${kept})\n![late.png](${late})`
+        )
+      );
+      await until(() => fixture.deliveries.length >= 3, "the three cards");
+      await settle();
+
+      // The ledger passed over every frame it holds; each handled attempt is a card with no accept.
+      expect(fixture.deliveries).toHaveLength(3);
+      expect(carded("live-context-handled-before")).toHaveLength(1);
+      expect(carded("live-context-handled-after")).toHaveLength(1);
+      expect(accepts).toEqual([]);
+      expect(fixture.userMessages).toEqual([]);
+      // The picture before the cut is sent again; the two the live context shows are named.
+      const [pictured] = carded("live-context-pictures");
+      expect(pictured?.content).toEqual([
+        {
+          type: "text",
+          text: expect.stringContaining(`- image 1: ${early} (shot.png, image/png, 10 bytes)`),
+        },
+        image,
+      ]);
+      const text = JSON.stringify(pictured?.content);
+      for (const address of [kept, late]) {
+        expect(text).toContain(`- not shown: ${address} (shown earlier this session;`);
+      }
+      expect(reads).toEqual([]);
+    });
+
+    // The pictures a compaction cut off are in no later request, so the session's shown set is
+    // what its new live context shows, replaced rather than added to, and the entries before the
+    // new cut are not read.
+    test("a compaction makes the session's shown pictures its new live context's, reading no body before the cut", async () => {
+      const address = (slug: string) =>
+        `dispatch://LEGION-1/artifact/live-context-compact-${slug}@v1`;
+      const reads: string[] = [];
+      let compacted = false;
+      const cut = () => compacted;
+      const file: unknown[] = [
+        withBody(
+          { type: "message", id: "c0" },
+          "message",
+          pictureTurn(address("first")),
+          reads,
+          cut
+        ),
+        withBody({ type: "message", id: "c1" }, "message", assistantReply, reads, cut),
+      ];
+      const { context, fixture } = await bootDirectSession("live-context-compaction", {
+        entries: file,
+      });
+      expect(shownPictures("ses_delivery").has(address("first"))).toBe(true);
+
+      // The session goes on: a card the host took and wrote, then a turn the compaction keeps,
+      // and the host compacts, which writes the compaction entry before it tells extensions.
+      shownPictures("ses_delivery").add(address("carded"));
+      file.push(
+        withBody(
+          {
+            type: "custom_message",
+            id: "c2",
+            customType: "envoy-message",
+            display: true,
+            details: {
+              event_id: "dispatch-live-context-compact",
+              dedupe_key: "live-context-compact",
+            },
+          },
+          "content",
+          [
+            {
+              type: "text",
+              text: `envoy: card\n\nPictures:\n- image 1: ${address("carded")} (carded.png, image/png, 10 bytes)`,
+            },
+            image,
+          ],
+          reads,
+          cut
+        ),
+        { type: "message", id: "c3", message: pictureTurn(address("kept")) },
+        {
+          type: "compaction",
+          id: "c4",
+          summary: "The session so far.",
+          firstKeptEntryId: "c3",
+          tokensBefore: 150_000,
+        }
+      );
+      compacted = true;
+      await fixture.handlers.get("session_compact")?.({}, context);
+
+      expect([...shownPictures("ses_delivery")]).toEqual([address("kept")]);
+      expect(reads).toEqual([]);
     });
 
     test("a session that shuts down forgets the pictures it was shown", async () => {

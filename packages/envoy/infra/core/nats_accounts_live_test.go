@@ -64,7 +64,7 @@ func grantClasses(t *testing.T) []grantClass {
 }
 
 // movedInbox is grant with its one inbox subscribe entry replaced by prefix's, the only entry plan
-// E's t-e-74 moves (natsgrant.InboxPrefix and the measure grant under _INBOX_envoy).
+// E's t-e-74 moves (natsgrant.InboxPrefix, for a listener still on nats.go's default prefix).
 func movedInbox(t *testing.T, grant natsgrant.Permissions, prefix string) natsgrant.Permissions {
 	t.Helper()
 	moved := grant
@@ -81,15 +81,27 @@ func movedInbox(t *testing.T, grant natsgrant.Permissions, prefix string) natsgr
 	return moved
 }
 
-// inboxPrefix is the reply prefix grant subscribes, which its client connects with: the first
-// subscribe entry naming an inbox prefix, or nats.go's default where it names none.
+// inboxPrefix is the reply prefix grant subscribes, which its client connects with: the subscribe
+// entry naming an inbox prefix under natsgrant.ReplyRoot where the grant names one there (the
+// measurement job's natsgrant.MeasureInbox, beside the legacy prefix its deployed job still sets),
+// else the first naming an inbox prefix, or nats.go's default where it names none.
 func inboxPrefix(grant natsgrant.Permissions) string {
+	prefix := ""
 	for _, entry := range grant.Subscribe {
-		if strings.HasPrefix(entry, "_INBOX") && strings.HasSuffix(entry, ".>") {
+		if !strings.HasPrefix(entry, "_INBOX") || !strings.HasSuffix(entry, ".>") {
+			continue
+		}
+		if strings.HasPrefix(entry, natsgrant.ReplyRoot+".") {
 			return strings.TrimSuffix(entry, ".>")
 		}
+		if prefix == "" {
+			prefix = strings.TrimSuffix(entry, ".>")
+		}
 	}
-	return "_INBOX"
+	if prefix == "" {
+		return "_INBOX"
+	}
+	return prefix
 }
 
 // permits reports whether a publish to subject passes grant: an allow entry matches it and no deny
@@ -563,9 +575,10 @@ func singletonAPI(t *testing.T, text string) string {
 }
 
 // clientGrants are the grants of the clients TestTheClientsStillWorkThroughTheAccountBoundary
-// admits, each natsgrant's own: ListenerEnvoy and Measure with only their inbox entry moved under
-// _INBOX_envoy, as plan E's t-e-74 moves it (natsgrant.InboxPrefix of the listener's identity, the
-// measure grant's ReplyRoot + "._measure.>"), every other one as it is today.
+// admits, each natsgrant's own: ListenerEnvoy with only its inbox entry moved under _INBOX_envoy,
+// as plan E's t-e-74 moves it (natsgrant.InboxPrefix of the listener's identity); Measure as
+// natsgrant.Measure returns it, which subscribes natsgrant.MeasureInbox under _INBOX_envoy beside
+// its legacy prefix, and connects with MeasureInbox (inboxPrefix); every other one as it is today.
 func clientGrants(t *testing.T) map[string]natsgrant.Permissions {
 	t.Helper()
 	return map[string]natsgrant.Permissions{
@@ -574,7 +587,7 @@ func clientGrants(t *testing.T) map[string]natsgrant.Permissions {
 		"ListenerEnvoy": movedInbox(t, natsgrant.Listener("m1"), "_INBOX_envoy.listener-m1"),
 		"Daemon":        natsgrant.Daemon(),
 		"Host":          natsgrant.Host("m1"),
-		"Measure":       movedInbox(t, natsgrant.Measure(), "_INBOX_envoy._measure"),
+		"Measure":       natsgrant.Measure(),
 	}
 }
 

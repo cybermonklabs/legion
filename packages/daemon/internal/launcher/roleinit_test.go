@@ -3,6 +3,7 @@
 package launcher
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,7 +45,6 @@ func init() {
 // filesystem of its own, so the layout it builds — and the role's own mounts over it — stay out
 // of the machine's filesystem and out of the test process's view.
 type stagePlan struct {
-	Self     string
 	Mount    string
 	Role     string
 	Sibling  string
@@ -97,16 +97,17 @@ func TestRoleNamespaceProbeHelper(t *testing.T) {
 // it nor, from a further namespace of its own, replace or remove it, and the launcher's file
 // stays a regular file; it sees and can signal only its own processes; what it writes under its
 // home and in its temporary directories lands on its own layer, invisible to the container; every
-// mount its home carried is still there; its config home is its own, a copy of the pod's shared
-// one that no sibling reads; and when the role's init exits nothing of the role is left, not even
-// a detached process that ignores SIGTERM.
+// mount its home carried is still there; a mount the container's /tmp hides is not carried into
+// the role's, and the role sees nothing of the container's /tmp at its path; its config home is
+// its own, a copy of the pod's shared one that no sibling reads; and when the role's init exits
+// nothing of the role is left, not even a detached process that ignores SIGTERM.
 func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := stagePlan{Self: self, Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: "987654"}
+	plan := stagePlan{Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: "987654"}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +149,15 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"agent home-mount-writes", "volume", "what the role writes into a volume under its home reaches the volume"},
 		{"agent home-mounts-view", "0", "the container's view of the home's volumes is covered: the role sees each at its own path alone"},
 		{"agent tmp-mount", "mounted-a", "a mount /tmp carried is bound back over the role's own /tmp"},
+		{"agent tmp-mount-nested", "nested-a", "a mount inside a mount /tmp carries comes back with it"},
+		{"agent tmp-mount-nested-extra", "0", "role-init binds back only the outermost mount /tmp carries, whose recursive bind brings the one inside it, so the inner mount has no bind of its own: role-init resolves no path inside a volume every role writes, where a sibling role could put a link"},
+		// The two mounts the container's /tmp hides (runStage): the stage's rows say its mount
+		// table lists each and no path under /tmp reaches it, so the agent's rows read hidden
+		// mounts and not mounts that were never made.
+		{"stage shadowed", "listed reaches=absent", "the container's mount table lists the mount its /tmp hides under a later mount, and nothing is at its path"},
+		{"stage beneath", "listed reaches=container", "the container's mount table lists the mount made beneath its /tmp after it, and its path reaches the container's own directory there"},
+		{"agent tmp-shadowed", "absent", "a mount the container's /tmp hides under a later mount is not carried: no path under /tmp reaches it, and the role sees nothing at its path"},
+		{"agent tmp-beneath", "absent", "a mount the container's /tmp hides, listed after the mount that hides it, is not carried either: the role sees nothing of the container's /tmp at its path"},
 		{"agent home-carryover", "absent", "the role's first generation starts on a home layer with nothing of its own"},
 		{"agent home-dir-rename", "ok", "the role renames a directory on its own home layer and the sandbox lives; under gVisor without userxattr the rename panics the sandbox instead"},
 		{"stage upper-home", "present", "what the role wrote under its home landed on its own layer"},
@@ -256,6 +266,23 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	}
 }
 
+// stageSelf is the test binary as a helper that covers stageMountPoint runs it again, as role-init
+// and as the agent role-init starts: the kernel's link to the running executable, which reaches
+// the file whatever mount now covers the path it was started from. `go test` builds the binary
+// under GOTMPDIR, else TMPDIR, else /tmp, so that path can lie under the very directory a helper
+// covers — /mnt, on a machine that keeps its scratch there — or under the /tmp the stage and
+// role-init cover, and a process started by that path would find nothing there. A process started
+// by this name runs the binary of the process that starts it, and each that starts one here runs
+// this binary: the helper, and role-init, which starts the agent through the role's own /proc.
+const stageSelf = "/proc/self/exe"
+
+// stageShadowed and stageBeneath are the stage's own mounts under the /tmp it covers, which its
+// own /tmp then hides: the first made before that /tmp, the second beneath it after (runStage).
+const (
+	stageShadowed = "/tmp/shadowed"
+	stageBeneath  = "/tmp/beneath"
+)
+
 // stageMountPoint is a directory the stage can cover with a memory filesystem of its own. It is
 // the one piece of the machine the test needs: the layout must sit outside /tmp and outside the
 // home a role's overlay covers, and must be a path the role's own mounts never hide.
@@ -313,20 +340,46 @@ func runStage(plan stagePlan) error {
 	if err := mountTmpfs(plan.Mount, "size=96m"); err != nil {
 		return err
 	}
-	// The test binary runs from wherever `go test` built it, under /tmp when TMPDIR is unset, as
-	// on GitHub's runners; the stage covers /tmp next, so every process it starts runs a copy of
-	// it kept on the stage's own filesystem.
-	self := filepath.Join(plan.Mount, "launcher.test")
-	if err := copyExecutable(plan.Self, self); err != nil {
+	// Two mounts under /tmp that the container's own /tmp hides, as it would hide a mount the
+	// machine's /tmp carries (a container runtime's leftover, say): made on a memory filesystem of
+	// the stage's own over the machine's /tmp, so the machine never sees them. stageShadowed is
+	// hidden by a mount made after it, the stage's own /tmp. stageBeneath is made after that /tmp,
+	// beneath it, through a handle on the directory it covers, so the mount table lists it after
+	// the mount that hides it, as a namespace gVisor copies may list a hidden mount: it numbers the
+	// copy's mounts in the order it walks each mount's children, a Go map's (cloneMountTree,
+	// gVisor's pkg/sentry/vfs/mount.go). The stage's own /tmp holds a directory of its own at
+	// stageBeneath's path, so a role-init that carried a mount by its path alone would hand the
+	// role the container's directory there.
+	if err := mountTmpfs("/tmp", "size=1m"); err != nil {
 		return err
 	}
-	plan.Self = self
+	below, err := os.Open("/tmp")
+	if err != nil {
+		return err
+	}
+	defer below.Close()
+	if err := mountHidden(stageShadowed); err != nil {
+		return err
+	}
 	// The stage's own /tmp and /dev/shm, so what the role plants if its privacy broke lands here
-	// and never on the machine, and the stage can see that it did not.
+	// and never on the machine, and the stage can see that it did not. Each hides every mount the
+	// machine's carries.
 	for _, dir := range []string{"/tmp", "/dev/shm"} {
 		if err := mountTmpfs(dir, "size=16m"); err != nil {
 			return err
 		}
+	}
+	if err := mountHidden(fmt.Sprintf("/proc/self/fd/%d/%s", below.Fd(), filepath.Base(stageBeneath))); err != nil {
+		return err
+	}
+	if err := os.Mkdir(stageBeneath, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(stageBeneath, "marker"), []byte("container"), 0o644); err != nil {
+		return err
+	}
+	for _, path := range []string{stageShadowed, stageBeneath} {
+		fmt.Printf("stage %s=%s\n", filepath.Base(path), hiddenMount(path))
 	}
 	rolesDir := filepath.Join(plan.Mount, "roles")
 	fixedRoot := filepath.Join(plan.Mount, "fixed")
@@ -389,8 +442,9 @@ func runStage(plan stagePlan) error {
 	// under the home mounts at their path relative to the home, as the pod builder renders them,
 	// so the home itself carries none. One sits shallow and holds a mount of its own; one sits
 	// deep, under directories the home does not have. A mount /tmp carries, as an operator's
-	// volume may, is carried over the role's own /tmp. The pod's shared config home sits at its
-	// own place, holding the jj configuration workspace-init writes there and a mount of its own.
+	// volume may, is carried over the role's own /tmp, with a mount of its own inside it. The
+	// pod's shared config home sits at its own place, holding the jj configuration workspace-init
+	// writes there and a mount of its own.
 	carried := filepath.Join(plan.Mount, "carried")
 	nested := filepath.Join(plan.Mount, "nested")
 	shared := filepath.Join(plan.Mount, "shared-config")
@@ -417,6 +471,7 @@ func runStage(plan stagePlan) error {
 		{carried, filepath.Join(homeMounts, "other", "cache")},
 		{carried, filepath.Join(homeMounts, "deep", "sessions")},
 		{carried, "/tmp/mounted"},
+		{nested, "/tmp/mounted/nested"},
 		{shared, filepath.Join(homeMounts, ConfigHomeDir)},
 		{nested, filepath.Join(homeMounts, ConfigHomeDir, "nested")},
 	} {
@@ -454,7 +509,7 @@ func runStage(plan stagePlan) error {
 		mqueue = "present"
 	}
 	fmt.Printf("stage mqueue=%s\n", mqueue)
-	roleInitLaunch = roleInitHelperLaunch(plan.Self)
+	roleInitLaunch = roleInitHelperLaunch(stageSelf)
 	layout := agentPlan{
 		Home: home, HomeMounts: homeMounts, RolesDir: rolesDir, FixedRoot: fixedRoot, Role: plan.Role,
 		Sibling: plan.Sibling, Owner: plan.Owner, OutsidePID: outside.Process.Pid, Detached: plan.Detached,
@@ -550,7 +605,7 @@ func runStage(plan stagePlan) error {
 	return nil
 }
 
-// copyExecutable copies the executable at source to target, which the stage then runs in its
+// copyExecutable copies the executable at source to target, which the caller then runs in its
 // place.
 func copyExecutable(source, target string) error {
 	body, err := os.ReadFile(source)
@@ -558,6 +613,56 @@ func copyExecutable(source, target string) error {
 		return err
 	}
 	return os.WriteFile(target, body, 0o755)
+}
+
+// mountHidden makes path a memory filesystem of the stage's own that holds the marker `hidden`.
+func mountHidden(path string) error {
+	if err := os.Mkdir(path, 0o755); err != nil {
+		return err
+	}
+	if err := mountTmpfs(path, "size=1m"); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(path, "marker"), []byte("hidden"), 0o644)
+}
+
+// hiddenMount says how the stage's container sees a mount it hid at path: whether its mount table
+// lists a mount there, read from mountinfo itself, and what the path reaches (reached).
+func hiddenMount(path string) string {
+	listed := "unlisted"
+	switch count, err := mountsAt(path); {
+	case err != nil:
+		return "unreadable: " + err.Error()
+	case count > 0:
+		listed = "listed"
+	}
+	return listed + " reaches=" + reached(path)
+}
+
+// mountsAt is how many mounts this process's mount table lists at path, read from mountinfo
+// itself.
+func mountsAt(path string) (int, error) {
+	table, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, line := range strings.Split(string(table), "\n") {
+		if fields := strings.Fields(line); len(fields) > 4 && fields[4] == path {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// reached is what path reaches where the stage hid a mount: `absent` where nothing is there, else
+// the marker of what is there, `hidden` for the hidden mount itself and `container` for the
+// directory the container's own /tmp holds over it.
+func reached(path string) string {
+	if found := presence(path); found != "present" {
+		return found
+	}
+	return content(filepath.Join(path, "marker"))
 }
 
 // runGeneration runs one generation of the role over the stage's layout and reports the wait
@@ -575,7 +680,7 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 			HomeMounts: layout.HomeMounts, FixedRoot: layout.FixedRoot,
 		},
 		Role: plan.Role, Generation: generation,
-		Argv: []string{plan.Self, "-test.run=^TestRoleInitAgentHelper$"},
+		Argv: []string{stageSelf, "-test.run=^TestRoleInitAgentHelper$"},
 	}, append(os.Environ(), roleInitAgentEnv+"="+string(agent)), os.Stdout, os.Stderr)
 	if err != nil {
 		return err
@@ -700,6 +805,24 @@ func TestRoleInitAgentHelper(t *testing.T) {
 		say("home-mounts-view", strconv.Itoa(len(entries)))
 	}
 	say("tmp-mount", content(filepath.Join("/tmp", "mounted", "marker")))
+	say("tmp-mount-nested", content(filepath.Join("/tmp", "mounted", "nested", "marker")))
+	// How many mounts the role's table lists at the carried mount and at the mount inside it. The
+	// container's own mount at each path is in the role's table too, hidden under the role's own
+	// /tmp, so the row reads how many more the inner path has than the outer one: one more is a
+	// bind role-init made of the inner mount by its own path.
+	outer, outerErr := mountsAt(filepath.Join("/tmp", "mounted"))
+	inner, innerErr := mountsAt(filepath.Join("/tmp", "mounted", "nested"))
+	if err := errors.Join(outerErr, innerErr); err != nil {
+		say("tmp-mount-nested-extra", "unreadable: "+err.Error())
+	} else {
+		say("tmp-mount-mounts", strconv.Itoa(outer))
+		say("tmp-mount-nested-mounts", strconv.Itoa(inner))
+		say("tmp-mount-nested-extra", strconv.Itoa(inner-outer))
+	}
+	// The mounts the container's /tmp hides are no mounts of /tmp's to carry: nothing is at their
+	// paths in the role's own /tmp, neither the mount nor the container's directory over it.
+	say("tmp-shadowed", reached(stageShadowed))
+	say("tmp-beneath", reached(stageBeneath))
 	// What an earlier generation of this role wrote under its home is still the role's own: the
 	// writable layer is the role's across its generations, as a role container's filesystem was.
 	say("home-carryover", presence(filepath.Join(plan.Home, "planted")))
@@ -1040,10 +1163,7 @@ const roleCheckEnv = "LEGION_ROLE_INIT_TEST_CHECK"
 // role its own /tmp.
 func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 	if dir := os.Getenv(roleCheckEnv); dir != "" {
-		self, err := os.Executable()
-		if err == nil {
-			err = privateMounts()
-		}
+		err := privateMounts()
 		if err == nil {
 			err = mountTmpfs(dir, "size=16m")
 		}
@@ -1051,7 +1171,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 			fmt.Println("check error:", err)
 			os.Exit(1)
 		}
-		roleInitLaunch = roleInitHelperLaunch(self)
+		roleInitLaunch = roleInitHelperLaunch(stageSelf)
 		answer := func(err error) string {
 			if err == nil {
 				return "passed"
@@ -1454,20 +1574,21 @@ const (
 // roleDrainPlan is what that stage builds and runs: a role layout under Dir, which it covers with
 // a memory filesystem of its own, and a shim that leaves a descendant behind which catches
 // SIGTERM and removes roleDrainFile. Leaves says whether that descendant then exits or goes on
-// running, which is the whole difference between the row's two cases.
+// running, which is the whole difference between the row's two cases. Bound is the bound
+// role-init's wait takes in place of roleNamespaceDrain (roleDrainBoundEnv).
 type roleDrainPlan struct {
 	Dir    string
 	Leaves bool
+	Bound  time.Duration
 }
 
-// roleDrainSlack is what that row allows the stage's own clock on a loaded machine. The stage
-// times role-init's wait from its read of the status report, while role-init starts its
-// roleNamespaceDrain after it has written that report and sent the SIGTERM, so under load the
-// stage's clock starts the later of the two and a wait that ran in full reads a little short of
-// the ceiling. It is that scheduling gap alone, never a span of the wait itself: it is a small
-// part of roleNamespaceDrain, and an init that sends no signal and kills the namespace at once
-// ends its wait in milliseconds, which the lower bound below still reads as the failure it is.
-const roleDrainSlack = 250 * time.Millisecond
+// roleDrainStaysBound is the bound role-init's wait takes in the case whose descendant stays,
+// which waits it out: thirty seconds, far past any stall of the descendant's trap, which must run
+// before the kill for the case to read anything — a trap 2.25 s late is killed inside
+// roleNamespaceDrain's two seconds — and short enough that the case costs half a minute. The case
+// whose descendant leaves takes a bound no wait of it reaches, since its wait ends when the
+// namespace empties; both are held under the test binary's deadline less a margin.
+const roleDrainStaysBound = 30 * time.Second
 
 // A role whose shim exits on its own has its namespace signalled before it is killed: role-init
 // sends SIGTERM over the role's whole namespace once it has reported the shim's status and before
@@ -1478,12 +1599,18 @@ const roleDrainSlack = 250 * time.Millisecond
 // file that is gone was removed before role-init exited, and one still there is a descendant that
 // was killed with no signal before it.
 //
-// The cases differ in what the descendant does once it has removed the file. One goes on running,
-// so nothing but the SIGKILL ends it and the wait spends the whole of roleNamespaceDrain, which
-// bounds it. The other leaves, and role-init's own exit then comes well inside that ceiling,
-// which is the one reading that tells a wait ending with the namespace from a fixed two-second
-// sleep. Each is timed from role-init's report of the shim's status, where its wait begins, to
-// its own exit.
+// The cases differ in what the descendant does once it has removed the file, and each reads how
+// role-init's wait loop ended from the line role-init logs as it leaves the loop (runRoleShim),
+// never from a clock of the stage's. One descendant goes on running, so nothing but the SIGKILL
+// ends it: the loop must end at its bound, with role-init's own clock past that bound. The other
+// leaves, and the loop must end with the namespace emptied, which is what tells it from a wait
+// that sleeps its bound whatever the role does. Each case sets the bound itself (roleDrainPlan),
+// far past any stall of the descendant's trap, so the trap runs before the kill however loaded the
+// machine; roleNamespaceDrain's own two seconds are not this row's subject. The row reads how the
+// loop ended and not when role-init exits: a role-init that slept after its loop and before its
+// kill would pass it. The verdict is that order alone, so a loaded machine that slows role-init's
+// polls or the descendant's trap changes no case's verdict; the stage's one deadline is a hang
+// guard (roleDrainReport).
 func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 	if encoded := os.Getenv(roleDrainEnv); encoded != "" {
 		var plan roleDrainPlan
@@ -1499,15 +1626,18 @@ func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 	}
 	requireRoleNamespaces(t)
 	mount := stageMountPoint(t)
+	// Each bound is whole milliseconds, the precision of the span role-init logs, so a span
+	// rounded to them never reads under a bound the wait did reach.
 	for _, tc := range []struct {
 		name   string
 		leaves bool
+		bound  time.Duration
 	}{
-		{"a descendant that stays is signalled before it is killed", false},
-		{"a descendant that leaves ends the wait with the namespace", true},
+		{"a descendant that stays is signalled before it is killed", false, testwait.Bounded(t, roleDrainStaysBound, time.Minute).Truncate(time.Millisecond)},
+		{"a descendant that leaves ends the wait with the namespace", true, testwait.Bounded(t, 2*time.Minute, time.Minute).Truncate(time.Millisecond)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			report, output := roleDrainReport(t, roleDrainPlan{Dir: mount, Leaves: tc.leaves})
+			report, output := roleDrainReport(t, roleDrainPlan{Dir: mount, Leaves: tc.leaves, Bound: tc.bound})
 			if report["status"] != "0" {
 				t.Fatalf("the role's status = %q, want the shim's own exit 0\n%s", report["status"], output)
 			}
@@ -1515,28 +1645,47 @@ func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 				t.Errorf("the file the role's descendant removes on SIGTERM is %q, want it gone: the descendant was killed with no signal before it\n%s",
 					report["descendant"], output)
 			}
-			drained, err := time.ParseDuration(report["drained"])
-			if err != nil {
-				t.Fatalf("role-init's wait = %q (%v)\n%s", report["drained"], err, output)
-			}
+			ended, span := roleDrainEnd(output)
 			switch {
-			case tc.leaves && drained > roleNamespaceDrain/2:
-				t.Errorf("role-init exited %s after it reported the shim's status, want well inside %s: the wait runs to its ceiling rather than ending with the namespace\n%s",
-					drained, roleNamespaceDrain, output)
-			case !tc.leaves && drained < roleNamespaceDrain-roleDrainSlack:
-				t.Errorf("role-init exited %s after it reported the shim's status, want at least %s (roleNamespaceDrain less the roleDrainSlack the stage's own clock may lose under load): a descendant that never leaves is killed before the wait is over\n%s",
-					drained, roleNamespaceDrain-roleDrainSlack, output)
-			case !tc.leaves && drained > 2*roleNamespaceDrain:
-				t.Errorf("role-init exited %s after it reported the shim's status, want twice roleNamespaceDrain (%s) and no more: the wait is not bounded\n%s",
-					drained, 2*roleNamespaceDrain, output)
+			case tc.leaves && ended != roleDrainEmptied:
+				t.Errorf("role-init's wait ended with %q, want %q: the wait does not end when the role's processes leave\n%s",
+					ended, roleDrainEmptied, output)
+			case !tc.leaves && ended != roleDrainBounded:
+				t.Errorf("role-init's wait ended with %q, want %q: a descendant that never leaves is not waited for until the bound\n%s",
+					ended, roleDrainBounded, output)
+			case !tc.leaves && span < tc.bound:
+				t.Errorf("role-init's wait ended at its bound %s after its SIGTERM by its own clock, want at least the bound the case set (%s): a descendant that never leaves is killed before the wait is over\n%s",
+					span, tc.bound, output)
 			}
 		})
 	}
 }
 
+// roleDrainEnd is how role-init's wait over the role's namespace ended, read from the line it
+// logs then (roleDrainEmptied or roleDrainBounded, the empty string for no such line), and the
+// span of the wait that line gives, by role-init's own clock.
+func roleDrainEnd(output string) (string, time.Duration) {
+	for _, line := range strings.Split(output, "\n") {
+		for _, ended := range []string{roleDrainEmptied, roleDrainBounded} {
+			_, rest, ok := strings.Cut(line, "role-init: "+ended+" ")
+			if !ok {
+				continue
+			}
+			spelled, _, _ := strings.Cut(rest, " ")
+			span, err := time.ParseDuration(spelled)
+			if err != nil {
+				return ended + " (an unreadable span " + strconv.Quote(spelled) + ")", 0
+			}
+			return ended, span
+		}
+	}
+	return "", 0
+}
+
 // roleDrainReport runs that row's stage in a user and mount namespace of its own, as the role
 // namespace check's helper runs, and answers every `drain <key>=<value>` line it printed, with
-// its whole output for a failure to print.
+// its whole output for a failure to print. Its deadline is a hang guard alone, the test binary's
+// own less a margin: a stage that never ends fails here, by name, rather than as the binary's panic.
 func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, string) {
 	t.Helper()
 	self, err := os.Executable()
@@ -1547,7 +1696,11 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	stage := exec.Command(self, "-test.run=^TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills$")
+	guard := testwait.Bounded(t, 3*time.Minute, 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), guard)
+	defer cancel()
+	stage := exec.CommandContext(ctx, self, "-test.run=^TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills$")
+	stage.WaitDelay = time.Second
 	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded))
 	stage.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
@@ -1556,6 +1709,9 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 		GidMappingsEnableSetgroups: false,
 	}
 	output, err := stage.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("the stage had not ended %s after it started, the hang guard: role-init or the role's shim never finished\n%s", guard, output)
+	}
 	if err != nil {
 		t.Fatalf("the stage: %v\n%s", err, output)
 	}
@@ -1574,21 +1730,18 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 
 // runRoleDrain is that stage: it builds a role layout of its own on a memory filesystem under the
 // plan's directory, as CheckRoleNamespaces lays one out, runs one generation over it whose shim
-// leaves a descendant behind and exits, and reports the shim's status, whether the file the
+// leaves a descendant behind and exits, and reports the shim's status and whether the file the
 // descendant removes on SIGTERM is still in the role's own /tmp once the role's namespace is
-// gone, and how long role-init took from its report of that status to its own exit.
+// gone. role-init's own lines, the one that says how its wait ended among them, reach the
+// stage's output through its stderr.
 func runRoleDrain(plan roleDrainPlan) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
 	if err := privateMounts(); err != nil {
 		return err
 	}
 	if err := mountTmpfs(plan.Dir, "size=16m"); err != nil {
 		return err
 	}
-	roleInitLaunch = roleInitHelperLaunch(self)
+	roleInitLaunch = roleInitHelperLaunch(stageSelf)
 	const role = "drain"
 	caught := "rm -f /tmp/" + roleDrainFile + "; while :; do /bin/sleep 600 & wait; done"
 	if plan.Leaves {
@@ -1608,30 +1761,24 @@ func runRoleDrain(plan roleDrainPlan) error {
 			return err
 		}
 	}
-	process, err := newRoleProcess(cfg, os.Environ(), os.Stdout, os.Stderr)
+	process, err := newRoleProcess(cfg, append(os.Environ(), roleDrainBoundEnv+"="+plan.Bound.String()), os.Stdout, os.Stderr)
 	if err != nil {
 		return err
 	}
 	if err := process.start(); err != nil {
 		return err
 	}
-	// The status pipe closes as soon as role-init has reported the shim's status, which is where
-	// its wait over the role's namespace begins: what is left until role-init is gone is that
-	// wait and the kill that ends the namespace.
 	raw, _ := io.ReadAll(process.status)
 	_ = process.status.Close()
-	reported := time.Now()
 	if err := process.cmd.Wait(); err != nil {
 		return fmt.Errorf("role-init: %w", err)
 	}
-	drained := time.Since(reported)
 	if status := parseStatus(raw); status == nil {
 		fmt.Println("drain status=none")
 	} else {
 		fmt.Printf("drain status=%d\n", status.ExitStatus())
 	}
 	fmt.Printf("drain descendant=%s\n", presence(filepath.Join(cfg.RolesDir, RoleHomesDir, role, "tmp", roleDrainFile)))
-	fmt.Printf("drain drained=%s\n", drained)
 	return nil
 }
 
@@ -1639,8 +1786,10 @@ func runRoleDrain(plan roleDrainPlan) error {
 // caught, waits until that descendant is up, and exits on its own while it is still running, as a
 // worker shim that leaves a git or a jj behind does. The descendant installs its trap before it
 // writes the file it removes when it is signalled, so the shim's exit says the trap is in place,
-// and a file that is gone was removed rather than never written; a file that never appeared is
-// the shim's own exit 1 rather than a case that reads as a pass.
+// and a file that is gone was removed rather than never written. The shim waits for that file for
+// as long as the descendant lives, with no count of its own, and a descendant gone without
+// writing it is the shim's own exit 1 rather than a case that reads as a pass; a descendant that
+// neither writes it nor ends is the stage's hang guard's (roleDrainReport).
 //
 // The descendant holds its life in one sleep, started before its trap so the trap can name it,
 // and spends that life waiting on that one sleep: it forks nothing after the signal but its own
@@ -1649,23 +1798,20 @@ func runRoleDrain(plan roleDrainPlan) error {
 // that waited in a loop of sleeps would fork its next sleep the moment role-init's SIGTERM killed
 // the one it was waiting for, before the shell ran the pending trap, and a trap that then left
 // would leave that new sleep behind with no signal of its own — a process of the row's own
-// making, which role-init rightly waits the whole of roleNamespaceDrain for and then kills, so
-// the case that reads an early end would read the ceiling instead and fail for what the rig left
-// rather than for what role-init did. The caught of the case whose descendant stays does go on
-// forking sleeps after the signal, which is that case's whole point: a descendant that never
-// leaves is what keeps the role's namespace up until the ceiling.
+// making, which role-init rightly waits the whole of its bound for and then kills, so
+// the case that reads the namespace emptied would read the bound instead and fail for what the
+// rig left rather than for what role-init did. The caught of the case whose descendant stays
+// does go on forking sleeps after the signal, which is that case's whole point: a descendant that
+// never leaves is what keeps the role's namespace up until the bound.
 func roleDrainShim(caught string) string {
 	return fmt.Sprintf(`/bin/sh -c "/bin/sleep 600 &
 sleeper=\$!
 trap 'kill \$sleeper 2>/dev/null; %s' TERM
 printf alive > /tmp/%s
 wait \$sleeper" &
-waited=0
+descendant=$!
 while [ ! -f /tmp/%s ]; do
-	waited=$((waited + 1))
-	if [ "$waited" -gt 1000 ]; then
-		exit 1
-	fi
+	kill -0 "$descendant" 2>/dev/null || exit 1
 	/bin/sleep 0.01
 done
 exit 0

@@ -393,16 +393,20 @@ runtime:
     #                                  # 80Gi over 6Gi of disk; controller 1 and 4Gi, 10Gi over 1Gi. On GKE
     #                                  # Autopilot, which caps a pod's ephemeral storage at 10Gi, set
     #                                  # issue: { ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi }
-    # sandbox:                         # optional: the sandbox the project's issue pods run in.
-    #   type: gvisor                   # gvisor or microvm. gvisor is the default.
+    # sandbox:                         # optional: the sandbox the project's issue pods and its
+    #                                  # controller's pod (controller: daemon) run in.
+    #   type: gvisor                   # gvisor or microvm. gvisor is the default. The controller's
+    #                                  # pod follows type alone.
     #   canary_issues: [WIDGETS-12]    # issues whose pods run in the other sandbox, for a canary.
     #                                  # Each is an exact issue key, named once. The default is [].
+    #                                  # The list never moves the controller's pod.
     #   microvm:                       # where a microVM pod runs.
     #     compute_class: example-microvm # the ComputeClass whose nodes run the microVM pods.
     #                                  # Required while type is microvm or canary_issues names an
     #                                  # issue.
-    #     storage_class: example-microvm-disk # the class of a microVM pod's workspace volume.
-    #                                  # The default is storage_class above.
+    #     storage_class: example-microvm-disk # the class of a microVM issue pod's workspace volume.
+    #                                  # The default is storage_class above. The controller's disk
+    #                                  # stays on storage_class in either sandbox.
     #     keep_volume: false           # true: a microVM issue pod's volume outlives the pod.
     #                                  # docs/kubernetes.md, A kept volume on a microVM pod.
     #     metadata:                    # optional: a microVM pod's launcher serves the metadata
@@ -414,10 +418,15 @@ runtime:
     #                                  # That launcher sets GCE_METADATA_HOST and GCE_METADATA_IP to
     #                                  # the endpoint's address, so pod.env must not set them.
     #                                  # A microvm block does nothing while no issue pod runs in a
-    #                                  # microVM. The controller's pod, the repository cache pods
-    #                                  # and the image probe always run in gVisor. While an issue
-    #                                  # pod runs in a microVM, scheduling must not name
-    #                                  # sandbox.gke.io/runtime: the RuntimeClass places the pod.
+    #                                  # microVM. The repository cache pods and the image probe
+    #                                  # always run in gVisor. In a microVM pod the launcher runs
+    #                                  # the guest memory watch in place of memory_guard's guard.
+    #                                  # While an issue pod runs in a microVM, scheduling must not
+    #                                  # name sandbox.gke.io/runtime: the RuntimeClass places the pod.
+    #                                  # A change of type moves the controller's pod at its next
+    #                                  # launch that installs nothing, and legion claims suspend,
+    #                                  # then legion claims resume, of its claim moves it at once
+    #                                  # where the resume installs nothing.
     # repository_cache:                # the cache pod of each repository a live record names, which every issue pod's feed is
     #   volume: 20Gi                   # filled from before GitHub is asked for the rest: the cache's own volume,
     #   refresh_minutes: 10            # holding a bare clone; how often it fetches GitHub; how long it outlives
@@ -425,17 +434,27 @@ runtime:
     #   resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # as a pod's.
     #                                  # These are the defaults. Issue pods reach the cache pods on port 8418.
     # memory_guard:                    # the memory guard in each issue pod's launcher: when the pod's anonymous
-    #   issue_pods:                    # memory reaches act_percent (50 to 95) of the container's memory limit
-    #     enabled: true                # and the processes it may end hold at least floor_percent (1 to 50) of
-    #     act_percent: 85              # it, it ends the largest of them with SIGKILL and tells the role whose
-    #     floor_percent: 10            # process it was. Legion's own processes and each role's agent are never
-    #     wait_seconds: 5              # ended. After a kill it waits up to wait_seconds (1 to 60) for the
-    #     interval_milliseconds: 100   # reading to fall, and it reads every interval_milliseconds (50 to 5000).
-    #                                  # These are the defaults. enabled: false sends the launchers no settings,
-    #                                  # so each issue pod's guard, which runs at these defaults from the
-    #                                  # launcher's start, turns off at its first acknowledgement and ends nothing
-    #                                  # from then on, and a command that fills the limit then ends every role of
-    #                                  # the pod with the container.
+    #   issue_pods:                    # memory reaches act_percent (50 to 90) of the container's memory limit and
+    #     enabled: true                # the processes it may end hold at least floor_percent (1 to 50) of it, it
+    #     act_percent: 85              # ends with SIGKILL the process that grew the most over its last few reads,
+    #     floor_percent: 10            # else the largest one it has read at most once in its last two readings
+    #     wait_seconds: 5              # near the limit, else the one that grew the most since the guard's first
+    #     interval_milliseconds: 100   # kill while the reading stays near the limit, else the largest, a fork that
+    #   controller_pod:                # still runs its parent's program counted by what it holds over its parent,
+    #     enabled: true                # and tells the role whose process it was; from halfway between act_percent
+    #     act_percent: 85              # and the limit (92.5% at 85) it ends at one reading every process that grew
+    #     floor_percent: 10            # and, where one it may end is not new near the limit, every one new there
+    #     wait_seconds: 1              # that holds memory of its own. Legion's own processes and each role's agent
+    #     interval_milliseconds: 100   # are never ended. After a kill it waits for the processes it killed to
+    #                                  # exit, at most wait_seconds (1 to 60), and it reads every
+    #                                  # interval_milliseconds (50 to 5000). controller_pod is the same guard in
+    #                                  # the controller's pod (controller: daemon), which waits at most 1 second
+    #                                  # after a kill.
+    #                                  # These are the defaults, for each kind. enabled: false sends that kind's
+    #                                  # launchers no settings, so each of their guards, which runs at these
+    #                                  # defaults from the launcher's start, turns off at its first acknowledgement
+    #                                  # and ends nothing from then on, and a command that fills the limit then
+    #                                  # ends every role of the pod with the container.
     # volume_trim:                     # the cache trimmer in each issue pod's launcher, which deletes the oldest
     #   enabled: true                  # entries of the four cache roots on the issue volume: it reads the volume
     #   high_percent: 85               # every interval_seconds, sweeps once the used fraction reaches
