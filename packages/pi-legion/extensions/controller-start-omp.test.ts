@@ -14,6 +14,7 @@ import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-deliv
 import {
   type Block,
   type Cleanup,
+  deleteRelayCapturingStreams,
   deliveryFor,
   type Interactive,
   messageStream,
@@ -1103,6 +1104,9 @@ test.skipIf(natsUrl === undefined && !onActions)(
   async () => {
     const connection = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => connection.close());
+    // Every half below turns on who answers a relay subject, so none may be a stream that
+    // another suite left on this server (`deleteRelayCapturingStreams`).
+    await deleteRelayCapturingStreams(connection);
     const codec = StringCodec();
     const send = (sid: string) =>
       sendRelayFrame({

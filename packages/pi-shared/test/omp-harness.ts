@@ -20,6 +20,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { loopbackHost } from "@legion/test-fixtures/loopback-host";
 import { readStandinBody } from "@legion/test-fixtures/standin-body";
 import { Terminal } from "@xterm/headless";
+import { z } from "zod";
 import { linkOmpNatives } from "./omp-natives";
 
 export interface Request {
@@ -278,6 +279,90 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
     }
     return answered;
   }
+}
+
+/** One page of JetStream's `$JS.API.STREAM.NAMES` answer, or its error. */
+const StreamNamesPage = z.object({
+  total: z.number().optional(),
+  streams: z.array(z.string()).nullable().optional(),
+  error: z.object({ code: z.number(), description: z.string() }).optional(),
+});
+
+/** JetStream's `$JS.API.STREAM.DELETE.<name>` answer, or its error. */
+const StreamDeleted = z.object({
+  success: z.boolean().optional(),
+  error: z.object({ code: z.number(), description: z.string() }).optional(),
+});
+
+/** The streams on the server that capture a session's relay subject, by JetStream's own match. */
+async function relayCapturingStreams(connection: RelayConnection): Promise<string[]> {
+  const subject = deliverSubject("*");
+  const names: string[] = [];
+  for (;;) {
+    let reply: { readonly data: Uint8Array };
+    try {
+      reply = await connection.request(
+        "$JS.API.STREAM.NAMES",
+        new TextEncoder().encode(JSON.stringify({ subject, offset: names.length })),
+        { timeout: 5_000 }
+      );
+    } catch (error) {
+      // nats.js names the server's no-responders status "503": a server without JetStream holds
+      // no stream, so none captures the subject.
+      if (names.length === 0 && error instanceof Error && "code" in error && error.code === "503") {
+        return names;
+      }
+      throw new Error(`list the NATS server's streams on ${subject}: ${String(error)}`);
+    }
+    const page = StreamNamesPage.parse(JSON.parse(new TextDecoder().decode(reply.data)));
+    if (page.error !== undefined) {
+      throw new Error(`list the NATS server's streams on ${subject}: ${page.error.description}`);
+    }
+    const streams = page.streams ?? [];
+    names.push(...streams);
+    if (streams.length === 0 || names.length >= (page.total ?? 0)) return names;
+  }
+}
+
+/**
+ * Deletes every JetStream stream on the server `connection` reaches that captures a session's
+ * relay subject (`deliverSubject`), and answers their names. Call it once a case holds its
+ * connection and before its first `sendRelayFrame`.
+ *
+ * A stream whose subjects take a relay subject answers each frame itself, with its publish ack
+ * (`{"stream":"ENVOY_NOTIFICATIONS","seq":2}`), beside the session that holds the subject, and a
+ * request takes whichever answer comes first: that ack reads as "a word the relay protocol does
+ * not hold", and a frame to a subject nobody holds is answered where it should meet no responder.
+ * Envoy's own stream never takes one (`DeliverSubjectPrefix`, packages/envoy/internal/bus/stream.go:
+ * a relay frame travels over core NATS). The daemon's Go tests make ENVOY_NOTIFICATIONS on all of
+ * `notifications.>`, and testnats.URL empties the server at the start of each of its tests, not at
+ * the end, so the last test's stream stays on a server both suites share: LEGION_TEST_NATS_URL in a
+ * pod with no Docker. Deleting it is what testnats.URL does at the start of every Go test on that
+ * server; this deletes only the streams that capture a relay subject, and fails naming any it
+ * could not.
+ */
+export async function deleteRelayCapturingStreams(
+  connection: RelayConnection
+): Promise<readonly string[]> {
+  const found = await relayCapturingStreams(connection);
+  for (const name of found) {
+    const reply = await connection.request(`$JS.API.STREAM.DELETE.${name}`, new Uint8Array(), {
+      timeout: 5_000,
+    });
+    const deleted = StreamDeleted.parse(JSON.parse(new TextDecoder().decode(reply.data)));
+    if (deleted.success !== true) {
+      throw new Error(
+        `delete the NATS server's stream ${name}, which captures a relay subject: ${deleted.error?.description ?? "no success in its answer"}`
+      );
+    }
+  }
+  const left = await relayCapturingStreams(connection);
+  if (left.length > 0) {
+    throw new Error(
+      `the NATS server still holds streams that capture a relay subject: ${left.join(", ")}`
+    );
+  }
+  return found;
 }
 
 /** One provider the stand-in serves and the models it offers under it. Every provider is the same
