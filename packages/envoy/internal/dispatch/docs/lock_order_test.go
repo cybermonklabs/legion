@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func lockOrderServiceFor(t *testing.T, database *store.Store) *Service {
@@ -32,8 +33,7 @@ func lockOrderService(t *testing.T) (*store.Store, *Service, string) {
 }
 
 func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	database, service, id := lockOrderService(t)
 	seedServiceText(t, service, id, "first\n\nsecond")
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -87,6 +87,10 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 		snapshotDone <- err
 	}()
 
+	// An inversion is a deadlock nothing but the test's end breaks: the snapshot waits for the
+	// document mutex the second edit holds while that edit waits in the database for the first
+	// transaction, which only ends below. So the wait ends on the snapshot's return, and
+	// otherwise at the end of the test's context, the binary's deadline less testwait's margin.
 	select {
 	case err := <-snapshotDone:
 		if err != nil {
@@ -94,8 +98,8 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 		}
 	case err := <-secondDone:
 		t.Fatalf("second edit returned before first transaction released its lock: %v", err)
-	case <-time.After(15 * time.Second):
-		t.Fatal("lock-order inversion: a conditional edit holds the document mutex while waiting for the advisory lock another writer holds")
+	case <-ctx.Done():
+		t.Fatal("lock-order inversion: a conditional edit holds the document mutex while waiting for the advisory lock another writer holds (the snapshot had not returned by the test binary's deadline less testwait's margin)")
 	}
 
 	// txTwo's connection belongs to the second edit until ApplyOps returns, so the deferred
@@ -105,13 +109,8 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 		t.Fatalf("roll back the first transaction: %v", err)
 	}
 	ledgerOne.Discard()
-	select {
-	case err := <-secondDone:
-		if err != nil {
-			t.Fatalf("second edit once the first transaction ended: %v", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("second edit did not finish once the first transaction ended")
+	if err := testwait.Receive(t, "the second edit to finish once the first transaction ended", secondDone); err != nil {
+		t.Fatalf("second edit once the first transaction ended: %v", err)
 	}
 }
 
@@ -143,19 +142,17 @@ func lockOrderDocument(t *testing.T) (*store.Store, *Service, string) {
 	return database, lockOrderServiceFor(t, database), id
 }
 
-// awaitUnblocked runs op and fails if it has not returned within the window a blocked writer
-// would exceed. subject names the writer in the lock-order-inversion message.
+// awaitUnblocked runs op and fails unless it returns without error. A writer the owner's lock
+// blocks waits until that lock's transaction ends, which only the test's end does, so the wait
+// ends on op's return and otherwise at the test binary's deadline less testwait's margin
+// (testwait.Receive), never at a span a loaded machine can overrun on a correct run. subject
+// names the writer in the wait's failure.
 func awaitUnblocked(t *testing.T, subject string, op func() error) {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- op() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run %s while the owner's lock and row are held: %v", subject, err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatalf("lock-order inversion: %s is blocked by the document's owner lock", subject)
+	if err := testwait.Receive(t, subject+" to return while the document's owner lock is held, which a lock-order inversion keeps it from", done); err != nil {
+		t.Fatalf("run %s while the owner's lock and row are held: %v", subject, err)
 	}
 }
 
@@ -169,8 +166,7 @@ func awaitUnblocked(t *testing.T, subject string, op func() error) {
 // advisory lock and the append's row lock is `for no key update`: they still serialise the
 // writers that take them, including the event sequence allocation, and do not block a foreign key.
 func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
 
@@ -197,8 +193,7 @@ func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
 }
 
 func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
 
@@ -222,8 +217,7 @@ func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 // loser is failRoom - it evicts the room and drops the in-flight update rather than returning
 // an error to anyone.
 func TestLiveUpdateIsNotBlockedByTheOwnerLock(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
 
