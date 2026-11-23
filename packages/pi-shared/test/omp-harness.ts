@@ -67,11 +67,16 @@ export async function ompRoot(
 
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
- * body, empty for a GET. Returns the recorded requests and the server's base URL.
+ * body, empty for a GET, and the request itself, whose `signal` aborts when the client gives the
+ * request up. Returns the recorded requests and the server's base URL.
  */
 export function serveStandin(
   cleanup: Cleanup,
-  answer: (url: URL, body: Record<string, unknown>) => Response | Promise<Response>
+  answer: (
+    url: URL,
+    body: Record<string, unknown>,
+    request: globalThis.Request
+  ) => Response | Promise<Response>
 ): { readonly requests: Request[]; readonly base: string } {
   const requests: Request[] = [];
   const server = Bun.serve({
@@ -82,7 +87,7 @@ export function serveStandin(
       const text = request.method === "POST" ? await request.text() : "";
       const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
       requests.push({ path: url.pathname, body });
-      return answer(url, body);
+      return answer(url, body, request);
     },
   });
   cleanup.push(async () => {
