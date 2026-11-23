@@ -15,6 +15,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
+
 // noList is the line tree writes after the directory when it reads no --retired list: the
 // instrument says what it did not read.
 const noList = ": no --retired list, so no id is checked against the ids the approved spec removed\n"

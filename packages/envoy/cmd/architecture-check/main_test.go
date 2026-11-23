@@ -22,6 +22,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
 
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
+
 // The bound refuses a set holding a note of notes.MaxFileSize + 1 bytes before any note is read,
 // so the note beside it, whose front matter holds an unknown key, is never parsed and its problem
 // never printed: the command prints the bound's one refusal and the count line.
