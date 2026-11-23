@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // proofHistory writes a document's stored history as a room stores one: each write is the update
@@ -484,11 +485,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 		_, err := service.Text(leaderCtx, artifactID)
 		leader <- err
 	}()
-	select {
-	case <-persistence.entered:
-	case <-time.After(time.Second):
-		t.Fatal("the cold fold never reached LoadDocument")
-	}
+	testwait.Receive(t, "the cold fold to reach LoadDocument", persistence.entered)
 
 	var followers sync.WaitGroup
 	results := make(chan error, 2)
@@ -503,16 +500,14 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 			results <- err
 		}()
 	}
-	// Give the followers a chance to enter DoChan while the first fold is still blocked.
+	// Give the followers a chance to enter DoChan while the first fold is still blocked. A
+	// coverage window, not a wait for a verdict: a follower a loaded machine keeps out past it
+	// reads the rendering the held fold stores once released (s.reads.get), with no load of its
+	// own, so the run still passes.
 	time.Sleep(20 * time.Millisecond)
 	cancel()
-	select {
-	case err := <-leader:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled leader = %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("the cancelled leader stayed blocked on the shared fold")
+	if err := testwait.Receive(t, "the cancelled leader to leave the shared fold", leader); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled leader = %v, want context.Canceled", err)
 	}
 	close(persistence.release)
 	followers.Wait()

@@ -38,8 +38,8 @@ const actAnswerSpec = "Context\n\n" +
 // (approval_carry_approved_test.go), and not the 20 ms a test that only seeds can afford: a
 // settlement firing while one of these tests holds its joined transaction takes the document's
 // rows in the other order and the two deadlock, which `-race` is slow enough to hit. The seeding
-// below schedules one settlement itself and waits up to three seconds for it, so a second costs
-// the seed nothing.
+// below schedules one settlement itself and waits for it with no span of its own (waitUntil), so
+// a second's settle delays the seed and cannot fail it.
 func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -48,7 +48,7 @@ func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index both blocks", func() bool {
+	waitUntil(t, "settlement to index both blocks", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from asks where block_artifact_id = $1 and block_id = any($2::text[])

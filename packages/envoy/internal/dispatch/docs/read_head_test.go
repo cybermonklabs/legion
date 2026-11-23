@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A read is never older than the stored head, nor than the room (plan D8): a resident room whose
@@ -74,14 +75,11 @@ func (g *catchUpGate) open() {
 	}
 }
 
-// awaitHeld waits until a catch-up of the gate's room has read the store and is held.
+// awaitHeld waits until a catch-up of the gate's room has read the store and is held. The wait
+// ends on that catch-up, bounded only by the test binary's deadline (testwait.Receive).
 func (g *catchUpGate) awaitHeld(t *testing.T, what string) {
 	t.Helper()
-	select {
-	case <-g.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatalf("no catch-up of the reader's room read the store after %s within %v", what, roomWait(t))
-	}
+	testwait.Receive(t, "a catch-up of the reader's room to read the store after "+what, g.entered)
 }
 
 // readPair is one document served by two processes: writer, which holds no room for it to begin
@@ -105,6 +103,10 @@ func newReadPair(t *testing.T) readPair {
 	second := storetest.SecondProcess(t, database)
 	loads := &loadCountingStore{VersionedStore: NewPgVersioned(second)}
 	reader := newReadCacheService(t, second, loads)
+	// Every test of the pair needs the reader's room resident throughout, so its idle sweeper is
+	// given an hour, set before the first room starts it (Deps.RoomIdleTimeout): at the default
+	// minute, a loaded machine that stalls the test that long has the room evicted under it.
+	reader.srv.RoomIdleTimeout = time.Hour
 	seedServiceText(t, writer, artifactID, "The quick brown fox.\n\nSecond.\n")
 	settleCurrentGeneration(t, writer, artifactID)
 
@@ -117,7 +119,7 @@ func newReadPair(t *testing.T) readPair {
 	// Runs before the room sync stops and the services shut down: a catch-up held then would
 	// keep the lane, and so both, from returning.
 	t.Cleanup(gate.open)
-	waitFor(t, roomWait(t), "the reader's room to stand at the head", func() bool {
+	waitUntil(t, "the reader's room to stand at the head", func() bool {
 		return !roomBehind(t, reader, artifactID)
 	})
 	return readPair{database: database, artifactID: artifactID, writer: writer, reader: reader, loads: loads, gate: gate}
@@ -239,7 +241,7 @@ func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoo
 	}
 
 	pair.gate.open()
-	waitFor(t, roomWait(t), "the reader's room to catch up", func() bool {
+	waitUntil(t, "the reader's room to catch up", func() bool {
 		return !roomBehind(t, pair.reader, pair.artifactID)
 	})
 	before = pair.loads.loads.Load()
@@ -323,7 +325,10 @@ func TestAReadOfARoomBehindTheHeadHoldingItsOwnUpdateReadsTheStoreAndThatUpdate(
 // applies it.
 func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 	pair := newReadPair(t)
-	pair.reader.markWait = roomWait(t)
+	// The second VerifyMark below waits for a mark the writer stores while it waits, a fact, so
+	// MarkWait is what the test binary's deadline leaves less roomWaitMargin (testwait.Remaining),
+	// read here on the test's goroutine: a loaded machine only lengthens that wait.
+	pair.reader.markWait = testwait.Remaining(t, roomWaitMargin)
 
 	pair.leaveReaderBehind(t, "the writer's mark", func() {
 		browserMark(t, pair.writer, pair.artifactID, "proofComment", "held-mark", "quick")
@@ -349,7 +354,7 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 	}
 
 	pair.gate.open()
-	waitFor(t, roomWait(t), "the reader's room to catch up", func() bool {
+	waitUntil(t, "the reader's room to catch up", func() bool {
 		return !roomBehind(t, pair.reader, pair.artifactID)
 	})
 	warmed := make(chan struct{}, 1)
@@ -368,11 +373,7 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 		anchored, err := pair.reader.VerifyMark(context.Background(), pair.artifactID, MarkComment, "late-mark")
 		result <- verified{anchored, err}
 	}()
-	select {
-	case <-warmed:
-	case <-time.After(roomWait(t)):
-		t.Fatal("VerifyMark never subscribed to the reader's room")
-	}
+	testwait.Receive(t, "VerifyMark to subscribe to the reader's room", warmed)
 	browserMark(t, pair.writer, pair.artifactID, "proofComment", "late-mark", "fox")
 	waitForLandedAppends(t, pair.writer, pair.artifactID)
 	got := <-result
@@ -388,7 +389,10 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 // while the mark has been durable all along (the comment at VerifyMark).
 func TestVerifyMarkOnARoomBehindTheHeadHoldingItsOwnUpdateFindsTheStoredMark(t *testing.T) {
 	pair := newReadPair(t)
-	pair.reader.markWait = roomWait(t)
+	// A VerifyMark that waited rather than read the store would wait for a catch-up this test
+	// holds, so MarkWait is what the test binary's deadline leaves less roomWaitMargin
+	// (testwait.Remaining): such a look fails by name, and a correct one returns at once.
+	pair.reader.markWait = testwait.Remaining(t, roomWaitMargin)
 	const typed = "Typed into the room behind the head."
 
 	pair.leaveReaderBehind(t, "the writer's mark", func() {
@@ -449,7 +453,7 @@ func TestTheTokenOfARoomBehindTheHeadHoldingItsOwnUpdateIsTheWholeDocuments(t *t
 	// stands is the one that token was taken over, and nothing else has written it.
 	land()
 	pair.gate.open()
-	waitFor(t, roomWait(t), "the reader's room to catch up", func() bool {
+	waitUntil(t, "the reader's room to catch up", func() bool {
 		return !roomBehind(t, pair.reader, pair.artifactID)
 	})
 	outcome, err := joinedApplyOps(pair.reader, pair.artifactID, nil, actor, &model.EditPrecondition{Document: token})

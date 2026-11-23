@@ -486,13 +486,8 @@ func TestALiveWriteAndAKeystrokeQueueOnTheRoomsLockAndNeitherIsLost(t *testing.T
 		t.Fatalf("release the room's lock: %v", err)
 	}
 
-	select {
-	case err := <-written:
-		if err != nil {
-			t.Fatalf("the live write: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the live write never finished once the room's lock was free")
+	if err := testwait.Receive(t, "the live write to finish once the room's lock was free", written); err != nil {
+		t.Fatalf("the live write: %v", err)
 	}
 	waitForLandedAppends(t, service, artifactID)
 	report := assertStoredOrder(t, service, artifactID)

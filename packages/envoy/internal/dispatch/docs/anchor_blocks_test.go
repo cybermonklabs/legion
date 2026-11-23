@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
@@ -124,18 +125,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	// A content change is what makes the settlement write a version, and a version write is what
 	// refreshes the anchors.
 	editLiveTree(t, service, artifactID, replaceRun("Introduction.", "Intro."))
-	settleCtx, cancelSettle := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelSettle()
-	if err := service.waitForPendingUpdates(settleCtx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(settleCtx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to become durable: %v", err)
-	}
-	state := service.room(artifactID)
-	state.mu.Lock()
-	generation := state.roomGeneration
-	state.mu.Unlock()
+	generation := roomGeneration(t, service, artifactID)
 
 	hold, err := service.store.Pool.Begin(context.Background())
 	if err != nil {
@@ -185,16 +175,11 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	}
 	<-settled
 
-	var backfill AnchorBlockBackfill
-	select {
-	case result := <-backfilled:
-		if result.err != nil {
-			t.Fatalf("backfill anchor blocks after the settlement: %v", result.err)
-		}
-		backfill = result.report
-	case <-time.After(30 * time.Second):
-		t.Fatal("the backfill never finished after the settlement released the comment's owner lock")
+	result := testwait.Receive(t, "the backfill to finish once the settlement released the comment's owner lock", backfilled)
+	if result.err != nil {
+		t.Fatalf("backfill anchor blocks after the settlement: %v", result.err)
 	}
+	backfill := result.report
 	if backfill.Asks != 0 || backfill.Comments != 1 {
 		t.Fatalf("backfill after the settlement = %#v, want the comment alone", backfill)
 	}

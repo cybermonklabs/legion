@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
 
@@ -83,17 +84,22 @@ func TestMarkQuoteJoinsTheCallerTransaction(t *testing.T) {
 }
 
 func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
+	const markWait = 300 * time.Millisecond
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{
 		Store:    database,
 		Events:   events.NewBroker(),
 		Settle:   time.Hour,
-		MarkWait: 300 * time.Millisecond,
+		MarkWait: markWait,
 	})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
+	// The first look waits for the browser's mark, a fact, so its MarkWait is what the test
+	// binary's deadline leaves less roomWaitMargin (testwait.Remaining), read here on the test's
+	// goroutine: a loaded machine that writes the mark late lengthens the look and cannot fail it.
+	service.markWait = testwait.Remaining(t, roomWaitMargin)
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		browserMark(t, service, artifactID, "proofComment", "b1", "brown")
@@ -103,6 +109,8 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 		t.Fatalf("VerifyMark = %q, %v", anchored.Quote, err)
 	}
 
+	// The second look is of a mark no one writes, so it measures MarkWait itself.
+	service.markWait = markWait
 	started := time.Now()
 	if _, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never"); !errors.Is(err, ErrAnchorMissing) {
 		t.Fatalf("missing mark err = %v", err)
@@ -115,43 +123,108 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 // Two processes serving one document can have one evict the room instance a verification
 // subscribed to, so no update of that instance ever announces the mark the browser writes next.
 // The wait ends with a read of the document as it then is, which finds the mark, rather than
-// refusing an anchor the document holds.
+// refusing an anchor the document holds. The order is made, not timed: the mark is written only
+// once the look the wait ends with has begun, and that look's read of the stored head is held
+// until the write has landed (finalLookHold), so the first look finds nothing and the last finds
+// the mark however slowly the machine runs either.
 func TestVerifyMarkReadsTheDocumentAgainWhenItsWaitEnds(t *testing.T) {
+	const markWait = 300 * time.Millisecond
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
+	looks := &finalLookHold{final: make(chan struct{}), release: make(chan struct{})}
 	service := New(Deps{
-		Store:    database,
+		Store:    storetest.TracedStore(t, database, looks),
 		Events:   events.NewBroker(),
 		Settle:   time.Hour,
-		MarkWait: 300 * time.Millisecond,
+		MarkWait: markWait,
 	})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
+	verified := make(chan struct{})
 	written := make(chan struct{})
 	var replaced atomic.Int32
+	var waitFrom time.Time
 	service.afterReadWarm = func(room string) {
 		if room != artifactID || !replaced.CompareAndSwap(0, 1) {
 			return
 		}
 		// The verification subscribes to this instance as the hook returns, so evicting it here
-		// leaves the mark to land in the instance that replaces it, announced to nobody. The
-		// write waits out the verification's first read, which must find nothing.
+		// leaves the mark to land in the instance that replaces it, announced to nobody.
 		if err := service.Evict(context.Background(), room); err != nil {
 			t.Errorf("evict the warm room: %v", err)
 		}
+		// The browser writes the mark once the final look has begun, and lets that look's held
+		// read of the head go once the mark is in the room. A verification that returns with no
+		// final look ends the writer unwritten, and the checks below name it.
 		go func() {
 			defer close(written)
-			time.Sleep(100 * time.Millisecond)
+			select {
+			case <-looks.final:
+			case <-verified:
+				return
+			}
 			browserMark(t, service, artifactID, "proofComment", "b1", "brown")
+			close(looks.release)
 		}()
+		// MarkWait's timer starts once this hook returns, so the look the wait ends with begins
+		// markWait after this at the soonest.
+		waitFrom = time.Now()
+		looks.armed.Store(true)
 	}
-	anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
-	<-written
+	// The verification's context ends only where testwait's waits give up, so a held read whose
+	// write never comes ends there and VerifyMark's error names it.
+	anchored, err := service.VerifyMark(context.WithValue(testwait.Context(t), verifyMarkLook{}, true), artifactID, MarkComment, "b1")
+	close(verified)
+	testwait.Receive(t, "the browser's write of the mark to end", written)
 	if err != nil || anchored.Quote != "brown" {
 		t.Fatalf("VerifyMark of a mark written into the room that replaced the subscribed one = %q, %v, want brown", anchored.Quote, err)
 	}
+	if reads := looks.reads.Load(); reads != 2 {
+		t.Fatalf("VerifyMark read the stored head %d times after the eviction, want 2: its first look's and the look its wait ends with", reads)
+	}
+	if into := looks.heldAt.Sub(waitFrom); into < markWait {
+		t.Fatalf("the look that found the mark began %v after the wait began, within MarkWait's %v: it was not the read the wait ends with", into, markWait)
+	}
 }
+
+// verifyMarkLook marks the context a test hands VerifyMark, so finalLookHold counts the reads of
+// that call and of no other reader of the head.
+type verifyMarkLook struct{}
+
+// storedHeadStatement is the read of the stored head (currentUpdateCursor) that each look of
+// VerifyMark begins with (docTree, readStoredHead).
+const storedHeadStatement = "select coalesce(max(version), 0) from doc_updates where artifact_id = $1"
+
+// finalLookHold sees, once armed, each read of the stored head made on a context carrying
+// verifyMarkLook. The first is the first look's and goes on. The second is the look the wait ends
+// with: it records when it began (heldAt), closes final, and is sent only once release is closed
+// or its context has ended. Each runs on VerifyMark's goroutine, the test's, which reads heldAt
+// once VerifyMark has returned.
+type finalLookHold struct {
+	armed   atomic.Bool
+	reads   atomic.Int32
+	heldAt  time.Time
+	final   chan struct{}
+	release chan struct{}
+}
+
+func (h *finalLookHold) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if !h.armed.Load() || ctx.Value(verifyMarkLook{}) == nil || strings.TrimSpace(data.SQL) != storedHeadStatement {
+		return ctx
+	}
+	if h.reads.Add(1) == 2 {
+		h.heldAt = time.Now()
+		close(h.final)
+		select {
+		case <-h.release:
+		case <-ctx.Done():
+		}
+	}
+	return ctx
+}
+
+func (*finalLookHold) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // Bob's browser comments on "quick brown", Alice's on "brown": the server reads each comment's own
 // whole text, so neither Send is refused as a missing anchor and neither quote is cut.
@@ -468,7 +541,7 @@ func TestVersionWriteRefreshesAnchorsByMark(t *testing.T) {
 	innerID := insertAnchoredCommentWithID(t, service, artifactID, "00000000-0000-4000-8000-000000000004", "brown")
 
 	editLiveTree(t, service, artifactID, replaceRun("brown", "browner"))
-	waitFor(t, time.Second, "anchor refresh to browner", func() bool {
+	waitUntil(t, "anchor refresh to browner", func() bool {
 		anchor := loadAskAnchor(t, service, askID)
 		return anchor.Quote == "browner" && !anchor.Orphaned && loadCommentAnchor(t, service, innerID).Quote == "browner"
 	})
@@ -483,7 +556,7 @@ func TestVersionWriteRefreshesAnchorsByMark(t *testing.T) {
 	}
 
 	editLiveTree(t, service, artifactID, deleteRun("browner"))
-	waitFor(t, time.Second, "anchor orphaning after browner deletion", func() bool {
+	waitUntil(t, "anchor orphaning after browner deletion", func() bool {
 		anchor := loadAskAnchor(t, service, askID)
 		return anchor.Orphaned && anchor.Version == 1
 	})
@@ -756,7 +829,7 @@ func TestMarkOnlyUpdateSweepsUnrecordedMarksWithoutCanonicalizingLegacyTable(t *
 	}
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	browserMark(t, service, artifactID, "proofComment", "dangling", "one|two")
-	waitFor(t, time.Second, "unrecorded mark removed", func() bool {
+	waitUntil(t, "unrecorded mark removed", func() bool {
 		_, _, found := pmdoc.FindMark(liveTree(t, service, artifactID), "proofComment", "dangling")
 		return !found
 	})
@@ -879,7 +952,7 @@ func TestProjectMarkRearmsPendingSettlement(t *testing.T) {
 		t.Fatalf("commit projection transaction: %v", err)
 	}
 	ledger.publish()
-	waitFor(t, time.Second, "settled projection version for after", func() bool {
+	waitUntil(t, "settled projection version for after", func() bool {
 		var markdown string
 		var named bool
 		if err := service.store.Pool.QueryRow(context.Background(), `
@@ -941,7 +1014,7 @@ func TestReplaceTextReanchorsOpenRows(t *testing.T) {
 	}
 	// The anchored ask and comment above schedule their own settlements, so version 2 can be the
 	// pre-replace snapshot; wait for the replacement's settled state, not a version number.
-	waitFor(t, time.Second, "the deleted quote's comment to orphan", func() bool {
+	waitUntil(t, "the deleted quote's comment to orphan", func() bool {
 		return loadCommentAnchor(t, service, commentID).Orphaned
 	})
 	if anchor := loadAskAnchor(t, service, askID); anchor.Orphaned || anchor.Quote != "brown" {
@@ -1172,13 +1245,12 @@ func loadAnchor(t *testing.T, service *Service, table, id string) storedAnchor {
 // (durableAppends, decremented after each append commits), so this waits on that signal rather
 // than polling the row count against a stopwatch: the drain takes as long as the machine needs -
 // it runs at roughly a hundred appends a second, so five hundred marks is seconds of work on an
-// idle box and longer on a loaded one - while a drain that never finishes still fails, on the
-// context deadline rather than on how busy the box was.
+// idle box and longer on a loaded one. Its context ends only at the test binary's deadline less
+// testwait's margin (testwait.Context), so a drain that never finishes still fails, by name, and
+// one that is merely slow passes.
 func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, want int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
+	if err := service.waitForDurableAppends(testwait.Context(t), artifactID); err != nil {
 		t.Fatalf("waiting for queued document updates to persist: %v", err)
 	}
 	var count int

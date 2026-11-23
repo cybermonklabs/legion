@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An edit a browser makes after a settlement has read the document it versions is not in that
@@ -363,6 +364,7 @@ func currentLiveMarkdown(t *testing.T, service *Service, artifactID string) stri
 // room - and its update observer has reached hook, one of the observer's test hooks, held there -
 // so write is in the live document but not yet reflected in the room's rendered replica or its
 // ask-block bookkeeping. release lets the held observer go on and returns once write has finished.
+// Both waits end on their fact (testwait.Receive), bounded only by the test binary's deadline.
 func holdObserver(t *testing.T, service *Service, artifactID string, hook *func(room string), write func() error) (release func()) {
 	t.Helper()
 	held := make(chan struct{})
@@ -379,21 +381,12 @@ func holdObserver(t *testing.T, service *Service, artifactID string, hook *func(
 	}
 	done := make(chan error, 1)
 	go func() { done <- write() }()
-	select {
-	case <-held:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the held write never reached its observer hook")
-	}
+	testwait.Receive(t, "the held write to reach its observer hook", held)
 	return func() {
 		t.Helper()
 		let()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("held write: %v", err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatal("the held write never finished applying")
+		if err := testwait.Receive(t, "the held write to finish applying", done); err != nil {
+			t.Fatalf("held write: %v", err)
 		}
 	}
 }
@@ -816,7 +809,7 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 	// The ask row is visible once the copy's settlement commits, and that settlement forgets the
 	// room's owed author as it commits, under the room's lock (consumeAskAuthorsLocked); the room
 	// is read once the settlement has ended, so its count is read after the forgetting.
-	waitFor(t, 10*time.Second, "the copy's settlement that opened its ask to end", func() bool {
+	waitUntil(t, "the copy's settlement that opened its ask to end", func() bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		return state.settling == 0

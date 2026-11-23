@@ -109,10 +109,14 @@ func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testin
 		t.Fatalf("the store holds bob's edit %q while its append is held, so nothing here is tested", stored)
 	}
 
+	// Task B's append is let go held after started, never sooner, and a correct anchor returns only
+	// after that, so waited is at least held however loaded the machine is: a slow machine only
+	// lets the append go later and lengthens the wait, and only an anchor that did not wait for the
+	// other process's room returns sooner.
 	const held = 200 * time.Millisecond
+	started := time.Now()
 	released := time.AfterFunc(held, pair.gateB.release)
 	defer released.Stop()
-	started := time.Now()
 	anchored, snapshot, err := anchorToAMark(pair.taskA, pair.artifactID, "c1", model.Actor{Kind: "user", ID: "carol"}, joinBeforeTheVersion)
 	waited := time.Since(started)
 
@@ -122,7 +126,7 @@ func TestAMarkAnchorFlushesTheOtherProcessesRoomBeforeTheDocumentsLock(t *testin
 	if strings.Contains(logs.String(), skippedFlush) {
 		t.Fatalf("the anchor asked for a flush while holding the document's advisory lock: %s", logs.String())
 	}
-	if waited < held-20*time.Millisecond {
+	if waited < held {
 		t.Fatalf("the anchor returned after %v, before task B's held append was let go at %v: it never waited for the other process's room", waited, held)
 	}
 	if stored := storedMarkdown(t, pair.database, pair.artifactID); !strings.Contains(stored, "by bob") {

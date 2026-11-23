@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/stacktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An authenticated peer grows a nested element chain through the document websocket, in updates
@@ -40,8 +41,10 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
 		// The peer writes on the room's document, as a browser does once the room has sent it, so
-		// the chain's root always lands beside the seeded paragraph.
-		if err := peer.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+		// the chain's root always lands beside the seeded paragraph. WaitForText takes only a
+		// span, so its span is what the test binary's deadline leaves less roomWaitMargin
+		// (testwait.Remaining): the wait ends on the room's document, never at a span of its own.
+		if err := peer.WaitForText(peerMarkdown, "before\n", testwait.Remaining(t, roomWaitMargin)); err != nil {
 			t.Fatal(err)
 		}
 		fragment := peer.Doc.GetXmlFragment(fragmentName)
@@ -75,7 +78,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		client := peer.Doc.ClientID()
 		sent := peer.Doc.StateVector().Clock(client)
 		live := service.srv.GetDoc(artifactID)
-		waitFor(t, 30*time.Second, "the room to hold the nested chain", func() bool {
+		waitUntil(t, "the room to hold the nested chain", func() bool {
 			return live.StateVector().Clock(client) == sent
 		})
 		if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocSchema) {
@@ -102,7 +105,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 			t.Fatalf("send the chain's delete: %v", err)
 		}
 
-		waitFor(t, 30*time.Second, "the room to read back as the document it was", func() bool {
+		waitUntil(t, "the room to read back as the document it was", func() bool {
 			text, err := service.Text(context.Background(), artifactID)
 			return err == nil && strings.TrimSpace(text) == "before"
 		})

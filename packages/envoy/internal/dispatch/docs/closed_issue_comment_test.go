@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A closed issue still takes a comment, so its document still takes that comment's anchor under
@@ -131,19 +132,16 @@ func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 	if service.roomHeld(artifactID) {
 		t.Fatal("the cold comment write loaded a room of the document")
 	}
-	select {
-	case <-started:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the cold write armed no settlement, so this test no longer covers the settlement its publish arms")
-	}
+	testwait.Receive(t, "the settlement the cold write's publish arms to start (without it, this test no longer covers that settlement)", started)
 	if owed, err := settlementPending(ctx, service.store.Pool, artifactID); err != nil || !owed {
 		t.Fatalf("the document owes a settlement after the comment = %t (%v), want the pending-settlement row its write left", owed, err)
 	}
 	letSettle()
-	waitFor(t, roomWait(t), "the closed issue's settlement to commit, taking the document's pending-settlement row", owesNothing)
+	waitUntil(t, "the closed issue's settlement to commit, taking the document's pending-settlement row", owesNothing)
 	// A refusal counted as a failure failed the room on its third try, three settle delays after
 	// the first; this watches ten, and the failure count below catches even the first taken as a
-	// fault.
+	// fault. A correct run counts no failure however long it is watched, so a loaded machine only
+	// shortens what the ten settle delays see and cannot fail it.
 	deadline := time.Now().Add(10 * settle)
 	for time.Now().Before(deadline) && !failed.Load() {
 		time.Sleep(settle / 5)
@@ -488,9 +486,5 @@ func holdOneRoomUpdate(t *testing.T, held *heldStore, write func()) {
 	t.Helper()
 	held.armed.Store(true)
 	write()
-	select {
-	case <-held.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's own append of the browser's update never reached the store")
-	}
+	testwait.Receive(t, "the room's own append of the browser's update to reach the store", held.entered)
 }

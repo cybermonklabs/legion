@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // blockIndexService is a document service whose settle delay is an hour, so no timer settles a
@@ -757,8 +758,9 @@ func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
 // other for good.
 func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	database, service, recorder := tracedBlockIndexService(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// The tick waits on the edit's owner lock under this context: it ends on the commit that
+	// releases the lock, bounded only by the test binary's deadline (testwait.Context).
+	ctx := testwait.Context(t)
 	var comment string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (issue_key, author, body)
@@ -801,13 +803,8 @@ func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the edit: %v", err)
 	}
-	select {
-	case err := <-ticked:
-		if err != nil {
-			t.Fatalf("tick beside the edit: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("the tick never finished after the edit committed")
+	if err := testwait.Receive(t, "the tick to finish once the edit committed", ticked); err != nil {
+		t.Fatalf("tick beside the edit: %v", err)
 	}
 	if tick.Items != 0 || tick.OwedItems != 1 {
 		t.Fatalf("tick beside the edit = %#v, want nothing written and the comment still owed", tick)
@@ -1411,15 +1408,11 @@ func TestTheBlockIndexArmsWaitForTheDocumentsOwnerLockHoldingNoTransactionID(t *
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatalf("release the owner lock: %v", err)
 			}
-			select {
-			case got := <-ticked:
-				if got.err != nil {
-					t.Fatalf("the tick: %v", got.err)
-				}
-				arm.wrote(t, got.tick)
-			case <-time.After(30 * time.Second):
-				t.Fatal("the tick never finished once the owner lock was released")
+			got := testwait.Receive(t, "the tick to finish once the owner lock was released", ticked)
+			if got.err != nil {
+				t.Fatalf("the tick: %v", got.err)
 			}
+			arm.wrote(t, got.tick)
 		})
 	}
 }

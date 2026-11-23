@@ -659,7 +659,7 @@ func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Se
 	seedServiceText(t, service, artifactID, regionSpec)
 	// Settlement indexes the block as an ask of this document, the row the carry reads.
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index the block", func() bool {
+	waitUntil(t, "settlement to index the block", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1 and block_id = 'region'`, artifactID).Scan(&rows); err != nil {
 			t.Fatal(err)

@@ -62,7 +62,7 @@ func TestTheConditionalEditQueueIsCappedAcrossProcesses(t *testing.T) {
 		}()
 	}
 	var held []func()
-	waitFor(t, roomWait(t), "32 conditional edits admitted across both processes", func() bool {
+	waitUntil(t, "32 conditional edits admitted across both processes", func() bool {
 		select {
 		case result := <-results:
 			// Task B's first edit takes its turn at once; every other one waits for a turn.
@@ -208,28 +208,19 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 		left <- err
 	}()
 	leave()
-	select {
-	case err := <-left:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("an admission whose context ended while it waited = %v, want its context's cancellation", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("an admission whose context ended stayed queued behind the document's queue lock")
+	if err := testwait.Receive(t, "the admission whose context ended to leave the document's queue lock", left); !errors.Is(err, context.Canceled) {
+		t.Fatalf("an admission whose context ended while it waited = %v, want its context's cancellation", err)
 	}
 
 	if err := holder.Commit(context.Background()); err != nil {
 		t.Fatalf("release the document's conditional edit queue lock: %v", err)
 	}
 	for range storm {
-		select {
-		case result := <-results:
-			if result.err != nil {
-				t.Fatalf("a conditional edit within the cap: %v", result.err)
-			}
-			result.release()
-		case <-time.After(roomWait(t)):
-			t.Fatal("an admission did not complete once the document's queue lock was released")
+		result := testwait.Receive(t, "an admission to complete once the document's queue lock was released", results)
+		if result.err != nil {
+			t.Fatalf("a conditional edit within the cap: %v", result.err)
 		}
+		result.release()
 	}
 	if queued, rows := queuedAcrossProcesses(t, database, artifactID); queued != 0 || rows != 0 {
 		t.Fatalf("after every edit left, the queue holds %d edits in %d rows, want none", queued, rows)
