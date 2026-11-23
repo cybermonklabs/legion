@@ -37,6 +37,8 @@ import {
   LegionPauseFailureResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPlanRegisterRequest,
+  LegionPlanRegisterResponse,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -50,6 +52,7 @@ import {
   LegionSessionActivity,
   LegionSignOffRequest,
   LegionStateResponse,
+  LegionTaskStopRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
@@ -167,6 +170,9 @@ const schemas: Record<string, z.ZodType> = {
   "signoff.json": LegionEmptyResponse,
   "root-close.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
+  // The owner's plan (contract 219): what register_plan took, and stop_task's empty answer.
+  "plan-register.json": LegionPlanRegisterResponse,
+  "task-stop.json": LegionEmptyResponse,
   // The project pause (contract 178), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
   // with how many held rows it let out, and every refusal. A blank reason is the plain refusal;
@@ -1345,6 +1351,91 @@ test("the request schema takes exactly the ratings the daemon takes", () => {
   expect(parted).toEqual([]);
 });
 
+// Contract 219: a step that failed names the step its task returns to, `returnTo`, by its place in
+// the task, 1 for its first. Only a completion with the verdict fail names one
+// (RETURN_TO_NEEDS_FAIL), and a place below 1 is none (INVALID_RETURN_TO). A completion that
+// names none stays what it was.
+test("a failed step's completion names the step its task returns to", () => {
+  const failed = { grantId: "g", summary: "s", verdict: "fail", returnTo: 2 };
+  expect(LegionHandoffCompleteRequest.parse(failed)).toEqual(failed);
+  expect(LegionHandoffCompleteRequest.safeParse({ ...failed, returnTo: 1 }).success).toBeTrue();
+  for (const returnTo of [0, -1, 1.5]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...failed, returnTo }).success).toBeFalse();
+  }
+  for (const verdict of ["pass", "pending", ""]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...failed, verdict }).success).toBeFalse();
+    const { returnTo: _, ...without } = { ...failed, verdict };
+    expect(LegionHandoffCompleteRequest.safeParse(without).success).toBeTrue();
+  }
+});
+
+// Contract 219: register_plan answers the plan it took, its version and each task with the steps
+// its block names as the plan writes them (`role` or `role:key`). A task whose block names none
+// runs the project's default steps and is answered with no step, an empty list and never null.
+// No plugin code reads a field of the answer, so the reader takes each as optional and refuses
+// only a value of the wrong type.
+test("register_plan answers each task of the plan it took with its steps", () => {
+  expect(LegionPlanRegisterResponse.parse(fixture("plan-register.json"))).toEqual({
+    plan: { version: 4, tasks: [{ id: "a", steps: ["implementer", "reviewer"] }] },
+  });
+  const none = { plan: { version: 1, tasks: [{ id: "a", steps: [] }] } };
+  expect(LegionPlanRegisterResponse.parse(none)).toEqual(none);
+  for (const task of [
+    { id: "a", steps: null },
+    { id: "", steps: [] },
+  ]) {
+    expect(
+      LegionPlanRegisterResponse.safeParse({ plan: { version: 1, tasks: [task] } }).success
+    ).toBeFalse();
+  }
+  expect(
+    LegionPlanRegisterResponse.safeParse({ plan: { version: 0, tasks: none.plan.tasks } }).success
+  ).toBeFalse();
+});
+
+// Contract 219 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
+// (its owner stopped its task with stop_task) or `children` (a parent whose plan has no
+// acceptance step waits, before its retro, for the issues beneath it). A state with a stopped
+// task and a held parent parses, each reason kept; a reason outside the three is refused.
+test("a state with a stopped task and a parent held for its children parses", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { phase: string; holdReason?: string; heldFrom?: string }>;
+  };
+  const stopped = state.issues["LEGION-210"];
+  if (stopped === undefined) throw new Error("state fixture lacks LEGION-210");
+  const parent = { ...stopped, key: "LEGION-230", holdReason: "children", heldFrom: "retro" };
+  state.issues["LEGION-230"] = parent;
+  stopped.holdReason = "task-stopped";
+  const parsed = LegionStateResponse.parse(state);
+  expect(parsed.issues["LEGION-210"]?.holdReason).toBe("task-stopped");
+  expect(parsed.issues["LEGION-230"]?.holdReason).toBe("children");
+  expect(parsed.issues["LEGION-230"]?.heldFrom).toBe("retro");
+  stopped.holdReason = "stopped";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
+// Contract 219 gives each of those two holds its own word in `admission.held`:
+// `children_before_retro`, a parent held before its retro, whose `heldBy` names each issue beneath
+// it still in the workflow, and `task_stopped`, a stopped task that keeps no slot, with no
+// `heldBy`. A state whose held rows carry them parses, each row kept as served; a word outside
+// `LEGION_HELD_REASONS` is refused.
+test("a state whose held rows name a parent held before its retro and a stopped task parses", () => {
+  const state = fixture("state.json") as {
+    admission: { held: { issue: string; reason: string; heldBy?: string[] }[] };
+  };
+  type HeldRows = NonNullable<
+    NonNullable<z.output<typeof LegionStateResponse>["admission"]>["held"]
+  >;
+  const rows = [
+    { issue: "LEGION-230", reason: "children_before_retro", heldBy: ["LEGION-231"] },
+    { issue: "LEGION-232", reason: "task_stopped" },
+  ] satisfies HeldRows;
+  state.admission.held.push(...rows);
+  expect(LegionStateResponse.parse(state).admission?.held?.slice(-2)).toEqual(rows);
+  state.admission.held.push({ issue: "LEGION-233", reason: "stopped" });
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 // The state shows the record a worker's completion of its current file-backed phase named, its id
 // and positive version; a worker that named none shows no field.
 test("the state golden carries a worker's handoff record", () => {
@@ -1828,6 +1919,17 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
     ],
     ["child", LegionChildRequest, { grantId: "grant-208", issue: "LEGION-209" }],
+    [
+      "register plan",
+      LegionPlanRegisterRequest,
+      {
+        grantId: "grant-208",
+        issue: "LEGION-209",
+        artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+        version: 4,
+      },
+    ],
+    ["stop task", LegionTaskStopRequest, { grantId: "grant-208", issue: "LEGION-209", task: "a" }],
     // The claim wire's own bodies (contracts 21 and 46), read from the goldens the Go side
     // writes rather than invented here.
     ["ready", LegionReadyRequest, ready],
@@ -2170,8 +2272,10 @@ test("the state golden carries each issue's repository and the repositories its 
 // the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
-// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
-// a live row carries none.
+// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
+// or, on `repository-cache-room`, `caches` (contract 213), what the repository caches' last health
+// reads said of their room: the golden's one cache ran out of room, so that row is open too. A
+// live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -2216,18 +2320,34 @@ test("the state golden carries the deployment's capability report", () => {
   }
   expect(statuses).not.toContain("installed");
 
+  expect(rows["repository-cache-room"]).toMatchObject({
+    status: "open",
+    configLine: 'capabilities.decided.repository-cache-room: "<reason>"',
+    source: "caches",
+  });
+  expect(rows["repository-cache-room"].detail).toContain("acme/widgets on a 20.0 GiB volume");
+
   const deploymentRows = [
     rows.secrets,
     rows["model-fallback"],
     rows["resource-limits"],
     rows["pool-capacity"],
+    rows["repository-cache-room"],
   ];
   for (const row of deploymentRows) {
-    expect(["configuration", "boot"]).toContain(row.source ?? "");
+    expect(["configuration", "boot", "caches"]).toContain(row.source ?? "");
   }
 
   const emptied = fixture("state-stage3.json") as { capabilities: unknown[] };
   expect(emptied.capabilities).toEqual([]);
+});
+
+// `source` is a finite set, so the schema names its three words and no other: a fourth word is
+// refused with the whole state, as `caches` was before it joined the enum at contract 213.
+test("a capability row whose source is a word the schema does not name is refused", () => {
+  const unknownSource = fixture("state.json") as { capabilities: { source?: string }[] };
+  unknownSource.capabilities = [{ ...unknownSource.capabilities[0], source: "volume" }];
+  expect(LegionStateResponse.safeParse(unknownSource).success).toBeFalse();
 });
 
 test("a capability row's status is one the report renders, and the report may be left out", () => {
@@ -2512,17 +2632,24 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// A plugin below 202 reads the repositories block with contract 152's schema
+// A plugin from 152 to 189 reads the repositories block with contract 152's schema
 // (`repositoriesAt152`), which requires `owners`, `mapped`, `refused` and `withoutWebhookApp`: the
-// block this contract writes refuses there, and with it the whole state, so the route serves that
-// caller the block in 152's shape, written from the same entries, and leaves every other key as
+// block this contract writes refuses there, and with it the whole state. A plugin from 193 on reads
+// every key of the block as optional (#3659), and the route serves every caller below 202 the
+// block in 152's shape all the same, written from the same entries, and leaves every other key as
 // the contract it serves the caller at writes it. `state-narrowed-repositories.json` is the body
-// served to a caller that states 201 (`internal/api`'s TestStateNarrowedRepositoriesGolden), and
-// the drift gate above holds every key of it to that copy. The entries land where 152 put them:
-// `owners` and `mapped` are the ones both role Apps are installed on, under the name each is
-// served under, every `default` false; `refused` is each other entry with why; `withoutWebhookApp`
-// is this contract's own list.
+// served to a caller that states the contract before 202 (`internal/api`'s
+// TestStateNarrowedRepositoriesGolden), and the drift gate above holds every key of it to that
+// copy. The entries land where 152 put them: `owners` and `mapped` are the ones both role Apps are
+// installed on, under the name each is served under, every `default` false; `refused` is each
+// other entry with why; `withoutWebhookApp` is this contract's own list.
 test("a reader at contract 152 parses the repositories block served below 202", () => {
+  // The caller states the contract before 202, the one whose entry made the block live
+  // (`repositoriesLiveContract` in `internal/api/shaping.go`), and the `contract` mark below names
+  // the highest contract the records hold below 202 (`recordedContractAtOrBelow`). The bound is
+  // 202 and not `daemonApiVersion`: the records hold an entry at 202 itself, so a bound at the
+  // daemon's own contract would name 202 as soon as a later contract lands.
+  const repositoriesLiveContract = 202;
   const served = fixtureBody("state-narrowed-repositories.json");
   const written = served.repositories;
   expect(isJsonObject(written) ? Object.keys(written).sort() : written).toEqual([
@@ -2578,11 +2705,18 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
   // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // nothing beside it.
+  // no other key. One value strip stands above 199 as well: `caches`, the source of the
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
+  // `source`, every other field of it and every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
-  expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: 199 });
+  const recordedBelow = z
+    .array(z.object({ contract: z.number() }))
+    .parse(fixture("contract-shapes.json"))
+    .map((record) => record.contract)
+    .filter((contract) => contract < repositoriesLiveContract);
+  expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: Math.max(...recordedBelow) });
   const {
     repositories: _narrowedBlock,
     contract: _narrowedMark,
@@ -2595,11 +2729,20 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
-  expect(narrowedRest).toEqual(rest);
+  const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
+  expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
+  const withoutCachesSource = capabilities.map((row) => {
+    if (row.source !== "caches") {
+      return row;
+    }
+    const { source: _source, ...kept } = row;
+    return kept;
+  });
+  expect(narrowedRest).toEqual({ ...rest, capabilities: withoutCachesSource });
 
-  // What serving the current block would do, and why it is not served: the reader of 152 refuses
-  // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
-  // so a caller below 202 would lose its whole state.
+  // What serving the current block would do: the reader of 152 refuses it for the three keys it
+  // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to
+  // 189 would lose its whole state.
   const current = repositoriesAt152.safeParse(fixtureBody("state.json").repositories);
   expect(current.success).toBeFalse();
   expect(current.error?.issues.map((issue) => issue.path[0]).sort()).toEqual([

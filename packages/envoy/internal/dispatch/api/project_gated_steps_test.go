@@ -64,6 +64,7 @@ func projectUpdates(t *testing.T, database *store.Store, project string) int {
 // for them. The daemon is not in this test: the route is called with the credential class a
 // daemon holds and the list is read back off the project list.
 func TestGatedStepsOnTheProjectRow(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "GATED", "The root", "A spec\n")
 	if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{

@@ -100,6 +100,7 @@ func retractionEventsOn(t *testing.T, database *store.Store, key string) int {
 // result itself exactly as it was — the results read still lists all three with their verdicts,
 // which is what makes both records readable.
 func TestResultIsRetractedByItsRecorderByTheClaimantAndByAPerson(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	parent := createInteractionIssue(t, handler, "RETA", "Parent", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", twoChecks)
@@ -172,6 +173,7 @@ func TestResultIsRetractedByItsRecorderByTheClaimantAndByAPerson(t *testing.T) {
 // is. A refusal writes nothing at all. A result a retraction already stands against is refused
 // too, so one result carries one retraction.
 func TestResultRetractionRefusesEveryOtherCallerAndASecondRetraction(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	parent := createInteractionIssue(t, handler, "RETB", "Parent", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", twoChecks)
@@ -234,6 +236,7 @@ func TestResultRetractionRefusesEveryOtherCallerAndASecondRetraction(t *testing.
 // so neither the ISSUE_CLOSED refusal the record route makes nor any test of `when` stands in
 // this route.
 func TestResultRetractionIsTakenOnAClosedIssueAndForAnAfterMergeCheck(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RETC", "Closed", "A spec\n")
 	owner := "/api/v1/issues/" + issue.Key
@@ -278,6 +281,7 @@ func TestResultRetractionIsTakenOnAClosedIssueAndForAnAfterMergeCheck(t *testing
 // the append's batch takes the same lock as its first statement, so the window holds the same
 // three statements either way. Holding the lock until both retractions wait on it does.
 func TestTwoRetractionsOfOneResultSentAtOnceAnswerOneRetractionAndOneConflict(t *testing.T) {
+	t.Parallel()
 	// An hour's settle keeps the upload's settlement, which takes the same owner lock, out of the
 	// queue this test counts.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})

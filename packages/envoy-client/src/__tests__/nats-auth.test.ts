@@ -3,10 +3,16 @@ import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { connect, nkeys } from "nats";
+import {
+  NATS_START_HOOK_MS,
+  NATS_STOP_HOOK_MS,
+  natsHookDeadline,
+  natsServer,
+  useNatsServerDirectory,
+} from "../../test/nats-server";
 import { natsSeedFromEnvironment } from "../envoy-settings";
 import { natsAuthOptions } from "../nats-auth";
 import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
-import { type NatsServer, startNatsServer, useNatsServerDirectory } from "./nats-server";
 
 interface TestKeyPair {
   getSeed(): Uint8Array;
@@ -49,22 +55,32 @@ async function connectWith(url: string, env: NodeJS.ProcessEnv) {
   return connection;
 }
 
+/** Settles every one of `steps` before it throws, naming each that failed: a step that fails
+ *  leaves the others to finish, so the afterAll finds each server as far as its own start got. */
+async function settleAll(steps: readonly Promise<void>[]): Promise<void> {
+  const failures = (await Promise.allSettled(steps)).flatMap((step) =>
+    step.status === "rejected"
+      ? [step.reason instanceof Error ? step.reason.message : String(step.reason)]
+      : []
+  );
+  if (failures.length > 0) throw new Error(failures.join("; "));
+}
+
 // Docker-backed: CI runs this package's tests with LEGION_E2E=1 after pulling the image.
 describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real NATS", () => {
   const user = createUser();
-  let open: NatsServer;
-  let authorized: NatsServer;
+  const open = natsServer(serverDirectory);
+  const authorized = natsServer(serverDirectory, user.publicKey);
 
+  // The two starts side by side, and the two removals, each whatever its start got to.
   beforeAll(async () => {
-    [open, authorized] = await Promise.all([
-      startNatsServer(serverDirectory),
-      startNatsServer(serverDirectory, user.publicKey),
-    ]);
-  }, 120_000);
-  afterAll(() => {
-    open?.stop();
-    authorized?.stop();
-  }, 60_000);
+    const deadline = natsHookDeadline(NATS_START_HOOK_MS);
+    await settleAll([open.start(deadline), authorized.start(deadline)]);
+  }, NATS_START_HOOK_MS);
+  afterAll(async () => {
+    const deadline = natsHookDeadline(NATS_STOP_HOOK_MS);
+    await settleAll([open.stop(deadline), authorized.stop(deadline)]);
+  }, NATS_STOP_HOOK_MS);
 
   test("with no seed, connects to a server that asks for no credential", async () => {
     const connection = await connectWith(open.url, {});

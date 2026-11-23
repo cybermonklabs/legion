@@ -369,13 +369,13 @@ func (rig *senderLimitRig) requireNoWake(t *testing.T, kind, name string) {
 // interceptForwards has every role forward the rig's routes make go through intercept, handed the
 // forward's number among them, from 1, and the forward itself, which intercept makes or does not,
 // and answers in its place. It answers the count of the forwards the routes made so far.
-func (rig *senderLimitRig) interceptForwards(intercept func(n int, forward func() (func() error, error)) (func() error, error)) *int {
+func (rig *senderLimitRig) interceptForwards(intercept func(n int, forward func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error)) *int {
 	forwards := 0
 	delivery := *rig.deps.delivery
 	forwardRole := delivery.forwardRole
-	delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		forwards++
-		return intercept(forwards, func() (func() error, error) { return forwardRole(subject, item, msgID, timeout) })
+		return intercept(forwards, func() (func() (bus.StoredAck, error), error) { return forwardRole(subject, item, msgID, timeout) })
 	}
 	rig.deps.delivery = &delivery
 	return &forwards
@@ -386,7 +386,7 @@ func (rig *senderLimitRig) interceptForwards(intercept func(n int, forward func(
 // wait answers natsgo.ErrTimeout, as the wait for an acknowledgement that never arrives ends.
 // Every later forward goes out as it would. It answers the count of the forwards made so far.
 func (rig *senderLimitRig) loseFirstForwardAck(then func()) *int {
-	return rig.interceptForwards(func(n int, forward func() (func() error, error)) (func() error, error) {
+	return rig.interceptForwards(func(n int, forward func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
 		if n > 1 {
 			return forward()
 		}
@@ -395,11 +395,11 @@ func (rig *senderLimitRig) loseFirstForwardAck(then func()) *int {
 		if err != nil {
 			return nil, err
 		}
-		if err := wait(); err != nil {
+		if _, err := wait(); err != nil {
 			return nil, err
 		}
 		then()
-		return func() error { return natsgo.ErrTimeout }, nil
+		return func() (bus.StoredAck, error) { return bus.StoredAck{}, natsgo.ErrTimeout }, nil
 	})
 }
 
@@ -935,6 +935,37 @@ func TestSenderLimitCost(t *testing.T) {
 		rig.requireCount(t, sender, false)
 	})
 
+	// A keep whose first send went out unanswered and whose resend the stream refused as in
+	// process may have stored the copy itself, and here it did: the next send's duplicate names
+	// the keep's own copy, which is no repeat (publishPastInProcess answers it Resent), so the
+	// 202 costs one, as a copy the keep stored does, and the wake's mark is not forgiven.
+	t.Run("role message kept after its own unanswered send stored the copy (202) costs one", func(t *testing.T) {
+		rig.limit(4, 1)
+		const sender, role = "ses_cost_kept_own_send", "cost-kept-own-send"
+		original := rig.deps.delivery
+		t.Cleanup(func() { rig.deps.delivery = original })
+		delivery := *original
+		sends := 0
+		delivery.keepPublish = func(ctx context.Context, subject string, item contracts.Envelope, msgID string) (bus.StoredAck, error) {
+			sends++
+			ack, err := original.keepPublish(ctx, subject, item, msgID)
+			if sends == 1 && err == nil {
+				return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrUnacknowledged,
+					fmt.Errorf("%w: nats: duplicate message id is in process", bus.ErrDuplicateInProcess))
+			}
+			return ack, err
+		}
+		rig.deps.delivery = &delivery
+		kept := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil)
+		kept.requireStatus(t, "the kept message whose first send went unanswered", http.StatusAccepted)
+		if !kept.Kept || sends != 2 {
+			t.Fatalf("the message answered %s after %d keep sends, want kept after two", kept.raw, sends)
+		}
+		kept.requireNamed(t, "the kept message whose first send went unanswered", sender)
+		awaitWake(t, rig.wakes, wakeKindRole, role)
+		rig.requireCount(t, sender, false)
+	})
+
 	t.Run("role message with no holder and keep false (404 after a wake report) costs one", func(t *testing.T) {
 		rig.limit(4, 1)
 		const sender, role = "ses_cost_unkept", "cost-unkept"
@@ -1077,7 +1108,7 @@ func TestSenderLimitCost(t *testing.T) {
 		// out, after the send resolved its holder live, so no acknowledgement arrives and every
 		// later resolution waits out the window.
 		var thaw func()
-		frozen.interceptForwards(func(_ int, forward func() (func() error, error)) (func() error, error) {
+		frozen.interceptForwards(func(_ int, forward func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
 			if thaw == nil {
 				thaw = server.Freeze(t)
 				t.Cleanup(thaw)

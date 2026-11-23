@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A `/clear` made while the channel server's NATS connection was closed for good is reported
+  again once it completes. When a heartbeat read the new session id just as the replacement
+  connection came up, the server moved to the new id before that connection was set up, its first
+  registration under the new id was refused, and the line `envoy: session id changed <old> ->
+  <new>; re-registered` was never written, although later heartbeats registered the new id. The
+  `/clear` now waits for the replacement connection's set-up, then completes in one step and says so.
+time: 2026-11-22T15:53:46Z
+custom:
+    Issue: INFRA-3904

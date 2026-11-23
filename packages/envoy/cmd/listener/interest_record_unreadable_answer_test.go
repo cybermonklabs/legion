@@ -85,7 +85,7 @@ func TestAnUnreadableInterestRecordIsAnsweredAsUnreadable(t *testing.T) {
 		handler http.HandlerFunc
 	}{
 		{"/v1/registry/" + unreadable, sessionEntryHandler(state)},
-		{"/v1/interests/" + unreadable, adminInterestsHandler(registry, sessions, nil, logging.New("test"))},
+		{"/v1/interests/" + unreadable, adminInterestsHandler(registry, sessions, nil, nil, logging.New("test"))},
 	} {
 		t.Run(route.path, func(t *testing.T) {
 			before := len(logs.String())
@@ -115,7 +115,7 @@ func TestAnUnreadableInterestRecordIsAnsweredAsUnreadable(t *testing.T) {
 	}
 
 	before := len(logs.String())
-	recorder := get(sessionsHandler(registry, sessions), "/v1/sessions")
+	recorder := get(sessionsHandler(registry, sessions, nil), "/v1/sessions")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d, body %s; want 200", recorder.Code, recorder.Body.String())
 	}

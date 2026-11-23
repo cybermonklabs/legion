@@ -424,8 +424,8 @@ function ListOfKeys(): ReactNode {
 }
 
 // R14: Escape closes the innermost layer. With the list of keys open over Details, Escape closes
-// the list alone, wherever the focus is: still on Details' Close in the frame before the list
-// takes it, or on the page after a press on the list's own text.
+// the list alone, wherever the focus is: on the list itself in the frame before its filter takes
+// it, or on the page after a press on the list's own text.
 test("with the list of keys over Details, Escape closes the list alone, the focus outside it", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
@@ -449,13 +449,13 @@ test("with the list of keys over Details, Escape closes the list alone, the focu
     act(() => close.focus());
     const list = () => screen.queryByRole("dialog", { name: "Keyboard shortcuts" });
 
-    // The list moves the focus into itself a frame after it opens; with that frame held, the
-    // Escape lands on Details' Close.
+    // The list holds the focus itself until its filter takes it a frame after it opens; with that
+    // frame held, the Escape lands on the list, not on Details' Close.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");
       expect(list(), "? drew no list of keys").not.toBeNull();
-      expect(document.activeElement, "the list took the focus in its first frame").toBe(close);
+      expect(document.activeElement, "the list left the focus behind it as it opened").toBe(list());
       await user.keyboard("{Escape}");
     } finally {
       frames.mockRestore();

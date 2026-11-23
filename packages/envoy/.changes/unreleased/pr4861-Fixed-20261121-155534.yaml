@@ -1,0 +1,27 @@
+kind: Fixed
+body: |-
+  A resend that reaches a clustered stream while its earlier attempt is still being stored is now
+  answered with that attempt's copy. Before, `POST /v1/messages/publish` to a team or captured
+  topic and `POST /v1/messages/send` answered such a resend `503` with `bus_unavailable`, "the
+  message bus did not answer: a publish under the same message id is still in process", so a
+  sender that retried during a hub failover was told its message was not taken while its first
+  attempt was being stored. The two routes, a role send's forward to its holder, a role-lane
+  forward and a kept-lane walk's forward, a keep and a takeover's copy now publish again every
+  50 ms until the stream answers with the earlier attempt's copy. The webhook routes
+  (`/webhook/github`, `/webhook/slack`, `/webhook/ghostwispr`) do not: such a delivery is still
+  answered `503` while the earlier publish stores the one copy, and a redelivery is answered with
+  that copy. Nor do the sweep's wake report, a kept copy's dead letter and a delivery exception,
+  whose earlier publish stores the one copy all the same; the
+  first two still log a failed publish. A role send's forward refused that way is sent again
+  inside the same attempt, not counted as a forward that failed and made again. A request whose
+  budget ends while the earlier attempt is still in process, a role send's included, is answered
+  `503` with
+  `Retry-After: 1`, the body `envoy: an earlier attempt of this message is still being stored: …`
+  and the code `maybe_stored`, recorded with the outcome `earlier_attempt_in_process`: the stream
+  may still store the earlier attempt, and Dispatch retries a `maybe_stored` send under the same
+  key. Under `ENVOY_SENDER_MESSAGES_PER_MINUTE` such a send or topic publish costs its sender
+  nothing unless a send of its own went out unanswered, and such a role send costs one, as its
+  `504` did.
+time: 2026-11-21T15:55:34Z
+custom:
+    Issue: pr4861

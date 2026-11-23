@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
@@ -410,6 +411,115 @@ func TestProbeImageProbesTheOmpItIsGiven(t *testing.T) {
 	}
 }
 
+// --omp and LEGION_OMP_PATH name the OMP executable, a path, as LEGION_OMP_PATH does for the
+// daemon: one whose directory's name holds a space, a quote or a glob character is probed as the
+// one file it names, every probe running it as one shell word, and the OK line names it as given.
+// Each glob name has a sibling its pattern also matches, holding an omp that fails, so a probe
+// that let the shell expand the path would run the other file or hand it the first as an argument.
+func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
+	for _, testCase := range []struct{ name, sibling string }{
+		{"x y", ""}, {"sq'x", ""}, {"q?x", "qax"}, {"glob[x]", "globx"},
+	} {
+		for _, how := range []string{"LEGION_OMP_PATH", "--omp"} {
+			t.Run(testCase.name+" by "+how, func(t *testing.T) {
+				dir := t.TempDir()
+				omp := filepath.Join(dir, testCase.name, "omp")
+				if err := os.MkdirAll(filepath.Dir(omp), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(imageOmp(t), omp); err != nil {
+					t.Fatal(err)
+				}
+				if testCase.sibling != "" {
+					other := filepath.Join(dir, testCase.sibling, "omp")
+					if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(other, []byte("#!/bin/sh\necho 'the omp a glob matched ran' >&2\nexit 97\n"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var args []string
+				if how == "--omp" {
+					args = inImage(t, thisBinarysContract, "/nonexistent/omp").flags("--omp", omp)
+				} else {
+					args = inImage(t, thisBinarysContract, omp).flags()
+				}
+
+				code, stdout, stderr := probeImage(args...)
+
+				if code != 0 || !strings.HasSuffix(stdout, "\nprobe-image: OK ("+omp+") session-storage=probed extensions=discovered agent-models=resolved"+capabilityMarks+thisBinarysContract+"\n") {
+					t.Fatalf("probe-image with the omp at %s named by %s = %d %q %q, want the OK line naming it", omp, how, code, stdout, stderr)
+				}
+				if strings.Contains(stderr, "the omp a glob matched ran") {
+					t.Errorf("probe-image ran the omp the glob %s also matches: %q", testCase.name, stderr)
+				}
+			})
+		}
+	}
+
+	// The two other boundaries that run the OMP path: the image's TLS "omp" client, built as the
+	// probe builds it (tlsClientSpec.build, here among stand-ins for the other clients), and the
+	// role overlay read (--role-config-files, capabilities.CheckOverlays). Under a directory whose
+	// name holds a space, a quote and a '?', the omp answers the TLS client's `--eval` as a client
+	// refusing the compromised chains and reaching the control (with the line the fetch program
+	// prints, tlsFetchAnswer), marking that it ran, and hands every other call to the stand-in omp;
+	// the role's overlay sits in the same directory. The stand-in makes no handshake, so it is
+	// counted as having reached the probe's server (reachingTLSClient), as the other stand-ins are.
+	t.Run("the TLS omp client and the role overlays under x y'q?x", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "x y'q?x")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		omp, ran, overlay := filepath.Join(dir, "omp"), filepath.Join(dir, "tls-omp-ran"), filepath.Join(dir, "implementer.yml")
+		script := "#!/bin/sh\n" +
+			"if [ \"$1\" = --eval ]; then\n" +
+			"  : >" + shellprefix.Literal(ran) + "\n" +
+			"  if [ \"$LEGION_TLS_URL\" = " + shellprefix.Literal(controlTLSSite.url) + " ]; then echo 'legion-tls-probe: answered 200' >&2; exit 0; fi\n" +
+			"  echo 'certificate verify failed' >&2\n  exit 1\nfi\n" +
+			"exec " + shellprefix.Literal(imageOmp(t)) + " \"$@\"\n"
+		if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(overlay, []byte("retry:\n  modelFallback: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		seen := filepath.Join(t.TempDir(), "seen")
+		t.Setenv("LEGION_TEST_SEEN", seen)
+		// No PI_CONFIG_FILES of the operator's: the caller's own (a dev box's omp config) would be
+		// the role's list's head, and Oh My Pi would read the role's file alone only once.
+		t.Setenv("PI_CONFIG_FILES", "")
+		realOmpClient := func(invocation string, env []string, stateDir string) []tlsClient {
+			clients := passingImageTLSClients(invocation, env, stateDir)
+			for index, spec := range workerTLSClients {
+				if spec.name == "omp" {
+					clients[index] = reachingTLSClient{spec.build(invocation, env, stateDir)}
+				}
+			}
+			return clients
+		}
+
+		code, stdout, stderr := probeImageWith(realOmpClient, passingTLSPositiveControls,
+			inImage(t, thisBinarysContract, "/nonexistent/omp").flags("--omp", omp, "--pod-safety", "--role-config-files", "implementer="+overlay)...)
+
+		if code != 0 || !strings.Contains(stdout, "\nprobe-image: OK ("+omp+") ") {
+			t.Fatalf("probe-image with the omp at %s, its TLS client and its overlay = %d %q %q, want the OK line naming it", omp, code, stdout, stderr)
+		}
+		if _, err := os.Stat(ran); err != nil {
+			t.Errorf("the TLS omp client never ran the omp at %s: %v", omp, err)
+		}
+		raw, err := os.ReadFile(seen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// With no PI_CONFIG_FILES of the operator's (emptied above), the role's whole list is its
+		// one file, so Oh My Pi reads it twice: alone, and as the whole list.
+		if got := len(regexp.MustCompile(`(?m)^`+regexp.QuoteMeta(overlay)+` written file$`).FindAllString(string(raw), -1)); got != 2 {
+			t.Errorf("Oh My Pi ran %d times on the implementer's overlay %s, want twice (alone and as the whole list): %q", got, overlay, raw)
+		}
+	})
+}
+
 // The image build's probe, which has none of the operator's model configuration, skips the agents'
 // models, and its OK line says so, which the daemon's probe Sandbox refuses at boot.
 func TestProbeImageWithSkipAgentModelsSaysSoOnTheOKLine(t *testing.T) {
@@ -669,12 +779,15 @@ func TestProbeImageWithPodSafetyProbesOnThePodsBaseline(t *testing.T) {
 			}
 			sessions := map[string]int{}
 			for _, run := range runs {
-				fields := strings.Fields(run)
-				if len(fields) != 3 || !tc.overlays.MatchString(fields[0]+" "+fields[1]) {
+				// The record is PI_CONFIG_FILES, whether its first overlay exists, and
+				// OMP_SESSION_STORAGE, a space apart: the overlays are paths, which hold a space
+				// wherever the test's temporary directory does, so the record is read from its end.
+				last := strings.LastIndexByte(run, ' ')
+				if last < 0 || strings.LastIndexByte(run[:last], ' ') < 0 || !tc.overlays.MatchString(run[:last]) {
 					t.Errorf("a probe ran Oh My Pi with %q, want %s", run, tc.overlays)
 					continue
 				}
-				sessions[fields[2]]++
+				sessions[run[last+1:]]++
 			}
 			if want := map[string]int{tc.sessions: len(runs) - 1, "legion-launch-probe": 1}; !maps.Equal(sessions, want) {
 				t.Errorf("the probes ran Oh My Pi with OMP_SESSION_STORAGE %v, want %v: the session-storage probe's own value once, %q otherwise", sessions, want, tc.sessions)

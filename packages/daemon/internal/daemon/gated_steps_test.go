@@ -26,6 +26,7 @@ import (
 // row ran publishes again — which is what lets a deployment that changed its list have the new
 // one written without anyone asking.
 func TestGatedStepsPublishAtBoot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -95,6 +96,7 @@ func TestGatedStepsPublishAtBoot(t *testing.T) {
 // The publish executor refuses a runner with no Dispatch client rather than dropping the row, as
 // every other Dispatch write of the outbox does: the row is retried once a client is there.
 func TestGatedStepsPublishWithoutADispatchClientIsRefused(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION", record.GatedStepsPublish{Project: "LEGION", Steps: []record.DesignStep{record.DesignStepSpec}}, time.Now())
 	err := (&outbox{}).execute(context.Background(), row)
 	if err == nil || err.Error() != "gated steps executor has no Dispatch client" {
@@ -111,6 +113,7 @@ func TestGatedStepsPublishWithoutADispatchClientIsRefused(t *testing.T) {
 // Dispatch it is sent to, meets the same answer as a failure, and retries it. A handler's 404
 // NOT_FOUND "not found", which a Dispatch that serves the route answers, is no wait for any kind.
 func TestTheRoutersNotFoundIsAWaitOnlyForAKindThatWaitsForItsRoute(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	started := now.Add(-time.Minute)
 	for _, tc := range []struct {
@@ -190,15 +193,17 @@ func designGatesPublications(t *testing.T, pool *store.Pool) map[string]int64 {
 // restart loop must cost neither a second row nor a Dispatch write: the enqueue writes nothing
 // for a row whose payload is already what it would write (record.Postgres.EnqueueDesignGates).
 func TestBootQueuesEveryRecordedGatePublication(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	boot := &workflowRuntime{pool: pool, records: records, dispatchProject: gatePublishProject}
+	boot := &workflowRuntime{pool: pool, records: records, dispatchProject: gatePublishProject, gatedSteps: gatePublishSteps}
 	const gated, done, ungated = "LEGION-301", "LEGION-302", "LEGION-303"
-	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria"}
-	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec"}
+	// The boot's deployment gates both steps, so each row it publishes holds its tree.
+	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(true)}
+	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec", Holds: new(true)}
 	approved := 1
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, seed := range []struct {
 			key   string
 			shown string

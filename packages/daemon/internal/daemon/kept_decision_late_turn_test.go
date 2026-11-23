@@ -42,6 +42,7 @@ func heldTaskClock(clock *heldClock) heldTaskOption {
 // same `decided` notice four times from 05:52Z, and again in a catch-up at 05:55:02Z
 // (dispatch://INFRA-3276, spec version 26).
 func TestAKeptDecisionToldInALateTurnIsToldOnce(t *testing.T) {
+	t.Parallel()
 	clock := &heldClock{}
 	r := newHeldTaskRig(t, heldTaskClock(clock))
 	ref := "dispatch://" + heldTaskRoot + "/ask/ask-late-turn"

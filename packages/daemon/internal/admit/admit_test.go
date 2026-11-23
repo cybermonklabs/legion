@@ -276,10 +276,10 @@ func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
-			Task: "Continue mid-phase child. Issue: LEGION-209. Phase: testing. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
+			Task: "Continue mid-phase child. Issue: LEGION-209. Phase: testing. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-211", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-211", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Retro,
-			Task: "Continue retro child. Issue: LEGION-211. Phase: retro. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
+			Task: "Continue retro child. Issue: LEGION-211. Phase: retro. Working copy: branch legion/LEGION-211. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-212", payload: record.IssueBranch{Generation: 1}},
 	})
 }
@@ -313,7 +313,7 @@ func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
+			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
 		rows, err := record.NewStore().Phases(context.Background(), tx, "LEGION-209")
@@ -361,7 +361,7 @@ func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
+			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
 		child, err := record.NewStore().Issue(context.Background(), tx, "LEGION-209")
@@ -614,7 +614,7 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 					payload := record.SuperviseRequest{Op: op, Tree: root.Key, Role: claim.RoleTester, Generation: generation}
 					switch op {
 					case "start":
-						payload.Phase, payload.Task = child.Phase, workflow.ResumePhaseTask(child)
+						payload.Phase, payload.Task = child.Phase, resumeTaskOf(t, pool, engine, child.Key)
 					case "tree_close":
 						// The close of the linger the re-admission ended: the root's generation 1.
 						payload.Linger = 1
@@ -721,13 +721,12 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 	before := written()
 
 	listed := []intake.DispatchIssue{intake.ListedIssue(dispatch.IssueSummary{Key: "LEGION-3", Title: title, Status: "todo", Rank: "C", HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets"})}
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, facts, func(tx pgx.Tx) error {
-		return admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+	if err := store.Transact(ctx, facts, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := admission.Reconcile(ctx, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+		return err
 	}); err != nil {
 		t.Fatalf("reconcile the boot listing: %v", err)
 	}
-	committed()
 	if after := written(); after != before {
 		t.Fatalf("the boot listing of the title the record holds wrote the record again (xmin %s, then %s), want no write", before, after)
 	}
@@ -1004,6 +1003,11 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		if err := records.PutGate(context.Background(), tx, record.DesignGate{Issue: "LEGION-CHILD", ArtifactID: "artifact-child", LatestVersion: 2}); err != nil {
 			t.Fatalf("seed the child's gate: %v", err)
 		}
+		// What the child's holders took of the old generation's gate goes with that gate.
+		if err := records.RaiseTold(context.Background(), tx, "LEGION-CHILD", record.AudienceHolder,
+			[]record.NewsItem{{Step: record.DesignStepSpec, To: 2}}, fixedNow); err != nil {
+			t.Fatalf("seed what the child's holder took: %v", err)
+		}
 		if err := records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-CHILD", Role: claim.RoleImplementer, Claim: "implementer-claim", HandoffCommit: "abc123", Rounds: 2, Verdict: "pass"}); err != nil {
 			t.Fatalf("seed the child's handoff: %v", err)
 		}
@@ -1028,6 +1032,13 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 		}
 		if len(gates) != 0 {
 			t.Errorf("the child kept the last generation's design gate: %#v", gates)
+		}
+		told, err := records.TreeTold(context.Background(), tx, "LEGION-LINGER")
+		if err != nil {
+			t.Fatalf("read what the tree's holders took: %v", err)
+		}
+		if len(told) != 0 {
+			t.Errorf("the child kept what its holder took of the last generation's gate: %#v", told)
 		}
 		phases, err := records.Phases(context.Background(), tx, "LEGION-CHILD")
 		if err != nil {

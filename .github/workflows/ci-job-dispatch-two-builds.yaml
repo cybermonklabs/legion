@@ -60,6 +60,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The Go half's database. The browser half runs on a Postgres of its own, which the harness
       # starts per step (e2e/harness-postgres.ts) from the same image digest the service runs, so
       # the service's pull is that step's too.
@@ -112,6 +113,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
@@ -183,7 +186,7 @@ jobs:
       # gives: Playwright's
       # Node runner reads `@legion/contracts` out of a build this checkout has to make before the
       # config loads, and the entries Dispatch imports are all it needs. `build:dispatch` bundles
-      # those four and so compiles no module outside the set this job's filter lists - not
+      # those three and so compiles no module outside the set this job's filter lists - not
       # ./legion-api, which nothing of this job loads. `bun run e2e:multiprocess` below makes the
       # same build again (packages/dispatch's build:contracts).
       - name: Build contracts for dispatch e2e
@@ -304,6 +307,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       # The whole history and the tags, as the job above takes them: build-dispatch-build.sh
@@ -336,6 +340,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).

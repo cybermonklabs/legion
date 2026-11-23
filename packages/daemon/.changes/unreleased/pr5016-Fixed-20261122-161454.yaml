@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'At boot the daemon runs each GitHub App''s `token_command` once to read the App''s login, however many attempts that read takes. Before, an attempt after one that failed read every App again, and an App whose own read failed after it took its release ran its command again: each run is one more request to the secrets broker, which for the review App waits for a person''s approval when no live grant exists. The login read uses the release it took again while more than 20 minutes of its token are left; nearer its expiry, as after a long wait for GitHub''s rate limit, the command runs again.'
+time: 2026-11-22T16:14:54.153571526Z
+custom:
+    Issue: pr5016

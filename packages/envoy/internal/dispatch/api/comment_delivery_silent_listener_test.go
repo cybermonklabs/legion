@@ -19,6 +19,7 @@ import (
 // its author route reaches must then still hear the comment from that route's copy on its own
 // topic, as it does when no mention names it, rather than from no copy at all.
 func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		route     string
@@ -126,6 +127,7 @@ func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID 
 // exclusive for one (comment, session): here the outbox acts first, and the session still ends up
 // with exactly one copy, whichever of the two delivers it.
 func TestAnAbandonedMentionIsDeliveredOnceByTheOutboxOrTheSweepNotBoth(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: stopping})
@@ -183,6 +185,7 @@ func TestAnAbandonedMentionIsDeliveredOnceByTheOutboxOrTheSweepNotBoth(t *testin
 // delivery sweep's resend, which the listener drops as a repeat of the same message - s1 must end
 // up with exactly one copy of the comment, not the mention and the route copy both.
 func TestAMentionInFlightAtAKillReachesItsSessionOnceAfterTheClaimLapses(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: stopping})
@@ -250,6 +253,7 @@ func TestAMentionInFlightAtAKillReachesItsSessionOnceAfterTheClaimLapses(t *test
 // is the only way the session can still hear the comment: it must get exactly one copy, as it does
 // when the listener is silent and no process was killed.
 func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{

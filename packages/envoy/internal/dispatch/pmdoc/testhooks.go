@@ -7,17 +7,19 @@ import (
 )
 
 // UseManifestForTest makes manifest, a schema manifest in blocks.json's format, the one this
-// package reads and writes by, in place of the embedded one, until restore is called. A test uses
-// it to act as a build whose manifest declares an element the embedded one does not, or numbers it
-// differently. GET /api/v1/schema/blocks keeps serving the embedded file (SchemaJSON). The
-// package's readers do not lock the manifest, so no other goroutine may use the package while it
-// is replaced or restored.
+// package reads and writes by, in place of the installed one, until restore is called. A test
+// uses it to act as a build whose manifest declares an element the embedded one does not, or
+// numbers it differently. GET /api/v1/schema/blocks keeps serving what it served before
+// (SchemaJSON), the embedded file unless something installed another. The manifest is one
+// atomic value, so a swap races no reader, but an operation that reads it twice may read both
+// manifests: a test installs it before it starts what reads it.
 func UseManifestForTest(manifest []byte) (restore func(), err error) {
 	compiled, err := compileManifest(manifest)
 	if err != nil {
 		return nil, err
 	}
-	previous := active
+	previous := active.Load()
+	compiled.json = previous.json
 	compiled.install()
 	return previous.install, nil
 }
@@ -37,13 +39,9 @@ func SetBlockSchemaForTest(value BlockSchema) (restore func(), err error) {
 	if err != nil {
 		return nil, fmt.Errorf("test block schema: %w", err)
 	}
-	previous, previousJSON := active, blockSchemaJSON
+	previous := active.Load()
 	compiled.install()
-	blockSchemaJSON = encoded
-	return func() {
-		previous.install()
-		blockSchemaJSON = previousJSON
-	}, nil
+	return previous.install, nil
 }
 
 // UseStagedBlockForTest makes the embedded manifest, its version raised by one and one more typed

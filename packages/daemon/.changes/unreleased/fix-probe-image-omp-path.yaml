@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `legion probe-image` runs the OMP executable `--omp` or `LEGION_OMP_PATH` names as one shell
+  word, as the daemon runs `LEGION_OMP_PATH`. It ran the value as shell text, so a path whose
+  directory's name holds a space or a single quote was split or left unbalanced there, and the
+  probe refused the image (`sh: 1: exec: <the path up to the space>: not found`, or Permission
+  denied when that prefix is a directory); a `?`, `*` or `[` was a glob that could run another
+  file. The OK line still names the path as given.
+time: 2026-11-19T00:11:38Z
+custom:
+    Issue: fix-probe-image-omp-path

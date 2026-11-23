@@ -70,6 +70,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      JOB_TIMEOUT_MINUTES: 25 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The screenshots step boots Dispatch on the e2e harness, which needs a database it may
     # truncate. The step before it turns the service's crash safety off.
     services:
@@ -99,6 +101,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-docs is a cache family of its own. This build compiles the daemon's legion command and
       # envoy's dispatch, broker and agent-secrets commands. envoy-e2e-local's go-envoy entry
@@ -261,6 +265,8 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

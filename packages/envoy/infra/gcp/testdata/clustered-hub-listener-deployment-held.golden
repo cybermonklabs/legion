@@ -1,0 +1,26 @@
+{
+  "envoy-nats-listener": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "annotations": {
+        "pulumi.com/skipAwait": "true"
+      },
+      "name": "envoy-nats-listener",
+      "namespace": "envoy"
+    },
+    "spec": {
+      "replicas": 1,
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/component": "listener",
+          "app.kubernetes.io/instance": "envoy-nats",
+          "app.kubernetes.io/name": "nats-listener"
+        }
+      },
+      "strategy": {
+        "type": "Recreate"
+      }
+    }
+  }
+}

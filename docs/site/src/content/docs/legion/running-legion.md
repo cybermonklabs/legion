@@ -27,14 +27,22 @@ your cluster, from one published worker image.
 
 `legion.yaml` names no repository of the project. Each issue targets the repository Dispatch
 resolves for it: its own (the issue header's Repository picker, or `dispatch issue-update --repo
-owner/name`), else its nearest ancestor's, else the project's default repository, which is set in
-Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository as
-Dispatch resolved it when the daemon read the issue (its event, or a listing of the project), and
-its default branch as GitHub names it, when it first records the issue, and keeps both: a later
-change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
+owner/name`), else its nearest ancestor's in its own project, else the project's default
+repository, which is set in Dispatch. An issue may name any `owner/name`. The daemon records an
+issue on that repository as Dispatch resolved it when the daemon read the issue (its event, or a
+listing of the project), and its default branch as GitHub names it, when it first records the
+issue, and keeps both: a later change of the issue's repository in Dispatch is not applied, and
+the daemon says so on the issue.
 A change that sends no event of the issue, as a move of the project's default repository does,
 and that lands between that read and the record, is such a later change, said on the issue at
-its next event or the next boot's listing.
+its next event or the next boot's listing. A change of the issue's own repository sends an event,
+and once the daemon has applied that event, no listing read before it records the issue: when the
+daemon applies the edit's event before it records the issue, the edit is applied, and the issue is
+recorded where Dispatch resolves it at that event or later. The daemon prepares an event, GitHub's
+answers for its repository included, before it applies it, so a listing read before the edit can
+still record the issue while the edit's event is being prepared. Then the issue is recorded on the
+repository that listing showed, and the edit is a later change, said on the issue when its event
+applies.
 An issue whose repository resolves to none, or to one a role App is not installed on, is not
 admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
@@ -160,7 +168,7 @@ out of the merge queue. Nothing else runs on a timer, and it reads one issue's o
 rather than a listing of every open one. A read that finds the head
 conflicting also reads the base branch's rules, its rulesets and its classic branch protection,
 for the checks the base requires and whether it requires a current branch, since that decides
-whether the conflict needs the implementer's merge forward now. It reads no check run and no
+whether the conflict needs a merge forward now. It reads no check run and no
 commit status: whether CI is red at a head reaches the daemon as Envoy's settled observation of
 that head's check runs and commit statuses, which is also where it reads whether a required check
 is green on a conflicting head. Dispatch's CI reconcile reads the
@@ -261,8 +269,8 @@ installations before it mints anything.
 All of that is true of a daemon that mints with its own App key (`private_key`,
 `private_key_command` or `private_key_secret`).
 A daemon that takes its tokens from the secrets broker through `token_command` gets a token only
-for the accounts the secret's `github-owners` tag lists, so an install by any other account
-gives nothing there.
+for the accounts the profile its command names lists, each an account of the secret's
+`github-owners` tag, so an install by any other account gives nothing there.
 
 `--webhook-url` becomes the Envoy App's webhook. That App's webhook secret is the listener's
 `ENVOY_GITHUB_WEBHOOK_SECRET`, its client id is Dispatch's `DISPATCH_APP_CLIENT_ID`, and its
@@ -647,8 +655,10 @@ What each part is for:
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
   order a person approves them. No phase of the tree starts, no released child starts and no
-  merger merges until a person has approved the document of every step listed. The
-  default is `[spec]`, which the word `root-issues` also means; the empty list `[]` skips the
+  merger merges until a person has approved the document of every step listed. A list that names
+  `spec` and not `criteria` lets a root's architect also register the root's Verification document
+  as `criteria`, and that tree then waits for that document too. The default is `[spec]`, which
+  the word `root-issues` also means; the empty list `[]` skips the
   approval, which the word `off` also means. A list naming one step twice, and any other word,
   is refused at load. There is no other way past the gate. `legion state --json` answers the
   resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in
@@ -932,6 +942,8 @@ What each part is for:
   runs no ladder leaves the daemon nothing to wait for.
   `LEGION_STALL_CALL_GRACE_MS` is the grace over a deadline a call declared for itself, 300000
   (5 minutes). `LEGION_STALL_STEP_MS` is the gap between the ladder's steps, 120000 (2 minutes).
+  The worker checks its open calls every quarter of that gap, but never more often than once a
+  second and never less often than every 5 seconds, so the default gap gives a check every 5 seconds.
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
   reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),
@@ -1283,7 +1295,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
-   or a resumed worker, runs the new one. To move a long-running agent over now, suspend and resume
+   or a resumed worker, runs the new one. At a release that moves the daemon API contract, the
+   daemon moves its own controller (`controller: daemon`) for you where it knows a plugin pair to
+   install: it relaunches the controller at once onto the release's plugins, and that relaunch
+   replaces the controller's pod when the pod runs another image. `legion config check` prints the
+   gap that leaves it relaunching none. To move a long-running agent over now, suspend and resume
    its claim:
 
    ```sh
@@ -1307,12 +1323,12 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child
-   that left the workflow and is set back to `todo` gets its own architect and its planner back,
-   on their kept sessions, at its next first phase start, and each other role at the start of its
-   phase. A claim whose session supervise's `forgetSession` has dropped comes back in a new
-   session instead. The daemon suspends or ends claims only when an issue leaves the workflow,
-   when a claim moves to another tree, or for a production check after the issue is done. A phase
-   start gives its task to that live claim. At boot the daemon
+   that left the workflow and is set back to `todo` gets its own architect and the agent of its
+   first step back, on their kept sessions, at its next first phase start, and each other role at
+   the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
+   in a new session instead. The daemon suspends or ends claims only when an issue leaves the
+   workflow, when a claim moves to another tree, or for a production check after the issue is done.
+   A phase start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
    operator-suspended architect waits until the operator resumes it. A notice for a child whose
