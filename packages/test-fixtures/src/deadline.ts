@@ -175,7 +175,7 @@ export function deadlineFor(start: number, caller: string): Deadline {
         ? ", counted from the wait's own start because no row-deadline preload took a mark"
         : "";
     return {
-      at: (newestMark ?? start) + guard - margin,
+      at: start + guard - margin,
       source: `${margin} ms before the row's guard of ${guard} ms (bun test --timeout)${counted}`,
     };
   }
