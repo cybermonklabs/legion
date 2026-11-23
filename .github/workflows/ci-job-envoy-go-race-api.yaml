@@ -69,7 +69,7 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # The package's tests run 16 at once (apiTestParallelism, server_test.go), each with a
+      # The package's tests run 8 at once (apiTestParallelism, server_test.go), each with a
       # database and pools of its own, so this samples the service's connections every 2 s while
       # the next step runs and the step after it prints the peak against max_connections: a change
       # that makes the tests open more at once shows here before it shows as a 53300 refusal. The
