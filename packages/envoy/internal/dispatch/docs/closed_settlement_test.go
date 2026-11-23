@@ -236,26 +236,41 @@ func (f closedSettlementFixture) storedText() string {
 	return fmt.Sprintf("%q", markdown)
 }
 
-// waitFor is waitFor within roomWait, failing with the document's settlement state
-// (settlementState) when it gives up.
+// settlementReading is the document's settlement state as the last reading of a wait on it: it is
+// read (settlementState) only when a wait that gave up prints it, since the reading costs the store
+// several reads and a wait asks every few milliseconds.
+type settlementReading struct{ f closedSettlementFixture }
+
+func (r settlementReading) String() string { return r.f.settlementState() }
+
+// waitFor waits until condition holds, failing with the document's settlement state
+// (settlementState) when it gives up. It sets no span of its own: its one bound is the test
+// binary's deadline less testwait's margin (testwait.UntilPolling).
 func (f closedSettlementFixture) waitFor(t *testing.T, description string, condition func() bool) {
 	t.Helper()
-	if !testwait.Holds(roomWait(t), 5*time.Millisecond, condition) {
-		t.Fatalf("timed out waiting for %s\n%s", description, f.settlementState())
-	}
+	testwait.UntilPolling(t, 5*time.Millisecond, description, func() (settlementReading, bool) {
+		return settlementReading{f}, condition()
+	})
 }
 
-// requireEnds is requireEnds, failing with the document's settlement state (settlementState). It
-// reads roomWait once: read again for the failure text, it fails the test itself once the test
-// binary's deadline is what bounds the wait, and the state is not reported.
+// awaitClosed waits until ended is closed, failing as waitFor does; what names what closes it.
+func (f closedSettlementFixture) awaitClosed(t *testing.T, what string, ended <-chan struct{}) {
+	t.Helper()
+	f.waitFor(t, what, func() bool {
+		select {
+		case <-ended:
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+// requireEnds is requireEnds, failing with the document's settlement state (settlementState), and
+// with no span of its own (awaitClosed).
 func (f closedSettlementFixture) requireEnds(t *testing.T, peer *docstest.Peer, what string) {
 	t.Helper()
-	wait := roomWait(t)
-	select {
-	case <-peer.Ended:
-	case <-time.After(wait):
-		t.Fatalf("%s: the browser's socket was still open after %v\n%s", what, wait, f.settlementState())
-	}
+	f.awaitClosed(t, what+": the browser's socket to close", peer.Ended)
 }
 
 // waitForNoSettlement waits until no settlement of the document is armed or running: the timer's
@@ -264,7 +279,7 @@ func (f closedSettlementFixture) requireEnds(t *testing.T, peer *docstest.Peer, 
 // wait goes on through each retry until the retries end or fail the room.
 func (f closedSettlementFixture) waitForNoSettlement(t *testing.T) {
 	t.Helper()
-	waitFor(t, roomWait(t), "no settlement of the document to be armed or running", func() bool {
+	waitUntil(t, "no settlement of the document to be armed or running", func() bool {
 		state := f.service.lockExistingState(f.artifactID)
 		if state == nil {
 			return true
@@ -349,12 +364,7 @@ func settleAnAppendInsideTheCloseMargin(t *testing.T) {
 		t.Fatal("the close left the keystroke's settlement armed, so the append's own settlement is not what this case settles with")
 	}
 	f.held.let()
-	wait := roomWait(t)
-	select {
-	case <-recorded:
-	case <-time.After(wait):
-		t.Fatalf("the close of CORE-1 had not returned %v after the room's append went on\n%s", wait, f.settlementState())
-	}
+	f.awaitClosed(t, "the close of CORE-1 to return after the room's append went on", recorded)
 	f.requireEnds(t, alice, "the close of CORE-1 closed alice's room")
 
 	if markdown := f.requireSettledFromTheStore(t, before); !strings.Contains(markdown, typed) {
@@ -576,13 +586,23 @@ func settleAfterItsStoreWriteIsRefused(t *testing.T) {
 	holdOneRoomUpdate(t, f.held, func() { typeOver(t, alice, closedSettlementParagraph, refusedKeystroke) })
 
 	f.resume(t)
-	select {
-	case <-watch.parked:
-	case <-watch.failedNow:
+	// The settlement's store write of the room's updates meets the refusal, which starts the room's
+	// close, and the first close parks; a room that fails instead is the fault this case is for.
+	failed := false
+	f.waitFor(t, "a refusal to start the room's close after the settlement was armed: its store write of the room's updates meeting the refusal", func() bool {
+		select {
+		case <-watch.parked:
+			return true
+		case <-watch.failedNow:
+			failed = true
+			return true
+		default:
+			return false
+		}
+	})
+	if failed {
 		f.requireNoSettlementFailure(t, watch, "after the settlement stored the room's updates")
 		t.Fatal("the room failed after the settlement stored the room's updates, want the refused update to fail no room")
-	case <-time.After(roomWait(t)):
-		t.Fatalf("no refusal started the room's close %v after the settlement was armed: its store write of the room's updates met no refusal", roomWait(t))
 	}
 	f.waitForNoSettlement(t)
 	f.requireNoSettlementFailure(t, watch, "after the settlement met the refusal")
@@ -627,7 +647,7 @@ func settleAfterTheRoomsPersistenceIsRefused(t *testing.T) {
 	}
 
 	f.resume(t)
-	waitFor(t, roomWait(t), "the settlement the resumption armed to take the document's lock", func() bool {
+	waitUntil(t, "the settlement the resumption armed to take the document's lock", func() bool {
 		return locked.Load() > 0
 	})
 	f.waitForNoSettlement(t)

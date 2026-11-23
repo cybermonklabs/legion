@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // editNoticeRow is a document's pending edit notice as document_edit_notices holds it, with the
@@ -467,13 +468,8 @@ func TestEditNoticeSweepSendsADueNotice(t *testing.T) {
 	if _, open := readEditNotice(t, service, artifactID); open {
 		t.Fatal("the sent notice's row is still there")
 	}
-	select {
-	case event := <-published:
-		if event.Type != "artifact.human_edited" {
-			t.Fatalf("published %q, want artifact.human_edited", event.Type)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the sent notice was never published")
+	if event := testwait.Receive(t, "the sent notice to be published", published); event.Type != "artifact.human_edited" {
+		t.Fatalf("published %q, want artifact.human_edited", event.Type)
 	}
 }
 
@@ -533,6 +529,8 @@ func TestEditNoticeSweepSendsNothingForANoticeMovedBehindItsClaim(t *testing.T) 
 	if from != 1 || to != 3 {
 		t.Fatalf("notice = %d..%d, want the moved 1..3 left as it stands", from, to)
 	}
+	// A slow machine cannot fail this window on a correct run: a notice the sweep did not claim is
+	// published at no pace, so a slower run only shortens what the window sees.
 	select {
 	case event := <-published:
 		t.Fatalf("published %s for a notice the sweep did not claim", event.Type)
@@ -729,25 +727,22 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	if bobVersion != aliceVersion+1 {
 		t.Fatalf("bob's settlement wrote version %d, want %d", bobVersion, aliceVersion+1)
 	}
-	select {
-	case result := <-swept:
-		if result.err != nil || result.sent != 0 {
-			t.Fatalf("the sweep that met the settlement = %d sent, %v; want none sent, since the settlement moved the notice on", result.sent, result.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the sweep that met the settlement never finished")
+	result := testwait.Receive(t, "the sweep that met the settlement to finish", swept)
+	if result.err != nil || result.sent != 0 {
+		t.Fatalf("the sweep that met the settlement = %d sent, %v; want none sent, since the settlement moved the notice on", result.sent, result.err)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
-	for len(humanEdits(t, service.store, artifactID)) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("no notice went once the quiet time passed")
+	// Each reading that finds no notice sent runs a sweep, so the notice goes once its quiet time
+	// has passed, however long the machine takes to get there.
+	testwait.UntilPolling(t, 50*time.Millisecond, "a notice to go once the quiet time passed", func() (int, bool) {
+		if sent := len(humanEdits(t, service.store, artifactID)); sent != 0 {
+			return sent, true
 		}
 		if _, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background())); err != nil {
 			t.Fatalf("sweep after the quiet time: %v", err)
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return 0, false
+	})
 	edits := humanEdits(t, service.store, artifactID)
 	for _, version := range []int{aliceVersion, bobVersion} {
 		covering := 0
