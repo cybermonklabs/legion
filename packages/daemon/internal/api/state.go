@@ -1451,7 +1451,7 @@ func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]rec
 			Status:          GatedStepWaiting,
 		}
 		switch {
-		case gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion:
+		case record.GateApproved(gate):
 			view.Status = GatedStepApproved
 		case record.GateExempt(gate):
 			view.Status = GatedStepExempt

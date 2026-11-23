@@ -1126,7 +1126,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // version and the row's own document are what the message names, so a reader is sent to the
 // document that moved rather than to the spec. An opening this row makes with no person
 // (openedByExemption) is told as one, and a person's opening while the tree's spec gate stands
-// open by exemption gives the merger the ending step (specGateExempt).
+// open by exemption gives the merger the ending step (record.SpecGateExempt).
 func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
 	step := gate.Step.OrSpec()
 	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
@@ -1142,7 +1142,7 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 	if stands == stood {
 		return nil
 	}
-	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands, stands && openedByExemption(gate), specGateExempt(gates))
+	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands, stands && openedByExemption(gate), record.SpecGateExempt(gates))
 }
 
 // mergerEndingAlsoHolds is what the merger's copy of a person's opening adds while the tree's

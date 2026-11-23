@@ -81,8 +81,7 @@ func (r *outbox) endingSubject(ctx context.Context, key string) (*record.Issue, 
 		if err != nil {
 			return err
 		}
-		spec := record.SpecGate(gates)
-		exempt = spec != nil && record.GateExempt(*spec)
+		exempt = record.SpecGateExempt(gates)
 		return nil
 	}); err != nil {
 		return nil, "", false, fmt.Errorf("read the ending subject of %s: %w", key, err)
@@ -228,12 +227,8 @@ func (r *outbox) endingHoldsMerger(ctx context.Context, issue record.Issue) (boo
 	var held bool
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		gates, err := r.records.GatesOf(ctx, tx, issue.Tree)
-		if err != nil {
+		if err != nil || !record.SpecGateExempt(gates) {
 			return err
-		}
-		spec := record.SpecGate(gates)
-		if spec == nil || !record.GateExempt(*spec) {
-			return nil
 		}
 		pr, err := r.records.PullRequest(ctx, tx, issue.Key)
 		if err != nil || pr == nil {

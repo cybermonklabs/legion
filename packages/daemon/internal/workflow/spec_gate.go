@@ -59,8 +59,7 @@ func openedNotice(gate record.DesignGate, version int, reviewer, ref string) rec
 // version (record.GateExempt), and approved by no person at that version. An approval at the
 // latest version is a person's opening, whatever the exemption beside it.
 func openedByExemption(gate record.DesignGate) bool {
-	approved := gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
-	return record.GateExempt(gate) && !approved
+	return record.GateExempt(gate) && !record.GateApproved(gate)
 }
 
 // exemptionReason is the reason a design-approved notice of an opening by exemption gives.
@@ -76,14 +75,7 @@ func (e *Engine) exemptSpecGate(ctx context.Context, tx pgx.Tx, tree string) (bo
 	if err != nil {
 		return false, err
 	}
-	return specGateExempt(gates), nil
-}
-
-// specGateExempt is whether gates, the rows a tree's root holds by step, hold a spec gate that
-// stands open by exemption (record.GateExempt).
-func specGateExempt(gates map[record.DesignStep]record.DesignGate) bool {
-	spec := record.SpecGate(gates)
-	return spec != nil && record.GateExempt(*spec)
+	return record.SpecGateExempt(gates), nil
 }
 
 // queueEndingReads queues the read of the ending condition for every member of tree in merging
@@ -209,7 +201,7 @@ func (e *Engine) specEndingRead(ctx context.Context, tx pgx.Tx, fact intake.Spec
 	if err != nil {
 		return intake.Result{}, err
 	}
-	exempt := specGateExempt(gates)
+	exempt := record.SpecGateExempt(gates)
 	var stale string
 	headMoved := false
 	switch {

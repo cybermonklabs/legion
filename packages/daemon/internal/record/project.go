@@ -723,7 +723,12 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 // own write both call. internal/classify reads this package, so the rule lives here, where every
 // reader can reach it.
 func GateOpen(gate DesignGate) bool {
-	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion || GateExempt(gate)
+	return GateApproved(gate) || GateExempt(gate)
+}
+
+// GateApproved is whether a person's approval stands on the gate's current document version.
+func GateApproved(gate DesignGate) bool {
+	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
 }
 
 // GateExempt is whether the gate stands open by exemption: it is under the rule of a change
@@ -732,6 +737,13 @@ func GateOpen(gate DesignGate) bool {
 // start still asks for the ending condition before anything of its tree lands (D10).
 func GateExempt(gate DesignGate) bool {
 	return gate.Rule == GateRuleChangeRequest && gate.ExemptVersion != nil && *gate.ExemptVersion == gate.LatestVersion
+}
+
+// SpecGateExempt is whether gates, the rows a tree's root holds by step, hold a spec gate
+// (SpecGate) that stands open by exemption (GateExempt).
+func SpecGateExempt(gates map[DesignStep]DesignGate) bool {
+	spec := SpecGate(gates)
+	return spec != nil && GateExempt(*spec)
 }
 
 // RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
