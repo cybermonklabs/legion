@@ -6968,7 +6968,7 @@ const (
 //
 // The handing-over phase is a replacement in which both listeners take requests behind the one
 // address: the registry read reaches the outgoing listener, which still holds the session, and
-// the send reaches its successor, still behind its starting gate (cmd/listener/main.go
+// the send reaches its successor, still behind its starting gate (cmd/listener/starting_gate.go
 // startingGate). It is the one phase in which a send itself meets that gate, because every try
 // reads the registry before it sends.
 func (f *fakeListener) takeOver(refuse, starting, handingOver, unknown time.Duration) {
@@ -7016,7 +7016,7 @@ func (f *fakeListener) sendsGatedUnder(key string) int {
 	return f.gatedSends[key]
 }
 
-// answerStarting answers as the real listener's starting gate does (cmd/listener/main.go
+// answerStarting answers as the real listener's starting gate does (cmd/listener/starting_gate.go
 // startingGate).
 func answerStarting(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusServiceUnavailable)
