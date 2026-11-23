@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testfifo"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -375,29 +376,55 @@ func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
 // which answers ENOTDIR without waiting: Remove returns, refusing, and the fifo is left as it was.
 // The parent is swapped as the store lock is let go, which is after the git worktree entry's
 // removal and before the aside's deletion. Remove's answer is waited for with no span of its own
-// (testwait.Receive), so a removal that waits on the fifo fails the row by name before the test
-// binary's deadline, and the jj and git runs before it are as slow as the host makes them.
+// (testwait.Receive), so the jj and git runs before it are as slow as the host makes them, and
+// a removal that opens the fifo plainly fails the row by name as soon as the fifo watch beside
+// that wait reads the open from the kernel (testfifo.WatchBeside), or at the deadline where it
+// cannot.
 func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
+	// The verdict needs the kernel's record of what each thread is asleep in; where it keeps
+	// none, as gVisor keeps none, the row fails under CI and skips elsewhere
+	// (testfifo.RequireWatch).
+	testfifo.RequireWatch(t)
 	run := newLocalRunner(t)
 	working, err := Provision(context.Background(), run, provisionRequest(t))
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	parent := filepath.Dir(working.Dir)
+	// The swap records its errors rather than reporting them: it runs in Remove's goroutine, which
+	// a row that failed early has stopped waiting for, and the row reads them once Remove answers.
+	swapped := make(chan struct{})
 	var once sync.Once
+	var swapErr error
 	lock := &unlockWatch{onUnlock: func() {
 		once.Do(func() {
+			defer close(swapped)
 			if err := os.Rename(parent, parent+".moved"); err != nil {
-				t.Error(err)
+				swapErr = err
+				return
 			}
-			if err := syscall.Mkfifo(parent, 0o644); err != nil {
-				t.Error(err)
-			}
+			swapErr = syscall.Mkfifo(parent, 0o644)
 		})
 	}}
 	done := make(chan error, 1)
 	go func() { done <- Remove(context.Background(), run, working, lock) }()
+	// Remove's answer is waited for with testwait.Receive, as main waits for it. Beside that wait,
+	// the fifo watch reads from the kernel whether the removal opens the swapped parent plainly and
+	// waits there for a writer (testfifo.WatchBeside); the correct removal opens it with
+	// O_NONBLOCK and holds it for a moment, which is no such wait. The watch's own open for
+	// writing is the writer a plain open needed, so Remove then answers, and the row fails naming
+	// the open at once rather than at the test binary's deadline.
+	stopWatch := testfifo.WatchBeside(swapped, parent)
+	defer func() { _, _ = stopWatch() }()
 	err = testwait.Receive(t, "Remove with its workspace's parent "+parent+" swapped for a fifo", done)
+	if opened, watchErr := stopWatch(); watchErr != nil {
+		t.Fatalf("cannot tell whether Remove waits in a plain open of %s: %v", parent, watchErr)
+	} else if opened != "" {
+		t.Fatalf("Remove opened %s, its workspace's parent swapped for a fifo, plainly and waited there for a writer: a workspace parent swapped for a fifo blocks the aside's removal", opened)
+	}
+	if swapErr != nil {
+		t.Fatalf("swap %s for a fifo as the store lock was let go: %v", parent, swapErr)
+	}
 	if !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "remove workspace directory") {
 		t.Fatalf("Remove with its workspace's parent swapped for a fifo answered %v, want the aside's removal refused with ENOTDIR", err)
 	}

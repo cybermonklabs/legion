@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `clientBuild(stampFile, release?)` and `clientConnectionName(name, build)` in `nats-connection`:
+  the build a session plugin names after its NATS connection's name, `legion@<commit>` from the
+  build-commit stamp an image writes beside the bundle, else `<package>@<version>` for a release,
+  else none.
+time: 2026-11-22T02:59:25Z
+custom:
+    Issue: legacy-subjects-gate
