@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    A claim write's 5 s bound now counts from the moment the write holds a database connection, not
+    from before its wait for one. At boot the daemon relaunches every unfinished claim at once
+    through one pool of max(4, CPUs) connections, so on a loaded node the last writes of a large wave
+    spent their whole bound queued behind the others and were cut, and each such launch waited for
+    the next probe, 30 s later, to be tried again. The wait for a connection has a bound of its own,
+    30 s, so a database that has stopped answering still releases the claim's machine.
+time: 2026-11-23T16:26:35Z
+custom:
+    Issue: INFRA-1075

@@ -67,6 +67,34 @@ const (
 // reply.
 const CommitSettleBound = commitReplyBound + outcomeReadBound
 
+// afterAcquireKey is the context key a write bound counted from its connection (BoundAfterAcquire)
+// lives under; afterAcquire is the bound.
+type afterAcquireKey struct{}
+
+type afterAcquire struct{ acquire, write time.Duration }
+
+// BoundAfterAcquire is ctx for one transaction bounded by its own time rather than by its wait for
+// a connection: TransactWith waits at most acquire for a connection of the pool, and ends the
+// transaction write after it holds one, its commit's settle aside (CommitSettleBound). ctx itself
+// is bounded by all three together, so a call that opens no transaction through TransactWith is
+// bounded too. A deadline counted from before the wait is the queue's bound as well as the
+// write's: a wave of transactions on a pool of a few connections cut the last of them for the
+// writes ahead of it, however quickly each would have run (supervise.Deps.BoundWrite).
+func BoundAfterAcquire(ctx context.Context, acquire, write time.Duration) (context.Context, context.CancelFunc) {
+	bounded, cancel := context.WithTimeout(ctx, acquire+write+CommitSettleBound)
+	return context.WithValue(bounded, afterAcquireKey{}, afterAcquire{acquire: acquire, write: write}), cancel
+}
+
+// afterAcquireOf is the bound BoundAfterAcquire put on ctx, if any.
+func afterAcquireOf(ctx context.Context) (afterAcquire, bool) {
+	bound, ok := ctx.Value(afterAcquireKey{}).(afterAcquire)
+	return bound, ok
+}
+
+// errAcquireBound is a transaction that waited its whole acquire bound (BoundAfterAcquire) for a
+// connection of the pool and got none.
+var errAcquireBound = errors.New("store: no connection of the pool was free within the wait for one")
+
 // commitHooksKey is the context key a TransactWith scope lives under. It is named only where a
 // scope is stored or read: TransactWith stores the one scope that holds hooks, scopeOf reads it,
 // and readOutcome and ForConcurrentWorker store none (TestOnlyTransactOpensACommitScope). Its type
@@ -207,12 +235,34 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //
 // So a caller whose context ends waits at most CommitSettleBound more for its commit's outcome.
 func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) error {
+	bound, bounded := afterAcquireOf(ctx)
 	if open := scopeOf(ctx); open != nil && open.writing.Load() {
+		if bounded {
+			// A joined write holds its open transaction's connection already: its bound runs now.
+			writing, cancel := context.WithTimeout(ctx, bound.write)
+			defer cancel()
+			ctx = writing
+		}
 		return open.join(ctx, pool, options, write)
 	}
-	tx, err := pool.BeginTx(ctx, options)
+	acquiring := ctx
+	if bounded {
+		var cancel context.CancelFunc
+		acquiring, cancel = context.WithTimeout(ctx, bound.acquire)
+		defer cancel()
+	}
+	tx, err := pool.BeginTx(acquiring, options)
 	if err != nil {
+		if bounded && ctx.Err() == nil && acquiring.Err() != nil {
+			return fmt.Errorf("%w (%s): %w", errAcquireBound, bound.acquire, err)
+		}
 		return err
+	}
+	if bounded {
+		// The write's bound counts from here, once the transaction holds its connection.
+		writing, cancel := context.WithTimeout(ctx, bound.write)
+		defer cancel()
+		ctx = writing
 	}
 	committing, stop := commitContext(ctx)
 	defer stop()

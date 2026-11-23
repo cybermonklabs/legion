@@ -1819,6 +1819,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
+		// A claim write's bound counts from its connection: a boot relaunches every unfinished
+		// claim at once through the one pool, and a bound that counted the queue for it cut the
+		// last writes for the writes ahead of them (supervise.defaultClaimWrite).
+		BoundWrite: store.BoundAfterAcquire,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,
 			PromptFailures: cfg.PromptFailureLimit,

@@ -924,10 +924,15 @@ type Timeouts struct {
 	// ClaimWrite bounds each claim and delivery write a decision makes while it holds the machine's
 	// lock, so a database that has stopped answering cannot hold that lock for as long as the
 	// connection's own patience: every other event for the claim queues behind the decision in
-	// flight, and a machine whose lock is held through an outage decides nothing at all. No
-	// setting names it, because the bound answers a question about the write rather than about a
-	// deployment, and no caller in internal/daemon sets it. Zero takes defaultClaimWrite.
+	// flight, and a machine whose lock is held through an outage decides nothing at all. It counts
+	// from the moment the write holds a connection of the store (Deps.BoundWrite): the wait for
+	// the connection is ClaimAcquire's. No setting names either, because each answers a question
+	// about the write rather than about a deployment, and only the daemon's tests set them.
+	// Zero takes defaultClaimWrite.
 	ClaimWrite time.Duration
+	// ClaimAcquire bounds the wait of each of those writes for a connection of the store, before
+	// ClaimWrite's count begins. Zero takes defaultClaimAcquire.
+	ClaimAcquire time.Duration
 }
 
 // Deps is what a machine is built from.
@@ -1185,6 +1190,13 @@ type Deps struct {
 	// connection pool (store.ForConcurrentWorker, which this package cannot import: the store
 	// imports it). nil applies the decision on the machine's context unchanged.
 	Worker func(context.Context) context.Context
+	// BoundWrite is ctx for one claim or delivery write, or claim read, of a decision (bounded):
+	// the wait for a connection of the store ends acquire after it begins, and the call itself
+	// ends write after it holds one, so a write queued behind the pool's other callers is not cut
+	// by a bound that is about the write (Timeouts.ClaimWrite). The daemon sets its store's
+	// (store.BoundAfterAcquire). nil, for a store whose writes queue for no connection, bounds the
+	// whole call by write alone.
+	BoundWrite func(ctx context.Context, acquire, write time.Duration) (context.Context, context.CancelFunc)
 }
 
 func (d Deps) check() error {
@@ -1228,7 +1240,24 @@ func (d Deps) check() error {
 // for five seconds rather than for the length of the outage. The write it does cut short is not
 // lost: a bare context deadline is a write the server never answered, which writeOwed owes, so
 // the claim write is marked and made again at the claim's next decision (owes, repair).
+//
+// It counts the write and not the wait for a connection (Deps.BoundWrite). Counted from before
+// that wait, it was the queue's bound too: a boot relaunches every unfinished claim at once, each
+// on a goroutine of its own, through a pool of max(4, CPUs) connections, so the last of forty
+// writes waited out thirty-odd writes before its own, and on a loaded node four of forty such
+// writes passed five seconds with almost all of their time in that wait (internal/daemon's
+// TestWithNoPacingTheBootWaveGoesOutInOneTick, and a measurement of its writes: acquire about 90%
+// of each write's time). Each such launch was cut, owed, and tried again only at the next probe.
 const defaultClaimWrite = 5 * time.Second
+
+// defaultClaimAcquire is the wait for a connection a Deps that names none takes. Every write
+// that holds a connection gives it back within its own bound, so the pool turns over within
+// defaultClaimWrite even while the database answers nothing, and thirty seconds is a queue six
+// times that deep, against healthy writes of milliseconds: no write that would land waits it out.
+// What it does end is a wait for a pool that cannot give a connection at all — a database that
+// has stopped answering, whose connections the pool cannot replace — and it is the probe
+// interval's default, the cadence at which such an owed write is made again in any case.
+const defaultClaimAcquire = 30 * time.Second
 
 // claimWrite is Deps.Timeouts.ClaimWrite, or defaultClaimWrite when it names none. It is a
 // fallback rather than a check, so a Deps built without it still writes under the deadline.
@@ -1237,6 +1266,14 @@ func (d Deps) claimWrite() time.Duration {
 		return defaultClaimWrite
 	}
 	return d.Timeouts.ClaimWrite
+}
+
+// claimAcquire is Deps.Timeouts.ClaimAcquire, or defaultClaimAcquire when it names none.
+func (d Deps) claimAcquire() time.Duration {
+	if d.Timeouts.ClaimAcquire <= 0 {
+		return defaultClaimAcquire
+	}
+	return d.Timeouts.ClaimAcquire
 }
 
 // RefusedError is a request the claim does not allow — the answer an API route gives its caller
@@ -4172,8 +4209,8 @@ func (m *Machine) forgetSend() {
 	m.send, m.helloDuringSend, m.askFirst = nil, false, false
 }
 
-// write runs one store write of a decision under the claim-write deadline, derived from the
-// decision's own context so the daemon's stop still ends the write at once. Every claim and
+// write runs one store write of a decision under the claim-write deadline (bounded), derived from
+// the decision's own context so the daemon's stop still ends the write at once. Every claim and
 // delivery write a decision makes while it holds the machine's lock goes through it, and those
 // are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and
 // take no deadline: what they wait on is an advisory lock another transaction holds, so a
@@ -4184,9 +4221,20 @@ func (m *Machine) forgetSend() {
 // the machine's lock for the length of the outage; a write it cuts short is owed and made again
 // at the claim's next decision (owes, repair).
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
-	writing, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	writing, cancel := m.bounded(ctx)
 	defer cancel()
 	return call(writing)
+}
+
+// bounded is ctx for one bounded store call of a decision: the store's wait for a connection
+// bounded by the acquire bound, and the call itself by the claim-write bound once it holds one
+// (Deps.BoundWrite, Timeouts.ClaimWrite, Timeouts.ClaimAcquire). With no BoundWrite the whole call
+// is bounded by the claim-write bound, which is right for a store that queues for no connection.
+func (m *Machine) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	if m.deps.BoundWrite == nil {
+		return context.WithTimeout(ctx, m.deps.claimWrite())
+	}
+	return m.deps.BoundWrite(ctx, m.deps.claimAcquire(), m.deps.claimWrite())
 }
 
 // putClaim writes the claim alone, under the claim-write deadline, and marks nothing owed: a
