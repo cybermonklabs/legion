@@ -407,8 +407,9 @@ edge, no broker project check). It is the same command, `outside-agent-tailnet.s
 `OUTSIDE_GATE=all`, the default, is both legs as above, and any other value reads every row UNKNOWN
 and exits 2.
 
-The project's owner acts through four commands. Each is a command line, split on blanks, that holds
-its own owner credential, which the leg never sees:
+The project's owner acts through four commands, or, where a command is unset, through one owner
+credential the leg holds (below). Each command is a command line, split on blanks, that holds its
+own owner credential, which the leg never sees:
 
 | Variable | Its last words | It must |
 | --- | --- | --- |
@@ -417,14 +418,29 @@ its own owner credential, which the leg never sees:
 | `OUTSIDE_OWNER_INVITE_COMMAND` | the address, the project | print the address's invitation link alone and exit 0; or print Dispatch's refusal, `<status> <code>`, on its first line and exit 1; or exit 2 when it could not tell. |
 | `OUTSIDE_OWNER_REMOVE_COMMAND` | the address, the project | take the address off the project's access list, and exit 0. |
 
-A command left unset is made by the leg itself with the owner's own browser session,
-`OUTSIDE_FULL_COOKIE_FILE` (the project's owner holds the person and approve scopes no agent token
-holds today), at `OUTSIDE_TAILNET_DISPATCH_URL`: `PUT` and `DELETE
-/api/v1/projects/<key>/access/people/<address>`, `GET /api/v1/projects/<key>/access` and `POST
-.../people/<address>/invitations`, each read as the command's contract says. Dispatch refuses a
-cookie's write whose `Origin` is not the origin called, 403 `invalid request origin`, which a row
-then names; a refusal with no code is quoted by its words. With neither the command nor the
-session, the rows that need the act read UNKNOWN, naming both.
+A command left unset is made by the leg itself at `OUTSIDE_TAILNET_DISPATCH_URL`: `PUT` and
+`DELETE /api/v1/projects/<key>/access/people/<address>`, `GET /api/v1/projects/<key>/access` and
+`POST .../people/<address>/invitations`, each read as the command's contract says. It acts with
+one owner credential:
+
+- `OUTSIDE_OWNER_TOKEN_FILE`, where it is set: a file that holds one personal token of the
+  project's owner. The token must hold the `person` and `approve` scopes, and its own project list
+  must name the project. The file must have mode 0600: a file that a group or others may read is
+  refused, and the leg makes no act, with the token or with the browser session. The leg gives the
+  token to curl in a header file of mode 0600 alone, and no output holds it. Every act whose
+  command is unset uses it: the add, the list, the link, row `unlisted` (409 `PERSON_NOT_LISTED`),
+  and T5's removal. Dispatch makes a link for such a token only in a build that holds the token
+  test of the owner's link (`personalTokenListsProject`, cybermonklabs/legion#5079); any other
+  build, and any token whose list does not name the project, answers 403
+  `BROWSER_SESSION_REQUIRED`. A token without `approve` gets the add, the link and the removal
+  refused, 403 `OAUTH_SCOPE_REQUIRED`. Each refusal reads UNKNOWN in the rows that need the act,
+  naming it, and a refused removal is named in row T5.
+- Else `OUTSIDE_FULL_COOKIE_FILE`, the owner's own browser session. Dispatch refuses a cookie's
+  write whose `Origin` is not the origin called, 403 `invalid request origin`, which a row then
+  names; a refusal with no code is quoted by its words.
+
+With no command, no token and no session, the rows that need the act read UNKNOWN, naming all
+three.
 
 The leg quotes no word of what they print but a refusal's `<status> <code>`, since a link is a
 secret, and asks no terminal. In this gate it does these steps:
@@ -559,9 +575,14 @@ control, and an empty control, no grant with no approver and no operator (no `gr
 sent), the driver's own guard and no `outside-edge-grants.tsv` each read UNKNOWN; with no owner
 command every owner act is made with the owner's browser session and every row passes, while the
 same acts sent another `Origin` are refused `403 invalid request origin`, which rows unlisted and
-public name, and with neither a command nor the session the owner rows read UNKNOWN naming both. Run
-alone, `outside-agent-grants.sh` prints the probe grant, `no grant with no approver and no operator`
-(exit 1), or UNKNOWN without the token (exit 2). The stand-in Dispatch answers the full member's
+public name; with the owner's token and no browser session every act is made with the token and
+every row passes, while a token whose list names another project gets the link refused `403
+BROWSER_SESSION_REQUIRED`, one without `approve` gets the add refused `403 OAUTH_SCOPE_REQUIRED`,
+one narrowed to `person` in the window gets the removal refused, which T5 names, and a token file
+of mode 0640 makes no act, each read UNKNOWN; and with none of a command, a token or the session
+the owner rows read UNKNOWN naming all three. Run alone, `outside-agent-grants.sh` prints the probe
+grant, `no grant with no approver and no operator` (exit 1), or UNKNOWN without the token (exit 2).
+The stand-in Dispatch answers the full member's
 token on whoami as Dispatch does, `{"kind":"agent","owner":...}`, so a read of `login` there reads
 UNKNOWN; planted in its place, a user shape's `login` still names the full member, and a kind of
 another word, an owner of null, an owner in capitals and an owner with no `@` each read UNKNOWN,
