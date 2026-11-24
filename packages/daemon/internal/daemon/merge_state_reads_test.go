@@ -550,6 +550,59 @@ func TestAClimbWhoseFirstReadFailsLeavesTheHeadWithItsBase(t *testing.T) {
 	}
 }
 
+// A push to the base that commits while a climb's first read runs asks the base's reads for a read
+// of its own (queueBaseMergeStates), and that request stands: once its first read has read
+// GitHub, the climb takes the issue out of its base's reads only under the request that stood when
+// it began (climbMergeState, leaveBase), and here none stood. The climb's first read answers
+// MERGEABLE and clean, which ends the climb; GitHub's next answer, to the push's read, is
+// CONFLICTING, and the record holds it. The push's read waits until the climb has ended, so the
+// climb's choice is made before that read applies its answer. Had the climb taken the issue out
+// whatever request put it there, the push's read would have read nothing or applied nothing
+// (readChunk applies no answer for an issue its batch no longer holds), and the head would go
+// unread after the push until its next event.
+func TestABasePushDuringAClimbsFirstReadKeepsItsRead(t *testing.T) {
+	t.Parallel()
+	clean := pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"clean"}`}
+	var current atomic.Pointer[readRig]
+	climbing := func(w *workflowRuntime) bool {
+		w.mergeStateMu.Lock()
+		defer w.mergeStateMu.Unlock()
+		_, running := w.mergeStateRunning["CAPTURE-1"]
+		return running
+	}
+	rig := newReadRig(t, captureInTesting, func(read int32) pullAnswer {
+		rig := current.Load()
+		switch read {
+		case 1:
+			// The push to main commits while the climb's first read runs.
+			rig.w.queueBaseMergeStates("acme/widgets", "main", []string{"CAPTURE-1"})
+			return clean
+		case 2:
+			for deadline := time.Now().Add(10 * time.Second); climbing(rig.w) && time.Now().Before(deadline); {
+				time.Sleep(time.Millisecond)
+			}
+		}
+		return conflictingPull
+	})
+	current.Store(rig)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go rig.w.readMergeStates(ctx)
+	rig.w.queueMergeState("CAPTURE-1")
+
+	testwait.Eventually(t, "the push's read to record GitHub's CONFLICTING after the climb's first read", func() bool {
+		_, pr := capturePhase(t, rig.pool)
+		return pr.ConflictRead != nil
+	})
+	if got := rig.reads.Load(); got != 2 {
+		t.Fatalf("GitHub was read %d times, want the climb's first read and the push's", got)
+	}
+	_, pr := capturePhase(t, rig.pool)
+	if pr.Mergeability != record.MergeabilityConflicting || pr.ConflictRead.Head != "code" || pr.ConflictRead.Base != "main" {
+		t.Fatalf("the record holds %s with first read %+v, want GitHub's CONFLICTING recorded as the first read of code on main", pr.Mergeability, pr.ConflictRead)
+	}
+}
+
 // armedFailure is a failure a test arms (on) and the stand-in that fails takes up once, counting
 // each time it fails (fired).
 type armedFailure struct {

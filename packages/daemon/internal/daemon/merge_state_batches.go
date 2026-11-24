@@ -168,10 +168,11 @@ func (w *workflowRuntime) batchLocked(repo ghrepo.Repository, base string) (*bas
 	return read, running
 }
 
-// leaveBaseLocked takes issue out of the batch it is owed a read in, if any, under mergeStateMu: a
-// climb of its own reads it, once its first read has read GitHub (climbMergeState), or another
-// batch takes it (putLocked).
-// A batch left with no issue is woken, so its follow ends rather than wait to read nothing.
+// leaveBaseLocked takes issue out of the batch it is owed a read in, if any, under mergeStateMu:
+// another batch takes it (putLocked), or the request that put it there was answered or is no
+// longer owed (leaveBase, which a climb of its own calls once its first read has read GitHub:
+// climbMergeState). A batch left with no issue is woken, so its follow ends rather than wait to
+// read nothing.
 func (w *workflowRuntime) leaveBaseLocked(issue string) {
 	key, owed := w.baseReadOf[issue]
 	if !owed {
@@ -202,8 +203,9 @@ func (w *workflowRuntime) owns(key, issue string) bool {
 }
 
 // leaveBase takes issue out of key's batch when the request that put it there was asked, the one a
-// read took it up under: GitHub answered it a state, or the record or GitHub no longer holds it
-// open at the head its reads follow. A later request stands.
+// read took it up under: GitHub answered it a state, the record or GitHub no longer holds it open
+// at the head its reads follow, or a climb of its own has read it since that request
+// (climbMergeState). A later request stands.
 func (w *workflowRuntime) leaveBase(key, issue string, asked uint64) {
 	w.mergeStateMu.Lock()
 	defer w.mergeStateMu.Unlock()
