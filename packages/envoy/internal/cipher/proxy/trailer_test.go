@@ -18,7 +18,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 )
 
-// chunkedWithTrailer is the request each row below sends: a PUT whose body is chunked, whose
+// chunkedWithTrailer is the request the test below sends twice: a PUT whose body is chunked, whose
 // length is unknown, and which declares one trailer carrying value. net/http sends a declared
 // trailer's final value after the last chunk, so a value set here reaches the proxy after the
 // body, as a trailer does on the wire. The request names no X-Amz-Content-Sha256, so the proxy
@@ -38,8 +38,9 @@ func chunkedWithTrailer(t *testing.T, name, value, body string) *http.Request {
 		t.Fatal(err)
 	}
 	// The command signed without naming a body hash, so the proxy reads the body and hashes it
-	// itself. A request that names one is signed again from that name and its body is streamed,
-	// which is the row below.
+	// itself, which is the path this test is about. A request that names one is signed again
+	// from that name and its body is streamed, so its trailers follow the request upstream and
+	// no scan before the forward holds them; nothing here sends that shape.
 	request.Header.Del("X-Amz-Content-Sha256")
 	return request
 }
@@ -47,9 +48,9 @@ func chunkedWithTrailer(t *testing.T, name, value, body string) *http.Request {
 // TestAPlaceholderInATrailerIsRefusedWhereTheBodyIsRead: an upload whose body the proxy reads
 // carries its trailers to the proxy before anything goes upstream, so a placeholder in one is
 // refused 403 PLACEHOLDER_NOT_SWAPPED and the service is sent nothing - the same answer as a
-// placeholder in a header. The control, in the same run: the same upload with no placeholder in
-// its trailer reaches the service, with the trailer as the command wrote it, so the refusal is
-// the placeholder's and not the trailer's. The named revert: proxy-leftover-skips-trailers.
+// placeholder in a header. The control, in the same run: the same upload whose trailer carries no
+// placeholder reaches the service, so the refusal is the placeholder's and not the trailer's, and
+// the trailer is no header there. The named revert: proxy-leftover-skips-trailers.
 func TestAPlaceholderInATrailerIsRefusedWhereTheBodyIsRead(t *testing.T) {
 	r := newAWSRig(t, true)
 	client := r.client(awsKeyPlaceholder)
