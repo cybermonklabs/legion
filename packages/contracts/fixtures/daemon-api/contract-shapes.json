@@ -36503,7 +36503,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "compact",
     "noBody": false,
     "keyPaths": [
@@ -36513,14 +36513,14 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "empty-object",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "fresh-session",
     "noBody": false,
     "keyPaths": [
@@ -36529,7 +36529,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "grant",
     "noBody": false,
     "keyPaths": [
@@ -36539,14 +36539,14 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "handoff-complete",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "health",
     "noBody": false,
     "keyPaths": [
@@ -36556,7 +36556,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "intake-discard",
     "noBody": false,
     "keyPaths": [
@@ -36566,7 +36566,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "intake-replay",
     "noBody": false,
     "keyPaths": [
@@ -36589,7 +36589,7 @@
     }
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "issue-record",
     "noBody": false,
     "keyPaths": [
@@ -36696,11 +36696,6 @@
       "mergeWait.waitsOn",
       "phase",
       "phaseEntry",
-      "podHold",
-      "podHold.at",
-      "podHold.detail",
-      "podHold.firstAt",
-      "podHold.reason",
       "pullRequest",
       "pullRequest.head",
       "pullRequest.mergeState",
@@ -37035,14 +37030,14 @@
     }
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "no-content",
     "noBody": true,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "plan-register",
     "noBody": false,
     "keyPaths": [
@@ -37057,7 +37052,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "project-pause",
     "noBody": false,
     "keyPaths": [
@@ -37072,7 +37067,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "project-resume",
     "noBody": false,
     "keyPaths": [
@@ -37092,7 +37087,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "refusal",
     "noBody": false,
     "keyPaths": [
@@ -37125,7 +37120,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "register",
     "noBody": false,
     "keyPaths": [
@@ -37150,7 +37145,7 @@
     }
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "register-controller",
     "noBody": false,
     "keyPaths": [
@@ -37162,7 +37157,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "release-records",
     "noBody": false,
     "keyPaths": [
@@ -37200,7 +37195,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -37388,11 +37383,6 @@
       "issues.*.mergeWait.waitsOn",
       "issues.*.phase",
       "issues.*.phaseEntry",
-      "issues.*.podHold",
-      "issues.*.podHold.at",
-      "issues.*.podHold.detail",
-      "issues.*.podHold.firstAt",
-      "issues.*.podHold.reason",
       "issues.*.pullRequest",
       "issues.*.pullRequest.head",
       "issues.*.pullRequest.mergeState",
@@ -37900,7 +37890,7 @@
     }
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "turn-outcome",
     "noBody": false,
     "keyPaths": [
@@ -37910,7 +37900,7 @@
     "domains": {}
   },
   {
-    "contract": 246,
+    "contract": 232,
     "answer": "wave-release",
     "noBody": false,
     "keyPaths": [

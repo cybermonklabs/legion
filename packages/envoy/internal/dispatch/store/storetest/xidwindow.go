@@ -126,10 +126,11 @@ const XidFaultGap = 20 * time.Millisecond
 // cannot run at all or at full size" runs them plain (shape and gaps); refs' runs plain in
 // envoy-go's unit step. envoy-go and envoy-go-docs-finalizers are among the slow suites the
 // changes job holds back on a pull request: each runs on a merge group (its first attempt only),
-// on a manual dispatch, and on a pull request only while it carries the `full-ci` label, and
-// only when its filter (envoy_go, envoy_go_race_docs) selects the change. So the gap bound is
-// judged in the merge queue before every merge, not on every pull-request push. Under the race
-// detector the docs tests that inject a sleep skip their timing arm by name.
+// on a manual dispatch, and on a pull request only while it carries the label `full-ci` or its
+// own `lane:<output>` (`lane:envoy_go`, `lane:envoy_go_race_docs`), and only when its filter
+// (envoy_go, envoy_go_race_docs) selects the change. So the gap bound is judged in the merge
+// queue before every merge, not on every pull-request push. Under the race detector the docs
+// tests that inject a sleep skip their timing arm by name.
 func XidJudgesGaps() bool { return XidNoGapJudgment() == "" }
 
 // xidPollInterval is how often the poller reads pg_stat_activity: the plan's 0.5 ms. A poll's own

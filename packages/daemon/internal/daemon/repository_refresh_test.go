@@ -862,17 +862,22 @@ func TestARecoveryRecordsChildrenParentsFirst(t *testing.T) {
 
 // A GitHub that answers each installation read slowly, but within installReadAttempt, is answered
 // for when the refresher reads it again, however long the whole preparation takes: only a read
-// longer than installReadAttempt is a failed read. A read bounded as a whole by appMintAttempt cut
-// such a preparation off, so a repository whose read failed once was never served.
+// longer than installReadAttempt is a failed read. A read bounded as a whole by the App-call attempt
+// bound (callBounds) cut such a preparation off, so a repository whose read failed once was never
+// served.
 func TestASlowButAnsweringGitHubIsServedOnARefresh(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt; it writes the package variable installReadAttempt.
+	// Not parallel: it writes the package variable installReadAttempt.
 	quickInstallReads(t)
-	attempt, read := appMintAttempt, installReadAttempt
-	appMintAttempt, installReadAttempt = 500*time.Millisecond, 2*time.Second
-	t.Cleanup(func() { appMintAttempt, installReadAttempt = attempt, read })
+	read := installReadAttempt
+	installReadAttempt = 2 * time.Second
+	t.Cleanup(func() { installReadAttempt = read })
 	installs := &installations{delay: 600 * time.Millisecond}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
-	w, _, installs, _ := repositoryRigWith(t, installs)
+	w, _, installs, _ := repositoryRigWith(t, installs, func(w *workflowRuntime) {
+		calls := productionAppCalls()
+		calls.attempt = 500 * time.Millisecond
+		w.appCalls = &calls
+	})
 	if recordsOn(w, "zeta/tools") {
 		t.Fatal("zeta/tools served at boot while its read fails")
 	}

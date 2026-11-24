@@ -1060,8 +1060,8 @@ const intakeGiveUpsContract = 228
 // own table before. A plugin before it reads each issue with a
 // strict schema that names no `podHold` and refuses the whole body for it, so every caller below
 // it is served the issues without the key (withoutPodHold). intakeGiveUpsContract stands below
-// it with no row of stateNarrowings between the two, so a caller from that contract to 245 is
-// served 228's keys.
+// it with no row of stateNarrowings between the two (232, between them, moves a request body and
+// no key of the state), so a caller from that contract to 245 is served 228's keys.
 //
 // It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
 // is, and it is the last number of answers.go's SupportedContracts, which names the constant.

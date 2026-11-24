@@ -48,14 +48,51 @@ type podRole struct {
 // Kubernetes daemon's do (Deps.PodStarts): every test of this file runs against it, and the
 // package's own harness builds none. phaseWorker is the role the workflow answers as working the
 // issue's current phase (Deps.PhaseRole), "" for a harness that answers none.
+//
+// The gate posts each grant once the harness's clock stands still (fakeClock.whenStill), where the
+// daemon posts it at once on a goroutine of its own: a grant the settle or the bound makes inside
+// the test's move of the clock then reaches its machine after that move, so what the grant's
+// decision arms for the moment it ran (the pause gate's stop, armed at once) is not fired by that
+// move, whichever order a scheduler gives the two. A test reads the decision before it moves the
+// clock again.
 func podHarness(t *testing.T, phaseWorker claim.Role) *harness {
 	t.Helper()
 	h := newBareHarness(t)
-	h.deps.PodStarts = NewPodStarts(h.clock)
+	gate := NewPodStarts(h.clock)
+	gate.post = h.clock.whenStill
+	h.deps.PodStarts = gate
 	if phaseWorker != "" {
 		h.deps.PhaseRole = func(context.Context, string) (claim.Role, error) { return phaseWorker, nil }
 	}
 	return h
+}
+
+// The pod harness posts a grant the clock's own move makes after that move, so a stop the grant's
+// decision posts for that moment is still posted when the move ends (podHarness). This is the
+// harness's promise, not the gate's: the daemon's gate posts at once. The case makes the move wait,
+// after the settle and at its moment, until the grant's decision has posted the pause's stop or the
+// grant waits for the clock to stand still; with the daemon's post, the move then fires the stop.
+func TestThePodHarnessPostsAGrantTheClocksMoveMadeAfterThatMove(t *testing.T) {
+	h, first, second, _, stops := pausedPodWithAWaitingStart(t)
+	h.registered(first)
+	// Armed after the registration armed its settle, for the same moment, so the move runs it right
+	// after the settle's grant and then looks for what else is due at that moment.
+	h.clock.AfterFunc(podLoadSettle, func() {
+		testwait.Eventually(t, "the second's grant to post the pause's stop, or to wait for the clock to stand still", func() bool {
+			return pauseStopPosted(second) || h.clock.waitingPosts() > 0
+		})
+	})
+	h.clock.Advance(podLoadSettle)
+
+	testwait.Eventually(t, "the second's grant, after the move, to post its stop for the pause or to make it", func() bool {
+		return pauseStopPosted(second) || len(stops.made()) > 0
+	})
+	second.m.Wait()
+	if made := stops.made(); len(made) != 0 || !pauseStopPosted(second) {
+		t.Fatalf("the pause's stops of the second made %+v, and its stop posted %v, once the move that granted its start ended; want none made and the stop posted: the move that made the grant fired the stop the grant posted",
+			stopsOf(made), pauseStopPosted(second))
+	}
+	h.wantStarts(second.token, 0)
 }
 
 // podRole builds the machine of role's claim of podIssue in state: queued, which a spawn starts
@@ -185,9 +222,9 @@ func (h *harness) parks(r *podRole, ev Event, before int) {
 }
 
 // wantGrantedStart is r's start the gate granted after its wait: the gate tells r's machine on a
-// goroutine of its own (askPod), so this waits until the runtime has been asked for r's process
-// n times, and then for the decision that asked to end (Machine.Wait). A start the door holds in
-// the runtime is read at the door instead (podDoor.at).
+// goroutine of its own (PodStarts.post), so this waits until the runtime has been asked for r's
+// process n times, and then for the decision that asked to end (Machine.Wait). A start the door
+// holds in the runtime is read at the door instead (podDoor.at).
 func (h *harness) wantGrantedStart(r *podRole, n int) {
 	h.t.Helper()
 	testwait.Eventually(h.t, fmt.Sprintf("%s's start %d, once the gate granted it", r.token, n), func() bool {
