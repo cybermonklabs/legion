@@ -225,6 +225,8 @@ if [ "$1" = run ]; then
   ref=$1
   shift
   dir="${FAKE_ROOT:?}/images/${ref//[\/:@]/_}"
+  # FAKE_DOCKER_SAYS is what a registry answering in its own place has docker say, for a case.
+  [ -z "${FAKE_DOCKER_SAYS:-}" ] || { printf 'docker: %s\n' "$FAKE_DOCKER_SAYS" >&2; exit 125; }
   if [ ! -d "$dir/fs" ]; then
     echo "docker: Error response from daemon: manifest for $ref not found: manifest unknown" >&2
     printf '\nRun '"'"'docker run --help'"'"' for more information\n' >&2

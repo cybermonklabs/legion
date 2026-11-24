@@ -118,6 +118,13 @@ kept_marker "UNKNOWN: dotfiles .claude/settings.json: cannot read "
 
 # --- docker's words ------------------------------------------------------------------------------
 
+echo "case: words: docker's error for an image it runs"
+new_case words-docker-run
+clients_open
+run_gate "FAKE_DOCKER_SAYS=Error response from daemon: ${marker}: unauthorized" -- --clients "$commit"
+prints_no_run "docker said running an image"
+kept_marker "UNKNOWN: LINUX image: cannot run "
+
 echo "case: words: docker's error for an image's manifest"
 daemons_words words-docker
 run_gate "FAKE_DOCKER_SAYS=ERROR: ${marker}: unauthorized" -- "$commit"
