@@ -919,7 +919,9 @@ func TestABatchAnswerIsStampedWithItsOwnPagesTime(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
 	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
-	pageOne := make(chan struct{}, 1)
+	// pageTwo is the stand-in's word that the batch asked for page 2, which it does only once it
+	// has page 1's answer in hand and stamped.
+	pageTwo := make(chan struct{}, 1)
 	release := make(chan struct{})
 	var once sync.Once
 	releasePageTwo := func() { once.Do(func() { close(release) }) }
@@ -932,9 +934,9 @@ func TestABatchAnswerIsStampedWithItsOwnPagesTime(t *testing.T) {
 		request := readBatchRequest(t, r)
 		if request.Variables.Cursor == nil {
 			_, _ = io.WriteString(w, batchPage(t, "page-2", batchNode(86, "head-86", "MERGEABLE", "CLEAN")))
-			nudge(pageOne)
 			return
 		}
+		nudge(pageTwo)
 		<-release
 		_, _ = io.WriteString(w, batchPage(t, "", batchNode(87, "head-87", "MERGEABLE", "BLOCKED")))
 	}})
@@ -946,9 +948,9 @@ func TestABatchAnswerIsStampedWithItsOwnPagesTime(t *testing.T) {
 
 	pushOntoMain(t, pool, w, "main-2")
 	select {
-	case <-pageOne:
+	case <-pageTwo:
 	case <-time.After(30 * time.Second):
-		t.Fatalf("the batch read no first page")
+		t.Fatalf("the batch asked for no second page")
 	}
 	// While page 2 is held, a read of 86 made after page 1 answered finds it CONFLICTING, and the
 	// record takes it as its first conflicting read.
