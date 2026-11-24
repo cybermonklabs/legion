@@ -94,9 +94,9 @@ func RecordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, email string) 
 // ErrMachineLoginApprovalInFlight is the refusal of HoldMachineLoginApprovals and
 // RecordMachineLoginRevocation while another transaction holds the person's approval lock: another
 // approval of theirs that Dispatch is relaying, a removal of them from an access list, or the
-// runbook's restore block. The approve answers it 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT
-// (api.relayMachineLoginApproval), and so does a removal whose record met it (api.removePerson); a
-// caller that does not match it relays or records nothing either, since it is an error.
+// runbook's restore block. The approve route a later slice adds answers it 409
+// MACHINE_LOGIN_APPROVAL_IN_FLIGHT, and so does its removal whose record met it; a caller that
+// does not match it relays or records nothing either, since it is an error.
 var ErrMachineLoginApprovalInFlight = errors.New("store: another holder has the person's machine-login approval lock")
 
 // tryMachineLoginApprovals takes, for the rest of tx, the person email's approval lock without

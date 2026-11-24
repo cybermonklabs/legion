@@ -623,7 +623,9 @@ export async function runDispatchCli(
     text = messageFor(error);
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
-    // was only a step of its command (a picture, a closing reason) into a failure of its own.
+    // was only a step of its command (a picture, a closing reason) into a failure of its own. A
+    // call that writes nothing whose answer Dispatch kept no copy of (`DispatchAnswerNotKeptError`)
+    // made nothing, so it is no landing: it exits 1 below, its line saying to run it again.
     if (error instanceof DispatchWriteLandedError) {
       entry = { tool, details: { landed_without_answer: error.code } };
       code = OK;

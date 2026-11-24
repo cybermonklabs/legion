@@ -12,6 +12,7 @@ import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -77,6 +78,7 @@ async function startChannelServer(
       // No heartbeat registration runs in the test's window: the reconnect's registration, on a
       // new epoch, is the only one that restarts the relay.
       ENVOY_HEARTBEAT_MS: "240000",
+      ...NO_TRANSPILER_CACHE,
     },
     stdin: "pipe",
     stdout: "pipe",

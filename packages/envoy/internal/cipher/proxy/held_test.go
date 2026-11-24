@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
@@ -44,7 +45,7 @@ const (
 	bobValue     = "ghp-the-real-bob-token"
 )
 
-var bobPlaceholder = requests.PlaceholderPrefix + "bobbobbobbobbobbobbobbobbobbob01"
+var bobPlaceholder = placeholder.Prefix + "bobbobbobbobbobbobbobbobbobbob01"
 
 // The words K2 gives the airlock's answers to ada, spelled out here rather than read from the
 // proxy, so a change to what the proxy says is a change this row sees. adaDirectoryHeld is what a

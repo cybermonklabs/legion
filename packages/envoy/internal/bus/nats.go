@@ -56,6 +56,7 @@ type connectOpts struct {
 	promptReconnect             bool
 	inboxPrefix                 string
 	streamMessageReads          bool
+	keeperStepGuard             time.Duration
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -489,6 +490,9 @@ type Client struct {
 	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
 	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
 	streamMessageReads bool
+	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
+	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
+	keeperStepGuard time.Duration
 
 	// recovery state
 	recovering int32
@@ -619,6 +623,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
 		streamMessageReads:          opts.streamMessageReads,
+		keeperStepGuard:             opts.keeperStepGuard,
 		requestExpiry:               opts.requestExpiry,
 		stopCh:                      make(chan struct{}),
 	}
@@ -2291,6 +2296,24 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	ack, err := c.PublishAckWithin(ctx, item)
 	return ack.Duplicate, err
+}
+
+// PublishEachWithin publishes item on its own topic as PublishAckWithin does, and once the
+// publish succeeds calls published, when it is not nil, with that topic and the stream's
+// acknowledgement: its duplicate verdict, and whether the verdict answers a resend
+// (StoredAck.Resent), which can make a duplicate this call's own first copy. It is the webhook
+// handlers' publisher (webhook.Publisher), which a publisher that also puts copies on other
+// topics implements by calling published once for each topic it published on
+// (ghrename.Publisher).
+func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
+	ack, err := c.PublishAckWithin(ctx, item)
+	if err != nil {
+		return err
+	}
+	if published != nil {
+		published(item.Topic, ack.Duplicate, ack.Resent)
+	}
+	return nil
 }
 
 // PublishAckWithin publishes item on its own topic as PublishReportingDuplicateWithin does, over

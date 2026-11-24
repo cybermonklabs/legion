@@ -369,11 +369,19 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
       // once, by the create, so no write of this session can replace what another wrote. The key
       // is this record's own, so a late append is replayed rather than written twice, and the same
       // record sent again with another body is refused (`422 KEY_REUSED`), never written twice.
-      await client.docEdit(
-        held,
-        { ops: [{ op: "insert", markdown: block, after: "end" }], actor },
-        intentKey(RECORD_KEY_PREFIX, sessionId, id)
-      );
+      try {
+        await client.docEdit(
+          held,
+          { ops: [{ op: "insert", markdown: block, after: "end" }], actor },
+          intentKey(RECORD_KEY_PREFIX, sessionId, id)
+        );
+      } catch (error) {
+        // An append Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`, or a
+        // replay of an answer it kept none of) is in the document: the record is written, and the
+        // reader counts it there by its `id`. Only an append that did not land is this record's
+        // failure.
+        if (!(error instanceof DispatchWriteLandedError)) throw error;
+      }
       return undefined;
     };
     // This session's records, one at a time: the next starts once this write has settled, however

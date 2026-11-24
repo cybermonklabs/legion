@@ -24,13 +24,14 @@ type Credential struct {
 // sees further. One that lists none is covered as a full member's is, for the projects that are
 // not private. A browser lists nothing and is its person, so it is covered everywhere.
 //
-// It decides projects only. A write of the whole deployment is no project's, and what a credential
-// that lists projects may write of it is api's (withinProjectScope): a list decides which private
+// It decides projects only. A write of the whole deployment is no project's, and a later slice
+// decides what a credential that lists projects may write of it: a list decides which private
 // projects a full member's credential reads, and a write of the whole deployment stays a person's or
 // an unlisted credential's.
 //
 // VisibleProjectsSQL is its SQL twin for reads, which TestTheListRuleIsOneInGoAndSQL holds equal to
-// it over every combination; api's checks of a write call it with the project the write names.
+// it over every combination. Nothing in this tree calls it on a write; a later slice's checks of a
+// write are to call it with the project the write names.
 func CredentialCovers(cred Credential, project string, private bool) bool {
 	if cred.Browser {
 		return true

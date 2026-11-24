@@ -139,7 +139,7 @@ func TestAClaimOfAnEarlierGenerationIsNotSettledAfterTheClockStepsBack(t *testin
 // still commit, after the claim's list ran, an approve it took before the removal. A claim at once
 // after the removal, settled asking a day, writes nothing and leaves the row owed at the claim's
 // generation; the same claim asking no time past the removal settles, so the generation passed and
-// the bound alone refused. The pass asks api.machineLoginSettleAfter, about a minute; a day is
+// the bound alone refused. The pass a later slice adds asks about a minute; a day is
 // longer than any run's timeout, so no slow run puts the claim past it.
 //
 // Control: Settle without its recorded_at bound, and the claim at once settles and the row fails

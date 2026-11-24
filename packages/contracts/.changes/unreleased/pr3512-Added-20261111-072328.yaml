@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  Four tools for the author of a post: dispatch_edit_comment, dispatch_delete_comment,
+  dispatch_edit_message and dispatch_delete_message, and dispatch_read takes history, which lists an
+  entry for each edit of one post and one for its delete, each with the body that write replaced,
+  its actor and its time; no entry of a deleted post carries a body. Each spec's description states
+  what it does.
+  Three event kinds join the union: comment.deleted, message.edited and message.deleted. A comment's
+  edit and delete events carry its thread_root_id and the thread_logins on its thread, and the
+  delete of a comment whose accepted suggestion named a document version after its body carries
+  renamed_version: that version's document, number and new name.
+  IDEMPOTENCY_ANSWER_NOT_KEPT also answers a repeat whose first answer held text a delete withdrew,
+  and its message says whether the request wrote. GOING_ERROR_ANSWER_WITHDRAWN is the error code
+  that ends an answer's stream once a comment or an issue message whose text the answer read is
+  deleted. A reply's reply_block carries edited_at, the time the quoted comment or message was
+  last edited by its author, and none for a post nobody edited. A ReferenceTarget naming a comment
+  or a message, or a block of one, carries the optional edited_at, and deleted_at with deleted_by,
+  where its author edited or deleted the post: a deleted post's member is named "" and is not
+  gone, and a block of it is gone with no name and no text_tree.
+time: 2026-11-11T07:23:28.113040407Z
+custom:
+    Issue: pr3512

@@ -498,8 +498,18 @@ func TestTheEdgeAnswersTheOutsideVerificationURI(t *testing.T) {
 // TestTheEdgeAnswersTheSameShapeForAKnownAndAnUnknownLoginHint: a device authorization at the edge
 // tells its caller nothing of whether the person it names is one the broker knows. A person whose
 // machine login the broker approved and who holds a launcher credential, and a person the broker
-// has never seen, are each answered 200 with the same members, the same page, the same lifetime
-// and polling interval, and a user code of the same shape.
+// has never seen, are each answered 200 with the same members, the same page and polling
+// interval, a user code of the same shape, and the same lifetime: each device code's stored
+// expiry is the rig's device lifetime from a moment of its own request, truncated to a second as
+// the provider truncates it (askedDeviceLogin.storedLifetime), and each expires_in is one of the
+// values correct for that request's own moments (askedDeviceLogin.lifetimeWindow). The known
+// person's device code takes more than a second longer to be written than the unknown person's
+// (holdDeviceCodeWrites), as a write to a busy database can, so the two answers may differ by the
+// second that write crossed, and each is still read off its own stored expiry and nothing else.
+//
+// The named reverts: compare the two answers' expires_in with each other, which fails whenever one
+// write crosses a second boundary and the other does not; and store and answer a shorter lifetime
+// for the known person than for the unknown one.
 func TestTheEdgeAnswersTheSameShapeForAKnownAndAnUnknownLoginHint(t *testing.T) {
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	const known, unknown = "known@outside.example", "unknown@outside.example"
@@ -511,27 +521,183 @@ func TestTheEdgeAnswersTheSameShapeForAKnownAndAnUnknownLoginHint(t *testing.T) 
 		t.Fatal("the known person's first login minted no credential")
 	}
 	header := map[string]string{"X-Forwarded-For": forwardedFor("", "203.0.113.51")}
-	answers := map[string]map[string]any{}
+	answers := map[string]askedDeviceLogin{}
 	for _, person := range []string{known, unknown} {
-		status, body := postEdge(t, rig.EdgeURL, "/v1/oauth/device_authorization", edgeDeviceForm(t, rig.EdgeURL, person), header)
-		if status != http.StatusOK {
-			t.Fatalf("an edge login naming %s = %d %v, want 200", person, status, body)
+		var release func() int
+		if person == known {
+			release = holdDeviceCodeWrites(t, rig, 1100*time.Millisecond)
 		}
-		answers[person] = body
+		answers[person] = askDeviceAuthorization(t, rig, rig.EdgeURL, edgeDeviceForm(t, rig.EdgeURL, person), header)
+		if release != nil {
+			if held := release(); held != 1 {
+				t.Fatalf("the edge login naming %s held %d device code writes, want 1", person, held)
+			}
+		}
 	}
-	knownKeys, unknownKeys := slices.Sorted(maps.Keys(answers[known])), slices.Sorted(maps.Keys(answers[unknown]))
+	knownKeys, unknownKeys := slices.Sorted(maps.Keys(answers[known].answer)), slices.Sorted(maps.Keys(answers[unknown].answer))
 	if !slices.Equal(knownKeys, unknownKeys) {
 		t.Fatalf("the edge answers %s with %v and %s with %v, want the same members", known, knownKeys, unknown, unknownKeys)
 	}
-	for _, member := range []string{"verification_uri", "expires_in", "interval"} {
-		if answers[known][member] != answers[unknown][member] {
-			t.Errorf("%s is %v for %s and %v for %s, want the same", member, answers[known][member], known, answers[unknown][member], unknown)
+	for _, member := range []string{"verification_uri", "interval"} {
+		if answers[known].answer[member] != answers[unknown].answer[member] {
+			t.Errorf("%s is %v for %s and %v for %s, want the same", member, answers[known].answer[member], known, answers[unknown].answer[member], unknown)
 		}
 	}
 	for _, person := range []string{known, unknown} {
-		if code, _ := answers[person]["user_code"].(string); !userCodeShape.MatchString(code) {
+		asked := answers[person]
+		if code, _ := asked.answer["user_code"].(string); !userCodeShape.MatchString(code) {
 			t.Errorf("the user code for %s is %q, want one of the shape %s", person, code, userCodeShape)
 		}
+		if earliest, latest := asked.storedLifetime(ciphertest.DeviceLifetime); asked.stored.Before(earliest) || asked.stored.After(latest) {
+			t.Errorf("the device code for %s is stored to expire at %s, want from %s to %s: the device lifetime %s from the send, truncated to a second, to that lifetime from the answer",
+				person, asked.stored.UTC().Format(time.RFC3339Nano), earliest.UTC().Format(time.RFC3339Nano), latest.UTC().Format(time.RFC3339Nano), ciphertest.DeviceLifetime)
+		}
+		low, high := asked.lifetimeWindow()
+		t.Logf("%s: expires_in %v, correct from %d to %d", person, asked.answer["expires_in"], low, high)
+		if got := asked.expiresIn(t); got < low || got > high {
+			t.Errorf("expires_in is %d for %s, want from %d to %d: the whole seconds from the answer and from the send to its stored expiry %s",
+				got, person, low, high, asked.stored.UTC().Format(time.RFC3339Nano))
+		}
+	}
+}
+
+// TestADeviceAuthorizationsLifetimeEndsByItsStoredExpiry: no device authorization answers a
+// lifetime that, counted from the moment its caller sent the request, outlasts the device code the
+// broker stored for it: expires_in is at most the whole seconds from the send to the stored expiry,
+// at the edge and on the broker's own address. Twelve requests are asked, none of them held, so a
+// lifetime one second too long passes only if every one of them crossed a second boundary between
+// its send and its answer.
+//
+// The named reverts: answer the configured lifetime (900 seconds), and answer one second more than
+// the time left.
+func TestADeviceAuthorizationsLifetimeEndsByItsStoredExpiry(t *testing.T) {
+	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
+	var asked []askedDeviceLogin
+	for i := range 8 {
+		header := map[string]string{"X-Forwarded-For": forwardedFor("", fmt.Sprintf("203.0.113.%d", 70+i))}
+		asked = append(asked, askDeviceAuthorization(t, rig, rig.EdgeURL, edgeDeviceForm(t, rig.EdgeURL, outsidePerson), header))
+	}
+	for range 4 {
+		asked = append(asked, askDeviceAuthorization(t, rig, rig.URL, edgeDeviceForm(t, rig.URL, rig.Operator), nil))
+	}
+	for i, a := range asked {
+		if _, high := a.lifetimeWindow(); a.expiresIn(t) > high {
+			t.Errorf("device authorization %d at %s answered expires_in %d, which from its send at %s ends after its stored expiry %s: want at most %d",
+				i, a.base, a.expiresIn(t), a.sent.UTC().Format(time.RFC3339Nano), a.stored.UTC().Format(time.RFC3339Nano), high)
+		}
+	}
+}
+
+// askedDeviceLogin is one answered device authorization: its answer, the moments just before
+// the request was sent and just after its answer was read, and the expiry the provider stored for
+// the one device code it wrote.
+type askedDeviceLogin struct {
+	base           string
+	answer         map[string]any
+	sent, answered time.Time
+	stored         time.Time
+}
+
+// askDeviceAuthorization posts form to base's device authorization endpoint with headers, reading
+// the clock just before it sends and just after the answer is read, and reads the stored expiry of
+// the device code the request wrote. It fails t unless the answer is 200 and the request wrote
+// exactly one device code.
+func askDeviceAuthorization(t *testing.T, rig *ciphertest.Rig, base string, form url.Values, headers map[string]string) askedDeviceLogin {
+	t.Helper()
+	before := deviceCodeExpiries(t, rig)
+	sent := time.Now()
+	status, body := postEdge(t, base, "/v1/oauth/device_authorization", form, headers)
+	answered := time.Now()
+	if status != http.StatusOK {
+		t.Fatalf("a device authorization at %s = %d %v, want 200", base, status, body)
+	}
+	var written []time.Time
+	for signature, expiry := range deviceCodeExpiries(t, rig) {
+		if _, ok := before[signature]; !ok {
+			written = append(written, expiry)
+		}
+	}
+	if len(written) != 1 {
+		t.Fatalf("a device authorization at %s wrote %d device codes, want 1", base, len(written))
+	}
+	return askedDeviceLogin{base: base, answer: body, sent: sent, answered: answered, stored: written[0]}
+}
+
+// deviceCodeExpiries is the stored expiry of every device code in rig's schema, by its signature.
+func deviceCodeExpiries(t *testing.T, rig *ciphertest.Rig) map[string]time.Time {
+	t.Helper()
+	rows, err := rig.Store.Pool.Query(context.Background(), `select signature, expires_at from oauth_device_codes`)
+	if err != nil {
+		t.Fatalf("read the device codes: %v", err)
+	}
+	defer rows.Close()
+	expiries := map[string]time.Time{}
+	for rows.Next() {
+		var signature string
+		var expiry time.Time
+		if err := rows.Scan(&signature, &expiry); err != nil {
+			t.Fatalf("read a device code: %v", err)
+		}
+		expiries[signature] = expiry
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the device codes: %v", err)
+	}
+	return expiries
+}
+
+// expiresIn is a's expires_in, failing t unless it is a whole number of seconds.
+func (a askedDeviceLogin) expiresIn(t *testing.T) int64 {
+	t.Helper()
+	seconds, ok := a.answer["expires_in"].(float64)
+	if !ok || seconds != float64(int64(seconds)) {
+		t.Fatalf("the device authorization at %s answered expires_in %v, want a whole number of seconds", a.base, a.answer["expires_in"])
+	}
+	return int64(seconds)
+}
+
+// lifetimeWindow is every expires_in correct for a: from the whole seconds left of its stored
+// expiry when its answer was read, to the whole seconds left when it was sent. The provider
+// answers the whole seconds left when it answers, a moment between the two, and no other value is
+// both read off that expiry and true of a moment in the request.
+func (a askedDeviceLogin) lifetimeWindow() (low, high int64) {
+	return int64(a.stored.Sub(a.answered) / time.Second), int64(a.stored.Sub(a.sent) / time.Second)
+}
+
+// storedLifetime is the span a's stored expiry must lie in when the provider gives its device code
+// lifetime: it stores that lifetime from a moment of the request, truncated to a whole second
+// (authelia.com/provider/oauth2 handler/rfc8628/device_authorize_handler.go:55), so from the
+// lifetime after the send, truncated, to the lifetime after the answer was read.
+func (a askedDeviceLogin) storedLifetime(lifetime time.Duration) (earliest, latest time.Time) {
+	return a.sent.Add(lifetime).Truncate(time.Second), a.answered.Add(lifetime)
+}
+
+// holdDeviceCodeWrites holds each device code the provider writes in rig's schema for hold, in a
+// trigger on oauth_device_codes, until the function it answers is called: that drops the trigger
+// and answers how many writes it held.
+func holdDeviceCodeWrites(t *testing.T, rig *ciphertest.Rig, hold time.Duration) func() int {
+	t.Helper()
+	ctx := context.Background()
+	for _, statement := range []string{
+		`create table held_device_code_writes (held_at timestamptz not null default clock_timestamp())`,
+		fmt.Sprintf(`create function hold_device_code_write() returns trigger language plpgsql as $$
+			begin insert into held_device_code_writes default values; perform pg_sleep(%.3f); return new; end $$`, hold.Seconds()),
+		`create trigger hold_device_code_write before insert on oauth_device_codes for each row execute function hold_device_code_write()`,
+	} {
+		if _, err := rig.Store.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("hold the device code writes: %v", err)
+		}
+	}
+	return func() int {
+		t.Helper()
+		if _, err := rig.Store.Pool.Exec(ctx, `drop trigger hold_device_code_write on oauth_device_codes`); err != nil {
+			t.Fatalf("release the device code writes: %v", err)
+		}
+		var held int
+		if err := rig.Store.Pool.QueryRow(ctx, `select count(*) from held_device_code_writes`).Scan(&held); err != nil {
+			t.Fatalf("count the held device code writes: %v", err)
+		}
+		return held
 	}
 }
 

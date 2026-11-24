@@ -209,9 +209,9 @@ func backfillOwner(kind string) func(t *testing.T) *ownerRig {
 			run: func(*testing.T) error {
 				var err error
 				if kind == "fill" {
-					_, err = fillRepositories(ctx, faulted, records, client, "LEGION", state, named, ghrepo.Renames{}, log)
+					_, err = fillRepositories(ctx, faulted, records, client, "LEGION", state, named, ghrepo.Renames{}, productionRepositoryReads(), log)
 				} else {
-					_, err = nameRepositories(ctx, faulted, records, "LEGION", named, ghrepo.Renames{}, log)
+					_, err = nameRepositories(ctx, faulted, records, "LEGION", named, ghrepo.Renames{}, productionRepositoryReads(), log)
 				}
 				return err
 			},
