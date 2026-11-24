@@ -47,6 +47,7 @@ func connectWithHandler(t *testing.T, hold time.Duration) (*bus.Client, *atomic.
 // A drain lets a delivery already in its handler finish before the connection closes. nats.go's
 // Drain only starts the drain, so returning when it returns would close under the handler.
 func TestDrainLetsAnInFlightDeliveryFinish(t *testing.T) {
+	t.Parallel()
 	client, finished := connectWithHandler(t, 300*time.Millisecond)
 	if err := client.Drain(5 * time.Second); err != nil {
 		t.Fatalf("drain: %v", err)
@@ -79,6 +80,7 @@ func TestDrainClosesTheConnectionAtItsDeadline(t *testing.T) {
 // The drain's close is a shutdown, not a lost connection: the client does not reconnect and
 // re-subscribe afterwards, which would hand deliveries to a process that is about to exit.
 func TestDrainDoesNotReconnect(t *testing.T) {
+	t.Parallel()
 	client, _ := connectWithHandler(t, 0)
 	if _, err := client.SubscribeCore("notifications.role.>", func(*natsgo.Msg) {}, "drain-test"); err != nil {
 		t.Fatalf("subscribe role lane: %v", err)
@@ -99,6 +101,7 @@ func TestDrainDoesNotReconnect(t *testing.T) {
 // so both forwards are published after the drain has begun; both are stored on the holder's agent
 // subject, which the stream captures and acknowledges as a forward needs.
 func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	publisher := testnats.Connect(t, uri)
 	t.Cleanup(publisher.Close)
@@ -166,6 +169,7 @@ func TestDrainLetsARoleForwardInItsHandlerFinish(t *testing.T) {
 // After a drain the client stays down: a publish from a request still in flight at shutdown gets
 // an error rather than dialling a new connection nothing will drain.
 func TestAPublishAfterDrainDoesNotReconnect(t *testing.T) {
+	t.Parallel()
 	client, _ := connectWithHandler(t, 0)
 	if err := client.Drain(5 * time.Second); err != nil {
 		t.Fatalf("drain: %v", err)

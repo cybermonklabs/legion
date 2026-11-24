@@ -49,6 +49,7 @@ var compiledTopicKinds = []struct {
 }
 
 func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCapture(t *testing.T) {
+	t.Parallel()
 	for _, tc := range compiledTopicKinds {
 		if got := (&Client{}).UsesCoreTransport(tc.topic); got != tc.core {
 			t.Errorf("UsesCoreTransport(%q) = %t, want %t", tc.topic, got, tc.core)
@@ -92,6 +93,7 @@ func narrowedAsTheQuiesce(subjects []string) []string {
 // deployed list lacks notifications.agent.>, so an agent topic read as an ad-hoc topic and went
 // where nothing stores it.
 func TestThePublishPathOfEachTopicKind(t *testing.T) {
+	t.Parallel()
 	withDeployed := func(deployed []string) *Client {
 		client := &Client{}
 		client.deployedSubjects.Store(&deployed)
@@ -170,6 +172,7 @@ func TestThePublishPathOfEachTopicKind(t *testing.T) {
 // StreamCaptures reads each stream subject as a literal prefix and `.>`; a subject of any other
 // shape needs a matcher that splits tokens.
 func TestEveryStreamSubjectIsALiteralPrefixAndWildcard(t *testing.T) {
+	t.Parallel()
 	for _, subject := range streamCarriedSubjects {
 		prefix, ok := strings.CutSuffix(subject, ".>")
 		if !ok || prefix == "" || strings.ContainsAny(prefix, "*>") {

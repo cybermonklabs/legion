@@ -21,6 +21,7 @@ import (
 // value; a cluster whose routes are frozen gives the code itself, which cmd/listener's in-process
 // route test drives.
 func TestAPublishWhoseMessageIDIsStillInProcessIsNamedErrDuplicateInProcess(t *testing.T) {
+	t.Parallel()
 	inProcess := &nats.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"}
 	full := &nats.APIError{Code: 503, ErrorCode: jsStreamStoreFailed, Description: maxBytesExceeded}
 	for _, row := range []struct {

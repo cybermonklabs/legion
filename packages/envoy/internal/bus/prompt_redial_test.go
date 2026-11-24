@@ -13,6 +13,7 @@ import (
 // doubles each pass up to the 2 s cap, which every later pass keeps, however many there are. Each
 // row reads the wait at the lowest and the highest draw, and the width the draw was asked for.
 func TestPromptRedialWaitsDoubleFromAQuarterSecondToTheCap(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		pass     int
 		low, top time.Duration
@@ -41,6 +42,7 @@ func TestPromptRedialWaitsDoubleFromAQuarterSecondToTheCap(t *testing.T) {
 // ReconnectWait and its jitter), and a connection without it keeps the second every other
 // connection waits.
 func TestPromptReconnectSetsTheConnectionsRedialWaits(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		prompt bool
