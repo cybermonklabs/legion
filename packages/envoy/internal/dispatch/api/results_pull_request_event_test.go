@@ -89,7 +89,7 @@ func requireTheEventsHeadWithinTheBound(t *testing.T, poisonBefore int) {
 		t.Fatal("the deployment holds delivery settings, want none: the case is a deployment that never configured the delivery timeline")
 	}
 
-	publisher := startNoSettingsIntakes(t, database, served)
+	publisher := startTheIntakes(t, database, served)
 
 	updated := time.Now().UTC().Format(time.RFC3339)
 	fake.pullAnswers(func(repo, number string) string {
@@ -187,12 +187,12 @@ func durableState(client *bus.Client) string {
 		info.PushBound, info.Delivered.Stream, info.AckFloor.Stream)
 }
 
-// startNoSettingsIntakes starts the delivery intakes of served as the process starts them
+// startTheIntakes starts the delivery intakes of served as the process starts them
 // (delivery.StartIntakes), on a NATS server of the test's own, with database's pool, the intakes'
-// callers of its lease pool and no delivery settings, and answers a publisher that owns the
-// stream: what it publishes is the intakes' input. The intakes stop, and then the publisher
-// closes, when the test ends.
-func startNoSettingsIntakes(t *testing.T, database *store.Store, served *server) *bus.Client {
+// callers of its lease pool and whatever delivery settings database holds (none unless the test
+// wrote them), and answers a publisher that owns the stream: what it publishes is the intakes'
+// input. The intakes stop, and then the publisher closes, when the test ends.
+func startTheIntakes(t *testing.T, database *store.Store, served *server) *bus.Client {
 	t.Helper()
 	_, natsURL := testnats.Start(t)
 	publisher, err := bus.ConnectOwningStream([]string{natsURL})
@@ -301,7 +301,7 @@ func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySetting
 		t.Fatalf("before #9's closed event, c1 holds %+v, want no result: run 42 was cancelled", before.Results)
 	}
 
-	publisher := startNoSettingsIntakes(t, database, served)
+	publisher := startTheIntakes(t, database, served)
 
 	closedAt = time.Now().UTC().Format(time.RFC3339)
 	payload, err := json.Marshal(map[string]string{
@@ -356,5 +356,149 @@ func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySetting
 	}
 	if stood := check.PassStands; stood.Answer != model.PassStandsYes {
 		t.Fatalf("c1 answers pass_stands %+v, want yes", stood)
+	}
+}
+
+// A pull request that closes unmerged stops being the head a check CI proves is read at on its
+// `closed` event alone, where the issue reaches its pull requests by the links it holds and the
+// read of the closing one was made before it closed.
+//
+// The case is production's: an issue in acme/widgets links two pull requests by their URLs, #5,
+// open at headCommit, where CI's run 41 passed, and #9, a draft negative control opened after it
+// at newHeadCommit, where run 42 failed. Neither's branch or texts name the issue, so the links
+// alone make them the issue's. Dispatch read both from GitHub before #9 closed and stores both
+// open, so the read of a check CI proves is at the open head of the highest number, #9, where c1
+// fails, and no role can record a result to correct it (409 CHECK_PROVED_BY_CI). GitHub then
+// closes #9 unmerged. Its `closed` event is the one envelope the stream ever holds and nothing
+// else reads GitHub: GitHub names no pull request for any commit here and the reconcile is not
+// running. Within v-head-no-settings' 5 seconds of that event c1 must read CI's pass at #5's head.
+//
+// Production held such a pair: the read stayed at the closed pull request's failure for the 25
+// minutes from its close to the open one's merge, and the merge moved it, not the close. The
+// subtests are a deployment with no delivery settings, as production was, and one with them, whose
+// intake also takes the merges of the delivery timeline.
+func TestAClosedEventAloneMovesTheCIReadOffALinkedPullRequestReadBeforeItClosed(t *testing.T) {
+	t.Parallel()
+	for _, withSettings := range []bool{false, true} {
+		name := "no delivery settings"
+		if withSettings {
+			name = "delivery settings"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			requireTheCloseAloneMovesTheLinkedRead(t, withSettings)
+		})
+	}
+}
+
+// requireTheCloseAloneMovesTheLinkedRead is TestAClosedEventAloneMovesTheCIReadOffALinkedPullRequestReadBeforeItClosed's
+// case, in a deployment with delivery settings when withSettings is true and with none otherwise.
+func requireTheCloseAloneMovesTheLinkedRead(t *testing.T, withSettings bool) {
+	t.Helper()
+	runs := newCheckRunsFake()
+	runs.set(headCommit, completedRun(41, ciCheckRun, "success"))
+	runs.set(newHeadCommit, completedRun(42, ciCheckRun, "failure"))
+	// GitHub's answer for #9 names the moment GitHub closed it, set below before the intakes start.
+	var closedAt string
+	handler, database, served := oneRepositoryGitHub(t, "acme/widgets", runs, func(number string) string {
+		switch number {
+		case "5":
+			return fmt.Sprintf(`{"number":5,"title":"A change","body":"","state":"open","merged":false,"merged_at":null,
+				"draft":false,"html_url":"https://github.com/acme/widgets/pull/5","updated_at":"2026-11-20T09:00:00Z",
+				"head":{"ref":"topic","sha":%q,"repo":{"full_name":"acme/widgets"}},"base":{"ref":"main"}}`, headCommit)
+		case "9":
+			return fmt.Sprintf(`{"number":9,"title":"A negative control","body":"","state":"closed","merged":false,
+				"merged_at":null,"closed_at":%q,"draft":true,"html_url":"https://github.com/acme/widgets/pull/9","updated_at":%q,
+				"head":{"ref":"control","sha":%q,"repo":{"full_name":"acme/widgets"}},"base":{"ref":"main"}}`,
+				closedAt, closedAt, newHeadCommit)
+		}
+		return ""
+	})
+	issue := issueInRepository(t, handler, "RCLOSE", "acme/widgets", "Two linked pull requests")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	if withSettings {
+		if _, err := delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
+			DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
+			ProductionJobNames: []string{"release / release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
+			PopulationAuthors: []string{"octocat"},
+		}, model.Actor{Kind: "system", ID: "test"}); err != nil {
+			t.Fatalf("write the delivery settings: %v", err)
+		}
+	} else if _, err := delivery.GetSettings(context.Background(), database.Pool); err == nil {
+		t.Fatal("the deployment holds delivery settings, want none: production held none")
+	}
+	// Both rows as a read of GitHub made before #9 closed stores them, with texts that name no
+	// issue; the links are written after them, so neither link owes a read.
+	storeLinkedHead(t, database, "acme/widgets", 5, headCommit)
+	storeLinkedHead(t, database, "acme/widgets", 9, newHeadCommit)
+	linkPullRequests(t, handler, issue.Key, "https://github.com/acme/widgets/pull/5", "https://github.com/acme/widgets/pull/9")
+	storedState := func() string {
+		var state string
+		if err := database.Pool.QueryRow(context.Background(),
+			`select state from pull_request_heads where repo = 'acme/widgets' and number = 9`).Scan(&state); err != nil {
+			return fmt.Sprintf("unread (%v)", err)
+		}
+		return state
+	}
+
+	// Before the close the read is production's wrong one: c1 fails at #9's head.
+	atControl := ciVerdictLineOf("c1", ciCheckRun, "fail", newHeadCommit)
+	assertCI(t, checkOf(t, readResults(t, handler, issue.Key), "c1"), ciCheckRun, model.CIStateFail, "failure", atControl)
+
+	publisher := startTheIntakes(t, database, served)
+	closedAt = time.Now().UTC().Format(time.RFC3339)
+	payload, err := json.Marshal(map[string]string{
+		"kind": "pr", "action": "closed", "repo": "acme/widgets", "number": "9",
+		"title": "A negative control", "body": "", "url": "https://github.com/acme/widgets/pull/9",
+		"author": "implementer[bot]", "head_sha": newHeadCommit, "head_ref": "control", "head_repo": "acme/widgets",
+		"base_ref": "main", "merged": "false", "updated_at": closedAt,
+	})
+	if err != nil {
+		t.Fatalf("encode the pull request's payload: %v", err)
+	}
+	published := time.Now()
+	if err := publisher.Publish(contracts.Envelope{
+		EventID: "acme-widgets-pr-9-closed", Source: "github", SourceEventID: "acme-widgets-pr-9-closed",
+		TraceID: "acme-widgets-pr-9-closed", Topic: contracts.GithubResourceSubject("acme", "widgets", "pr", "9"),
+		Payload: string(payload), IssuedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("publish the pull request's close: %v", err)
+	}
+
+	deadline := published.Add(headAfterEventBound)
+	atHead := ciVerdictLineOf("c1", ciCheckRun, "pass", headCommit)
+	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	for check.CI == nil || check.CI.Line != atHead {
+		if time.Now().After(deadline) {
+			reads := "no ci reading"
+			if check.CI != nil {
+				reads = fmt.Sprintf("case %q (%s)", check.CI.Case, check.CI.Detail)
+			}
+			t.Fatalf("%s after #9's closed event, c1 reads %s, #9 is stored %s and the delivery durable is %s; "+
+				"want CI's pass of run 41 at %s, the head of the linked acme/widgets#5: GitHub closed #9 unmerged, so its head is no head",
+				time.Since(published).Round(time.Millisecond), reads, storedState(), durableState(publisher), headCommit)
+		}
+		time.Sleep(100 * time.Millisecond)
+		check = checkOf(t, readResults(t, handler, issue.Key), "c1")
+	}
+	if took := time.Since(published); took > headAfterEventBound {
+		t.Fatalf("the results route read c1 at #5's head %s after #9's closed event, past the %s of v-head-no-settings",
+			took.Round(time.Millisecond), headAfterEventBound)
+	}
+	// The close moved the read, and nothing else did: the stream holds that one envelope.
+	info, err := publisher.JS().StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	if info.State.Msgs != 1 {
+		t.Fatalf("the stream holds %d envelopes, want only #9's close", info.State.Msgs)
+	}
+	assertCI(t, check, ciCheckRun, model.CIStatePass, "success", atHead)
+	result := assertDerived(t, check, 41, ciCheckRun, "success", "pass", headCommit)
+	if basis := result.CommitStands.Basis; basis == nil || basis.PullRequest == nil || *basis.PullRequest != 5 {
+		t.Fatalf("the derived result stands at %+v, want the head of #5", basis)
+	}
+	if state := storedState(); state != "closed" {
+		t.Fatalf("#9 is stored %s, want closed, as GitHub answered", state)
 	}
 }

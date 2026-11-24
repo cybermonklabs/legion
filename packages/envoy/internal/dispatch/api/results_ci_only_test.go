@@ -212,7 +212,7 @@ func TestACheckOnlyCIProvesComparesWithTheHeadOfItsPullRequestWithNoResultRecord
 			return "legion/" + issue, "Dispatch: " + issue + "\n\nThe change."
 		})
 		world.requireNoHead("the event")
-		publisher := startNoSettingsIntakes(t, world.database, world.served)
+		publisher := startTheIntakes(t, world.database, world.served)
 		payload, err := json.Marshal(map[string]string{
 			"kind": "pr", "action": "opened", "repo": "acme/tools", "number": "12",
 			"title": "A change", "body": "Dispatch: " + world.issue + "\n\nThe change.",
