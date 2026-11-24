@@ -892,11 +892,12 @@ test("state accepts the existing done phase", () => {
   expect(LegionStateResponse.safeParse(completed).success).toBeTrue();
 });
 
-test("a backward move rejects future read-only phases", () => {
+// `awaiting_person` is a phase of the workflow that no backward move reaches (contract 40).
+test("a backward move refuses a workflow phase no move back reaches", () => {
   expect(
     LegionPhaseBackwardRequest.safeParse({
       grantId: "grant-208",
-      to: "integrating",
+      to: "awaiting_person",
       reason: "test failed",
     }).success
   ).toBeFalse();
@@ -906,7 +907,7 @@ test("a backward move rejects future read-only phases", () => {
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
 // before the merge, in `accepting`, which the list holds between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
-// check after the close is no phase, so no phase follows `integrating` but the close itself.
+// check after the close is no phase, so no phase follows `merging` but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
   expect(LEGION_WORKFLOW_PHASES).toEqual([
     "admitted",
@@ -918,7 +919,6 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
     "accepting",
     "retro",
     "merging",
-    "integrating",
     "done",
     "held",
   ]);
