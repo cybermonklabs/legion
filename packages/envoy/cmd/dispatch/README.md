@@ -362,17 +362,12 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
 - A delivery's GUID, event and action are GitHub's text, so every line and error of the sweep shows them, and an index entry's `key`, to a bound (`githubapp.ShownBody`):
   whole up to 512 characters, and past that the first 512 and `… (<n> bytes)`, where `<n>` is the size of the text.
   The GitHub App client (`githubapp`) shows a refusal's body in its errors as `githubapp.ShownBody` shows it, and `<n>` is the size of the body.
-  A value of an answer that the client cannot decode, in a time parse error or a JSON type error, is cut alone, and `<n>` is the size of the value.
-  That error still names the time layout, or the field and its Go type.
-  For a valid time with text after it, the time parse error's reason quotes that text (`extra text`).
-  The client cuts that reason alone too, and `<n>` is the size of the reason.
+  A value of an answer that the client cannot decode is in no error: the error names the member that did not decode, its Go type and the type that holds it, and, where Go names it, the JSON kind it held, and quotes none of the value.
   An error for a request that GitHub did not answer, or whose answer could not be read or passed the size limit, names the request's URL as `githubapp.ShownBody` shows it, and `<n>` is the size of the URL.
-  A transport error also cuts its cause, so it still names the cause after a long URL, for example `context deadline exceeded`.
-  A line the cause quotes is cut with the cause's text, and `<n>` is the size of the cause's text.
+  A transport error names its failure by `redact.Unanswered`: a transport failure's own words, for example `context deadline exceeded`, or a fixed class, so it quotes no line of the answer.
   `githubapp.ShownErr` cuts whole any other error that quotes GitHub's text, such as an error of the bucket that quotes a key, and `<n>` is the size of the error's text.
   No error that `githubapp.ShownErr` answers is longer than 4,414 bytes: two texts as `githubapp.ShownBody` shows them, each at most 2,079 bytes, and 256 bytes for the error's own words.
-  A time parse error, a JSON type error or a transport error whose text is still longer after the cuts above is cut whole, and `<n>` is the size of that text.
-  A time value past ASCII can make such a text, since package time writes each of its bytes past ASCII as `\xNN`.
+  An error whose text is still longer after the cuts above is cut whole, and `<n>` is the size of that text.
   The sweep's errors and lines therefore carry that text the same way.
   A next page link longer than 2048 bytes is refused rather than followed, and shown as `githubapp.ShownBody` shows it.
   The refusal of a shorter link that cannot be parsed, or that leaves GitHub's API origin, shows the link the same way, and so does an error that names a next page GitHub answered with a status other than 200.
