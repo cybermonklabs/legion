@@ -88,7 +88,9 @@ func holdForTheStop(t *testing.T, h *harness, key string) {
 // key an earlier task of the issue used. The task is the plan's one task whatever its state
 // (record.StoredPlan.Task), a stopped one among them, whose issue is held for the stop. An issue
 // with no plan rows keeps today's key byte for byte, its pass read from its implementer's row (the
-// control).
+// control). The completion carries no verdict and names the head it tested, so the last segment
+// of each key, where a tester's verdict stood, is empty, and the head is not in the key: the
+// testing phase is record-backed, so the key names its record.
 func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 	h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	for _, tc := range []struct {
@@ -106,7 +108,7 @@ func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 				seedImplementerPass(t, h, "LEGION-208", 5)
 				seedTaskPlan(t, h, "LEGION-208", taskStanding{task: "a", state: record.TaskRunning, place: 2, pass: 2})
 			},
-			want: func(record string) string { return "handoff:LEGION-208:1:1:1:tester:testing:a:2:" + record + ":pass" },
+			want: func(record string) string { return "handoff:LEGION-208:1:1:1:tester:testing:a:2:" + record + ":" },
 		},
 		{
 			name:  "the plan's one task, stopped by its owner, its issue held for the stop",
@@ -116,13 +118,13 @@ func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 				holdForTheStop(t, h, "LEGION-210")
 			},
 			// The issue is held for the stop, so the key names the phase it stands in, held.
-			want: func(record string) string { return "handoff:LEGION-210:1:1:1:tester:held:a:4:" + record + ":pass" },
+			want: func(record string) string { return "handoff:LEGION-210:1:1:1:tester:held:a:4:" + record + ":" },
 		},
 		{
 			name:  "control: no plan rows, today's key",
 			issue: "LEGION-209",
 			seed:  func(t *testing.T) { seedImplementerPass(t, h, "LEGION-209", 3) },
-			want:  func(record string) string { return "handoff:LEGION-209:1:1:1:tester:testing:3:" + record + ":pass" },
+			want:  func(record string) string { return "handoff:LEGION-209:1:1:1:tester:testing:3:" + record + ":" },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,7 +132,7 @@ func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 			tc.seed(t)
 			tester := newLiveClaim(t, h, tc.issue, claim.RoleTester)
 			written := tester.writeHandoff("test", 1)
-			completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1}))
+			completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}))
 			if got, want := completionKeys(t, h, tc.issue), tc.want(written); len(got) != 1 || got[0] != want {
 				t.Fatalf("the completion keys of %s = %q, want [%q]", tc.issue, got, want)
 			}
