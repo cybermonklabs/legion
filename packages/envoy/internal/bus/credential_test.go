@@ -195,6 +195,7 @@ func TestASeedAgainstAServerWithoutUsersIsRefused(t *testing.T) {
 // on the others). A value that is no seed is not found, and neither is any clean value of the
 // same shapes.
 func TestHoldsSeed(t *testing.T) {
+	t.Parallel()
 	// nats-io's vector: nkeys v0.4.15 README.md line 45, and its public key, line 49.
 	const seed = "SUAKYRHVIOREXV7EUZTBHUHL7NUMHPMAS7QMDU3GTIUWEI5LDNOXD43IZY"
 	const publicKey = "UD466L6EBCM3YY5HEGHJANNTN4LSKTSUXTH7RILHCKEQMQHTBNLHJJXT"
@@ -372,6 +373,7 @@ func costInputs() []struct{ name, text string } {
 // a runner slower and busier than that workstation still passes it, while a quadratic regression
 // cannot.
 func TestHoldsSeedCostIsLinear(t *testing.T) {
+	t.Parallel()
 	const costBound = 10 * time.Second
 	for _, in := range costInputs() {
 		t.Run(in.name, func(t *testing.T) {

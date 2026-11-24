@@ -221,11 +221,18 @@ func TestAMergedPullRequestsApprovalAndItsRefusedMovesBackAgree(t *testing.T) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
-	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
 	const reason = "its pull request has merged; a merged change never moves back"
 	back := func(id string, requester claim.Role, from phase.Phase) {
 		t.Helper()
-		result := apply(id, intake.BackwardMove{Issue: "LEGION-208", Requester: requester, To: phase.Implementing, Reason: "the spec changed"})
+		move := intake.BackwardMove{Issue: "LEGION-208", Requester: requester, To: phase.Implementing, Reason: "the spec changed"}
+		if requester == claim.RoleArchitect {
+			// An architect's request names the claim, the generation and the run of accepting its
+			// route read, which the workflow judges again (rootsMoveBack).
+			move = rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the spec changed")
+		}
+		result := apply(id, move)
 		if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, reason) {
 			t.Fatalf("the %s's move back = %+v; want BACKWARD_REFUSED saying %q", requester, result.Refusal, reason)
 		}

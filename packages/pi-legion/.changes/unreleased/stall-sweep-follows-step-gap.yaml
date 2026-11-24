@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  The worker's watch on its own tool calls checks them every quarter of the gap between its recovery steps (`LEGION_STALL_STEP_MS`), and never more often than once a second or less often than every 5 seconds. Before, it checked them every 5 seconds whatever the gap was. The default 2-minute gap still gives a check every 5 seconds. A deployment that sets a shorter gap has its stuck calls found and its steps run closer to when they are due.

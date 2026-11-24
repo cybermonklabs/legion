@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/pause"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -53,9 +52,7 @@ func newPauseRig(t *testing.T, roles ...claim.Role) *pauseRig {
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool)
 	records := record.NewStore()
-	putOutboxIssue(t, pool, records, record.Issue{Key: pauseIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Tree: pauseIssue, Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
-		Rank: "U", LastDispatchSeq: 5})
+	putOutboxIssue(t, pool, records, podIssueRecord())
 	r := &pauseRig{t: t, ctx: ctx, pool: pool, st: st, logs: &testlog.Buffer{}}
 	for _, role := range roles {
 		if err := st.PutClaim(ctx, r.claim(role, supervise.StateIdle)); err != nil {

@@ -116,7 +116,7 @@ func (l *launchedTrimmer) await() *trimmer {
 	select {
 	case trim := <-l.started:
 		return trim
-	case <-time.After(testwait.Bounded(l.t, 30*time.Second, time.Second)):
+	case <-time.After(beforeDeadline(l.t)):
 		l.t.Fatal("the launcher started no trimmer")
 		return nil
 	}
@@ -176,7 +176,7 @@ func offerSettingsTick(t *testing.T, f *trimFixture) {
 // case waits for what the change brings about rather than for a set number of ticks.
 func offerSettingsTicksUntil(t *testing.T, f *trimFixture, what string, done func() bool) {
 	t.Helper()
-	testwait.Eventually(t, what, func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, what, func() bool {
 		if done() {
 			return true
 		}
@@ -189,7 +189,7 @@ func offerSettingsTicksUntil(t *testing.T, f *trimFixture, what string, done fun
 
 func offerTickOf(t *testing.T, f *trimFixture, period time.Duration, what string) {
 	t.Helper()
-	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(beforeDeadline(t))
 	for time.Now().Before(deadline) {
 		at, live := f.ticks.live(period)
 		if !live {
@@ -208,7 +208,7 @@ func awaitClosed(t *testing.T, done <-chan struct{}, what string) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+	case <-time.After(beforeDeadline(t)):
 		t.Fatalf("timed out waiting for %s", what)
 	}
 }
@@ -285,7 +285,7 @@ func TestThePodsTrimmerRunsByTheFirstRolesAnswerAlone(t *testing.T) {
 	pod.role(podRoles[0]).acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
 	trim := trims.await()
 	started := volumeTrimLog + "started: trimmer " + trim.id + ", high 85%, low 70%, minimum age 30 min, interval 30 s"
-	testwait.Eventually(t, "the trimmer to start on the first role's settings", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start on the first role's settings", func() bool {
 		return f.logged(started) == 1
 	})
 
@@ -514,7 +514,7 @@ func TestTheContainersStopCutsTheSizeWalkDropsTheHeldReportAndRunReturnsInsideTh
 	acceptRole(t, pod.listener)
 
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the trimmer to hold the first sweep's report", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the first sweep's report", func() bool {
 		return f.logged("the report could not be sent (no daemon connection is up to carry it); holding it for the next attempt") == 1
 	})
 
@@ -580,7 +580,7 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 		}
 
 		trims.await()
-		testwait.Eventually(t, "the trimmer to stay off", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to stay off", func() bool {
 			return f.logged("no settings are in force, so the trimmer stays off") == 1
 		})
 		// The trimmer waits rather than ending with the pod, and waits on the one clock it
@@ -626,7 +626,7 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 			cancel()
 			select {
 			case <-result:
-			case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
+			case <-time.After(cleanupBeforeDeadline(t)):
 				t.Errorf("the launcher did not leave after its context ended; its log: %s", stderr.String())
 			}
 		})
@@ -745,7 +745,7 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 	}
 	// The interval writes "nothing to sweep" and only then has the loop stop the clock of the old
 	// period and make one of the new (intervals), so the case waits for that clock.
-	testwait.Eventually(t, "the trimmer to wait on a clock of the later answer's interval: a shortened interval must not wait the old one out", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait on a clock of the later answer's interval: a shortened interval must not wait the old one out", func() bool {
 		_, live := f.ticks.live(settingsInterval(*laterTrimSettings()))
 		return live
 	})
@@ -781,7 +781,7 @@ func TestADroppedConnectionLeavesTheSettingsInForceAndHoldsTheReport(t *testing.
 	if gone := len(f.gone()); gone != len(f.entries) {
 		t.Errorf("the sweep deleted %d of the %d entries through the outage, want every one of them: a drop leaves the settings in force", gone, len(f.entries))
 	}
-	testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report the outage refused", func() bool {
 		return f.logged("holding it for the next attempt") == 1
 	})
 
@@ -850,7 +850,7 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 	_ = pod.role(podRoles[0]).conn.Close()
 	again := acceptRole(t, pod.listener)
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report the outage refused", func() bool {
 		return f.logged("holding it for the next attempt") == 1
 	})
 
@@ -860,10 +860,10 @@ func TestAnAnswerWithNoSettingsStopsTheSweepInFlightAndDiscardsTheHeldReport(t *
 	pod.conns[podRoles[0]] = again
 	releaseSweep()
 
-	testwait.Eventually(t, "the trimmer to stop sweeping on an answer that carries no settings", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to stop sweeping on an answer that carries no settings", func() bool {
 		return f.logged("the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, and no report is sent for it") == 1
 	})
-	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 		return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
 	})
 	if trims.hasStopped() {
@@ -948,7 +948,7 @@ func TestAReportIsNeverWrittenOnAConnectionWhoseAnswerCarriesNoSettings(t *testi
 				// line the trimmer wrote is read after it, so a send that merely came late
 				// still fails here.
 				again.refuseVolumeReport(500 * time.Millisecond)
-				testwait.Eventually(t, "the trimmer to hold the report that connection refused", func() bool {
+				testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report that connection refused", func() bool {
 					return f.logged("carries no trimmer settings") == 1
 				})
 				f.assertProtected()
@@ -1017,7 +1017,7 @@ func TestThePodsTrimmerSweepsAgainWhenTheSettingsComeBack(t *testing.T) {
 	rolledBack.acknowledgeWith(shimwire.LauncherHelloAck{})
 	pod.conns[podRoles[0]] = rolledBack
 	f.tick("sweeps nothing more")
-	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 		return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
 	})
 	if trims.hasStopped() {
@@ -1034,7 +1034,7 @@ func TestThePodsTrimmerSweepsAgainWhenTheSettingsComeBack(t *testing.T) {
 
 	started := volumeTrimLog + "started: trimmer " + trim.id
 	offerSettingsTick(t, f)
-	testwait.Eventually(t, "the trimmer to start again on the settings that came back", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start again on the settings that came back", func() bool {
 		return f.logged(started) == 2
 	})
 	f.tick("the sweep ended")
@@ -1078,7 +1078,7 @@ func TestATrimmerGivenNothingItCanRunStartsWhenSettingsArrive(t *testing.T) {
 			pod := newFleetDialed(t, 2*time.Second, podRoles...)
 			ackPod(pod, tc.first)
 			trim := trims.await()
-			testwait.Eventually(t, "the trimmer to stay off on the answer it cannot run", func() bool {
+			testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to stay off on the answer it cannot run", func() bool {
 				return f.logged("stays off") > 0
 			})
 			switch {
@@ -1095,7 +1095,7 @@ func TestATrimmerGivenNothingItCanRunStartsWhenSettingsArrive(t *testing.T) {
 			again.acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
 			pod.conns[podRoles[0]] = again
 			offerSettingsTick(t, f)
-			testwait.Eventually(t, "the trimmer to start on the settings it can run", func() bool {
+			testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start on the settings it can run", func() bool {
 				return f.logged(volumeTrimLog+"started: trimmer "+trim.id) == 1
 			})
 
@@ -1197,7 +1197,7 @@ func TestAVolumeTheTrimmerCannotReadIsSaidAgainWhenTheSettingsComeBack(t *testin
 
 	const unreadable = "could not be read"
 	started := volumeTrimLog + "started: trimmer " + trim.id
-	testwait.Eventually(t, "the trimmer to start on the settings the pod was answered with", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start on the settings the pod was answered with", func() bool {
 		return f.logged(started) == 1
 	})
 	f.tick(unreadable)
@@ -1213,7 +1213,7 @@ func TestAVolumeTheTrimmerCannotReadIsSaidAgainWhenTheSettingsComeBack(t *testin
 	rolledBack.acknowledgeWith(shimwire.LauncherHelloAck{})
 	pod.conns[podRoles[0]] = rolledBack
 	f.tick("sweeps nothing more")
-	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 		return f.logged("no settings are in force, so the trimmer stays off until the daemon sends settings it can run") == 1
 	})
 
@@ -1222,7 +1222,7 @@ func TestAVolumeTheTrimmerCannotReadIsSaidAgainWhenTheSettingsComeBack(t *testin
 	rolledForward.acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
 	pod.conns[podRoles[0]] = rolledForward
 	offerSettingsTick(t, f)
-	testwait.Eventually(t, "the trimmer to start again on the settings that came back", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to start again on the settings that came back", func() bool {
 		return f.logged(started) == 2
 	})
 

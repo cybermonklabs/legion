@@ -14,11 +14,9 @@ const artifactDocumentRolesVersion = 20261102110000
 // written before this deploy. Nothing else takes one: a project document of the same slug, a
 // picture, and another issue document each keep null.
 func TestMigrationGivesStoredIssueDocumentsTheirRole(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, artifactDocumentRolesVersion-1)); err != nil {
-		t.Fatalf("migrate through the migration before the roles: %v", err)
-	}
+	store := openMigratedTestStore(t, artifactDocumentRolesVersion-1)
 	for _, seed := range []string{
 		`insert into projects (key, name) values ('TEST', 'Test')`,
 		`insert into issues (key, project_key, number, title, created_by, rank) values ('TEST-1', 'TEST', 1, 'Spec', '{"kind":"user","id":"alice"}', 'U')`,

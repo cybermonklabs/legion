@@ -15,11 +15,9 @@ const deliveryRunCreatedAtVersion = 108
 // and the head-commit index gone, and the change log records nothing for a migration that rewrote
 // no row.
 func TestMigrationAddsRunCreatedAt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, deliveryRunCreatedAtVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", deliveryRunCreatedAtVersion-1, err)
-	}
+	store := openMigratedTestStore(t, deliveryRunCreatedAtVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, url, head_branch, event)
 		values ('acme/widgets', 1, 'deploy', 'abc', '2026-10-07T11:40:00Z', '2026-10-07T12:01:00Z', 'https://github.com/acme/widgets/actions/runs/1', 'main', 'push')
