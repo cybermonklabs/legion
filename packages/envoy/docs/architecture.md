@@ -727,12 +727,17 @@ one-hour window, every later note of that role there joins it, and once the hour
 outbox posts one message naming every event of the window, through the issue message route's own
 writer (`api.Background.PostSystemMessage`) under the same system actor, so it wakes no route
 either. The window is kept in Postgres, and its message is written under an id derived from the
-issue, the role and the moment the window opened, so a restart does not lose it and a post made
-again (after a crash between the post and its mark) writes no second message. A long window's
-events are listed 50 to a list, so no block of the message passes the writer's block bound. The
-expiry that records an event undelivered also settles every earlier expiry of it still owed a
-keep, so nothing keeps it again. Only the publisher hold's holder records a notice or claims an
-expiry. An event of no issue and
+issue, the role, the moment the window opened and the events it names. So a restart does not
+lose the window, and a post made again after a crash between the post and its mark writes no
+second message. A note joins only a window whose message is not posted yet. A long window's events
+go in several lists, each at most 50 events and 16,000 UTF-16 units, so no block of the message
+passes the writer's 32,000-unit block bound, however long a document's reference is. An event's
+delivery to a role ends the same way whether its last keep expired or its copy is gone: every
+expiry of it still owed a keep is settled, and its one `role.undelivered` record is appended,
+so nothing keeps it again. Only the publisher hold's holder records a notice, claims an expiry or
+posts a window. Each record transaction locks the hold's row for share, so a takeover of the hold
+waits for that transaction to commit, and the new holder reads every write it made. An event of
+no issue and
 of no issue's document never has a copy kept for a role, since the route is read from the issue
 alone (`readBatchSQL`, `coalesce(i.route, ai.route)`), and such an expiry logs one Error line. An
 `unresponsive` holder's event stays pending and is retried, as a read that failed is, until that

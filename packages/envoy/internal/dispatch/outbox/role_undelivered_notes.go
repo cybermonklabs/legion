@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 )
@@ -66,12 +68,18 @@ const undeliveredWindowsQuery = `
 // (undeliveredWindow.messageID).
 var undeliveredMessageNamespace = uuid.MustParse("6d3f4b2e-9a0c-5e1f-8b7a-2c4d6e8f0a1b")
 
-// messageID is the id of w's message: derived from its issue, its role and the moment it opened, so
-// every post of that window, by any process and after any restart, names the one message and the
-// issue message writer stores it once (api.Background.PostSystemMessage).
+// messageID is the id of w's message: derived from its issue, its role, the moment it opened and
+// the events it names, so every post of the same notes, by any process and after any restart,
+// names the one message and the issue message writer stores it once
+// (api.Background.PostSystemMessage). A note that joined after the window's message was posted
+// changes the set its next read finds unposted, so it is posted in a message of its own that names
+// it, rather than marked posted under one that does not.
 func (w undeliveredWindow) messageID() string {
-	return uuid.NewSHA1(undeliveredMessageNamespace,
-		[]byte(w.issueKey+"\x00"+w.role+"\x00"+strconv.FormatInt(w.openedAt.UnixMicro(), 10))).String()
+	key := []byte(w.issueKey + "\x00" + w.role + "\x00" + strconv.FormatInt(w.openedAt.UnixMicro(), 10))
+	for _, note := range w.notes {
+		key = strconv.AppendInt(append(key, 0), note.eventID, 10)
+	}
+	return uuid.NewSHA1(undeliveredMessageNamespace, key).String()
 }
 
 // postUndeliveredNotes posts one message for each window of events recorded undelivered to a role
@@ -179,23 +187,37 @@ func markUndeliveredWindow(ctx context.Context, deps Deps, instance uuid.UUID, w
 	return err
 }
 
-// undeliveredMessageListItems is how many events one list of a window's message names. The issue
-// message writer refuses a body with a block over contracts.DispatchBlockUnits (32,000 UTF-16
-// units; itemblocks.Check), and a Markdown list is one block however many items it holds, so the
-// events of a long window go in lists of this many, each led by a paragraph that ends the list
-// before it. An item is at most a few hundred units - an event id, its type, one reference and a
-// line about its keeps - so a list of 50 stays far under the bound, and the message's block count
-// (two blocks for each 50 events, and three more) stays under contracts.DispatchItemBlocks for any
-// window shorter than about 800,000 events.
-const undeliveredMessageListItems = 50
+// A window's events are named in lists of at most undeliveredMessageListItems events and
+// undeliveredMessageListUnits UTF-16 units. The issue message writer refuses a body with a block
+// over contracts.DispatchBlockUnits (32,000 units; itemblocks.Check), and a Markdown list is one
+// block however many items it holds, so the events of a long window go in several lists, each led
+// by a paragraph that ends the list before it. An item names one reference, and a document's can
+// run to a few thousand units (its slug is as long as its name), so a list is bounded by its
+// length as well as by its count: half the block bound leaves room for any one item, and an item
+// that alone passed the budget would still stand in a list of its own.
+const (
+	undeliveredMessageListItems = 50
+	undeliveredMessageListUnits = contracts.DispatchBlockUnits / 2
+)
 
 // undeliveredMessage is the body of window's message: the role, how many events of this issue it
 // did not take in the window, each event by its id and type with the post or document it is about,
-// how many times it was kept and why it ended, and what a person does about it. A window of more
-// than undeliveredMessageListItems events names them in lists of that many, each led by a line
-// "Events <first> to <last> of <count>:", so every event is named in the one message and no block
-// of it is over the writer's bound.
+// how many times it was kept and why it ended, and what a person does about it. A window whose
+// events do not fit one list names them in several (undeliveredMessageListItems,
+// undeliveredMessageListUnits), each led by a line "Events <first> to <last> of <count>:", so every
+// event is named in the one message and no block of it is over the writer's bound.
 func undeliveredMessage(window undeliveredWindow) string {
+	var lists [][]string
+	units := 0
+	for _, note := range window.notes {
+		line := undeliveredNoteLine(note)
+		size := itemblocks.Units16(line)
+		if last := len(lists) - 1; last < 0 || len(lists[last]) == undeliveredMessageListItems || units+size > undeliveredMessageListUnits {
+			lists, units = append(lists, nil), 0
+		}
+		lists[len(lists)-1] = append(lists[len(lists)-1], line)
+		units += size
+	}
 	var body strings.Builder
 	count := "1 event"
 	if len(window.notes) != 1 {
@@ -203,37 +225,40 @@ func undeliveredMessage(window undeliveredWindow) string {
 	}
 	fmt.Fprintf(&body, "Dispatch did not deliver %s to role `%s`. Dispatch kept each event for the role for an hour at a time, and no session took the role:\n",
 		count, window.role)
-	for start := 0; start < len(window.notes); start += undeliveredMessageListItems {
-		end := min(start+undeliveredMessageListItems, len(window.notes))
-		if len(window.notes) > undeliveredMessageListItems {
-			fmt.Fprintf(&body, "\nEvents %d to %d of %d:\n", start+1, end, len(window.notes))
+	first := 1
+	for _, list := range lists {
+		if len(lists) > 1 {
+			fmt.Fprintf(&body, "\nEvents %d to %d of %d:\n", first, first+len(list)-1, len(window.notes))
 		}
 		body.WriteString("\n")
-		for _, note := range window.notes[start:end] {
-			writeUndeliveredNote(&body, note)
+		for _, line := range list {
+			body.WriteString(line)
 		}
+		first += len(list)
 	}
 	fmt.Fprintf(&body, "\nEach event has a role.undelivered record in this issue's history. To deliver one, find the session that should hold role `%s`, then send it the work again.",
 		window.role)
 	return body.String()
 }
 
-// writeUndeliveredNote writes note as one list item of a window's message.
-func writeUndeliveredNote(body *strings.Builder, note undeliveredNote) {
-	fmt.Fprintf(body, "- event %d (%s)", note.eventID, note.eventType)
+// undeliveredNoteLine is note as one list item of a window's message, with its line end.
+func undeliveredNoteLine(note undeliveredNote) string {
+	var line strings.Builder
+	fmt.Fprintf(&line, "- event %d (%s)", note.eventID, note.eventType)
 	switch {
 	case note.itemRef != "" && note.document:
-		fmt.Fprintf(body, ", on the document %s", note.itemRef)
+		fmt.Fprintf(&line, ", on the document %s", note.itemRef)
 	case note.itemRef != "":
-		fmt.Fprintf(body, ", %s", note.itemRef)
+		fmt.Fprintf(&line, ", %s", note.itemRef)
 	}
 	keeps := fmt.Sprintf("%d times", note.keeps)
 	if note.keeps == 1 {
 		keeps = "1 time"
 	}
 	if note.reason == model.RoleUndeliveredCopyGone {
-		fmt.Fprintf(body, ": kept %s, and Envoy no longer held the copy to keep it again\n", keeps)
+		fmt.Fprintf(&line, ": kept %s, and Envoy no longer held the copy to keep it again\n", keeps)
 	} else {
-		fmt.Fprintf(body, ": kept %s, and no session took it\n", keeps)
+		fmt.Fprintf(&line, ": kept %s, and no session took it\n", keeps)
 	}
+	return line.String()
 }

@@ -125,13 +125,40 @@ func readKeptExpiries(ctx context.Context, deps Deps, hold fence, instance uuid.
 // process that would record the notice.
 var errNotTheHolder = errors.New("the publisher hold is not this process's")
 
+// lockPublisherHold reports, in tx, whether the publisher hold's row names instance live on the
+// database's clock, and locks that row for share until tx ends. A takeover of the hold writes that
+// row (duty's takeHold), so it waits for tx: a transaction that found the hold its own writes
+// everything it writes before another process can hold the hold, and so before that process
+// reads, posts or claims anything those writes touch. A renewal of the hold waits for tx as well,
+// which is why every transaction that takes this lock runs under recordTimeout. Deps.holdLocked
+// runs once the lock is held, for a test.
+func lockPublisherHold(ctx context.Context, deps Deps, tx pgx.Tx, instance uuid.UUID) (bool, error) {
+	var mine bool
+	err := tx.QueryRow(ctx, `
+		select holder = $2 and expires_at > now() from duty_holds where name = $1 for share
+	`, publisherHold, instance).Scan(&mine)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if deps.holdLocked != nil {
+		deps.holdLocked()
+	}
+	return mine, nil
+}
+
 // recordKeptExpiry records the expiry notice stored, and moves the cursor past it, in one
-// transaction (recordExpiry), and publishes the role.undelivered event that record appended, if
-// any, once it has committed. The transaction first reads the publisher hold's row on the
-// database's clock, and writes nothing and answers errNotTheHolder while that row does not name
-// instance. A notice that names no event's copy - its body does not decode, or it names no source
-// event, role or attempt - is passed over with one Error line: no read of it will ever name one.
+// transaction (recordExpiry) under recordTimeout, and publishes the role.undelivered event that
+// record appended, if any, once it has committed. The transaction first locks the publisher hold's
+// row (lockPublisherHold), and writes nothing and answers errNotTheHolder while that row does not
+// name instance. A notice that names no event's copy - its body does not decode, or it names no
+// source event, role or attempt - is passed over with one Error line: no read of it will ever name
+// one.
 func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored bus.StoredMessage) error {
+	ctx, cancel := context.WithTimeout(ctx, recordTimeout)
+	defer cancel()
 	var notice bus.KeptCopyExpiry
 	decodeErr := json.Unmarshal(stored.Data, &notice)
 	eventID, parseErr := strconv.ParseInt(notice.SourceEventID, 10, 64)
@@ -140,10 +167,8 @@ func recordKeptExpiry(ctx context.Context, deps Deps, instance uuid.UUID, stored
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var mine bool
-	if err := tx.QueryRow(ctx, `
-		select exists (select 1 from duty_holds where name = $1 and holder = $2 and expires_at > now())
-	`, publisherHold, instance).Scan(&mine); err != nil {
+	mine, err := lockPublisherHold(ctx, deps, tx, instance)
+	if err != nil {
 		return err
 	}
 	if !mine {
@@ -237,13 +262,34 @@ func recordExpiry(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, noti
 			attempts, "keeps", attempt, "next_attempt", attempt+1)
 		return nil, nil
 	}
+	return endRoleDelivery(ctx, deps, tx, eventID, notice.Role, attempt, keptAt, droppedAt, model.RoleUndeliveredExpired)
+}
+
+// endRoleDelivery is the one way an event's delivery to a role ends, in tx, for both reasons it
+// ends - its last keep expired (recordExpiry) or its copy is gone (recordCopyGone): every row of
+// the pair still owed a keep is settled undelivered, and the event's role.undelivered record is
+// appended (appendUndelivered) unless the pair had ended already, so the pair has one record
+// however many of its rows end, and no row of it is left owed. The caller has written its own row
+// settled undelivered; ended reads whether any other row of the pair was undelivered before it.
+func endRoleDelivery(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, role string, keeps int, keptAt, droppedAt time.Time, reason string) (*model.Event, error) {
+	var ended bool
+	if err := tx.QueryRow(ctx, `
+		select count(*) filter (where outcome = $3) > 1 from outbox_role_copy_expiries where event_id = $1 and role = $2
+	`, eventID, role, expiryUndelivered).Scan(&ended); err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(ctx, `
 		update outbox_role_copy_expiries set settled_at = now(), outcome = $3
 		where event_id = $1 and role = $2 and settled_at is null
-	`, eventID, notice.Role, expiryUndelivered); err != nil {
+	`, eventID, role, expiryUndelivered); err != nil {
 		return nil, err
 	}
-	return appendUndelivered(ctx, deps, tx, eventID, notice.Role, attempt, keptAt, droppedAt, model.RoleUndeliveredExpired)
+	if ended {
+		slog.Info("dispatch outbox: an event already recorded undelivered to a role ended again; it keeps its one record",
+			"event_id", eventID, "role", role, "keeps", keeps, "reason", reason)
+		return nil, nil
+	}
+	return appendUndelivered(ctx, deps, tx, eventID, role, keeps, keptAt, droppedAt, reason)
 }
 
 // appendUndelivered appends, in tx, the role.undelivered record of eventID's copy for role on that
@@ -319,7 +365,8 @@ const undeliveredNoteWindow = time.Hour
 // noteUndelivered notes, in tx, eventID as undelivered to role, for the message postUndeliveredNotes
 // posts about it: on the event's own issue, or on the issue of its document, which is the issue
 // whose route the role is. It joins the window of that issue and role opened less than
-// undeliveredNoteWindow before, and opens one at now when none was. The note names the post an
+// undeliveredNoteWindow before whose message is not posted yet, and opens one at now when none
+// was. The note names the post an
 // issue's comment or message event carries (dispatch://<issue>/<kind>/<id>), or else the document a
 // document event is about (dispatch://<issue>/artifact/<slug>), and names nothing for any other
 // event, which the message names by its id and type alone. An event of neither an issue nor an
@@ -350,7 +397,7 @@ func noteUndelivered(ctx context.Context, tx pgx.Tx, eventID int64, role string,
 			(event_id, role, issue_key, artifact_id, event_type, keeps, reason, item_ref, window_opened_at)
 		values ($1, $2, $3, $4::uuid, $5, $6, $7, nullif($8, ''), coalesce(
 			(select max(window_opened_at) from outbox_role_undelivered_notes
-			 where issue_key = $3 and role = $2 and window_opened_at > now() - $9::interval),
+			 where issue_key = $3 and role = $2 and window_opened_at > now() - $9::interval and posted_at is null),
 			now()))
 		on conflict (event_id, role) do nothing
 	`, eventID, role, issueKey, document, about.eventType, keeps, reason, ref, undeliveredNoteWindow); err != nil {
@@ -688,28 +735,33 @@ func recordExpiredCopies(ctx context.Context, deps Deps, instance uuid.UUID, rec
 	return holds, nil
 }
 
-// recordCopyGone settles held undelivered, with the event's role.undelivered record appended
-// beside it (appendUndelivered, model.RoleUndeliveredCopyGone), in one transaction fenced on the
-// publisher hold and on the row's claim as the pass's record is: a process the hold has left, or a
-// row a later pass claimed, writes nothing. It publishes the record once that has committed.
+// recordCopyGone ends held's event's delivery to its role because the stream no longer holds the
+// copy to keep again: it settles held undelivered and ends the pair as the bound does
+// (endRoleDelivery, model.RoleUndeliveredCopyGone), so the pair's other owed rows are settled and
+// its role.undelivered record is appended once, in one transaction. The transaction locks the
+// publisher hold's row first (lockPublisherHold) and is fenced on the row's claim as the pass's
+// record is: a process the hold has left, or a row a later pass claimed, writes nothing. It
+// publishes the record once that has committed. The caller runs it under recordTimeout.
 func recordCopyGone(ctx context.Context, deps Deps, instance uuid.UUID, held expiredCopy) error {
 	tx, err := deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if mine, err := lockPublisherHold(ctx, deps, tx, instance); err != nil || !mine {
+		return err
+	}
 	tag, err := tx.Exec(ctx, `
-		update outbox_role_copy_expiries set settled_at = now(), outcome = $6
+		update outbox_role_copy_expiries set settled_at = now(), outcome = $5
 		where event_id = $1 and role = $2 and keep_attempt = $3 and settled_at is null and next_attempt_at = $4
-		  and exists (select 1 from duty_holds where name = $7 and holder = $5 and expires_at > now())
-	`, held.eventID, held.role, held.attempt, held.claim, instance, expiryUndelivered, publisherHold)
+	`, held.eventID, held.role, held.attempt, held.claim, expiryUndelivered)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return nil
 	}
-	appended, err := appendUndelivered(ctx, deps, tx, held.eventID, held.role, held.attempt, held.keptAt, held.droppedAt, model.RoleUndeliveredCopyGone)
+	appended, err := endRoleDelivery(ctx, deps, tx, held.eventID, held.role, held.attempt, held.keptAt, held.droppedAt, model.RoleUndeliveredCopyGone)
 	if err != nil {
 		return err
 	}

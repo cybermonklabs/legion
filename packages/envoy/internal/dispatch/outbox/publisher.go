@@ -145,6 +145,11 @@ type Deps struct {
 	// moves it past a forward's fence and acknowledgement window while the forward waits, which no
 	// test could otherwise wait out; it is unexported, so no importer can.
 	clock func() time.Time
+	// holdLocked, when set, runs inside an expiry record's transaction right after it locked the
+	// publisher hold's row (lockPublisherHold), and holds the record there until it returns. A
+	// test opens a takeover of the hold while a record holds that lock, which no test could time
+	// otherwise; it is unexported, and nil in cmd/dispatch.
+	holdLocked func()
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox
 	// pool's one statement at a time, and the wake a released owner gives the scan (Outbox.scan).
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
