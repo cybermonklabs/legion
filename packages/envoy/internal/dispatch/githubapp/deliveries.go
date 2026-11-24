@@ -505,14 +505,15 @@ const shownBodyRunes = 512
 //     alone, with the value's size. The error still names the layout, or the field and the type
 //     (ShownErr). The reason of a time parse error quotes the text after a valid time, and it is
 //     cut alone too, with the reason's size.
-//   - A transport error of send cuts its URL, with the URL's size, and its cause (ShownErr). A
-//     line the cause quotes is cut with the cause's text, with the size of the cause's text.
+//   - A transport error of send names its target as ShownBody shows it, with the target's size,
+//     and its failure by redact.Unanswered: a transport failure's own words or a fixed class, so it
+//     quotes no line of an answer at all.
 //   - Any other error that quotes GitHub's text, such as a bucket error that quotes a key
 //     (redeliver's bucketErr), is cut whole, with the size of its text (ShownErr).
 //   - A request's target, which a status error names, is cut alone, with the target's size. So is
 //     a next page link in nextLink's refusal. A target holds names Dispatch keeps and text GitHub
 //     gave (a next page link).
-//   - A time parse error, a JSON type error or a transport error whose text is still longer than
+//   - A time parse error, a JSON type error or a URL's parse error whose text is still longer than
 //     shownErrMost (4,414 bytes) after the cuts above is cut whole, with the size of that text
 //     (ShownErr).
 //
@@ -555,11 +556,11 @@ const shownErrMost = 2*(shownBodyRunes*utf8.UTFMax+len("… (9223372036854775807
 // errors.As reaches the answer as it reaches err. ShownErr reads the type of err itself (a type
 // switch), not of the errors that err wraps:
 //
-//   - A *url.Error, the transport error of send's request, has the text `<Op> "<URL>": <cause>`.
+//   - A *url.Error, the error of a URL that does not parse (send's build of a request of its
+//     target, nextLink's parse of a next page link), has the text `<Op> "<URL>": <cause>`.
 //     ShownErr answers a new *url.Error with the same Op, the URL as ShownBody shows it, with the
 //     URL's size, and the cause (Err) as ShownErr shows it. So a long URL never pushes the cause
-//     out of the text. A cause that quotes a long line of an answer (net/http's `malformed MIME
-//     header`) is cut with the cause's text, with the size of the cause's text.
+//     out of the text.
 //   - A *time.ParseError is a time in an answer that JSON could not decode. ShownErr answers a
 //     copy whose Value, ValueElem and Message are as ShownBody shows them, each with its own
 //     size. Message is the reason. For a valid time with text after it, the reason quotes that
@@ -588,9 +589,9 @@ const shownErrMost = 2*(shownBodyRunes*utf8.UTFMax+len("… (9223372036854775807
 // bytes long.
 //
 // The package cuts with it the error of every JSON decode of an answer GitHub gave whose error it
-// returns, the error of send's request, and the error of send's read of the answer. Another
-// package cuts with it an error whose text quotes GitHub's text (redeliver's bucketErr, for a
-// bucket error that quotes a key).
+// returns, the error of a URL that does not parse, and the error of send's read of the answer.
+// Another package cuts with it an error whose text quotes GitHub's text (redeliver's bucketErr,
+// for a bucket error that quotes a key).
 func ShownErr(err error) error {
 	shown, _ := shownErr(err)
 	return shown
