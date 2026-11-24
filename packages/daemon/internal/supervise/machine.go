@@ -4432,9 +4432,9 @@ func (m *Machine) arm(kind TimerKind, after time.Duration, deliveryID string) {
 }
 
 // fire hands the machine ev, a timer of its own firing, on the goroutine it fires on: the
-// clock's, for a timer the clock holds (arm), and one of its own for the grant of a launch parked
-// at its issue pod's gate (askPod). That goroutine holds no lock, so its decision runs on a fresh
-// context.
+// clock's, for a timer the clock holds (arm), and the one the pod gate posts the grant of a launch
+// parked at its gate on (askPod, PodStarts.post). That goroutine holds no lock, so its decision
+// runs on a fresh context.
 func (m *Machine) fire(ev Timer) {
 	if err := m.Handle(m.worker(), ev); err != nil {
 		m.log.Error("supervise: timer", "timer", string(ev.Kind), "error", err)
