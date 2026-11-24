@@ -5,21 +5,40 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // shown is text a run under the credential wrote, as an error made of it prints it once it leaves
-// the process and nothing decides on it: the shared clone's steps' (cloneSteps.runIn) and its
-// fetch's (ensureFetchConfiguration), which Provision returns to the daemon's outbox
-// (outbox.provisionIn) and to workspace-init's caller. It is scrub's text read once more by the
-// fail-closed rule (oauth2call.Field), which prints it as WordsNotReadable where it cannot read a
-// URL in it as clean, and on one line (Go-quoted where git wrote more than one). The rule reads the
-// text after the URL rule, by design: git's refusal of a redirect names the asked-for URL with its
-// query and more text after it, which the rule cannot read as clean, so read before the URL rule
-// every such refusal would print as WordsNotReadable. What that order gives up is a query value
-// whitespace parts from its URL (`?access_token= <value>`): the URL rule takes its `?…=` away, and
-// the fail-closed rule then reads the value as a word.
+// the process and nothing decides on it (shownWithoutCredentials of the credential's token): the
+// shared clone's steps' (cloneSteps.runIn) and its fetch's (ensureFetchConfiguration), which
+// Provision returns to the daemon's outbox (outbox.provisionIn) and to workspace-init's caller.
 func (r remote) shown(text string) string {
-	return oauth2call.Field(strings.TrimSpace(r.scrub(text)))
+	return shownWithoutCredentials(text, r.token)
+}
+
+// withoutCredentials is the one scrub of git's words - what a run of git holding tokens wrote, and
+// a line or an argument naming what such a run read from GitHub or the repository cache - with
+// every credential taken out: each of tokens wherever git, or whatever answered in GitHub's or the
+// cache's place, wrote it back (scrubTokens), and then the URL rule (redact.URLCredentials), since
+// git names a redirect's Location as GitHub, or whatever answers in its place, wrote it, query
+// values and user information and all, and that text is not a token's. The shared clone's steps
+// and fetch take it of their credential's token (remote.shown), and Fetch of every token the fetch
+// holds (fetchCredential.scrub).
+func withoutCredentials(text string, tokens ...string) string {
+	return redact.URLCredentials(scrubTokens(text, tokens...))
+}
+
+// shownWithoutCredentials is text a run holding tokens wrote, its stderr, as an error made of it
+// prints it once it leaves the process: withoutCredentials' text read once more by the fail-closed
+// rule (oauth2call.Field), which prints it as WordsNotReadable where it cannot read a URL in it as
+// clean, and on one line (Go-quoted where git wrote more than one). The rule reads the text after
+// the URL rule, by design: git's refusal of a redirect names the asked-for URL with its query and
+// more text after it, which the rule cannot read as clean, so read before the URL rule every such
+// refusal would print as WordsNotReadable. What that order gives up is a query value whitespace
+// parts from its URL (`?access_token= <value>`): the URL rule takes its `?…=` away, and the
+// fail-closed rule then reads the value as a word.
+func shownWithoutCredentials(text string, tokens ...string) string {
+	return oauth2call.Field(strings.TrimSpace(withoutCredentials(text, tokens...)))
 }
 
 // scrubTokens is text with each of tokens, the tokens a run holds - the provisioning tokens git

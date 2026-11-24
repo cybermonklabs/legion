@@ -198,17 +198,17 @@ type FetchReport struct {
 // first, and no retry starts past the bound. A transfer still failing after the last wait, and
 // every other failure, is the answer at once. Every token the fetch holds - each provisioning token
 // it has read and the repository cache's bearer (fetchCredential) - is taken out by one filter
-// (fetchCredential.withoutTokens, scrubTokens): whole, and every run of oauth2call.TokenPiece
+// (fetchCredential.scrub, withoutCredentials): whole, and every run of oauth2call.TokenPiece
 // characters of it or of the Basic credential git sends it in, as the text is written and
-// percent-decoded. Each attempt's stderr goes through that filter as soon as the attempt returns,
-// and then through the URL rule, and what Fetch logs or returns of it goes through the fail-closed
-// rule too (transferWithRetries), so nothing Fetch logs or returns carries a token, wherever git
-// echoed it, nor a query value or user information of any URL git names, a redirect's Location
-// among them. Every line Fetch logs, and fsck's stderr on what the cache streamed, go through the
-// same filter: a line names what the cache streamed or what GitHub answered - a ref the feed drops,
-// the branch GitHub's HEAD names - the words of whatever answers at either address. A tar entry's
-// name prints through the same filter (scrubTokens) of the cache's bearer, the one token the /tar
-// request carries.
+// percent-decoded, and then the query and user information of every URL. Each attempt's stderr
+// goes through that filter as soon as the attempt returns (transferWithRetries), and so does fsck's
+// on what the cache streamed (feedGitWithin), each read once more by the fail-closed rule where an
+// error prints it, so nothing Fetch logs or returns of them carries a token, wherever git echoed
+// it, nor a query value or user information of any URL git names, a redirect's Location among
+// them. Every line Fetch logs goes through the same filter: a line names what the cache streamed or
+// what GitHub answered - a ref the feed drops, the branch GitHub's HEAD names - the words of
+// whatever answers at either address. A tar entry's name prints through the token filter
+// (scrubTokens) of the cache's bearer, the one token the /tar request carries.
 //
 // A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text:
 // a read of the provisioning token that failed, a cache named without its token, the wait for the
@@ -256,9 +256,9 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	// A line Fetch logs can name what the cache streamed, a ref it held (pruneToGitHub), or the
 	// branch GitHub's HEAD names (followHead), the words of whatever answers at the cache's address
 	// or GitHub's, which can echo the bearer the /tar request carried or the provisioning token git
-	// presented: every line goes through the filter of every token the fetch holds.
+	// presented: every line goes through the fetch's one filter.
 	log := request.Log
-	request.Log = func(line string) { log(held.withoutTokens(line)) }
+	request.Log = func(line string) { log(held.scrub(line)) }
 	present, err := ownFeedRepository(feed, request.Repo, request.Clock.Now(), request.Log)
 	if err != nil {
 		return FetchReport{}, err
@@ -855,11 +855,8 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	}
 	// fsck names the refs it reads, and a ref's name is the cache's words, or a stand-in's at its
 	// address, which can echo the bearer the /tar request carried: the stderr its failure prints
-	// goes through the filter of every token the fetch holds (fetchCredential.withoutTokens).
-	fsck := slices.Concat(feedGit, []string{"--git-dir=" + staging, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"})
-	result, err := runCommandTimeout(ctx, run, fsck, isolatedGitConfig, staging, left)
-	result.Stderr = held.withoutTokens(result.Stderr)
-	if _, err := checkedResult(fsck, result, err); err != nil {
+	// goes through the fetch's filter (feedGitWithin under held).
+	if _, err := feedGitWithin(ctx, run, staging, left, held, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"); err != nil {
 		return fmt.Errorf("the repository cache's history is not whole: %w", err)
 	}
 	return nil
@@ -1200,8 +1197,19 @@ func FeedGit(ctx context.Context, run Runner, gitDir string, args ...string) (Re
 // command on such a repository whose duration follows the repository's size, as the cache's repack
 // does. A `-c` among args comes after feedGit's, so it wins over them for its key.
 func FeedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.Duration, args ...string) (Result, error) {
+	return feedGitWithin(ctx, run, gitDir, timeout, nil, args...)
+}
+
+// feedGitWithin is FeedGitWithin, and with held set, a command of Fetch's on what the repository
+// cache streamed - fsck, which names the refs it reads - whose stderr can hold the cache's words,
+// which can echo a token the fetch holds: its error prints that stderr through the fetch's filter
+// (fetchCredential.shown).
+func feedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.Duration, held *fetchCredential, args ...string) (Result, error) {
 	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args)
 	result, err := runCommandTimeout(ctx, run, argv, isolatedGitConfig, gitDir, timeout)
+	if held != nil {
+		result.Stderr = held.shown(result.Stderr)
+	}
 	return checkedResult(argv, result, err)
 }
 
@@ -1290,18 +1298,17 @@ func (c *fetchCredential) renew() error {
 	return nil
 }
 
-// withoutTokens is text with every token the fetch holds taken out (scrubTokens): the one filter
-// of what a run of the fetch wrote - git's stderr, fsck's - and of every line Fetch logs.
-func (c *fetchCredential) withoutTokens(text string) string {
-	return scrubTokens(text, c.held...)
+// scrub is text with every token the fetch holds, and every URL's query and user information,
+// taken out (withoutCredentials): the fetch's one filter, of what a run of the fetch wrote and of
+// every line Fetch logs. The classifiers read what it answers of a transfer's stderr.
+func (c *fetchCredential) scrub(text string) string {
+	return withoutCredentials(text, c.held...)
 }
 
-// scrub is text with every token the fetch holds taken out (withoutTokens), and then through the
-// URL rule (redact.URLCredentials), as remote.scrub gives it: a redirect's Location that git names
-// keeps no query value or user information. The classifiers read what it answers;
-// transferWithRetries reads it once more, by the fail-closed rule, where it leaves the process.
-func (c *fetchCredential) scrub(text string) string {
-	return redact.URLCredentials(c.withoutTokens(text))
+// shown is text a run of the fetch wrote, its stderr, as an error made of it prints it: the
+// filter's text read once more by the fail-closed rule (shownWithoutCredentials).
+func (c *fetchCredential) shown(text string) string {
+	return shownWithoutCredentials(text, c.held...)
 }
 
 // Clock is the time Fetch's retries read and wait on: WallClock, or a test's own.
