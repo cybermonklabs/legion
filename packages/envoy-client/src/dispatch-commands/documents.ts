@@ -24,6 +24,7 @@ import {
   oversizePictureText,
   PICTURE_SHOWN_MAX_BYTES,
   PICTURE_SNIFF_BYTES,
+  readPictureHead,
   sniffPictureType,
   toolImage,
 } from "../dispatch-pictures";
@@ -90,9 +91,11 @@ async function blockAsks(
  * the upload of the next version names as its precondition; a named version's `Content: sha256:`
  * line, as a named document version's read prints its hash. It goes in the header, never after
  * the text, so the text after the header is the stored file unchanged, a leading byte order mark
- * included (the decoder keeps it), and a script or patch read back ends where the file ends; the
- * dispatch command alone adds one line feed after a file that ends without one, as it ends every
- * output it prints with one. Dispatch states both beside the version in the artifact's
+ * included (the decoder keeps it), and a script or patch read back ends where the file ends. The
+ * dispatch command changes two things, as it does for every output it prints: it adds one line
+ * feed after a file that ends without one, and under Claude Code or Codex it cuts an output past
+ * 25,000 characters and writes the whole of it to a file it names (`fitOutput` in
+ * dispatch-cli.ts). Dispatch states both beside the version in the artifact's
  * version list, so no other read is made for them, and a Dispatch or a version that states none
  * prints no line: such a Dispatch takes no token on a file's upload. A file carries no anchors or
  * approval, so nothing else is read. A picture is shown whatever `shown` holds, and joins it
@@ -752,14 +755,10 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       // upload of another kind than the name holds is refused under that name whatever it
       // carries, so it is told to take another name. Only a path that is not Markdown has bytes
       // to read, and only their first PICTURE_SNIFF_BYTES decide.
-      const kind = await uploadKindOf(path, async (named) =>
+      const kind = await uploadKindOf(path, (named) =>
         input.uploadBytes === undefined
-          ? new Uint8Array(
-              await Bun.file(resolvePath(input.cwd, named))
-                .slice(0, PICTURE_SNIFF_BYTES)
-                .arrayBuffer()
-            )
-          : input.uploadBytes.subarray(0, PICTURE_SNIFF_BYTES)
+          ? readPictureHead(resolvePath(input.cwd, named))
+          : Promise.resolve(input.uploadBytes.subarray(0, PICTURE_SNIFF_BYTES))
       );
       throw new ToolInputError(input.tool, [
         artifactNameExistsProblem(

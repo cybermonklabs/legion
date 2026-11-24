@@ -72,6 +72,12 @@ export function sniffPictureType(bytes: Uint8Array): PictureType | undefined {
   return undefined;
 }
 
+/** The first PICTURE_SNIFF_BYTES bytes of the file at `path`, all `sniffPictureType` reads, so
+ *  judging a large file reads no more of it. */
+export async function readPictureHead(path: string): Promise<Uint8Array> {
+  return new Uint8Array(await Bun.file(path).slice(0, PICTURE_SNIFF_BYTES).arrayBuffer());
+}
+
 /** `bytes` as the image block a model is shown, or undefined when they are no picture it takes. */
 export function toolImage(bytes: Uint8Array): ToolImage | undefined {
   const mimeType = sniffPictureType(bytes);

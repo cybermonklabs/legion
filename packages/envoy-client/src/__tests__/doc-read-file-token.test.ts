@@ -233,9 +233,8 @@ describe("dispatch doc-read of an uploaded file or picture", () => {
     expect(code, stdout).toBe(0);
     const printed = new TextEncoder().encode(stdout);
     expect([...printed.subarray(printed.length - WITH_BOM.length)]).toEqual([...WITH_BOM]);
-    expect(
-      stdout.endsWith(`\n\n${new TextDecoder("utf-8", { ignoreBOM: true }).decode(WITH_BOM)}`)
-    ).toBe(true);
+    // U+FEFF is the byte order mark as text: EF BB BF in UTF-8.
+    expect(stdout.endsWith("\n\n\uFEFFA\n")).toBe(true);
   });
 
   // A version Dispatch states no token for takes none on an upload, so no line is printed.

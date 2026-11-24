@@ -329,17 +329,17 @@ describe("dispatch artifact under a name the owner holds", () => {
   test.each([
     ["a file", "notes", "notes.txt", textOf],
     ["a picture", "chart", "chart.png", pictureOf],
-  ] as const)("for %s, prints no token, and a stale reader following it cannot overwrite the newer version", async (_label, name, file, bytesOf) => {
+  ] as const)("for %s, prints no token, and a stale reader following it cannot overwrite the newer version", async (_label, name, file, contentOf) => {
     const v1Token = await readToken(name);
     const written = await upload(
       name,
-      ["--path", pathOf(`b-${file}`, bytesOf("from B"))],
+      ["--path", pathOf(`b-${file}`, contentOf("from B"))],
       ["--force"]
     );
     expect(written.code, written.stdout).toBe(0);
     const standing = held.find((artifact) => artifact.name === name)?.versions.at(-1);
 
-    const refused = await upload(name, ["--path", pathOf(`a-${file}`, bytesOf("from A"))]);
+    const refused = await upload(name, ["--path", pathOf(`a-${file}`, contentOf("from A"))]);
     expect(refused.code, refused.stdout).toBe(2);
     const text = refusalOf(refused.stdout, name);
     expect(text).not.toContain("sha256:");
@@ -348,7 +348,7 @@ describe("dispatch artifact under a name the owner holds", () => {
 
     const stale = await upload(
       name,
-      ["--path", pathOf(`a-${file}`, bytesOf("from A"))],
+      ["--path", pathOf(`a-${file}`, contentOf("from A"))],
       advisedFlags(text, v1Token)
     );
     expect(stale.code, stale.stdout).toBe(1);
@@ -357,7 +357,7 @@ describe("dispatch artifact under a name the owner holds", () => {
 
     const fresh = await upload(
       name,
-      ["--path", pathOf(`a-${file}`, bytesOf("from A"))],
+      ["--path", pathOf(`a-${file}`, contentOf("from A"))],
       advisedFlags(text, await readToken(name))
     );
     expect(fresh.code, fresh.stdout).toBe(0);

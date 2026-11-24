@@ -514,23 +514,20 @@ func uploadPreconditionBody(stale *docs.ErrPreconditionFailed, version int) edit
 }
 
 // fileUploadPreconditionBody is the 409 PRECONDITION_FAILED body of a file's or a picture's upload
-// naming a token that is not its standing version's: the body a document's refusal answers
-// (editPreconditionBody), holding the standing token in current.document and the one mismatch
-// scoped to it, with the standing version's number, in words that name the artifact's kind
-// rather than a document.
+// naming a token that is not its standing version's: the shape a document's refusal answers
+// (preconditionBody), holding the standing token in current.document and the one mismatch scoped
+// to it, with the standing version's number, in words that name the artifact's kind rather than
+// a document.
 func fileUploadPreconditionBody(kind, name, named string, standing model.Version) editPreconditionError {
 	what := "file"
 	if kind == "image" {
 		what = "picture"
 	}
 	token := *standing.Token
-	body := editPreconditionBody(&docs.ErrPreconditionFailed{
-		CurrentDocument: token,
-		Mismatches:      []model.EditPreconditionMismatch{{Scope: "document", Expected: named, Current: &token}},
-	})
+	body := preconditionBody(token, []model.EditPreconditionMismatch{{Scope: "document", Expected: named, Current: &token}},
+		fmt.Sprintf("%s upload precondition failed: %q stands at version %d, whose token is not the one this upload names; %s",
+			what, name, standing.Number, uploadAdvice(what)))
 	body.Current.Version = &standing.Number
-	body.Error = fmt.Sprintf("%s upload precondition failed: %q stands at version %d, whose token is not the one this upload names; %s",
-		what, name, standing.Number, uploadAdvice(what))
 	return body
 }
 
@@ -540,8 +537,9 @@ func fileUploadPreconditionBody(kind, name, named string, standing model.Version
 // is refused 409 PRECONDITION_FAILED with the standing version's token and number, as a
 // document's is; a version stored with no hash has no token for a base to name, and is refused as
 // a first upload naming a token is (writeUploadNoTokenError). An upload naming no base is never
-// refused here. A first upload never reaches it: storeArtifact refuses one naming a token, and
-// refuseUploadBeforeItsObject does before its object. It runs twice, the same check each time:
+// refused here, a first upload among them: one naming a token is refused before it reaches here,
+// by storeArtifact and, before its object, by refuseUploadBeforeItsObject, so a first upload
+// arrives naming none and passes. It runs twice, the same check each time:
 // before the upload's object is written, from the pool (putUploadedFile, its version read by
 // newestFileVersion), so an upload refused there leaves no object, and in storeArtifact's
 // transaction under the owner's lock, which decides, its version the one that transaction loaded
