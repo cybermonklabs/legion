@@ -53,11 +53,12 @@ ci_ok_run() {
 # (stderr, the reasoning) and status.
 run_bypass() {
   set +e
-  out=$(HEAD_SHA=$1 HEAD_MESSAGE=$2 RUNS=$3 CI_OK=$4 timeout 60 "$script_dir/main-bypass-check.sh" 2>"$work/err")
+  out=$(HEAD_SHA=$1 HEAD_MESSAGE=$2 RUNS=$3 CI_OK=$4 RUNNER_TEMP="$work/temp" timeout 60 "$script_dir/main-bypass-check.sh" 2>"$work/err")
   status=$?
   set -e
   err=$(cat "$work/err")
 }
+mkdir "$work/temp"
 
 echo "case: a head with no ci.yaml merge-group run at all starts a run"
 run_bypass "$bypassed" "fix(ci): an admin merge, pushed past the queue" '[]' '[]'
@@ -277,5 +278,79 @@ shape "the words with no empty line above them" \
 shape "the words as the whole message, which makes them its subject" 'skip-checks: true' read
 shape "skip-checks: false, which is no marker of GitHub's" \
   "$(printf 'plan: record the handoff\n\nCo-authored-by: a <a@example.com>\nskip-checks: false\n')" read
+
+echo "case: the reasoning holds no word of the two reads but the values GitHub gives their fields"
+# RUNS and CI_OK are what the step's `gh run list` and `gh api` answered, and whatever answers
+# those calls in GitHub's place holds gh's token and writes the answers; the reasoning goes to
+# the job log and the job summary. Each read below holds the marker not-a-secret-token in a field
+# the script printed: a run's workflow name and conclusion, a ci-ok check run's conclusion, and a
+# read that is no list at all. No run of eight of its characters (redacttest.Piece's run) may be
+# in what the script prints.
+marker=not-a-secret-token
+# prints_no_marker <text>: true when the text holds no run of eight characters of the marker.
+prints_no_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    if [[ $1 == *"${marker:at:8}"* ]]; then
+      echo false
+      return
+    fi
+  done
+  echo true
+}
+marked_runs=$(jq -n --arg head "$bypassed" --arg marker "$marker" \
+  '[{conclusion: $marker, headSha: $head, workflowName: $marker}]')
+marked_ci_ok=$(jq -n --arg marker "$marker" '[{name: "ci-ok", conclusion: $marker}]')
+run_bypass "$bypassed" "fix(ci): an admin merge, pushed past the queue" "$marked_runs" "$marked_ci_ok"
+while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"$'\n'"$err"
+check "twin: the two reads hold the marker, on three lines" \
+  "$(is "$(grep -cF -- "$marker" <<<"$marked_runs"$'\n'"$marked_ci_ok")" 3)"
+check "decides as before: the head was not tested" "$(is "$status $out" "0 dispatch $bypassed")"
+check "prints no run of the marker the reads hold" "$(prints_no_marker "$out$err")"
+check "names each field for what it is" \
+  "$(contains "$err" "^commit $bypassed (fix(ci): an admin merge, pushed past the queue): it is the head of 1 ci.yaml merge-group run(s) (another workflow's name a conclusion that is none of GitHub's) and its 1 ci-ok check run(s) concluded a conclusion that is none of GitHub's: not tested\$")"
+check "ci.yaml is named CI, the one workflow name the reasoning prints (control)" \
+  "$(is "$(yq -r .name "$script_dir/../workflows/ci.yaml")" CI)"
+run_bypass "$queued" 'feat: one' "$(jq -n --arg marker "$marker" '{a: $marker}')" '[]'
+while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"$'\n'"$err"
+check "a RUNS that is no list: fails, as before" "$(is "$status" 1)"
+check "  prints no run of the marker it holds" "$(prints_no_marker "$out$err")"
+kept=$(sed -n 's/.*it is kept in \([^ ]*\)$/\1/p' <<<"$err" | sed -n 1p)
+check "  names the file that keeps it, which holds the marker" \
+  "$(if [ -n "$kept" ] && grep -qF -- "$marker" "$kept"; then echo true; else echo false; fi)"
+
+echo "case: the workflow's step, under a stand-in gh whose answers hold the marker"
+# The step's own run: text, read out of main-bypass-check.yaml and run from the repository root
+# as the runner runs it (bash -eo pipefail), with a stand-in gh first on PATH that answers its two
+# reads with the marker in the fields above and records the dispatch. What the step prints and
+# what it writes to the job summary must hold no run of the marker.
+step_run=$(yq -r '.jobs["bypass-check"].steps[] | select(.name == "Start ci.yaml when this push'"'"'s head was never tested") | .run' \
+  "$bypass_workflow")
+mkdir -p "$work/step/bin"
+cat > "$work/step/bin/gh" <<GH
+#!/usr/bin/env bash
+set -euo pipefail
+echo "\$*" >> "$work/step/calls"
+case "\$1 \$2" in
+  'run list') printf '%s\n' '$marked_runs' ;;
+  'api repos/o/r/commits/'*) printf '%s\n' '$marked_ci_ok' ;;
+  'workflow run') ;;
+  *) echo "unexpected gh \$*" >&2; exit 2 ;;
+esac
+GH
+chmod +x "$work/step/bin/gh"
+: > "$work/step/summary"
+set +e
+out=$(cd "$script_dir/../.." && PATH="$work/step/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r \
+  GITHUB_REF_NAME=main HEAD_SHA="$bypassed" HEAD_MESSAGE='fix(ci): an admin merge, pushed past the queue' \
+  BASE_SHA="$queued" RUNNER_TEMP="$work/temp" GITHUB_STEP_SUMMARY="$work/step/summary" \
+  timeout 60 bash --noprofile --norc -eo pipefail -c "$step_run" 2>&1)
+status=$?
+set -e
+while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"
+check "the stand-in gh is the one called: both reads and the dispatch (control)" \
+  "$(is "$status $(grep -c '^run list\|^api repos/o/r/commits/\|^workflow run ci.yaml' "$work/step/calls")" '0 3')"
+check "the step prints no run of the marker the answers hold" "$(prints_no_marker "$out")"
+check "nor writes one to the job summary" "$(prints_no_marker "$(cat "$work/step/summary")")"
 
 summary "the main bypass check's decision"
