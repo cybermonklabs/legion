@@ -826,9 +826,12 @@ func (r *Runtime) settleUnverified(loc runtime.Locator, pane string, inc incarna
 
 // awaitNotRunning re-verifies the pane until the recorded process no longer verifies, or grace
 // is spent, and returns the last verdict. A verdict that cannot be reached — tmux not answering
-// — keeps the wait going; it proves nothing either way.
+// — keeps the wait going; it proves nothing either way. The grace runs on the runtime's clock
+// (timers), as the command timeout and the sweep's period do, so a test drives the stop's own
+// span rather than waiting it out: the pace between verifications stays the machine's, since it
+// is how often the pane is asked, not what the stop promises.
 func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnation, grace time.Duration) (verdict, error) {
-	deadline := time.NewTimer(grace)
+	deadline := r.timers().NewTimer(grace)
 	defer deadline.Stop()
 	tick := time.NewTicker(pollInterval)
 	defer tick.Stop()
@@ -836,7 +839,7 @@ func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnat
 		select {
 		case <-ctx.Done():
 			return verdict{}, ctx.Err()
-		case <-deadline.C:
+		case <-deadline.C():
 			return r.verifyPane(ctx, pane, inc)
 		case <-tick.C:
 			v, err := r.verifyPane(ctx, pane, inc)
