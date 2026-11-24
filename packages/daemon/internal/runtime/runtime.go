@@ -116,26 +116,29 @@ type Runtime interface {
 	// tell the daemon's stop from a refusal, and charges that try nothing.
 	LaunchBound() time.Duration
 	// PodDrift is why the place k's process runs in no longer matches the configuration the
-	// runtime would build it from now, one short phrase an operator reads per reason, and nil when
-	// nothing differs. Only a runtime whose processes share a place fixed at its creation has any
-	// — the Sandbox runtime's issue pod, whose image, reservation, operator volumes and mounts,
-	// disk, role overlays, secrets broker enrollment and session store are all fixed for the pod's
-	// life — and only for a claim that runs in one: it answers nothing for a claim with no
-	// process, which records no place at all, and nothing for the project controller's own pod,
-	// which has no issue workspace and nothing to push. The daemon opens an update round on a
-	// non-empty answer: the round asks each role of that place to do the steps of its update
+	// runtime would build it from now, one reason per facet, each with its kind (DriftKind) and a
+	// short phrase an operator reads, and nil when nothing differs. Only a runtime whose processes
+	// share a place fixed at its creation has any — the Sandbox runtime's issue pod, whose image,
+	// reservation, operator volumes and mounts, disk, leak check, account, role overlays, secrets
+	// broker enrollment, session store and gh directories are all fixed for the pod's life, and
+	// which records the contract of the daemon that made it — and only for a claim that runs in
+	// one: it answers nothing for a claim with no process, which records no place at all, and
+	// nothing for the project controller's own pod, which has no issue workspace and nothing to
+	// push. The daemon opens an update round only where a reason is of a kind that breaks
+	// (DriftReasons.Breaks): the round asks each role of that place to do the steps of its update
 	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
 	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
 	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
 	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
-	// suspension excepted.
+	// suspension excepted. A place whose drift is only of kinds that drain keeps working as it is,
+	// however long, until a release of it.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
 	// nothing can be read of a place that is going, so nothing says it has drifted from nothing,
 	// and the round open over it ends. Any other error means the runtime itself could not be
 	// asked, and is never a statement that something drifted either.
-	PodDrift(ctx context.Context, k Known) ([]string, error)
+	PodDrift(ctx context.Context, k Known) (DriftReasons, error)
 	// ReplacePod ends the place k's process runs in, once its update round is over, and returns
 	// when the runtime no longer has it. It creates nothing in its stead: every process it ends is
 	// reported ended by the daemon's own act (Observation.Displaced), and the supervisor's resume
@@ -218,6 +221,18 @@ var ErrPodGone = errors.New("the pod the locator records is not there")
 // answers no drift and so opens no pod round.
 type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
+}
+
+// IssuePodDriftReader reads the drift of the pod issue's Sandbox holds, asked by the issue alone,
+// as PodDrift reads it of a claim's pod: one reason per facet with its kind, nil when nothing
+// differs, and ErrPodGone where the Sandbox holds no pod podUID or none at all. roles are the
+// roles whose own facets are read (a role's overlays and its gh directories are its own). It
+// exists beside PodDrift for an update round whose claims record no pod (internal/daemon's
+// podlessRound): a round still open at a daemon's boot ends with no replacement where its pod's
+// drift only drains, and such a round has no claim to ask PodDrift through. A runtime whose
+// processes run in no pod implements nothing here.
+type IssuePodDriftReader interface {
+	IssuePodDrift(ctx context.Context, issue, podUID string, roles []claim.Role) (DriftReasons, error)
 }
 
 // IssuePodReplacer ends the pod of an update round that has no role process in it, asked by the

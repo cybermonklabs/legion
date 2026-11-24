@@ -453,8 +453,9 @@ type keptPod struct {
 // install is made once, at its own image's pin, so a pod kept after the deployment moved its pin
 // and its digest together holds the install of the old pin, whose digest is the old one. A role
 // started in such a pod is told the digest its pod was built under (keptPod.checker), so its shim
-// starts against the install its pod holds, and it can push its work and answer the update round
-// that replaces the pod (leakCheckDrift), where told the digest now it would start no agent at all.
+// starts against the install its pod holds and every push stays checked, until a release of the
+// pod builds the next one under the setting (leakCheckDrift, which drains); told the digest now it
+// would start no agent at all.
 const leakCheckerAnnotation = "legion.dev/leak-checker-manifest-sha256"
 
 // leakChecker is the manifest digest this launch's generation is told (leakguard.CheckerVar): the
@@ -534,10 +535,11 @@ func (l launch) trades(r *Runtime) bool {
 // variant's overlays for every role of it (keptPod.variantFiles).
 //
 // A pod built before an arm's mount was added holds none of that arm's files, so a unit recorded
-// in it starts its role without them — in neither arm, until the update round replaces the pod —
-// since Oh My Pi refuses to start on an entry that is not there and a role that never starts
-// never answers that round (INFRA-484). Each such drop is logged once, at the launch that makes
-// it, naming the issue, the role, the experiment and the arm.
+// in it starts its role without them — in neither arm, until the pod's idle release, since the
+// overlays and the mounts that carry them drain and open no round — since Oh My Pi refuses to
+// start on an entry that is not there, and a role that never starts does no work at all
+// (INFRA-484). Each such drop is logged once, at the launch that makes it, naming the issue, the
+// role, the experiment and the arm.
 //
 // carried are the arms the launch runs in: each arm of l.spec.Variants, in its order, of which
 // the launch names every overlay — every arm for a launch that builds its pod, and for one that
@@ -559,7 +561,7 @@ func (l launch) overlays(r *Runtime) (files []string, carried []runtime.Variant)
 		}
 		variants = append(variants, held...)
 		if len(dropped) > 0 {
-			r.log.Warn("sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the update round replaces the pod",
+			r.log.Warn("sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the pod's idle release",
 				"issue", l.spec.Issue, "role", l.spec.Role, "experiment", variant.Experiment, "variant", variant.Name,
 				"dropped", dropped)
 			continue
@@ -924,9 +926,10 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 // carries, beside the two stop-eviction annotations, the configuration the pod is built from
 // (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
 // (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from
-// without rebuilding the launch that built it (drift.go). A microVM pod's labels carry
-// labelSandbox beside its kind's, on the template alone, so the Sandbox and its Secrets carry
-// exactly the labels a gVisor pod's do.
+// without rebuilding the launch that built it (drift.go). It carries the contract of the daemon
+// that makes the pod too (contractAnnotation), which a later daemon reads against its floor
+// (floorDrift). A microVM pod's labels carry labelSandbox beside its kind's, on the template
+// alone, so the Sandbox and its Secrets carry exactly the labels a gVisor pod's do.
 func (r *Runtime) podTemplate(l launch) podTemplate {
 	_, providersMounts := r.providers()
 	runtimeClass, selector, tolerations := r.placement(l)
@@ -963,6 +966,7 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 	annotations := map[string]string{
 		doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
 		podShapeAnnotation: r.podShapes[l.shapeKey()],
+		contractAnnotation: strconv.Itoa(r.contracts.Daemon),
 	}
 	if r.leakCheck.Configured() {
 		annotations[leakCheckerAnnotation] = r.leakCheck.ManifestSHA256

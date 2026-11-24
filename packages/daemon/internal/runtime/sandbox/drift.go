@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -19,25 +20,31 @@ var _ runtime.IssuePodReplacer = (*Runtime)(nil)
 
 // A running issue pod whose configuration has drifted is not replaced where it is found: every
 // role of the issue runs in that one pod, and ending it ends each of their processes mid-turn and
-// deletes the disk they work on, with everything unpushed on it. The daemon opens an update round
-// over such a pod instead. The round asks each role in it to do the steps of its update message
-// (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the pod once
-// every asked role has answered, no turn runs and no claim's activity report holds it
-// (internal/daemon's roundEnd.holding), or at the round's bound (pod_update_grace_minutes)
-// whatever the roles answered and whatever runs, an operator's suspension excepted. PodDrift is
-// what the round is opened on, and ReplacePod what ends the round, or ReplaceIssuePod where no
-// role process is left in the pod to name it through; the round itself, its ask and its sweep
-// are the daemon's (internal/daemon).
+// deletes the disk they work on, with everything unpushed on it. Each reason PodDrift gives has a
+// kind (runtime.DriftKind), declared as one the pod's roles keep working under, which drains, or
+// one they cannot, which breaks. A pod whose drift only drains — its image, its reservation, the
+// operator's volumes and mounts, its disk, its sandbox, a role's overlays, its leak check digest,
+// an owner the daemon newly serves — keeps working on what it was made with, however long, until
+// a release of it builds the next pod from the configuration then. For a kind that breaks the
+// daemon opens an update round over the pod. The round asks each role in it to do the steps of
+// its update message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and
+// replaces the pod once every asked role has answered, no turn runs and no claim's activity
+// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
+// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+// suspension excepted. PodDrift is what the round is opened on, and ReplacePod what ends the
+// round, or ReplaceIssuePod where no role process is left in the pod to name it through; the round
+// itself, its ask and its sweep are the daemon's (internal/daemon).
 //
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
-// roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is
-// what ends the roles already running there. The one exception is the round's own: where the
-// round over the pod is over and no role process runs in it (Options.RoundPodEnds), the launch
-// replaces the pod as that round's replacement, under the round's mark, rather than start a role
-// the round would end a moment later. A pod no round covers has no such round to wait for, so its
-// launch replaces it for every kind of drift, as every launch did before the round existed — save
-// a launch installing a stale-plugin pair, which replaces such a pod for its shape only where the
-// pod was built on another image (podImageDrift).
+// roundCovers): it keeps the pod and starts its role in it, whatever kind the drift is and however
+// old the pod, since a round, or for drift that drains a release, not the launch, is what ends the
+// roles already running there. The one exception is the round's own: where the round over the pod
+// is over and no role process runs in it (Options.RoundPodEnds), the launch replaces the pod as
+// that round's replacement, under the round's mark, rather than start a role the round would end
+// a moment later. A pod no round covers has no such round to wait for, so its launch replaces it
+// for every kind of drift, as every launch did before the round existed — save a launch installing
+// a stale-plugin pair, which replaces such a pod for its shape only where the pod was built on
+// another image (podImageDrift).
 
 // roundCovers is whether an update round can be opened over a pod of kind: the one predicate that
 // says who replaces such a pod when it has drifted, read by both sides of that answer. PodDrift
@@ -45,8 +52,9 @@ var _ runtime.IssuePodReplacer = (*Runtime)(nil)
 // pod it excludes replaces that pod for the facets its roles' addresses carry, for the
 // ServiceAccount it runs as and for the shape its template was built from (relaunch, movedInPod,
 // accountDrift, shapeDrift), where a launch into a pod it covers keeps the pod — for the account
-// and the image as for every other kind of drift — and leaves it to its round, unless that round
-// is over with no role process in the pod, when the launch makes the round's own replacement
+// and the image as for every other kind of drift — and leaves it to a release of it where its
+// drift only drains, or to its round where a kind of it breaks, unless that round is over with no
+// role process in the pod, when the launch makes the round's own replacement
 // (Options.RoundPodEnds). A launch installing a stale-plugin pair reads one key of an excluded
 // pod's shape alone, the image (podImageDrift): it replaces a controller pod built on another
 // image, and keeps a controller pod whose other facets alone drifted — its reservation, an
@@ -104,15 +112,16 @@ type podShapeRecord struct {
 // its encoding (omitempty), which changes no issue pod's, whose class is never empty (New refuses
 // an empty one while an issue pod runs in a microVM). A gVisor pod records none
 // (podShapeRecord.Sandbox), so every gVisor shape encodes byte for byte as it did before the
-// setting existed and the setting's arrival opens no round over a gVisor pod, and the gVisor pods'
-// storage class stays out of every shape as it always was. KeepVolume is written only when it is
-// true, so a shape with keep_volume off, and the controller's, which ignores the setting
-// (keptVolume), encodes byte for byte as it did before that setting existed. A change of the
-// microVM block's storage class, keep_volume or metadata endpoint opens a round over each microVM
-// issue pod and no other, and a change of an issue's sandbox one over that issue's pod, from null
-// to a microVM or back; a change of the block's metadata endpoint or compute class, or of the
-// project's type, has the controller's next launch that installs nothing replace its pod, and a
-// change of the block's storage class or keep_volume alone does not (relaunch, roundCovers).
+// setting existed and the setting's arrival drifts no gVisor pod, and the gVisor pods' storage
+// class stays out of every shape as it always was. KeepVolume is written only when it is true, so
+// a shape with keep_volume off, and the controller's, which ignores the setting (keptVolume),
+// encodes byte for byte as it did before that setting existed. A change of the microVM block's
+// storage class, keep_volume or metadata endpoint drifts each microVM issue pod and no other, and a
+// change of an issue's sandbox drifts that issue's pod, from null to a microVM or back: drift of
+// the sandbox kind, which drains, so each such pod keeps working until a release of it and its
+// next pod takes the new block. A change of the block's metadata endpoint or compute class, or of
+// the project's type, has the controller's next launch that installs nothing replace its pod, and
+// a change of the block's storage class or keep_volume alone does not (relaunch, roundCovers).
 type sandboxShape struct {
 	RuntimeClass string                `json:"runtime_class"`
 	ComputeClass string                `json:"compute_class"`
@@ -229,11 +238,12 @@ func (c SandboxConfig) ofIssueLabel(label string) SandboxType {
 }
 
 // podShapeDrift names what the pod of the Sandbox read as s was built from that the runtime would
-// build a pod from otherwise now (want, podShape), one short phrase per key: `image`, `resources`,
-// `volumes`, `mounts`, `disk` or `sandbox`, with what the pod holds and would be handed now.
-// `sandbox` is where a microVM pod runs (sandboxShape) and null for a gVisor pod, so a pod whose
-// issue moved from one sandbox to the other reads null on one side.
-// Nil means nothing drifted.
+// build a pod from otherwise now (want, podShape), one reason per key, each of the key's own kind:
+// `image`, `resources`, `volumes`, `mounts`, `disk` or `sandbox`, with what the pod holds and
+// would be handed now. `sandbox` is where a microVM pod runs (sandboxShape) and null for a gVisor
+// pod, so a pod whose issue moved from one sandbox to the other reads null on one side. A
+// recorded shape this daemon cannot read is one reason of its own kind
+// (runtime.DriftUnreadableShape). Nil means nothing drifted.
 //
 // It reads the stored Sandbox's template, never the pod: GKE Autopilot rewrites a pod's
 // requirements at admission, so a pod need not match the template it was made from, which is why
@@ -247,7 +257,7 @@ func (c SandboxConfig) ofIssueLabel(label string) SandboxType {
 // Equality is semantic, not textual: a quantity spelled otherwise (1024Mi for 1Gi) is the same
 // reservation and the same disk, and a configuration that encodes differently but means the same
 // is no drift.
-func podShapeDrift(s *sandbox, want string) []string {
+func podShapeDrift(s *sandbox, want string) runtime.DriftReasons {
 	held := s.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]
 	if held == want {
 		return nil
@@ -261,25 +271,25 @@ func podShapeDrift(s *sandbox, want string) []string {
 	}
 	var was podShapeRecord
 	if err := json.Unmarshal([]byte(held), &was); err != nil {
-		return []string{fmt.Sprintf("its recorded shape %q cannot be read: %v", held, err)}
+		return runtime.DriftReasons{{Kind: runtime.DriftUnreadableShape, Text: fmt.Sprintf("its recorded shape %q cannot be read: %v", held, err)}}
 	}
-	var drifted []string
-	named := func(key string, inPod, handed any) {
+	var drifted runtime.DriftReasons
+	named := func(kind runtime.DriftKind, inPod, handed any) {
 		if equality.Semantic.DeepEqual(inPod, handed) {
 			return
 		}
-		drifted = append(drifted, key+" "+shapeValue(inPod)+", now "+shapeValue(handed))
+		drifted = append(drifted, runtime.DriftReason{Kind: kind, Text: string(kind) + " " + shapeValue(inPod) + ", now " + shapeValue(handed)})
 	}
 	if was.Image != now.Image {
-		drifted = append(drifted, "image "+was.Image+", now "+now.Image)
+		drifted = append(drifted, runtime.DriftReason{Kind: runtime.DriftImage, Text: "image " + was.Image + ", now " + now.Image})
 	}
-	named("resources", was.Resources, now.Resources)
-	named("volumes", was.Volumes, now.Volumes)
-	named("mounts", was.Mounts, now.Mounts)
+	named(runtime.DriftResources, was.Resources, now.Resources)
+	named(runtime.DriftVolumes, was.Volumes, now.Volumes)
+	named(runtime.DriftMounts, was.Mounts, now.Mounts)
 	if !sameQuantity(was.Disk, now.Disk) {
-		drifted = append(drifted, "disk "+was.Disk+", now "+now.Disk)
+		drifted = append(drifted, runtime.DriftReason{Kind: runtime.DriftDisk, Text: "disk " + was.Disk + ", now " + now.Disk})
 	}
-	named("sandbox", was.Sandbox, now.Sandbox)
+	named(runtime.DriftSandbox, was.Sandbox, now.Sandbox)
 	return drifted
 }
 
@@ -308,11 +318,11 @@ func sameQuantity(held, want string) bool {
 
 // templateImageDrift is how a Sandbox written before this release is compared: the first container
 // of its stored template — an init container or the pod's own — running an image other than the
-// one this runtime launches every container with, as one reason. A pod is built whole from one
-// image, so one container's drift is the pod's.
-func templateImageDrift(s *sandbox, image string) []string {
+// one this runtime launches every container with, as one reason of the image's kind. A pod is
+// built whole from one image, so one container's drift is the pod's.
+func templateImageDrift(s *sandbox, image string) runtime.DriftReasons {
 	if other, drifted := imageOtherThan(&s.Spec.PodTemplate.Spec, image); drifted {
-		return []string{"image " + other + ", now " + image}
+		return runtime.DriftReasons{{Kind: runtime.DriftImage, Text: "image " + other + ", now " + image}}
 	}
 	return nil
 }
@@ -328,7 +338,7 @@ func templateImageDrift(s *sandbox, image string) []string {
 // shape has moved, or about which kind's shape, in which sandbox, it is compared with. A launch
 // installing a stale-plugin pair into such a pod reads the image key of that same shape alone
 // (podImageDrift).
-func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
+func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) runtime.DriftReasons {
 	return podShapeDrift(s, r.podShapes[key])
 }
 
@@ -371,18 +381,20 @@ func podImageDrift(s *sandbox, want string) bool {
 }
 
 // PodDrift satisfies runtime.Runtime: why the pod k's process runs in no longer matches the
-// configuration a pod created now is built from, each reason a phrase an operator reads in a task
-// and in a log line, nil when nothing drifted.
+// configuration a pod created now is built from, each reason with its kind (runtime.DriftKind)
+// and a phrase an operator reads in a task and in a log line, nil when nothing drifted.
 //
-// It is the configuration a running pod cannot be changed to carry: what its template was built
-// from (podShapeDrift — the image, the kind's reservation, the operator's volumes and mounts, the
-// disk, and the sandbox its issue's pod runs in — and leakCheckDrift, the leak check digest its
-// install is held to), the ServiceAccount the pod runs as
-// (accountDrift), and what driftedInPod reads of the pod itself whose worker can be asked to push
-// first — the operator's volume and mount holding its role's overlays, the secrets broker's
-// enrollment, the session store, and the GitHub owners its
-// gh volume projects a directory for. The two facets whose worker cannot be
-// reached at all stay a launch's business and are never a round's (movedInPod).
+// It is the configuration a running pod cannot be changed to carry, read from four sources: what
+// its template was built from (shapeDrift — the image, the kind's reservation, the operator's
+// volumes and mounts, the disk, and the sandbox its issue's pod runs in), the leak check digest
+// its install is held to (leakCheckDrift), the ServiceAccount the pod runs as (accountDrift), and
+// what driftedInPod reads of the pod itself — the operator's volume and mount holding its role's
+// overlays, the secrets broker's enrollment, the exchange identity, the session store, and the
+// GitHub owners its gh volume projects a directory for. Beside them is the contract of the daemon
+// that made the pod, read against the floor (floorDrift). The daemon opens an update round over
+// the pod only for a kind that breaks (runtime.DriftReasons.Breaks); a pod whose drift only
+// drains keeps working until a release of it. The two facets whose worker cannot be reached at
+// all stay a launch's business and are never a round's (movedInPod).
 //
 // It answers nothing for a claim with no process — such a claim records no pod, so no pod of it
 // is gone — and nothing for a pod no round covers (roundCovers), today the project controller's:
@@ -408,12 +420,11 @@ func podImageDrift(s *sandbox, want string) bool {
 //
 // The sweep asks this of every claim of the deployment at every tick, so the steady state — a
 // Sandbox running and a pod built from the configuration the runtime still has — costs one read
-// of the operating mode, one of the issue the Sandbox is labelled with and one of the annotation
+// of the operating mode, one of the issue the Sandbox is labelled with and one of the annotations
 // the stored template records, against the shape the runtime holds for an issue pod in that
 // issue's sandbox (r.podShapes, storedShapeKey), all strings of the object this call already
-// holds. The Sandbox itself is decoded only where the two shapes differ, which is the pod a round
-// is about to be opened over.
-func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
+// holds. The Sandbox itself is decoded only where the two shapes differ.
+func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) (runtime.DriftReasons, error) {
 	if err := k.Validate(); err != nil {
 		return nil, fmt.Errorf("sandbox runtime: pod drift: %w", err)
 	}
@@ -424,62 +435,125 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		return nil, err
 	}
 	role, _ := k.Locator.Claim.Role()
-	kind := podKindFor(role)
-	if !roundCovers(kind) {
+	if !roundCovers(podKindFor(role)) {
 		return nil, nil
 	}
-	name := k.Locator.Sandbox.Name
+	return r.drift(k.Locator.Sandbox.Name, k.Locator.Sandbox.PodUID, []claim.Role{role}, string(k.Claim))
+}
+
+// IssuePodDrift satisfies runtime.IssuePodDriftReader: PodDrift's reading of the pod podUID of
+// issue's Sandbox, asked by the issue alone, with the facets of each of roles that are a role's
+// own. It answers runtime.ErrPodGone as PodDrift does, and an error for an issue key no Sandbox
+// name can be built from.
+func (r *Runtime) IssuePodDrift(_ context.Context, issue, podUID string, roles []claim.Role) (runtime.DriftReasons, error) {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox runtime: pod drift of %s: %w", issue, err)
+	}
+	return r.drift(name, podUID, roles, issue)
+}
+
+// drift is PodDrift's reading of the issue pod podUID of the Sandbox named name, the facets that
+// are a role's own read for each of roles, each reason once. of names what the caller reads it
+// for, a claim or an issue, in an error.
+func (r *Runtime) drift(name, podUID string, roles []claim.Role, of string) (runtime.DriftReasons, error) {
 	u, err := r.storedObject(name)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, err)
+		return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", of, err)
 	}
 	if u == nil {
-		return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, runtime.ErrPodGone)
+		return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", of, runtime.ErrPodGone)
 	}
 	pod := r.storedPod(name)
-	if !ownedBy(pod, u.GetUID()) || string(pod.UID) != k.Locator.Sandbox.PodUID {
-		return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, runtime.ErrPodGone)
+	if !ownedBy(pod, u.GetUID()) || string(pod.UID) != podUID {
+		return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", of, runtime.ErrPodGone)
 	}
 	if mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode"); mode == modeSuspended {
 		round, _, _ := unstructured.NestedString(u.Object, "metadata", "annotations", roundDisplacedAnnotation)
-		if round != k.Locator.Sandbox.PodUID {
-			return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, runtime.ErrPodGone)
+		if round != podUID {
+			return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", of, runtime.ErrPodGone)
 		}
 		// This round's own replacement, between its suspension and the pod's end: the pod is
 		// there, and what it was built from is what the replacement is about to build again.
 		return nil, nil
 	}
-	var drifted []string
+	var drifted runtime.DriftReasons
 	shape := r.storedShapeKey(u)
-	if held, _, _ := unstructured.NestedString(u.Object, "spec", "podTemplate", "metadata", "annotations", podShapeAnnotation); held != r.podShapes[shape] {
-		// Only a template whose recorded shape differs is decoded, which is the pod a round is
-		// about to be opened over; shapeDrift reads that same recorded shape against that same
-		// key's and answers nothing where the two are equal, so the skipped decode hides no reason.
+	annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
+	if annotations[podShapeAnnotation] != r.podShapes[shape] {
+		// Only a template whose recorded shape differs is decoded; shapeDrift reads that same
+		// recorded shape against that same key's and answers nothing where the two are equal, so
+		// the skipped decode hides no reason.
 		s, err := decodeSandbox(u)
 		if err != nil {
-			return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, err)
+			return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", of, err)
 		}
 		drifted = r.shapeDrift(s, shape)
 	}
 	// The leak check digest the pod records, read from the same stored template's annotations and,
 	// where the template records none, from the Sandbox's record of the check this daemon pushed
-	// into this very pod (recordedLeakChecker, leakCheckDrift): a pod that records another digest
-	// than the setting's is replaced by its round, and its workers are told the digest it records
-	// while they push.
-	annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
+	// into this very pod (recordedLeakChecker, leakCheckDrift). Such a pod keeps working: its
+	// roles are told the digest it records while they push (keptPod.checker).
 	drifted = append(drifted, r.leakCheckDrift(recordedLeakChecker(annotations, u.GetAnnotations(), string(pod.UID)))...)
 	// The account the pod runs as is read from the live pod this call already holds, and both
 	// sides go through serviceAccountOr, so a configured account left unset matches a pod on
 	// `default` rather than reading every pod of the deployment as drifted (accountDrift). The
-	// kind gate above (!roundCovers) is what keeps the controller's pod out of this reason, as
-	// it does of every other.
+	// kind gate in PodDrift (!roundCovers) is what keeps the controller's pod out of this reason,
+	// as it does of every other.
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
-		drifted = append(drifted, "account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
+		drifted = append(drifted, runtime.DriftReason{Kind: runtime.DriftAccount, Text: "account " + account + ", now " + serviceAccountOr(r.pod.ServiceAccount)})
 	}
-	for _, moved := range r.driftedInPod(pod, role) {
-		drifted = append(drifted, moved.String())
+	for _, role := range roles {
+		for _, facet := range r.driftedFacets(pod, role) {
+			if reason := (runtime.DriftReason{Kind: facet.kind, Text: facet.moved.String()}); !slices.Contains(drifted, reason) {
+				drifted = append(drifted, reason)
+			}
+		}
+	}
+	if reason, below := r.floorDrift(annotations); below {
+		drifted = append(drifted, reason)
 	}
 	return drifted, nil
+}
+
+// contractAnnotation records on a pod template's metadata the daemon API contract of the daemon
+// that made the pod (Contracts.Daemon, api.DaemonAPIVersion). It is written where the template is
+// built (podTemplate), so every pod this release makes carries it, and read against the floor
+// (floorDrift). A template that carries none was made by a daemon before the record existed.
+const contractAnnotation = "legion.dev/daemon-api-version"
+
+// Contracts is what a pod's record of its maker is read against (floorDrift). Daemon is the
+// contract this daemon speaks (api.DaemonAPIVersion), which each pod it makes records
+// (contractAnnotation). Floor is the oldest contract whose pods it can still run roles in
+// (api.DaemonAPIFloor). FirstFloor is the contract a pod that records none counts as made at
+// (api.DaemonAPIFirstFloor): it stands for every daemon before the record existed.
+type Contracts struct{ Daemon, Floor, FirstFloor int }
+
+// floorDrift is the floor's reason for a pod whose template's annotations are annotations, and
+// whether the pod was made below the floor. A pod that records no contract counts as made at the
+// first floor, so the move onto the release that began the record replaces no pod, and a later
+// floor above the first replaces such a pod. A pod recorded above this daemon's own contract,
+// after a pin moved back, is above the floor and gets no reason: a newer daemon's pod is no pod
+// this one has declared it cannot serve. A record this daemon cannot read as a number is read as
+// below the floor, since nothing shows the pod's maker is one this daemon can serve.
+func (r *Runtime) floorDrift(annotations map[string]string) (runtime.DriftReason, bool) {
+	floor := r.contracts.Floor
+	raw, recorded := annotations[contractAnnotation]
+	if !recorded {
+		if r.contracts.FirstFloor >= floor {
+			return runtime.DriftReason{}, false
+		}
+		return runtime.DriftReason{Kind: runtime.DriftFloor, Text: fmt.Sprintf("contract (no record, read as the first floor %d), below the floor %d",
+			r.contracts.FirstFloor, floor)}, true
+	}
+	made, err := strconv.Atoi(raw)
+	if err != nil {
+		return runtime.DriftReason{Kind: runtime.DriftFloor, Text: fmt.Sprintf("contract %q (cannot be read), below the floor %d", raw, floor)}, true
+	}
+	if made >= floor {
+		return runtime.DriftReason{}, false
+	}
+	return runtime.DriftReason{Kind: runtime.DriftFloor, Text: fmt.Sprintf("contract %d, below the floor %d", made, floor)}, true
 }
 
 // ReplacePod satisfies runtime.Runtime: it ends the pod k's process runs in, once its update round

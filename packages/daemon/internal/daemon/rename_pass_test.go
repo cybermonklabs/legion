@@ -560,7 +560,7 @@ type presenceRuntime struct {
 	unread map[string]bool
 }
 
-func (r presenceRuntime) IssuePodRunsConfiguredImage(string) bool { return true }
+func (r presenceRuntime) IssuePodImage(string) runtime.PodImage { return runtime.PodImageConfigured }
 
 func (r presenceRuntime) IssueSandbox(string) (string, bool) { return "", false }
 
@@ -700,7 +700,7 @@ func (r *closingRuntime) SuspendIssue(ctx context.Context, _, _ string, authoriz
 	return err
 }
 
-func (r *closingRuntime) IssuePodRunsConfiguredImage(string) bool { return true }
+func (r *closingRuntime) IssuePodImage(string) runtime.PodImage { return runtime.PodImageConfigured }
 
 func (r *closingRuntime) IssueSandbox(issue string) (string, bool) {
 	return "sandbox-of-" + issue, true

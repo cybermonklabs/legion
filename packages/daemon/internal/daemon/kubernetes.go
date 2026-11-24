@@ -408,6 +408,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		MemoryGuard:           launcherMemoryGuard(k.MemoryGuard.IssuePods),
 		ControllerMemoryGuard: launcherMemoryGuard(k.MemoryGuard.ControllerPod),
 		LeakCheckSetting:      cfg.LeakCheck,
+		Contracts:             sandboxContracts(),
 		BootTimeout:           cfg.WorkerBootTimeout,
 		RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
 		BusyBackoff:           busyBackoffFirst,
@@ -421,6 +422,13 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	}
 	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
+}
+
+// sandboxContracts is what the Sandbox runtime reads a pod's record of its maker against: this
+// daemon's contract, which each pod it makes records, and the floor and first floor of
+// internal/api's version.go (dispatch://INFRA-4754 R5).
+func sandboxContracts() sandbox.Contracts {
+	return sandbox.Contracts{Daemon: api.DaemonAPIVersion, Floor: api.DaemonAPIFloor, FirstFloor: api.DaemonAPIFirstFloor}
 }
 
 // launcherMemoryGuard is one pod kind's settled memory guard as its launchers are handed it on the

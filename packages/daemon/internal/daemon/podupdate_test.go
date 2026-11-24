@@ -15,6 +15,7 @@ package daemon
 // a message the sweep writes is a real row of the real table.
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -57,13 +58,18 @@ const (
 	// phase worker's last recorded step may be in the past before the silence sweep reads that
 	// worker as one nothing will prompt (config.Config.WorkerSilence). It is the shipped default.
 	podUpdateSilence = 30 * time.Minute
-	// podUpdateDrift is the drift the fake runtime reports for the issue's pod.
-	podUpdateDrift = "image"
+	// podUpdateDrift is the drift the fake runtime reports for the issue's pod: the ServiceAccount
+	// moved, a kind that breaks a pod, so it opens a round at once (breaking). A pod whose drift
+	// only drains opens no round at all (TestADrainingDriftOpensNoRound), so every test of what a
+	// round does scripts a drift that breaks.
+	podUpdateDrift = "account default, now legion-worker"
 	// podUpdateKeptDrift is a drift of the kind a launch keeps the pod for and starts its role
 	// degraded in: the operator's volume holding that role's overlay moved, so a pod built before
 	// the move cannot carry the file the role's Oh My Pi would be told to read. The launch starts
 	// the role as the pod was built instead (the Sandbox runtime's relaunch), so the role runs
-	// without that overlay until this round replaces its pod — and can still push and answer.
+	// without that overlay — and can still push and answer. The overlays drain, so alone they open
+	// no round; a test scripts this text as a reason of a kind that breaks (drifts), so the round it
+	// opens is one that replaces the pod.
 	podUpdateKeptDrift = "role_config_files.architect /etc/legion-operator-extra/fallback.yml (unset), now volume operator-roles from ConfigMap legion-operator-roles items []"
 	// podUpdateReplacementPod is the pod the issue's roles come back in once something replaced
 	// the pod a round was open over: a different uid, which is the one evidence that the pod went.
@@ -313,6 +319,20 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 			rig.reportsNothingRunning(role.role)
 		}
 	}
+	// A round seeded on a claim was opened by an earlier daemon over drift that breaks the pod,
+	// and the pod still has it: the runtime answers that drift for the claim's pod and for the
+	// issue's pod read by the issue alone. A round found open at the boot over drift that only
+	// drains ends with no replacement at its first reading (endRoundOverDrainingDrift), so a test
+	// of what such a round does once it goes on starts from drift that breaks; a test of that end
+	// scripts drift that drains over this (driftsBy, ScriptIssuePodDrift).
+	for _, role := range roles {
+		if role.round == "" {
+			continue
+		}
+		seeded := breaking(cmp.Or(role.reasons, podUpdateDrift))
+		rt.ScriptPodDrift(tokens[role.role], seeded...)
+		rt.ScriptIssuePodDrift(podUpdateIssue, seeded...)
+	}
 	return rig
 }
 
@@ -345,12 +365,40 @@ func podUpdateLocator(token claim.Token, issue, pod string) *runtime.Locator {
 }
 
 // drifts scripts the runtime to report reasons for every claim of the issue that records a
-// process, which is what a pod built from a configuration the runtime has moved past answers.
-func (r *podUpdateRig) drifts(reasons ...string) {
+// process, which is what a pod built from a configuration the runtime has moved past answers. Each
+// text is a reason of a kind that breaks (breaking), so the round opens; driftsBy scripts reasons
+// of any kind.
+func (r *podUpdateRig) drifts(texts ...string) {
+	r.t.Helper()
+	r.driftsBy(breaking(texts...)...)
+}
+
+// driftsBy is drifts with each reason's own kind.
+func (r *podUpdateRig) driftsBy(reasons ...runtime.DriftReason) {
 	r.t.Helper()
 	for _, token := range r.tokens {
 		r.rt.ScriptPodDrift(token, reasons...)
 	}
+}
+
+// breaking is each of texts as a reason of a kind that breaks a pod, the ServiceAccount's, which
+// opens a round at once: the drift every test of what a round does is scripted with. No texts is
+// no drift.
+func breaking(texts ...string) []runtime.DriftReason {
+	if len(texts) == 0 {
+		return nil
+	}
+	reasons := make([]runtime.DriftReason, len(texts))
+	for i, text := range texts {
+		reasons[i] = runtime.DriftReason{Kind: runtime.DriftAccount, Text: text}
+	}
+	return reasons
+}
+
+// recorded is the reasons a round records for texts scripted through drifts (breaking): each one
+// a reason of a kind that breaks, so each starts with the marker runtime.BreakingDrift.
+func recorded(texts ...string) string {
+	return runtime.DriftReasons(breaking(texts...)).String()
 }
 
 // tick is one orphan sweep: the claims as the store holds them now, put to the sweep.
@@ -750,8 +798,8 @@ func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing
 
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		c := rig.awaitRound(role, podUpdateRound)
-		if c.UpdateReasons != podUpdateDrift {
-			t.Errorf("%s UpdateReasons = %q, want %q", role, c.UpdateReasons, podUpdateDrift)
+		if want := recorded(podUpdateDrift); c.UpdateReasons != want {
+			t.Errorf("%s UpdateReasons = %q, want %q", role, c.UpdateReasons, want)
 		}
 		if c.Pending != nil {
 			t.Errorf("%s pending = %+v, want no task: the round's ask is a message on the role's topic", role, c.Pending)
@@ -869,8 +917,8 @@ func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing
 	rig.tick()
 
 	degraded := rig.awaitRound(claim.RoleArchitect, podUpdateRound)
-	if degraded.UpdateReasons != podUpdateKeptDrift {
-		t.Errorf("the degraded architect was asked for %q, want the drift its pod was kept for %q", degraded.UpdateReasons, podUpdateKeptDrift)
+	if want := recorded(podUpdateKeptDrift); degraded.UpdateReasons != want {
+		t.Errorf("the degraded architect was asked for %q, want the drift its pod was kept for %q", degraded.UpdateReasons, want)
 	}
 
 	rig.signal(claim.RoleImplementer, "a1b2c3d")
@@ -971,7 +1019,7 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 	if notice.Update.Round != podUpdateRound || notice.Update.Pod != podUpdatePod {
 		t.Errorf("the notice names round %q of pod %q, want %q of %q", notice.Update.Round, notice.Update.Pod, podUpdateRound, podUpdatePod)
 	}
-	if want := podUpdateDrift + ", disk"; notice.Update.Reasons != want {
+	if want := recorded(podUpdateDrift, "disk"); notice.Update.Reasons != want {
 		t.Errorf("the notice names reasons %q, want %q", notice.Update.Reasons, want)
 	}
 	if !strings.Contains(notice.Reason, "An operator suspended") || !strings.Contains(notice.Reason, string(claim.RoleImplementer)) {
@@ -1102,9 +1150,9 @@ func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 	rig.tick()
 	for _, role := range roles {
 		asked := rig.awaitRound(role, podUpdateRound)
-		if asked.UpdateReasons != podUpdateAccountDrift {
+		if want := recorded(podUpdateAccountDrift); asked.UpdateReasons != want {
 			t.Errorf("%s UpdateReasons = %q, want the account reason %q and nothing else",
-				role, asked.UpdateReasons, podUpdateAccountDrift)
+				role, asked.UpdateReasons, want)
 		}
 		rig.signal(role, "")
 		rig.awaitClaim(role, "its answer to the round the account opened", func(c supervise.Claim) bool {
@@ -1203,7 +1251,7 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 	t.Parallel()
 	const opened = "The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (" + podUpdateRound + "). " +
-		"The reasons were: " + podUpdateDrift + ". The pod went before the round was over.\n\n"
+		"The reasons were: " + runtime.BreakingDrift + podUpdateDrift + ". The pod went before the round was over.\n\n"
 	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed."
 	const lost = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
 		"The pod's disk went with the pod. Work that these roles did not push is lost." + restarted
@@ -1578,7 +1626,7 @@ type podGoneAfterTheDriftRead struct {
 	reads atomic.Int64
 }
 
-func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) ([]string, error) {
+func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) (runtime.DriftReasons, error) {
 	if r.reads.Add(1) == 1 {
 		return r.Runtime.PodDrift(ctx, k)
 	}
@@ -1727,6 +1775,18 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	}
 	if _, err := sup.restore(r.ctx, stored); err != nil {
 		r.t.Fatalf("restore the stored claims: %v", err)
+	}
+	// A round still open at the restart was opened over drift that breaks the pod, which the pod
+	// still has, as the first daemon's rig scripts it (newPodUpdateRigWith): the new runtime answers
+	// it for the claim's pod and for the issue's pod read by the issue alone, until a test scripts
+	// other drift over it.
+	for _, c := range stored {
+		if c.UpdateRound == "" || c.Issue != podUpdateIssue {
+			continue
+		}
+		seeded := breaking(cmp.Or(c.UpdateReasons, podUpdateDrift))
+		rt.ScriptPodDrift(c.Token, seeded...)
+		rt.ScriptIssuePodDrift(podUpdateIssue, seeded...)
 	}
 	workers := map[claim.Role]*fake.Conn{}
 	for role, token := range r.tokens {
@@ -2065,7 +2125,7 @@ func TestPodUpdateNoticeKeepsTheReasonsWhole(t *testing.T) {
 	if err := json.Unmarshal(rows[0].Payload, &payload); err != nil {
 		t.Fatalf("decode the notice: %v", err)
 	}
-	if got, want := string(payload.Update.Reasons), strconv.Quote(podUpdateTwoReasons); got != want {
+	if got, want := string(payload.Update.Reasons), strconv.Quote(recorded(podUpdateTwoReasons)); got != want {
 		t.Fatalf("the notice carries reasons %s, want the one string the round records, %s", got, want)
 	}
 }
@@ -3070,7 +3130,9 @@ func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 }
 
 // The control of the rounds above: a round over the pod its claims still record is carried on,
-// drift or no drift, until it replaces that pod. A worker of it has not answered, so nothing is
+// drift or no drift, until it replaces that pod, once the daemon's first reading since its boot
+// found drift that breaks the pod (a round found over drift that only drains at that reading ends:
+// TestARoundOpenAtBootOverDrainingDriftEnds). A worker of it has not answered, so nothing is
 // replaced, nothing ends, nothing is written on the issue, and nothing asks the runtime about the
 // issue's Sandbox, which only a round no claim records a pod for asks.
 func TestPodUpdateKeepsARoundOverTheRecordedPod(t *testing.T) {
@@ -3087,6 +3149,9 @@ func TestPodUpdateKeepsARoundOverTheRecordedPod(t *testing.T) {
 				podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
 					contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift},
 			)
+			// The boot's first reading finds the drift the round was opened over.
+			rig.tick()
+			rig.settleAll()
 			rig.drifts(drift...)
 
 			for range 3 {

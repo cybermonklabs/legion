@@ -445,6 +445,11 @@ type Options struct {
 	// Setting is a deployment that runs none: the runtime pushes nothing to a launcher whatever
 	// tag its hello names, tells its roles neither variable, and so starts each role without one.
 	LeakCheckSetting leakguard.Setting
+	// Contracts are the daemon API contracts a pod's record of its maker is read against: the
+	// daemon's own, which each pod it makes records, and the floor below which a pod's drift
+	// carries the floor kind (Contracts, floorDrift). checkSupervision refuses a runtime without
+	// them.
+	Contracts Contracts
 	// VolumeReported takes one sweep of an issue pod's volume as that pod's launcher reported it
 	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's
 	// architect its volume is filling. A runtime given none reads the frame, logs a warning naming

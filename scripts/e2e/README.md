@@ -2106,8 +2106,8 @@ Each item below names a check, then what it does and what it requires.
 
   an update round over a live issue pod (INFRA-484), on an issue of its own, `S4A-<n>` with `<n>` the FNV-1a hash of the run's project and this checkpoint's name, whose architect and implementer run in that issue's one pod.
   `PodDrift` of the pod their launch just made names nothing, for both of them.
-  The operator then patches that Sandbox's pod template (`kubectl patch sandbox <name> --type=json`), replacing the configuration it records its pod was built from (`legion.dev/pod-shape`) with the same shape at a disk a gibibyte larger
-  — what no running pod can be changed to carry — and `PodDrift` then names `disk <recorded>, now <configured>` and nothing else, for both workers: the reason the round is opened on.
+  The harness then patches that Sandbox's pod template (`kubectl patch sandbox <name> --type=json`), recording a daemon below the floor as its pod's maker (`legion.dev/daemon-api-version: "1"`)
+  — drift of a kind that breaks the pod, which no running pod can be changed to carry, where a move of the operator's configuration (the disk, the image, a volume) drains and opens no round — and `PodDrift` then names `contract 1, below the floor <floor>` and nothing else, for both workers: the reason the round is opened on.
   Both are tasked, and while only the architect has answered the pod is not replaced:
   over a settle window nothing in it is observed ending, the pod keeps its uid and stays Running, its Sandbox stays `Running`, and both processes probe `Alive`.
   Each worker answers as its own agent in the pod, never as the harness:
@@ -2119,9 +2119,9 @@ Each item below names a check, then what it does and what it requires.
 
 - `pod-update-fleet`
 
-  one pod-template change drifting every pod of two issues at once (INFRA-419), each issue on a run key of its own (`S4A-<n>`, the FNV-1a hash of the run's project and that checkpoint's name) with an architect and a worker in its own pod.
-  Both Sandboxes record the one configuration this runtime builds an issue pod from, and `PodDrift` of both pods names nothing before the change.
-  The operator then patches that one moved shape onto both Sandboxes (`legion.dev/pod-shape` at a disk a gibibyte larger, `kubectl patch sandbox <name> --type=json` for each), and `PodDrift` then names `disk <recorded>, now <configured>` and nothing else for all four workers: one change, every pod.
+  one floor reaching every pod made below it, two issues at once (INFRA-419), each issue on a run key of its own (`S4A-<n>`, the FNV-1a hash of the run's project and that checkpoint's name) with an architect and a worker in its own pod.
+  `PodDrift` of both pods names nothing before the change.
+  The harness then records a daemon below the floor as the maker of both pods (`legion.dev/daemon-api-version: "1"`, `kubectl patch sandbox <name> --type=json` for each), and `PodDrift` then names `contract 1, below the floor <floor>` and nothing else for all four workers: one floor, every pod.
   Each issue's pod is still a round of its own.
   The second issue's two workers answer — each as its own agent in its pod, committing and pushing its work to its own issue's branch through the clone's own `legion git-credential` helper and reporting that branch's head
   — and `ReplacePod` ends that issue's round: its two processes are observed at their recorded locators as `Gone` or `NotRecordedProcess` with `Displaced` set and resume from the session table into its one new pod, which reads no drift.

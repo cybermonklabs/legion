@@ -555,12 +555,12 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 			old := g.sandbox(name).UID
 			r2 := restartedOver(t, g, loc, tc.now)
 			if drifted := driftOf(t, g, r2, loc); len(drifted) == 0 {
-				t.Fatal("PodDrift of the issue pod is empty, so this case proves nothing: its round is what ends it")
+				t.Fatal("PodDrift of the issue pod is empty, so this case proves nothing: the pod keeps working on its own disk until a release ends it")
 			}
 			g.clearActions()
 			next := resumeTester(t, g, r2, loc)
 			if next.Sandbox.PodUID != loc.Sandbox.PodUID {
-				t.Fatalf("the launch replaced the live pod %s with %s, want it kept for its update round", loc.Sandbox.PodUID, next.Sandbox.PodUID)
+				t.Fatalf("the launch replaced the live pod %s with %s, want it kept", loc.Sandbox.PodUID, next.Sandbox.PodUID)
 			}
 			if made := sandboxRemakes(g, name); len(made) > 0 {
 				t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept with its live pod", made)

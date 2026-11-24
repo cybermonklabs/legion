@@ -54,6 +54,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -975,6 +976,7 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		GitHubCredential:      r.tokens.Credential,
 		ControllerCredential:  r.tokens.ControllerCredential,
 		GitHubDirs:            r.tokens.ProjectDirs,
+		Contracts:             Contracts{Daemon: api.DaemonAPIVersion, Floor: api.DaemonAPIFloor, FirstFloor: api.DaemonAPIFirstFloor},
 		Conns:                 ln,
 		Log:                   r.log,
 		SessionStore:          r.sessionStore,

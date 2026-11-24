@@ -712,10 +712,10 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // of those claims for its contract: the stale-plugin lane posts them nothing and their stale
 // registrations are accepted and charged nothing (internal/daemon's refreshStalePlugins,
 // supervise's staleRegistration), so this refusal's own sentence would be false of them and no
-// sweep would ever make it true. Only a new image moves such a worker's plugin, and the update
-// round over its pod is what brings one — a round that opens on pod-shape drift alone, so a
-// release that changes no image opens none, and a refusal here would hold the worker's grants,
-// its handoff_complete and its ready for the rest of the deployment's life. The round term is
+// sweep would ever make it true. Only a new image moves such a worker's plugin, and the pod the
+// issue gets after its idle release is what brings one: a pod on an older image opens no update
+// round and keeps working (dispatch://INFRA-4754), so a refusal here would hold the worker's
+// grants, its handoff_complete and its ready for as long as its pod runs. The round term is
 // there for the same reason read the other way: the round's whole point is that the worker
 // pushes its work before its process is replaced, and it cannot push without the daemon it
 // already speaks to, so while the round is open the daemon serves the claim on its previous

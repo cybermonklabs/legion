@@ -1,0 +1,22 @@
+kind: Changed
+body: |-
+    An issue pod whose drift its roles keep working under now keeps working, however old, until its
+    idle release, and the next pod takes the configured image and settings. No update round opens
+    for a changed image, reservation, operator volume or mount, disk, sandbox, role overlay, leak
+    check digest or newly served GitHub owner. A round opens at once, as before, for a changed
+    ServiceAccount, enrollment, exchange identity or session store, a gh layout from before
+    contract 152, a pod-shape record the daemon cannot read, or a pod made below the contract
+    floor. Each pod now records the contract of the daemon that made it
+    (`legion.dev/daemon-api-version` on its Sandbox's pod template), and `version.go` holds the
+    floor, `DaemonAPIFloor`, and the first floor, `DaemonAPIFirstFloor`; a pod with no record
+    counts as made at the first floor. Each round records the reason of each kind that breaks
+    starting with `[breaks the pod] ` (`runtime.BreakingDrift`), and no draining reason carries it.
+    A round that an older daemon left open over drift that only drains ends at the first sweep
+    after the boot with no replacement, and each role gets the task the round held; one over drift
+    that breaks goes on, and its reasons are written again with the marker. The idle release now
+    releases a pod on another image and a pod with a claim on
+    another plugin contract, Oh My Pi or Claude Code; it holds only a pod whose image it cannot read
+    (`image`), and the hold `plugin_contract` is gone.
+time: 2026-11-24T01:20:48Z
+custom:
+    Issue: INFRA-4754

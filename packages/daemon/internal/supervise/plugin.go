@@ -432,10 +432,10 @@ func (m *Machine) refreshOverturned() bool {
 // unreachable by an install as one below it, and the next bump would walk exactly that claim to
 // failed — so the rule is the install alone.
 //
-// What replaces such a claim's plugin is a new image, which the update round over its pod is
-// opened for: it is asked like every other worker, answers with the op or not at all, and the
-// round's replacement brings the image, at the latest at the round's bound (internal/daemon's
-// refreshStalePlugins, which posts no relaunch for it either).
+// What replaces such a claim's plugin is a new image, which the pod its issue gets after its idle
+// release carries: a pod on an older image opens no update round and keeps working, so the claim is
+// served on the contract it speaks until then (internal/daemon's refreshStalePlugins, which posts
+// no relaunch for it either, and api's staleClaim).
 //
 // A registration that arrives while a launch the pacing holds waits over the process it comes
 // from relaunches nothing and is charged nothing. PluginRelaunchFor is written where the
@@ -470,7 +470,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 		return m.endCurrentPluginRound(ctx)
 	}
 	if m.deps.NoPluginInstall != nil && m.deps.NoPluginInstall(m.claim) {
-		m.log.Warn("supervise: this claim's launch installs no plugin, so no relaunch can move its contract; the registration stands and the update round over its pod brings the new image",
+		m.log.Warn("supervise: this claim's launch installs no plugin, so no relaunch can move its contract; the registration stands, and the pod its issue gets after its idle release brings the new image",
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract)
 		return nil
 	}

@@ -101,7 +101,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	rows := map[claim.Role]int{}
 	for _, ask := range rig.asks() {
 		rows[ask.Role]++
-		text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))
+		text := supervise.UpdateTask(ask.Role, podUpdateRound, recorded(podUpdateDrift), podUpdateStart.Add(podUpdateGrace))
 		if ask.Round != podUpdateRound || ask.Pod != podUpdatePod || ask.Text != text {
 			t.Errorf("the ask to the %s = %+v, want round %s of pod %s with the round's text:\n%s", ask.Role, ask, podUpdateRound, podUpdatePod, text)
 		}
@@ -213,9 +213,9 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 	}
 	for _, role := range roles {
 		rig.settle(role)
-		if c := rig.claimOf(role); c.UpdateRound != podUpdateRound || c.UpdateReasons != podUpdateDrift {
+		if c := rig.claimOf(role); c.UpdateRound != podUpdateRound || c.UpdateReasons != recorded(podUpdateDrift) {
 			t.Errorf("the %s records round %q for %q, want %q: a later sweep writes no new reasons over an open round",
-				role, c.UpdateRound, c.UpdateReasons, podUpdateDrift)
+				role, c.UpdateRound, c.UpdateReasons, recorded(podUpdateDrift))
 		}
 	}
 	asks := rig.asks()
@@ -223,7 +223,7 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 		t.Fatalf("the sweeps enqueued %d asks, want one for each of the %d roles: %+v", len(asks), len(roles), asks)
 	}
 	for _, ask := range asks {
-		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace)); ask.Text != text {
+		if text := supervise.UpdateTask(ask.Role, podUpdateRound, recorded(podUpdateDrift), podUpdateStart.Add(podUpdateGrace)); ask.Text != text {
 			t.Errorf("the ask to the %s says:\n%s\nwant the round's own terms:\n%s", ask.Role, ask.Text, text)
 		}
 	}
@@ -235,8 +235,8 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 	if len(notices) != 1 || notices[0].Update == nil {
 		t.Fatalf("at the bound %s the controller was told %+v, want one update-stalled notice", rig.clock.Now(), notices)
 	}
-	if got := notices[0].Update.Reasons; got != podUpdateDrift {
-		t.Errorf("the late-round notice names reasons %q, want the %q the round opened with", got, podUpdateDrift)
+	if got := notices[0].Update.Reasons; got != recorded(podUpdateDrift) {
+		t.Errorf("the late-round notice names reasons %q, want the %q the round opened with", got, recorded(podUpdateDrift))
 	}
 }
 
@@ -308,7 +308,7 @@ func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T
 		t.Fatalf("restore the spawn of %s: %v", other, err)
 	}
 	rig.conns.Register(token, fake.NewConn())
-	rig.rt.ScriptPodDrift(token, podUpdateDrift)
+	rig.rt.ScriptPodDrift(token, breaking(podUpdateDrift)...)
 	round := supervise.PodRound(otherPod)
 	since := len(rig.logs.String())
 

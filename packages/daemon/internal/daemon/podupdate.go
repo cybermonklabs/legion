@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -20,7 +21,13 @@ import (
 // reconcilePodUpdates carries every update round of this project one step, over the claims the
 // orphan sweep already read this tick. A running issue pod whose configuration has drifted is
 // never replaced where it is found: that ends every role process in it mid-turn and deletes the
-// pod's disk with everything unpushed on it. The daemon opens a round over the pod instead — each
+// pod's disk with everything unpushed on it. A pod whose drift is only of kinds its roles keep
+// working under (runtime.DriftKind's Drains: the image, the reservation, the operator's volumes and
+// mounts, the disk, the sandbox, a role's overlays, the leak check digest, an owner newly served)
+// keeps working, however old, until a release of it (dispatch://INFRA-4754). For a kind that breaks
+// it — the account, the enrollment, the exchange identity, the session store, a gh layout from
+// before contract 152, an unreadable shape record, a contract below the floor — the daemon opens a
+// round over the pod instead — each
 // role the round asks (roundAsks) is asked, on its own Envoy topic, to do the steps of the update
 // message and answer (supervise.UpdateTask holds those steps; openPodUpdate, record.UpdateAsk,
 // api's claims/ready-for-update) — and replaces the pod once each of them has answered
@@ -134,9 +141,11 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 		}
 		return
 	}
+	s.noteBootRounds(claims)
 	sweep := s.beginPodUpdateSweep(now, byIssue)
 	s.forgetWorkspaceReads(byIssue)
 	s.forgetLaunchRounds(byIssue)
+	s.forgetBootRounds(byIssue)
 	var replacements []podReplacement
 	for _, issue := range issues {
 		if ctx.Err() != nil {
@@ -299,10 +308,16 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // opening under the project's limits like any other — and the end is posted to the members of
 // that round alone (endPodUpdates), so a claim already in a round over the new pod stays in it.
 // Then the drift, which is also what says the pod is not there: a round open over a pod the
-// runtime no longer has ends at that reading, and a pod that has drifted from nothing and has no
-// round open over it needs no replacement. A round open over the pod the claims still record goes
-// on, drift or no drift: once opened, a round ends only by replacing its pod, or because that pod
-// is gone. Only then is a complete round acted on, and only then is a round opened or kept open.
+// runtime no longer has ends at that reading, and a pod whose drift is only of kinds its roles keep
+// working under (runtime.DriftReasons.Breaks false), with no round open over it, needs no
+// replacement and keeps working, however old (dispatch://INFRA-4754). A round open over the pod
+// the claims still record goes on, drift or no drift, once this daemon has read that pod's drift
+// since its boot: once opened, such a round ends only by replacing its pod, or because that pod is
+// gone. The one exception is the first reading since the boot of a round the daemon found open,
+// an older daemon's, by claim here or by issue (podlessRound): where that drift only drains, the
+// round ends with no replacement (endRoundOverDrainingDrift), and its pod keeps working. Only then
+// is a complete round acted on, and only then is a round opened, for a kind that breaks, or kept
+// open.
 //
 // The sweep decides the end of a round once (dispatch://INFRA-4109 R6). Every end it makes is
 // posted to the round's members and kept as the issue's ended round (endPodUpdates,
@@ -440,26 +455,50 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		}
 		return nil
 	}
-	if len(reasons) == 0 && open == "" {
-		// A pod that has drifted from nothing, with no round open over it, needs no replacement:
-		// returning here is what keeps the code below from opening a round over it.
+	restated := ""
+	if open != "" && s.bootRoundUnread(open) {
+		// The round's boot mark goes only once this reading's end or restatement is recorded
+		// (takeBootRound below): a launch reads the mark before the sweep's end
+		// (roundPodEndsAtLaunch), so at every moment it sees one or the other.
+		if !reasons.Breaks() {
+			// A round open at the boot, an older daemon's, over a pod whose drift only drains:
+			// the pod's roles keep working under that drift, so the round ends with no
+			// replacement (dispatch://INFRA-4754 R1).
+			s.endRoundOverDrainingDrift(issue, group, open, pod, reasons)
+			s.takeBootRound(open)
+			return nil
+		}
+		// A round open at the boot over drift that breaks goes on, and its recorded reasons are
+		// written again from this reading, so the reason of each kind that breaks carries the
+		// marker (runtime.BreakingDrift) that tells the round's replacement the drift breaks the
+		// pod.
+		restated = s.restateRoundReasons(issue, group, open, reasons)
+		s.takeBootRound(open)
+	}
+	if open == "" && !reasons.Breaks() {
+		// A pod that has drifted from nothing, or only in kinds its roles keep working under,
+		// with no round open over it, needs no replacement: it keeps working on its old image and
+		// settings until a release of it (dispatch://INFRA-4754 R1, R4). Returning here is what
+		// keeps the code below from opening a round over it.
 		return nil
 	}
 	if open == "" && clock.held() {
 		s.log.Info("supervise: a project's pause holds this drifted issue's pod; no update round opens over it until the hold ends",
-			"issue", issue, "pod", pod, "reasons", strings.Join(reasons, ", "))
+			"issue", issue, "pod", pod, "kinds", reasons.Kinds(), "reasons", reasons.String())
 		return nil
 	}
-	// The drift this tick read opens a round and decides nothing of a round already open: a
-	// round's terms are fixed at its open (dispatch://INFRA-2981 R9), so what an open round's
-	// notices and its replacement name is its own recorded reasons (roundReasons). That holds
-	// where the drift has gone away too — an operator rolled the release back — and the round
-	// replaces the pod all the same. The round has already asked each role it asks (roundAsks) to
-	// do the steps of its update message (supervise.UpdateTask) and to start no new work, and no
-	// path is left that lets a role carry on in the pod it was told would be replaced. Replacing it
-	// is one restart of each role in its own session, which the alternative — a release of the
-	// answered roles that the daemon alone knows about — is not.
-	terms := strings.Join(reasons, ", ")
+	// The drift this tick read opens a round and decides nothing of a round already open past
+	// the first reading after a boot: a round's terms are fixed at its open (dispatch://INFRA-2981
+	// R9), so what an open round's notices and its replacement name is its own recorded reasons
+	// (roundReasons). That holds where the drift has gone away too — an operator rolled the release
+	// back — and the round replaces the pod all the same. The round has already asked each role it
+	// asks (roundAsks) to do the steps of its update message (supervise.UpdateTask) and to start no
+	// new work, and no path is left that lets a role carry on in the pod it was told would be
+	// replaced. Replacing it is one restart of each role in its own session, which the alternative
+	// — a release of the answered roles that the daemon alone knows about — is not. The two
+	// exceptions are both the first reading since the boot of a round found open: over drift that
+	// only drains it ended above, and over drift that breaks its reasons were written again above.
+	terms := reasons.String()
 	// One live read, given to both decisions below, so the claims the replacement waits on and
 	// the claims the post records the round on, which the ask then reaches, are one set. Read
 	// live by the replacement and from the snapshot by the post, a claim whose session registered
@@ -472,7 +511,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		// A round open here is over the pod the claims record, the one round this issue can be
 		// in: a round over any other pod has ended above.
 		live = s.liveGroup(group)
-		terms = roundReasons(group, open)
+		terms = cmp.Or(restated, roundReasons(group, open))
 		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, terms, clock); decided {
 			return replace
 		}
@@ -496,9 +535,117 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		live = s.liveGroup(group)
 	}
 	if s.openPodUpdate(ctx, issue, live, pod, terms, clock) && opening {
+		s.log.Info(roundOpensLine, "issue", issue, "round", round, "pod", pod, "kinds", reasons.Kinds(), "reasons", terms)
 		s.recordPodUpdateOpening(sweep, issue, round, clock.now)
 	}
 	return nil
+}
+
+// roundOpensLine is the line the sweep writes where it opens a round, naming each of the round's
+// reasons by kind (runtime.DriftKind) beside the reasons themselves.
+const roundOpensLine = "supervise: an update round opens over this issue's pod for drift that breaks it"
+
+// roundEndsOverDrainingDriftLine is the line the sweep writes where a round open at the boot ends
+// with no replacement (endRoundOverDrainingDrift).
+const roundEndsOverDrainingDriftLine = "supervise: the update round open at the daemon's boot is over drift its pod's roles keep working under; it ends with no replacement and the pod keeps working"
+
+// noteBootRounds records, at the daemon's first sweep, every pod round a claim of claims records:
+// the rounds found open at the boot, which an older daemon opened, whose pod's drift no sweep of
+// this daemon has read yet (podUpdateBootRounds). Every later sweep records nothing: a round this
+// daemon opens is opened on a reading of its own, and is never one of these.
+func (s *supervision) noteBootRounds(claims []supervise.Claim) {
+	s.podUpdateBootMu.Lock()
+	defer s.podUpdateBootMu.Unlock()
+	if s.podUpdateBootSwept {
+		return
+	}
+	s.podUpdateBootSwept = true
+	s.podUpdateBootRounds = map[string]bool{}
+	for _, c := range claims {
+		if supervise.IsPodRound(c.UpdateRound) {
+			s.podUpdateBootRounds[c.UpdateRound] = true
+		}
+	}
+}
+
+// bootRoundUnread is whether round is a round found open at the boot whose pod's drift no sweep has
+// read yet: before the first sweep every round a claim records is one, since this daemon has opened
+// none.
+func (s *supervision) bootRoundUnread(round string) bool {
+	s.podUpdateBootMu.Lock()
+	defer s.podUpdateBootMu.Unlock()
+	return !s.podUpdateBootSwept || s.podUpdateBootRounds[round]
+}
+
+// takeBootRound marks round's pod's drift read, and answers whether round was a round found open
+// at the boot whose drift no sweep had read: this reading is the one that decides it
+// (dispatch://INFRA-4754 R1).
+func (s *supervision) takeBootRound(round string) bool {
+	s.podUpdateBootMu.Lock()
+	defer s.podUpdateBootMu.Unlock()
+	if !s.podUpdateBootRounds[round] {
+		return false
+	}
+	delete(s.podUpdateBootRounds, round)
+	return true
+}
+
+// forgetBootRounds drops every round found open at the boot that no claim of the sweep's groups
+// records any more: it ended by another way before a sweep read its drift (its pod gone, or
+// replaced at a launch), and the pod it was over is gone, so its id never comes back.
+func (s *supervision) forgetBootRounds(byIssue map[string][]supervise.Claim) {
+	s.podUpdateBootMu.Lock()
+	defer s.podUpdateBootMu.Unlock()
+	for round := range s.podUpdateBootRounds {
+		recorded := false
+		for _, group := range byIssue {
+			if slices.ContainsFunc(group, func(c supervise.Claim) bool { return c.UpdateRound == round }) {
+				recorded = true
+				break
+			}
+		}
+		if !recorded {
+			delete(s.podUpdateBootRounds, round)
+		}
+	}
+}
+
+// endRoundOverDrainingDrift ends round, found open at the daemon's boot, at the first sweep that
+// reads its pod's drift, by claim or by issue, where that drift is only of kinds that drain
+// (dispatch://INFRA-4754 R1). An older daemon opened it, with its reasons as text, for drift this
+// daemon keeps a pod for: the pod's roles keep working under it, so nothing is replaced and
+// nothing is lost. The end is posted to each member (endPodUpdates), and each claim's machine
+// releases the task the round held back (supervise's endPodUpdate), so every role the round asked
+// goes on working in the pod it is in. Nothing is written on the issue: no work went anywhere.
+func (s *supervision) endRoundOverDrainingDrift(issue string, group []supervise.Claim, round, pod string, reasons runtime.DriftReasons) {
+	s.log.Info(roundEndsOverDrainingDriftLine, "issue", issue, "round", round, "pod", pod,
+		"kinds", reasons.Kinds(), "reasons", reasons.String(), "terms", roundReasons(group, round))
+	s.endPodUpdates(issue, group, round)
+}
+
+// restateRoundLine is the line the sweep writes where a round found open at the boot goes on over
+// drift that breaks its pod, and its reasons are written again (restateRoundReasons).
+const restateRoundLine = "supervise: the update round open at the daemon's boot goes on over drift that breaks its pod; its reasons are written again with the marker of a drift that breaks"
+
+// restateRoundReasons writes the recorded reasons of round, found open at the daemon's boot, again
+// from reasons, this daemon's first reading of its pod's drift since the boot, which holds a kind
+// that breaks (dispatch://INFRA-4754 R1). An older daemon recorded the round's reasons as text
+// with no marker; written again, the reason of each kind that breaks starts with
+// runtime.BreakingDrift, the mark a reader of the round's reasons tells a drift that breaks the pod
+// by (dispatch://INFRA-3271's R7). Each
+// member's machine writes the reasons and nothing else (supervise.PodUpdateOpen.Restate). It answers
+// the reasons it wrote, which the rest of this sweep names as the round's terms.
+func (s *supervision) restateRoundReasons(issue string, group []supervise.Claim, round string, reasons runtime.DriftReasons) string {
+	terms := reasons.String()
+	s.log.Info(restateRoundLine, "issue", issue, "round", round, "kinds", reasons.Kinds(),
+		"was", roundReasons(group, round), "reasons", terms)
+	for _, c := range group {
+		if !memberOf(c, round) {
+			continue
+		}
+		s.supervisor.post(c.Token, supervise.PodUpdateOpen{Claim: c.Token, Round: round, Reasons: terms, Restate: true})
+	}
+	return terms
 }
 
 // completePodUpdate decides a round that is over. Before the round's bound that is every claim
@@ -1963,6 +2110,23 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	if !recordsRound(group, round) {
 		return false, nil
 	}
+	// The boot mark is read before the sweep's end: the sweep records a round's end before it drops
+	// the round's boot mark (endRoundOverDrainingDrift, then takeBootRound), so a launch at any
+	// moment of that end sees the mark or the end, and keeps the pod for either.
+	if s.bootRoundUnread(round) {
+		// A round found open at the boot whose pod's drift no sweep has read: the launch reads it
+		// first, since no start of a role replaces a pod whose drift only drains
+		// (dispatch://INFRA-4754 R1, R4).
+		if keep, why := s.bootReadingAtLaunch(ctx, issue, group, round, podUID); keep {
+			return s.keepAtLaunch(issue, round, token, why)
+		}
+	}
+	if s.sweepEnded(issue, round) {
+		// The sweep has ended this round, and a member's machine takes that end only once its
+		// launch is over: a round the sweep ended replaces no pod, and a round ended at the boot
+		// over drift that drains has left its pod working (dispatch://INFRA-4754 R4).
+		return s.keepAtLaunch(issue, round, token, "the sweep has ended the round, and its end has not reached every member yet")
+	}
 	var launching supervise.Claim
 	for _, c := range group {
 		m, held := s.supervisor.Machine(c.Token)
@@ -2012,6 +2176,51 @@ func (s *supervision) keepAtLaunch(issue, round string, token claim.Token, why s
 	s.log.Info("supervise: a launch goes into the pod of an update round that keeps its pod",
 		"issue", issue, "round", round, "claim", token, "reason", why)
 	return false, nil
+}
+
+// bootReadingAtLaunch is a launch's reading of the pod of round, a round found open at the boot
+// whose pod's drift no sweep has read, made by the issue (runtime.IssuePodDriftReader) as the
+// boot's first sweep would make it, and whether the launch keeps the pod for it and why. A pod
+// whose drift only drains is kept, and the first sweep that reads it ends the round with no
+// replacement (endRoundOverDrainingDrift); a pod whose drift cannot be read is kept, since nobody
+// has read whether it drains. A pod with a kind that breaks has the round's reasons written again
+// with the marker (restateRoundReasons), before the first sweep too, so a launch that then replaces
+// the pod leaves the round naming the marked reasons; the launch then goes on to the rule every
+// launch into a round's pod reads. The reading is the round's first only once the first sweep has
+// recorded the round (takeBootRound); before that sweep, the sweep reads the round again, and
+// writes the same reasons.
+func (s *supervision) bootReadingAtLaunch(ctx context.Context, issue string, group []supervise.Claim, round, podUID string) (bool, string) {
+	reader, ok := s.runtime.(runtime.IssuePodDriftReader)
+	if !ok {
+		return true, "the round was open at the daemon's boot, and its pod's drift cannot be read at a launch"
+	}
+	reasons, err := reader.IssuePodDrift(ctx, issue, podUID, groupRoles(group))
+	switch {
+	case err != nil:
+		return true, "the round was open at the daemon's boot, and its pod's drift cannot be read: " + err.Error()
+	case !reasons.Breaks():
+		return true, "the round was open at the daemon's boot over drift its pod's roles keep working under; the first sweep that reads it ends it with no replacement"
+	}
+	s.restateRoundReasons(issue, group, round, reasons)
+	s.takeBootRound(round)
+	return false, ""
+}
+
+// sweepEnded is whether round is the round of issue that the sweep has ended and a claim of the
+// issue may still record (podUpdateEnded, keepEndedRound).
+func (s *supervision) sweepEnded(issue, round string) bool {
+	s.podUpdateEndedMu.Lock()
+	defer s.podUpdateEndedMu.Unlock()
+	return s.podUpdateEnded[issue] == round
+}
+
+// groupRoles is the role of each claim of group, in its order.
+func groupRoles(group []supervise.Claim) []claim.Role {
+	roles := make([]claim.Role, 0, len(group))
+	for _, c := range group {
+		roles = append(roles, c.Role)
+	}
+	return roles
 }
 
 // launchRound is what the launches into one issue's pod decided of the update round open over that
@@ -2307,7 +2516,11 @@ func (s *supervision) podlessRound(ctx context.Context, issue string, group []su
 			return nil
 		}
 		if read {
-			if replace := s.replacementByIssue(issue, s.liveGroup(group), round, sandboxPod, roundReasons(group, round), clock); replace != nil {
+			terms, decided := s.podlessBootReading(ctx, issue, group, round, sandboxPod, clock)
+			if decided {
+				return nil
+			}
+			if replace := s.replacementByIssue(issue, s.liveGroup(group), round, sandboxPod, cmp.Or(terms, roundReasons(group, round)), clock); replace != nil {
 				return replace
 			}
 		}
@@ -2321,6 +2534,53 @@ func (s *supervision) podlessRound(ctx context.Context, issue string, group []su
 		"issue", issue, "round", round)
 	s.tellPodlessRound(ctx, issue, group, round, clock)
 	return nil
+}
+
+// podlessBootReading is the first reading since the boot of the pod of a round found open at the
+// boot whose claims record no pod, made by the issue (runtime.IssuePodDriftReader) with the roles
+// of the group (dispatch://INFRA-4754 R1). It answers whether it decided the round this sweep, and
+// otherwise the round's terms where it wrote them again. A pod whose drift only drains ends the
+// round with no replacement, as a round read by claim ends (endRoundOverDrainingDrift); a pod the
+// read finds gone ends it as a gone pod's round (endRoundOverAGonePod); a read that fails decides
+// nothing, and the next sweep reads again, since nobody has read whether the drift drains — past
+// the round's bound the operator's side is told of it once, as of a pod the by-claim reading cannot
+// read (tellUnreadPod). A pod with a kind that breaks has the round's reasons written again with
+// the marker (restateRoundReasons), and those terms go to the replacement by issue this same sweep.
+// A round this daemon opened, a round already read, and a runtime that cannot read by issue decide
+// nothing here.
+func (s *supervision) podlessBootReading(ctx context.Context, issue string, group []supervise.Claim, round, pod string, clock roundClock) (string, bool) {
+	reader, ok := s.runtime.(runtime.IssuePodDriftReader)
+	if !ok || !s.bootRoundUnread(round) {
+		return "", false
+	}
+	reasons, err := reader.IssuePodDrift(ctx, issue, pod, groupRoles(group))
+	switch {
+	case errors.Is(err, runtime.ErrPodGone):
+		s.endRoundOverAGonePod(ctx, issue, group, round, pod)
+		s.takeBootRound(round)
+		return "", true
+	case err != nil:
+		if ctx.Err() != nil {
+			return "", true
+		}
+		s.log.Error("supervise: read by the issue whether the pod of this update round, open at the daemon's boot, has drifted; nothing is decided of the round until a sweep reads it",
+			"issue", issue, "round", round, "error", err)
+		if clock.pastBound(group, round) && !roundTold(group, round) {
+			live := s.liveGroup(group)
+			s.tellUnreadPod(ctx, issue, live, round, pod, roundReasons(group, round), heldByOperator(live, round, clock), clock)
+		}
+		return "", true
+	}
+	// The boot mark goes once this reading's end or restatement is recorded, as in the by-claim
+	// reading, so a launch at any moment of it sees the mark or the end (roundPodEndsAtLaunch).
+	if reasons.Breaks() {
+		terms := s.restateRoundReasons(issue, group, round, reasons)
+		s.takeBootRound(round)
+		return terms, false
+	}
+	s.endRoundOverDrainingDrift(issue, group, round, pod, reasons)
+	s.takeBootRound(round)
+	return "", true
 }
 
 // tellPodlessRound tells the operator's side of a round whose issue records no pod at all, and
@@ -2798,10 +3058,12 @@ func (s *supervision) writeOnIssue(ctx context.Context, issue string, post recor
 // (memberOf), and on no other. It is the one way the sweep ends a round: the round's own
 // replacement (replacePodForRound, by issue replaceIssuePodForRound, or at a launch
 // endRoundALaunchReplaced), its pod gone with another pod recorded in its place
-// (reconcileIssuePodUpdate), its pod read gone (endRoundOverAGonePod) and its pod gone with a
-// member's work (podWentWithoutItsRound) all end it here. A round ends only where the pod it was
-// opened over is gone — replaced by the round itself, replaced under it, or gone for a failure of
-// its own — so the post carries nothing of that pod's fate (supervise.PodUpdateEnded). The read of
+// (reconcileIssuePodUpdate), its pod read gone (endRoundOverAGonePod), its pod gone with a
+// member's work (podWentWithoutItsRound) and a round found open at the boot over drift that only
+// drains (endRoundOverDrainingDrift) all end it here. A round ends where the pod it was opened over
+// is gone — replaced by the round itself, replaced under it, or gone for a failure of its own — or,
+// at the boot's first reading, where that pod's roles keep working under its drift, so the post
+// carries nothing of that pod's fate (supervise.PodUpdateEnded). The read of
 // the issue's workspace the round kept goes with it (forgetWorkspaceRead): no replacement of the
 // round is left to name the read. So does what the launches into the pod left of the round
 // (forgetLaunchRound): no launch into that pod is left to keep it for, and no end is left to make.
@@ -2885,8 +3147,8 @@ const (
 )
 
 // groupDrift is why the group's pod has drifted: the union of the runtime's PodDrift over every
-// claim of the group that records a process, in the claims' own order and without repeats, with
-// the reading that says what those reasons are worth (podReading).
+// claim of the group that records a process, each reason with its kind, in the claims' own order
+// and without repeats, with the reading that says what those reasons are worth (podReading).
 //
 // It reads podUnread when the runtime could not be asked at all: an error is never a statement
 // that something drifted, and a round must neither open nor end on one.
@@ -2897,8 +3159,8 @@ const (
 // that has drifted from nothing, it would carry the round on over a pod that took its workers'
 // unpushed work with it. Read as nothing at all, it would leave that round open over a pod that is
 // not there. The caller is what logs it, because the caller is what decides it.
-func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) ([]string, podReading) {
-	var reasons []string
+func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) (runtime.DriftReasons, podReading) {
+	var reasons runtime.DriftReasons
 	for _, c := range group {
 		if c.Locator == nil {
 			continue

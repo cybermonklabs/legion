@@ -3,12 +3,7 @@
 // `go test ./...` compiles and exercises it directly (live_pod_update_unit_test.go).
 package sandbox
 
-import (
-	"encoding/json"
-	"fmt"
-
-	"k8s.io/apimachinery/pkg/api/resource"
-)
+import "strconv"
 
 // podUpdateRunIssue is pod-update's issue key in the run whose project is project, seeded by that
 // project and this check's own name (runIssue), so it is neither cache-b's key
@@ -25,26 +20,14 @@ func podUpdateRunIssue(project string) string { return runIssue(project + " pod-
 // branch a killed run left is swept by cache-lost-volume's own sweep (staleRunBranches).
 func podUpdateFleetRunIssue(project string) string { return runIssue(project + " pod-update-fleet") }
 
-// movedPodShape is the recorded shape with its disk moved one gibibyte up, and the one reason the
-// runtime then names for the pod (podShapeDrift). The disk is what the harness moves because it is
-// the operator's own value and nothing of the pod itself: the Sandbox keeps the pod it has, every
-// process in it keeps running, and the only thing that has moved is the configuration the pod was
-// built from — which is what a round is opened on.
-func movedPodShape(held string) (shape, reason string, err error) {
-	var record podShapeRecord
-	if err := json.Unmarshal([]byte(held), &record); err != nil {
-		return "", "", fmt.Errorf("the recorded shape %q cannot be read: %w", held, err)
-	}
-	disk, err := resource.ParseQuantity(record.Disk)
-	if err != nil {
-		return "", "", fmt.Errorf("the recorded disk %q: %w", record.Disk, err)
-	}
-	was := record.Disk
-	disk.Add(resource.MustParse("1Gi"))
-	record.Disk = disk.String()
-	encoded, err := json.Marshal(record)
-	if err != nil {
-		return "", "", err
-	}
-	return string(encoded), "disk " + record.Disk + ", now " + was, nil
-}
+// belowTheFloor is the contract the update-round checks write as the maker of a running pod
+// (contractAnnotation): one below every floor a daemon of this release can hold, since the first
+// floor stands for every daemon before the record (api.DaemonAPIFirstFloor). A pod recorded so
+// gives the floor kind (floorDrift), which breaks, and so is what a round is opened on: the Sandbox
+// keeps the pod it has and every process in it keeps running, and the only thing that has moved
+// is the record of the daemon that made it. A move of the operator's configuration (the disk, the
+// image, a volume) drains, and opens no round at all.
+const belowTheFloor = 1
+
+// belowTheFloorRecord is belowTheFloor as the annotation holds it.
+var belowTheFloorRecord = strconv.Itoa(belowTheFloor)

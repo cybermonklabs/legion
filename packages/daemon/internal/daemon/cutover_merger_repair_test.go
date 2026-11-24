@@ -542,7 +542,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 			rig.te.key, entry, given, served)
 	}
 
-	rig.rt = &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true, sandboxName: "legion-" + project + "-cutover"}
+	rig.rt = &releaseRuntime{Runtime: fake.NewRuntime(), image: runtime.PodImageConfigured, sandboxName: "legion-" + project + "-cutover"}
 	rig.rt.InPod = true
 	rig.o = fakeRuntime(rig.rt, rig.built)
 	rig.o.workflowTokens = &workflowTokenRecorder{}

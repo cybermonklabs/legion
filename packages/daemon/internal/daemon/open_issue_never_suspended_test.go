@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -248,7 +249,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 		t.Fatalf("report what the pods are doing: %v", err)
 	}
 	idle := &workflowRuntime{pool: pool, projectID: "legion", log: quietLogger(), idleStore: trees,
-		idleRuntime: &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}, idlePeriod: time.Minute}
+		idleRuntime: &releaseRuntime{Runtime: fake.NewRuntime(), image: runtime.PodImageConfigured}, idlePeriod: time.Minute}
 	if !idle.listenerLive(ctx) {
 		t.Fatal("the listener's report is not live, so the tick below would decide no pod at all")
 	}

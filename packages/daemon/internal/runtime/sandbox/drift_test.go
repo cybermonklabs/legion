@@ -36,6 +36,16 @@ import (
 // answer they gave before this wait.
 func driftOf(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) []string {
 	t.Helper()
+	drifted := driftReasonsOf(t, g, r, loc)
+	if drifted == nil {
+		return nil
+	}
+	return drifted.Texts()
+}
+
+// driftReasonsOf is driftOf's reading with each reason's kind.
+func driftReasonsOf(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) runtime.DriftReasons {
+	t.Helper()
 	name := loc.Sandbox.Name
 	// differs names what the stores held unlike the trackers at the last read: the Sandbox, the
 	// pod, or both.

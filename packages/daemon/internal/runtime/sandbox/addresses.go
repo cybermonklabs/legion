@@ -375,18 +375,19 @@ func carriesExchangeIdentity(pod corev1.PodSpec, broker *AgentSecrets) bool {
 // ending every process in it.
 //
 // Where a round covers the pod (roundCovers), everything else a running pod cannot be changed to
-// carry is drift, not a moved address (driftedInPod, podShapeDrift): its worker can be asked to
-// do the steps of an update message first (supervise.UpdateTask), and an update round asks it
-// before the pod is replaced.
+// carry is drift, not a moved address (driftedInPod, podShapeDrift): a kind of it the pod's roles
+// keep working under drains, and the pod keeps working until a release of it; a kind that breaks
+// opens an update round, which asks its workers to do the steps of an update message first
+// (supervise.UpdateTask) before the pod is replaced.
 //
 // A pod no round covers holds every facet here, driftedInPod's five included. No round is ever
 // opened over such a pod — PodDrift answers nothing for it — so a facet that was neither a moved
-// address nor a round's would leave its role in the pod it was created in for ever, with nothing
+// address nor drift would leave its role in the pod it was created in for ever, with nothing
 // saying so: today that is the project controller's pod, which has nobody in it to task and no
 // issue disk to protect, and so keeps the replacement it has always had, at the next launch into
 // it. The rest of such a pod's drift, the shape its template was built from, is its launch's too
-// (relaunch, shapeDrift), so a round covers every drift of a pod or a launch covers every drift of
-// it, and no drifted pod is left to neither.
+// (relaunch, shapeDrift), so the drift of an issue pod is read by the round decision and every
+// drift of the controller's pod by its launch, and no drifted pod is left to neither.
 func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 	var moved []movedAddress
 	if layout, ok := movedLayout(pod); ok {
@@ -401,40 +402,56 @@ func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 	return moved
 }
 
-// driftedInPod is what pod holds, for role, that a pod created now is not handed and whose
-// replacement is an update round's business rather than a launch's: the operator's volume and
-// mount holding every named role's overlays and the overlays of every arm the project declares
-// in role's container
-// (movedRoleOverlays), the secrets broker's enrollment its next generation is started against
-// (movedEnrollment), the exchange identity it is told of (movedExchangeIdentity), the whole session
-// store it was created under (movedSessionStore), and the gh directories its gh volume projects
-// (movedGhDirs). Each is fixed for the
-// pod's life, so the pod must be replaced for the role to run as one launched now — but each
-// leaves the workers already in the pod running and able to reach this daemon, so each is a
-// reason to open a round (PodDrift) and ask them to do the steps of its update message
-// (supervise.UpdateTask), where replacing the pod under them would end every turn in it and take
-// the issue's disk with it. The two facets whose worker cannot be reached at all are movedInPod's
-// and are never a round's — and for a pod no round covers (roundCovers), the project controller's
-// today, so are these five: no round is opened over such a pod, so movedInPod holds every facet
-// there and its launch replaces it, as it always did.
+// driftedInPod is what pod holds, for role, that a pod created now is not handed and that is no
+// moved address: the operator's volume and mount holding every named role's overlays and the
+// overlays of every arm the project declares in role's container (movedRoleOverlays), the secrets
+// broker's enrollment its next generation is started against (movedEnrollment), the exchange
+// identity it is told of (movedExchangeIdentity), the whole session store it was created under
+// (movedSessionStore), and the gh directories its gh volume projects (movedGhDirs). Each is fixed
+// for the pod's life, and each leaves the workers already in the pod running and able to reach
+// this daemon. In a pod a round covers each is drift of its own kind (driftedFacets, PodDrift):
+// the daemon opens a round for the kinds that break and keeps the pod for the kinds that drain.
+// The two facets whose worker cannot be reached at all are movedInPod's and are never a round's —
+// and for a pod no round covers (roundCovers), the project controller's today, so are these five:
+// no round is opened over such a pod, so movedInPod holds every facet there and its launch
+// replaces it, as it always did.
 func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
-	var moved []movedAddress
-	if overlays, ok := r.movedRoleOverlays(pod.Spec, role); ok {
-		moved = append(moved, overlays)
+	facets := r.driftedFacets(pod, role)
+	if len(facets) == 0 {
+		return nil
 	}
-	if enrollment, ok := r.movedEnrollment(pod, role); ok {
-		moved = append(moved, enrollment)
-	}
-	if exchange, ok := r.movedExchangeIdentity(pod); ok {
-		moved = append(moved, exchange)
-	}
-	if store, ok := r.movedSessionStore(pod); ok {
-		moved = append(moved, store)
-	}
-	if dirs, ok := r.movedGhDirs(pod, role); ok {
-		moved = append(moved, dirs)
+	moved := make([]movedAddress, len(facets))
+	for i, facet := range facets {
+		moved[i] = facet.moved
 	}
 	return moved
+}
+
+// driftedFacet is one facet driftedInPod reads, with the kind of drift it is (runtime.DriftKind).
+type driftedFacet struct {
+	kind  runtime.DriftKind
+	moved movedAddress
+}
+
+// driftedFacets is driftedInPod's reading with each facet's kind, in driftedInPod's order.
+func (r *Runtime) driftedFacets(pod *corev1.Pod, role claim.Role) []driftedFacet {
+	var facets []driftedFacet
+	if overlays, ok := r.movedRoleOverlays(pod.Spec, role); ok {
+		facets = append(facets, driftedFacet{runtime.DriftRoleOverlays, overlays})
+	}
+	if enrollment, ok := r.movedEnrollment(pod, role); ok {
+		facets = append(facets, driftedFacet{runtime.DriftEnrollment, enrollment})
+	}
+	if exchange, ok := r.movedExchangeIdentity(pod); ok {
+		facets = append(facets, driftedFacet{runtime.DriftExchangeIdentity, exchange})
+	}
+	if store, ok := r.movedSessionStore(pod); ok {
+		facets = append(facets, driftedFacet{runtime.DriftSessionStore, store})
+	}
+	if dirs, kind, ok := r.movedGhDirsOfKind(pod, role); ok {
+		facets = append(facets, driftedFacet{kind, dirs})
+	}
+	return facets
 }
 
 // movedGhDirs is the owner directories a pod created now would project (r.gitHubDirs,
@@ -498,10 +515,20 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // deleting its disk for. The daemon's set comes sorted (Options.GitHubDirs), and the pod's is
 // sorted here, so each is searched and named in one order.
 func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, bool) {
+	moved, _, ok := r.movedGhDirsOfKind(pod, role)
+	return moved, ok
+}
+
+// movedGhDirsOfKind is movedGhDirs with the kind of drift each of its three reasons is: the two
+// layouts from before contract 152 break (runtime.DriftGhRepositoryDir, runtime.DriftGhNoPairs),
+// since the pod's wrappers answer a moved repository with the wrong token and its pushes fail, and
+// an owner the daemon newly serves and the pod lacks drains (runtime.DriftGhOwner), since every
+// repository the pod already works keeps its token.
+func (r *Runtime) movedGhDirsOfKind(pod *corev1.Pod, role claim.Role) (movedAddress, runtime.DriftKind, bool) {
 	name := roleVolume(ghVolume, role)
 	projected, found := ghProjectionOf(pod, role)
 	if !found {
-		return movedAddress{}, false
+		return movedAddress{}, "", false
 	}
 	held := projected.dirs
 	slices.Sort(held)
@@ -512,14 +539,14 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	// installation. The names ghOwnerDirs drops are exactly those.
 	if repositories := slices.DeleteFunc(slices.Clone(held), func(dir string) bool { return !strings.Contains(dir, "/") }); len(repositories) > 0 {
 		return movedAddress{where: name + " holds a repository directory", held: ghDirsName(repositories),
-			handed: "the owner directories alone"}, true
+			handed: "the owner directories alone"}, runtime.DriftGhRepositoryDir, true
 	}
 	// A pod launched with no directory at all projects no Secret and so no pairs file either,
 	// and a launch now would hand it the same empty directory: it is compared for its owner
 	// directories alone, below.
 	if projected.secret && !projected.pairs {
 		return movedAddress{where: name + " holds no " + ghconfig.PairsFile, held: ghDirsName(owned),
-			handed: "the same directories beside the configured renames the wrappers route by"}, true
+			handed: "the same directories beside the configured renames the wrappers route by"}, runtime.DriftGhNoPairs, true
 	}
 	repo, _ := fetchRepository(pod)
 	served := ghOwnerDirs(r.gitHubDirs(repo, podAppRoles(podKindFor(role))))
@@ -528,9 +555,9 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 		return !found
 	})
 	if !lacking {
-		return movedAddress{}, false
+		return movedAddress{}, "", false
 	}
-	return movedAddress{where: name, held: ghDirsName(owned), handed: ghDirsName(served)}, true
+	return movedAddress{where: name, held: ghDirsName(owned), handed: ghDirsName(served)}, runtime.DriftGhOwner, true
 }
 
 // ghProjection is what one role's gh volume of a pod projects, read off its items, which are

@@ -863,7 +863,7 @@ type podUnreadAfterTheDriftRead struct {
 	reads atomic.Int64
 }
 
-func (r *podUnreadAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) ([]string, error) {
+func (r *podUnreadAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known) (runtime.DriftReasons, error) {
 	if r.reads.Add(1) == 1 {
 		return r.Runtime.PodDrift(ctx, k)
 	}

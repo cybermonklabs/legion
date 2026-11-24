@@ -241,11 +241,11 @@ func displaced(v view, loc runtime.Locator, obs observation) bool {
 // that predate the update round's contract and have no way to signal. Every role of such a pod
 // reads so, so each is relaunched uncharged and they move into one new pod together, rather than
 // the first relaunch for some other reason replacing the pod under the rest. A pod that has merely
-// drifted from the configuration is never StaleAddress (PodDrift): its roles keep running until
-// its update round replaces it, once every worker of the pod has answered, no turn runs and no
-// claim's activity report holds it (internal/daemon's roundEnd.holding), or at the round's
-// bound, which is the whole point of the round — repointing one of them would end the pod's turns
-// mid-flight, which this verdict must never do.
+// drifted from the configuration is never StaleAddress (PodDrift): its roles keep running, until
+// a release of the pod where its drift only drains, and until its update round replaces it where
+// a kind of it breaks the pod, once every worker of the pod has answered, no turn runs and no
+// claim's activity report holds it (internal/daemon's roundEnd.holding), or at the round's bound
+// — repointing one of them would end the pod's turns mid-flight, which this verdict must never do.
 // In a pod no update round covers (roundCovers, today the project controller's) movedInPod holds
 // every facet, so each of those reads StaleAddress there and its launch replaces the pod, which is
 // what keeps such a pod from being left behind by a configuration it cannot carry.

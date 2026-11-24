@@ -467,8 +467,9 @@ func TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed(t *te
 }
 
 // A change of the deployment's manifest digest alone is drift: an issue pod built under one digest
-// is reported drifted, naming both, by a daemon restarted under another, so its update round
-// opens and replaces the pod once its workers have pushed — a corrected digest reaches every pod.
+// is reported drifted, naming both, by a daemon restarted under another. The kind drains: no round
+// opens for it, the kept pod's roles are told the digest it records, and a corrected digest reaches
+// each pod at the next pod after its release.
 // A pod built under no setting records none and has not drifted for it, and neither has a pod
 // built under the digest the daemon still runs.
 func TestAChangedManifestDigestIsDrift(t *testing.T) {

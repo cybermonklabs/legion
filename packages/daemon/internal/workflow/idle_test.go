@@ -9,13 +9,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // idleNow is the moment every row of the table decides at, and idlePeriod the idle period it
-// decides against: a pod that has recorded nothing for ten minutes is released. idlePod is the
-// pod the issue's roles run in, which an update round over that pod is named for.
+// decides against: a pod that has recorded nothing for ten minutes is released. idleContract is
+// the plugin contract a claim on the daemon's contract records; the rule itself reads no contract.
+// idlePod is the pod the issue's roles run in, which an update round over that pod is named for.
 var (
 	idleNow      = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	idlePeriod   = 10 * time.Minute
@@ -62,28 +64,28 @@ func idleRoot() pods.IdleView {
 
 // Every condition of the idle rule is one row here: it holds the pod and names the hold the
 // daemon records, and the pod with every condition met is released with its live roles named.
-// The rule is pure, so each row is the view, the clock, the idle period, the image verdict and
-// the daemon's plugin contract and nothing else.
+// The rule is pure, so each row is the view, the clock, the idle period and the read of the pod's
+// image, and nothing else.
 //
 // The condition this branch left out until sjawhar/legion#2538 landed — "no INFRA-484 update
-// round open on the pod" — is the two rows below the plugin contract's: #2538 is on main now,
-// and the rule reads supervise.Claim.UpdateRound with supervise.IsPodRound.
+// round open on the pod" — is the two rows below the image's: #2538 is on main now, and the rule
+// reads supervise.Claim.UpdateRound with supervise.IsPodRound.
 func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		view  pods.IdleView
-		image bool
+		image runtime.PodImage
 		want  IdleHold
 		roles []claim.Role
 	}{
 		{
-			name: "every condition holds", view: idleChild(), image: true, want: IdleHoldNone,
+			name: "every condition holds", view: idleChild(), image: runtime.PodImageConfigured, want: IdleHoldNone,
 			roles: []claim.Role{claim.RoleImplementer},
 		},
 		{
 			name:  "the record holds no such issue",
 			view:  func() pods.IdleView { v := idleChild(); v.Found = false; return v }(),
-			image: true, want: IdleHoldNoPod,
+			image: runtime.PodImageConfigured, want: IdleHoldNoPod,
 		},
 		{
 			name: "the pod has no live claim",
@@ -92,33 +94,33 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].State = supervise.StateRetired
 				return v
 			}(),
-			image: true, want: IdleHoldNoLiveClaim,
+			image: runtime.PodImageConfigured, want: IdleHoldNoLiveClaim,
 		},
 		{
 			name:  "a release of the pod is already in progress",
 			view:  func() pods.IdleView { v := idleChild(); v.Releasing = true; return v }(),
-			image: true, want: IdleHoldReleasing,
+			image: runtime.PodImageConfigured, want: IdleHoldReleasing,
 		},
 		{
 			name:  "the issue has left the workflow",
 			view:  func() pods.IdleView { v := idleChild(); v.Status = "backlog"; return v }(),
-			image: true, want: IdleHoldTreeNotLive,
+			image: runtime.PodImageConfigured, want: IdleHoldTreeNotLive,
 		},
 		{
 			name:  "the tree root lingers",
 			view:  func() pods.IdleView { v := idleChild(); v.Root.LingerUntil = &idleNow; return v }(),
-			image: true, want: IdleHoldTreeNotLive,
+			image: runtime.PodImageConfigured, want: IdleHoldTreeNotLive,
 		},
 		{
 			name:  "the project is paused",
 			view:  func() pods.IdleView { v := idleChild(); v.Paused = true; return v }(),
-			image: true, want: IdleHoldPaused,
+			image: runtime.PodImageConfigured, want: IdleHoldPaused,
 		},
 		{
 			// The resume ended the pause, and no role of the pod has been ready since.
 			name:  "a pause holds the pod",
 			view:  func() pods.IdleView { v := idleChild(); v.PauseHeld = true; return v }(),
-			image: true, want: IdleHoldPauseHeld,
+			image: runtime.PodImageConfigured, want: IdleHoldPauseHeld,
 		},
 		{
 			name: "the project is paused and its pod holds no live claim",
@@ -127,12 +129,12 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Paused, v.Claims[0].State = true, supervise.StateSuspended
 				return v
 			}(),
-			image: true, want: IdleHoldPaused,
+			image: runtime.PodImageConfigured, want: IdleHoldPaused,
 		},
 		{
 			name:  "a bundle of the pod's work is still waiting to be restored",
 			view:  func() pods.IdleView { v := idleChild(); v.BundleUnrestored = true; return v }(),
-			image: true, want: IdleHoldBundleUnrestored,
+			image: runtime.PodImageConfigured, want: IdleHoldBundleUnrestored,
 		},
 		{
 			name: "the root waits on a person who has not answered",
@@ -141,7 +143,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Phase, v.Root.Phase, v.Root.AwaitingPerson = phase.AwaitingPerson, phase.AwaitingPerson, true
 				return v
 			}(),
-			image: true, want: IdleHoldAwaitingPerson,
+			image: runtime.PodImageConfigured, want: IdleHoldAwaitingPerson,
 		},
 		{
 			name: "the root's person has answered and it waits only for the pass that resumes it",
@@ -151,7 +153,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Root.AwaitingPerson, v.Root.Answered = true, true
 				return v
 			}(),
-			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleArchitect},
+			image: runtime.PodImageConfigured, want: IdleHoldNone, roles: []claim.Role{claim.RoleArchitect},
 		},
 		{
 			name: "a child of a root that waits on a person",
@@ -160,15 +162,23 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Root.Phase, v.Root.AwaitingPerson = phase.AwaitingPerson, true
 				return v
 			}(),
-			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+			image: runtime.PodImageConfigured, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
 		},
 		{
-			name: "the pod does not run the configured image", view: idleChild(), image: false, want: IdleHoldImage,
+			name: "the pod's image could not be read", view: idleChild(), image: runtime.PodImageUnread, want: IdleHoldImage,
 		},
 		{
+			// A pod on another image keeps working on it until its idle release, and its next pod
+			// takes the configured image.
+			name: "the pod runs another image than the configured one", view: idleChild(), image: runtime.PodImageOther,
+			want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			// A claim on another plugin contract holds nothing: its next pod takes the daemon's
+			// plugins.
 			name:  "a live claim speaks an older plugin contract",
 			view:  func() pods.IdleView { v := idleChild(); v.Claims[0].PluginContract = idleContract - 1; return v }(),
-			image: true, want: IdleHoldPluginContract,
+			image: runtime.PodImageConfigured, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
 		},
 		{
 			name: "an update round of the pod is open on a live claim",
@@ -177,7 +187,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].UpdateRound = supervise.PodRound(idlePod)
 				return v
 			}(),
-			image: true, want: IdleHoldUpdateRound,
+			image: runtime.PodImageConfigured, want: IdleHoldUpdateRound,
 		},
 		{
 			// A round the suspended tester still records is the round of a pod it is no longer
@@ -188,17 +198,17 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[1].UpdateRound = supervise.PodRound(idlePod)
 				return v
 			}(),
-			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+			image: runtime.PodImageConfigured, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
 		},
 		{
 			name:  "a role is in a turn",
 			view:  func() pods.IdleView { v := idleChild(); v.Claims[0].State = supervise.StateWorking; return v }(),
-			image: true, want: IdleHoldInTurn,
+			image: runtime.PodImageConfigured, want: IdleHoldInTurn,
 		},
 		{
 			name:  "a role's launch is not yet known",
 			view:  func() pods.IdleView { v := idleChild(); v.Claims[0].State = supervise.StateLaunchUncertain; return v }(),
-			image: true, want: IdleHoldInTurn,
+			image: runtime.PodImageConfigured, want: IdleHoldInTurn,
 		},
 		{
 			name: "a task waits for delivery to a role of the pod",
@@ -207,7 +217,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Waiting = true
 				return v
 			}(),
-			image: true, want: IdleHoldDelivery,
+			image: runtime.PodImageConfigured, want: IdleHoldDelivery,
 		},
 		{
 			name: "a live role's session reported background work of its own",
@@ -217,12 +227,12 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].ActivityKinds = []string{"async-job"}
 				return v
 			}(),
-			image: true, want: IdleHoldBackgroundWork,
+			image: runtime.PodImageConfigured, want: IdleHoldBackgroundWork,
 		},
 		{
 			name:  "a live role's session has reported nothing",
 			view:  func() pods.IdleView { v := idleChild(); v.Claims[0].ActivityAt = time.Time{}; return v }(),
-			image: true, want: IdleHoldUnreported,
+			image: runtime.PodImageConfigured, want: IdleHoldUnreported,
 		},
 		{
 			name: "a live role's report predates its last turn",
@@ -231,7 +241,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].ActivityAt = v.Claims[0].LastTurnAt.Add(-time.Minute)
 				return v
 			}(),
-			image: true, want: IdleHoldUnreported,
+			image: runtime.PodImageConfigured, want: IdleHoldUnreported,
 		},
 		{
 			name: "an open phase's reminder is due inside the period",
@@ -240,7 +250,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
 				return v
 			}(),
-			image: true, want: IdleHoldReminder,
+			image: runtime.PodImageConfigured, want: IdleHoldReminder,
 		},
 		{
 			name: "an open phase's reminder is due after the period",
@@ -249,7 +259,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].ActivityNextReminderAt = idleNow.Add(5 * time.Minute)
 				return v
 			}(),
-			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+			image: runtime.PodImageConfigured, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
 		},
 		{
 			name: "a reminder of a worker whose phase is not open",
@@ -259,7 +269,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
 				return v
 			}(),
-			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+			image: runtime.PodImageConfigured, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
 		},
 		{
 			name: "a reminder of a worker serving an earlier generation",
@@ -269,7 +279,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
 				return v
 			}(),
-			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+			image: runtime.PodImageConfigured, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
 		},
 		{
 			name: "the pod recorded something inside the idle period",
@@ -278,11 +288,11 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				v.Claims[0].UpdatedAt = idleNow.Add(-time.Minute)
 				return v
 			}(),
-			image: true, want: IdleHoldNotIdle,
+			image: runtime.PodImageConfigured, want: IdleHoldNotIdle,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image, idleContract)
+			got := IdleRelease(tc.view, idleNow, idlePeriod, tc.image)
 			if got.Hold != tc.want {
 				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
 			}
@@ -298,6 +308,74 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// An idle pod on another image than the configured one is released as any other idle pod is
+// (dispatch://INFRA-4754 R2). Its roles kept working on that image for as long as they had work,
+// and the pod the issue's next start makes runs the configured image. The pod here is idleChild,
+// which every other condition of the rule releases, read as the Sandbox runtime's IssuePodImage
+// answers a pod on another image.
+func TestIdleReleaseTakesAPodOnAnOlderImage(t *testing.T) {
+	got := IdleRelease(idleChild(), idleNow, idlePeriod, runtime.PodImageOther)
+	if !got.Release || got.Hold != IdleHoldNone {
+		t.Fatalf("the idle pod on another image: release %t, hold %s; want it released", got.Release, got.Hold)
+	}
+	if len(got.Roles) != 1 || got.Roles[0] != claim.RoleImplementer {
+		t.Fatalf("roles = %v, want the live implementer the release suspends", got.Roles)
+	}
+}
+
+// An idle pod whose live claim is on another plugin contract than the daemon's is released as any
+// other idle pod is (R2), for an Oh My Pi claim and for a Claude Code claim. The claim's next pod
+// takes the daemon's plugins. The view the rule reads carries no claim's backend (pods.IdleClaim
+// holds none): a role's backend is the daemon's configuration (config.Config.BackendFor), which
+// the rule never reads. So the two cases are claims of two roles. The implementer stands for an Oh
+// My Pi claim. The reviewer stands for a Claude Code claim, as it does in the daemon's own tests of
+// the stale-plugin lane (internal/daemon's refreshNoInstallRole).
+func TestIdleReleaseTakesAPodWithAClaimOnAnotherContract(t *testing.T) {
+	for _, tc := range []struct {
+		backend string
+		role    claim.Role
+	}{
+		{backend: "an Oh My Pi claim", role: claim.RoleImplementer},
+		{backend: "a Claude Code claim", role: claim.RoleReviewer},
+	} {
+		t.Run(tc.backend, func(t *testing.T) {
+			view := idleChild()
+			view.Claims[0].Role = tc.role
+			view.Claims[0].PluginContract = idleContract - 1
+			got := IdleRelease(view, idleNow, idlePeriod, runtime.PodImageConfigured)
+			if !got.Release || got.Hold != IdleHoldNone {
+				t.Fatalf("the idle pod whose %s claim is on plugin contract %d: release %t, hold %s; want it released",
+					tc.role, idleContract-1, got.Release, got.Hold)
+			}
+			if len(got.Roles) != 1 || got.Roles[0] != tc.role {
+				t.Fatalf("roles = %v, want the live %s the release suspends", got.Roles, tc.role)
+			}
+		})
+	}
+}
+
+// The idle release still holds an idle pod whose image the runtime could not read (R2): the
+// Sandbox runtime's IssuePodImage answers runtime.PodImageUnread for no Sandbox, no pod, a foreign
+// pod, an ended pod, a key with no Sandbox name and a failed store read. Nothing then says which
+// pod the release would take. The hold is IdleHoldImage, recorded under the name `image` that the
+// daemon's release records have always carried for it (pod_holds.reason). Unread is the zero value
+// of the answer, so an answer nobody set holds the pod too.
+func TestIdleReleaseHoldsAPodWhoseImageIsNotReadable(t *testing.T) {
+	if runtime.PodImageUnread != runtime.PodImage(0) {
+		t.Fatalf("runtime.PodImageUnread = %d, want the zero value, which an answer nobody set holds", runtime.PodImageUnread)
+	}
+	got := IdleRelease(idleChild(), idleNow, idlePeriod, runtime.PodImageUnread)
+	if got.Release || got.Hold != IdleHoldImage {
+		t.Fatalf("the idle pod whose image is not readable: release %t, hold %s; want it held as %s", got.Release, got.Hold, IdleHoldImage)
+	}
+	if name := got.Hold.String(); name != "image" {
+		t.Fatalf("the hold is recorded as %q, want %q", name, "image")
+	}
+	if len(got.Roles) != 0 {
+		t.Fatalf("roles = %v, want none: the pod is not released", got.Roles)
 	}
 }
 
@@ -527,7 +605,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 
 	var decided IdleDecision
 	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		decided = IdleRelease(view, now, idlePeriod, true, idleContract)
+		decided = IdleRelease(view, now, idlePeriod, runtime.PodImageConfigured)
 		if !decided.Release {
 			return store.IdleReleaseMark{}, nil
 		}

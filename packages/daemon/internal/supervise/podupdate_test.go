@@ -261,6 +261,43 @@ func TestPodUpdateALaterOpenOfTheSameRoundKeepsTheTermsItOpenedWith(t *testing.T
 	h.wantPrompts(0)
 }
 
+// The one exception to the fixed terms: the daemon's first reading since its boot of a round an
+// older daemon opened, which goes on over drift that breaks the pod, writes that round's reasons
+// again (PodUpdateOpen.Restate, dispatch://INFRA-4754 R1), so they carry the marker of a drift that
+// breaks. Only the reasons move: the round, its clock and its ask's mark stay, the claim is written
+// once, and the worker is sent nothing. A restate of a round the claim is not in opens nothing.
+func TestPodUpdateARestateWritesTheOpenRoundsReasonsAgain(t *testing.T) {
+	h := updateHarness(t, PodUpdateContract)
+	h.reach(StateReady)
+	h.openUpdate(testRound, testReasons)
+	settled := len(h.store.history())
+	marked := runtime.BreakingDrift + testReasons
+
+	h.advance(time.Minute)
+	h.must(PodUpdateOpen{Claim: h.token, Round: testRound, Reasons: marked, Restate: true})
+	h.must(PodUpdateOpen{Claim: h.token, Round: testRound, Reasons: marked, Restate: true})
+
+	c := h.wantRound(testRound)
+	if c.UpdateReasons != marked {
+		t.Errorf("UpdateReasons = %q, want them written again as %q", c.UpdateReasons, marked)
+	}
+	if c.UpdateOpenedAt == nil || !c.UpdateOpenedAt.Equal(epoch) {
+		t.Errorf("UpdateOpenedAt = %v, want the first post's %v: a restate keeps the round's clock", c.UpdateOpenedAt, epoch)
+	}
+	if got := len(h.store.history()); got != settled+1 {
+		t.Errorf("two restates of the open round wrote the claim %d times, want once", got-settled)
+	}
+	if stored := h.store.load(h.token); stored.UpdateReasons != marked {
+		t.Errorf("stored reasons = %q, want %q", stored.UpdateReasons, marked)
+	}
+	h.wantPrompts(0)
+
+	h.must(PodUpdateOpen{Claim: h.token, Round: "pod:another", Reasons: marked, Restate: true})
+	if c := h.wantRound(testRound); c.UpdateReasons != marked {
+		t.Errorf("a restate of another round moved this claim to round %q for %q, want it left in %q", c.UpdateRound, c.UpdateReasons, testRound)
+	}
+}
+
 // A claim working a phase task keeps it: the round records itself, and the task in the worker's
 // hands is neither displaced nor joined by a second one.
 func TestPodUpdateLeavesTheTaskAWorkingClaimHolds(t *testing.T) {

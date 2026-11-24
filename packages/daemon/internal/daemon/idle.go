@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -27,8 +26,8 @@ import (
 const idleTickInterval = time.Minute
 
 // issuePods is what the daemon asks a runtime that runs a pod per issue about an issue's pod,
-// which is everything about it the daemon's own Postgres does not hold: whether the pod runs the
-// image the configuration names (sandbox.Runtime.IssuePodRunsConfiguredImage), whether the runtime
+// which is everything about it the daemon's own Postgres does not hold: which image the pod runs,
+// or that the runtime could not read it (sandbox.Runtime.IssuePodImage), whether the runtime
 // still holds the issue's Sandbox and under what name (sandbox.Runtime.IssueSandbox), which pod
 // that Sandbox holds, or that the runtime cannot say (runtime.IssuePodReader), and whether the
 // runtime keeps the issue's volume for its next pod (runtime.IssueVolumeReader). It is the one
@@ -38,7 +37,7 @@ const idleTickInterval = time.Minute
 // The Kubernetes runtime implements it; a runtime that runs no pods implements none of it, and the
 // daemon then releases nothing, which is also what `runtime: tmux` wants.
 type issuePods interface {
-	IssuePodRunsConfiguredImage(issue string) bool
+	IssuePodImage(issue string) runtime.PodImage
 	IssueSandbox(issue string) (name string, present bool)
 	runtime.IssuePodReader
 	runtime.IssueVolumeReader
@@ -113,7 +112,7 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 // recordPodRelease).
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	now := w.clockNow().UTC()
-	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
+	image := w.idleRuntime.IssuePodImage(issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
 	// The release's line and the wake of its lane are hooks of the mark's commit, so a mark whose
@@ -123,7 +122,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	err := store.Transact(ctx, w.idleStore.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion)
+			decision = workflow.IdleRelease(view, now, w.idlePeriod, image)
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding
@@ -338,8 +337,8 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 //
 // Every other value is a reason worth a row, the ones that are working as designed
 // (background_work, in_turn, delivery_waiting, reminder_due, awaiting_person) as much as the
-// ones that are not (image, plugin_contract, unreported, bundle_too_large, bundle_save_failed,
-// overtaken, unauthorized): a deployment reads release's health from which of them it sees, so
+// ones that are not (image, unreported, bundle_too_large, bundle_save_failed, overtaken,
+// unauthorized): a deployment reads release's health from which of them it sees, so
 // leaving the healthy ones out would leave it unable to tell a pod kept for good reason from one
 // never decided at all. IdleHoldTreeNotLive is recorded too: a pod of an issue the workflow has
 // taken out is one the close is stopping, and a deployment that sees it every tick is seeing a

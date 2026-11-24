@@ -6,6 +6,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -23,12 +24,9 @@ const (
 	// IdleHoldAwaitingPerson: the pod is a root's, and the root waits on an answer a person has
 	// not given. Its children's pods are not held by it.
 	IdleHoldAwaitingPerson
-	// IdleHoldImage: the pod runs an image other than the one the configuration names, or its
-	// image could not be read at all.
+	// IdleHoldImage: the runtime could not read the pod's image (runtime.PodImageUnread), so
+	// nothing says which pod a release would take. A pod on another image is not held for it.
 	IdleHoldImage
-	// IdleHoldPluginContract: a live claim of the pod speaks a plugin contract other than the
-	// daemon's current one.
-	IdleHoldPluginContract
 	// IdleHoldUpdateRound: an update round of the pod is open on a live claim of it, so the pod
 	// is already being replaced and the replacement is waiting for its workers to do the steps of
 	// the update message (supervise.UpdateTask).
@@ -147,7 +145,6 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldTreeNotLive:      "tree_not_live",
 	IdleHoldAwaitingPerson:   "awaiting_person",
 	IdleHoldImage:            "image",
-	IdleHoldPluginContract:   "plugin_contract",
 	IdleHoldUpdateRound:      "update_round",
 	IdleHoldInTurn:           "in_turn",
 	IdleHoldDelivery:         "delivery_waiting",
@@ -203,9 +200,9 @@ type IdleDecision struct {
 }
 
 // IdleRelease decides whether an issue's pod may be released now. It is the whole rule and it is
-// pure: the view the store read (pods.IdleView), the clock, the idle period, whether the pod
-// runs the image the configuration names, and the plugin contract this daemon serves
-// (api.DaemonAPIVersion) are all it reads, so every condition below is one row of a table test.
+// pure: the view the store read (pods.IdleView), the clock, the idle period and the read of the
+// pod's image (runtime.PodImage) are all it reads, so every condition below is one row of a table
+// test.
 //
 // A pod is released only when all of these hold, and the first that does not is the hold the
 // decision reports:
@@ -228,9 +225,13 @@ type IdleDecision struct {
 //     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
 //     person qualify whatever their root is waiting for;
 //
-//   - the pod runs the image the configuration names, and each live claim speaks this daemon's
-//     plugin contract: a released pod comes back as a fresh pod on the configured image, so a pod
-//     already behind is a relaunch's to replace, not a release's to save;
+//   - the runtime read the pod's image. A pod on the configured image and a pod on another image
+//     are released alike, and so is a pod whose live claims speak another plugin contract than
+//     this daemon's, Oh My Pi or Claude Code: such a pod keeps working on its image and its
+//     plugins until this release, and the issue's next pod takes the configured image and the
+//     daemon's plugins. A pod whose image was not read (runtime.PodImageUnread: no Sandbox, no
+//     pod, a foreign pod, an ended pod, a key with no Sandbox name, or a failed store read) is
+//     held (IdleHoldImage), since nothing then says which pod a release would take;
 //
 //   - no update round of the pod is open on a live claim of it (sjawhar/legion#2538, read from
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()
@@ -239,9 +240,8 @@ type IdleDecision struct {
 //     (internal/daemon's roundEnd.holding), or until the round's bound. A release that deleted the
 //     pod under that wait would leave the round to read its own pod as one that went, and to
 //     tell the issue that the workers which had not answered lost what they had not pushed. A
-//     claim's own plugin round is not this condition's: that claim speaks a contract other than
-//     this daemon's, which the condition above already holds the pod for, and such a round keeps
-//     the pod and the disk anyway;
+//     claim's own plugin round is not this condition's: only a daemon of an earlier release opened
+//     one, it covers that one claim, and it keeps the pod and the disk;
 //
 //   - no claim of the pod has a process in a turn, starting or stopping, or whose launch is not
 //     yet known. Failed, retired and already suspended claims stay as they are and hold nothing;
@@ -263,7 +263,7 @@ type IdleDecision struct {
 // the round it left (supervise.Claim.UpdateRound): the round is over for every claim of it only
 // when the daemon clears it, so a pod is released once the round's own end has run and not
 // before.
-func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage bool, contract int) IdleDecision {
+func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, image runtime.PodImage) IdleDecision {
 	if !view.Found {
 		return IdleDecision{Hold: IdleHoldNoPod}
 	}
@@ -295,13 +295,8 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if len(roles) == 0 {
 		return IdleDecision{Hold: IdleHoldNoLiveClaim}
 	}
-	if !onConfiguredImage {
+	if image == runtime.PodImageUnread {
 		return IdleDecision{Hold: IdleHoldImage}
-	}
-	for _, c := range view.Claims {
-		if c.Live() && c.PluginContract != contract {
-			return IdleDecision{Hold: IdleHoldPluginContract}
-		}
 	}
 	for _, c := range view.Claims {
 		if c.Live() && supervise.IsPodRound(c.UpdateRound) {
@@ -350,18 +345,18 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 // on its own. Nothing else takes such a pod back, and it stands for as long as the record holds
 // the issue.
 //
-// It is pure, as IdleRelease is, and it reads less than that rule: no image, no plugin contract,
-// no turn and no reminder. Each of those is a fact about a live role — the image a released pod
-// would come back on, the contract a live claim speaks, the turn a process is in, the reminder
-// armed in a phase worker's session — and this rule acts only where there is no live role to
-// have one. The idle rule's bundle hold is not a conjunct here either, because this release
-// takes no bundle: it asks the pod for nothing and stores nothing, so an issue whose last
-// release saved work no pod has restored is still this rule's to release, with that bundle left
-// as it is for the pod a later start makes. Nor is the idle rule's hold for a root waiting on a
-// person (IdleHoldAwaitingPerson): that hold keeps the pod of a root whose architect is live and
-// idle, so the answer reaches the session it is waiting in, and a root this rule reads has no
-// live architect to answer in any pod. The answer promotes the root and the daemon queues the
-// architect's start, which builds the Sandbox, the pod and the workspace again.
+// It is pure, as IdleRelease is, and it reads less than that rule: no image, no turn and no
+// reminder. Each of those is a fact about a live role — the image of the pod a live role works
+// in, the turn a process is in, the reminder armed in a phase worker's session — and this rule
+// acts only where there is no live role to have one. The idle rule's bundle hold is not a
+// conjunct here either, because this release takes no bundle: it asks the pod for nothing and
+// stores nothing, so an issue whose last release saved work no pod has restored is still this
+// rule's to release, with that bundle left as it is for the pod a later start makes. Nor is the
+// idle rule's hold for a root waiting on a person (IdleHoldAwaitingPerson): that hold keeps the
+// pod of a root whose architect is live and idle, so the answer reaches the session it is
+// waiting in, and a root this rule reads has no live architect to answer in any pod. The answer
+// promotes the root and the daemon queues the architect's start, which builds the Sandbox, the
+// pod and the workspace again.
 //
 // The pod is released only when all of these hold, and the first that does not is the hold the
 // decision reports:

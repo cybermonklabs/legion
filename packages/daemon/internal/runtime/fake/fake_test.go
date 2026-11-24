@@ -292,7 +292,7 @@ func TestPodDriftAnswersTheScriptAndReplacePodEndsIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
-	reasons := []string{"image ghcr.io/cybermonklabs/legion-worker@sha256:old, now ghcr.io/cybermonklabs/legion-worker@sha256:new"}
+	reasons := runtime.DriftReasons{{Kind: runtime.DriftImage, Text: "image ghcr.io/cybermonklabs/legion-worker@sha256:old, now ghcr.io/cybermonklabs/legion-worker@sha256:new"}}
 	fake.ScriptPodDrift(drifted.Claim, reasons...)
 	known := runtime.Known{Claim: drifted.Claim, Locator: &drifted}
 	if got, err := fake.PodDrift(ctx, known); err != nil || !slices.Equal(got, reasons) {
@@ -345,7 +345,8 @@ func TestReplacePodOfAPodThatIsNotThereAsksNothingAndReplacesNothing(t *testing.
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
-	fake.ScriptPodDrift(drifted.Claim, "image")
+	image := runtime.DriftReasons{{Kind: runtime.DriftImage, Text: "image"}}
+	fake.ScriptPodDrift(drifted.Claim, image...)
 	known := runtime.Known{Claim: drifted.Claim, Locator: &drifted}
 	asked := 0
 	due := func(context.Context) error { asked++; return nil }
@@ -363,7 +364,7 @@ func TestReplacePodOfAPodThatIsNotThereAsksNothingAndReplacesNothing(t *testing.
 	if calls := fake.CallsOf("ReplacePodNoPod"); len(calls) != 1 || calls[0].Pod.Claim != drifted.Claim {
 		t.Fatalf("ReplacePodNoPod recorded %+v, want the one call of the claim", calls)
 	}
-	if got, err := fake.PodDrift(ctx, known); err != nil || !slices.Equal(got, []string{"image"}) {
+	if got, err := fake.PodDrift(ctx, known); err != nil || !slices.Equal(got, image) {
 		t.Fatalf("the claim's drift after no replacement = %q, %v; want it as scripted", got, err)
 	}
 

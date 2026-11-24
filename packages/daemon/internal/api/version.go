@@ -1,5 +1,21 @@
 package api
 
+// DaemonAPIFloor is the floor: the oldest daemon contract whose issue pods this daemon can still
+// run roles in. Each issue pod records the contract of the daemon that made it
+// (`internal/runtime/sandbox`'s `contractAnnotation`), and the drift read gives a pod recorded
+// below the floor the floor kind (`runtime.DriftFloor`), which breaks, so the daemon opens an
+// update round over it at once, paced by `pod_update_max_open_rounds` and
+// `pod_update_rounds_per_minute`. A pod recorded above this daemon's own contract, after a pin
+// moved back, gets no floor kind. The rule for raising it is the floor rule in
+// DaemonAPIVersion's doc below.
+const DaemonAPIFloor = 220
+
+// DaemonAPIFirstFloor is the first floor, the contract of the change that began the record: a pod
+// that records no contract was made by a daemon before that change and counts as made here. It
+// stands for every daemon before the record, so the move onto that release replaced no pod, and a
+// floor raised above it replaces every such pod. It never moves.
+const DaemonAPIFirstFloor = 220
+
 // DaemonAPIVersion is the contract this daemon speaks with the Legion plugin (@sjawhar/pi-legion):
 // the claim, credential, workflow, controller and state shapes the plugin's client parses
 // (`packages/pi-shared/src/daemon-client.ts`, through
@@ -37,6 +53,17 @@ package api
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
 // `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
 // only its row in settings_test.go's classification and the fixture values the field walk asks for.
+//
+// Floor rule: DaemonAPIFloor, above, is the oldest contract whose issue pods this daemon can still
+// run roles in, and DaemonAPIFirstFloor the contract every pod made before the record counts as
+// made at: the first floor stands for every daemon before that change. A pod keeps working on
+// the image and settings it was made with for its whole life, however old, until a release of it
+// (the idle release, a close); only a kind of drift that breaks it, or a record below the floor,
+// gets it an update round. So a change raises the floor, to its own contract, when a pod made by
+// an older daemon can no longer run a role under this one: for example a break in that pod's
+// launcher, its shim, its `workspace-init`, its gh wrapper, the tokens it gets, or its Oh My Pi
+// loading this daemon's plugin pair. A change that breaks a pod of a daemon before the record
+// raises the floor above the first floor. Every pod below the floor then takes one paced round.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.

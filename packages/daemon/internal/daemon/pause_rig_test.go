@@ -146,7 +146,7 @@ func (r *pauseRuntime) holdPod(issue string) {
 	r.sandboxes[issue] = true
 }
 
-func (r *pauseRuntime) IssuePodRunsConfiguredImage(string) bool { return true }
+func (r *pauseRuntime) IssuePodImage(string) runtime.PodImage { return runtime.PodImageConfigured }
 
 func (r *pauseRuntime) IssueSandbox(issue string) (string, bool) {
 	r.mu.Lock()
@@ -469,22 +469,31 @@ func (r *pauseDaemonRig) unfinished(issue string, role claim.Role) supervise.Cla
 }
 
 // inPodRound is c in an update round over its issue's pod (podLocator's), opened at opened and
-// asked of c then, for the reason a pod that runs an outdated image gives.
+// asked of c then, for the reason a pod on another ServiceAccount gives: a kind that breaks the
+// pod, so the round goes on at the daemon's boot (seed scripts that drift for the pod). A round
+// found open at the boot over drift that only drains ends with no replacement at its first
+// reading (dispatch://INFRA-4754 R1).
 func inPodRound(c supervise.Claim, opened time.Time) supervise.Claim {
 	c.UpdateRound = supervise.PodRound("pod-" + strings.ToLower(c.Issue))
-	c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt = "the pod runs an image the deployment has moved on from", &opened, &opened
+	c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt = "account default, now legion-worker", &opened, &opened
 	return c
 }
 
 // seed records root as an admitted tree with its claims through the rig's open store
 // (seedWorkflowTreeIn), puts it on the board at its status, writes each claim's role prompt, and
-// stands its pod up in the runtime.
+// stands its pod up in the runtime. A claim seeded in a round (inPodRound) has its pod answer the
+// drift that round was opened over, as a pod still on the old account does.
 func (r *pauseDaemonRig) seed(root record.Issue, claims ...supervise.Claim) {
 	r.t.Helper()
 	seedWorkflowTreeIn(r.t, r.st, r.project, root, claims...)
 	r.board.show(root.Key, root.DispatchStatus)
 	for _, c := range claims {
 		writePrompt(r.t, r.cfg, c.Token)
+		if c.UpdateRound != "" {
+			drift := runtime.DriftReason{Kind: runtime.DriftAccount, Text: c.UpdateReasons}
+			r.rt.ScriptPodDrift(c.Token, drift)
+			r.rt.ScriptIssuePodDrift(root.Key, drift)
+		}
 	}
 	r.rt.holdPod(root.Key)
 }

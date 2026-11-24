@@ -366,9 +366,12 @@ func TestTheBootReconciliationWarnsOfEachPodRunningAnotherImage(t *testing.T) {
 	if err := r2.ReconcileOrphans(g.ctx, known, 0); err != nil {
 		t.Fatal(err)
 	}
-	for _, loc := range []runtime.Locator{issue, controller} {
+	for loc, keeps := range map[runtime.Locator]string{
+		issue:      "the pod keeps it until its idle release, unless the floor rises above the pod's contract",
+		controller: "its next launch that installs no plugin replaces the pod",
+	} {
 		want := "sandbox runtime: " + loc.Sandbox.Name + " runs image " + testImage + ", the configured image is " + nextImage +
-			"; its agents call this daemon as the older release until its update round replaces the pod"
+			"; its agents call this daemon as the older release, and " + keeps
 		if !strings.Contains(logs.String(), want) || warnings(loc.Sandbox.Name) != 1 {
 			t.Errorf("the boot reconciliation logged %q, want one warning %q", logs.String(), want)
 		}

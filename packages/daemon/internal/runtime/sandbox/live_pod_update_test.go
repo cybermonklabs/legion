@@ -49,9 +49,9 @@ type liveTurn struct {
 
 // pod-update: an update round over a live issue pod, from the drift that opens it to the
 // replacement that ends it. Two workers of one issue run in one pod. The pod their launch just
-// made reads no drift at all; the operator then moves the configuration that pod's Sandbox records
-// it was built from (podShapeAnnotation), which no running pod can be changed to carry, and the
-// runtime reads exactly that as the round's reason. Both workers are tasked. While one of them has
+// made reads no drift at all; the harness then records a daemon below the floor as that pod's maker
+// (contractAnnotation, belowTheFloor), drift that breaks the pod, which no running pod can be
+// changed to carry, and the runtime reads exactly that as the round's reason. Both workers are tasked. While one of them has
 // not answered, the pod is not replaced: it keeps its uid and stays Running, and both workers'
 // processes stay Alive. Each worker answers by pushing its work to the issue's branch and
 // reporting that branch's head, and once both have, ReplacePod ends the round: each worker's
@@ -79,7 +79,7 @@ func (r *liveRig) checkPodUpdate() error {
 			return fmt.Errorf("PodDrift(%s): %w", c.name, err)
 		}
 		if len(drifted) > 0 {
-			return fmt.Errorf("the pod %s a launch of this run just made reads drifted for %s: %s", short(old.Sandbox.PodUID), c.name, strings.Join(drifted, "; "))
+			return fmt.Errorf("the pod %s a launch of this run just made reads drifted for %s: %s", short(old.Sandbox.PodUID), c.name, drifted.String())
 		}
 	}
 	note("runtime", "PodDrift of the pod %s a launch just made: nothing, for %s and %s alike", short(old.Sandbox.PodUID), first.name, second.name)
@@ -88,22 +88,18 @@ func (r *liveRig) checkPodUpdate() error {
 	if err != nil {
 		return err
 	}
-	held := before.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]
-	if held == "" {
-		return fmt.Errorf("the Sandbox %s's pod template records no %s: every launch of this release records the configuration its pod was built from", name, podShapeAnnotation)
-	}
-	moved, reason, err := movedPodShape(held)
+	reason, err := r.belowTheFloorReason()
 	if err != nil {
 		return err
 	}
-	if err := r.patchPodShape(name, moved); err != nil {
+	if err := r.patchContract(name, belowTheFloorRecord); err != nil {
 		return err
 	}
-	note("operator", "patched Sandbox %s: its pod template now records %s=%s, a configuration its running pod %s was never built from",
-		name, podShapeAnnotation, moved, short(old.Sandbox.PodUID))
+	note("operator", "patched Sandbox %s: its pod template now records %s=%s, a daemon below the floor as the maker of its running pod %s",
+		name, contractAnnotation, belowTheFloorRecord, short(old.Sandbox.PodUID))
 
-	var drifted []string
-	if err := r.poll(liveAdoptTimeout, "the runtime to read the moved shape of "+name, func() (bool, error) {
+	var drifted runtime.DriftReasons
+	if err := r.poll(liveAdoptTimeout, "the runtime to read the record of "+name, func() (bool, error) {
 		var err error
 		drifted, err = r.rt.PodDrift(r.ctx, runtime.Known{Claim: first.token, Locator: first.loc})
 		return len(drifted) > 0, err
@@ -115,8 +111,8 @@ func (r *liveRig) checkPodUpdate() error {
 		if err != nil {
 			return fmt.Errorf("PodDrift(%s): %w", c.name, err)
 		}
-		if !slices.Equal(drifted, []string{reason}) {
-			return fmt.Errorf("PodDrift(%s) names %v, want the moved disk alone (%s): nothing else of the pod moved", c.name, drifted, reason)
+		if !slices.Equal(drifted.Texts(), []string{reason}) || !drifted.Breaks() {
+			return fmt.Errorf("PodDrift(%s) names %+v, want the floor alone (%s): nothing else of the pod moved", c.name, drifted, reason)
 		}
 	}
 	note("runtime", "PodDrift of %s's pod, for both workers: %s — what the round is opened on", issue, reason)
@@ -221,7 +217,7 @@ func (r *liveRig) checkPodUpdate() error {
 			return fmt.Errorf("PodDrift(%s) after the round: %w", c.name, err)
 		}
 		if len(drifted) > 0 {
-			return fmt.Errorf("the pod %s the round made reads drifted for %s: %s", short(fresh.Sandbox.PodUID), c.name, strings.Join(drifted, "; "))
+			return fmt.Errorf("the pod %s the round made reads drifted for %s: %s", short(fresh.Sandbox.PodUID), c.name, drifted.String())
 		}
 	}
 	note("runtime", "PodDrift of the pod %s the round made: nothing — the replacement carries the configuration a pod made now is built from", short(fresh.Sandbox.PodUID))
@@ -379,19 +375,30 @@ func (r *liveRig) assertNoTurnCut(turns []*liveTurn) error {
 	return nil
 }
 
-// patchPodShape replaces the configuration the Sandbox name's pod template records its pod was
-// built from (podShapeAnnotation) with shape, as an operator's change to the deployment's pod
-// configuration reaches every Sandbox written after it. The running pod is untouched: its own
-// build is fixed, which is exactly what makes it drifted.
-func (r *liveRig) patchPodShape(name, shape string) error {
-	// The key holds no "~", so only its "/" is escaped for the pointer (RFC 6901).
-	pointer := "/spec/podTemplate/metadata/annotations/" + strings.ReplaceAll(podShapeAnnotation, "/", "~1")
-	body, err := json.Marshal([]map[string]any{{"op": "replace", "path": pointer, "value": shape}})
+// patchContract replaces the contract the Sandbox name's pod template records its pod's maker at
+// (contractAnnotation) with contract, as a pod a daemon below the floor made records it. The
+// running pod is untouched: its own build is fixed, which is exactly what makes it drifted.
+func (r *liveRig) patchContract(name, contract string) error {
+	// The key holds no "~", so only its "/" is escaped for the pointer (RFC 6901). "add" replaces
+	// a record that is there and writes one that is not.
+	pointer := "/spec/podTemplate/metadata/annotations/" + strings.ReplaceAll(contractAnnotation, "/", "~1")
+	body, err := json.Marshal([]map[string]any{{"op": "add", "path": pointer, "value": contract}})
 	if err != nil {
 		return err
 	}
 	_, err = r.kubectl("patch", "sandbox", name, "--type=json", "-p", string(body))
 	return err
+}
+
+// belowTheFloorReason is the one reason the runtime under test gives a pod recorded at
+// belowTheFloor (floorDrift), read from the runtime itself, and an error where its floor reads
+// that record as at or above it, which no daemon of this release does.
+func (r *liveRig) belowTheFloorReason() (string, error) {
+	reason, below := r.rt.floorDrift(map[string]string{contractAnnotation: belowTheFloorRecord})
+	if !below {
+		return "", fmt.Errorf("the runtime reads a pod made at contract %d as at or above its floor %d", belowTheFloor, r.rt.contracts.Floor)
+	}
+	return reason.Text, nil
 }
 
 // liveFleetRound is one issue's side of the fleet-wide round (pod-update-fleet): the workers of
@@ -414,13 +421,11 @@ func (round *liveFleetRound) names() []string {
 	return names
 }
 
-// pod-update-fleet: one change to the pod configuration drifts every pod of the deployment at
-// once (INFRA-419), and each issue's pod is still a round of its own. Two issues run here, each
-// with an architect and a worker in its own pod, and each pod's Sandbox records the one
-// configuration this runtime builds an issue pod from. The operator moves that configuration on
-// both Sandboxes in one step — the same moved shape on each, as one deployment change reaches
-// every pod written after it — and the runtime then reads the same one reason for all four
-// workers.
+// pod-update-fleet: one floor reaches every pod made below it at once (INFRA-419), and each
+// issue's pod is still a round of its own. Two issues run here, each with an architect and a
+// worker in its own pod. The harness records a daemon below the floor as the maker of both pods in
+// one step, as a release that raises the floor leaves every pod an older daemon made, and the
+// runtime then reads the same one reason, of the floor's kind, for all four workers.
 //
 // What the round then promises across the fleet is that each pod waits for its own workers: the
 // second issue's two answer, its pod is replaced, and the first issue's pod is untouched by that
@@ -464,47 +469,30 @@ func (r *liveRig) checkPodUpdateFleet() error {
 			}
 			if len(drifted) > 0 {
 				return fmt.Errorf("the pod %s of issue %s reads drifted for %s before any change: %s",
-					short(round.uid), round.issue, c.name, strings.Join(drifted, "; "))
+					short(round.uid), round.issue, c.name, drifted.String())
 			}
 		}
 	}
 	note("runtime", "PodDrift of the two issue pods %s (%s) and %s (%s): nothing, for every worker of each",
 		short(rounds[0].uid), rounds[0].issue, short(rounds[1].uid), rounds[1].issue)
 
-	// One change, every pod. Both Sandboxes record the one configuration this runtime builds an
-	// issue pod from, so the one moved shape is what the deployment's change leaves on each.
-	var held string
-	for _, round := range rounds {
-		s, err := r.getSandbox(round.sandbox)
-		if err != nil {
-			return err
-		}
-		shape := s.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]
-		if shape == "" {
-			return fmt.Errorf("the Sandbox %s's pod template records no %s: every launch of this release records the configuration its pod was built from",
-				round.sandbox, podShapeAnnotation)
-		}
-		if held == "" {
-			held = shape
-		} else if shape != held {
-			return fmt.Errorf("the two issue pods were built from two configurations (%s and %s); one deployment drifts every pod from one of them", held, shape)
-		}
-	}
-	moved, reason, err := movedPodShape(held)
+	// One record, every pod: both pods are recorded as made below the floor, as a release that
+	// raises the floor above the daemon that made them leaves every such pod.
+	reason, err := r.belowTheFloorReason()
 	if err != nil {
 		return err
 	}
 	for _, round := range rounds {
-		if err := r.patchPodShape(round.sandbox, moved); err != nil {
+		if err := r.patchContract(round.sandbox, belowTheFloorRecord); err != nil {
 			return err
 		}
 	}
-	note("operator", "patched the Sandboxes %s and %s with the one moved configuration %s=%s: one change, every pod of both issues",
-		rounds[0].sandbox, rounds[1].sandbox, podShapeAnnotation, moved)
+	note("operator", "patched the Sandboxes %s and %s to record %s=%s: one floor, every pod of both issues",
+		rounds[0].sandbox, rounds[1].sandbox, contractAnnotation, belowTheFloorRecord)
 
 	for _, round := range rounds {
 		first := round.workers[0]
-		if err := r.poll(liveAdoptTimeout, "the runtime to read the moved shape of "+round.sandbox, func() (bool, error) {
+		if err := r.poll(liveAdoptTimeout, "the runtime to read the record of "+round.sandbox, func() (bool, error) {
 			drifted, err := r.rt.PodDrift(r.ctx, runtime.Known{Claim: first.token, Locator: first.loc})
 			return len(drifted) > 0, err
 		}); err != nil {
@@ -515,8 +503,8 @@ func (r *liveRig) checkPodUpdateFleet() error {
 			if err != nil {
 				return fmt.Errorf("PodDrift(%s): %w", c.name, err)
 			}
-			if !slices.Equal(drifted, []string{reason}) {
-				return fmt.Errorf("PodDrift(%s) names %v, want the one reason the fleet's change left (%s)", c.name, drifted, reason)
+			if !slices.Equal(drifted.Texts(), []string{reason}) || !drifted.Breaks() {
+				return fmt.Errorf("PodDrift(%s) names %+v, want the one reason the floor leaves (%s)", c.name, drifted, reason)
 			}
 		}
 	}
@@ -660,7 +648,7 @@ func (r *liveRig) replaceFleetPod(round *liveFleetRound, mark int) (runtime.Loca
 		}
 		if len(drifted) > 0 {
 			return runtime.Locator{}, fmt.Errorf("the pod %s %s's round made reads drifted for %s: %s",
-				short(fresh.Sandbox.PodUID), round.issue, c.name, strings.Join(drifted, "; "))
+				short(fresh.Sandbox.PodUID), round.issue, c.name, drifted.String())
 		}
 	}
 	note("runtime", "PodDrift of the pod %s %s's round made: nothing — the replacement carries the configuration a pod made now is built from",

@@ -119,7 +119,8 @@ type Runtime struct {
 	resumes      []SpawnResult
 	probes       []ProbeResult
 	failures     map[string]error
-	drift        map[claim.Token][]string
+	drift        map[claim.Token]runtime.DriftReasons
+	issueDrift   map[string]runtime.DriftReasons
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
 	keptVolumes  map[string]time.Time
@@ -151,7 +152,8 @@ func NewRuntime() *Runtime {
 	fake := &Runtime{
 		Now:         time.Now,
 		failures:    map[string]error{},
-		drift:       map[claim.Token][]string{},
+		drift:       map[claim.Token]runtime.DriftReasons{},
+		issueDrift:  map[string]runtime.DriftReasons{},
 		gone:        map[claim.Token]bool{},
 		issuePods:   map[string]string{},
 		keptVolumes: map[string]time.Time{},
@@ -224,9 +226,9 @@ func (r *Runtime) FailCleanupTree(err error) { r.fail("CleanupTree", err) }
 
 // ScriptPodDrift makes every later PodDrift of token's claim answer reasons, as the Sandbox
 // runtime answers a pod built from a configuration the runtime has since moved on from. A claim no
-// call named has drifted from nothing, which is the uninteresting case; nil clears this claim's
-// answer.
-func (r *Runtime) ScriptPodDrift(token claim.Token, reasons ...string) {
+// call named has drifted from nothing, which is the uninteresting case, and carries no floor kind;
+// nil clears this claim's answer.
+func (r *Runtime) ScriptPodDrift(token claim.Token, reasons ...runtime.DriftReason) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if reasons == nil {
@@ -234,6 +236,19 @@ func (r *Runtime) ScriptPodDrift(token claim.Token, reasons ...string) {
 		return
 	}
 	r.drift[token] = reasons
+}
+
+// ScriptIssuePodDrift makes every later IssuePodDrift of issue answer reasons for the pod
+// ScriptIssuePod set, as the Sandbox runtime answers the pod of an issue's Sandbox read by the
+// issue alone. An issue no call named has drifted from nothing; nil clears its answer.
+func (r *Runtime) ScriptIssuePodDrift(issue string, reasons ...runtime.DriftReason) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if reasons == nil {
+		delete(r.issueDrift, issue)
+		return
+	}
+	r.issueDrift[issue] = reasons
 }
 
 // ScriptPodGone makes every later PodDrift of token's claim answer runtime.ErrPodGone, as a
@@ -713,7 +728,7 @@ func (r *Runtime) LaunchBound() time.Duration {
 // call named and for one with no process, as a runtime answers a claim that runs nowhere, and
 // runtime.ErrPodGone for a claim ScriptPodGone named, as a runtime answers a claim whose
 // recorded pod is not there.
-func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
+func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) (runtime.DriftReasons, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "PodDrift", Pod: copyKnown(k)})
@@ -726,7 +741,25 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	if r.gone[k.Claim] {
 		return nil, runtime.ErrPodGone
 	}
-	return append([]string(nil), r.drift[k.Claim]...), nil
+	return append(runtime.DriftReasons(nil), r.drift[k.Claim]...), nil
+}
+
+// IssuePodDrift records its call and answers what ScriptIssuePodDrift set for the issue, for the
+// pod IssuePod answers: runtime.ErrPodGone where that pod is not podUID, as the Sandbox runtime
+// answers a Sandbox that holds another pod or none. It fails as PodDrift fails (FailPodDrift).
+func (r *Runtime) IssuePodDrift(_ context.Context, issue, podUID string, _ []claim.Role) (runtime.DriftReasons, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "IssuePodDrift", Issue: issue})
+	if err := r.failures["PodDrift"]; err != nil {
+		return nil, err
+	}
+	pod, read := r.issuePods[issue]
+	now, live := r.podNow(pod)
+	if !read || !live || now != podUID {
+		return nil, runtime.ErrPodGone
+	}
+	return append(runtime.DriftReasons(nil), r.issueDrift[issue]...), nil
 }
 
 // IssuePod records its call and answers what ScriptIssuePod set for the issue, followed to the pod

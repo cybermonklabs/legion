@@ -89,20 +89,21 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // A live pod a round covers (roundCovers) that has merely drifted from the configuration — a
 // container on another image, the kind's reservation, an operator volume or mount, the disk size,
 // the ServiceAccount it runs as, the role's overlays, the secrets broker's enrollment, the session
-// store or the GitHub owners its gh volume projects a directory for (PodDrift) — is kept,
-// and this role is started in it.
-// Such a pod is replaced by an update round, which first asks every role in it to do the steps
-// of its update message (supervise.UpdateTask) and answer, and then ends the pod (ReplacePod):
-// replacing it at a launch would end every role's turn in it and delete the issue's disk with
-// everything unpushed on it (INFRA-484). A launch into a drifted pod is therefore an ordinary
-// launch, the install of a stale-plugin pair (spec.Plugins, LEGION-164) included, which brings
-// this launch's agent onto the current plugin without a fresh pod. Its role is started as the
-// kept pod was built, from the volumes and mounts of that pod's own stored template (keptBy,
-// keptPod) and not from the configuration as it now reads: two of those drift facets, the
-// broker's enrollment and the role's overlays, are named in the role's own start command, and a
-// process started against what its pod cannot carry refuses to run, never registers, and so
-// never answers the round that is to replace that pod. A pod whose template says nothing this
-// daemon can read is replaced at the launch instead, as every drifted pod was before the round.
+// store, its leak check digest or the GitHub owners its gh volume projects a directory for
+// (PodDrift) — is kept, whatever its age, and this role is started in it. Such a pod keeps working
+// until a release of it where its drift only drains, and is replaced by an update round where the
+// drift is of a kind that breaks it; the round first asks every role in it to do the steps of its
+// update message (supervise.UpdateTask) and answer, and then ends the pod (ReplacePod): replacing
+// it at a launch would end every role's turn in it and delete the issue's disk with everything
+// unpushed on it (INFRA-484). A launch into a drifted pod is therefore an ordinary launch, the
+// install of a stale-plugin pair (spec.Plugins, LEGION-164) included, which brings this launch's
+// agent onto the current plugin without a fresh pod. Its role is started as the kept pod was
+// built, from the volumes and mounts of that pod's own stored template (keptBy, keptPod) and not
+// from the configuration as it now reads: two of those drift facets, the broker's enrollment and
+// the role's overlays, are named in the role's own start command, and a process started against
+// what its pod cannot carry refuses to run, never registers, and so never answers a round. A pod
+// whose template says nothing this daemon can read is replaced at the launch instead, as every
+// drifted pod was before the round.
 //
 // Such a pod is kept unless the update round over it is over by the daemon's rule for a round with
 // no process in its pod (Options.RoundPodEnds, dispatch://INFRA-4109 R7): no role process runs in
@@ -197,12 +198,12 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 //
 // The other disk shape alone ends no live pod whose shape record drifts (shapeDrift). Each change
 // that moves an issue's disk shape moves that record too: keep_volume, the issue's sandbox, the
-// microVM block's storage class and the disk's size. So the pod's update round asks every role in
-// it to do the steps of its update message (supervise.UpdateTask) and then ends it (ReplacePod),
-// and the launch after the round, which finds no live pod, replaces the Sandbox. A live pod whose
-// record does not drift is replaced here, with its Sandbox: that is the cutover from the release
-// before the pod-owned disk. Every launch that replaces the pod, for any reason, replaces a Sandbox
-// of the other shape with it, so the Running patch never writes a pod that mounts a claim its
+// microVM block's storage class and the disk's size. Each of those drains, so the pod keeps
+// working on its own disk until a release of it (or a round for a kind that breaks ends it), and
+// the launch after that, which finds no live pod, replaces the Sandbox. A live pod whose record
+// does not drift is replaced here, with its Sandbox: that is the cutover from the release before
+// the pod-owned disk. Every launch that replaces the pod, for any reason, replaces a Sandbox of
+// the other shape with it, so the Running patch never writes a pod that mounts a claim its
 // Sandbox does not own.
 //
 // A launch resets a kept volume in the same way (volumeReset): it replaces the Sandbox, and with it
@@ -293,11 +294,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// message (supervise.UpdateTask), is what replaces it.
 	//
 	// A Sandbox of the other disk shape (replacement) ends a live pod only where the pod's shape
-	// record does not drift, the cutover from the release before the pod-owned disk. A drifted record
-	// opens the pod's update round, which ends the pod once every role in it has done the steps of
-	// its update message (ReplacePod). A pod that this launch replaces for any other reason takes
-	// such a Sandbox with it below. A reset comes with a pod that is not live: a pod whose init
-	// container failed, or no pod after ReplacePod or the release.
+	// record does not drift, the cutover from the release before the pod-owned disk. A drifted
+	// record keeps the pod working on its own disk until a release of it, the kinds a disk shape
+	// moves all draining. A pod that this launch replaces for any other reason takes such a Sandbox
+	// with it below. A reset comes with a pod that is not live: a pod whose init container failed,
+	// or no pod after ReplacePod or the release.
 	drifted := len(r.shapeDrift(s, l.shapeKey())) > 0
 	replace := !live || (accountDrifted && !covered) ||
 		(replacement != "" && !drifted) ||
@@ -338,11 +339,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	if !replace {
 		// The pod is kept, so this role is started as that pod was built rather than as the
-		// configuration now reads (keptBy): a drifted pod the update round has not replaced yet
-		// carries neither an enrollment nor an overlay the configuration gained after it was
-		// created, and a start naming either would refuse to run, never register, and so never
-		// answer the round that is to replace it (INFRA-484). Where the stored template says
-		// nothing the daemon can read, it cannot tell what the pod carries, and the launch
+		// configuration now reads (keptBy): a drifted pod carries neither an enrollment nor an
+		// overlay the configuration gained after it was created, and a start naming either would
+		// refuse to run and never register — never working in a pod kept until its release, nor
+		// answering a round over drift that breaks the pod (INFRA-484). Where the stored template
+		// says nothing the daemon can read, it cannot tell what the pod carries, and the launch
 		// replaces the pod where it stands, which is what every launch into a drifted pod did
 		// before the round existed.
 		kept, readable := r.keptBy(s, string(pod.UID), l)
@@ -509,9 +510,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // its install hashes to). A launch that keeps such a pod
 // builds its start command from these rather than from the configuration as it now reads, so the
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
-// runs degraded until the update round replaces the pod — able to do the steps of that round's
-// update message (supervise.UpdateTask) and answer it, where a start naming what its pod cannot
-// carry would refuse to run at all (keptPod, INFRA-484).
+// works without what the pod lacks — until a release of the pod where its drift only drains, or
+// its update round where a kind of it breaks, whose update message (supervise.UpdateTask) it can
+// do and answer — where a start naming what its pod cannot carry would refuse to run at all
+// (keptPod, INFRA-484).
 // The same enrollment decision writes the generation's address record (recordAddresses), so the
 // record says what the start said.
 //

@@ -142,6 +142,9 @@ type Runtime struct {
 	// leakCheck is Options.LeakCheckSetting: the deployment's shared public leak check, whose
 	// install and checker every role is told where it is configured (mainEnvironment).
 	leakCheck leakguard.Setting
+	// contracts is Options.Contracts: the contract each pod this runtime makes records, and the
+	// floor and first floor a pod's record is read against (floorDrift).
+	contracts Contracts
 	// volumeTrim is Options.VolumeTrim: the cache trimmer settings an issue pod's launcher is
 	// handed on the answer to its hello (LauncherResolver), nil for a deployment that runs none.
 	volumeTrim *shimwire.LauncherVolumeTrim
@@ -284,6 +287,8 @@ func checkSupervision(opts Options) error {
 		return refuse("no connection directory")
 	case opts.CacheRepositories == nil:
 		return refuse("no repository set for the repository caches")
+	case opts.Contracts.Daemon <= 0 || opts.Contracts.FirstFloor <= 0 || opts.Contracts.Floor < opts.Contracts.FirstFloor:
+		return refuse("contracts %+v: the daemon's contract and the first floor must be positive, and the floor no lower than the first floor", opts.Contracts)
 	}
 	if err := opts.RepositoryCache.check(); err != nil {
 		return refuse("%v", err)
@@ -437,7 +442,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds,
+		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, contracts: opts.Contracts, roundPodEnds: opts.RoundPodEnds,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
@@ -795,15 +800,14 @@ func terminal(p *corev1.Pod) bool {
 // imageDrift is the image a container of p — a role's or an init container — runs that is not
 // image, the one this runtime launches every container with (r.image), and whether there is one.
 // A pod is built whole from one image, so one container's drift is the pod's: it was launched by
-// another release of the daemon, and its agents call this daemon as that release — for a route it
-// no longer serves, a variable it no longer sets — until the pod is replaced. A launch into an
-// issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
-// once every role in it has answered the update message, no turn runs and no claim's activity
-// report holds it (internal/daemon's roundEnd.holding), or at the round's bound (PodDrift,
-// ReplacePod). The controller's pod, which no round covers, is replaced by the next launch into it,
-// an installing one included (roundCovers, podImageDrift), and the repository cache's own pod,
-// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each one
-// it finds. A nil pod holds no drift: it is replaced for being absent.
+// another release of the daemon, and its agents call this daemon as that release. An issue pod on
+// another image keeps working, however old, until its idle release (the image is drift that
+// drains, runtime.DriftImage), and a launch into it keeps it (relaunch); a release whose daemon
+// can no longer serve such a pod raises the floor, and the round that the floor kind opens
+// replaces it (floorDrift). The controller's pod, which no round covers, is replaced by the next
+// launch into it, an installing one included (roundCovers, podImageDrift), and the repository
+// cache's own pod, which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans
+// warns of each one it finds. A nil pod holds no drift: it is replaced for being absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false
@@ -1261,17 +1265,27 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 // a ServiceAccount other than the configured one (accountDrift), and the recorded leak-check
 // manifest differing from the configured one (leakCheckDrift). Each kind of drift is one warning
 // of its own, naming the Sandbox and the held and current values, as ReconcileOrphans says, so a
-// pod holding several is named once for each. A same-named pod u does not own is an earlier
-// Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is ever warned
-// of, for the account as for the image: ReconcileOrphans passes over it before the call, since its
-// own sweep replaces its pod for either drift without a relaunch to wait for.
+// pod holding several is named once for each, at every orphan sweep. Each warning says what ends
+// that drift for the pod's kind (podKindOf): an issue pod keeps its image and its leak check
+// until its idle release, unless the floor rises above it (floorDrift), and is replaced for its
+// account by the update round that kind opens; the controller's pod, which no round covers, is
+// replaced by its next launch that installs no plugin. A same-named pod u does not own is an
+// earlier Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is ever
+// warned of, for the account as for the image: ReconcileOrphans passes over it before the call,
+// since its own sweep replaces its pod for either drift without a relaunch to wait for.
 func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 	pod := r.storedPod(u.GetName())
 	if !ownedBy(pod, u.GetUID()) {
 		return
 	}
+	kind, err := podKindOf(u.GetLabels())
+	covered := err == nil && roundCovers(kind)
+	keeps := "its next launch that installs no plugin replaces the pod"
+	if covered {
+		keeps = "the pod keeps it until its idle release, unless the floor rises above the pod's contract"
+	}
 	if other, drifted := imageDrift(pod, r.image); drifted {
-		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs image %s, the configured image is %s; its agents call this daemon as the older release until its update round replaces the pod", u.GetName(), other, r.image),
+		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs image %s, the configured image is %s; its agents call this daemon as the older release, and %s", u.GetName(), other, r.image, keeps),
 			"sandbox", u.GetName(), "pod", pod.UID)
 	}
 	if account, drifted := accountDrift(pod, r.pod.ServiceAccount); drifted {
@@ -1285,8 +1299,8 @@ func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 		if current == "" {
 			current = "none"
 		}
-		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs leak check manifest %s, the configured manifest is %s; its agents keep the held check until its update round replaces the pod",
-			u.GetName(), held, current), "sandbox", u.GetName(), "pod", pod.UID)
+		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs leak check manifest %s, the configured manifest is %s; its agents keep the held check, and %s",
+			u.GetName(), held, current, keeps), "sandbox", u.GetName(), "pod", pod.UID)
 	}
 }
 

@@ -36,8 +36,8 @@ func (w *idleRigSaveWatch) ReleaseIssue(ctx context.Context, issue, tree string,
 	return w.releaser.ReleaseIssue(ctx, issue, tree, authorize)
 }
 
-func (w *idleRigSaveWatch) IssuePodRunsConfiguredImage(issue string) bool {
-	return w.pods.IssuePodRunsConfiguredImage(issue)
+func (w *idleRigSaveWatch) IssuePodImage(issue string) runtime.PodImage {
+	return w.pods.IssuePodImage(issue)
 }
 
 func (w *idleRigSaveWatch) IssueSandbox(issue string) (string, bool) {

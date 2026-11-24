@@ -217,13 +217,13 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 }
 
 // The same five keys over a pod a round does cover: an issue pod whose shape has moved is kept by
-// every launch into it, whatever moved, and the round PodDrift names the reasons of is what
-// replaces it. This is the direction that must never break — replacing an issue pod where it
-// stands ends every role's turn in it and deletes the disk they work on, with everything unpushed
-// (INFRA-484) — and the four keys beside the image reach a launch through nothing but shapeDrift,
-// which a pod a round covers is never read by (relaunch, roundCovers). A launch installing a
-// stale-plugin pair into an issue pod on another image keeps it too, and installs the pair into
-// it, where the same launch into the controller's pod replaces that pod (podImageDrift,
+// every launch into it, whatever moved, and keeps working until a release of it, since every key
+// of the shape drains. This is the direction that must never break — replacing an issue pod where
+// it stands ends every role's turn in it and deletes the disk they work on, with everything
+// unpushed (INFRA-484) — and the four keys beside the image reach a launch through nothing but
+// shapeDrift, which a pod a round covers is never read by (relaunch, roundCovers). A launch
+// installing a stale-plugin pair into an issue pod on another image keeps it too, and installs the
+// pair into it, where the same launch into the controller's pod replaces that pod (podImageDrift,
 // TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted).
 func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
@@ -257,7 +257,7 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 				t.Fatalf("Resume the tester: %v", err)
 			}
 			if next.Sandbox.PodUID != loc.Sandbox.PodUID {
-				t.Errorf("Resume replaced the issue pod %s with %s, want it kept for its update round",
+				t.Errorf("Resume replaced the issue pod %s with %s, want it kept: drift of its shape drains",
 					loc.Sandbox.PodUID, next.Sandbox.PodUID)
 			}
 			if tc.plugins != nil {
@@ -431,7 +431,8 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 // (podKind.launcherContainer, workloadIdentityVolumes), and the metadata endpoint's variables are
 // the launcher's to set — so a start into the kept gVisor pod names nothing of a microVM. Nor does
 // the launch write one onto the pod: it patches no template, so the Sandbox still records the
-// gVisor pod it runs until the update round PodDrift opens over it replaces that pod.
+// gVisor pod it runs, which keeps working until a release of it (the sandbox kind drains), and the
+// issue's next pod is built in the microVM.
 func TestARoleStartedInAKeptPodWhoseSandboxMovedIsStartedAsItsPodWasBuilt(t *testing.T) {
 	spec := workerSpec(t)
 	// resumed is a resume of the tester at generation 2 into its issue pod, built under no sandbox
@@ -451,7 +452,7 @@ func TestARoleStartedInAKeptPodWhoseSandboxMovedIsStartedAsItsPodWasBuilt(t *tes
 			t.Fatalf("Resume: %v", err)
 		}
 		if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
-			t.Fatalf("Resume replaced the tester's pod %s with %s, want it kept for its update round", loc.Sandbox.PodUID, kept.Sandbox.PodUID)
+			t.Fatalf("Resume replaced the tester's pod %s with %s, want it kept", loc.Sandbox.PodUID, kept.Sandbox.PodUID)
 		}
 		return drifted, startSent(t, g, 2), g.writes(), g.sandbox(loc.Sandbox.Name)
 	}

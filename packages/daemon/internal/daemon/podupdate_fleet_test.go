@@ -231,8 +231,15 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 }
 
 // drifts scripts the runtime to answer reasons for every claim of issue, which is what one
-// template change leaves on every pod built before it.
-func (r *fleetRig) drifts(issue string, reasons ...string) {
+// template change leaves on every pod built before it. Each text is a reason of a kind that breaks
+// (breaking), so the round opens; driftsBy scripts reasons of any kind.
+func (r *fleetRig) drifts(issue string, texts ...string) {
+	r.t.Helper()
+	r.driftsBy(issue, breaking(texts...)...)
+}
+
+// driftsBy is drifts with each reason's own kind.
+func (r *fleetRig) driftsBy(issue string, reasons ...runtime.DriftReason) {
 	r.t.Helper()
 	for key, token := range r.tokens {
 		if key.issue == issue {
@@ -647,8 +654,8 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 		{fleetIssueB, claim.RoleArchitect}, {fleetIssueB, claim.RolePlanner},
 	} {
 		got := rig.awaitRound(c.issue, c.role)
-		if got.UpdateReasons != fleetDrift {
-			t.Errorf("%s's %s was asked for %q, want the one template change %q", c.issue, c.role, got.UpdateReasons, fleetDrift)
+		if want := recorded(fleetDrift); got.UpdateReasons != want {
+			t.Errorf("%s's %s was asked for %q, want the one template change %q", c.issue, c.role, got.UpdateReasons, want)
 		}
 		if got.Pending != nil {
 			t.Errorf("%s's %s holds %+v, want no task: the round's ask is a message on the role's topic", c.issue, c.role, got.Pending)

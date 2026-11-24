@@ -35,13 +35,13 @@ const releasedPodUID = "pod-being-released"
 // one: the bundle of the issue workspace's unpushed work, taken from a launcher of the pod, and
 // the issue-level teardown that takes the pod down — the release's (ReleaseIssue), and the
 // close's (SuspendIssue), which a test reaches through the same lane. It also answers what the
-// daemon reads of the pod outside the transaction (issuePods): whether it runs the configured
-// image, and whether the runtime still holds the issue's Sandbox. The rest of issuePods, which pod
-// the Sandbox holds and whether the runtime keeps the issue's volume, is the embedded fake's.
+// daemon reads of the pod outside the transaction (issuePods): which image it runs, and whether
+// the runtime still holds the issue's Sandbox. The rest of issuePods, which pod the Sandbox holds
+// and whether the runtime keeps the issue's volume, is the embedded fake's.
 type releaseRuntime struct {
 	*fake.Runtime
 	mu        sync.Mutex
-	onImage   bool
+	image     runtime.PodImage
 	bundle    runtime.WorkspaceBundle
 	bundleErr error
 	bundled   []claim.Role
@@ -68,10 +68,10 @@ type releaseRuntime struct {
 	sandboxGate    map[string]chan struct{}
 }
 
-func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
+func (r *releaseRuntime) IssuePodImage(string) runtime.PodImage {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.onImage
+	return r.image
 }
 
 func (r *releaseRuntime) IssueSandbox(issue string) (string, bool) {
@@ -183,7 +183,7 @@ func newIdleRig(t *testing.T) *idleRig {
 	// pass queued with queuedBy.
 	st.PublishRoleHolders(nil)
 
-	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true,
+	rt := &releaseRuntime{Runtime: fake.NewRuntime(), image: runtime.PodImageConfigured,
 		// A bundle names the pod its work came off, as the Kubernetes runtime's own does
 		// (sandbox's Runtime.BundleWorkspace): the store refuses that pod the restore and keeps
 		// the attempt for the pod that replaces it (store.PutWorkspaceBundle).

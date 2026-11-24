@@ -361,8 +361,10 @@ func checkGolden(t *testing.T, name string, manifest any) {
 // Karpenter's, so a pod on Autopilot without the second can be evicted mid-turn by consolidation or
 // a node upgrade. Each carries, beside them, the configuration it was built from, its own kind's
 // in its own sandbox (podShapeAnnotation): the one record an update round reads a pod's drift from
-// (podShapeDrift), written here and nowhere else; and, under a configured leak check setting, the
-// checker it was built under (leakCheckerAnnotation), which a launch keeping the pod tells its role.
+// (podShapeDrift), written here and nowhere else; the contract of the daemon that made it
+// (contractAnnotation), which a later daemon reads against its floor (floorDrift); and, under a
+// configured leak check setting, the checker it was built under (leakCheckerAnnotation), which a
+// launch keeping the pod tells its role.
 func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -379,6 +381,7 @@ func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.
 				doNotDisruptAnnotation: "true",
 				safeToEvictAnnotation:  "false",
 				podShapeAnnotation:     podShape(r, l.kind, l.microVM),
+				contractAnnotation:     strconv.Itoa(testContracts.Daemon),
 				leakCheckerAnnotation:  testLeakCheck.ManifestSHA256,
 			}
 			if got := r.podTemplate(l).Metadata.Annotations; !maps.Equal(got, want) {
@@ -2928,7 +2931,7 @@ func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 		t.Fatalf("the pod runs in %s, want a microVM", got)
 	}
 	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{}, testMicroVM()),
-		leakCheckerAnnotation: testLeakCheck.ManifestSHA256}
+		contractAnnotation: strconv.Itoa(testContracts.Daemon), leakCheckerAnnotation: testLeakCheck.ManifestSHA256}
 	if got := template.Metadata.Annotations; !maps.Equal(got, want) {
 		t.Errorf("the microVM pod's annotations are %v, want exactly %v", got, want)
 	}

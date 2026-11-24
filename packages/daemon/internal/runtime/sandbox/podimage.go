@@ -14,34 +14,41 @@ var (
 	_ runtime.IssueVolumeReader = (*Runtime)(nil)
 )
 
-// IssuePodRunsConfiguredImage says whether the pod of issue's Sandbox is running the image the
-// daemon's configuration names (r.image), read from the pod the runtime's store holds: the pod
-// must be the Sandbox's own, not ended, and no container of it — a role's or an init container —
-// may run another image. That last reading is imageDrift's, the one a relaunch replaces a pod on
-// (relaunch.go), so a release and a relaunch never disagree about which pods are behind.
+// IssuePodImage says which image the pod of issue's Sandbox runs, read from the pod the runtime's
+// store holds. The pod must be the Sandbox's own and must not have ended. It answers
+// runtime.PodImageConfigured where every container of that pod, a role's or an init container,
+// runs the image the daemon's configuration names (r.image), and runtime.PodImageOther where one
+// runs another image. That reading is imageDrift's, the one the drift read gives as the image
+// kind, so the idle release and the drift read agree about which pods run another image.
 //
-// An idle release reads this before it releases a pod, because a released pod comes back as a
-// fresh pod on the configured image: releasing a pod that already runs another image would wake
-// its roles onto a daemon release they never ran under, and a pod on an image this daemon does
-// not serve is a pod a relaunch of any of its roles replaces outright. Anything that leaves the
-// image unread — no Sandbox, no pod, a pod of another Sandbox, an ended pod — answers false: a
-// pod whose image cannot be read is not on the configured image, so the release holds rather
-// than guesses.
-func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
+// The idle release reads this before it releases a pod. A pod on another image keeps working on
+// it until its idle release: no relaunch replaces it for its image, and no update round opens
+// over it for its image alone. The release takes it as it takes a pod on the configured image,
+// and the issue's next pod is made on the configured image. Anything that leaves the image unread
+// answers runtime.PodImageUnread: no Sandbox, no pod, a pod the Sandbox does not own, an ended
+// pod, an issue key no Sandbox name can be built from, or a store read that fails (storedSandbox,
+// which fails where the store cannot answer or the Sandbox it holds cannot be decoded). The
+// release holds such a pod rather than guess which pod it would take.
+//
+// It is the informer's store and never an API call, as IssueSandbox is: the idle pass asks this
+// of every pod of the project on every tick.
+func (r *Runtime) IssuePodImage(issue string) runtime.PodImage {
 	name, err := issueSandboxName(r.project, issue)
 	if err != nil {
-		return false
+		return runtime.PodImageUnread
 	}
 	s, err := r.storedSandbox(name)
 	if err != nil || s == nil {
-		return false
+		return runtime.PodImageUnread
 	}
 	pod := r.storedPod(name)
 	if !ownedBy(pod, s.UID) || terminal(pod) {
-		return false
+		return runtime.PodImageUnread
 	}
-	_, drifted := imageDrift(pod, r.image)
-	return !drifted
+	if _, drifted := imageDrift(pod, r.image); drifted {
+		return runtime.PodImageOther
+	}
+	return runtime.PodImageConfigured
 }
 
 // IssueSandbox says whether the runtime still holds the Sandbox of issue, and what that Sandbox

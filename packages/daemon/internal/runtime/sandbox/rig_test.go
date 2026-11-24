@@ -111,6 +111,7 @@ func testOptions() Options {
 		},
 		CacheRepositories: func() []ghrepo.Repository { return nil },
 		LeakCheckSetting:  testLeakCheck,
+		Contracts:         testContracts,
 		Log:               slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}
 }

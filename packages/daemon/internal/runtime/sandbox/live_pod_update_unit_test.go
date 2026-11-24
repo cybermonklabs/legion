@@ -3,17 +3,13 @@
 package sandbox
 
 import (
-	"encoding/json"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/resource"
-
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -54,69 +50,19 @@ func TestEachRunsPodUpdateIssueNamesABranchOfItsOwn(t *testing.T) {
 	}
 }
 
-// The live check moves the shape a Sandbox records and then holds the runtime's own answer to one
-// reason, so what movedPodShape writes and what podShapeDrift says of it must agree: the moved
-// shape is the recorded one with its disk alone moved, and the pod's one drift reason is that
-// disk's, in the words the check compares. A disk spelled otherwise moves the same way, since the
-// amount, not the spelling, is what drift compares.
-func TestTheMovedShapeDriftsByItsDiskAlone(t *testing.T) {
-	image := "example.test/legion/worker@sha256:" + strings.Repeat("a", 64)
-	for name, disk := range map[string]string{"the run's own disk": "20Gi", "the same amount spelled otherwise": "20480Mi"} {
-		t.Run(name, func(t *testing.T) {
-			record := podShapeRecord{
-				Image: image,
-				Resources: corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")},
-					Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")},
-				},
-				Volumes: []corev1.Volume{{Name: "route", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
-				Mounts:  []corev1.VolumeMount{{Name: "route", MountPath: "/var/run/legion/route"}},
-				Disk:    disk,
-			}
-			encoded, err := json.Marshal(record)
-			if err != nil {
-				t.Fatal(err)
-			}
-			held := string(encoded)
-			moved, reason, err := movedPodShape(held)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var after podShapeRecord
-			if err := json.Unmarshal([]byte(moved), &after); err != nil {
-				t.Fatalf("the moved shape %q cannot be read: %v", moved, err)
-			}
-			if after.Disk == record.Disk {
-				t.Fatalf("the moved shape holds the recorded disk %s", after.Disk)
-			}
-			after.Disk = record.Disk
-			if !equality.Semantic.DeepEqual(after, record) {
-				t.Fatalf("the moved shape moved more than the disk: %+v, want %+v", after, record)
-			}
-			s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
-				Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: moved}},
-			}}}
-			if drifted := podShapeDrift(s, held); !slices.Equal(drifted, []string{reason}) {
-				t.Fatalf("podShapeDrift of the moved shape = %q, want the one reason the check holds it to, %q", drifted, reason)
-			}
-		})
+// The live checks write belowTheFloor as the maker of a running pod and then hold the runtime's own
+// answer to one reason: a pod so recorded gives exactly one reason, of the floor's kind, which
+// breaks, under the floor every daemon of this release holds at the least, the first floor.
+func TestThePodUpdateChecksRecordReadsBelowTheFloorAlone(t *testing.T) {
+	if belowTheFloor >= api.DaemonAPIFirstFloor {
+		t.Fatalf("the checks write contract %d, want one below the first floor %d", belowTheFloor, api.DaemonAPIFirstFloor)
 	}
-}
-
-// A shape no launch of this release wrote is not something the check moves on: it says so instead
-// of patching a Sandbox with a shape of its own invention.
-func TestAnUnreadableShapeIsNotMoved(t *testing.T) {
-	for name, held := range map[string]string{
-		"no shape at all":    "",
-		"not a shape":        "{",
-		"no disk in it":      `{"image":"example.test/legion/worker@sha256:a","resources":{},"disk":""}`,
-		"an unreadable disk": `{"image":"example.test/legion/worker@sha256:a","resources":{},"disk":"twenty"}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			if moved, reason, err := movedPodShape(held); err == nil {
-				t.Fatalf("movedPodShape(%q) = %q, %q, nil; want a refusal", held, moved, reason)
-			}
-		})
+	g := newRig(t, nil)
+	loc := g.spawn(workerSpec(t))
+	holdContract(t, g, g.r, loc.Sandbox.Name, belowTheFloorRecord)
+	drifted := driftReasonsOf(t, g, g.r, loc)
+	if len(drifted) != 1 || drifted[0].Kind != runtime.DriftFloor || drifted[0].Kind.Drains() {
+		t.Fatalf("PodDrift of a pod recorded at contract %d = %+v, want one reason of the floor's kind", belowTheFloor, drifted)
 	}
 }
 
@@ -159,57 +105,5 @@ func TestTheFleetRoundsTwoIssuesNameBranchesOfTheirOwn(t *testing.T) {
 				t.Fatalf("a killed run's %s is swept as %q, want the branch itself: its shape is not the sweep's", branch, stale)
 			}
 		}
-	}
-}
-
-// The fleet check's premise: every issue pod of one runtime is built from the one configuration,
-// so the one moved shape the operator writes onto each Sandbox drifts every one of them, by the
-// same one reason the check holds each worker's PodDrift to. A pod built from another
-// configuration is another fleet, and the check says so rather than patching a shape of its own
-// invention over it.
-func TestOneMovedShapeDriftsEveryPodBuiltFromTheHeldOne(t *testing.T) {
-	image := "example.test/legion/worker@sha256:" + strings.Repeat("b", 64)
-	record := podShapeRecord{
-		Image: image,
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")},
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")},
-		},
-		Volumes: []corev1.Volume{{Name: "route", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
-		Mounts:  []corev1.VolumeMount{{Name: "route", MountPath: "/var/run/legion/route"}},
-		Disk:    "20Gi",
-	}
-	encoded, err := json.Marshal(record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	held := string(encoded)
-	moved, reason, err := movedPodShape(held)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Two issues, each a Sandbox of its own, each built from the one held configuration and each
-	// carrying the one moved shape the operator's single change writes.
-	for _, issue := range []string{"S4A-101", "S4A-102"} {
-		s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
-			Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: moved}},
-		}}}
-		if drifted := podShapeDrift(s, held); !slices.Equal(drifted, []string{reason}) {
-			t.Fatalf("%s's pod drifts by %q after the one change, want the one reason %q every pod of the fleet reads", issue, drifted, reason)
-		}
-	}
-	// A pod of another configuration is no part of this fleet: the same moved shape leaves it
-	// drifting by more than that one reason, which is what the check refuses before it patches.
-	other := record
-	other.Image = "example.test/legion/worker@sha256:" + strings.Repeat("c", 64)
-	otherEncoded, err := json.Marshal(other)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
-		Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: moved}},
-	}}}
-	if drifted := podShapeDrift(s, string(otherEncoded)); slices.Equal(drifted, []string{reason}) {
-		t.Fatalf("a pod built from another configuration reads the one fleet reason %q, so the check could not tell the two apart", reason)
 	}
 }
