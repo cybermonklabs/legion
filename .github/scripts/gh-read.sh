@@ -11,16 +11,30 @@
 # naming the wait and the limit, sleeps until then and runs the command once more; when that time
 # has passed by the moment it would sleep (a slow host), it runs the command once more at once and
 # logs no wait. When that time falls past the limit, or no limit can be read, it runs nothing more
-# and fails by name at once. Any other failure is the command's own: its stdout, its stderr and
-# its exit status reach the caller as a bare call's would. It returns the status of the run it
-# ended on, or 75 when it failed by name: a wait past the limit, no limit to wait within, a reset
-# it could not read, or a refusal again after the wait. Every line of its own goes to stderr;
-# stdout holds the stdout of the run it ended on and nothing else, so a run it repeats leaves no
-# half page in the caller's hands.
+# and fails by name at once. Any other failure is the command's own: its stdout and its exit
+# status reach the caller as a bare call's would, and its stderr is kept (below). It returns the
+# status of the run it ended on, or 75 when it failed by name: a wait past the limit, no limit to
+# wait within, a reset it could not read, or a refusal again after the wait. Every line of its own
+# goes to stderr; stdout holds the stdout of the run it ended on and nothing else, so a run it
+# repeats leaves no half page in the caller's hands. That stdout is gh's answer: the caller reads
+# it, and prints of it only what it holds to a value it expects.
 #
-# --stderr <file> writes the stderr of the run it ended on to <file> instead of stderr, for a
-# caller that reads gh's words (a 404 told apart from a refusal); an earlier run's stderr, and
-# every line of the helper's own, still reach stderr, where the job log holds them.
+# gh's words are never printed. Whatever answers gh's call in GitHub's place holds gh's token, and
+# gh prints that party's message on stderr (`gh: <message> (HTTP 404)`), or the client's error on
+# a failed connection; either can carry the token, and Actions masks a token only by its exact
+# string. So the stderr of every run, and the words and answer of the rate_limit read, stay in a
+# file of their own that the helper does not remove, under RUNNER_TEMP (TMPDIR, else /tmp, outside
+# Actions), and the helper prints one line of its own on stderr in their place:
+#   gh-read.sh: the command exited <status> (HTTP <nnn>); its own words are in <file>
+# the HTTP status being the last `(HTTP nnn)` gh wrote, three digits, and left out where gh wrote
+# none. A run that wrote nothing on stderr leaves no file and no line. In CI the file is under
+# RUNNER_TEMP, which the runner removes at the job's end, so the job log keeps only the exit and
+# the HTTP status; a run on a person's box keeps the file.
+#
+# --stderr <file> writes the stderr of the run it ended on to <file> instead, for a caller that
+# reads gh's words (a 404 told apart from a refusal), and prints no line for it: the caller names
+# that file. An earlier run's stderr is kept as above, and every line of the helper's own reaches
+# stderr, where the job log holds it.
 #
 # The two limits, told apart by the API's own message, which gh prints for a 403 or a 429:
 #   * The hourly budget ("API rate limit exceeded for installation ID <n>", or "already
@@ -39,8 +53,8 @@
 #     names, and where the answer names none, at least one minute. gh prints no header of an
 #     answer but under GH_DEBUG=api, which logs each request and its answer, body and all, from a
 #     `* Request at` line to a `* Request took` line, so the helper runs `gh api` under
-#     GH_DEBUG=api, reads the answer's headers out of that log, and hands the caller gh's stderr
-#     without it. Only a `gh api` without --paginate: one request, whose log ends at the last
+#     GH_DEBUG=api, reads the answer's headers out of that log, and keeps gh's stderr without
+#     it. Only a `gh api` without --paginate: one request, whose log ends at the last
 #     `took` line, which a line of the body cannot move (_gh_read_run). gh release view, edit and
 #     upload send a GraphQL lookup and a REST request together, and a paginated read sends one per
 #     page, so a log of theirs holds more than one answer's body (a draft release's name and body,
@@ -70,7 +84,8 @@
 # set (JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES unset, or no Runner.Worker to measure from)
 # keeps those two later attempts, as the ladder made them before the wait existed: one may land
 # after a short reset. It prints the stdout of the attempt that succeeded and nothing else; every
-# attempt's stderr goes to the caller's stderr, where the job log holds it. It returns 0 for the
+# attempt's stderr is kept as gh_wait_reset keeps it, and the line naming its file reaches the
+# caller's stderr, where the job log holds it. It returns 0 for the
 # attempt that succeeded, 75 when gh_wait_reset failed by name on the attempt it stopped at (past
 # a limit, another attempt within seconds cannot find a limit that lifts later), and 1 when all
 # three were refused otherwise, which is the caller's to answer: a refused jobs list leaves
@@ -91,7 +106,7 @@ GH_WAIT_MARGIN=30
 # `set -e` (and inherit_errexit) reaches the decision below rather than leaving at the first
 # refused run.
 gh_wait_reset() {
-  local into='' dir status=0 kind reset=0 seconds named until wake now pause limit deadline why failure=''
+  local into='' dir status=0 kind reset=0 seconds named until wake now pause limit deadline why failure='' probe
   if [ "${1:-}" = --stderr ]; then
     into=$2
     shift 2
@@ -101,7 +116,14 @@ gh_wait_reset() {
   kind=$(_gh_read_refusal "$status" "$dir/err" "$dir/out")
   if [ -n "$kind" ]; then
     if [ "$kind" = budget ] && ! reset=$(_gh_read_reset 2> "$dir/probe"); then
-      failure="GitHub refused this call for its API rate limit, and its rate_limit route did not say when the budget resets ($(head -n 1 "$dir/probe"))"
+      if [ ! -s "$dir/probe" ]; then
+        probe="it said nothing"
+      elif probe=$(_gh_read_kept "$dir/probe"); then
+        probe="its words and answer are in $probe"
+      else
+        probe="its words and answer could not be kept"
+      fi
+      failure="GitHub refused this call for its API rate limit, and its rate_limit route did not say when the budget resets$(_gh_read_http "$dir/probe"); $probe"
       reset=0
     fi
     # Read after the rate_limit read, which can take its whole 30 s bound: a clock from before it
@@ -135,8 +157,9 @@ gh_wait_reset() {
       fi
     fi
     if [ -z "$failure" ]; then
-      # The refused run's words stay in the log; the run below is the one the caller gets.
-      cat "$dir/err" >&2
+      # The refused run's words are kept, its file named in the log; the run below is the one the
+      # caller gets.
+      _gh_read_words "$dir/err" "$status"
       now=$(date +%s)
       pause=$((wake > now ? wake - now : 0))
       if [ "$pause" -gt 0 ]; then
@@ -156,11 +179,11 @@ gh_wait_reset() {
       fi
     fi
   fi
-  # The run it ended on: its words, then the helper's own refusal or its stdout.
+  # The run it ended on: its words, kept, then the helper's own refusal or its stdout.
   if [ -n "$into" ]; then
     cat "$dir/err" > "$into"
   else
-    cat "$dir/err" >&2
+    _gh_read_words "$dir/err" "$status"
   fi
   if [ -n "$failure" ]; then
     echo "::error::$failure" >&2
@@ -255,7 +278,8 @@ _gh_read_refusal() {
 
 # _gh_read_reset: prints the latest reset (epoch seconds) of the core and graphql budgets that
 # GET /rate_limit reports at 0, or 0 when neither is. Fails with gh's words on stderr when the
-# route does not answer, bounded like every read the ladder makes.
+# route does not answer, and with its answer there when that is no epoch, bounded like every read
+# the ladder makes; its caller keeps that stderr in a file and prints none of it.
 _gh_read_reset() {
   local reset
   reset=$(timeout 30 gh api rate_limit \
@@ -266,6 +290,36 @@ _gh_read_reset() {
     return 1
   fi
   echo "$reset"
+}
+
+# _gh_read_words <file> <status>: keeps a run's stderr, <file>, when it holds any, and prints the
+# one line the header names in its place: the run's exit status, the HTTP status gh named and the
+# kept file.
+_gh_read_words() {
+  local kept
+  [ -s "$1" ] || return 0
+  if kept=$(_gh_read_kept "$1"); then
+    echo "gh-read.sh: the command exited $2$(_gh_read_http "$1"); its own words are in $kept" >&2
+  else
+    echo "gh-read.sh: the command exited $2$(_gh_read_http "$1"); its own words could not be kept" >&2
+  fi
+}
+
+# _gh_read_kept <file>: copies <file> to a file of its own under RUNNER_TEMP (TMPDIR, else /tmp,
+# outside Actions) that the helper never removes, and prints that file's path.
+_gh_read_kept() {
+  local kept
+  kept=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/gh-read-words.XXXXXX") || return 1
+  cat "$1" > "$kept" || return 1
+  echo "$kept"
+}
+
+# _gh_read_http <file>: ` (HTTP <nnn>)`, the last HTTP status gh named in <file> as gh names one,
+# three digits and nothing of the words around them; nothing when it names none.
+_gh_read_http() {
+  local http
+  http=$(grep -oE '\(HTTP [0-9]{3}\)' "$1" | tail -n 1) || true
+  echo "${http:+ $http}"
 }
 
 # _gh_read_deadline: prints `<epoch> job` or `<epoch> step`, the earlier of the limits

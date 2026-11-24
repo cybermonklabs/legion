@@ -51,11 +51,12 @@ runs() { printf '%s\n' "$@" | jq -s '.'; }
 # reasoning) and status.
 run_cancels() {
   set +e
-  out=$(RUN_ID=$1 HEAD_BRANCH=$2 RUNS=$3 timeout 60 "$script_dir/merge-group-cancels.sh" 2>"$work/err")
+  out=$(RUN_ID=$1 HEAD_BRANCH=$2 RUNS=$3 RUNNER_TEMP="$work/temp" timeout 60 "$script_dir/merge-group-cancels.sh" 2>"$work/err")
   status=$?
   set -e
   err=$(cat "$work/err")
 }
+mkdir "$work/temp"
 
 echo "case: an older group of the same pull request is cancelled by the newer group's start"
 # The older group's run was created first and started last: the queue rebuilt pull request 2700
@@ -96,5 +97,56 @@ lagging=$(runs "$(mg_run 41874000200 2700 "$main_older" in_progress 2026-11-04T1
 run_cancels 41874000100 "$(queue_branch 2700 "$main_older")" "$lagging"
 check "it decides rather than failing" "$(is "$status" 0)"
 check "it cancels no group it cannot prove is older than itself" "$(is "$out" "")"
+
+echo "case: the reasoning holds no word of RUNS but the values GitHub gives its fields"
+# RUNS is what `gh run list` answered in cancel-started-act.sh, and whatever answers that call in
+# GitHub's place holds gh's token and writes the answer. Each RUNS below holds the marker
+# not-a-secret-token in a field the script printed: an older group's branch and its status, a
+# createdAt that is no time, and RUNS that is no array at all. No run of eight of its characters
+# (redacttest.Piece's run) may be in what the script prints. RUNS stays in a file it names.
+marker=not-a-secret-token
+# prints_no_marker <text>: true when the text holds no run of eight characters of the marker.
+prints_no_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    if [[ $1 == *"${marker:at:8}"* ]]; then
+      echo false
+      return
+    fi
+  done
+  echo true
+}
+# kept_marker <text>: true when the file the text names as keeping RUNS holds the marker.
+kept_marker() {
+  local kept
+  kept=$(sed -n 's/.*it is kept in \([^ ]*\)$/\1/p' <<<"$1" | sed -n 1p)
+  if [ -n "$kept" ] && grep -qF -- "$marker" "$kept"; then echo true; else echo false; fi
+}
+marked=$(runs \
+  "$(jq --arg branch "gh-readonly-queue/$marker/pr-2700-$main_older" '.headBranch = $branch' \
+    <<<"$(mg_run 41871000100 2700 "$main_older" in_progress 2026-11-04T19:00:00Z)")" \
+  "$(mg_run 41871000150 2700 "$main_older" "$marker" 2026-11-04T19:01:00Z)" \
+  "$(mg_run 41871000200 2700 "$main_tip" in_progress 2026-11-04T19:05:00Z)")
+run_cancels 41871000200 "$(queue_branch 2700 "$main_tip")" "$marked"
+while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"$'\n'"$err"
+check "twin: RUNS holds the marker, in a branch and in a status" "$(is "$(grep -cF -- "$marker" <<<"$marked")" 2)"
+check "decides as before: both older groups are cancelled" \
+  "$(is "$status $out" "0 cancel 41871000100"$'\n'"cancel 41871000150")"
+check "prints no run of the marker RUNS holds" "$(prints_no_marker "$out$err")"
+check "names the branch for what it is" \
+  "$(contains "$err" "^run 41871000100 (a branch of pull request 2700 that is not on this run's base main with a commit id for its parent) is a group of pull request 2700")"
+check "and the status" \
+  "$(contains "$err" "^run 41871000150 (gh-readonly-queue/main/pr-2700-$main_older) is a group .* and is in a status that is none of GitHub's, so")"
+check "and prints a branch and a status of GitHub's as they came (control)" \
+  "$(is "$(contains "$err" "^run 41871000150 (gh-readonly-queue/main/pr-2700-$main_older) ") $(contains "$err" 'and is in_progress, so')" 'true true')"
+for bad in "\"$marker\"" "$(runs "$(mg_run 41871000100 2700 "$main_older" in_progress "$marker")")"; do
+  run_cancels 41871000200 "$(queue_branch 2700 "$main_tip")" "$bad"
+  while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"$'\n'"$err"
+  check "bad RUNS: fails and cancels nothing, as before" "$(is "$status $out" '1 ')"
+  check "  prints no run of the marker it holds" "$(prints_no_marker "$out$err")"
+  check "  names the file that keeps RUNS" \
+    "$(contains "$err" "^::error::RUNS .*; it is kept in $work/temp/merge-group-cancels-runs\.")"
+  check "  that file holds the marker, where the operator finds it" "$(kept_marker "$err")"
+done
 
 summary "the merge-group cancel decision"

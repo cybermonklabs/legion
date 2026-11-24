@@ -144,7 +144,23 @@ fi
 # group's base, so no group stands in front of it, and when GitHub refuses that read three times,
 # which leaves the post as it was before this read existed. It sets tip for the line that says why
 # nothing went up.
+#
+# What answers that read, and the jobs read below, in GitHub's place holds gh's token and writes
+# the answer, so this script prints no word of an answer but a closed value it expects: the tip
+# as a commit id (40 hex digits), and each job's live status as one of GitHub's. Any other tip is
+# kept in a file of its own, which outlives this script (RUNNER_TEMP's on a runner, until the job
+# ends), and the line names that file in its stead (keep).
 tip=
+# keep <what> <text>: writes the text to a file of its own and prints the words that name it.
+keep() {
+  local kept
+  if kept=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ci-ok-report-$1.XXXXXX") &&
+    printf '%s\n' "$2" > "$kept"; then
+    echo "it is kept in $kept"
+  else
+    echo "it could not be kept"
+  fi
+}
 front_of_queue() {
   if ! tip=$(gh_read gh api "repos/$GITHUB_REPOSITORY/git/ref/${BASE_REF#refs/}" --jq .object.sha); then
     echo "::warning::GitHub refused the tip of $BASE_REF three times, so this group may stand behind the front of the queue; the failing ci-ok goes up all the same, as every other refusal here prefers the failing verdict"
@@ -156,7 +172,12 @@ if [ "$EVENT" = merge_group ]; then
   case "$JOB_STATUS/$(jq -r .result <<<"$CHANGES")" in
     failure/* | cancelled/* | */failure | */cancelled)
       if ! front_of_queue; then
-        echo "$JOB ended $JOB_STATUS (changes ended $(jq -r .result <<<"$CHANGES")) on a merge-group run whose group stands behind the front of the queue: its base $BASE_SHA is not $tip, the tip of $BASE_REF. The queue takes its pull request out only once the groups in front of it have ended, and an early post would let the queue build another group on this one, so nothing is posted from here; the ci-ok job reaches this run's verdict at the end of the run and holds a failing one until the group is the front"
+        if [[ $tip =~ ^[0-9a-f]{40}$ ]]; then
+          tip_said="$tip, the tip of $BASE_REF"
+        else
+          tip_said="the tip of $BASE_REF, which GitHub's answer gave as no commit id ($(keep tip "$tip"))"
+        fi
+        echo "$JOB ended $JOB_STATUS (changes ended $(jq -r .result <<<"$CHANGES")) on a merge-group run whose group stands behind the front of the queue: its base $BASE_SHA is not $tip_said. The queue takes its pull request out only once the groups in front of it have ended, and an early post would let the queue build another group on this one, so nothing is posted from here; the ci-ok job reaches this run's verdict at the end of the run and holds a failing one until the group is the front"
         exit 0
       fi
       ;;
@@ -241,7 +262,11 @@ def ended($job):
         elif any(. == "success") then "success"
         else "skipped" end
     else null end;
-def live($job): [mine($job)[] | select(.status != "completed") | .status] | first // "unlisted";
+# A status GitHub does not give a job (queued, in_progress, waiting, requested, pending) is read as
+# unread, as every job of a refused list is: the word is the answer's, and printed it would print
+# whatever answered the read in GitHub's place.
+def live($job): [mine($job)[] | select(.status != "completed") | .status] | first // "unlisted"
+  | if IN("queued", "in_progress", "waiting", "requested", "pending", "unlisted") then . else "unread" end;
 {changes: $changes}
 + ([$always[] | select(. != "changes") | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
 + ([$map | keys_unsorted[] | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)

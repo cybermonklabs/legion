@@ -126,4 +126,48 @@ check "it names the ref" \
   "$(contains "$err" "^::error::merge_group.head_ref 'refs/heads/gh-readonly-queue/main/pr-2847-$short' names no queued pull request ")"
 check "it reads no route" "$(is "$(gh_calls)" "")"
 
+echo "case: the payload holds no word of the answer but the pull request's number and two shas"
+# Whatever answers the read in GitHub's place holds gh's token and writes the answer, and
+# check-pr-text.sh prints the number and both shas of the payload this script writes. Each answer
+# below holds the marker not-a-secret-token in one of them, as a string, which the script read as
+# a sha (or took as the number); no run of eight of its characters (redacttest.Piece's run) may
+# be in what the script prints or in the payload it hands on. A refused answer stays in its file.
+marker=not-a-secret-token
+# prints_no_marker <text>: true when the text holds no run of eight characters of the marker.
+prints_no_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    if [[ $1 == *"${marker:at:8}"* ]]; then
+      echo false
+      return
+    fi
+  done
+  echo true
+}
+cp "$work/pull-request.answer" "$work/pull-request.good"
+for field in headRefOid baseRefOid number; do
+  jq --arg field "$field" --arg marker "$marker" '.data.repository.pullRequest[$field] = $marker' \
+    "$work/pull-request.good" > "$work/pull-request.answer"
+  merge_group_event "refs/heads/gh-readonly-queue/main/pr-2847-$pull_head"
+  find_payload merge_group
+  payload=$(cat "$work/temp/pull-request-event.json" 2> /dev/null || true)
+  while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"$'\n'"$err"
+  printf '    payload: %s\n' "$payload"
+  check "$field: the stand-in gh is the one called (control)" \
+    "$(is "$(gh_calls)" 'graphql QueuedPull {"owner":"o","repo":"r","number":2847}')"
+  check "$field, twin: the stand-in's answer holds the marker" \
+    "$(is "$(grep -cF -- "$marker" "$work/pull-request.answer")" 1)"
+  check "$field: refused" "$(is "$status" 1)"
+  check "$field: prints no run of the marker the answer holds" "$(prints_no_marker "$out$err")"
+  check "$field: hands on no run of it in the payload" "$(prints_no_marker "$payload")"
+  check "$field: names the file that keeps the answer" \
+    "$(contains "$err" "^find-pr-payload.sh: it answered no pull request #2847 with a base and a head sha of 40 lowercase hex digits; its answer is in $work/temp/pull-request.json\$")"
+  check "$field: that file holds the marker, where the operator finds it" \
+    "$(is "$(grep -cF -- "$marker" "$work/temp/pull-request.json")" 1)"
+done
+cp "$work/pull-request.good" "$work/pull-request.answer"
+find_payload merge_group
+check "GitHub's own answer is still handed on (control)" \
+  "$(is "$status $(jq -r '.pull_request.head.sha' "$work/temp/pull-request-event.json")" "0 $pull_head")"
+
 summary "the pull request payload the pr-title job checks a pull request's text against"
