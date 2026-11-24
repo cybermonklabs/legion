@@ -476,6 +476,33 @@ func processEnded(t *testing.T, pid int) bool {
 	return ok && strings.HasPrefix(after, "Z")
 }
 
+// watchGroupGone watches the process group whose leader is pid, every testwait.Poll, until the
+// group answers kill with ESRCH, which it does once no member of it is left, its leader reaped (a
+// zombie still answers), or until the watch is stopped. stop ends the watch and answers when the
+// watch first saw the group gone, read after that fact, and whether it saw it at all.
+func watchGroupGone(pid int) (stop func() (gone time.Time, seen bool)) {
+	var gone time.Time
+	stopped, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(testwait.Poll)
+		defer ticker.Stop()
+		for !errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH) {
+			select {
+			case <-stopped:
+				return
+			case <-ticker.C:
+			}
+		}
+		gone = time.Now()
+	}()
+	return func() (time.Time, bool) {
+		close(stopped)
+		<-done
+		return gone, !gone.IsZero()
+	}
+}
+
 // The end of a command's context stops its whole group with SIGTERM first and SIGKILL only after
 // the grace. The child here records its SIGTERM and keeps running, so it proves both halves at
 // once: the record is the SIGTERM, and the SIGKILL that finally ends it cannot have been sent
@@ -514,24 +541,60 @@ func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
 // reads the order of facts: the lock, which only the child's trap removes, is gone by the time the
 // run ends, and the child ended by its own exit 0, which only that trap gives, so it left before
 // any SIGKILL, which would have ended it by the signal instead.
+//
+// The row also reads that the grace ended once the group was gone, not at the end of its span
+// (StopGrace). A stop that sits the grace out returns from Cancel no sooner than StopGrace after
+// it sent the SIGTERM, and Wait returns only once Cancel has, so such a run ends no sooner than
+// StopGrace after the stop: a bound the production constant sets from below, which no load can
+// shorten. A run that ended sooner shows the early end. A run that ended later is judged only
+// where the row's own watch saw the group gone inside half the grace (watchGroupGone): that run
+// went on for at least the other half with nothing left in its group to stop, and the row fails.
+// Where the group went later, a loaded machine that held up the child's own exit cannot be told
+// from a grace sat out, so that run is not judged, and the row runs again, until a run of the
+// right order comes, within a minute.
 func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
-	dir := t.TempDir()
-	ready, lock := filepath.Join(dir, "ready"), filepath.Join(dir, "index.lock")
-	child := startChild(t, `: >"$2"; trap 'rm -f "$2"; exit 0' TERM; : >"$1"; `+childLives, ready, lock)
+	// The last run may spend its own far bound (answerBudget) and a second for the row to fail in.
+	within := testwait.Bounded(t, time.Minute, answerBudget+time.Second)
+	until := time.Now().Add(within)
+	for runs := 1; ; runs++ {
+		dir := t.TempDir()
+		ready, lock := filepath.Join(dir, "ready"), filepath.Join(dir, "index.lock")
+		child := startChild(t, `: >"$2"; trap 'rm -f "$2"; exit 0' TERM; : >"$1"; `+childLives, ready, lock)
+		group := watchGroupGone(child.cmd.Process.Pid)
 
-	child.stop()
-	err := child.wait(t)
+		stopped := time.Now()
+		child.stop()
+		err := child.wait(t)
+		took := time.Since(stopped)
+		gone, seen := group()
 
-	// The child took the lock before it reported that it was running, which startChild waited for,
-	// so a lock that is gone here is one the child's own SIGTERM handler removed.
-	if _, statErr := os.Stat(lock); !errors.Is(statErr, os.ErrNotExist) {
-		t.Errorf("the lock the child held is still there (%v) after the run ended: the stop gave it no SIGTERM to remove it on (Run = %v)", statErr, err)
-	}
-	if state := child.cmd.ProcessState; !state.Exited() || state.ExitCode() != 0 {
-		t.Errorf("the child ended as %v, want its own exit 0 from its SIGTERM trap: a stop whose SIGKILL came before the trap's exit ended it by that signal (Run = %v)", state, err)
-	}
-	if !child.killed() {
-		t.Errorf("killed() = false for a command the end of its context stopped (Run = %v)", err)
+		// The child took the lock before it reported that it was running, which startChild waited
+		// for, so a lock that is gone here is one the child's own SIGTERM handler removed.
+		if _, statErr := os.Stat(lock); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("run %d: the lock the child held is still there (%v) after the run ended: the stop gave it no SIGTERM to remove it on (Run = %v)", runs, statErr, err)
+		}
+		if state := child.cmd.ProcessState; !state.Exited() || state.ExitCode() != 0 {
+			t.Errorf("run %d: the child ended as %v, want its own exit 0 from its SIGTERM trap: a stop whose SIGKILL came before the trap's exit ended it by that signal (Run = %v)", runs, state, err)
+		}
+		if !child.killed() {
+			t.Errorf("run %d: killed() = false for a command the end of its context stopped (Run = %v)", runs, err)
+		}
+		if t.Failed() || took < StopGrace {
+			return
+		}
+		if seen && gone.Sub(stopped) < StopGrace/2 {
+			t.Errorf("run %d: the run ended %s after the stop, though its group was gone %s after it, inside half the %s grace: a group that leaves on its SIGTERM must end the grace, not sit out its whole span (Run = %v)", runs, took, gone.Sub(stopped), StopGrace, err)
+			return
+		}
+		went := "was not seen gone while the run lasted"
+		if seen {
+			went = fmt.Sprintf("was seen gone %s after the stop", gone.Sub(stopped))
+		}
+		if time.Now().Before(until) {
+			t.Logf("run %d is not judged: it ended %s after the stop, no sooner than the %s grace, and its group %s, not inside half the grace", runs, took, StopGrace, went)
+			continue
+		}
+		t.Fatalf("no run of the right order in %d runs over %s: the last ended %s after the stop, no sooner than the %s grace, and its group %s, not inside half the grace", runs, within, took, StopGrace, went)
 	}
 }
 
