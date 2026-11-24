@@ -1218,7 +1218,7 @@ test("the state golden carries the rounds waiting on GitHub's merge state", () =
 
 // The checking role's report carries no commit (the look pushed nothing) and a verdict the
 // daemon holds to pass, pending or fail; a phase completion keeps its commit and, from contract
-// 221, carries the empty verdict. A pending report names when the agent asks to be woken for its
+// 225, carries the empty verdict. A pending report names when the agent asks to be woken for its
 // next look, an offset timestamp.
 test("a check report is a completion without a commit", () => {
   const report = { grantId: "grant-207", summary: "Driven in production." };

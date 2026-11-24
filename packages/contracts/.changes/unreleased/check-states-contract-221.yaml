@@ -1,7 +1,0 @@
-kind: Changed
-body: |-
-  The daemon API fixtures declare contract 221: `version.json`'s `daemonApiVersion` and
-  `state.json`'s `contract.daemon` and `contract.caller`. No schema changes.
-time: 2026-11-21T09:43:58Z
-custom:
-    Issue: check-states-contract-221

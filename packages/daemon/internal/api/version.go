@@ -3399,7 +3399,7 @@ package api
 // `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
 // open pull request again at the next merge rather than from this line.)
 //
-// 221: a phase completion carries no verdict. `POST /legion/v1/handoff/complete`
+// 225: a phase completion carries no verdict. `POST /legion/v1/handoff/complete`
 // (`api.HandoffCompleteRequest`, contracts' `LegionHandoffCompleteRequest`) keeps `verdict` for a
 // production check's report alone: a phase completion that names one from a plugin at this
 // contract or a later one is refused 400 `VERDICT_NOT_TAKEN`, "a phase completion carries no
@@ -3441,15 +3441,18 @@ package api
 // moved to 221, the lowest number above main's 205 that no other open pull request declares. The
 // forward merge of 2026-11-23 that brought in 5685883d brought main's 213, below 221, so this
 // entry kept 221. The forward merge of 2026-11-24 that brought in 4bd9a2b4 brought main's 217, 219
-// and 220 (the entries above), below 221, so this entry keeps 221. Read the base's own number and
-// every open pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 221
+// and 220 (the entries above), and a reading of every open pull request at that merge, which ended
+// at 2026-11-24T11:41:39Z, found 221 declared by #4049, #4392, #4682 and #5164 as well, and 222,
+// 223 and 224 declared, so this entry moved to 225, the lowest number above the base's 220 that no
+// other open pull request declares. Read the base's own number and every open pull request again
+// at every forward merge rather than from this line.)
+const DaemonAPIVersion = 225
 
 // CheckStatesContract is the daemon contract at which a phase completion carries no verdict (the
-// entry of 221 above): a plugin at it or above has its completion naming one refused
+// entry of 225 above): a plugin at it or above has its completion naming one refused
 // VERDICT_NOT_TAKEN, and a tester's plugin below it has its verdict ignored, so a worker mid-turn
 // across the upgrade still completes and Dispatch's check states decide its phase. A later bump
 // of DaemonAPIVersion leaves it where it is. It stands above every contract declared before the
 // check states' change, which a plugin that still sends a verdict can state
 // (TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt).
-const CheckStatesContract = 221
+const CheckStatesContract = 225

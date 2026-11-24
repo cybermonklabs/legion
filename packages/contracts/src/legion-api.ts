@@ -2014,7 +2014,7 @@ export function legionPlanRatingLoneField(
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
  * `verdict` is `pass`, `pending` or `fail` for a check report (`CHECK_VERDICT_REQUIRED`) and the
- * empty string for every phase completion: from contract 221 a phase completion that names one is
+ * empty string for every phase completion: from contract 225 a phase completion that names one is
  * refused (`VERDICT_NOT_TAKEN`), since Dispatch's check states at the tested head decide the
  * testing phase. It stays a string on the wire, as the Go field is. `wakeAt` is the check report's
  * alone (contract 54): when the checking agent asks to be woken for its next look, which a pending
