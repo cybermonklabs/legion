@@ -182,6 +182,14 @@ func (k *kept) text() string { return strings.Join(k.lines(), "\n") }
 // say a message event on the open stream. It answers the server's address (host:port).
 func standIn(t *testing.T, endpoint func(host string) string, message func(say func(string), w http.ResponseWriter, r *http.Request)) string {
 	t.Helper()
+	return standInAt(t, "", nil, endpoint, message)
+}
+
+// standInAt is standIn with its routes under prefix (prefix/sse, prefix/message), keeping each SSE
+// connect, and each request that reaches neither route (answered 404), in connects where connects
+// is not nil.
+func standInAt(t *testing.T, prefix string, connects *kept, endpoint func(host string) string, message func(say func(string), w http.ResponseWriter, r *http.Request)) string {
+	t.Helper()
 	var (
 		mu     sync.Mutex
 		stream http.ResponseWriter
@@ -195,7 +203,10 @@ func standIn(t *testing.T, endpoint func(host string) string, message func(say f
 		}
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(prefix+"/sse", func(w http.ResponseWriter, r *http.Request) {
+		if connects != nil {
+			connects.keep(r)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		mu.Lock()
@@ -208,7 +219,13 @@ func standIn(t *testing.T, endpoint func(host string) string, message func(say f
 		stream = nil
 		mu.Unlock()
 	})
-	mux.HandleFunc("/message", func(w http.ResponseWriter, r *http.Request) { message(say, w, r) })
+	mux.HandleFunc(prefix+"/message", func(w http.ResponseWriter, r *http.Request) { message(say, w, r) })
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if connects != nil {
+			connects.keep(r)
+		}
+		http.NotFound(w, r)
+	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(func() {
 		server.CloseClientConnections()
