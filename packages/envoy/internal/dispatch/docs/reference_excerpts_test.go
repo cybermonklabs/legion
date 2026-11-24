@@ -342,8 +342,9 @@ func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *
 // before - not on every pass, which here may run every 50 ms - and the pass that defers it
 // returns that due time as the loop's one timer.
 func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
-	// Not parallel: it holds a timer or a sweep to a wall-clock window, and among the package's parallel
-	// tests it missed it (envoy-go-docs-finalizers job 137379091221).
+	// Not parallel: it holds each retry to its 400 ms base doubled, no more than 20 ms early and a
+	// fifth plus a second late, and among the package's parallel tests the first retry came 4.42 s
+	// after the attempt (envoy-go-docs-finalizers job 137379091221).
 	database := storetest.Open(t)
 	failing := owedDocuments(t, database, 1)[0]
 	persistence := newUnreadableDocumentStore(database, failing)
@@ -427,8 +428,9 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 // one an old-style direct update leaves, as the previous release's code and rebuild-refs write
 // them, with no call in Go to announce them.
 func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
-	// Not parallel: it holds a timer or a sweep to a wall-clock window, and among the package's parallel
-	// tests it missed it (envoy-go-docs-finalizers job 137379091221).
+	// Not parallel: it holds the excerpt each owed mention leaves to being stored within 3 s of the
+	// wake, and among the package's parallel tests it was not (envoy-go-docs-finalizers job
+	// 137379091221).
 	database := storetest.Open(t)
 	document := owedDocuments(t, database, 1)[0]
 	hub := &pglisten.Hub{Owner: "reference excerpts test", Dial: database.Pool.Listener}

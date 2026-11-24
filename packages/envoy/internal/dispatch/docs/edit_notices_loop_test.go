@@ -114,8 +114,9 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 // loop had no due time before the edit, so only the wake can have scheduled the sweep that sends
 // it. The sweep here starts passes 200 ms apart, not five seconds.
 func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
-	// Not parallel: it holds a timer or a sweep to a wall-clock window, and among the package's parallel
-	// tests it missed it (envoy-go-docs-finalizers job 137379091221).
+	// Not parallel: it holds the notice to going at the end of its 3 s quiet window, within the
+	// sweep's 200 ms gap and a second, and among the package's parallel tests it went 2.24 s late
+	// (envoy-go-docs-finalizers job 137379091221).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	const quiet = 3 * time.Second

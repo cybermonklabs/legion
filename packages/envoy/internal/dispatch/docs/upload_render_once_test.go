@@ -16,7 +16,7 @@ import (
 // acceptance counts the renders of one document and not the renders of anything: a write that
 // renders the text it was given twice costs the same count as one that renders the document it
 // replaces and then that text. One test records at a time, as one test at a time sets a hook on
-// Service, and the record is taken away in t.Cleanup.
+// Service, and the record is taken away in a cleanup (testcleanup.Add).
 func countRenders(t *testing.T) func() []string {
 	t.Helper()
 	record := &renderRecord{}

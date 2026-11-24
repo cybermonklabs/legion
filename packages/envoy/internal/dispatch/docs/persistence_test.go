@@ -26,9 +26,10 @@ import (
 // past the connections testlimits.ServerConnections sizes the test server for, and under the race
 // detector past the memory envoy-go-race-docs allows its binary (RACE_MEM_LIMIT_KB).
 //
-// Six, not eight: at eight, three runs under the race detector on 4 vCPU peaked at 7.0, 7.7 and
-// 7.9 GB of the step's 8 GB RACE_MEM_LIMIT_KB, which leaves no room for the growth a merged tree
-// brings.
+// Six was chosen before testcleanup.Add, when three runs at eight under the race detector on
+// 4 vCPU peaked at 7.0, 7.7 and 7.9 GB of the step's 8 GB RACE_MEM_LIMIT_KB, most of it memory
+// that finished tests held. Since that fix, runs at six peak at 4.77 to 5.31 GB (the build-cluster
+// soak, legion-race-docssoak-*); eight has not been measured again.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const docsTestParallelism = 6
@@ -37,8 +38,9 @@ const docsTestParallelism = 6
 // (service_leak_test.go): the memory a test that never shuts its service down holds for the rest
 // of the binary's run. A service still alive fails the run - the exit code stays storetest.Main's
 // when that is already non-zero, and becomes non-zero when the tests passed and a service is
-// still alive. The fix such a run asks for is a t.Cleanup on the test the report names, shutting
-// down the service that test built.
+// still alive. The fix such a run asks for is a testcleanup.Add on the test the report names,
+// shutting down the service that test built (testcleanup.Add rather than t.Cleanup: testing keeps
+// a finished parallel test's cleanups, and the service each captured, until the run ends).
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(docsTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
