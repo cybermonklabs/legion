@@ -981,8 +981,9 @@ type ClaimView struct {
 	// start did not produce a running agent — a launcher that refused it, a failed init container,
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
-	// questions, and LastReady is what dates them: a cause older than it is one the agent running
-	// now has already survived.
+	// questions. LastReady dates the death's cause: a death older than it is one the agent running
+	// now has already survived. The claim drops its start failure when its agent says it is ready
+	// (supervise.Claim.LastStartFailure says which older claims can still hold one from before).
 	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
 	LastStartFailure string     `json:"lastStartFailure,omitempty"`
 	LastReady        *time.Time `json:"lastReady,omitempty"`
@@ -1122,7 +1123,7 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		Step: StepViewOf(c.Step),
 		// When the agent last began and last ended a turn, and when it last said it could be
 		// prompted, each absent until it happens: they are what tells a worker still making
-		// progress from one wedged in a turn, and what dates the two causes below.
+		// progress from one wedged in a turn, and the ready is what dates the death's cause below.
 		LastTurnStart:    instant(c.LastTurnStart),
 		LastTurnEnd:      instant(c.LastTurnEnd),
 		LastReady:        instant(c.LastReady),

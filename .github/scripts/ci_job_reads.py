@@ -1263,37 +1263,37 @@ LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
 LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
-# The packages envoy-go's step "Count the database broker suites' skips" runs with `go test -json`
-# through packages/envoy/scripts/database-skips.sh, its default table (DEFAULT_PACKAGES there):
-# the broker's tree, internal/cipher and every package under it, and its command, cmd/cipherd.
-# That step fails on a failed test as on a skipped one. The unit step leaves them out: it ran
-# each of them a second time in the same job, with the same database, about 645 s of package
-# time on a merge-group run of 2026-11-17 (job 133989142856), internal/cipher/helper alone 326 s;
-# cmd/cipherd took 580 s of the unit step on 2026-11-18 (job 135007706189). The script's own
-# DEFAULT_EXCEPT, a `grep -Ev` over that table's import paths, leaves out the race lane's packages
-# under the tree (DATABASE_SKIPS_PATTERN, today the auth service's natscallout), which open no
-# database and which the lane's race job runs: a run there too would be each one's second in the
+# The packages whose skips envoy-go's unit step counts: it runs the module through
+# packages/envoy/scripts/database-skips.sh with --module-except, one `go test -json`, and the
+# script counts the skips of its default table (DEFAULT_PACKAGES there), the broker's tree,
+# internal/cipher and every package under it, and its command, cmd/cipherd, failing on any skip
+# there as on any failed test in the run. They ran in a step of their own after the unit step
+# until INFRA-1075: cmd/cipherd alone, 714 s, held that step at 15.3 minutes, in which its four -p
+# slots ran 1,817 s of package time, half what they had, while the unit step, 14.8 minutes, ran
+# before it (merge-group run 45048924209, job 137290624677); in one go test the two share the
+# slots. The script's own DEFAULT_EXCEPT, a
+# `grep -Ev` over that table's import paths, leaves out the race lane's packages under the tree
+# (DATABASE_SKIPS_PATTERN, today the auth service's natscallout), which open no database and which
+# the lane's race job runs: counting them would add them to the run, each one's second in the
 # same CI run. The pattern is built from ENVOY_RACE_LANE, as the unit step's is.
 # hold_database_skips_packages() below refuses a script whose table is not this list, or whose
 # DEFAULT_EXCEPT is not that pattern.
 DATABASE_SKIPS_TREE = "internal/cipher"
 DATABASE_SKIPS_COMMAND = "cmd/cipherd"
 DATABASE_SKIPS_PKGS = [f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
-DATABASE_SKIPS_STEP = "Count the database broker suites' skips"
 DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
 DATABASE_SKIPS_PATTERN = "|".join(
     f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
     if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/"))
-# The -timeout of envoy-go's unit step, which the count step passes the counter too: cmd/cipherd
-# ran under it in the unit step before it moved to the count, so its limit does not fall.
+# The -timeout of envoy-go's unit step, which bounds each package's test binary.
 UNIT_TEST_TIMEOUT = "20m"
 
 # The tests envoy-go's step "Count the store-form rows on each backend" runs through
 # packages/envoy/scripts/backend-count.sh, by package, counting each one's `aws` and `gcp` passes
 # (the verification's check c8). It runs them in the same job, on the same runner and env, with
-# no -tags and no -race, as the unit step runs cmd/cipher and the database-skips step runs
-# internal/cipher/api, so a second run in either asked nothing the count does not: each skips
-# them by name, and the count is their one run (O15 of dispatch://INFRA-1408, which
+# no -tags and no -race, as the unit step runs cmd/cipher and internal/cipher/api, so a second run
+# there asked nothing the count does not: the unit step skips them by name, and the count is their
+# one run (O15 of dispatch://INFRA-1408, which
 # go-test-step-expansion.py's duplicate verdict reads; its BACKEND_COUNT_TESTS is this list).
 BACKEND_COUNT_AGENT_SECRETS = "cmd/cipher"
 BACKEND_COUNT_BROKER_API = f"{DATABASE_SKIPS_TREE}/api"
@@ -1303,9 +1303,6 @@ BACKEND_COUNT_TESTS = {
                                   "TestTheChainSkipsAbsenceAndStopsOnABrokenSource"],
     BACKEND_COUNT_BROKER_API: ["TestSettingsNameTheGoogleExchangeAudienceOnEitherStore"],
 }
-if DATABASE_SKIPS_PATTERN and re.search(DATABASE_SKIPS_PATTERN, f"/{BACKEND_COUNT_BROKER_API}"):
-    raise ValueError(f"{BACKEND_COUNT_BROKER_API} is out of the database-skips step, so its --skip below skips "
-                     "nothing; name the step that runs that package now and move the skip to it")
 
 
 def names_pattern(names):
@@ -1314,52 +1311,71 @@ def names_pattern(names):
     return f"'^({'|'.join(sorted(names))})$'"
 
 
-DATABASE_SKIPS_RUN = (f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT} "
-                      f"--skip {names_pattern(BACKEND_COUNT_TESTS[BACKEND_COUNT_BROKER_API])}")
-# The counter's own test, which envoy-go runs before the count: its five controls run the counter
-# on these three packages, one at a time, each narrowed to its planted and expected tests.
+# The counter's own test, which envoy-go runs before the unit step: its six controls run the
+# counter on these four packages, each narrowed to its planted and expected tests.
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
 DATABASE_SKIPS_TEST = "packages/envoy/scripts/database-skips.test.sh"
-DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/dispatch/api/"]
+DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/dispatch/api/", "./internal/fold/"]
 
 
 def hold_database_skips_packages():
     """Refuse a database-skips.sh whose default table is not DATABASE_SKIPS_PKGS, or whose
-    DEFAULT_EXCEPT is not DATABASE_SKIPS_PATTERN. The counting step's Run claims that table's
-    closure less the lane's packages, and the unit step leaves the whole table out, so a package
-    the script added without this list would run twice in the job, one it dropped would run in no
-    step of it, and a lane package the script kept would run twice in the CI run, with every check
-    green."""
+    DEFAULT_EXCEPT is not DATABASE_SKIPS_PATTERN. The unit step counts that table's skips less
+    the lane's packages, and runs every package of the table it counts, so a package the script
+    added without this list would be counted by nothing here that declares it, one it dropped
+    would run uncounted, and a lane package the script kept would be added to the unit step's run,
+    its second in the CI run, with every check green."""
     text = Path(DATABASE_SKIPS_SCRIPT).read_text()
     found = re.findall(r"^DEFAULT_PACKAGES=\((.*)\)$", text, re.M)
     if found != [" ".join(DATABASE_SKIPS_PKGS)]:
         raise ValueError(f"{DATABASE_SKIPS_SCRIPT}'s DEFAULT_PACKAGES is {found}, and DATABASE_SKIPS_PKGS here is "
-                         f"{DATABASE_SKIPS_PKGS}: make them one list, which the unit step leaves out and the "
-                         f"database-skips step runs")
+                         f"{DATABASE_SKIPS_PKGS}: make them one list, the packages whose skips the unit step "
+                         f"counts")
     excepted = re.findall(r"^DEFAULT_EXCEPT='(.*)'$", text, re.M)
     if excepted != [DATABASE_SKIPS_PATTERN]:
         raise ValueError(f"{DATABASE_SKIPS_SCRIPT}'s DEFAULT_EXCEPT is {excepted}, and DATABASE_SKIPS_PATTERN here, "
                          f"the race lane's packages under {DATABASE_SKIPS_TREE}, is '{DATABASE_SKIPS_PATTERN}': make "
-                         f"them one pattern, so the count runs no package the lane's race job runs")
+                         f"them one pattern, so the count adds no package the lane's race job runs")
 
 
 hold_database_skips_packages()
 
-# The unit step runs the module less six things: the lane's packages, which the three race jobs
+# The unit step runs the module less five things: the lane's packages, which the three race jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
-# checks, which the text-check job runs, the architecture-note and spec-file packages and
-# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-build runs, and the
-# broker's tree and command, which envoy-go's database-skips step runs. Its `grep -Ev` is
-# `/integration`, then the text checks, then those packages, each the package alone, then the
-# broker's tree and its command, then, in the lane's own order, each package in the form go
-# list's import paths need - a tree matching the package and everything under it, any other the
-# package alone.
+# checks, which the text-check job runs, and the architecture-note and spec-file packages and
+# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-build runs. Its
+# `grep -Ev` is `/integration`, then the text checks, then those packages, each the package
+# alone, then, in the lane's own order, each package in the form go list's import paths need - a
+# tree matching the package and everything under it, any other the package alone. It runs the
+# broker's tree and command too, whose skips it counts (DATABASE_SKIPS_PKGS above).
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
     + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
-    + [f"/{DATABASE_SKIPS_TREE}($|/)", f"/{DATABASE_SKIPS_COMMAND}$"]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+
+
+def hold_counted_in_unit_run():
+    """Refuse a package whose skips the unit step counts and which its `grep -Ev` takes out:
+    database-skips.sh adds each such package to the run, and the step's Run, packages_kept over
+    UNIT_TEST_PATTERN, would not name it, so a change to its files would not start this job.
+    The counted packages are those of DATABASE_SKIPS_PKGS that DATABASE_SKIPS_PATTERN keeps."""
+    module = next(line.split()[1] for line in (Path(ENVOY) / "go.mod").read_text().splitlines()
+                  if line.startswith("module "))
+    counted = [Path(ENVOY) / DATABASE_SKIPS_COMMAND]
+    for current, subdirs, names in os.walk(Path(ENVOY) / DATABASE_SKIPS_TREE):
+        subdirs[:] = sorted(s for s in subdirs if not go_skips_dir(Path(current), s))
+        if any(n.endswith(".go") for n in names):
+            counted.append(Path(current))
+    for directory in counted:
+        path = f"{module}/{directory.relative_to(ENVOY).as_posix()}"
+        if not re.search(DATABASE_SKIPS_PATTERN, path) and re.search(UNIT_TEST_PATTERN, path):
+            raise ValueError(f"{path} is a package whose skips the unit step counts, and the step's `grep -Ev "
+                             f"'{UNIT_TEST_PATTERN}'` takes it out: keep it in the step's run, or take it out of "
+                             f"{DATABASE_SKIPS_SCRIPT}'s table")
+
+
+hold_counted_in_unit_run()
 
 # envoy-go-race-api's step runs its package through database-skips.sh, which counts the skips of
 # that same run, so the package's contract tests, which skip without BROKER_TEST_DATABASE_URL, and
@@ -1416,15 +1432,17 @@ if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
     raise ValueError(f"the display-tree fixture tests are in {WEB_FIXTURE_PACKAGE}, which the unit step's "
                      f"`grep -Ev` takes out, so that step does not run them and the -skip below skips nothing; "
                      f"name the step that runs that package now and move the -skip to it")
-# The backend count's tests of cmd/cipher (BACKEND_COUNT_TESTS above) are skipped here by
-# the same rule, and held to this step the same way.
-if re.search(UNIT_TEST_PATTERN, f"/{BACKEND_COUNT_AGENT_SECRETS}"):
-    raise ValueError(f"the backend count's tests of {BACKEND_COUNT_AGENT_SECRETS} are skipped by the unit step, "
-                     f"whose `grep -Ev` takes that package out, so the -skip below skips nothing; name the step "
-                     f"that runs that package now and move the skip to it")
-UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
-                    f"xargs go test -count=1 -timeout {UNIT_TEST_TIMEOUT} "
-                    f"-skip {names_pattern(WEB_FIXTURE_TESTS + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS])}")
+# The backend count's tests of cmd/cipher and internal/cipher/api (BACKEND_COUNT_TESTS above) are
+# skipped here by the same rule, and held to this step the same way.
+for backend_package in BACKEND_COUNT_TESTS:
+    if re.search(UNIT_TEST_PATTERN, f"/{backend_package}"):
+        raise ValueError(f"the backend count's tests of {backend_package} are skipped by the unit step, whose "
+                         f"`grep -Ev` takes that package out, so the -skip below skips nothing; name the step "
+                         f"that runs that package now and move the skip to it")
+# One go test of the module through the skip counter (DATABASE_SKIPS_PKGS above says why one).
+UNIT_TEST_RUN = (f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT} "
+                 f"--skip {names_pattern(WEB_FIXTURE_TESTS + [t for ts in BACKEND_COUNT_TESTS.values() for t in ts])} "
+                 f"--module-except '{UNIT_TEST_PATTERN}'")
 
 
 def hold_web_fixture_tests():
@@ -2156,9 +2174,8 @@ TAG_RUNS = [
     TagRun("dispatch_two_builds_go", TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, "envoy_go", "envoy-go",
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
            job_file(TWO_BUILDS_JOB)),
-    # envoy-go's unit step leaves /cmd/cipherd$ out, since its database-skips step runs it.
     TagRun("broker_multiprocess", "broker-multiprocess", BROKER_MP_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's \"{DATABASE_SKIPS_STEP}\" runs ./cmd/cipherd's untagged tests",
+           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/cipherd's untagged tests",
            job_file("broker-multiprocess")),
     # envoy-go's unit step leaves /cmd/listener$ out, since the lane runs it under the detector.
     TagRun("listener_server_change", "listener-server-change", SOAK_STEP, "envoy_go_race", "envoy-go-race",
