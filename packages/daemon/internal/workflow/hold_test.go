@@ -657,6 +657,137 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	})
 }
 
+// A todo a session wrote on a held root whose tree runs is none of the moves that release the hold
+// (TestATodoOnAHeldRootReleasesTheHold): the workflow reads who wrote the status before it reads
+// the hold (sessionStatusWrite), and a session's lifecycle status is set back. The hold stays from
+// the phase it is from, and the root keeps its generation and its counts. The record keeps its own
+// status, in_progress, and takes the observation: Dispatch shown at todo, at the event's sequence.
+// Legion writes no status of a phase the issue works: it writes its own status back over the todo,
+// in a set-back that names the todo and its sequence (record.ReassertStatusWrite). No worker is
+// started, so no worker is told anything. A session that holds a claim in the tree, the tree's
+// architect here, is an agent, and nobody is told; a session that holds none, from outside the
+// tree, has the tree's architect told, in a status-reasserted notice.
+func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
+	const root = "LEGION-208"
+	for _, tc := range []struct {
+		name string
+		// session is the session that writes the todo, and claims says it holds a claim in the tree.
+		session string
+		claims  bool
+		// told is the kind of the one notice the todo writes for the tree's architect, "" for none.
+		told record.NoticeKind
+	}{
+		{name: "the tree's architect", session: "ses", claims: true},
+		{name: "a session outside the tree", session: "ses-outsider", told: "status-reasserted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
+				Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 3, Status: "in_progress", DispatchStatus: "in_progress",
+				Rank: "U", HandedOver: true, LastDispatchSeq: 4})
+			seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
+			counted := record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Rounds: 3, ConflictRounds: 1,
+				BackwardMoves: map[string]int{"testing-implementing": 2}, CapTold: 3}
+			seedPhase(t, pool, counted)
+			if tc.claims {
+				seedPhaseWorker(t, pool, root, claim.RoleArchitect, "")
+			}
+			notices := len(noticeRows(t, pool))
+
+			apply("todo", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 5, Type: "issue.updated", Status: "todo",
+				Title: "root", Rank: "U", HandedOver: true, ActorSession: tc.session})
+
+			kept := storedIssue(t, pool, root)
+			if kept.Phase != phase.Held || kept.Hold == nil || *kept.Hold != (record.Hold{From: phase.Implementing}) {
+				t.Fatalf("the root after the session's todo stands in %s with hold %+v, want it still held from implementing", kept.Phase, kept.Hold)
+			}
+			if kept.Generation != 3 || kept.Status != "in_progress" || kept.DispatchStatus != "todo" || kept.LastDispatchSeq != 5 {
+				t.Fatalf("the root after the session's todo = %#v, want generation 3, in_progress kept, Dispatch shown at todo and the event's sequence 5 recorded", kept)
+			}
+			want := []record.StatusWrite{record.ReassertStatusWrite("in_progress", "todo", 5)}
+			if got := statusWrites(t, pool, root); !reflect.DeepEqual(got, want) {
+				t.Fatalf("status writes = %+v, want the one set-back %+v", got, want)
+			}
+			if starts := superviseRowsOf(t, pool, root, "start"); len(starts) != 0 {
+				t.Fatalf("start rows = %+v, want none: no worker starts, so none is told why", starts)
+			}
+			added := noticeRows(t, pool)[notices:]
+			switch {
+			case tc.told == "" && len(added) != 0:
+				t.Fatalf("the todo wrote notices %+v, want none", added)
+			case tc.told != "":
+				if len(added) != 1 {
+					t.Fatalf("the todo wrote notices %+v, want one %s for the architect", added, tc.told)
+				}
+				if notice, ok := added[0].(record.Notice); !ok || notice.Kind != tc.told || notice.Role != claim.RoleArchitect {
+					t.Fatalf("the todo's notice = %+v, want a %s for the architect", added[0], tc.told)
+				}
+			}
+			if got := phaseCounts(t, pool, root, claim.RoleImplementer); !reflect.DeepEqual(got, counted) {
+				t.Fatalf("the implementer's counts after the session's todo = %+v, want the %+v the hold left", got, counted)
+			}
+		})
+	}
+}
+
+// A person's todo on a root held from reviewing, by its reviewer's failed claim, is a hold no plan
+// made, and the todo releases it into reviewing (releaseHeldRoot, retryPhase). It starts no new run:
+// the root keeps its generation and its one slot. The counts of its returns, which a root with no
+// plan rows keeps on its implementer's phases row (record.ImplementerCounts), stand as the hold left
+// them: the round the reviewer left is still open, so the release settles nothing and starts the
+// reviewer again. A review of that round that requests changes then settles it, and the move back
+// it makes raises the counts: one more pass, one more move back under reviewing-implementing
+// (recordPass) and one more review round (recordRound).
+func TestATodoOnAHeldRootKeepsTheCountsUntilAReviewRoundSettles(t *testing.T) {
+	const root = "LEGION-208"
+	pool := migratedPool(t)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	seedReview(t, pool, "green")
+	seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
+	seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Claim: "implement-claim", Pass: 2, Rounds: 1,
+		BackwardMoves: map[string]int{"reviewing-implementing": 1}})
+	apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
+	held := storedIssue(t, pool, root)
+	if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Reviewing}) {
+		t.Fatalf("the root after its reviewer failed stands in %s with hold %+v, want held from reviewing", held.Phase, held.Hold)
+	}
+	before := record.ReturnCounts{Pass: 2, Rounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}}
+	if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, before) {
+		t.Fatalf("the counts before the todo = %+v, want the %+v seeded", got, before)
+	}
+	if got := slotCount(t, pool, root); got != 1 {
+		t.Fatalf("%s holds %d slots before the todo, want 1", root, got)
+	}
+
+	apply("todo", intake.DispatchIssue{Key: root, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
+		Title: "root", Rank: "U", HandedOver: true})
+
+	released := storedIssue(t, pool, root)
+	if released.Phase != phase.Reviewing || released.Hold != nil || released.Generation != held.Generation {
+		t.Fatalf("the root after the todo stands in %s with hold %+v at generation %d, want reviewing, no hold and generation %d",
+			released.Phase, released.Hold, released.Generation, held.Generation)
+	}
+	if got := slotCount(t, pool, root); got != 1 {
+		t.Fatalf("%s holds %d slots after the todo, want the 1 it held", root, got)
+	}
+	if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, before) {
+		t.Fatalf("the counts after the todo = %+v, want the %+v the hold left", got, before)
+	}
+
+	apply("changes-requested", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "changes_requested", CommitID: headOne,
+		Author: testReviewApp, Body: reviewBody("Name the rollback path.", headOne)})
+
+	if moved := storedIssue(t, pool, root); moved.Phase != phase.Implementing || moved.Generation != held.Generation {
+		t.Fatalf("the root after the request for changes stands in %s at generation %d, want implementing at generation %d", moved.Phase, moved.Generation, held.Generation)
+	}
+	raised := record.ReturnCounts{Pass: 3, Rounds: 2, BackwardMoves: map[string]int{"reviewing-implementing": 2}}
+	if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, raised) {
+		t.Fatalf("the counts after the round settled = %+v, want %+v", got, raised)
+	}
+}
+
 // storedIssue is the record of key.
 func storedIssue(t *testing.T, pool *pgxpool.Pool, key string) record.Issue {
 	t.Helper()

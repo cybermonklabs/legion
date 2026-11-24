@@ -275,3 +275,67 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 			"HANDOFF_NOT_CURRENT_PHASE", "the tester does not run phase held of LEGION-208; this completion changed nothing", "", before)
 	})
 }
+
+// A task stopped in its retro or in its merge stands at no step of its plan: the retro and the
+// merge are the acts of its line after its steps (record.PlaceRetro, record.PlaceMerge). The late
+// report of the role that worked it, the implementer's of the retro and the merger's of the merge,
+// is refused HANDOFF_NOT_CURRENT_PHASE, as a report of a phase no role works while the issue is
+// held, and never TASK_STOPPED, which answers only the report of a step the stop ended
+// (lateReport). The two get there by two roads. The merger's report is of merging, the phase the
+// hold is from, so it reports the run the stop ended (pastReportOf), and lateReport answers it
+// nothing because the merge is no step. The implementer works implementing and the retro, and
+// while the issue is held its report is of implementing (phase.Of, phase.LeftBy: held stands
+// outside the line), which the hold is not from, so it reports no run at all. Either refusal writes
+// nothing: the issue, its task, the role's row and the outbox stand as they were, and the handoff
+// record the report names is not kept as the role's last one.
+func TestALateReportOfTheRetroOrTheMergeAfterAStopIsNotCurrent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		role claim.Role
+		// moves take the task from its first step to where the owner stops it, at in place.
+		moves   []TriggerKind
+		at      phase.Phase
+		place   record.TaskPlace
+		handoff string
+	}{
+		{name: "the implementer's report of the retro", role: claim.RoleImplementer,
+			moves: []TriggerKind{TriggerGateOpened, TriggerImplementationReady},
+			at:    phase.Retro, place: record.TaskPlace{Kind: record.PlaceRetro}, handoff: "retro-1"},
+		{name: "the merger's report of the merge", role: claim.RoleMerger,
+			moves: []TriggerKind{TriggerGateOpened, TriggerImplementationReady, TriggerRetroCompleted},
+			at:    phase.Merging, place: record.TaskPlace{Kind: record.PlaceMerge}, handoff: "merge-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer")
+			for _, trigger := range tc.moves {
+				move(t, pool, engine, root.Key, trigger, "", record.PhaseRow{})
+			}
+			assertWalksAt(t, pool, engine, root.Key, tc.at, tc.place)
+			worker := seedPhaseWorker(t, pool, root.Key, tc.role, "")
+			apply := applyFacts(t, pool, engine)
+			if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+				t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+			}
+			stopped := record.Hold{From: tc.at, Reason: record.HoldTaskStopped}
+			if held := issueOf(t, pool, engine, root.Key); held.Phase != phase.Held || held.Hold == nil || *held.Hold != stopped {
+				t.Fatalf("%s after the stop stands in %s with hold %+v, want held %+v", root.Key, held.Phase, held.Hold, stopped)
+			}
+			if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.Place != tc.place {
+				t.Fatalf("task a after the stop is %s at %+v, want stopped at %+v", task.State, task.Place, tc.place)
+			}
+			before := reportedOf(t, pool, engine, root.Key, tc.role, true)
+
+			result := apply("late", reportOf(tc.role, worker, tc.handoff))
+
+			if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "HANDOFF_NOT_CURRENT_PHASE" {
+				t.Fatalf("the %s's late report after the stop at %s = %+v, want 409 HANDOFF_NOT_CURRENT_PHASE", tc.role, tc.at, result.Refusal)
+			}
+			if after := reportedOf(t, pool, engine, root.Key, tc.role, true); !reflect.DeepEqual(after, before) {
+				t.Fatalf("the refused late report changed %s:\n want %+v\n got  %+v", root.Key, before, after)
+			}
+		})
+	}
+}
