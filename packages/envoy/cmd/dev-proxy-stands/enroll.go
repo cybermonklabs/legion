@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -89,6 +90,18 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// The one rule both halves of this client read an address by, so --url takes an address
 	// typed with however many trailing slashes exactly as agent-secrets does.
 	base := cipherclient.WithoutTrailingSlashes(*url)
+	loginURL, err := brokerRoute(base, "/v1/launcher-credentials/token")
+	if err != nil {
+		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: %v\n", err)
+		return 1
+	}
+	// The enrolment's URL is also the htu its launcher proof signs, one join for both: the broker
+	// refuses a proof whose htu is not its own address followed by the path the proof was sent to.
+	enrollURL, err := brokerRoute(base, "/v1/enrollments")
+	if err != nil {
+		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: %v\n", err)
+		return 1
+	}
 	registrarToken, err := readToken(*tokenFile)
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: %v\n", err)
@@ -117,7 +130,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	var login struct {
 		CredentialID string `json:"credential_id"`
 	}
-	if err := call(ctx, http.MethodPost, base+"/v1/launcher-credentials/token", nil,
+	if err := call(ctx, http.MethodPost, loginURL, nil,
 		map[string]string{"token": registrarToken, "request": request}, &login); err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: the service login: %v\n", err)
 		return 1
@@ -136,7 +149,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if *session != "" {
 		body["session_id"] = *session
 	}
-	signed, err := proof.SignLauncher(key, login.CredentialID, http.MethodPost, base+"/v1/enrollments", time.Now())
+	signed, err := proof.SignLauncher(key, login.CredentialID, http.MethodPost, enrollURL, time.Now())
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: sign the launcher proof: %v\n", err)
 		return 1
@@ -145,7 +158,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		EnrollmentID   string    `json:"enrollment_id"`
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}
-	if err := call(ctx, http.MethodPost, base+"/v1/enrollments", map[string]string{"Proof": signed}, body, &enrolled); err != nil {
+	if err := call(ctx, http.MethodPost, enrollURL, map[string]string{"Proof": signed}, body, &enrolled); err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: the enrolment: %v\n", err)
 		return 1
 	}
@@ -177,6 +190,19 @@ func readToken(path string) (string, error) {
 	return token, nil
 }
 
+// brokerRoute is the URL of route at the broker: route joined onto the path of base, --url as
+// given, with base's query kept and its fragment dropped (urljoin.Join), where route appended to
+// base's text would sit inside a query or a fragment and the broker would be asked another path. A
+// base that does not parse or names no host is refused by --url and the class alone: url.Parse's
+// error quotes it whole, user information and query included.
+func brokerRoute(base, route string) (string, error) {
+	joined, err := urljoin.Join(base, route)
+	if err != nil {
+		return "", fmt.Errorf("--url %q: %s", redact.NotPrinted, redact.ClassNotAURL)
+	}
+	return joined.String(), nil
+}
+
 // call makes one JSON call and reads its answer into out. A refusal is an error naming the
 // status and the broker's own body, which carries the contract's code and no credential.
 func call(ctx context.Context, method, url string, headers map[string]string, body, out any) error {
@@ -188,7 +214,9 @@ func call(ctx context.Context, method, url string, headers map[string]string, bo
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(raw))
 	if err != nil {
-		return err
+		// url.Parse's error quotes the URL whole, and a URL brokerRoute joined can be one it
+		// refuses (an IPv6 zone holding a byte that is not ASCII, which url.URL.String escapes).
+		return fmt.Errorf("%s %s: %w", method, redact.URL(url), redact.Class(err))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	for name, value := range headers {
