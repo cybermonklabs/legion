@@ -145,15 +145,17 @@ func ParseSteps(text string) ([]Step, error) {
 	for i, word := range words {
 		role, key, keyed := strings.Cut(word, ":")
 		if !IsTaskID(role) || keyed && !IsTaskID(key) {
-			return nil, fmt.Errorf("the %s word of steps is neither a role nor a role:key, where each matches %s", ordinal(i+1), TaskIDGrammar)
+			return nil, fmt.Errorf("the %s word of steps is neither a role nor a role:key, where each matches %s", Ordinal(i+1), TaskIDGrammar)
 		}
 		steps = append(steps, Step{Role: role, Key: key})
 	}
 	return steps, nil
 }
 
-// ordinal is n as an ordinal number: 1st, 2nd, 3rd, 4th, 11th, 21st.
-func ordinal(n int) string {
+// Ordinal is n as an ordinal number: 1st, 2nd, 3rd, 4th, 11th, 21st. A refusal of a plan names a
+// word, a task or a section by its place rather than by its text, which is Dispatch's (ParseSteps,
+// and the design news's headingName), so the places all read one helper.
+func Ordinal(n int) string {
 	suffix := "th"
 	if n%100 < 11 || n%100 > 13 {
 		switch n % 10 {

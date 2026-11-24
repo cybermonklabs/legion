@@ -7,6 +7,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -548,27 +549,11 @@ func sectionName(section record.SectionChange) string {
 func headingName(heading string, occurrence int) string {
 	switch {
 	case heading == "":
-		return fmt.Sprintf("the %s section with an empty heading", ordinal(occurrence))
+		return fmt.Sprintf("the %s section with an empty heading", plan.Ordinal(occurrence))
 	case occurrence > 0:
-		return fmt.Sprintf("the %s section headed %q", ordinal(occurrence+1), heading)
+		return fmt.Sprintf("the %s section headed %q", plan.Ordinal(occurrence+1), heading)
 	}
 	return fmt.Sprintf("%q", heading)
-}
-
-// ordinal is n as an ordinal number: 1st, 2nd, 3rd, 4th, 11th, 21st.
-func ordinal(n int) string {
-	suffix := "th"
-	if n%100 < 11 || n%100 > 13 {
-		switch n % 10 {
-		case 1:
-			suffix = "st"
-		case 2:
-			suffix = "nd"
-		case 3:
-			suffix = "rd"
-		}
-	}
-	return fmt.Sprintf("%d%s", n, suffix)
 }
 
 // blockLines names the typed blocks of step's document that changed, one line for each type in

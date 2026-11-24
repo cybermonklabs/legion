@@ -609,17 +609,18 @@ func (m *Manager) verifyTokenApp(ctx context.Context, role AppRole, appID, token
 // viewerLogin is the login GitHub's GraphQL viewer answers for token.
 func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (string, error) {
 	what := fmt.Sprintf("the %s App's bot login (GraphQL viewer)", role)
+	reading := "read " + what
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/graphql", strings.NewReader(`{"query":"{viewer{login}}"}`))
 	if err != nil {
 		return "", err
 	}
 	tokenHeaders(request, token)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := m.send(request, "read "+what, "")
+	response, err := m.send(request, reading, "")
 	if err != nil {
 		return "", err
 	}
-	body, err := readBody(response, "read "+what, responseBound)
+	body, err := readBody(response, reading, responseBound)
 	if err != nil {
 		return "", err
 	}
@@ -644,16 +645,17 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, token string) error {
 	shown := strings.TrimSuffix(githubrest.ShownLogin(slug+"[bot]"), "[bot]")
 	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, shown, shown)
+	reading := "read " + what
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/apps/"+url.PathEscape(slug), nil)
 	if err != nil {
 		return err
 	}
 	tokenHeaders(request, token)
-	response, err := m.send(request, "read "+what, "/apps/"+shown)
+	response, err := m.send(request, reading, "/apps/"+shown)
 	if err != nil {
 		return err
 	}
-	body, err := readBody(response, "read "+what, responseBound)
+	body, err := readBody(response, reading, responseBound)
 	if err != nil {
 		return err
 	}
