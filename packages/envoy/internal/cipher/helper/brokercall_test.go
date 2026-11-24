@@ -53,6 +53,7 @@ func wantSettled(t *testing.T, what string, resp Response, code string, elapsed,
 // own 503 MEMBER_KIND_UNCHECKABLE, which it answers before it writes anything. Each case answers
 // one code; each unknown answer says that the outcome is unknown, and no known one does.
 func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
+	t.Parallel()
 	enroll := Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}
 	unenroll := Request{Op: "unenroll-session-key", EnrollmentID: "enr-1"}
 	login := Request{Op: "login"}
@@ -126,6 +127,7 @@ func (s *heldSignIns) Refused(context.Context, string) error { return nil }
 // ended at the bound, so it sends the broker nothing: when the helper answers, no request of the
 // op is in flight and none can start.
 func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	var out syncBuffer
 	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(&out, nil)))
 	r.login(t)
@@ -164,6 +166,7 @@ func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.
 // and login answers LOGIN_FAILED saying the outcome is unknown, with settle's cause, at the bound
 // and before the bound plus 1 s, where brokerCall's timer would answer.
 func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	r := newRig(t, "")
 	// A helper that left the request running would hold the fake's handler until its Close, which
 	// waits for it; closing the connections first lets this row fail rather than hang.
@@ -197,6 +200,7 @@ func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testin
 // gets ENROLL_OUTCOME_UNKNOWN rather than an empty reply, and Serve returns only once that answer
 // is written, so a helper process that exits when Serve returns never cuts the answer off.
 func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	gate, open := testGate(t)
 	r.fake.mu.Lock()
@@ -270,6 +274,7 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 // watch the context: the broker holds the session's enrollment, so the register would otherwise
 // hold Serve until its whole wait ran out. Serve returns within the stop's own time instead.
 func TestARegisterWaitingForItsEnrollmentDoesNotHoldTheStop(t *testing.T) {
+	t.Parallel()
 	const wait = 6 * time.Second
 	r := startRig(t, "")
 	gate, _ := testGate(t) // its cleanup opens the gate; the rig's cleanup ends the register's wait
@@ -303,6 +308,7 @@ func TestARegisterWaitingForItsEnrollmentDoesNotHoldTheStop(t *testing.T) {
 // retired, while the broker still holds the revoke of the session's enrollment; the revoke goes
 // on, and the DELETE of that enrollment lands once the broker lets it.
 func TestUnregisterAnswersBeforeItsRevokeEnds(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	gate, open := testGate(t)
 	child := sleeper(t)

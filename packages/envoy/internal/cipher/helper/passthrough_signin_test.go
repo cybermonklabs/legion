@@ -109,6 +109,7 @@ func signedInBox(t *testing.T, tokenURL string) *cipherclient.SignInAuthority {
 // TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter reads, and not an empty reply:
 // the code, the text and the time fail, though the broker made nothing.
 func TestAPassThroughOpAnswersInsideItsBoundWhileTheBoxsSignInIsTrading(t *testing.T) {
+	t.Parallel()
 	// bound is the row's bound on the op, and timerAnswers when brokerCall's timer answers an op
 	// still running: the bound plus 1 s.
 	const (

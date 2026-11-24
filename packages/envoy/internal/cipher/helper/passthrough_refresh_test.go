@@ -29,6 +29,7 @@ import (
 // brokerCall's timer answers ENROLL_OUTCOME_UNKNOWN at the bound plus 1 s for an enrolment the
 // broker refused.
 func TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin(t *testing.T) {
+	t.Parallel()
 	// timerAnswers is when brokerCall's timer answers an op still running: the bound plus 1 s.
 	const timerAnswers = overBound + time.Second
 	r := startRig(t, "")

@@ -122,6 +122,7 @@ func liveIDs(rows []brokerEnrollment) []string {
 // that waits BrokerCallWait gets OK with the enrollment's id, and the broker holds exactly that
 // one live enrollment for the runtime id.
 func TestContractASlowBrokersEnrollmentAnswersWithItsID(t *testing.T) {
+	t.Parallel()
 	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", hold: 8 * time.Second}
 	cr := heldContractRig(t, held)
 	runtimeID := "slow-box-" + t.Name()
@@ -144,6 +145,7 @@ func TestContractASlowBrokersEnrollmentAnswersWithItsID(t *testing.T) {
 // answer reaches the helper 8 s later. unenroll-session-key answers OK, and the broker's row is
 // revoked.
 func TestContractASlowBrokersRevokeAnswersOK(t *testing.T) {
+	t.Parallel()
 	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodDelete, path: "/v1/enrollments/", hold: 8 * time.Second}
 	cr := heldContractRig(t, held)
 	runtimeID := "slow-revoke-box-" + t.Name()
@@ -174,6 +176,7 @@ func TestContractASlowBrokersRevokeAnswersOK(t *testing.T) {
 // same key under the same credential and runtime id with its live enrollment, and makes no second
 // one.
 func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", hold: 5 * time.Second}
 	cr := heldContractRig(t, held)
 	const bound = 2 * time.Second
@@ -210,6 +213,7 @@ func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow
 // decides before it writes anything. The helper answers ENROLL_FAILED, not unknown, and the
 // broker holds no new row.
 func TestContractAnEnrollTheBrokerRefusesIsAKnownFailureThatAddsNoRow(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	cr.login(t)
 	runtimeID := "refused-box-" + t.Name()

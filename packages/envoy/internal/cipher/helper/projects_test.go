@@ -21,6 +21,7 @@ import (
 // naming other projects for the session is refused, and a reboot that brings the named session
 // back under another list gives it a new identity rather than the old one's key and enrollment.
 func TestHelperKeepsASessionsProjectsAcrossARestart(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	r := startRig(t, state)
 	r.callerPID.Store(int64(os.Getpid()))
@@ -94,6 +95,7 @@ func TestHelperKeepsASessionsProjectsAcrossARestart(t *testing.T) {
 // is answered with the session's own runtime id, the control that shows the refusals are the
 // projects' doing and not the attach's.
 func TestAnAttachToARegisteredSessionKeepsItsProjects(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, "")
 	r.callerPID.Store(int64(os.Getpid()))
 	defer r.callerPID.Store(0)
@@ -130,6 +132,7 @@ func TestAnAttachToARegisteredSessionKeepsItsProjects(t *testing.T) {
 // key or enrollment, whose grants were decided under the old list: it gets a fresh key, and the
 // old enrollment is revoked.
 func TestASessionComingBackUnderOtherProjectsGetsANewIdentity(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	gone := sleeper(t)
 	gonePID := gone.Process.Pid
@@ -164,6 +167,7 @@ func TestASessionComingBackUnderOtherProjectsGetsANewIdentity(t *testing.T) {
 // holds one key in each element, and never that keys are separated by white space, which would
 // send the caller to write the very element it refused.
 func TestHelperRefusesAProjectElementThatIsNotOneKey(t *testing.T) {
+	t.Parallel()
 	r := startRig(t, filepath.Join(t.TempDir(), "sessions.json"))
 	child := sleeper(t)
 	r.callerPID.Store(int64(child.Process.Pid))

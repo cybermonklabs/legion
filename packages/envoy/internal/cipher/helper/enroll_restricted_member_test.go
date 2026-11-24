@@ -32,6 +32,7 @@ import (
 // returns, so it can only fail. The register is given an hour's wait, which only the refusal can
 // end, and the bounds below are for a box too stalled to answer at all, never a pass.
 func TestARestrictedMembersEnrollmentIsAskedOnce(t *testing.T) {
+	t.Parallel()
 	const stalled = 60 * time.Second
 	f := newFakeBroker(t)
 	f.enrollRestricted = true

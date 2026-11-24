@@ -84,6 +84,7 @@ func wantHTTP2(t *testing.T, proto <-chan string) {
 // `false && ended`), the row answers ENROLL_FAILED; with the op's context left running past the
 // bound, the timer answers instead, at the bound plus 1 s and with its own cause.
 func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	r := newRig(t, "")
 	r.login(t) // log in against the ordinary fake first, then point the Broker at the stand-in
 
@@ -114,6 +115,7 @@ func TestAnEnrollWhoseBodyIsStillBeingWrittenAtTheBoundIsUnknown(t *testing.T) {
 // clause's or brokerCall's timer's, not GotFirstResponseByte's. With traceReach's
 // GotFirstResponseByte line removed, the row answers ENROLL_FAILED.
 func TestAnEnrollWhoseAnswerBeginsBeforeItsBodyIsWrittenIsUnknown(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	r := newRig(t, "")
 	r.login(t)
 

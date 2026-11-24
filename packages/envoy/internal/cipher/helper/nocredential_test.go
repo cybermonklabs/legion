@@ -25,6 +25,7 @@ const noCredentialMsg = "no machine credential; run: agent-secrets machine login
 // helper recorded, and a helper from before credential_dropped, which sets login_refused only for
 // a broker refusal, reads as that refusal.
 func TestNoCredentialReasonNamesWhyTheHelperHoldsNone(t *testing.T) {
+	t.Parallel()
 	const refusal = "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch)"
 	for _, tc := range []struct {
 		name, state string
@@ -70,6 +71,7 @@ func waitForRecord(t *testing.T, out *syncBuffer, msg string) map[string]any {
 // enrollment before it enrolls again. That revoke cannot run, and the helper says so at ERROR,
 // naming the session, the prior enrollment and why.
 func TestARestartWithNoLoginSaysWhyTheSessionCannotEnroll(t *testing.T) {
+	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-prior")
 	var out syncBuffer
@@ -93,6 +95,7 @@ func TestARestartWithNoLoginSaysWhyTheSessionCannotEnroll(t *testing.T) {
 // for want of a launcher credential fails, as before, and logs the same ERROR and reason as the
 // helper's own session's enrollment does.
 func TestASessionKeyTheHelperCannotEnrollIsAnError(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	r := newLoggedRig(t, "", slog.New(slog.NewJSONHandler(&out, nil)))
 	if key := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}); key.OK || key.Code != CodeEnrollFailed || key.Error != noCredentialMsg {
@@ -125,6 +128,7 @@ func noErrors(t *testing.T, out *syncBuffer, dropMsg string) {
 // session is short of one: the failure is the ordinary retry WARN naming the broker's refusal, and
 // the retry the login woke enrolls the session with the new credential at once.
 func TestARefusalOfAReplacedCredentialIsAnOrdinaryRetry(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	r := newLoggedRig(t, "", slog.New(slog.NewJSONHandler(&out, nil)))
 	r.login(t)
@@ -182,6 +186,7 @@ func (h *onDrop) Handle(ctx context.Context, rec slog.Record) error {
 // the failure. The helper holds a credential by then, so the line is the ordinary retry WARN, not
 // an ERROR that the session cannot enroll, and the retry the login woke enrolls it at once.
 func TestALoginBetweenARefusalAndItsLineIsAnOrdinaryRetry(t *testing.T) {
+	t.Parallel()
 	var out syncBuffer
 	hook := &onDrop{Handler: slog.NewJSONHandler(&out, nil)}
 	r := newLoggedRig(t, "", slog.New(hook))
@@ -217,6 +222,7 @@ func TestALoginBetweenARefusalAndItsLineIsAnOrdinaryRetry(t *testing.T) {
 // minute. The login that installs a credential must wake that retry, so the session can sign
 // within about a second of the login instead of whenever its backoff comes round.
 func TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	r := newRig(t, "")
 	if reg := r.call(t, Request{Op: "register"}); !reg.OK || reg.Code != CodeNoCredential {
 		t.Fatalf("register with no credential: %+v", reg)
@@ -246,6 +252,7 @@ func TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential(t *testi
 // NO_CREDENTIAL in the same case. Every enrollment this fake broker sees fails, so the session
 // never enrolls and the credential alone decides the answer.
 func TestSignAnswersNoCredentialWhileTheHelperHoldsNone(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, "")
 	r.fake.mu.Lock()
 	r.fake.failFirst = failAlways
@@ -306,6 +313,7 @@ func TestSignAnswersNoCredentialWhileTheHelperHoldsNone(t *testing.T) {
 // waiting call is blocked in registerReply, so what the row reads is its own ordering and not how
 // fast the host is.
 func TestARegisterWaitWaitsForAConfirmationThatNeedsNoCredential(t *testing.T) {
+	t.Parallel()
 	r, _, _, release := reclaimedIdentityRig(t)
 
 	// The register that admits the session and starts its enroll loop, whose renew is then held
@@ -339,6 +347,7 @@ func TestARegisterWaitWaitsForAConfirmationThatNeedsNoCredential(t *testing.T) {
 // (scripts/agent-secrets-session) stalls every launch ten seconds for the rest of the session's
 // life.
 func TestARegisterWaitAnswersAtOnceOnceTheBrokerRefusesTheInheritedEnrollment(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	r := reclaimedIdentityRigRefusingRenew(t)
 
 	// The register that admits the session and starts its enroll loop, whose confirming renew the
@@ -370,6 +379,7 @@ func TestARegisterWaitAnswersAtOnceOnceTheBrokerRefusesTheInheritedEnrollment(t 
 // reach the broker, whose attempts the enroll loop retries for as long as the outage lasts, and
 // a session that never had a record to inherit an enrollment from at all.
 func TestARegisterWaitAnswersAtOnceWhenNoConfirmationIsInFlight(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	// The broker cannot ANSWER the confirming renew: a 503, not a refusal, so confirmInherited
 	// keeps retrying it and the session stays unconfirmed for as long as the outage lasts. A
 	// wait that covered those retries would cost every launch its whole N for all that time.
@@ -429,6 +439,7 @@ func TestARegisterWaitAnswersAtOnceWhenNoConfirmationIsInFlight(t *testing.T) {
 // all the same, which the launcher gate's unconditional `--wait 10`
 // (scripts/agent-secrets-session) would pay on every launch for the rest of the session's life.
 func TestARegisterWaitAnswersAtOnceWhenALapsedIDBlocksTheConfirmation(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	r := reclaimedIdentityRigWithLapsedID(t)
 
 	// The register that admits the session and starts its enroll loop, which is stuck on the
@@ -458,6 +469,7 @@ func TestARegisterWaitAnswersAtOnceWhenALapsedIDBlocksTheConfirmation(t *testing
 // expires that attempt has answered as one that did not reach the broker, the wait ends, and
 // the enroll loop retries on its own schedule, exactly as it does for a 503.
 func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.T) {
+	t.Parallel()
 	// The production bound is DefaultFirstConfirmBound, 3 s; this row sets a short one of its
 	// own so it is quick and deterministic. What it pins is the mechanism — a first renew
 	// nothing answers ends the wait at the bound rather than at the client timeout — and not
@@ -508,6 +520,7 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.
 // whole `--wait 10` (scripts/agent-secrets-session) on every launch for as long as the outage
 // lasts, which is what the bound exists to prevent.
 func TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRenew(t *testing.T) {
+	t.Parallel()
 	// Short, for the same reason as the row above: what this pins is the mechanism, not the
 	// number. The bound may well expire before the register below arrives — the credential
 	// drop takes a round trip of its own — and that is the same answer by the same means: the
@@ -565,6 +578,7 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRene
 // woken by a login alone leaves the renew unsent until the backoff comes round, and the
 // launcher gate spends its wait on a backoff this confirmation has no part in.
 func TestANameTakenDuringAnEnrollRetryConfirmsItsInheritedEnrollmentAtOnce(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	r, _, _, release := reclaimedIdentityRig(t)
 	release() // nothing holds the confirming renew here: this fake answers it as a healthy broker does
 

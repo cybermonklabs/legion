@@ -23,6 +23,7 @@ const overBound = 500 * time.Millisecond
 // settle's cause, before the bound plus 1 s where brokerCall's timer would answer: the broker got
 // the request, so it may have revoked the enrollment.
 func TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
+	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
 	r := startRig(t, "")
 	enrolled := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "rt-ended-box", Thumbprint: "tp-ended-box"})
 	if !enrolled.OK || enrolled.EnrollmentID == "" {
