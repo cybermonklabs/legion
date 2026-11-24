@@ -3699,6 +3699,63 @@
         "base": "77f8b4b97a502984724ccf3f6118ca0e50d4a34b",
         "files": ["packages/daemon/internal/workspace/cache_unanswered_name_test.go"],
         "capture": "workspace.unanswered-name/fragment"
+      },
+      {
+        "row": "loadtest-dashboard-words-userinfo",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/envoy/loadtest/dashboard_words_test.go"],
+        "capture": "loadtest.dashboard-words/userinfo"
+      },
+      {
+        "row": "loadtest-dashboard-words-status-line",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/envoy/loadtest/dashboard_words_test.go"],
+        "capture": "loadtest.dashboard-words/status-line"
+      },
+      {
+        "row": "loadtest-fetch-words-unparsed",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": [
+          "packages/envoy/loadtest/fetch_words_test.go",
+          "packages/envoy/loadtest/dashboard_words_test.go"
+        ],
+        "capture": "loadtest.fetch-words/unparsed"
+      },
+      {
+        "row": "dev-proxy-stands-probe-address-unparsed",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/envoy/cmd/dev-proxy-stands/probe_address_test.go"],
+        "capture": "dev-proxy-stands.probe-address/unparsed"
+      },
+      {
+        "row": "dev-proxy-stands-probe-private-words-refused",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/envoy/cmd/dev-proxy-stands/probe_private_words_test.go"],
+        "capture": "dev-proxy-stands.probe-private-words/refused"
+      },
+      {
+        "row": "loadtest-sampler-words-pprof",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": [
+          "packages/envoy/loadtest/sampler_words_test.go",
+          "packages/envoy/loadtest/dashboard_words_test.go"
+        ],
+        "capture": "loadtest.sampler-words/pprof"
+      },
+      {
+        "row": "loadtest-metadata-words-unparsed",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": [
+          "packages/envoy/loadtest/metadata_words_test.go",
+          "packages/envoy/loadtest/dashboard_words_test.go"
+        ],
+        "capture": "loadtest.metadata-words/unparsed"
+      },
+      {
+        "row": "docstest-dial-words-status-line",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/envoy/internal/dispatch/docs/docstest/dial_words_test.go"],
+        "capture": "docstest.dial-words/status-line"
       }
     ],
     "boundary_fields": {
@@ -13399,6 +13456,139 @@
       "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
       "test": "TestALegionDaemonURLThatDoesNotParseIsNotPrinted/twin",
       "production": "the probe of the unparsed LEGION_DAEMON_URL row: url.Parse's error for that URL quotes its query's token, so the row can see one printed"
+    },
+    {
+      "id": "loadtest-register-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestARegistrationCarriesNoBearerOn/followed",
+      "production": "loadtest registerSessions: its listener client follows no redirect (redirects.Refused), so a registration answered with a 302 is counted refused by its status and the stand-in a Location names is sent nothing, the listener's bearer among it",
+      "function": "(*github.com/sjawhar/envoy/loadtest.step).registerSessions",
+      "capture": "loadtest.register-redirect/followed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/sessions.go",
+        "preimage": "redirects.Refused(&http.Client{Timeout: 10 * time.Second})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: 10 * time.Second} }()"
+      }
+    },
+    {
+      "id": "loadtest-backlog-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABacklogCheckAsksNoStandInALocationNames/followed",
+      "production": "loadtest runBacklog: the NATS check's client follows no redirect (redirects.Refused), so a /varz answered with a 302 refuses the run by its status and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "loadtest-dashboard-words-userinfo",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADashboardProbePrintsNoWordOfItsAnswerers/userinfo",
+      "production": "loadtest probeDashboard: the SSE request's failure prints as redact.Cause reads it beside the URL it asked, never net/http's text, which names a foreign -url's user name and quotes a Location that does not parse, which echoes the password the request sent as Basic credentials",
+      "function": "github.com/sjawhar/envoy/loadtest.probeDashboard",
+      "capture": "loadtest.dashboard-words/userinfo",
+      "mutation": {
+        "file": "packages/envoy/loadtest/dashboard.go",
+        "preimage": "redact.Cause(sseErr, sseURL).Error()",
+        "replacement": "sseErr.Error()"
+      }
+    },
+    {
+      "id": "loadtest-dashboard-words-status-line",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADashboardProbePrintsNoWordOfItsAnswerers/status-line",
+      "production": "loadtest probeDashboard: the live socket's dial failure prints by its class (redact.Class), never gorilla's text, which quotes a status line it could not read, the answering party's words",
+      "function": "github.com/sjawhar/envoy/loadtest.probeDashboard",
+      "capture": "loadtest.dashboard-words/status-line",
+      "mutation": {
+        "file": "packages/envoy/loadtest/dashboard.go",
+        "preimage": "redact.Class(dialErr).Error()",
+        "replacement": "dialErr.Error()"
+      }
+    },
+    {
+      "id": "loadtest-fetch-words-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAFetchPrintsNoCredentialOfItsURL/unparsed",
+      "production": "loadtest fetchTo: a failed GET logs as redact.Cause reads it, never net/http's text, which names a foreign -pprof's user name and quotes a Location that does not parse, which echoes the password the GET sent as Basic credentials",
+      "function": "github.com/sjawhar/envoy/loadtest.fetchTo",
+      "capture": "loadtest.fetch-words/unparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/util.go",
+        "preimage": "redact.Cause(err, url)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-probe-address-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestABoundProbeAddressThatDoesNotParsePrintsItsClass/unparsed",
+      "production": "dev-airlock-stands probe-bound: an AIRLOCK_S_URL that does not parse prints by its class (redact.Class), never net/url's text, which quotes the value whole, its user information among it",
+      "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.runProbeBound",
+      "capture": "dev-proxy-stands.probe-address/unparsed",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/probe.go",
+        "preimage": "redact.Class(err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-probe-private-words-refused",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAPrivateProbePrintsNoWordOfItsProxy/refused",
+      "production": "dev-airlock-stands probe-private: a GET the environment's proxy refuses prints as redact.Cause reads it beside the private address, never net/http's text, which holds the proxy's reason phrase as it came",
+      "function": "github.com/sjawhar/envoy/cmd/dev-proxy-stands.runProbePrivate",
+      "capture": "dev-proxy-stands.probe-private-words/refused",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/probe.go",
+        "preimage": "redact.Cause(err, privateAddress)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "loadtest-sampler-words-pprof",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASamplerReadPrintsNoCredentialOfItsURL/pprof",
+      "production": "loadtest getOK: a sampler read that got no answer fails as redact.Cause reads it, never net/http's text, which names a foreign -pprof's user name and quotes a Location that does not parse; readErrors logs that",
+      "function": "github.com/sjawhar/envoy/loadtest.getOK",
+      "capture": "loadtest.sampler-words/pprof",
+      "mutation": {
+        "file": "packages/envoy/loadtest/sample.go",
+        "preimage": "return nil, redact.Cause(err, url)",
+        "replacement": "return nil, err"
+      }
+    },
+    {
+      "id": "loadtest-metadata-words-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAMetadataReadPrintsNoCredentialOfItsURL/unparsed",
+      "production": "loadtest cloudsqlMetadataToken: a token read that got no answer prints as redact.Cause reads it, never net/http's text, which names a -token-url's user name and quotes a Location that does not parse",
+      "function": "github.com/sjawhar/envoy/loadtest.cloudsqlMetadataToken",
+      "capture": "loadtest.metadata-words/unparsed",
+      "mutation": {
+        "file": "packages/envoy/loadtest/cloudsqlcpu.go",
+        "preimage": "redact.Cause(err, tokenURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "docstest-dial-words-status-line",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/docs/docstest",
+      "test": "TestADialPrintsNoWordOfAStatusLineItCouldNotRead/status-line",
+      "production": "docstest DialContext: a dial that failed with no handshake answer prints by its class (redact.Class), never gorilla's text, which quotes a status line it could not read; a load driver (loadtest/browsertype) prints it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/docs/docstest.DialContext",
+      "capture": "docstest.dial-words/status-line",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/docs/docstest/docstest.go",
+        "preimage": "redact.Class(err)",
+        "replacement": "err"
+      }
     }
   ],
   "bun": [
@@ -16057,6 +16247,51 @@
       "site": "claudebridge startTurnReports: appended the turn-outcome route to LEGION_DAEMON_URL's text, so a URL with a query or a fragment took the route into it and each report went to a path the daemon does not serve",
       "source": "the round-9 decisions of #4368",
       "guard": "claudebridge-turn-report-url-query"
+    },
+    {
+      "site": "loadtest registerSessions: the listener client follows no redirect (redirects.Refused), but no row drove registerSessions, so nothing held the policy",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-register-redirect-followed"
+    },
+    {
+      "site": "loadtest runBacklog: the client checkNATSServerName got followed any redirect the NATS monitor answered",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-backlog-redirect-followed"
+    },
+    {
+      "site": "loadtest probeDashboard: the live socket's and the SSE request's failures printed as gorilla and net/http wrote them, a status line they could not read, a Location that did not parse and a foreign -url's user name among them",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-dashboard-words-userinfo"
+    },
+    {
+      "site": "loadtest fetchTo: a failed GET logged net/http's error, which names a foreign -pprof's user name and quotes a Location that does not parse",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-fetch-words-unparsed"
+    },
+    {
+      "site": "dev-airlock-stands probe-bound: an AIRLOCK_S_URL that does not parse printed net/url's error, which quotes the value whole, user information included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dev-proxy-stands-probe-address-unparsed"
+    },
+    {
+      "site": "dev-airlock-stands probe-private: a CONNECT the proxy refused printed net/http's error, which holds the proxy's reason phrase as it came (found by this round's class search of probe.go)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dev-proxy-stands-probe-private-words-refused"
+    },
+    {
+      "site": "loadtest getOK: a sampler read that got no answer returned net/http's error as it came, and readErrors logged it: a foreign -pprof's or -nats-mon's user name and a Location that does not parse (found by this round's class search)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-sampler-words-pprof"
+    },
+    {
+      "site": "loadtest cloudsqlMetadataToken: a token read that got no answer wrapped net/http's error as it came: a -token-url's user name and a Location that does not parse (found by this round's class search)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-metadata-words-unparsed"
+    },
+    {
+      "site": "docstest DialContext: a dial with no handshake answer wrapped gorilla's error, which quotes a status line it could not read, and loadtest/browsertype printed it (found by this round's class search)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "docstest-dial-words-status-line"
     }
   ]
 }
