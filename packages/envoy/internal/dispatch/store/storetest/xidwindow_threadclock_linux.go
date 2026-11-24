@@ -306,9 +306,16 @@ func xidHoldThread() (release func(), held bool) {
 // rig started runs (startXidTrace) and none of the tracer's memory is found: then the tracer's
 // first writes inside a gap can land on pages never touched, which the gap would read as the code's
 // time, so the BEGIN's window is UNKNOWN by that reason (analyzeXidWindows). A mapping that goes
-// away between the read of /proc/self/maps and its mbind or madvise is one there is nothing left to
-// hold. A kernel without MADV_POPULATE_WRITE (before Linux 5.14) leaves the tracer's pages to fault
-// in as the tracer writes them, which can fail a gap the code did not make, never pass one.
+// away between the read of /proc/self/maps and its mbind or madvise is one there is nothing left
+// to hold. A kernel without MADV_POPULATE_WRITE (before Linux 5.14) leaves the tracer's pages to
+// fault in as the tracer writes them, and so does any other refusal, since this call does not read
+// what madvise answers. Such a fault is not one-sided. Inside a gap it reads as the code's time,
+// and can fail a window the code did not make slow. Inside a statement it lands on the statements'
+// side, which rule 2 weighs the gaps against (XidWindow.StatementTime, XidWindow.Violations), so
+// it can also hide a window that breaks rule 2: a 4 ms gap against 1 ms of statements breaks that
+// rule and not XidMaxGap, and 5 ms of fault time inside those statements takes the breach away.
+// What shows a populate that made nothing present is the burst test, which fails naming the pages
+// this search found (TestTheTracersEventsInAWindowTouchNoFreshPage).
 func xidHoldWindowMemory() (unheld string) {
 	balancing := xidNUMABalancing()
 	tracing := xidMappedBeforeTrace.Load() != nil
@@ -338,6 +345,8 @@ func xidHoldWindowMemory() (unheld string) {
 	}
 	tracer := xidFindTracerMemory(maps)
 	for _, r := range tracer {
+		// What madvise answers is not read, so a refusal is not reported: what a page left
+		// unmade costs a window is in this function's comment, on both sides of rule 2.
 		unix.Syscall(unix.SYS_MADVISE, r.start, r.end-r.start, unix.MADV_POPULATE_WRITE)
 	}
 	if refused {
