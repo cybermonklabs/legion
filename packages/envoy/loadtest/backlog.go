@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // The backlog publisher (`loadgen backlog`): it publishes envelopes to the simulated sessions'
@@ -130,7 +131,9 @@ func runBacklog(args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	if err := checkNATSServerName(ctx, &http.Client{Timeout: 10 * time.Second}, monURL, name); err != nil {
+	// The monitor answers /varz itself, so its client follows no redirect (redirects.Refused), as
+	// checkStack's does: a Location is the answering party's words.
+	if err := checkNATSServerName(ctx, redirects.Refused(&http.Client{Timeout: 10 * time.Second}), monURL, name); err != nil {
 		return err
 	}
 	sum, err := publishBacklog(url, planBacklog(*sessions, *per, *over, *idBase), *wait)

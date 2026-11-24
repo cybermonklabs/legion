@@ -37,7 +37,13 @@ func probeDashboard(ctx context.Context, dispatch string) (string, string, error
 		_ = conn.Close()
 		return dashboardLive, liveURL, nil
 	}
-	liveAnswer := dialErr.Error()
+	// Neither stream's failure prints as its client's own text. gorilla's and net/http's quote a
+	// status line the answering party wrote that they cannot read; net/http's also quotes a Location
+	// that does not parse, and names the URL it asked with the user name of its user information (a
+	// foreign -url may carry one; gorilla refuses to dial it). So the live socket's failure prints by
+	// its class (redact.Class: the rule prints no ws:// URL), the SSE request's as redact.Cause reads
+	// it beside the URL it asked.
+	liveAnswer := redact.Class(dialErr).Error()
 	if resp != nil {
 		liveAnswer = redact.StatusLine(resp.StatusCode)
 		_ = resp.Body.Close()
@@ -54,7 +60,7 @@ func probeDashboard(ctx context.Context, dispatch string) (string, string, error
 	sseResp, sseErr := client.Do(req)
 	sseAnswer := "no answer"
 	if sseErr != nil {
-		sseAnswer = sseErr.Error()
+		sseAnswer = redact.Cause(sseErr, sseURL).Error()
 	}
 	if sseErr == nil {
 		sseAnswer = redact.StatusLine(sseResp.StatusCode)

@@ -7,8 +7,10 @@
 // and builds, so that CI compiles and vets them with everything else here. Each is still a
 // plain Go HTTP client: it reads the proxy, NO_PROXY and the trust bundle from its own
 // environment, as net/http does for any Go program, and that is the whole point of the probe.
-// probe-bound's request carries a bearer, so its client follows no redirect and its failure
-// prints through redact; neither changes how it reads the proxy or the trust bundle.
+// Each prints its failure through redact, never as net/http's or net/url's own text, which quotes
+// the answering party's words (a proxy's refusal, a Location, a status line) and the whole value
+// of a URL that does not parse. probe-bound's request carries a bearer, so its client also follows
+// no redirect. Neither changes how a probe reads the proxy or the trust bundle.
 package main
 
 import (
@@ -30,9 +32,11 @@ import (
 const privateAddress = "https://10.11.12.13/"
 
 // runProbePrivate is `dev-airlock-stands probe-private`: one GET of a private address literal,
-// printing the status or the error with the milliseconds it took. It takes the proxy from the
-// environment as any Go program does, so what it does with the literal is what a Go consumer
-// behind the airlock would do.
+// printing the status, or the error as redact.Cause reads it, with the milliseconds it took. It
+// takes the proxy from the environment as any Go program does, so what it does with the literal is
+// what a Go consumer behind the airlock would do. A proxy that refuses the CONNECT is the answering
+// party, and net/http's error holds its reason phrase as it came (net/http/transport.go of
+// go1.27.3, lines 2036-2042), which it can write the proxy URL's password into.
 func runProbePrivate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("dev-airlock-stands probe-private", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -50,7 +54,7 @@ func runProbePrivate(args []string, stdout, stderr io.Writer) int {
 	client := &http.Client{Timeout: 8 * time.Second}
 	answer, err := client.Get(privateAddress)
 	if err != nil {
-		fmt.Fprintf(stdout, "error after %dms: %v\n", time.Since(start).Milliseconds(), err)
+		fmt.Fprintf(stdout, "error after %dms: %v\n", time.Since(start).Milliseconds(), redact.Cause(err, privateAddress))
 		return 0
 	}
 	defer func() { _ = answer.Body.Close() }()
@@ -78,7 +82,9 @@ func runProbeBound(args []string, stdout, stderr io.Writer) int {
 	address := os.Getenv("AIRLOCK_S_URL") + "/go"
 	request, err := http.NewRequest(http.MethodGet, address, nil)
 	if err != nil {
-		fmt.Fprintln(stdout, "error", err)
+		// net/url quotes the whole value it could not parse, the user information of the URL
+		// among it, so the failure prints by its class alone.
+		fmt.Fprintln(stdout, "error", redact.Class(err))
 		return 0
 	}
 	request.Header.Set("Authorization", "Bearer "+os.Getenv("AIRLOCK_DEMO_TOKEN"))
