@@ -34,6 +34,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
+import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
 import type { RequestCredential } from "../bearer";
 import {
   DispatchClient,
@@ -1113,7 +1114,12 @@ test.each([
   expect(error).toBeInstanceOf(DispatchServiceError);
   expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
   expect(error).toEqual(
-    expect.objectContaining({ code: answer.code, status: answer.status, fromDispatch: true })
+    expect.objectContaining({
+      // Every kind this table names carries a code; one that names none matches no box.
+      code: remoteText(answer.code ?? "(the kind names no code)"),
+      status: answer.status,
+      fromDispatch: true,
+    })
   );
 });
 
@@ -1145,7 +1151,11 @@ test("after a gateway page, the callers' stored refusals keep what their callers
   );
   const reused = await drive([kind("502 page"), kind("422 KEY_REUSED exact echo")]);
   expect(reused.error).toEqual(
-    expect.objectContaining({ code: IDEMPOTENCY_KEY_REUSED, status: 422, fromDispatch: true })
+    expect.objectContaining({
+      code: remoteText(IDEMPOTENCY_KEY_REUSED),
+      status: 422,
+      fromDispatch: true,
+    })
   );
 });
 

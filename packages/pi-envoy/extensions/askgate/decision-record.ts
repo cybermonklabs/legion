@@ -515,7 +515,7 @@ function mayHaveCreated(error: unknown): boolean {
     error instanceof DispatchServiceError &&
     error.fromDispatch &&
     error.status === 422 &&
-    error.code === IDEMPOTENCY_KEY_REUSED
+    error.code.equals(IDEMPOTENCY_KEY_REUSED)
   );
 }
 

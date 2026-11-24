@@ -265,7 +265,7 @@ function settleSideRead<T>(read: Promise<T>): Promise<SettledSideRead<T>> {
 function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string[]): T | undefined {
   if (!("error" in settled)) return settled.answer;
   const error = settled.error;
-  if (dispatchAnswered(error, 403) && error.code === "OAUTH_SCOPE_REQUIRED") {
+  if (dispatchAnswered(error, 403) && error.code.equals("OAUTH_SCOPE_REQUIRED")) {
     throw refusalWithCode(error);
   }
   warnings.push(`dispatch: warning: ${what} could not be read: ${inboxReadRefusal(error)}`);

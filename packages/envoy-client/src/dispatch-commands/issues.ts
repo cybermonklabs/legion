@@ -219,7 +219,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       },
     };
   } catch (error) {
-    if (!(error instanceof DispatchServiceError) || error.code !== "POSSIBLE_DUPLICATE") {
+    if (!(error instanceof DispatchServiceError) || !error.code.equals("POSSIBLE_DUPLICATE")) {
       throw error;
     }
     const candidates = duplicateCandidates(error);
@@ -719,7 +719,7 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
     // it can give asks the caller to change something first, and reaches them as Dispatch
     // wrote it. Untouched, this one reaches them as prose with its code hidden, which reads
     // as a failure to work out rather than a write to repeat.
-    if (dispatchAnswered(error, 409) && error.code === "CHECK_CONTENDED") {
+    if (dispatchAnswered(error, 409) && error.code.equals("CHECK_CONTENDED")) {
       throw refusalWithCode(
         error,
         "the check moved twice while this result was being written, and nothing was recorded: run the same dispatch result command again"

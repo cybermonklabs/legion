@@ -99,6 +99,7 @@ import {
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
+import { RemoteText, redactRemoteText } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { reachedNothing } from "./errors";
@@ -123,6 +124,15 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
+/**
+ * A refusal Dispatch decided: its status, its `code` and its words as the message. The code is
+ * Dispatch's word, held as a {@link RemoteText} (with the credentials the request carried, where
+ * Dispatch wrote it), so it prints only as the rule reads it; code that branches on a code compares
+ * through the box (`code.equals`). The message is the rule's reading of Dispatch's words
+ * (`#payloadOf`), or the client's own sentence for a refusal it makes itself, whose code it names
+ * as a string. `candidates`, `current` and `mismatches` are the refusal's data, which a caller reads
+ * to act on it.
+ */
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
   /**
@@ -130,9 +140,11 @@ export class DispatchServiceError extends Error {
    * false for an answer something in Dispatch's place wrote (`DispatchGatewayError`).
    */
   readonly fromDispatch: boolean = true;
+  /** The code of the first rule the call broke, or `HTTP_<status>` where the answer names none. */
+  readonly code: RemoteText;
 
   constructor(
-    readonly code: string,
+    code: RemoteText | string,
     readonly status: number,
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
@@ -140,6 +152,7 @@ export class DispatchServiceError extends Error {
     readonly mismatches?: DispatchServiceErrorShape["mismatches"]
   ) {
     super(message);
+    this.code = code instanceof RemoteText ? code : new RemoteText(code);
   }
 }
 
@@ -223,10 +236,13 @@ export class DispatchWriteUnsettledError extends Error {
         : "an earlier attempt of the write may have reached Dispatch";
     if (last instanceof DispatchGatewayError) {
       answer = last.answer;
-    } else if (last instanceof DispatchServiceError && last.code === IDEMPOTENCY_KEY_IN_FLIGHT) {
+    } else if (
+      last instanceof DispatchServiceError &&
+      last.code.equals(IDEMPOTENCY_KEY_IN_FLIGHT)
+    ) {
       // Dispatch's own text tells the caller to ask again under the same key, which the client
       // already did and a person or agent reading this cannot: the code alone names the answer.
-      answer = last.code;
+      answer = IDEMPOTENCY_KEY_IN_FLIGHT;
       why = "Dispatch was still running an earlier attempt of the write";
     } else if (last instanceof DispatchServiceError) {
       answer = `${last.code}: ${last.message}`;
@@ -301,7 +317,7 @@ export function isNoRoute(error: unknown): boolean {
   return (
     error instanceof DispatchServiceError &&
     error.status === 404 &&
-    error.code === "NOT_FOUND" &&
+    error.code.equals("NOT_FOUND") &&
     error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
   );
 }
@@ -1387,7 +1403,7 @@ export class DispatchClient {
       if (
         error instanceof DispatchServiceError &&
         error.status === 404 &&
-        error.code === "SOURCE_NOT_FOUND"
+        error.code.equals("SOURCE_NOT_FOUND")
       ) {
         return [];
       }
@@ -2650,10 +2666,17 @@ export class DispatchClient {
             requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)
           );
         }
+        // Dispatch's code and words are its own, each held or printed as the rule reads it, the
+        // tokens this client presented redacted from them: a Dispatch at the wrong URL can echo
+        // the bearer it was sent.
+        const carried = this.#sent.with(this.token);
         throw new DispatchServiceError(
-          error.code ?? `HTTP_${response.status}`,
+          new RemoteText(
+            typeof error.code === "string" ? error.code : `HTTP_${response.status}`,
+            carried
+          ),
           response.status,
-          error.error,
+          redactRemoteText(error.error, carried),
           error.candidates,
           error.current,
           error.mismatches

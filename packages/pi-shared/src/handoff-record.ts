@@ -314,7 +314,7 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
     if (
       error instanceof DispatchServiceError &&
       error.fromDispatch &&
-      error.code === "HANDOFF_NOT_FOUND"
+      error.code.equals("HANDOFF_NOT_FOUND")
     ) {
       // A left phase with no record sends `@-` alone (the module doc's left-phase rule).
       if (!works) return standingReport(env, jj);
