@@ -241,16 +241,14 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: the broker's own Google credentials gave no token", ErrMintUpstream)
 	}
-	// The resource's path is joined onto the base URL's path, its query kept and its fragment,
-	// which no request sends, dropped (urljoin.Join): the path appended to that URL's text would
-	// sit inside a query or a fragment, and IAM would be asked another path. Only the email is
-	// escaped, and the verb is appended after: url.PathEscape would be free to escape the colon
-	// of ":generateAccessToken", and Google reads a path whose verb arrived as
+	// The resource is joined onto the base URL (urljoin.Join, which says what the join is for),
+	// and a base URL it cannot use fails the mint in fixed words, since url.Parse's error quotes
+	// the URL whole, user information and query included. Only the email is escaped, and the
+	// verb is appended after: url.PathEscape would be free to escape the colon of
+	// ":generateAccessToken", and Google reads a path whose verb arrived as
 	// %3AgenerateAccessToken as a resource name of its own and answers 404, never a token. The
 	// escaping is what keeps a stored value from reaching a different resource; the pattern above
-	// already admits no slash, so the two agree. A base URL that does not parse is refused in
-	// fixed words, since url.Parse's error quotes the URL whole, user information and query
-	// included.
+	// already admits no slash, so the two agree.
 	endpoint, err := urljoin.Join(cmp.Or(m.BaseURL, GoogleIAMCredentialsURL), "v1/projects/-/serviceAccounts/"+url.PathEscape(secret.ServiceAccount)+":generateAccessToken")
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: create Google service account token request: the IAM Credentials URL does not parse", ErrMintUpstream)

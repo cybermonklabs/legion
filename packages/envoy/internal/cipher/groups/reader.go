@@ -270,12 +270,11 @@ func (r *Reader) read(ctx context.Context, name string) {
 
 // list reads every page of name's members.list, derived members included, and answers the
 // people among them by their record.CanonicalLogin form. A failed page fails the whole read.
-// Each page's URL is BaseURL with the members route and the page's own parameters joined onto
-// its path and its query (urljoin.Join), its fragment, which no request sends, dropped: the
-// route appended to BaseURL's text would sit inside a query or a fragment, and the second "?"
-// of the parameters would be read as part of the first query's last value, so the Directory
-// would be asked another path. A BaseURL that does not parse is refused in fixed words, since
-// url.Parse's error quotes the URL whole, user information and query included.
+// Each page's URL is the members route and that page's own parameters joined onto BaseURL
+// (urljoin.Join, which says what the join is for), so the configured query stays ahead of the
+// parameters and no second "?" is written, which would have put them inside it. A BaseURL the
+// join cannot use fails the read in fixed words, since url.Parse's error quotes the URL whole,
+// user information and query included.
 func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, error) {
 	token, err := redact.OAuth2(r.Source.Token())
 	if err != nil {

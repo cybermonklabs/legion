@@ -211,12 +211,10 @@ func (g *GoogleAccount) mint() (string, error) {
 }
 
 // generateIDToken is mint's work, its errors not yet naming the account and the audience. The
-// call's URL is IAMCredentialsURL with the resource's path joined onto its path (urljoin.Join),
-// its query kept and its fragment, which no request sends, dropped: the path appended to that
-// URL's text would sit inside a query or a fragment, and IAM Credentials would be asked another
-// path. A URL that does not parse, or that the join leaves url.Parse will not take again, fails
-// the mint in fixed words, since url.Parse's error quotes the URL whole, its user information
-// and query included.
+// call's URL is the resource joined onto IAMCredentialsURL (urljoin.Join, which says what the
+// join is for). An IAMCredentialsURL the join cannot use, and one whose joined URL url.Parse
+// will not take again, fail the mint in fixed words, since url.Parse's error quotes the URL
+// whole, user information and query included.
 func (g *GoogleAccount) generateIDToken() (string, error) {
 	bound := g.MintTimeout
 	if bound <= 0 {
