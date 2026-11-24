@@ -10,12 +10,14 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const roleLaneMachine = "example machine"
 
 // requireRoleMessage publishes a role message as another connection of the same user and requires
-// the lane's handler to receive it within 5 s.
+// the lane's handler to receive it, waiting for it bounded only by the test binary's deadline
+// (testwait.Receive).
 func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 	t.Helper()
 	publisher, err := bus.Dial("role-publisher", []string{uri}, os.LookupEnv)
@@ -30,13 +32,8 @@ func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	select {
-	case got := <-received:
-		if got != topic {
-			t.Fatalf("the role lane received %s, want %s", got, topic)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the role lane received nothing")
+	if got := testwait.Receive(t, "the role lane to receive the role message", received); got != topic {
+		t.Fatalf("the role lane received %s, want %s", got, topic)
 	}
 }
 

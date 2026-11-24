@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -130,17 +131,15 @@ func natscredGoroutines() (all, keepers int) {
 	return all, keepers
 }
 
-// requireNoNatscredGoroutine waits up to five seconds for no natscred goroutine to run, and fails
-// naming how many still do, and how many of those are service keepers, when.
+// requireNoNatscredGoroutine waits for no natscred goroutine to run, bounded only by the test
+// binary's deadline (testwait.UntilPolling), and fails naming how many still do, and how many of
+// those are service keepers, when.
 func requireNoNatscredGoroutine(t *testing.T, when string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for all, keepers := natscredGoroutines(); all != 0; all, keepers = natscredGoroutines() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d natscred goroutines, %d of them service keepers, still run %s, want none", all, keepers, when)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 50*time.Millisecond, "no natscred goroutine to run "+when, func() (string, bool) {
+		all, keepers := natscredGoroutines()
+		return fmt.Sprintf("%d natscred goroutines, %d of them service keepers", all, keepers), all == 0
+	})
 }
 
 // A replacement connection the client discards leaves no keeper running. The discard closes the

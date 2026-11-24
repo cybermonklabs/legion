@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reconnectWaitFixture is a client that reaches NATS through a proxy the test can cut, a subscriber
@@ -78,18 +79,12 @@ func (f *reconnectWaitFixture) startPublishWhileReconnecting(t *testing.T, ctx c
 	return answer
 }
 
-// awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish has
-// not answered within 15 s.
+// awaitAnswer returns the publish's answer and clears onTick, failing the test if the publish never
+// answers: the wait is bounded only by the test binary's deadline (testwait.Receive).
 func (f *reconnectWaitFixture) awaitAnswer(t *testing.T, answer <-chan error) error {
 	t.Helper()
 	defer f.onTick.Store(nil)
-	select {
-	case err := <-answer:
-		return err
-	case <-time.After(15 * time.Second):
-		t.Fatal("the publish never returned")
-		return nil
-	}
+	return testwait.Receive(t, "the publish to return", answer)
 }
 
 // requireNothingReceived fails the test if the subscriber receives anything from the publisher.

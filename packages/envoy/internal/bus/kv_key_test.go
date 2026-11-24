@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
@@ -417,6 +418,7 @@ func listedKeys(t *testing.T, kv KeyValue) []string {
 	}
 	defer func() { _ = watcher.Stop() }()
 	var keys []string
+	waited := testwait.Context(t)
 	for {
 		select {
 		case entry, open := <-watcher.Updates():
@@ -427,8 +429,8 @@ func listedKeys(t *testing.T, kv KeyValue) []string {
 				return keys
 			}
 			keys = append(keys, entry.Key())
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the watch of every key delivered %d keys and no nil within 10 s, want the nil that ends its scan", len(keys))
+		case <-waited.Done():
+			t.Fatalf("the watch of every key delivered %d keys and no nil, want the nil that ends its scan", len(keys))
 		}
 	}
 }
@@ -445,13 +447,9 @@ func watchKey(t *testing.T, kv KeyValue, key string) {
 	}
 	defer func() { _ = watcher.Stop() }()
 	for _, want := range []bool{true, false} {
-		select {
-		case entry := <-watcher.Updates():
-			if (entry != nil) != want || (entry != nil && entry.Key() != key) {
-				t.Fatalf("watch of %d-byte key delivered %v, want the key and then the scan's end", len(key), entry)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("watch of %d-byte key delivered nothing within 10 s", len(key))
+		entry := testwait.Receive(t, fmt.Sprintf("a delivery from the watch of %d-byte key", len(key)), watcher.Updates())
+		if (entry != nil) != want || (entry != nil && entry.Key() != key) {
+			t.Fatalf("watch of %d-byte key delivered %v, want the key and then the scan's end", len(key), entry)
 		}
 	}
 }

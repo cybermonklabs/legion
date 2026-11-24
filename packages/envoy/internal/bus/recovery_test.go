@@ -28,12 +28,14 @@ func startNATS(t *testing.T) (*testnats.Server, string) {
 	return testnats.Start(t)
 }
 
-// waitFor polls a condition with timeout. Returns true if condition was met.
-func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
+// waitFor waits for cond, asking it every 250 ms, and fails the test naming desc if it never holds.
+// The wait ends on cond, bounded only by the test binary's deadline (testwait.UntilPolling): each
+// caller waits for a connection, a delivery, a log line or a server's state that a loaded machine
+// delays without anything being wrong, so the fixed span each caller passes, the second argument,
+// no longer ends it. That span ended about 90 calls in this package early on a slow machine before.
+func waitFor(t *testing.T, _ time.Duration, desc string, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(timeout, 250*time.Millisecond, cond) {
-		t.Fatalf("timed out waiting for: %s", desc)
-	}
+	testwait.UntilPolling(t, 250*time.Millisecond, desc, func() (struct{}, bool) { return struct{}{}, cond() })
 }
 
 func subscribeAllNotifications(client *bus.Client, handler natsgo.MsgHandler, opts ...natsgo.SubOpt) (*natsgo.Subscription, error) {
@@ -1015,17 +1017,15 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		t.Helper()
 		return len(byName()[name])
 	}
-	// settle waits up to within for the server to hold want of the client's connections, and fails
-	// with the count it last read.
-	settle := func(want int, within time.Duration, when string) {
+	// settle waits for the server to hold want of the client's connections, bounded only by the test
+	// binary's deadline (testwait.UntilPolling), and fails with the count it last read. The span
+	// callers pass, the second argument, no longer ends the wait.
+	settle := func(want int, _ time.Duration, when string) {
 		t.Helper()
-		deadline := time.Now().Add(within)
-		for open := connections(); open != want; open = connections() {
-			if time.Now().After(deadline) {
-				t.Fatalf("%d connection(s) open %s, want %d", open, when, want)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		testwait.UntilPolling(t, 100*time.Millisecond, fmt.Sprintf("%d connection(s) open %s", want, when), func() (int, bool) {
+			open := connections()
+			return open, open == want
+		})
 	}
 
 	logs := captureBusLogs(t)

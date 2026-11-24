@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectWithHandler connects a client and subscribes a core handler that signals when a
@@ -36,11 +37,7 @@ func connectWithHandler(t *testing.T, hold time.Duration) (*bus.Client, *atomic.
 	if err := client.Conn.Publish("drain.in-flight", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	return client, finished
 }
 

@@ -3,6 +3,7 @@ package bus_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -52,14 +53,12 @@ func drainSubscription(t *testing.T, sub *natsgo.Subscription) {
 }
 
 // awaitHook waits for the reconnect hook to report a run, which comes after the client's restore of
-// its subscriptions on that connection event.
+// its subscriptions on that connection event. The wait ends on that report, bounded only by the
+// test binary's deadline (testwait.Receive): a loaded machine delays a reconnect without anything
+// being wrong, so a fixed span (30 s, before) failed rows whose reconnect came late.
 func awaitHook(t *testing.T, hooked <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-hooked:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect hooks never ran")
-	}
+	testwait.Receive(t, "the reconnect hooks to run", hooked)
 }
 
 // awaitPushBound waits for the durable consumer to report want for its push binding. nats-server
@@ -443,11 +442,14 @@ func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
 	awaitPushBound(t, client, consumer, true, "the durable to take the subscription's binding")
 	publishReleaseProbe(t, client, "notifications.github.test.released")
 	// The drain hands the handler what the client has buffered and nothing new, so the message must
-	// have left the server before the drain's UNSUB reaches it. The consumer's own count of what it
-	// delivered is the last thing a test can read before the message is the client's.
-	waitFor(t, 10*time.Second, "the durable to deliver the message", func() bool {
-		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
-		return err == nil && info.Delivered.Consumer >= 1
+	// be the client's before the drain's UNSUB reaches the server. The consumer's own count of what it
+	// delivered does not say so: nats-server counts a delivery (v2.15.1 consumer.go:5809, o.dseq++)
+	// before it queues the message for the stream's send loop (:5838, o.outq.send), and a drain whose
+	// UNSUB the server takes in between leaves the message off this subscription. So the row waits
+	// for the client's own fact: the message queued on the subscription, or already handed over.
+	testwait.Until(t, "the subscription to hold the message or to have handed it over", func() (string, bool) {
+		queued, _, err := sub.Pending()
+		return fmt.Sprintf("%d queued (%v), %d handled", queued, err, handled.Load()), err == nil && queued+int(handled.Load()) >= 1
 	})
 
 	drained, err := client.DrainSubscription(sub)
