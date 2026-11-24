@@ -14,7 +14,8 @@
 #   - a copy of a test of structured values, which reads no text an agent is given.
 # Where a case names a family, the row must carry it, so each family has a case only it serves.
 # The other cases build a miniature repository: a tree whose only test is that copy finds nothing,
-# and a tree it cannot read, or one that holds no test file, is UNKNOWN, never clean.
+# a tree whose only row is an assertion of words finds it, and a tree it cannot read, or one that
+# holds no test file, is UNKNOWN, never clean.
 #
 # Run from anywhere: scripts/prompt-word-tests.test.sh
 set -euo pipefail
@@ -226,6 +227,19 @@ git -C "$clean" add .
 run_search --repo "$clean" --out "$work/clean-out"
 check "finds nothing, so exits 0" "$(is "$status" 0)"
 check "says it searched one test file" "$(contains "$out" '^prompt-word-tests: 0 row(s) in 0 file(s), of 1 test file(s) searched')"
+
+echo "case: a tree whose only row is an assertion of words, with no row of another family"
+lone="$work/lone"
+mkdir -p "$lone/packages/daemon/internal/workflow"
+printf '%s\n' 'package workflow' '' 'import (' '	"strings"' '	"testing"' ')' '' \
+  'func TestZZLoneAssertion(t *testing.T) {' \
+  '	if !strings.Contains(taskOf(t), "planted words of a lone assertion") {' \
+  '		t.Fatal("the task lost its planted words")' '	}' '}' > "$lone/packages/daemon/internal/workflow/lone_test.go"
+git -C "$lone" init --quiet
+git -C "$lone" add .
+run_search --repo "$lone" --out "$work/lone-out"
+check "finds the row, so exits 1" "$(is "$status" 1)"
+check "names the line of its words" "$(contains "$out" '^packages/daemon/internal/workflow/lone_test.go:9: asserted-words: ')"
 
 echo "case: a tree it cannot read is UNKNOWN"
 mkdir -p "$work/not-a-repo"

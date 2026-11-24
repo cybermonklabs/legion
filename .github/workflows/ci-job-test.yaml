@@ -276,6 +276,12 @@ on:
           scripts/priorities-seed-check.test.sh and what it tests.
         type: string
         required: false
+      prompt_word_tests_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.prompt_word_tests_test:
+          scripts/prompt-word-tests.test.sh and what it tests.
+        type: string
+        required: false
       architecture_check_test:
         description: "ci.yaml's needs.changes.outputs.architecture_check_test: check.test.sh and what it tests."
         type: string
@@ -557,6 +563,10 @@ jobs:
       - name: Test the priorities seed check (a stand-in Dispatch)
         if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
         run: bash scripts/priorities-seed-check.test.sh
+
+      - name: Test the search for tests of prompt words
+        if: inputs.changes-result != 'success' || inputs.prompt_word_tests_test == 'true'
+        run: bash scripts/prompt-word-tests.test.sh
 
       - name: Test the architecture-check action's go-path mode
         if: inputs.changes-result != 'success' || inputs.architecture_check_test == 'true'
