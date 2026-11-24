@@ -1822,7 +1822,7 @@ and pack as the release runs them, the check that the plugin's build-input list 
 build reads, the render check of every changelog fragment with the changie it installs, the
 guides' layout step behind its own guide_layout gate, and the lints and typechecks of
 scripts/dispatch, scripts/github-apps, scripts/sessions and scripts/approval-eval, with the
-typecheck of scripts/e2e/lib's plan ratings read test. They are builds, lints and typechecks,
+typecheck of the live proofs' libraries, scripts/e2e/lib. They are builds, lints and typechecks,
 which a pull request runs whatever their time, and they come to 1.0 minutes at the 90th
 percentile (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 The job shares ci-job-test.yaml with the test job

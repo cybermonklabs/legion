@@ -5,18 +5,18 @@
 # here is what a step reads outside any program.
 GATE = gate("tooling_checks", TOOLING_JOB, reads=CLAUDE_ENVOY_BUILD + reads(
     (CONTRACTS_SRC, f"scripts/dispatch/ask-census.ts:3-9 ({at(TOOLING_JOB, 'Typecheck the Dispatch census script')}); "
-                    f"scripts/e2e/lib/envoy-bridge.ts:9-10 ({at(TOOLING_JOB, 'Typecheck the plan ratings read test')})"),
+                    "scripts/e2e/lib/envoy-bridge.ts:9-10 (" + at(TOOLING_JOB, "Typecheck the live proofs' libraries") + ")"),
     (TEST_FIXTURES_SRC, f"{at(TOOLING_JOB, 'Typecheck the Dispatch census script')} and "
-                        f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')} compile tests that import "
+                        + at(TOOLING_JOB, "Typecheck the live proofs' libraries") + " compile tests that import "
                         "@legion/test-fixtures"),
     ("scripts/dispatch/**", f"{at(TOOLING_JOB, 'Lint the Dispatch census script')} and typecheck"),
     ("scripts/github-apps/**", f"{at(TOOLING_JOB, 'Lint the GitHub App registration script')} and typecheck"),
     ("scripts/sessions/**", f"{at(TOOLING_JOB, 'Lint the session message-wait script')} and typecheck; the suite "
                             f"itself is {SESSIONS_JOB}'s"),
     ("scripts/approval-eval/**", f"{at(TOOLING_JOB, 'Lint the approval-eval statistics')} and typecheck"),
-    ("scripts/e2e/lib/**", f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')}: scripts/e2e/lib/tsconfig.json"),
-    ("packages/envoy-client/test/fake-dispatch.ts", f"scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path, and "
-                                                    f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')} compiles that test"),
+    ("scripts/e2e/lib/**", at(TOOLING_JOB, "Typecheck the live proofs' libraries") + ": scripts/e2e/lib/tsconfig.json"),
+    ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path, and "
+                                                    + at(TOOLING_JOB, "Typecheck the live proofs' libraries") + " compiles that test"),
     ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
     (".github/actions/install-changie/**", at(TOOLING_JOB, "./.github/actions/install-changie")),
     (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:28-29 installs the tarball of the changie row, "
