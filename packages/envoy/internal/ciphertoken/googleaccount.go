@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -210,7 +210,13 @@ func (g *GoogleAccount) mint() (string, error) {
 	return token, nil
 }
 
-// generateIDToken is mint's work, its errors not yet naming the account and the audience.
+// generateIDToken is mint's work, its errors not yet naming the account and the audience. The
+// call's URL is IAMCredentialsURL with the resource's path joined onto its path (urljoin.Join),
+// its query kept and its fragment, which no request sends, dropped: the path appended to that
+// URL's text would sit inside a query or a fragment, and IAM Credentials would be asked another
+// path. A URL that does not parse, or that the join leaves url.Parse will not take again, fails
+// the mint in fixed words, since url.Parse's error quotes the URL whole, its user information
+// and query included.
 func (g *GoogleAccount) generateIDToken() (string, error) {
 	bound := g.MintTimeout
 	if bound <= 0 {
@@ -222,15 +228,17 @@ func (g *GoogleAccount) generateIDToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read this pod's own access token from the metadata server: %w", err)
 	}
-	endpoint := strings.TrimSuffix(cmp.Or(g.IAMCredentialsURL, googleIAMCredentialsURL), "/") +
-		"/v1/projects/-/serviceAccounts/" + url.PathEscape(g.ServiceAccount) + ":generateIdToken"
+	call, err := urljoin.Join(cmp.Or(g.IAMCredentialsURL, googleIAMCredentialsURL), "v1/projects/-/serviceAccounts/"+url.PathEscape(g.ServiceAccount)+":generateIdToken")
+	if err != nil {
+		return "", errors.New("build the generateIdToken request: the IAM Credentials URL does not parse")
+	}
 	body, err := json.Marshal(map[string]any{"audience": g.Audience, "includeEmail": true})
 	if err != nil {
 		return "", fmt.Errorf("build the generateIdToken request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, call.String(), bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("build the generateIdToken request: %w", err)
+		return "", errors.New("build the generateIdToken request: the URL it joined does not parse")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+access)
