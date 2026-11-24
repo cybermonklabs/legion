@@ -234,25 +234,22 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 
 // readDecisions is the answers and the usage of an answered decision. Every member is read through
 // Answer.Decode but each score answer's legend, whose levels are the question's criteria in
-// whatever shape the caller wrote them, which only the JSON itself holds: the legends are read as
-// the answer's data (Answer.StreamTo), and a body they do not decode from is named in fixed text
-// (redact.DecodeError) that quotes no value of it.
+// whatever shape the caller wrote them, which only the JSON itself holds: Decode refuses a
+// destination that takes the answer's text as it came, so the legends are read as the answer's
+// data (redact.Unmarshal), and a body they do not decode from is named in that function's fixed
+// text, which quotes no value of it.
 func readDecisions(answer redact.Answer) (map[string]Decision, *systemOneUsage, error) {
 	var decided systemOneResponse
 	if err := answer.Decode(&decided); err != nil {
 		return nil, nil, err
-	}
-	var body bytes.Buffer
-	if _, err := answer.StreamTo(&body); err != nil {
-		return nil, nil, fmt.Errorf("reading the answer's legends: %w", err)
 	}
 	var legends struct {
 		Answers map[string]struct {
 			Legend json.RawMessage `json:"legend"`
 		} `json:"answers"`
 	}
-	if err := json.Unmarshal(body.Bytes(), &legends); err != nil {
-		return nil, nil, redact.DecodeError(err, body.Bytes(), &legends)
+	if err := redact.Unmarshal(answer, &legends); err != nil {
+		return nil, nil, err
 	}
 	answers := make(map[string]Decision, len(decided.Answers))
 	for name, a := range decided.Answers {
