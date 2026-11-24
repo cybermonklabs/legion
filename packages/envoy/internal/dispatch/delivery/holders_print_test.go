@@ -18,20 +18,22 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		HasNextPage bool   `json:"hasNextPage"`
 		EndCursor   string `json:"endCursor"`
 	}
+	type connectionTwin = struct {
+		IssueCount int                     `json:"issueCount"`
+		PageInfo   pageTwin                `json:"pageInfo"`
+		Nodes      []searchPullRequestNode `json:"nodes"`
+	}
+	type dataTwin = struct {
+		Search connectionTwin `json:"search"`
+	}
 	type responseTwin = struct {
-		Data struct {
-			Search struct {
-				IssueCount int                     `json:"issueCount"`
-				PageInfo   pageTwin                `json:"pageInfo"`
-				Nodes      []searchPullRequestNode `json:"nodes"`
-			} `json:"search"`
-		} `json:"data"`
+		Data   dataTwin    `json:"data"`
 		Errors []errorTwin `json:"errors"`
 	}
-	response := searchPullRequestsResponse{Errors: []searchError{{Message: words}}}
-	response.Data.Search.PageInfo.EndCursor = words
-	responseSame := responseTwin{Errors: []errorTwin{{redacttest.Words}}}
-	responseSame.Data.Search.PageInfo.EndCursor = redacttest.Words
+	connection := searchPullRequestsConnection{IssueCount: 1, PageInfo: searchPullRequestsPage{EndCursor: words}}
+	connectionSame := connectionTwin{IssueCount: 1, PageInfo: pageTwin{EndCursor: redacttest.Words}}
+	response := searchPullRequestsResponse{Data: searchPullRequestsData{Search: connection}, Errors: []searchError{{Message: words}}}
+	responseSame := responseTwin{Data: dataTwin{Search: connectionSame}, Errors: []errorTwin{{redacttest.Words}}}
 	type searchPageTwin = struct {
 		items      []FetchedPullRequest
 		endCursor  string
@@ -49,6 +51,20 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Boxed:    response,
 			Same:     responseSame,
 			Exported: responseSame,
+		},
+		{
+			Name:     "delivery.searchPullRequestsData",
+			Kind:     "fields",
+			Boxed:    searchPullRequestsData{Search: connection},
+			Same:     dataTwin{Search: connectionSame},
+			Exported: dataTwin{Search: connectionSame},
+		},
+		{
+			Name:     "delivery.searchPullRequestsConnection",
+			Kind:     "fields",
+			Boxed:    connection,
+			Same:     connectionSame,
+			Exported: connectionSame,
 		},
 		{
 			Name:     "delivery.searchError",

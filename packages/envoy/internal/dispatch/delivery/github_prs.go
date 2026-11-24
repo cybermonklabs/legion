@@ -279,16 +279,25 @@ func labelNames(labels []githubLabel) []string {
 // despite otherwise mirroring REST search's query string syntax (`repo:`/`is:pr`/`is:merged`/
 // `merged:`/`author:`, built by mergedPullRequestQuery below) and its 1,000-result cap.
 type searchPullRequestsResponse struct {
-	Data struct {
-		Search struct {
-			IssueCount int                     `json:"issueCount"`
-			PageInfo   searchPullRequestsPage  `json:"pageInfo"`
-			Nodes      []searchPullRequestNode `json:"nodes"`
-		} `json:"search"`
-	} `json:"data"`
+	Data searchPullRequestsData `json:"data"`
 	// Errors are GitHub's words beside the data, held with the request's record
 	// (redact.Answer.Decode): an answer in GitHub's place can echo the token there.
 	Errors []searchError `json:"errors"`
+}
+
+// searchPullRequestsData is a search answer's data. It and the connection under it are named
+// types, each a holder of the search cursor (searchPullRequestsPage), so the box print test names
+// each.
+type searchPullRequestsData struct {
+	Search searchPullRequestsConnection `json:"search"`
+}
+
+// searchPullRequestsConnection is the search connection: the total it matches, the page's
+// pageInfo, and its nodes.
+type searchPullRequestsConnection struct {
+	IssueCount int                     `json:"issueCount"`
+	PageInfo   searchPullRequestsPage  `json:"pageInfo"`
+	Nodes      []searchPullRequestNode `json:"nodes"`
 }
 
 // searchError is one entry of a search answer's errors.

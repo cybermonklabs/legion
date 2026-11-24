@@ -444,6 +444,14 @@
       {
         "holder": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPage",
         "test": "print-delivery.searchPage"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPullRequestsData",
+        "test": "print-delivery.searchPullRequestsData"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPullRequestsConnection",
+        "test": "print-delivery.searchPullRequestsConnection"
       }
     ],
     "reflection": [
@@ -9189,6 +9197,20 @@
       "package": "./internal/dispatch/delivery",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/delivery.searchPage",
       "production": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPage: every printer at every placement"
+    },
+    {
+      "id": "print-delivery.searchPullRequestsData",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/delivery.searchPullRequestsData",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPullRequestsData: every printer at every placement"
+    },
+    {
+      "id": "print-delivery.searchPullRequestsConnection",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/delivery.searchPullRequestsConnection",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPullRequestsConnection: every printer at every placement"
     },
     {
       "id": "delivery-branch-lines-read-failed",
