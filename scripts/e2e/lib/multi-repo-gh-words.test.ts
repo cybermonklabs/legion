@@ -107,6 +107,22 @@ describe("record-head prints no word of gh's", () => {
     expectKept(run.printed, join(run.evidence, "record-head-branch.raw.gh-stderr"));
     expect(run.calls()).toBe(`${defaultT}\n${branch}\n`);
   }, 30_000);
+
+  // The head read's refusal named the request it made, the default branch GitHub answered in it.
+  test("a failed head read names no default branch GitHub answered", async () => {
+    const branch = `api repos/acme/widgets/branches/${MARKER} --jq .commit.sha`;
+    const run = await observe(
+      ["record-head", "acme/widgets"],
+      [answers(defaultT, MARKER), `"${branch}") echo 'gh: HTTP 502' >&2; exit 1`]
+    );
+    expect(run.status).toBe(1);
+    expectNoMarker(run.printed);
+    expect(run.printed).toContain("gh api repos/acme/widgets/branches/<its default branch>");
+    expect(readFileSync(join(run.evidence, "record-head-default-branch.raw"), "utf8")).toContain(
+      MARKER
+    );
+    expect(run.calls()).toBe(`${defaultT}\n${branch}\n`);
+  }, 30_000);
 });
 
 describe("branch-base prints no word of gh's", () => {
@@ -124,6 +140,24 @@ describe("branch-base prints no word of gh's", () => {
     );
     expect(run.status).toBe(1);
     expectKept(run.printed, join(run.evidence, "branch-base-compare.raw"));
+    expect(readFileSync(join(run.evidence, "branch-base-default-branch.raw"), "utf8")).toContain(
+      MARKER
+    );
+    expect(run.calls()).toBe(`${defaultT}\n${compare(MARKER)}\n`);
+  }, 30_000);
+
+  // The compare's refusal named the request it made, the default branch GitHub answered in it.
+  test("a failed compare names no default branch GitHub answered", async () => {
+    const run = await observe(
+      ["branch-base", "LEGION-2"],
+      [answers(defaultT, MARKER), `"${compare(MARKER)}") echo 'gh: HTTP 502' >&2; exit 1`],
+      { setup: recorded }
+    );
+    expect(run.status).toBe(1);
+    expectNoMarker(run.printed);
+    expect(run.printed).toContain(
+      "gh api repos/acme/widgets/compare/<its default branch>...legion/LEGION-2"
+    );
     expect(readFileSync(join(run.evidence, "branch-base-default-branch.raw"), "utf8")).toContain(
       MARKER
     );
