@@ -8,8 +8,10 @@ body: |-
     states a design. A batch given both `SKILL_SCENARIOS_POSTGRES_URL` and
     `SKILL_SCENARIOS_NATS_URL` uses those two servers and starts no container. Such a batch needs
     `psql` and `python3` with libpq. `SKILL_SCENARIOS_POSTGRES_URL` must be a `postgres://` or
-    `postgresql://` URL. The given Postgres must be on this machine: the batch refuses a URL whose
-    host is not `127.0.0.1`, `localhost` or `::1`. When `LEGION_E2E_MODEL_PROVIDER` names a
+    `postgresql://` URL with no `sslpassword` parameter, whose values each run's connection string
+    can carry. The given Postgres must be on this machine: the batch refuses a URL whose host is
+    not `127.0.0.1`, `localhost` or `::1`, and it refuses each of these before it starts anything.
+    When `LEGION_E2E_MODEL_PROVIDER` names a
     built-in provider such as `anthropic`, the provider route's profile no longer disables that
     provider. The scenario's world names one repository, `example/widgets`, with the default
     branch `trunk`, in the pane's addressing, in the record the daemon stand-in serves and in the

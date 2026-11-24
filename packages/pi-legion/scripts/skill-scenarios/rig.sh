@@ -162,12 +162,20 @@
 #                                 start, as a postgres:// or postgresql:// URL
 #                                 (postgres://<user>:<password>@<host>:<port>/<database>), never
 #                                 a key=value connection string: services_up refuses one, since
-#                                 the batch can take a password out of a URL alone. It must be
-#                                 the Postgres on this machine: services_up reads the URL with
+#                                 the batch can take a password out of a URL alone. It must hold
+#                                 no sslpassword parameter, a client key's passphrase, its key
+#                                 percent-decoded as safe_url decodes it (`%73slpassword=` is
+#                                 `sslpassword=`): services_up refuses one, since pg_sql takes
+#                                 only the password out of the URL it gives psql, and every user
+#                                 of this machine can read psql's arguments. It must be the
+#                                 Postgres on this machine: services_up reads the URL with
 #                                 require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh) before
 #                                 anything connects to it or the batch writes the URL anywhere,
 #                                 and refuses every host libpq reads from it but 127.0.0.1,
-#                                 localhost and ::1. Its login must be allowed to CREATE
+#                                 localhost and ::1. Then it refuses a URL with a value that the
+#                                 connection string each run's Dispatch gets cannot carry
+#                                 (run_database_url), a password with a character that does not
+#                                 print among them. Its login must be allowed to CREATE
 #                                 DATABASE, since each run makes a database of
 #                                 its own on it (own_dispatch), and each new database must offer
 #                                 the `vector` extension, as the container (pgvector) does: each
@@ -931,19 +939,34 @@ nats_ready() {
 # not the batch's, so services_up reads it and refuses a parallelism the server cannot serve.
 #
 # A given Postgres must be a postgres:// or postgresql:// URL, the one form safe_url and pg_sql take
-# a password out of. Its URL is read with require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh)
+# a password out of. It must hold no sslpassword parameter, a client key's passphrase: pg_sql takes
+# only the password out of the URL it gives psql, and every user of this machine can read psql's
+# arguments. Its query is read as safe_url reads it: from the first `?` past the user info, each
+# key percent-decoded. Its URL is read with require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh)
 # before anything connects to that server or this batch writes the URL anywhere. The guard reads
 # the host with libpq, and pg_sql connects with psql, which is libpq, so the host psql reaches is
-# the host the guard read.
+# the host the guard read. run_database_url then rebuilds, for a placeholder database, the
+# connection string each run's Dispatch gets (own_dispatch), and refuses a value that string
+# cannot carry, so such a URL is refused here, before anything starts, and not in every run.
 services_up() {
   evidence=$S
-  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port pg_host tool
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port pg_host run_url tool rest param key
+  local -a params=()
   needs=$((30 * parallel + 20))
   if given_services; then
     case $SKILL_SCENARIOS_POSTGRES_URL in
     postgres://* | postgresql://*) ;;
     *) fail "SKILL_SCENARIOS_POSTGRES_URL is not a postgres:// or postgresql:// URL: the batch names the server in its notes and in each run's dispatch.json, and it can take a password out of a URL alone, never out of a key=value connection string" ;;
     esac
+    rest=${SKILL_SCENARIOS_POSTGRES_URL#*://}
+    [[ ${rest%%/*} != *@* ]] || rest=${rest#*@}
+    case $rest in *\?*) IFS='&' read -ra params <<<"${rest#*\?}" ;; esac
+    for param in "${params[@]}"; do
+      key=${param%%=*}
+      printf -v key '%b' "${key//%/\\x}"
+      [ "$key" != sslpassword ] ||
+        fail "SKILL_SCENARIOS_POSTGRES_URL holds an sslpassword parameter, a client key's passphrase, whose value this line does not print: pg_sql takes only the password out of the URL it gives psql, so psql's arguments, which every user of this machine can read, would hold the passphrase"
+    done
     pg_url_without_password "$SKILL_SCENARIOS_POSTGRES_URL" >/dev/null ||
       fail "SKILL_SCENARIOS_POSTGRES_URL is a URL pg-url.sh refuses, for the reason on the line above: pg_sql and safe_url take its password out with pg-url.sh, so the batch could neither reach that server nor name it"
     for tool in psql python3; do
@@ -951,6 +974,7 @@ services_up() {
         fail "$tool is not on PATH: a batch given SKILL_SCENARIOS_POSTGRES_URL reads that URL with python3 and libpq, and reaches the server with psql"
     done
     require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" "each run creates a database there" || fail "$pg_host"
+    run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
@@ -1545,18 +1569,20 @@ cmd_judge() {
 # worker_routes PR prints the routes the gh stand-in answers the tester's world from
 # (fixtures.json), for PR, the fixture's pull request as `gh pr view --json` prints it whole.
 # `gh pr list` answers as GitHub does for a repository whose one pull request is PR, open. A
-# `--head` (`--head=`, `-H`) that names PR's branch lists PR, as the worker prompt's lookup of the
-# PR by `--head legion/<issue>` does, and any other head lists nothing, as GitHub's answer for a
-# branch with no pull request is. A `--state` (`-s`) of closed or merged lists nothing, and every
-# other list, a list with no head among them, lists PR. The branch is legion/<key>, and a Dispatch
-# key holds letters, digits and a hyphen, so it goes into the route's regex as it is.
+# `--state` (`-s`) of closed or merged lists nothing, whatever the head, so its route comes first:
+# the stand-in answers with the first route that matches. Otherwise a `--head` (`--head=`, `-H`)
+# that names PR's branch lists PR, as the worker prompt's lookup of the PR by `--head
+# legion/<issue>` does, any other head lists nothing, as GitHub's answer for a branch with no pull
+# request is, and every other list, a list with no head among them, lists PR. The branch is
+# legion/<key>, and a Dispatch key holds letters, digits and a hyphen, so it goes into the route's
+# regex as it is.
 worker_routes() {
   jq -n --argjson pr "$1" '
     ($pr.number|tostring) as $number
     | {routes:[
+      {match:"^gh pr list( .*)? (--state[ =]|-s ?)(closed|merged)( |$)", stdout:[]},
       {match:("^gh pr list( .*)? (--head[ =]|-H ?)" + $pr.headRefName + "( |$)"), stdout:[$pr]},
       {match:"^gh pr list( .*)? (--head[ =]|-H ?)", stdout:[]},
-      {match:"^gh pr list( .*)? (--state[ =]|-s ?)(closed|merged)( |$)", stdout:[]},
       {match:"^gh pr list", stdout:[$pr]},
       {match:"^gh pr view", stdout:$pr},
       {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},

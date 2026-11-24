@@ -4,6 +4,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -674,6 +675,97 @@ describe("safe_url", () => {
         "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
       stderr: "-: refused a Postgres URL: a host holds a raw @ (the URL is not printed)\n",
     });
+  });
+});
+
+// services_up reads a given SKILL_SCENARIOS_POSTGRES_URL before anything connects to that server
+// or the batch writes the URL anywhere. python3 with libpq: its guards read the URL with this
+// host's libpq (scripts/e2e/lib/loopback-dsn.py), which refuses every URL where it finds none.
+const withoutPython = skipWithout("python3");
+const withoutLibpq =
+  !withoutPython &&
+  Bun.spawnSync([
+    "python3",
+    "-c",
+    "import ctypes.util, sys; sys.exit(ctypes.util.find_library('pq') is None)",
+  ]).exitCode !== 0;
+if (withoutLibpq) {
+  console.warn(
+    `Skipped the services_up rows in ${import.meta.path}. services_up reads a given Postgres ` +
+      `URL with libpq, and ctypes.util.find_library("pq") finds none on this host; install libpq5.`
+  );
+}
+describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
+  const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
+  const loopbackDsn = path.join(root, "scripts/e2e/lib/loopback-dsn.sh");
+  /** services_up given URL and a NATS, in a services directory of its own, with a psql first on
+   * PATH that appends to psql.log each time it runs. until_true runs its command once, so a URL
+   * that passed every check would reach psql at once. Answers services_up's status and standard
+   * error, whether psql ran, and what the services directory holds. */
+  function up(url: string) {
+    const dir = freshDir("services-up");
+    const bin = path.join(dir, "bin");
+    const log = path.join(dir, "psql.log");
+    const services = path.join(dir, "services");
+    mkdirSync(bin);
+    mkdirSync(services);
+    writeFileSync(path.join(bin, "psql"), `#!/bin/sh\necho ran >>${JSON.stringify(log)}\n`, {
+      mode: 0o755,
+    });
+    const result = bash(
+      `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
+        `until_true() { shift 2; "$@"; }\n` +
+        `S=$3\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
+      [pgUrl, loopbackDsn, services],
+      {
+        PATH: `${bin}:${childEnv.PATH}`,
+        SKILL_SCENARIOS_POSTGRES_URL: url,
+        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+      }
+    );
+    return {
+      code: result.code,
+      stderr: result.stderr,
+      psqlRan: existsSync(log),
+      written: readdirSync(services),
+    };
+  }
+  const host = (name: string) =>
+    `SKILL_SCENARIOS_POSTGRES_URL must name 127.0.0.1, localhost or ::1: libpq reads the host ${name}, and each run creates a database there`;
+  const sslpassword =
+    "SKILL_SCENARIOS_POSTGRES_URL holds an sslpassword parameter, a client key's passphrase, whose value this line does not print: pg_sql takes only the password out of the URL it gives psql, so psql's arguments, which every user of this machine can read, would hold the passphrase";
+
+  // Catches: a services_up that connects to, or writes into its services file, a given URL that
+  // its checks refuse, because a check is gone or runs after the write or the first psql: a host
+  // that is not loopback, the `localhost?x@evil.example` shape whose host libpq reads as
+  // evil.example (scripts/e2e/lib/loopback-dsn.sh), a key=value connection string, an
+  // `sslpassword` parameter (its key percent-decoded too), and a value run_database_url refuses to
+  // write into each run's connection string (a newline, which it refuses in a password the same
+  // way). Each refusal is the one its own check prints, and holds no password.
+  test("refuses a URL the runs cannot use before psql runs or the URL is written", () => {
+    for (const [url, refusal] of [
+      ["postgres://u:p@db.example:5432/postgres", host("db.example")],
+      ["postgres://localhost?x:p@evil.example:5432/postgres", host("evil.example")],
+      [
+        "host=127.0.0.1 port=5432 user=u password=p dbname=postgres",
+        "SKILL_SCENARIOS_POSTGRES_URL is not a postgres:// or postgresql:// URL: the batch names the server in its notes and in each run's dispatch.json, and it can take a password out of a URL alone, never out of a key=value connection string",
+      ],
+      ["postgres://u:p@127.0.0.1:5432/postgres?sslmode=require&sslpassword=x", sslpassword],
+      ["postgresql://u@localhost:5432/postgres?%73slpassword=x&sslmode=require", sslpassword],
+      [
+        "postgres://u@localhost:5432/postgres?application_name=x%0A",
+        "SKILL_SCENARIOS_POSTGRES_URL gives application_name U+000A, a character that does not print: it reaches the rewritten connection string, where a caller writes that string into a file, and this refusal prints no value that holds one",
+      ],
+    ]) {
+      expect({ url, ...up(url) }).toEqual({
+        url,
+        code: 1,
+        stderr: `skill-scenarios: ${refusal}\n`,
+        psqlRan: false,
+        written: [],
+      });
+    }
   });
 });
 
@@ -1598,14 +1690,17 @@ describe("worker_routes", () => {
     }
   });
 
-  // Catches: a list of another branch, or of the closed or merged pull requests, that names the
-  // fixture's open PR, or that fails where GitHub answers an empty list.
+  // Catches: a list of another branch, or of the closed or merged pull requests (on the PR's own
+  // branch too), that names the fixture's open PR, or that fails where GitHub answers an empty
+  // list.
   test("a list of any other head, or of closed or merged pull requests, is empty", () => {
     for (const filter of [
       ["--head", "legion/LWEVAL-10"],
       ["--head", "legion/LWEVAL-2"],
       ["--state", "closed"],
       ["-s", "merged"],
+      ["--head", "legion/LWEVAL-1", "--state", "closed"],
+      ["--state", "merged", "--head", "legion/LWEVAL-1"],
     ]) {
       expect(gh("pr", "list", ...filter, "--json", "number")).toEqual({
         code: 0,
