@@ -9,7 +9,8 @@ import { resetAdviceMemory } from "../dispatch-execute";
 // header, on the line under the header's first: the latest version's token in a `Document token:`
 // line, which the next version's upload names as its precondition, and a named version's hash in
 // a `Content: sha256:` line, as document reads print them. The line goes in the header, so the
-// text after it is the stored file byte for byte. The header's own wording is
+// text after it is the stored file unchanged, a leading byte order mark included, but for the line
+// feed the dispatch command adds after a file that ends without one. The header's own wording is
 // dispatch-execute.test.ts's to pin; these rows read only where the hash line sits, what it
 // holds, and the requests made. The command runs whole, through runDispatchCli, against a stub
 // Dispatch that records every path it is asked.
@@ -36,6 +37,9 @@ const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 /** The stored bytes of sweep.json's two versions: the second ends with a line feed, which the
  *  read must keep as the file's last byte. */
 const SWEEP = ['{"rows":1}', '{"rows": [1, 2]}\n'] as const;
+
+/** A file that begins with a UTF-8 byte order mark, which the read keeps. */
+const WITH_BOM = new Uint8Array([0xef, 0xbb, 0xbf, 0x41, 0x0a]);
 
 const issue = {
   key: "DSP-1",
@@ -75,6 +79,14 @@ const issue = {
       versions: [version(1, "application/octet-stream", 2, "5")],
     },
     {
+      id: "file-12",
+      slug: "bom-txt",
+      name: "bom.txt",
+      kind: "file",
+      primary: false,
+      versions: [version(1, "text/plain", 5, "7")],
+    },
+    {
       // What a Dispatch that states no token for a file's version answers.
       id: "file-11",
       slug: "old-txt",
@@ -96,6 +108,7 @@ const served: Record<string, readonly [string, Uint8Array<ArrayBuffer>]> = {
     new Uint8Array([0xff, 0xfe]),
   ],
   "/api/v1/artifacts/file-11/versions/1": ["text/plain", new TextEncoder().encode("old\n")],
+  "/api/v1/artifacts/file-12/versions/1": ["text/plain", WITH_BOM],
 };
 
 const requests: string[] = [];
@@ -154,7 +167,7 @@ const secondLine = (stdout: string) => stdout.split("\n")[1];
 describe("dispatch doc-read of an uploaded file or picture", () => {
   // R1: the latest version's token on the header's second line, and after the header's blank
   // line the stored file whole, ending where it ends.
-  test("prints the latest version's token in the header, and the file after it byte for byte", async () => {
+  test("prints the latest version's token in the header, and the stored file after it", async () => {
     const { code, stdout } = await run([
       "doc-read",
       "--issue",
@@ -186,6 +199,7 @@ describe("dispatch doc-read of an uploaded file or picture", () => {
     expect(code, stdout).toBe(0);
     expect(secondLine(stdout)).toBe(`Content: sha256:${hexOf("1")}`);
     expect(stdout).not.toContain("Document token:");
+    // The file ends without a line feed, and the dispatch command ends every output with one.
     expect(stdout.endsWith(`\n\n${SWEEP[0]}\n`)).toBe(true);
   });
 
@@ -210,6 +224,18 @@ describe("dispatch doc-read of an uploaded file or picture", () => {
 
     expect(code, stdout).toBe(0);
     expect(secondLine(stdout)).toBe(`Document token: sha256:${hexOf("5")}`);
+  });
+
+  // R1: the text after the header is the stored file, so a leading byte order mark stays.
+  test("keeps a file's leading byte order mark", async () => {
+    const { code, stdout } = await run(["doc-read", "--issue", "DSP-1", "--artifact", "bom-txt"]);
+
+    expect(code, stdout).toBe(0);
+    const printed = new TextEncoder().encode(stdout);
+    expect([...printed.subarray(printed.length - WITH_BOM.length)]).toEqual([...WITH_BOM]);
+    expect(
+      stdout.endsWith(`\n\n${new TextDecoder("utf-8", { ignoreBOM: true }).decode(WITH_BOM)}`)
+    ).toBe(true);
   });
 
   // A version Dispatch states no token for takes none on an upload, so no line is printed.

@@ -460,13 +460,16 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 	}, true
 }
 
-// uploadBaseAdvice tells the reader of an upload refused for a token the document has moved past
-// where the token of the version it is replacing is printed. It names no flag of a command: a
-// caller that named a token may have sent it straight to this route, from a client whose
-// `dispatch artifact` has no flag for one (INFRA-4980), so it names the field the token goes in.
-const uploadBaseAdvice = "read the document with `dispatch doc-read`, which prints " +
-	"`Document token: sha256:…`, and upload again naming that token as the upload's " +
-	"precondition, `{\"document\":\"sha256:…\"}`"
+// uploadAdvice tells the reader of an upload refused for a token the artifact has moved past,
+// `what` naming its kind (document, file or picture), where the token of the version it is
+// replacing is printed. It names no flag of a command: a caller that named a token may have sent
+// it straight to this route, from a client whose `dispatch artifact` has no flag for one
+// (INFRA-4980), so it names the field the token goes in.
+func uploadAdvice(what string) string {
+	return "read the " + what + " with `dispatch doc-read`, which prints " +
+		"`Document token: sha256:…`, and upload again naming that token as the upload's " +
+		"precondition, `{\"document\":\"sha256:…\"}`"
+}
 
 // writeUploadDocumentError answers an upload whose document write was refused, which is where
 // this route's words meet the document service's: the service reports which tree a token missed
@@ -506,28 +509,29 @@ func (s *server) writeUploadDocumentError(ctx context.Context, w http.ResponseWr
 func uploadPreconditionBody(stale *docs.ErrPreconditionFailed, version int) editPreconditionError {
 	body := editPreconditionBody(stale)
 	body.Current.Version = &version
-	body.Error += "; " + uploadBaseAdvice
+	body.Error += "; " + uploadAdvice("document")
 	return body
 }
 
 // fileUploadPreconditionBody is the 409 PRECONDITION_FAILED body of a file's or a picture's upload
-// naming a token that is not its standing version's: the shape a document's upload answers
-// (uploadPreconditionBody), the standing token in current.document and the one mismatch scoped
-// to it, in words that name the artifact's kind rather than a document.
+// naming a token that is not its standing version's: the body a document's refusal answers
+// (editPreconditionBody), holding the standing token in current.document and the one mismatch
+// scoped to it, with the standing version's number, in words that name the artifact's kind
+// rather than a document.
 func fileUploadPreconditionBody(kind, name, named string, standing model.Version) editPreconditionError {
 	what := "file"
 	if kind == "image" {
 		what = "picture"
 	}
 	token := *standing.Token
-	return editPreconditionError{
-		Code:    "PRECONDITION_FAILED",
-		Current: editPreconditionCurrent{Blocks: []model.EditBlockPrecondition{}, Document: token, Version: &standing.Number},
-		Error: fmt.Sprintf("%s upload precondition failed: %q stands at version %d, whose token is not the one this upload names; "+
-			"read the %s with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload again naming that token "+
-			"as the upload's precondition, `{\"document\":\"sha256:…\"}`", what, name, standing.Number, what),
-		Mismatches: []model.EditPreconditionMismatch{{Scope: "document", Expected: named, Current: &token}},
-	}
+	body := editPreconditionBody(&docs.ErrPreconditionFailed{
+		CurrentDocument: token,
+		Mismatches:      []model.EditPreconditionMismatch{{Scope: "document", Expected: named, Current: &token}},
+	})
+	body.Current.Version = &standing.Number
+	body.Error = fmt.Sprintf("%s upload precondition failed: %q stands at version %d, whose token is not the one this upload names; %s",
+		what, name, standing.Number, uploadAdvice(what))
+	return body
 }
 
 // refuseFileBase answers an upload of a file or an image of the given kind that names base, the
@@ -911,15 +915,14 @@ func (s *server) storeArtifact(
 		// it is replacing, as a document's does, checked here under the owner's lock against the
 		// newest of the versions this transaction loaded with the artifact under that lock (none,
 		// for a row with no version, has no token); one that names none is taken unchecked and
-		// counted once it commits, as a document's is.
-		if !created {
-			var standing model.Version
-			if count := len(artifact.Versions); count > 0 {
-				standing = artifact.Versions[count-1]
-			}
-			if s.refuseFileBase(w, kind, input.name, input.precondition, standing) {
-				return
-			}
+		// counted once it commits, as a document's is. A first upload reaches here naming none,
+		// since one naming a token was refused above, so refuseFileBase passes it.
+		var standing model.Version
+		if count := len(artifact.Versions); count > 0 {
+			standing = artifact.Versions[count-1]
+		}
+		if s.refuseFileBase(w, kind, input.name, input.precondition, standing) {
+			return
 		}
 		version, err = s.queueFileVersion(r.Context(), tx, ledger, artifact.ID, input, sha, documentSummary, actor)
 		if err != nil {

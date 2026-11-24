@@ -43,7 +43,22 @@ interface StoredArtifact {
 /** The eight bytes every PNG starts with. */
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-const pictureOf = (text: string) => new Uint8Array([...PNG, ...new TextEncoder().encode(text)]);
+const ascii = (text: string) => [...new TextEncoder().encode(text)];
+
+/** Bytes each picture format begins with, as Go's http.DetectContentType matches them: the
+ *  `jpeg`, `gif` and `webp` keys, with `riff` a RIFF file that says WEBP but holds no `VP` chunk
+ *  after it, which Go reads as no picture. A WebP's signature is 14 bytes long. */
+const HEADS = {
+  png: [...PNG],
+  jpeg: [0xff, 0xd8, 0xff, 0xe0],
+  gif: ascii("GIF89a"),
+  webp: [...ascii("RIFF"), 0x24, 0x00, 0x00, 0x00, ...ascii("WEBPVP8 ")],
+  riff: [...ascii("RIFF"), 0x24, 0x00, 0x00, 0x00, ...ascii("WEBP")],
+} as const;
+
+const bytesOf = (format: keyof typeof HEADS, text: string) =>
+  new Uint8Array([...HEADS[format], ...ascii(text)]);
+const pictureOf = (text: string) => bytesOf("png", text);
 const textOf = (text: string) => new TextEncoder().encode(`${text}\n`);
 const hexOf = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
@@ -83,10 +98,19 @@ const artifactOf = (artifact: StoredArtifact) => ({
   versions: artifact.versions.map((version) => versionOf(artifact, version)),
 });
 
-/** The kind Dispatch stores an upload as: its rule, in artifactKind. */
+/** The kind Dispatch stores an upload as: its rule, in artifactKind, which sniffs the bytes with
+ *  Go's http.DetectContentType and takes its PNG, JPEG, GIF and WebP answers as a picture. */
 function kindOf(mime: string, bytes: Uint8Array): Kind {
   if (mime.split(";")[0]?.trim() === "text/markdown") return "doc";
-  return PNG.every((byte, index) => bytes[index] === byte) ? "image" : "file";
+  const at = (offset: number, expected: readonly number[]) =>
+    expected.every((byte, index) => bytes[offset + index] === byte);
+  const picture =
+    at(0, HEADS.png) ||
+    at(0, [0xff, 0xd8, 0xff]) ||
+    at(0, ascii("GIF87a")) ||
+    at(0, ascii("GIF89a")) ||
+    (at(0, ascii("RIFF")) && at(8, ascii("WEBPVP")));
+  return picture ? "image" : "file";
 }
 
 const refusal = (status: number, code: string, error: string) =>
@@ -380,16 +404,23 @@ describe("dispatch artifact under a name the owner holds", () => {
   test.each([
     ["a --content document over a file", "notes", ["--content", "# Notes\n"]],
     ["a --content document over a picture", "chart", ["--content", "# Chart\n"]],
-    ["PNG bytes over a file", "notes", ["--path", "shot.png"]],
-    ["text bytes over a picture", "chart", ["--path", "data.txt"]],
-    ["a file over a document", "plan.md", ["--path", "data.txt"]],
-    ["PNG bytes over a document", "plan.md", ["--path", "shot.png"]],
+    ["PNG bytes over a file", "notes", ["--path", "png"]],
+    ["WebP bytes over a file", "notes", ["--path", "webp"]],
+    ["JPEG bytes over a file", "notes", ["--path", "jpeg"]],
+    ["GIF bytes over a file", "notes", ["--path", "gif"]],
+    ["text bytes over a picture", "chart", ["--path", "text"]],
+    ["a RIFF that holds no WebP chunk over a picture", "chart", ["--path", "riff"]],
+    ["a file over a document", "plan.md", ["--path", "text"]],
+    ["PNG bytes over a document", "plan.md", ["--path", "png"]],
   ] as const)("refuses %s naming another name and no flag", async (_label, name, given) => {
     const source =
       given[0] === "--path"
         ? [
             "--path",
-            pathOf(given[1], given[1].endsWith(".png") ? pictureOf("other") : textOf("other")),
+            pathOf(
+              `other.${given[1]}`,
+              given[1] === "text" ? textOf("other") : bytesOf(given[1], "other")
+            ),
           ]
         : [...given];
     const refused = await upload(name, source);
@@ -406,6 +437,27 @@ describe("dispatch artifact under a name the owner holds", () => {
 
     const renamed = await upload(`${name.replace(".md", "")}-other`, source);
     expect(renamed.code, renamed.stdout).toBe(0);
+  });
+
+  // R3: a picture of any of the four formats over a held picture, and a RIFF that holds no WebP
+  // chunk over a held file, is of the kind the name holds, so the refusal advises the replacement,
+  // and the upload sending exactly that, with the writer's own token, is taken as the next version.
+  test.each([
+    ["WebP bytes over a picture", "chart", "webp"],
+    ["JPEG bytes over a picture", "chart", "jpeg"],
+    ["GIF bytes over a picture", "chart", "gif"],
+    ["a RIFF that holds no WebP chunk over a file", "notes", "riff"],
+  ] as const)("advises the replacement for %s, and it is taken", async (_label, name, format) => {
+    const source = ["--path", pathOf(`next.${format}`, bytesOf(format, "next"))];
+    const refused = await upload(name, source);
+    expect(refused.code, refused.stdout).toBe(2);
+    const text = refusalOf(refused.stdout, name);
+    expect(text).not.toContain("another name");
+    expect(text).toContain("--precondition-json");
+
+    const taken = await upload(name, source, advisedFlags(text, await readToken(name)));
+    expect(taken.code, taken.stdout).toBe(0);
+    expect(taken.stdout).toContain("as version 2");
   });
 
   // A file holds no text dispatch doc-edit changes, so the refusal never sends the writer there.

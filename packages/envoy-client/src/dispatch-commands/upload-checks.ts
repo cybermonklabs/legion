@@ -7,6 +7,7 @@ import {
   pathKeepsBytesOf,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { sniffPictureType } from "../dispatch-pictures";
 import { messageFor } from "../errors";
 import { dispatchAnswered } from "./failures";
 
@@ -24,35 +25,21 @@ export function artifactUnderName(
   );
 }
 
-/** Whether `bytes` begin as one of the pictures Dispatch stores as an image, by the signatures
- *  Go's http.DetectContentType matches for them (artifactKind in the server's artifacts.go): PNG,
- *  JPEG, GIF87a or GIF89a, and RIFF…WEBPVP. */
-function picturePrefix(bytes: Uint8Array): boolean {
-  const at = (offset: number, expected: readonly number[]) =>
-    expected.every((byte, index) => bytes[offset + index] === byte);
-  return (
-    at(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) ||
-    at(0, [0xff, 0xd8, 0xff]) ||
-    at(0, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) ||
-    at(0, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61]) ||
-    (at(0, [0x52, 0x49, 0x46, 0x46]) && at(8, [0x57, 0x45, 0x42, 0x50, 0x56, 0x50]))
-  );
-}
-
 /**
  * The kind Dispatch stores an upload as, decided as the server decides it (artifactKind in
  * artifacts.go): a declared Markdown upload is a document, which inline content always is and a
  * path is when its name says Markdown (the media type the upload declares for it,
- * `pathKeepsBytesOf`); bytes that begin as a PNG, JPEG, GIF or WebP are a picture; anything else
- * is a file. `head` reads the first bytes of the path's file, and is asked only for a path that
- * is not Markdown.
+ * `pathKeepsBytesOf`); bytes that begin as a PNG, JPEG, GIF or WebP are a picture, by the
+ * signatures Go's http.DetectContentType matches (`sniffPictureType`); anything else is a file.
+ * `head` reads the first PICTURE_SNIFF_BYTES bytes of the file at the path it is given, and is
+ * asked only for a path that is not Markdown.
  */
 export async function uploadKindOf(
   path: string | undefined,
-  head: () => Promise<Uint8Array>
+  head: (path: string) => Promise<Uint8Array>
 ): Promise<Artifact["kind"]> {
   if (path === undefined || !pathKeepsBytesOf(path)) return "doc";
-  return picturePrefix(await head()) ? "image" : "file";
+  return sniffPictureType(await head(path)) === undefined ? "file" : "image";
 }
 
 /** The refusal of an upload under a name its owner already holds: the artifact found, its kind,

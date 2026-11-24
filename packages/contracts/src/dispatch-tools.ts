@@ -1687,7 +1687,7 @@ export const dispatchToolSpecs = [
       "After the markdown it prints every open thread anchored on the document in full: an open ask with its id and question and each reply's author, time and text, and a comment thread with its root's id, author, time, quote and text and each reply's author, time and text, in order; a resolved thread, and an ask that is answered or resolved, is not printed. " +
       "A picture (an uploaded PNG, JPEG, GIF or WebP of at most 3,750,000 bytes, 5 MB once base64-encoded) comes back as an image you see, with its name, type, size and version, every time you ask, including one a read already showed this session; " +
       "any other file that is not UTF-8 text is described, with the route that serves its bytes. " +
-      "A read of an uploaded file or picture prints, in its header before the file's text, the latest version's token as a `Document token: sha256:…` line, which dispatch artifact's precondition takes for the next version, or a named version's hash as a `Content: sha256:…` line; the text after the header is the stored file byte for byte. " +
+      "A read of an uploaded file or picture prints, in its header before the file's text, the latest version's token as a `Document token: sha256:…` line, which dispatch artifact's precondition takes for the next version, or a named version's hash as a `Content: sha256:…` line; the text after the header is the stored file unchanged, except that the dispatch command adds a line feed after a file that ends without one. " +
       OWNER_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),

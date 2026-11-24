@@ -23,6 +23,7 @@ import { shownPictureLine } from "../dispatch-picture-tools";
 import {
   oversizePictureText,
   PICTURE_SHOWN_MAX_BYTES,
+  PICTURE_SNIFF_BYTES,
   sniffPictureType,
   toolImage,
 } from "../dispatch-pictures";
@@ -88,8 +89,10 @@ async function blockAsks(
  * first: the latest version's `Document token:` line, as a document read prints its token, which
  * the upload of the next version names as its precondition; a named version's `Content: sha256:`
  * line, as a named document version's read prints its hash. It goes in the header, never after
- * the text, so the text after the header is the stored file byte for byte, and a script or patch
- * read back ends where the file ends. Dispatch states both beside the version in the artifact's
+ * the text, so the text after the header is the stored file unchanged, a leading byte order mark
+ * included (the decoder keeps it), and a script or patch read back ends where the file ends; the
+ * dispatch command alone adds one line feed after a file that ends without one, as it ends every
+ * output it prints with one. Dispatch states both beside the version in the artifact's
  * version list, so no other read is made for them, and a Dispatch or a version that states none
  * prints no line: such a Dispatch takes no token on a file's upload. A file carries no anchors or
  * approval, so nothing else is read. A picture is shown whatever `shown` holds, and joins it
@@ -149,7 +152,9 @@ async function readUploadedFile(
   }
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(file.bytes);
+    // ignoreBOM keeps a leading byte order mark as text, so the text encodes back to the stored
+    // bytes.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(file.bytes);
   } catch {
     return {
       text:
@@ -746,15 +751,15 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       // The kind Dispatch would store this upload as decides what the refusal may advise: an
       // upload of another kind than the name holds is refused under that name whatever it
       // carries, so it is told to take another name. Only a path that is not Markdown has bytes
-      // to read, and only their first twelve decide.
-      const kind = await uploadKindOf(path, async () =>
+      // to read, and only their first PICTURE_SNIFF_BYTES decide.
+      const kind = await uploadKindOf(path, async (named) =>
         input.uploadBytes === undefined
           ? new Uint8Array(
-              await Bun.file(resolvePath(input.cwd, path ?? ""))
-                .slice(0, 12)
+              await Bun.file(resolvePath(input.cwd, named))
+                .slice(0, PICTURE_SNIFF_BYTES)
                 .arrayBuffer()
             )
-          : input.uploadBytes.subarray(0, 12)
+          : input.uploadBytes.subarray(0, PICTURE_SNIFF_BYTES)
       );
       throw new ToolInputError(input.tool, [
         artifactNameExistsProblem(
