@@ -21,12 +21,29 @@ import (
 // test keeps outlives the record of the request it answered: seed.json and the id maps hold it for
 // later runs, and replay-fetch reads most answers back from its cache.
 
-// issueKeyPattern is an issue key as Dispatch names one: a project key (contracts.ProjectKeyPattern),
-// a hyphen and a positive decimal with no leading zero.
-var issueKeyPattern = regexp.MustCompile(strings.TrimSuffix(contracts.ProjectKeyPattern, "$") + `-[1-9][0-9]*$`)
+// issueKeyDigits is how many digits an issue key's number may have: ten, which is every number
+// Dispatch can give an issue, since it numbers one from its project's own counter into an integer
+// column (internal/dispatch/store/migrations/0001_init.up.sql: issues.number, whose largest value
+// is 2,147,483,647). The bound is what makes a key short, which the file names built from one
+// rest on (replay_bundle.go): a key is a project key's ten bytes at most, a hyphen and these
+// digits, so 21 bytes.
+const issueKeyDigits = 10
 
-// isIssueKey says whether s is an issue key as Dispatch names one (issueKeyPattern).
-func isIssueKey(s string) bool { return issueKeyPattern.MatchString(s) }
+// isIssueKey says whether s is an issue key as Dispatch names one: a project key and a hyphen, as
+// contracts.IssueProject reads them, then a positive decimal of at most issueKeyDigits digits with
+// no leading zero. It reads the project key through IssueProject, the package that owns that
+// grammar, and not by editing the text of contracts.ProjectKeyPattern: the pattern this was built
+// from by trimming that text's "$" would have matched no key at all, and said nothing, the moment
+// the pattern stopped ending in one.
+func isIssueKey(s string) bool {
+	project, ok := contracts.IssueProject(s)
+	if !ok {
+		return false
+	}
+	// IssueProject read s as the project, a hyphen and a decimal of at least one digit.
+	number := s[len(project)+1:]
+	return number[0] != '0' && len(number) <= issueKeyDigits
+}
 
 // notAnIssueKey is what shownKey prints in place of a key that is not an issue key.
 const notAnIssueKey = "(a key that is not an issue key)"
