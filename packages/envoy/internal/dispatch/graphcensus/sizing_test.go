@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -658,18 +659,18 @@ const sweptDocument = "CORE-1/swept-md"
 // writer, and no writer says it.
 func seededDrives(database *store.Store) []StoreDrive {
 	ctx := context.Background()
-	backfill := func(pass func(context.Context, *store.Store) (KindBackfill, error)) func(*testing.T) {
+	backfill := func(pass func(context.Context, *store.Store, *pacer) (KindBackfill, error)) func(*testing.T) {
 		return func(t *testing.T) {
 			t.Helper()
-			if done, err := pass(ctx, database); err != nil {
+			if done, err := pass(ctx, database, unpaced()); err != nil {
 				t.Fatalf("backfill the %s kind: %v", done.Kind, err)
 			}
 		}
 	}
-	passes := func(pass func(context.Context, *store.Store) ([]KindBackfill, error)) func(*testing.T) {
+	passes := func(pass func(context.Context, *store.Store, *pacer) ([]KindBackfill, error)) func(*testing.T) {
 		return func(t *testing.T) {
 			t.Helper()
-			if _, err := pass(ctx, database); err != nil {
+			if _, err := pass(ctx, database, unpaced()); err != nil {
 				t.Fatalf("run a backfill pass: %v", err)
 			}
 		}
@@ -699,8 +700,8 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// graphstore.AuthorFacts), so its kinds are the comment path's; the role sizer and its
 		// page; and the sessions the census holds to a node.
 		Name: blockBatchDrive, Sites: []string{"graphcensus/backfill_blocks.go#writeBlockBatch", "graphstore/write.go#Write"},
-		Database: database, Drive: backfill(func(ctx context.Context, database *store.Store) (KindBackfill, error) {
-			return backfillBlocks(ctx, database, refs.BlockIndexMarkingRule)
+		Database: database, Drive: backfill(func(ctx context.Context, database *store.Store, p *pacer) (KindBackfill, error) {
+			return backfillBlocks(ctx, database, refs.BlockIndexMarkingRule, p)
 		}),
 		Counts: map[StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},

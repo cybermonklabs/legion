@@ -17,7 +17,9 @@ import (
 
 // The seed of TestTheBackfillsWalksReadOnlyTheirBatch: walkPlanDocuments documents of an issue each,
 // with walkPlanBlocksPerDocument block rows naming no node and one block reference naming no node
-// out of each block. That is a hundred batches of each walk (backfillBatch), enough that reading
+// out of each block. That is a hundred batches of each walk (backfillBatch, the limit these walks
+// are measured at: a run takes its batch from its Throttle, whose default is smaller, so a walk
+// that reads only its batch at 200 rows reads only its batch at any batch a run uses), enough that reading
 // every row still naming no node, and sorting it, costs the planner more than reading one batch
 // through an index in the walk's order, as it does on any deployment's tables.
 const (
@@ -54,7 +56,7 @@ func TestTheBackfillsWalksReadOnlyTheirBatch(t *testing.T) {
 	pool := database.Pool
 	seedWalkPlan(t, pool)
 
-	blocks, err := readBlockRows(ctx, database, "")
+	blocks, err := readBlockRows(ctx, database, "", backfillBatch)
 	if err != nil {
 		t.Fatalf("read the first block batch: %v", err)
 	}
@@ -65,7 +67,7 @@ func TestTheBackfillsWalksReadOnlyTheirBatch(t *testing.T) {
 	requireFirstBatch(t, "the block batch", gotBlocks, walkKeys(t, pool, `
 		select node_id from document_blocks where node_kind is null order by node_id limit $1`))
 
-	refs, err := readBlockRefRows(ctx, database, []any{"", "", "", ""})
+	refs, err := readBlockRefRows(ctx, database, []any{"", "", "", ""}, backfillBatch)
 	if err != nil {
 		t.Fatalf("read the first block reference batch: %v", err)
 	}
@@ -148,7 +150,7 @@ func TestTheHeldBlockRefReadProbesEachRowsBlockNode(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("write a node for every block: %v", err)
 	}
-	batch, err := readBlockRefRows(ctx, database, []any{"", "", "", ""})
+	batch, err := readBlockRefRows(ctx, database, []any{"", "", "", ""}, backfillBatch)
 	if err != nil || len(batch) != backfillBatch {
 		t.Fatalf("read the first block reference batch: %d rows, %v", len(batch), err)
 	}

@@ -228,7 +228,7 @@ func TestThePointerGuardRefusesAPairWhoseBlockNodeIsGone(t *testing.T) {
 	}
 	_, tuplesBefore := storeSize(t, database)
 
-	done, err := backfillBlockRefs(ctx, database)
+	done, err := backfillBlockRefs(ctx, database, unpaced())
 	if err != nil {
 		t.Fatalf("run the pointer pass: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 	for _, issue := range []struct {
 		key    string
 		blocks int
-	}{{"CORE-1", backfillBatch}, {"CORE-2", 2}} {
+	}{{"CORE-1", DefaultThrottle.Batch}, {"CORE-2", 2}} {
 		var id, refKey string
 		if err := database.Pool.QueryRow(ctx, `
 			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
@@ -364,9 +364,9 @@ func TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed(t *testing.T)
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release issue CORE-2's row: %v", err)
 	}
-	if first, second := named("CORE-1"), named("CORE-2"); first != backfillBatch || second != 0 {
+	if first, second := named("CORE-1"), named("CORE-2"); first != DefaultThrottle.Batch || second != 0 {
 		t.Fatalf("after the killed run %d of CORE-1's blocks and %d of CORE-2's name their node, want all %d and none: the run was not stopped after its first batch",
-			first, second, backfillBatch)
+			first, second, DefaultThrottle.Batch)
 	}
 	if !owed("CORE-1") {
 		t.Errorf("the killed run committed the batch of CORE-1's blocks and left its document unmarked: no later run marks it, since none reads those rows again")
@@ -406,12 +406,12 @@ func TestABackfillOfALowerMarkingRuleLeavesAHigherRulesHorizon(t *testing.T) {
 		t.Fatalf("seed project CORE: %v", err)
 	}
 	appendHorizonEvent(t, database)
-	if _, err := backfillAt(ctx, database, io.Discard, higher); err != nil {
+	if _, err := backfillAt(ctx, database, io.Discard, higher, unpaced()); err != nil {
 		t.Fatalf("backfill at marking rule %d: %v", higher, err)
 	}
 	want := horizonOfRule(t, database, higher)
 	appended := appendHorizonEvent(t, database)
-	if _, err := backfillAt(ctx, database, io.Discard, lower); err != nil {
+	if _, err := backfillAt(ctx, database, io.Discard, lower, unpaced()); err != nil {
 		t.Fatalf("backfill at marking rule %d: %v", lower, err)
 	}
 	if got := horizonOfRule(t, database, higher); got != want {

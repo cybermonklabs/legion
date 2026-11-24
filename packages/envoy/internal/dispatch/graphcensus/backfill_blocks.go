@@ -32,14 +32,16 @@ type blockRow struct {
 // store holds. A block whose address is past refs.MaxBlockNodeBytes is no node of the store by
 // design, so it is neither written nor counted as skipped: the writers leave it unprojected too.
 // A row a version write deleted after its batch was read is not written either
-// (writeBlockBatch), and is counted nowhere: it is no row of the database any more.
-func backfillBlocks(ctx context.Context, database *store.Store, rule int) (KindBackfill, error) {
+// (writeBlockBatch), and is counted nowhere: it is no row of the database any more. Each batch is
+// p's, and p paces the pass (pacer).
+func backfillBlocks(ctx context.Context, database *store.Store, rule int, p *pacer) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
 	// The documents the run marked, each once however many of its batches marked it.
 	documents := map[string]struct{}{}
 	after := ""
+	p.begin(refs.BlockNodeKind)
 	for {
-		rows, err := readBlockRows(ctx, database, after)
+		rows, err := readBlockRows(ctx, database, after, p.throttle.Batch)
 		if err != nil {
 			return done, err
 		}
@@ -65,11 +67,15 @@ func backfillBlocks(ctx context.Context, database *store.Store, rule int) (KindB
 		for _, row := range written {
 			documents[row.artifactID] = struct{}{}
 		}
-		if len(rows) < backfillBatch {
+		if err := p.after(ctx, len(rows)); err != nil {
+			return done, err
+		}
+		if len(rows) < p.throttle.Batch {
 			break
 		}
 	}
-	stale, err := markStaleDocuments(ctx, database, rule)
+	p.end()
+	stale, err := markStaleDocuments(ctx, database, rule, p)
 	if err != nil {
 		return done, err
 	}
@@ -86,12 +92,12 @@ func backfillBlocks(ctx context.Context, database *store.Store, rule int) (KindB
 	return done, nil
 }
 
-// readBlockRows reads one batch of the blocks naming no node (BlockRowsStatement), by their node
-// address so the walk is a keyset over a column every row of the batch carries. Each row's event
-// is the one that recorded the version it was last written at (docs' versionEventID), and the
-// store's sentinel where that is not found.
-func readBlockRows(ctx context.Context, database *store.Store, after string) ([]blockRow, error) {
-	rows, err := database.Pool.Query(ctx, BlockRowsStatement, after, backfillBatch, graphstore.NoEvent)
+// readBlockRows reads one batch of at most limit of the blocks naming no node
+// (BlockRowsStatement), by their node address so the walk is a keyset over a column every row of
+// the batch carries. Each row's event is the one that recorded the version it was last written at
+// (docs' versionEventID), and the store's sentinel where that is not found.
+func readBlockRows(ctx context.Context, database *store.Store, after string, limit int) ([]blockRow, error) {
+	rows, err := database.Pool.Query(ctx, BlockRowsStatement, after, limit, graphstore.NoEvent)
 	if err != nil {
 		return nil, fmt.Errorf("read the blocks naming no node: %w", err)
 	}

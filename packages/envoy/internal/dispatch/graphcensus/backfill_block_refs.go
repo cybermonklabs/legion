@@ -46,12 +46,13 @@ type blockRefRow struct {
 // The row's own source_seq is the event that stamped it, which is both the cause of its tuple
 // and that tuple's legacy_source_seq; a row with none takes the store's sentinel as its cause
 // and keeps no legacy sequence, exactly as the graph_edges arm over block_refs answers null
-// for it.
-func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill, error) {
+// for it. Each batch is p's, and p paces the pass (pacer).
+func backfillBlockRefs(ctx context.Context, database *store.Store, p *pacer) (KindBackfill, error) {
 	done := KindBackfill{Kind: "block_ref"}
 	after := []any{"", "", "", ""}
+	p.begin(done.Kind)
 	for {
-		batch, err := readBlockRefRows(ctx, database, after)
+		batch, err := readBlockRefRows(ctx, database, after, p.throttle.Batch)
 		if err != nil {
 			return done, err
 		}
@@ -76,10 +77,14 @@ func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill
 			done.Rows += written
 			done.Tuples += written
 		}
-		if len(batch) < backfillBatch {
+		if err := p.after(ctx, len(batch)); err != nil {
+			return done, err
+		}
+		if len(batch) < p.throttle.Batch {
 			break
 		}
 	}
+	p.end()
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from block_refs
 		where node_kind is null and octet_length(from_node) <= `+addressBound+`
@@ -90,12 +95,12 @@ func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill
 	return done, nil
 }
 
-// readBlockRefRows reads one batch of the block references naming no node, by the key a row of
+// readBlockRefRows reads one batch of at most limit of the block references naming no node, by the key a row of
 // block_refs is keyed on past its artifact, so the walk never reads one row twice
-// (BlockRefRowsStatement). Each row carries whether its block's node stands (blockNodeStands),
-// which is the guard backfillBlockRefs skips a row by.
-func readBlockRefRows(ctx context.Context, database *store.Store, after []any) ([]blockRefRow, error) {
-	rows, err := database.Pool.Query(ctx, BlockRefRowsStatement, after[0], after[1], after[2], after[3], backfillBatch, graphstore.NoEvent)
+// (BlockRefRowsStatement), at most limit of them. Each row carries whether its block's node stands
+// (blockNodeStands), which is the guard backfillBlockRefs skips a row by.
+func readBlockRefRows(ctx context.Context, database *store.Store, after []any, limit int) ([]blockRefRow, error) {
+	rows, err := database.Pool.Query(ctx, BlockRefRowsStatement, after[0], after[1], after[2], after[3], limit, graphstore.NoEvent)
 	if err != nil {
 		return nil, fmt.Errorf("read the block references naming no node: %w", err)
 	}

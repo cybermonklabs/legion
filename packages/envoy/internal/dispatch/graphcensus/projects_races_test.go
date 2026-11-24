@@ -57,7 +57,7 @@ func TestTheCommentBatchLeavesTheCallersBatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	batch, err := readCommentRows(ctx, database, zeroUUID)
+	batch, err := readCommentRows(ctx, database, zeroUUID, backfillBatch)
 	if err != nil || len(batch) != 2 || batch[0].id != removed || batch[1].id != standing {
 		t.Fatalf("read the two unmarked comments: %+v, %v; want %s then %s", batch, err, removed, standing)
 	}

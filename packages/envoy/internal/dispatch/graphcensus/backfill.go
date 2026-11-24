@@ -17,10 +17,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// backfillBatch is how many rows of one kind one transaction writes. Each row costs a node, a
-// tuple or two and one projection column write, and an author costs a statement of its own, so
-// a batch is a few hundred statements at most and holds its row locks for about as long as one
-// request does.
+// backfillBatch is how many rows one transaction writes in the block-index tick's object pass
+// (WriteOwedObjectNodes) and in a test that drives a pass, or a run of another marking rule, by
+// itself (unpaced); a run of the backfill takes its batch from its Throttle. Each row costs a
+// node, a tuple or two and one projection column write, and an author costs a statement of its
+// own, so a batch is a few hundred statements at most and holds its row locks for about as long
+// as one request does.
 const backfillBatch = 200
 
 // backfillActor is who the run records as the writer of every node and tuple it writes. The
@@ -123,18 +125,33 @@ type BackfillReport struct {
 // readEventsAfterCursor), so nothing that release writes between the run and that build's first
 // block-index tick is passed over.
 //
+// It runs at DefaultThrottle: each pass reads and writes batches of 100 rows and pauses after each
+// one so that it reads no more than 500 rows a second (BackfillThrottled).
+//
 // It is no repair. Its input is each row's own content: it never reads one side of a
 // projection to write the other, so a row whose node is already written is left alone and a
 // kind whose rows disagree with the store is for the census to report, not for this to paper
 // over.
 func Backfill(ctx context.Context, database *store.Store, out io.Writer) (BackfillReport, error) {
-	return backfillAt(ctx, database, out, refs.BlockIndexMarkingRule)
+	return BackfillThrottled(ctx, database, out, DefaultThrottle)
 }
 
-// backfillAt is Backfill as a build of the marking rule rule runs it: its marks and its horizon
-// are that rule's. A test runs a backfill of another rule through it.
-func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule int) (BackfillReport, error) {
+// BackfillThrottled is Backfill at throttle: each pass reads and writes batches of throttle.Batch
+// rows, pauses after each one so that it reads no more than throttle.Rate rows a second, and
+// prints its pace (pacer). It refuses a throttle Throttle.Check refuses before it reads anything.
+func BackfillThrottled(ctx context.Context, database *store.Store, out io.Writer, throttle Throttle) (BackfillReport, error) {
+	if err := throttle.Check(); err != nil {
+		return BackfillReport{}, fmt.Errorf("refused: %w", err)
+	}
+	return backfillAt(ctx, database, out, refs.BlockIndexMarkingRule, newPacer(throttle, wallClock{}, out))
+}
+
+// backfillAt is Backfill as a build of the marking rule rule runs it, paced by p: its marks and its
+// horizon are that rule's. A test runs a backfill of another rule, or on a clock of its own,
+// through it.
+func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule int, p *pacer) (BackfillReport, error) {
 	report := BackfillReport{}
+	fmt.Fprintf(out, "backfill-graph-store: throttle %s\n", p.throttle)
 	if err := requireBackfillIndexes(ctx, database); err != nil {
 		return report, err
 	}
@@ -158,13 +175,13 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 	if err := analyzeWalkedColumns(ctx, database); err != nil {
 		return report, err
 	}
-	blocks := func(ctx context.Context, database *store.Store) (KindBackfill, error) {
-		return backfillBlocks(ctx, database, rule)
+	blocks := func(ctx context.Context, database *store.Store, p *pacer) (KindBackfill, error) {
+		return backfillBlocks(ctx, database, rule, p)
 	}
-	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){
+	for _, write := range []func(context.Context, *store.Store, *pacer) (KindBackfill, error){
 		blocks, backfillBlockRefs, backfillComments, backfillRoles, backfillSessions,
 	} {
-		done, err := write(ctx, database)
+		done, err := write(ctx, database, p)
 		if err != nil {
 			return report, err
 		}
@@ -180,10 +197,10 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 	// second run cures, holds back neither the rest of that pass nor the fill: the run answers it
 	// after both.
 	var moved error
-	for _, write := range []func(context.Context, *store.Store) ([]KindBackfill, error){
+	for _, write := range []func(context.Context, *store.Store, *pacer) ([]KindBackfill, error){
 		backfillObjectNodes, backfillScopes,
 	} {
-		done, err := write(ctx, database)
+		done, err := write(ctx, database, p)
 		report.Kinds = append(report.Kinds, done...)
 		for _, kind := range done {
 			writeKindBackfill(out, kind)

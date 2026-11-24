@@ -16,12 +16,13 @@ import (
 // states them), the base attributes graphstore.Write states for every node it makes, and who
 // wrote it, as graphstore.QueueAuthored states that (graphstore.AuthorFacts). A row between a
 // party the store refuses (partiesRefused) is skipped and counted in Skipped, so it stops neither
-// its batch nor any later run.
-func backfillComments(ctx context.Context, database *store.Store) (KindBackfill, error) {
+// its batch nor any later run. Each batch is p's, and p paces the pass (pacer).
+func backfillComments(ctx context.Context, database *store.Store, p *pacer) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.KindComment}
 	after := "00000000-0000-0000-0000-000000000000"
+	p.begin(done.Kind)
 	for {
-		batch, err := readCommentRows(ctx, database, after)
+		batch, err := readCommentRows(ctx, database, after, p.throttle.Batch)
 		if err != nil {
 			return done, err
 		}
@@ -46,10 +47,14 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 			done.Nodes += nodes
 			done.Tuples += tuples
 		}
-		if len(batch) < backfillBatch {
+		if err := p.after(ctx, len(batch)); err != nil {
+			return done, err
+		}
+		if len(batch) < p.throttle.Batch {
 			break
 		}
 	}
+	p.end()
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from comments c`+refs.CommentStoreJoins+`
 		where c.node_kind is null and `+refs.CommentInTheStore+`
@@ -68,14 +73,14 @@ type commentID struct {
 	refused bool
 }
 
-// readCommentRows reads the next batch of comments rows after the comment after, in id order,
+// readCommentRows reads the next batch of at most limit comments rows after the comment after, in id order,
 // that name no node and whose relations fit the store's bound: each one's id, and beside it the
 // first comment.created event that names it, or the sentinel (graphstore.NoEvent) where no event
 // does, which is the cause of what the batch states of it (refs.CommentsNamingNoNode reads the
 // rest of the row again under the owner locks), and whether the session of the conversation that
 // owns it is a party the store refuses (CommentRowsStatement).
-func readCommentRows(ctx context.Context, database *store.Store, after string) ([]commentID, error) {
-	rows, err := database.Pool.Query(ctx, CommentRowsStatement, after, backfillBatch, graphstore.NoEvent)
+func readCommentRows(ctx context.Context, database *store.Store, after string, limit int) ([]commentID, error) {
+	rows, err := database.Pool.Query(ctx, CommentRowsStatement, after, limit, graphstore.NoEvent)
 	if err != nil {
 		return nil, fmt.Errorf("read the comments naming no node: %w", err)
 	}

@@ -37,15 +37,17 @@ type roleRow struct {
 // for a role only a row names, which no event dates.
 //
 // No arm of graph_edges answers a role, so its Complete switches nothing off: it reads whether
-// every role the census names holds its node and its page.
-func backfillRoles(ctx context.Context, database *store.Store) (KindBackfill, error) {
+// every role the census names holds its node and its page. Each batch is p's, and p paces the
+// pass (pacer).
+func backfillRoles(ctx context.Context, database *store.Store, p *pacer) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.KindRole}
 	missing, err := readRoleRows(ctx, database)
 	if err != nil {
 		return done, err
 	}
-	for start := 0; start < len(missing); start += backfillBatch {
-		batch := missing[start:min(start+backfillBatch, len(missing))]
+	p.begin(done.Kind)
+	for start := 0; start < len(missing); start += p.throttle.Batch {
+		batch := missing[start:min(start+p.throttle.Batch, len(missing))]
 		nodes, tuples, err := writeRoleBatch(ctx, database, batch)
 		if err != nil {
 			return done, err
@@ -53,7 +55,11 @@ func backfillRoles(ctx context.Context, database *store.Store) (KindBackfill, er
 		done.Rows += int64(len(batch))
 		done.Nodes += nodes
 		done.Tuples += tuples
+		if err := p.after(ctx, len(batch)); err != nil {
+			return done, err
+		}
 	}
+	p.end()
 	left, err := readRoleRows(ctx, database)
 	if err != nil {
 		return done, err

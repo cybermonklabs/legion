@@ -489,6 +489,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("census with an unreachable DATABASE_URL: exit %d, stderr %q, want a connect failure", code, stderr.String())
 			}
 		},
+		// backfill-graph-store's throttle (graph_backfill_throttle_test.go).
+		"DISPATCH_GRAPH_BACKFILL_BATCH_ROWS":      graphBackfillBatchRowsReachesItsReader,
+		"DISPATCH_GRAPH_BACKFILL_ROWS_PER_SECOND": graphBackfillRowsPerSecondReachesItsReader,
 		"DISPATCH_AGENT_TOKEN": func(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_AGENT_TOKEN": ""}, "DISPATCH_AGENT_TOKEN required")
 			refusedWith(t, map[string]string{"DISPATCH_AGENT_TOKEN": " \n "}, "DISPATCH_AGENT_TOKEN required")

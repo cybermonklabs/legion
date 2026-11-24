@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,8 +43,12 @@ var subcommands = []subcommand{
 	{"backfill-anchor-blocks", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillAnchorBlocks(ctx, env.get("DATABASE_URL"), stdout)
 	}},
-	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
+	{"backfill-graph-store", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
+		throttle, ok := graphBackfillThrottle(args, env, stdout)
+		if !ok {
+			return 2
+		}
+		return backfillGraphStore(ctx, env.get("DATABASE_URL"), throttle, stdout)
 	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
@@ -260,22 +265,28 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 
 // backfillGraphStore runs `envoy-dispatch backfill-graph-store`: it writes the nodes and
 // tuples of every comment, document block and block reference written before the node and
-// tuple store existed, in batches, one transaction each (graphcensus.Backfill). It appends no
-// event of its own: a fact whose row's own event cannot be found carries the store's sentinel
+// tuple store existed, the node of every issue, document, ask and message written before its
+// kind's writer wrote one, and the project of every comment and block node written before a node
+// named its project, in batches, one transaction each (graphcensus.BackfillThrottled). It appends
+// no event of its own: a fact whose row's own event cannot be found carries the store's sentinel
 // as its cause. It is safe to run again: a row that already names its node is left alone, so a
 // run interrupted anywhere carries on from where it stopped.
+//
+// It runs at throttle (graphBackfillThrottle): batches of throttle.Batch rows, each pass paused
+// after each batch so that it reads at most throttle.Rate rows a second, and each pass's pace
+// printed while it runs and when it ends.
 //
 // A block's parent is left to the block index: the run marks each document it touched owed
 // one, and `census --store` reads a difference on every backfilled block until that
 // reconciliation has drained the mark, since the reconciliation is the one writer of
 // document_blocks.parent_block_id.
-func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) int {
+func backfillGraphStore(ctx context.Context, databaseURL string, throttle graphcensus.Throttle, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-graph-store", databaseURL, out)
 	if !ok {
 		return 1
 	}
 	defer database.Pool.Close()
-	report, err := graphcensus.Backfill(ctx, database, out)
+	report, err := graphcensus.BackfillThrottled(ctx, database, out, throttle)
 	if err != nil {
 		fmt.Fprintf(out, "backfill-graph-store: %v\n", err)
 		return 1
@@ -286,6 +297,53 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 		}
 	}
 	return 0
+}
+
+// graphBackfillThrottle is the throttle `envoy-dispatch backfill-graph-store` runs at: each of
+// --batch-rows and --rows-per-second where given, else DISPATCH_GRAPH_BACKFILL_BATCH_ROWS and
+// DISPATCH_GRAPH_BACKFILL_ROWS_PER_SECOND where set and not empty, else graphcensus.DefaultThrottle's
+// own value. A rate of 0, no pause between batches, is a choice a flag or a setting makes, never
+// the default. A value that is no whole number, a batch outside 1 to graphcensus.MaxBackfillBatch
+// rows, a rate below 0 and an argument that is no flag are refused on out, before the database is
+// opened, and the caller exits 2.
+func graphBackfillThrottle(args []string, env settingValues, out io.Writer) (graphcensus.Throttle, bool) {
+	throttle := graphcensus.DefaultThrottle
+	for _, setting := range []struct {
+		name string
+		into *int
+	}{
+		{"DISPATCH_GRAPH_BACKFILL_BATCH_ROWS", &throttle.Batch},
+		{"DISPATCH_GRAPH_BACKFILL_ROWS_PER_SECOND", &throttle.Rate},
+	} {
+		value := strings.TrimSpace(env.get(setting.name))
+		if value == "" {
+			continue
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			fmt.Fprintf(out, "backfill-graph-store: refused: %s=%q is no whole number\n", setting.name, value)
+			return throttle, false
+		}
+		*setting.into = n
+	}
+	flags := flag.NewFlagSet("backfill-graph-store", flag.ContinueOnError)
+	flags.SetOutput(out)
+	flags.IntVar(&throttle.Batch, "batch-rows", throttle.Batch,
+		fmt.Sprintf("rows each batch reads and each transaction writes, 1 to %d", graphcensus.MaxBackfillBatch))
+	flags.IntVar(&throttle.Rate, "rows-per-second", throttle.Rate,
+		"the most rows a second each pass reads, held by a pause after each batch; 0 pauses nowhere")
+	if err := flags.Parse(args); err != nil {
+		return throttle, false
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(out, "backfill-graph-store: unexpected argument %q; the flags are --batch-rows and --rows-per-second\n", flags.Arg(0))
+		return throttle, false
+	}
+	if err := throttle.Check(); err != nil {
+		fmt.Fprintf(out, "backfill-graph-store: refused: %v\n", err)
+		return throttle, false
+	}
+	return throttle, true
 }
 
 func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer) int {
