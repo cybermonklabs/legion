@@ -10,7 +10,8 @@
 //   - The status-line probe: a server whose reason phrase quotes a URL carrying made-up
 //     credentials, and the check's designated assertion, RequireNone, which a print-site row of
 //     that module calls as a row of this module calls redacttest.RequireNone; RequireNoPiece is
-//     the same assertion for a row whose stand-in echoes the credential the request carried too.
+//     the same assertion for a row whose stand-in echoes the credential the request carried too,
+//     and Piece the one reading of a shown run it fails on.
 //   - The certificate stand-in: a TLS server whose certificate holds a name with a made-up
 //     credential in it, which crypto/x509 quotes in its error (CertificateServer).
 //
@@ -111,6 +112,11 @@ func RequireNoPiece(t testing.TB, capture, text string, credentials ...string) {
 	t.Helper()
 	redacttest.RequireNoPiece(t, capture, text, credentials...)
 }
+
+// Piece is redacttest.Piece: the first run of credential that text shows, 8 characters as written
+// or the 16 hex digits of 8 bytes, and "" for none. It is the reading RequireNoPiece fails on, for
+// a twin that must show what the row's assertion would see.
+func Piece(text, credential string) string { return redacttest.Piece(text, credential) }
 
 // Said is s held as another party's words, for a test that builds the value a client would have
 // decoded from an answer: it prints only as the rule reads it and compares as it came.
