@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The daemon's Kubernetes clients no longer send their bearer wherever a redirect points.
+  client-go follows a redirect as Go does, and the bearer is set by the round trippers it builds,
+  so a 307 or 302 from whoever answered in the API server's place took the service account's or
+  the kubeconfig user's bearer on: to the same host name at another port or over plain http,
+  where net/http copies the `Authorization`, and to another host name, where client-go sets it
+  again. Every client the daemon makes of its cluster's configuration now sends the
+  `Authorization` to the API server's own scheme, host and port alone; a redirect is still
+  followed, without it off that origin.
+time: 2026-11-24T21:47:55Z
+custom:
+    Issue: pr4368
