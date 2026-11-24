@@ -485,6 +485,53 @@ func TestAClaimsTurnTimesRoundTrip(t *testing.T) {
 	}
 }
 
+// A claim's two causes and the time the daemon recorded each are columns of their own, so a
+// restarted daemon reads each cause back beside its time, to the microsecond
+// (dispatch://INFRA-5645). A claim that holds no cause reads back with no time; a cause recorded
+// again with the same text reads back with its new time; and a cause the daemon dropped, as it
+// drops a start failure at its agent's ready, reads back with no time. So does a time the row
+// holds beside an empty cause, which a daemon of the release before the columns leaves when it
+// drops the start failure and not the column it never names.
+func TestClaimCauseTimesSurviveAReload(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	put := func(what string) supervise.Claim {
+		t.Helper()
+		if err := store.PutClaim(ctx, c); err != nil {
+			t.Fatalf("put the claim %s: %v", what, err)
+		}
+		return onlyClaim(t, store)
+	}
+	want := func(got supervise.Claim, what string, death, startFailure time.Time) {
+		t.Helper()
+		if got.LastDeathCause != c.LastDeathCause || !got.LastDeathAt.Equal(death) {
+			t.Errorf("the claim %s read back the death %q at %v, want %q at %v", what, got.LastDeathCause, got.LastDeathAt, c.LastDeathCause, death)
+		}
+		if got.LastStartFailure != c.LastStartFailure || !got.LastStartFailureAt.Equal(startFailure) {
+			t.Errorf("the claim %s read back the start failure %q at %v, want %q at %v",
+				what, got.LastStartFailure, got.LastStartFailureAt, c.LastStartFailure, startFailure)
+		}
+	}
+
+	want(put("that holds no cause"), "that holds no cause", time.Time{}, time.Time{})
+
+	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3)
+	c.LastStartFailure, c.LastStartFailureAt = "init container workspace-init failed: exit 1", at(9)
+	want(put("with both causes"), "with both causes", at(3), at(9))
+
+	c.LastDeathAt = at(21)
+	want(put("whose death was recorded again with the same text"), "whose death was recorded again with the same text", at(21), at(9))
+
+	c.LastStartFailure, c.LastStartFailureAt = "", time.Time{}
+	want(put("whose start failure was dropped"), "whose start failure was dropped", at(21), time.Time{})
+
+	if _, err := store.Pool().Exec(ctx, `update claims set last_start_failure_at = $1 where token = $2`, at(30), string(c.Token)); err != nil {
+		t.Fatalf("leave a start failure's time beside no start failure: %v", err)
+	}
+	want(onlyClaim(t, store), "holding a time beside no start failure", at(21), time.Time{})
+}
+
 // What the daemon charged for the death of the process a claim records round-trips: a restart
 // builds every claim from this table and has charged nothing of its own, so a claim restored
 // without this is charged a second death for the one dead process it stands over, which costs
