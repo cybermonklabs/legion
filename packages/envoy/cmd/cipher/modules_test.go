@@ -9,6 +9,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -219,11 +220,10 @@ func TestTheBrokerBinaryLinksItsListedModules(t *testing.T) {
 // debug/buildinfo records the module of every non-standard package its build compiles, and
 // go list -deps lists those packages for the same GOOS, GOARCH and CGO_ENABLED without compiling
 // one, where a build of each GOOS compiled every dependency again on each run (the build cache
-// holds none of them). The listing must name the command's own package, so an empty or failed
-// listing fails rather than reads as a binary that links nothing.
+// holds none of them). linkedModules reads the listing.
 func requireModules(t *testing.T, what, dir string, want []string, env ...string) {
 	t.Helper()
-	list := exec.Command("go", "list", "-deps", "-f", "{{.Name}} {{with .Module}}{{if .Main}}main{{else}}{{.Path}}{{end}}{{else}}std{{end}}", ".")
+	list := exec.Command("go", "list", "-deps", "-f", "{{.Name}} {{with .Module}}{{.Path}}{{else}}std{{end}}", ".")
 	list.Dir = dir
 	list.Env = append(os.Environ(), env...)
 	out, err := list.Output()
@@ -234,24 +234,10 @@ func requireModules(t *testing.T, what, dir string, want []string, env ...string
 		}
 		t.Fatalf("go list -deps of %s in %s with %q: %v\n%s", what, dir, env, err, stderr)
 	}
-	var linked []string
-	commands := 0
-	for line := range strings.Lines(string(out)) {
-		name, module, ok := strings.Cut(strings.TrimSpace(line), " ")
-		if !ok {
-			t.Fatalf("go list -deps of %s printed %q, not a package name and its module", what, line)
-		}
-		if name == "main" {
-			commands++ // a main package is imported by nothing, so this is the command itself
-		}
-		if module != "main" && module != "std" && !slices.Contains(linked, module) {
-			linked = append(linked, module)
-		}
+	linked, err := linkedModules(string(out))
+	if err != nil {
+		t.Fatalf("go list -deps of %s in %s: %v", what, dir, err)
 	}
-	if commands != 1 {
-		t.Fatalf("go list -deps of %s in %s listed %d main packages, not the one command, so it read no build: %q", what, dir, commands, out)
-	}
-	slices.Sort(linked)
 	var entered, left []string
 	for _, path := range linked {
 		if !slices.Contains(want, path) {
@@ -265,5 +251,70 @@ func requireModules(t *testing.T, what, dir string, want []string, env ...string
 	}
 	if len(entered) > 0 || len(left) > 0 {
 		t.Fatalf("%s links modules its list does not name: %q; and no longer links modules its list names: %q", what, entered, left)
+	}
+}
+
+// linkedModules reads a `go list -deps -f '{{.Name}} {{with .Module}}{{.Path}}{{else}}std{{end}}'`
+// listing of one command: the sorted paths of every module its packages come from but the
+// command's own, which is the module of its one main package (a main package is imported by
+// nothing, so the listing's only one is the command). Every other module counts, a module of the
+// go.work beside it included: go list marks each workspace module Main, and the binary's
+// debug/buildinfo records one the command imports as a (devel) dependency. A listing with no main
+// package, or more than one, read no build of one command, so it is an error rather than a
+// command that links nothing.
+func linkedModules(listing string) ([]string, error) {
+	own, commands := "", 0
+	var modules []string
+	for line := range strings.Lines(listing) {
+		name, module, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok || name == "" || module == "" {
+			return nil, fmt.Errorf("the listing printed %q, not a package name and its module", line)
+		}
+		if name == "main" {
+			own, commands = module, commands+1
+		}
+		if module != "std" && !slices.Contains(modules, module) {
+			modules = append(modules, module)
+		}
+	}
+	if commands != 1 {
+		return nil, fmt.Errorf("the listing holds %d main packages, not the one command, so it read no build of one: %q", commands, listing)
+	}
+	modules = slices.DeleteFunc(modules, func(m string) bool { return m == own })
+	slices.Sort(modules)
+	return modules, nil
+}
+
+// TestTheModuleListingCountsEveryModuleButTheCommandsOwn: linkedModules drops the standard
+// library and the command's own module and counts every other one, a module of the go.work beside
+// it included, which go list marks Main as it marks the command's. Control: drop the modules that
+// go list marks Main instead of the command's own, as the reading did at 2a49e0e3, and the
+// workspace row fails.
+func TestTheModuleListingCountsEveryModuleButTheCommandsOwn(t *testing.T) {
+	t.Parallel()
+	const envoy, daemon = "github.com/sjawhar/envoy", "github.com/sjawhar/legion/daemon"
+	for _, c := range []struct {
+		name, listing string
+		want          []string
+		wantErr       bool
+	}{
+		{"a third-party module counts", "fmt std\nuuid github.com/google/uuid\nmain " + envoy + "\n", []string{"github.com/google/uuid"}, false},
+		{"a module of the go.work counts", "fmt std\nplanted " + daemon + "\nsecrets " + envoy + "\nmain " + envoy + "\n", []string{daemon}, false},
+		{"the command's own module and the standard library do not", "fmt std\nsecrets " + envoy + "\nmain " + envoy + "\n", nil, false},
+		{"a listing with no command is an error", "fmt std\nuuid github.com/google/uuid\n", nil, true},
+		{"a listing of two commands is an error", "main " + envoy + "\nmain " + daemon + "\n", nil, true},
+		{"an empty listing is an error", "", nil, true},
+		{"a line with no module is an error", "fmt\nmain " + envoy + "\n", nil, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := linkedModules(c.listing)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("linkedModules(%q) = %q, %v; want an error: %t", c.listing, got, err, c.wantErr)
+			}
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("linkedModules(%q) = %q; want %q", c.listing, got, c.want)
+			}
+		})
 	}
 }
