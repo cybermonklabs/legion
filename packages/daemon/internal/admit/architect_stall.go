@@ -48,7 +48,7 @@ func stallMarks(stalls []architectStall) []record.ArchitectStall {
 // architectStalls reads the three arms over the architect of every root of read, in the order
 // the holders are read and, for each root, in the order a controller is told them: the architect
 // took nothing, its claim cannot be reached, the root is slow before its gate. The domain is the
-// selection's (readSlotHolders): a root holding a slot, a root past its review and a root
+// selection's (readSlotHolders): a root holding a slot, a root in accepting, retro or merging and a root
 // released for a wait alike. A root in accepting, retro or merging holds no slot since
 // cybermonklabs/legion#3573, and a root waiting on another issue holds none since
 // cybermonklabs/legion#3715, so the first two arms read each of them here as they read it while

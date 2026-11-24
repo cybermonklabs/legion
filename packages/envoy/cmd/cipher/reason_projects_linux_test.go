@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
@@ -42,7 +41,7 @@ func TestARequestWhoseReasonNamesMoreThanSixteenProjectsIsRefusedAtTheCLI(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "reason-box-" + t.Name(), Thumbprint: thumbprint}, 10*time.Second)
+	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "reason-box-" + t.Name(), Thumbprint: thumbprint}, untilGiveUp(t))
 	if err != nil || !enrolled.OK {
 		t.Fatalf("enroll-session-key: %+v %v", enrolled, err)
 	}

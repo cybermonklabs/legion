@@ -23,6 +23,7 @@ import (
 // place rather than closing, so a JetStream handle taken from it before the restart is still bound
 // to a live connection afterwards.
 func TestAServerRestartKeepsJetStreamStateTakenFromTheConnection(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -99,6 +100,7 @@ func TestAPublishThatFailedWhileReconnectingIsNeverSent(t *testing.T) {
 // rather than failing at once: a webhook that gets an error answers 503, and the sender does not
 // redeliver, so a failure fast enough to beat a one-second NATS restart loses the event.
 func TestAPublishWhileReconnectingWaitsForTheReconnect(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {

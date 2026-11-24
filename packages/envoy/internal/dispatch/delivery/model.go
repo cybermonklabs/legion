@@ -236,8 +236,8 @@ type DeliveryRunJobView struct {
 
 // DeliveryPRView is one population pull request on `GET /api/v1/delivery/timeline` -- LEGION-294's
 // facts plus what the server derives at read time from the stored facts: DeployedStatus, the
-// linked issue's title, priority and effective components (the nearest ancestor's attachment, as
-// the issue read resolves it), and (on DeliveryRunView) RootFailingJob. Mirrors
+// linked issue's title, priority and effective components (the nearest ancestor's attachment in
+// its own project, as the issue read resolves it), and (on DeliveryRunView) RootFailingJob. Mirrors
 // packages/contracts/src/dispatch-api.ts's DeliveryPR exactly. ParentAgent is the Parent agent of
 // the first of Sessions: its session group's `group:<id>`, else that session's title or id
 // (ParentAgents, parent_agent.go).

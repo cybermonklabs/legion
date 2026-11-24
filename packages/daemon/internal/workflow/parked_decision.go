@@ -252,7 +252,7 @@ func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root rec
 // ArchitectHearsSlotted is ArchitectHears for a root the caller already knows waits for no
 // admission slot, which reads nothing: record.WaitsForSlot answers false for such a root, so what
 // is left is the rest of that one reading. Admission asks it of the roots its selection holds
-// (admit's readSlotHolders, through architectServed): each holds a slot, stands past its review
+// (admit's readSlotHolders, through architectServed): each holds a slot, stands in accepting, retro or merging
 // in a tree that runs, or was released for a wait in a tree that runs, and no queued root is one
 // of those.
 func ArchitectHearsSlotted(root record.Issue) bool {

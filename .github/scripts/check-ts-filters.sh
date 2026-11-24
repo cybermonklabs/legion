@@ -18,13 +18,15 @@
 #
 # The pairs cover every gate whose job runs a typecheck, each read from that job's own steps:
 # contracts, envoy_client (packages/envoy-client and packages/cipher-client), pi_shared,
-# pi_envoy, pi_legion, claude_envoy, dispatch_ui (packages/dispatch and packages/proof-editor),
-# docs (docs/site, in the docs-site.yaml job ci.yaml's docs job calls), conflicts_script
-# (scripts/conflicts) and test (scripts/dispatch, scripts/github-apps, scripts/sessions and
-# scripts/approval-eval).
+# pi_envoy, pi_legion_build (packages/pi-legion, in the pi-legion-build job), claude_envoy,
+# dispatch_ui (packages/dispatch and packages/proof-editor), docs (docs/site, in the
+# docs-site.yaml job ci.yaml's docs job calls), conflicts_script (scripts/conflicts) and
+# tooling_checks (scripts/dispatch, scripts/github-apps, scripts/sessions, scripts/approval-eval
+# and scripts/e2e/lib, in the tooling-checks job).
 # The gates left out are the ones whose job runs TypeScript but no typecheck, so there is no
-# program to derive: `dispatch_browser`, whose jobs are the browser suite itself, sharded and in
-# two-process mode, in the workflow ci.yaml's dispatch-browser job calls (the dashboard's and the
+# program to derive: `dispatch_browser` and `dispatch_browser_pr`, whose jobs are the browser
+# suite itself, sharded and in two-process mode, in the workflow ci.yaml's dispatch-browser and
+# dispatch-browser-pr jobs call (the dashboard's and the
 # proof editor's typechecks are dispatch_ui's, and
 # .github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
 # says why they were split out), `envoy_session_stall`,
@@ -33,11 +35,11 @@
 # the two-build job's gates, whose job runs the browser suite against two builds and whose Go
 # step runs this tree's dispatch command. What such a job loads is a runtime closure rather than
 # a tsc program, and stays a hand-kept read of ci_job_reads.py: envoy_client_dep for the
-# dispatch_browser, envoy_e2e_local and two-build gates, a read of its own for the
-# envoy_session_stall gate. Two parts of such closures this check does derive: every file the
-# dispatch command the two-build Go step runs loads, from that command's bundle (the bundles,
-# below), and the share of packages/contracts/src that dispatch_browser and the two two-build
-# gates load, from dispatch_ui's programs and that bundle (the listed blocks, below).
+# dispatch_browser, dispatch_browser_pr, envoy_e2e_local and two-build gates, a read of its own
+# for the envoy_session_stall gate. Two parts of such closures this check does derive: every file
+# the dispatch command the two-build Go step runs loads, from that command's bundle (the bundles,
+# below), and the share of packages/contracts/src that the two browser gates and the two
+# two-build gates load, from dispatch_ui's programs and that bundle (the listed blocks, below).
 #
 # THE BUNDLES. A step that runs an entry with Bun loads that entry's runtime closure, which no
 # tsc program of its job lists: the two-build job's Go step runs cmd/dispatch/twobuild_cli_test.go,
@@ -98,11 +100,12 @@
 # to say; and a file of the block that only another filter's programs or bundles give, which the
 # filter does not select. Every refusal names the filter, the file and the command that writes
 # the block. An entry's source is another filter where its job runs no program of its own and
-# loads what that filter's programs compile or its bundles load. dispatch_browser takes the
-# union of dispatch_ui's set and dispatch_two_builds_go's, the bundle of the dispatch command:
-# its rows run the SPA and the e2e helpers that dispatch_ui's programs compile, and they spawn
-# that command (packages/dispatch/e2e/dispatch-cli.ts:8,39). dispatch_two_builds takes the same
-# union, for its browser half and for the command its Go step runs. LISTED says why for each.
+# loads what that filter's programs compile or its bundles load. dispatch_browser and
+# dispatch_browser_pr take the union of dispatch_ui's set and dispatch_two_builds_go's, the
+# bundle of the dispatch command: their rows run the SPA and the e2e helpers that dispatch_ui's
+# programs compile, and they spawn that command (packages/dispatch/e2e/dispatch-cli.ts:8,39).
+# dispatch_two_builds takes the same union, for its browser half and for the command its Go step
+# runs. LISTED says why for each.
 # check-ci-filters.sh, which can run neither tsc nor `bun build`, holds no declared read to those
 # files: rule 9's second direction passes over a listed block's patterns, since this check holds
 # them. Its rule 15 reads a block's lines all the same, as what the tag step its filter gates

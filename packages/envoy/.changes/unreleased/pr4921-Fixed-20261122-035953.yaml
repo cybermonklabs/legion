@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  `agent-secrets` on Linux: a gcloud call still running when the command is killed by SIGKILL
+  (the out-of-memory killer, `kill -9`, a harness's timeout) now ends with the command, where
+  gcloud is started directly or through a plain script that replaces itself with gcloud's Python.
+  gcloud runs in a process group of its own, which the command kills itself at a call's deadline
+  or on a signal it handles; a SIGKILL runs none of its code, so gcloud ran on until it ended by
+  itself. gcloud now starts with SIGKILL as its parent-death signal. A gcloud started through a
+  setuid or file-capability launcher, such as a snap install's `/snap/bin/gcloud` (snap-confine),
+  loses that signal at the launcher's exec and still runs to its own end, as before; on macOS and
+  other platforms nothing changes.
+time: 2026-11-22T03:59:53Z
+custom:
+    Issue: pr4921

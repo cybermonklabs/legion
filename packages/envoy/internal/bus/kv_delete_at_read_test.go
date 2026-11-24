@@ -34,6 +34,7 @@ func (kv *writingOnMissingGet) Get(key string) (nats.KeyValueEntry, error) {
 // and the bucket applies it over whatever it holds - a session's live registration, which the
 // delete read none of and judged nothing about.
 func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
+	t.Parallel()
 	client, err := Connect([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -101,6 +102,7 @@ func (kv *writingOnGet) Get(key string) (nats.KeyValueEntry, error) {
 // the delete still answers that refusal and keeps that writer's record: the leader's answer is no
 // message the server wrote.
 func TestADeleteAtReadDeletesACopyAtItsTrueSequence(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_delete_at_read_copy"
 	_, kv := leaderReadBucket(t, bucket)
 	conn := kv.Streams().Conn()

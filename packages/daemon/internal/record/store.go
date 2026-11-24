@@ -1968,7 +1968,7 @@ func (s *Postgres) RestartCaughtUp(ctx context.Context, tx pgx.Tx, issue string)
 	return nil
 }
 
-const assignmentColumns = `issue_key, experiment, unit, variant, mode, drawn_at, carried`
+const assignmentColumns = `issue_key, experiment, unit, variant, mode, drawn_at, carried, plan`
 
 // scanAssignment reads an assignment row with the issue it is keyed by, since the readers of many
 // issues' rows group by that key and the reader of one issue's rows already knows it.
@@ -1977,7 +1977,7 @@ func scanAssignment(row scanner) (string, Assignment, error) {
 	var assignment Assignment
 	var drawnAt *time.Time
 	if err := row.Scan(&issue, &assignment.Experiment, &assignment.Unit, &assignment.Variant,
-		&assignment.Mode, &drawnAt, &assignment.Carried); err != nil {
+		&assignment.Mode, &drawnAt, &assignment.Carried, &assignment.Plan); err != nil {
 		return "", Assignment{}, err
 	}
 	if drawnAt != nil {
@@ -1989,8 +1989,9 @@ func scanAssignment(row scanner) (string, Assignment, error) {
 
 // PutAssignments records what issue's unit runs each of rows' experiments under, once: the insert
 // does nothing where a row for that issue and experiment stands, so an experiment the unit has
-// been running under keeps the arm, the mode and the instant it was drawn with, whatever the
-// project's file says by now. Nothing here ever updates a row. It reports how many rows it wrote.
+// been running under keeps the arm, the mode, the instant and the plan it was drawn with, whatever
+// the project's file says by now. Nothing here ever updates a row. It reports how many rows it
+// wrote.
 //
 // The write is guarded by the issue's own record, which it selects from: a key the daemon holds no
 // record for — an operator's spawn, whose tree's root the daemon never recorded — writes no row
@@ -2006,19 +2007,21 @@ func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, 
 	modes := make([]string, len(rows))
 	drawnAt := make([]*time.Time, len(rows))
 	carried := make([]bool, len(rows))
+	plans := make([]string, len(rows))
 	for i, row := range rows {
 		experiments[i], units[i] = row.Experiment, row.Unit
 		variants[i], modes[i] = row.Variant, row.Mode
 		drawnAt[i], carried[i] = row.DrawnAt, row.Carried
+		plans[i] = row.Plan
 	}
-	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
-		select target.key, drawn.experiment, drawn.unit, drawn.variant, drawn.mode, drawn.drawn_at, drawn.carried
+	tag, err := tx.Exec(ctx, `insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried, plan)
+		select target.key, drawn.experiment, drawn.unit, drawn.variant, drawn.mode, drawn.drawn_at, drawn.carried, drawn.plan
 		from issues target
-		cross join unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[], $7::boolean[])
-			as drawn(experiment, unit, variant, mode, drawn_at, carried)
+		cross join unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::timestamptz[], $7::boolean[], $8::text[])
+			as drawn(experiment, unit, variant, mode, drawn_at, carried, plan)
 		where target.key = $1
 		on conflict (issue_key, experiment) do nothing`,
-		issue, experiments, units, variants, modes, drawnAt, carried)
+		issue, experiments, units, variants, modes, drawnAt, carried, plans)
 	if err != nil {
 		return 0, fmt.Errorf("record %d experiment assignments of %s: %w", len(rows), issue, err)
 	}
@@ -2601,7 +2604,7 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // names a phase and carries that phase's task, which workflow.StartOrOwe alone writes and
 // refuses to write without either. $1 is the issue. It is the shape of the row an issue holds
 // one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
-// since a start of a phase past its review carries none (PhaseKeepsSlot).
+// since a start of accepting, retro or merging carries none (PhaseKeepsSlot).
 //
 // The issue's other supervise starts name no phase or carry no task — a root's architect's
 // (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
@@ -2627,7 +2630,7 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // at its own generation and at one entry, which is the pair the held phase's retry writes
 // (workflow's restart sends the entry its row already names, marked ResendEntry) while the
 // first start is still queued. While every start of a phase worker was marked for the slot, the
-// mark could stand for the row's shape; a start of a phase past its review carries none, so the
+// mark could stand for the row's shape; a start of accepting, retro or merging carries none, so the
 // shape is read from the row itself, and a retro's or a merger's retry is written over the
 // queued row as an implementer's is.
 //

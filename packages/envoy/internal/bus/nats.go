@@ -56,6 +56,7 @@ type connectOpts struct {
 	promptReconnect             bool
 	inboxPrefix                 string
 	streamMessageReads          bool
+	keeperStepGuard             time.Duration
 	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
 	// reports, and startCheck WithStartCheck's check.
 	credentialWait     time.Duration
@@ -571,6 +572,9 @@ type Client struct {
 	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
 	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
 	streamMessageReads bool
+	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
+	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
+	keeperStepGuard time.Duration
 
 	// recovery state
 	recovering int32
@@ -789,6 +793,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
 		streamMessageReads:          opts.streamMessageReads,
+		keeperStepGuard:             opts.keeperStepGuard,
 		requestExpiry:               opts.requestExpiry,
 		closedHook:                  opts.closedHook,
 		closeSettleBound:            opts.closeSettleBound,
@@ -1984,15 +1989,17 @@ func (c *Client) Close() {
 // watchers with requests of their own while the connection still carries them, even when the
 // deliveries ran out their share of the timeout (drainHookReserve) or failed to drain. Only then
 // does it drain the connection, whose Drain only starts the drain, and waits for it to close
-// itself. A connection that is reconnecting is closed at once and runs no hook: nothing it sends
-// reaches the server, so no subscription would drain and a reconnect would re-send them. A bind in
-// flight at the stop is not waited for: one that ends while the subscriptions drain installs its
-// own, which the next pass drains, and one that ends after the last pass drains its own, which the
-// connection's drain takes (endBind). The close ends one still in flight. A reconnect nats.go
-// reports once the client has stopped closes the connection only when it came after the stop
-// (closeStopped). The stop ends the keeper too, which Drain waits for once the connection is
-// closed (awaitKeeper). The stop also takes the client out of the registry of live clients
-// (forgetClient), as Close does, since the connection it owns is going.
+// itself. A connection that is reconnecting is closed at once, once the hooks have run on a
+// context that has already ended: nothing it sends reaches the server, so no subscription would
+// drain and a reconnect would re-send them, but each hook still ends what it holds and says what
+// it left to the server. A bind in flight at the stop is not waited for: one that ends while the
+// subscriptions drain installs its own, which the next pass drains, and one that ends after the
+// last pass drains its own, which the connection's drain takes (endBind). The close ends one
+// still in flight. A reconnect nats.go reports once the client has stopped closes the connection
+// only when it came after the stop (closeStopped). The stop ends the keeper too, which Drain
+// waits for once the connection is closed (awaitKeeper). The stop also takes the client out of
+// the registry of live clients (forgetClient), as Close does, since the connection it owns is
+// going.
 func (c *Client) Drain(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	deliveriesDeadline := deadline.Add(-min(drainHookReserve, timeout*3/10))
@@ -2012,6 +2019,12 @@ func (c *Client) Drain(timeout time.Duration) error {
 	defer c.awaitKeeper()
 	defer conn.Close()
 	if conn.IsReconnecting() {
+		// Nothing sent while reconnecting reaches the server, so no subscription would drain and
+		// a reconnect would re-send them: the connection is closed at once. The drain hooks still
+		// run first, on a context that has already ended (runDrainHooks reads the connection as
+		// lost), so each ends what it holds and says what it left to the server; a drain that ran
+		// none ended no KV watcher and said nothing of any.
+		c.runDrainHooks(conn, deadline)
 		return fmt.Errorf("drain NATS: %w", nats.ErrConnectionReconnecting)
 	}
 	if err := c.drainDeliveries(deliveriesDeadline); err != nil {

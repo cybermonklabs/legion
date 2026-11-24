@@ -16,15 +16,6 @@ const noTask = "the plan has no task block, so it gives Legion no work."
 // notYet ends each reason of Supported: what a later release carries out.
 const notYet = " This release of Legion does not carry it out yet."
 
-// todaysOrder is the order this release runs the steps of a task in, as its refusal names it.
-var todaysOrder = func() string {
-	names := make([]string, len(builtinRoles))
-	for i, role := range builtinRoles {
-		names[i] = role.Name
-	}
-	return strings.Join(names, ", ")
-}()
-
 // Validate is what Legion cannot carry out in any release: a plan with no task, and each step
 // that names a role neither d nor the plan's own role blocks define, refused once for each role
 // at the first step that names it. It refuses no plan for a step the plan lacks. The other causes
@@ -55,9 +46,12 @@ func Validate(p Plan, d Deployment) []Refusal {
 
 // Supported is what this release does not carry out yet: more than one task, a role block,
 // and, for each task, `needs`, `owner`, `part_of` and `merges`, each key but the owner's on
-// acceptance, acceptance with no key, a role named at two steps, steps in another order than
-// today's, and no implementer. A task that names no steps runs the project's default steps,
-// which the configuration loader holds to these same checks, so none of its step causes apply.
+// acceptance, acceptance with no key, a role named at two steps, no implementer, and each step
+// of a role that reads the implementer's pull request with no implementer step before it. Its
+// steps stand in any other order: the planner at any place, and the tester, the reviewer and the
+// acceptance in any order after the implementer. A task that names no steps runs the project's
+// default steps, which the configuration loader holds to these same checks, so none of its step
+// causes apply.
 func Supported(p Plan) []Refusal {
 	var refusals []Refusal
 	if len(p.Tasks) > 1 {
@@ -100,18 +94,25 @@ func taskReasons(t Task) []string {
 	return reasons
 }
 
+// readsPullRequest is each role whose step reads the pull request the implementer's step opens:
+// the tester and the reviewer judge its head, and the owner's acceptance reads the evidence of it.
+// The implementer's move on waits for that pull request (the workflow's guard hasOpenOrMergedPR),
+// so such a step with no implementer step before it has no pull request to read, and this release
+// refuses it; a later release that gives such a step another pull request to read takes it. The
+// role decides, never the step's type.
+var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "acceptance": true}
+
 // stepReasons is Supported's causes in the steps of t, in this order: each step's key, in step
-// order; each role named at two steps, at its first two; the first step that comes after a step
-// later in today's order, named with the latest such step before it; and no implementer. A role
-// outside Legion's five has no place in today's order, and Validate refuses it.
+// order; each role named at two steps, at its first two; no implementer; and each step of a role
+// that reads a pull request with no implementer step before it, in step order, named by its word
+// as the plan writes it.
 func stepReasons(t Task) []string {
 	var keys, twice []string
 	firstAt := map[string]int{}
 	var roles []string // each role once, in the order of its first step
 	secondAt := map[string]int{}
-	outOfOrder := ""
-	latest := -1 // the index of the step latest in today's order so far
-	hasImplementer := false
+	hasImplementer := false // a step of the implementer stands before this one
+	var unopened []string
 	for i, step := range t.Steps {
 		at := i + 1
 		switch {
@@ -126,19 +127,11 @@ func stepReasons(t Task) []string {
 		} else if _, seen := secondAt[step.Role]; !seen {
 			secondAt[step.Role] = at
 		}
+		if readsPullRequest[step.Role] && !hasImplementer {
+			unopened = append(unopened, fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads.",
+				at, t.ID, step, step))
+		}
 		hasImplementer = hasImplementer || step.Role == "implementer"
-		rank := orderRank(step.Role)
-		if rank < 0 {
-			continue
-		}
-		if latest >= 0 && rank < orderRank(t.Steps[latest].Role) {
-			if outOfOrder == "" {
-				outOfOrder = fmt.Sprintf("task %s names %s at step %d after %s at step %d, and this release runs the steps in the order %s.",
-					t.ID, step.Role, at, t.Steps[latest].Role, latest+1, todaysOrder)
-			}
-			continue
-		}
-		latest = i
 	}
 	for _, role := range roles {
 		if second, ok := secondAt[role]; ok {
@@ -146,21 +139,8 @@ func stepReasons(t Task) []string {
 		}
 	}
 	reasons := append(keys, twice...)
-	if outOfOrder != "" {
-		reasons = append(reasons, outOfOrder)
-	}
 	if !hasImplementer {
 		reasons = append(reasons, fmt.Sprintf("task %s has no step implementer.", t.ID))
 	}
-	return reasons
-}
-
-// orderRank is role's place in today's order, or -1 for a role outside Legion's five.
-func orderRank(role string) int {
-	for i, builtin := range builtinRoles {
-		if builtin.Name == role {
-			return i
-		}
-	}
-	return -1
+	return append(reasons, unopened...)
 }

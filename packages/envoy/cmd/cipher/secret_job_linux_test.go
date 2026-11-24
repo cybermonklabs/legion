@@ -125,7 +125,7 @@ func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
 					break
 				}
 				if waitsGaveUp(t) {
-					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, promptJobMargin, stat, s.out.String())
+					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, waitMargin, stat, s.out.String())
 				}
 			}
 			s.pid = 0
@@ -798,6 +798,8 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 			if _, err := controller.Write([]byte("private-value")); err != nil {
 				t.Fatal(err)
 			}
+			meter := startStallMeter(t)
+			sent := time.Now()
 			if err := cmd.Process.Signal(sig); err != nil {
 				t.Fatal(err)
 			}
@@ -817,9 +819,10 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 				}
 			}()
 			// The process ends on the signal; the one bound of this wait is the moment every wait
-			// of these tests gives up (waitsGaveUp). The end can be slow even on an idle machine:
-			// Go's GOTRACEBACK=crash relays SIGQUIT between threads, and a SIGQUIT subscriber can
-			// make that relay wait for its 10s watchdog before the runtime raises the fatal SIGABRT.
+			// of these tests gives up (waitsGaveUp). Its end is then timed from the signal against
+			// no deadline of its own (requireCommandOnTime), except SIGABRT's: Go's
+			// GOTRACEBACK=crash relays SIGQUIT between threads, and a SIGQUIT subscriber can make
+			// that relay wait for its 10s watchdog before the runtime raises the fatal SIGABRT.
 			for ended := false; !ended; time.Sleep(time.Millisecond) {
 				select {
 				case <-done:
@@ -832,6 +835,11 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 					}
 				}
 			}
+			allowed := time.Duration(0)
+			if sig == syscall.SIGABRT {
+				allowed = 10 * time.Second
+			}
+			requireCommandOnTime(t, meter, "the prompt after "+sig.String(), sent, allowed)
 			if err := controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
 				t.Fatal(err)
 			}

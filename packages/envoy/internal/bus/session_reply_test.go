@@ -17,6 +17,7 @@ import (
 // crypto/rand.Text and new on every call, and the session's grant entry admits it and no other
 // session's.
 func TestASessionReplySubjectNamesItsSessionAndARandomToken(t *testing.T) {
+	t.Parallel()
 	inbox := natsgo.NewInbox()
 	first, second := bus.SessionReplySubject(inbox, "ses_one"), bus.SessionReplySubject(inbox, "ses_one")
 	for _, reply := range []string{first, second} {
@@ -45,6 +46,7 @@ func TestASessionReplySubjectNamesItsSessionAndARandomToken(t *testing.T) {
 // session's connection is told of every refusal, which is the control that the refusals are the
 // grant's and the watcher is not deaf.
 func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
 	config := fmt.Sprintf(`authorization {
   users = [

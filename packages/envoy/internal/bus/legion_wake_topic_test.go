@@ -7,6 +7,7 @@ import "testing"
 // Legion daemon can read it off a durable of its own. It must not travel over core NATS, which
 // would leave a daemon that was restarting at the moment of a wake with no record of it.
 func TestTheLegionWakeTopicIsRetainedByTheStream(t *testing.T) {
+	t.Parallel()
 	if LegionWakeTopic != "notifications.legion.wake" {
 		t.Fatalf("LegionWakeTopic = %q, want notifications.legion.wake", LegionWakeTopic)
 	}
