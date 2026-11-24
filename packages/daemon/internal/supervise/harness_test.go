@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -155,6 +156,28 @@ func (c *fakeClock) Live() int {
 		}
 	}
 	return live
+}
+
+// movingClock is the harness's clock moved by step right after each read while moving is set, as
+// another goroutine moves a test's clock between a decision's read of it and its arm. A move fires
+// nothing, so the decision that read the clock still runs; a timer that falls due within a move
+// fires at the next Advance at its own moment, which sets the clock back to that moment.
+type movingClock struct {
+	*fakeClock
+	step   time.Duration
+	moving atomic.Bool
+	moves  atomic.Int32
+}
+
+func (c *movingClock) Now() time.Time {
+	c.fakeClock.mu.Lock()
+	defer c.fakeClock.mu.Unlock()
+	now := c.fakeClock.now
+	if c.moving.Load() {
+		c.moves.Add(1)
+		c.fakeClock.now = now.Add(c.step)
+	}
+	return now
 }
 
 // memStore is the store as a double: what was written, in order, and a way to fail a write.

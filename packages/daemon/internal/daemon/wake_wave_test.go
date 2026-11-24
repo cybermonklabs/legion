@@ -45,8 +45,10 @@ import (
 const waveSize = 40
 
 // waveClock is the machines' time, held still until a test moves it, with each timer due at a
-// moment: a test that advances to a paced wake's turn fires that timer and no other, though the
-// daemon jitters every paced release, so the forty turns of one wave are forty different moments.
+// moment: a test that advances to a paced wake's turn fires that timer and no other. heldClock
+// (supervision_test.go) fires by the exact wait a timer was armed for, and no wave can name its
+// waits, since the daemon jitters every paced release: the forty turns of one wave are forty
+// different moments.
 type waveClock struct {
 	mu     sync.Mutex
 	now    time.Time
