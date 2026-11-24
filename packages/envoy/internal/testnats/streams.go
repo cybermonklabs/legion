@@ -486,16 +486,7 @@ func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string)
 // copies and holds n settled ones (settled), and returns its info.
 func AwaitStreamCopies(t testing.TB, js natsgo.JetStreamContext, stream string, n int) *natsgo.StreamInfo {
 	t.Helper()
-	return AwaitStreamCopiesWithin(t, js, stream, n, connectTimeout)
-}
-
-// AwaitStreamCopiesWithin is AwaitStreamCopies. within no longer ends the wait, which ends on the
-// copies, bounded only by the test's deadline (awaitInfo): it was for a caller whose own bound for
-// the work it waits on is longer than connectTimeout, as a member that was killed or lame-ducked
-// mid-write rejoins and catches its streams up.
-func AwaitStreamCopiesWithin(t testing.TB, js natsgo.JetStreamContext, stream string, n int, within time.Duration) *natsgo.StreamInfo {
-	t.Helper()
-	return awaitInfo(t, within, fmt.Sprintf("stream %s did not hold %d settled copies", stream, n),
+	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s did not hold %d settled copies", stream, n),
 		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
 		func(info *natsgo.StreamInfo) bool { return info.Config.Replicas == n && settled(info.Cluster, n) },
 		describeStream)

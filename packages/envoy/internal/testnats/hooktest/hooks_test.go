@@ -660,21 +660,31 @@ func TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt(t *testing.T
 	for _, hold := range holds {
 		t.Logf("held %s", hold.Reached(t))
 	}
-	// No member can answer the create while each is parked before it applies the assignment, which
-	// the three holds reached above say with no span: the answer needs a member to apply it and the
-	// consumer's group to elect a leader. So the row reads the answer channel once, now. The 500 ms
-	// window of unanswered (before) could not see a member that answered without the hold, since
-	// that answer comes only after the election, which a loaded machine can put past 500 ms.
+	// No member may answer the create while each is parked before it applies the assignment. No
+	// fact orders that answer against a read here: each member applies the meta layer's entries in
+	// order, so a later request on the same path (another consumer's create) waits behind the held
+	// one and cannot serve as a barrier. So the row gives the answer a window it must not win,
+	// assignedWindow. A hold that holds answers never, so the window cannot fail the row wrongly;
+	// its only cost is to miss a broken hold that answers later than it. A read of the channel
+	// once, with no window, missed such a hold every time: a hook that reports each point reached
+	// and parks nothing let the answer through after the read.
 	select {
 	case err := <-done:
 		t.Fatalf("the create of N was answered (%v) while every member was held before applying it", err)
-	default:
+	case <-time.After(assignedWindow):
 	}
 	for _, hold := range holds {
 		hold.Release()
 	}
 	answered(t, done, "the create of N")
 }
+
+// assignedWindow is how long TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt watches
+// for an answer to the held create: ten times main's 500 ms window (held), which caught a hook that
+// parked nothing in both of two runs on a build Job of six CPUs, so its answer came inside 500 ms
+// there; a CI runner is slower than that Job. The apply, the election and the answer were not
+// timed apart.
+const assignedWindow = 5 * time.Second
 
 func TestForcedOrderHoldsACommittedEntryBeforeItsLeaderStoresIt(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
