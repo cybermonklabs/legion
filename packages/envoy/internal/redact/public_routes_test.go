@@ -251,6 +251,18 @@ func TestAPageNumberIsPublicOnlyOnAGet(t *testing.T) {
 	})
 }
 
+// TestASearchCursorIsPublicOnlyOnGraphQL: after, GitHub's endCursor a GraphQL query sends back for
+// the next page, prints in a POST to /graphql on the API's origin; on a REST read, in a POST to
+// another path and under a base with a path it is a credential.
+func TestASearchCursorIsPublicOnlyOnGraphQL(t *testing.T) {
+	requireRoutes(t, []routedValue{
+		{http.MethodPost, "https://api.github.com/graphql", "json", "after", "Y3Vyc29yOjEwMA==", true},
+		{http.MethodGet, "https://api.github.com/repos/acme/widgets/activity", "query", "after", "Y3Vyc29yOjEwMA==", false},
+		{http.MethodPost, "https://api.github.com/repos/acme/widgets/issues", "json", "after", "Y3Vyc29yOjEwMA==", false},
+		{http.MethodPost, "https://github.example/api/graphql", "json", "after", "Y3Vyc29yOjEwMA==", false},
+	})
+}
+
 // TestAMetadataFlavorIsPublicOnlyOnAMetadataRead: Metadata-Flavor prints on a GET of
 // /computeMetadata/v1 or any path below it, the metadata server's reads; on another method, on the
 // server's root and on another server's path it is a credential.

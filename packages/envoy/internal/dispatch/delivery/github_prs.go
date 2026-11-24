@@ -297,9 +297,13 @@ type searchError struct {
 	Message redact.RemoteText `json:"message"`
 }
 
+// searchPullRequestsPage is a search answer's pageInfo. EndCursor is GitHub's position after the
+// page, which the request for the next page sends back to it (fetchSearchPage): GitHub's words,
+// held with the request's record (redact.Answer.Decode), since an answer in GitHub's place can
+// echo the token there.
 type searchPullRequestsPage struct {
-	HasNextPage bool   `json:"hasNextPage"`
-	EndCursor   string `json:"endCursor"`
+	HasNextPage bool              `json:"hasNextPage"`
+	EndCursor   redact.RemoteText `json:"endCursor"`
 }
 
 // searchPullRequestNode is one `... on PullRequest` search result, limited to the fields
@@ -497,25 +501,28 @@ const searchMergedPullRequestsWindow = githubResultCap
 
 // searchMergedPullRequests walks a GraphQL search query over [since, until] through walkWindowed
 // (windowed.go), handing each completed window to visit. newFetcher builds a fresh query string
-// and a fresh (nil) cursor for every window walkWindowed asks for -- the original call and each
-// recursive half -- so GitHub's own cursor, not a REST page number, is this fetcher's only
-// pagination state. Each page asks token for its own installation token, by readGitHubPage's
-// rule; walkWindowed's error names the scope and the window, and each page's names its cursor.
+// and a fresh fetcher, which asks for the first page, for every window walkWindowed asks for --
+// the original call and each recursive half -- so GitHub's own cursor, not a REST page number, is
+// this fetcher's only pagination state: each page after the first is the page after the cursor
+// GitHub answered for the one before. Each page asks token for its own installation token, by
+// readGitHubPage's rule; walkWindowed's error names the scope and the window, and each page's
+// names its cursor as the rule reads it.
 func searchMergedPullRequests(ctx context.Context, client *githubapp.Client, token func() (string, error), repos, authors []string, since, until time.Time, visit func(time.Time, []FetchedPullRequest) error) error {
 	scope := searchScopeLabel(repos)
 	newFetcher := func(since, until time.Time) func() ([]FetchedPullRequest, int, error) {
 		query := mergedPullRequestQuery(repos, authors, since, until)
-		var cursor string
+		var cursor redact.RemoteText
+		first := true
 		return func() ([]FetchedPullRequest, int, error) {
 			current, err := token()
 			if err != nil {
 				return nil, 0, fmt.Errorf("page after %q: mint installation token: %w", cursor, err)
 			}
-			result, err := fetchSearchPage(ctx, client, current, query, cursor)
+			result, err := fetchSearchPage(ctx, client, current, query, first, cursor)
 			if err != nil {
 				return nil, 0, err
 			}
-			cursor = result.endCursor
+			cursor, first = result.endCursor, false
 			return result.items, result.issueCount, nil
 		}
 	}
@@ -562,21 +569,33 @@ const searchPullRequestsQuery = `query($q: String!, $after: String) {
   }
 }`
 
+// searchPage is one page of the search: its pull requests, GitHub's cursor after it (held as
+// searchPullRequestsPage holds it), and the connection's total issueCount.
 type searchPage struct {
 	items      []FetchedPullRequest
-	endCursor  string
+	endCursor  redact.RemoteText
 	issueCount int
 }
 
-// fetchSearchPage runs one page of query, after cursor ("" for the first page), returning the
-// page's pull requests, its own pagination cursor, and the connection's total issueCount (the
-// 1,000-result cap walkWindowed checks).
-func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query, after string) (searchPage, error) {
-	var variables map[string]any
-	if after == "" {
-		variables = map[string]any{"q": query, "after": nil}
-	} else {
-		variables = map[string]any{"q": query, "after": after}
+// errCursorNotSentBack is a search cursor the next page's request would send back to GitHub that
+// SendBack refuses: an empty one, which would ask for the first page again, one the rule does not
+// print as it came, and one that echoes a credential the request before carried.
+var errCursorNotSentBack = errors.New("GitHub's endCursor for the page before is not one the search sends back as it came")
+
+// fetchSearchPage runs one page of query: the first where first is true, and otherwise the page
+// after the cursor after, GitHub's endCursor for the page before, which the request sends back to
+// it (redact.RemoteText.SendBack). A cursor SendBack refuses ends the search with
+// errCursorNotSentBack before any request, since sending none would ask for the first page again.
+// It returns the page's pull requests, its own pagination cursor, and the connection's total
+// issueCount (the 1,000-result cap walkWindowed checks).
+func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query string, first bool, after redact.RemoteText) (searchPage, error) {
+	variables := map[string]any{"q": query, "after": nil}
+	if !first {
+		sent, ok := after.SendBack()
+		if !ok {
+			return searchPage{}, fmt.Errorf("page after %q: %w", after, errCursorNotSentBack)
+		}
+		variables["after"] = sent
 	}
 	body, status, header, err := queryGitHubPage(ctx, client, token, searchPullRequestsQuery, variables)
 	if err != nil {

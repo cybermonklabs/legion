@@ -227,6 +227,17 @@ test("a page number is public only on a GET", () => {
   ]);
 });
 
+// Go's TestASearchCursorIsPublicOnlyOnGraphQL.
+test("a search cursor is public only on GraphQL", () => {
+  const cursor = "Y3Vyc29yOjEwMA==";
+  requireRoutes([
+    ["POST", "https://api.github.com/graphql", "json", "after", cursor, true],
+    ["GET", "https://api.github.com/repos/acme/widgets/activity", "query", "after", cursor, false],
+    ["POST", "https://api.github.com/repos/acme/widgets/issues", "json", "after", cursor, false],
+    ["POST", "https://github.example/api/graphql", "json", "after", cursor, false],
+  ]);
+});
+
 // Go's TestAMetadataFlavorIsPublicOnlyOnAMetadataRead.
 test("a Metadata-Flavor is public only on a metadata read", () => {
   const tokenRoute = `${metadata}/computeMetadata/v1/instance/service-accounts/default/token`;
