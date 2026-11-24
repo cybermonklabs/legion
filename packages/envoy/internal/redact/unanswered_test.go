@@ -1,7 +1,6 @@
 package redact
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -21,40 +20,6 @@ import (
 
 // unansweredToken is the bearer the requests below carry, which each stand-in echoes.
 const unansweredToken = "kd7vq-not-a-secret-RDX-e52a"
-
-// rawAnswer serves, until t ends, a stand-in that reads each request on a connection of its own
-// and writes answer of it on the connection itself, then closes it: an answer net/http's own
-// server never writes. It answers the stand-in's base URL.
-func rawAnswer(t *testing.T, answer func(request *http.Request) string) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func(conn net.Conn) {
-				defer conn.Close()
-				request, err := http.ReadRequest(bufio.NewReader(conn))
-				if err != nil {
-					return
-				}
-				_, _ = io.WriteString(conn, answer(request))
-			}(conn)
-		}
-	}()
-	return "http://" + listener.Addr().String()
-}
-
-// bearerOf is the credential request carried in its Authorization, as a stand-in echoes it.
-func bearerOf(request *http.Request) string {
-	return strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
-}
 
 // ownText reports whether text is the own text of an error err wraps, down its chain
 // (errors.Unwrap): words net/http or the system wrote, never a copy the printer made up.

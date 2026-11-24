@@ -94,6 +94,22 @@ func unansweredFailure(err error) string {
 	return ClassRequestFailed
 }
 
+// unreadable is err, the failure of a read of an answer's body (ReadAnswer, StreamAnswer's
+// stream), as a message may print it: err itself where it is nil, a transport failure or the
+// caller's cancellation (io.EOF, io.ErrUnexpectedEOF, a timeout, a reset connection), whose text
+// is the transport's own words, so a reader that compares it with io.EOF still finds it as it
+// came; and otherwise Unanswered of it, its class, unwrapping to err. net/http's own text of a
+// body it could not read can quote a line the answer wrote: a chunked body's trailer line that
+// does not parse comes back quoted (net/http/transfer.go of go1.27.3, line 956, then textproto's
+// reader.go 549-621), and whoever answers in the server's place can write the request's
+// credential there.
+func unreadable(err error) error {
+	if err == nil || transport(err) || err == context.Canceled {
+		return err
+	}
+	return Unanswered(err, nil, "")
+}
+
 // redirectedElsewhere reports whether failed, the URL net/http's error names, is on another host
 // than asked, the request's own: a redirect the client followed, whose target is the answering
 // party's words. A URL that does not parse is counted as elsewhere.
