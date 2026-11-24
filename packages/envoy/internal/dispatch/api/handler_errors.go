@@ -343,8 +343,11 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 // errorAnswer records what an error writer (writeHandlerError, writeAuthenticationError) writes:
 // its status, its headers and its body, for a caller that answers it in a form of its own. A test
 // hook sends it as a process's acknowledgement (runTestHook), and the status-change route answers
-// it with the entries of the steps that committed (writeStatusChangeRefusal).
+// it with the entries of the steps that committed (writeStatusChangeRefusal). outer is the writer
+// of the request it answers for, where there is one: Unwrap hands it to closedByClient's walk, so
+// a request its client closed is logged 499 with no ERROR line through this writer too.
 type errorAnswer struct {
+	outer  http.ResponseWriter
 	header http.Header
 	status int
 	body   bytes.Buffer
@@ -353,6 +356,9 @@ type errorAnswer struct {
 func (a *errorAnswer) Header() http.Header         { return a.header }
 func (a *errorAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
 func (a *errorAnswer) WriteHeader(status int)      { a.status = status }
+
+// Unwrap is the request's writer (outer), nil where errorAnswer answers for no request.
+func (a *errorAnswer) Unwrap() http.ResponseWriter { return a.outer }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading
 // anchor that resolved in several places.
