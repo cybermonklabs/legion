@@ -128,6 +128,22 @@ func (a Address) LogValue() slog.Value { return slog.StringValue(a.String()) }
 // message may print it.
 func (a Address) Call(callURL string) string { return redact.Call(a.Raw(), callURL) }
 
+// Route is route, a broker route whose id a caller typed is spelled as words in its place (as
+// "/v1/enrollments/(the enrollment id, not printed)"), at the address as a message may print it:
+// route joined onto the address as a request's path is (Join), its words as written, and
+// redact.NotPrinted beside an address that is not clean. It names a call whose URL ends in what a
+// caller typed (Named), since the broker never accepted that id and an argument that is no id is
+// where a credential pasted in the wrong place lands.
+func (a Address) Route(route string) string {
+	joined, err := a.Join(route)
+	if err != nil || !a.Clean() {
+		return redact.NotPrinted
+	}
+	// A clean address holds no user information, query or fragment, and the route's words print
+	// as written (Path, not EscapedPath), the way the route spells the id it leaves out.
+	return joined.Scheme + "://" + joined.Host + joined.Path
+}
+
 // Error is redact.Error with the address as the base: err, from a request built from Raw, as a
 // message may print it.
 func (a Address) Error(err error) error { return redact.Error(err, a.Raw()) }
