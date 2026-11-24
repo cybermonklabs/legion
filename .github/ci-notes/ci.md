@@ -53,6 +53,21 @@ TypeScript listing, which only the changes job runs. The `full-ci` term still ho
 suites back on a pull request that has no label, as it does when their filters match; the merge
 group runs them.
 
+The job's steps. Each step before the generation runs with `continue-on-error`: one that fails
+makes the generation fail too, which falls open to selecting every job. setup-go keeps no Go
+cache: its key is exact, so each pull request's first run and every merge group missed it, and
+each miss saved 895 MB. The generation step hands the script the run's base (the merge group's
+base, the pull request's base) as `CI_FILTERS_BASE`, so a change to the computation itself
+selects every filter it alters against the base tree's. The upload keeps the filters as computed
+for the lint job, which holds them to the tsc programs and the image builds
+(check-ts-filters.sh, check-image-trigger-paths.sh), and for the test job's filter-check and
+router-outputs harnesses. The job's timeout, 30 minutes, is above the sum of its steps' own,
+28: the generation's 9 (ci-filters-generate.sh stops this tree's run at 300 s and kills it 15 s
+later, and bounds the base's fetch at 65 s and its install at 125 s, so it ends within 505 s),
+3 each for the checkout, setup-go, Bun's setup and install, the upload and the paths filter,
+and 1 for the ref. Each output of the job but ref_is_main reads its one paths-filter step; rule
+19 of .github/scripts/check-ci-filters.sh refuses an output naming a filter no gate declares.
+
 Why computed. The filters were one file every job's filter was in, and every pull request that
 added a read, a test file or a package a job compiles edited it, most of them at the same lines:
 of 433 open pull requests counted when this changed, 215 edited that file or the read table, and
