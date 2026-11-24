@@ -18,9 +18,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// S3 is a Store over one bucket.
+// S3 is a Store over one bucket. Each failure of an S3 call prints through redact.AWS, never as
+// the SDK's own text, which quotes net/http's error (a Location that does not parse, or one its
+// client followed, either of which whatever answers at the bucket's address can write the call's
+// X-Amz-Security-Token or signature into) and the answer's request id, host id and message.
 type S3 struct {
 	client *s3.Client
 	bucket string
@@ -80,7 +85,7 @@ func (s *S3) Put(ctx context.Context, sha, mime string, body []byte) error {
 	case err == nil:
 		return nil
 	case !isNotFound(err):
-		return fmt.Errorf("head file %s: %w", sha, err)
+		return fmt.Errorf("head file %s: %w", sha, redact.AWS(err))
 	}
 	raw, err := hex.DecodeString(sha)
 	if err != nil {
@@ -96,7 +101,7 @@ func (s *S3) Put(ctx context.Context, sha, mime string, body []byte) error {
 		ChecksumSHA256:    aws.String(base64.StdEncoding.EncodeToString(raw)),
 	})
 	if err != nil {
-		return fmt.Errorf("put file %s: %w", sha, err)
+		return fmt.Errorf("put file %s: %w", sha, redact.AWS(err))
 	}
 	return nil
 }
@@ -131,7 +136,7 @@ func (s *S3) Get(ctx context.Context, sha string) (*Object, error) {
 		if isNotFound(err) {
 			return nil, fmt.Errorf("get file %s: %w", sha, ErrNotFound)
 		}
-		return nil, fmt.Errorf("get file %s: %w", sha, err)
+		return nil, fmt.Errorf("get file %s: %w", sha, redact.AWS(err))
 	}
 	if object.Body == nil {
 		cancel()
@@ -173,7 +178,7 @@ func (s *S3) Healthy(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, healthTimeout)
 	defer cancel()
 	if _, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)}); err != nil {
-		return fmt.Errorf("head bucket %s: %w", s.bucket, err)
+		return fmt.Errorf("head bucket %s: %w", s.bucket, redact.AWS(err))
 	}
 	return nil
 }
