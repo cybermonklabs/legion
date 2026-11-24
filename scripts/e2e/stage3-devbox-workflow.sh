@@ -906,9 +906,9 @@ primary_issue() {
   wait_for_worker "$root_issue" reviewer
   pass
 
-  # Three real GitHub changes-requested reviews, each posted by the reviewer pane and ended by its
-  # completion, exercise the round counter, the return to implementing, and the third `pr-blocked`
-  # publication. Every recovery repeats the real workers.
+  # Three real GitHub changes-requested reviews, each posted by the reviewer pane, which then
+  # completes its phase, exercise the round counter, the return to implementing, and the third
+  # `pr-blocked` publication. Every recovery repeats the real workers.
   for round in 1 2 3; do
     begin "review-round-$round-changes-requested"
     # A review that names no correction leaves the implementer nothing it may change under a spec
@@ -922,9 +922,10 @@ primary_issue() {
       review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
-    # The round ends when the reviewer completes it: its review, its handoff record, its completion.
+    # The review ends the round whether or not the reviewer has completed, so the reviewer's
+    # handoff record is checked once the daemon records the completion that names it.
     wait_for_phase "$root_issue" implementing 1200
-    assert_handoff_record "$root_issue" reviewer reviewing "$round"
+    assert_review_round_handoff "$root_issue" "$round"
     assert_review_of_head "$root_issue" "$round" CHANGES_REQUESTED
     until_true 180 "round $round to write in_progress on the Dispatch board" dispatch_status_is "$root_issue" in_progress
     wait_for_worker "$root_issue" implementer

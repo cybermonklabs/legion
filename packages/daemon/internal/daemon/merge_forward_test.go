@@ -98,7 +98,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		publisher.setAbsent()
 		drainAt(t, runner, 10*time.Minute, "the row's attempt once the session holds the role")
 		_, delivered := publisher.snapshot()
-		if len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != ask.Message("LEGION-208", "acme/widgets") ||
+		if len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != ask.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
 			t.Fatalf("delivered %+v, want the ask once to %s under its row's key", delivered, topic)
 		}
@@ -161,7 +161,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 
 		drainAt(t, runner, 0, "the row's attempt")
 		_, delivered := publisher.snapshot()
-		if len(delivered) != 1 || delivered[0].topic != tester || delivered[0].message != told.Message("LEGION-208", "acme/widgets") ||
+		if len(delivered) != 1 || delivered[0].topic != tester || delivered[0].message != told.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
 			t.Fatalf("delivered %+v, want the landed once to %s under its row's key", delivered, tester)
 		}
@@ -173,6 +173,42 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 			t.Fatalf("the row logged %v, want one delivery of the landed of sha-1 to the tester", lines)
 		}
 	})
+
+	// The merger's landed in merging holds its merge to the reviewer's approval of the new head only
+	// where the landing asked the reviewer for it, which the record keeps (record.MergeForward
+	// .ReviewAsked) and the attempt reads: a landing on a task with no reviewer step asks no review,
+	// and its merger is told to go on at the new head. The control is the same row over a record
+	// whose landing asked the review.
+	for _, tc := range []struct {
+		name        string
+		reviewAsked bool
+	}{
+		{name: "a landed to the merger of a task with no reviewer step holds nothing", reviewAsked: false},
+		{name: "control: a landed to the merger whose landing asked the review waits for it", reviewAsked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			publisher := &holderPublisher{}
+			asked := *landed
+			asked.Phase, asked.ReviewAsked = phase.Merging, tc.reviewAsked
+			// The issue stands in merging, since a message to the merger once the issue left merging
+			// ends with nothing published (cybermonklabs/legion#4979).
+			runner, _, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, &asked)
+			told := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
+				Base: "main", Phase: phase.Merging, PullRequest: 86}
+			merger := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleMerger))
+			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", told, time.Now().Add(-time.Minute)))
+
+			drainAt(t, runner, 0, "the row's attempt")
+			_, delivered := publisher.snapshot()
+			if len(delivered) != 1 || delivered[0].topic != merger {
+				t.Fatalf("delivered %+v, want the landed once to %s", delivered, merger)
+			}
+			const wait = "only once the reviewer's approval of that head is on the pull request"
+			if waits := strings.Contains(delivered[0].message, wait); waits != tc.reviewAsked {
+				t.Fatalf("the merger was told %q; want the wait for the reviewer's approval: %t", delivered[0].message, tc.reviewAsked)
+			}
+		})
+	}
 
 	t.Run("a retired implementer is not told", func(t *testing.T) {
 		publisher := &holderPublisher{}
@@ -212,7 +248,7 @@ func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
 
 		drainAt(t, runner, 0, "the row's attempt")
 		_, delivered := publisher.snapshot()
-		if len(delivered) != 1 || delivered[0].topic != merger || delivered[0].message != toMerger.Message("LEGION-208", "acme/widgets") ||
+		if len(delivered) != 1 || delivered[0].topic != merger || delivered[0].message != toMerger.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
 			t.Fatalf("delivered %+v, want the ask once to %s under its row's key", delivered, merger)
 		}

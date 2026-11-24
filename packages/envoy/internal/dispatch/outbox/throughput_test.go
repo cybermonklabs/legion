@@ -709,5 +709,5 @@ func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, p
 	}
 	holders := roles.NewBuckets(client, roles.Windows{})
 	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
-		RoleClaims: holders, Sessions: holders}, 10*time.Second)
+		RoleClaims: holders, Sessions: holders})
 }

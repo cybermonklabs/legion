@@ -477,6 +477,6 @@ fresh_env
 test_real_docker="$root/docker-2.12"
 good_deploy 'a deploy through Compose 2.12.2'
 unset test_real_docker
-[[ $(grep -c ' config ' "$root/compose-2.12.calls") -ge 3 ]] ||
-  fail "UNKNOWN: Compose 2.12.2 served $(grep -c ' config ' "$root/compose-2.12.calls") config reads, want the tag's, the settings' and the schema record's"
+[[ $(grep -c ' config ' "$root/compose-2.12.calls") -ge 2 ]] ||
+  fail "UNKNOWN: Compose 2.12.2 served $(grep -c ' config ' "$root/compose-2.12.calls") config reads, want the one of the tag and the schema record, and the settings'"
 

@@ -1854,24 +1854,20 @@ func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
 // run runs an outbox on database, publishing through publisher, until the returned func stops it.
 func run(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
-	return runDeps(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}), time.Second)
+	return runDeps(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
 }
 
-// runDeps runs New(deps) until the returned func stops it, which fails t unless Run returns within
-// stopWithin. A test that needs more of Deps than run's store, publisher and broker - a metrics
-// counter among them - builds it itself and calls this.
-func runDeps(t *testing.T, deps Deps, stopWithin time.Duration) func() {
+// runDeps runs New(deps) until the returned func stops it, which waits for Run to return through
+// the shared wait, with no span of its own. A test that needs more of Deps than run's store,
+// publisher and broker - a metrics counter among them - builds it itself and calls this.
+func runDeps(t *testing.T, deps Deps) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { New(deps).Run(ctx); close(done) }()
 	return func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(stopWithin):
-			t.Fatal("outbox did not stop")
-		}
+		testwait.Receive(t, "the outbox's Run to return once its context ended", done)
 	}
 }
 

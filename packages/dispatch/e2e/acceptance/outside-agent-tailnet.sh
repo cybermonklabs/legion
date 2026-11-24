@@ -499,9 +499,10 @@ helper_env() {
 }
 # start_login DIR: starts the helper helper_vars describes, its process id in helper_pid, and then
 # its machine login, in the background, its process id in login_pid, writing DIR/helper.log and
-# DIR/login.log. Sets login_code to the login's code, or login_problem.
+# DIR/login.log. Sets login_code to the login's code, or login_problem. The socket and the code are
+# looked at every pause, and each wait ends at once when the process that would make it has ended.
 start_login() {
-  local deadline line
+  local deadline line login_ended=''
   login_code=''
   login_problem=''
   login_pid=''
@@ -509,9 +510,15 @@ start_login() {
   helper_pid=$!
   background="$background $helper_pid"
   deadline=$(($(now) + 30))
-  while [ ! -S "$1/helper.sock" ] && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
+  while [ ! -S "$1/helper.sock" ] && running_child "$helper_pid" && [ "$(now)" -lt "$deadline" ]; do
+    pause
+  done
   if [ ! -S "$1/helper.sock" ]; then
-    login_problem="the scratch helper made no socket within 30 s: $(text_of "$1/helper.log")"
+    if running_child "$helper_pid"; then
+      login_problem="the scratch helper made no socket within 30 s: $(text_of "$1/helper.log")"
+    else
+      login_problem="the scratch helper ended before it made a socket: $(text_of "$1/helper.log")"
+    fi
     return
   fi
   # The log exists before the login starts, so the read below never meets a missing file.
@@ -520,16 +527,20 @@ start_login() {
   login_pid=$!
   background="$background $login_pid"
   deadline=$(($(now) + 60))
-  while [ -z "$login_code" ] && [ "$(now)" -lt "$deadline" ]; do
+  # Whether the login still runs is read before its log: a login that has ended has written all it
+  # printed, so a code it printed as it ended is still read, and the wait ends on that read.
+  while [ -z "$login_code" ] && [ -z "$login_ended" ] && [ "$(now)" -lt "$deadline" ]; do
+    running_child "$login_pid" || login_ended=yes
     while IFS= read -r line; do
       case $line in 'machine login code: '*) login_code=${line#machine login code: } ;; esac
     done <"$1/login.log"
-    [ -z "$login_code" ] || break
-    running_child "$login_pid" || break
-    sleep 1
+    [ -n "$login_code" ] || [ -n "$login_ended" ] || pause
   done
-  [ -n "$login_code" ] ||
+  if [ -z "$login_code" ] && [ -n "$login_ended" ]; then
+    login_problem="agent-secrets machine login ended and printed no code: $(text_of "$1/login.log")"
+  elif [ -z "$login_code" ]; then
     login_problem="agent-secrets machine login printed no code within 60 s: $(text_of "$1/login.log")"
+  fi
 }
 scratch="$work/scratch"
 code=''
@@ -949,7 +960,7 @@ elif [ -n "$public_problem" ]; then
   row T1 "$want_t1" "not run: only the public leg approves code $code, and it did not start: $public_problem" UNKNOWN
 else
   say "T1: waiting for the code $code to be approved (the code waits 15 minutes)"
-  await_child "$scratch_login_pid" 960 2
+  await_child "$scratch_login_pid" 960
   exited=$child_exit
   [ ! -f "$scratch/machine.json" ] || credential=$(json_field credential_id "$(tr -d ' \n' <"$scratch/machine.json")")
   listed=$(env -i "${scratch_env[@]}" agent-secrets machine list --json 2>&1 </dev/null)
@@ -1107,7 +1118,7 @@ if [ -z "$control_helper_problem" ]; then
   fi
   # The approved login completes and writes its machine file; then the helper can enroll.
   child_exit=''
-  [ -z "$control_credential" ] || await_child "$control_login_pid" 30 1
+  [ -z "$control_credential" ] || await_child "$control_login_pid" 30
   case $approved:$child_exit in
     2??:0) ;;
     2??:*) control_helper_problem="the full member's machine login did not complete within 30 s of its approval (${child_exit:+exit $child_exit}${child_exit:-still running})" ;;
@@ -1255,12 +1266,17 @@ if [ -z "$t5_problem" ]; then
     say "T5: waiting for the public leg to open its window"
     # The window line is read before whether the public leg still runs: a leg that opened its
     # window and has since ended still opened it. The public leg opens it after P10, well within an
-    # hour.
+    # hour. The peer's text is looked at every pause; a local public leg's end at each look, and a
+    # workflow run's, which is GitHub's to answer, at most every 5 s.
+    run_asked=0
     while [ -z "$opened" ]; do
       case $(peer_text) in *'outside-e2e t5-open '*) opened=yes && break ;; esac
-      public_running || break
+      if [ -z "$run_id" ] || [ "$(now)" -ge $((run_asked + 5)) ]; then
+        public_running || break
+        run_asked=$(now)
+      fi
       [ "$(now)" -lt "$window_deadline" ] || break
-      sleep 5
+      pause
     done
     if [ -z "$opened" ] && public_running; then
       window_problem="the public leg had not opened its window within an hour"
@@ -1305,7 +1321,7 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   gh run watch "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --interval 30 >/dev/null 2>&1 </dev/null &
   watch_pid=$!
   background="$background $watch_pid"
-  await_child "$watch_pid" 7200 5
+  await_child "$watch_pid" 7200
   [ -n "$child_exit" ] || stop_child "$watch_pid"
   if public_running; then
     public_problem="run $run_id had not ended within two hours, or its watch ended before it did"
@@ -1321,7 +1337,7 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   fi
 elif [ -z "$public_problem" ]; then
   say "waiting for the public leg's command"
-  await_child "$public_pid" 3600 5
+  await_child "$public_pid" 3600
   if [ -z "$child_exit" ]; then
     public_problem="the public leg's command had not ended within an hour"
   else

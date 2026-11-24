@@ -16,7 +16,7 @@ import (
 
 // The claim keeps the runtime's own account of the death it last suffered, the agent's first
 // prompt after the restart names that account and what the death took with it, and the claim's
-// last ready time dates both.
+// last ready time dates the death.
 func TestADeadWorkerIsRestartedInItsSessionAndToldWhyItDied(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -160,6 +160,36 @@ func TestAFailedStartIsKeptBesideTheLastDeathsCause(t *testing.T) {
 	if stored := h.store.load(testToken); stored.LastDeathCause != c.LastDeathCause || stored.LastStartFailure != c.LastStartFailure {
 		t.Errorf("stored causes %q / %q, want them persisted as %q / %q",
 			stored.LastDeathCause, stored.LastStartFailure, c.LastDeathCause, c.LastStartFailure)
+	}
+}
+
+// A failed start's cause goes with the launch failures it names once the agent comes up: the
+// claim then holds no start failure, so a reader who finds the claim launching again later is not
+// shown a refusal from before the agent last ran as the reason it is not running now
+// (dispatch://INFRA-5463). The death's cause stays, since the record of that death names it.
+func TestAFailedStartsCauseGoesWhenTheAgentComesUp(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
+	h.must(StreamTurnStart{Claim: testToken})
+	h.rt.ScriptResume(fake.SpawnResult{Err: errBoom})
+	h.observe(runtime.Gone)
+	if got := h.claim().LastStartFailure; !strings.Contains(got, errBoom.Error()) {
+		t.Fatalf("the claim records the failed start as %q, want the runtime's refusal %q", got, errBoom)
+	}
+	death := h.claim().LastDeathCause
+
+	h.advance(time.Minute)
+	h.relaunched()
+
+	h.wantState(StateReady)
+	for name, got := range map[string]Claim{"the machine's claim": h.claim(), "the stored claim": h.store.load(testToken)} {
+		if got.LastStartFailure != "" {
+			t.Errorf("%s still records the start failure %q after its agent came up, want none", name, got.LastStartFailure)
+		}
+		if death == "" || got.LastDeathCause != death {
+			t.Errorf("%s records the death as %q, want the cause it died of, %q", name, got.LastDeathCause, death)
+		}
 	}
 }
 

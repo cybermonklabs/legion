@@ -129,9 +129,9 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 }
 
 // A3's eighth return, which is admission's own start rather than a transition: a re-admitted
-// tree whose two children stand mid-phase. The child short of its review waits for a slot of
-// its own, because the cap counts the issues whose change is still to write and the tree's one
-// root slot no longer carries its children; the child past its review waits for none
+// tree whose two children stand mid-phase. The child in testing waits for a slot of its own,
+// because the cap counts the issues whose change is still to write and the tree's one root slot
+// no longer carries its children; the child in retro waits for none, since retro keeps no slot
 // (record.KeepsSlot), so its start is claimable as soon as the branch row ahead of it is run.
 //
 // The promotion writes everything but the tasks in the fact's own transaction: the root's new
@@ -192,8 +192,8 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 		phase phase.Phase
 		// waits says the child's start waits for an admission slot, which the phase it stands
 		// in decides (record.PhaseKeepsSlot, read by workflow.StartOrOwe): the tester's start
-		// waits, and the retro implementer's does not, since an issue past its review holds no
-		// row for that start to wait for.
+		// waits, and the retro implementer's does not, since retro keeps no row for that start
+		// to wait for.
 		waits bool
 	}{testing_: {role: claim.RoleTester, phase: phase.Testing, waits: true}, retro: {role: claim.RoleImplementer, phase: phase.Retro}} {
 		// The re-admission rewrites no phase: the phase a member's record carries is the phase it
