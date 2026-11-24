@@ -251,6 +251,14 @@ holder is no longer live and nothing was kept. That exception is only a bus sign
 re-sends a refused publish except the Legion daemon's own outbox notice, whose row retries by
 itself.
 
+An event Dispatch routes to a role that no live session holds is kept on the role for one hour,
+as a role message is. When that hour ends with no session taking it, Dispatch keeps the event
+for the role again, up to three times in all; a session that holds the role by then is sent it
+instead. If the third keep also ends with no session taking it, Dispatch stops and appends a
+`role.undelivered` event to the event's own issue, document or project. That event names the
+event, the role and how many times it was kept, and it shows in that issue's history. It
+notifies no route, so it is never itself sent to the role.
+
 ### What a restored session gets
 
 A released Legion role gets the messages kept for it when it comes back. The release ends the

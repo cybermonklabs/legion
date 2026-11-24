@@ -60,6 +60,7 @@ const PAYLOAD_TYPES = [
   "ProjectDefaultAssigneeUpdatedEventPayload",
   "ReferenceChangesPayload",
   "RepoProjectUpdatedEventPayload",
+  "RoleUndeliveredEventPayload",
   "SubscriptionRemovedEventPayload",
   "ThreadLoginsPayload",
   "UserAgentStateUpdatedEventPayload",
@@ -111,7 +112,7 @@ const CONSTANT_LIST_TYPES = [
  * aliases by. So a regeneration that moves one of the eleven reds the typecheck by that name, and
  * a twelfth is added by passing that assertion rather than by being written here.
  */
-const SCHEMA_DERIVATIONS = 64;
+const SCHEMA_DERIVATIONS = 65;
 
 /** The payloads whose shape the Go route table holds, so the generated module is their one
  *  definition and the split declares none of them: a `project.*` event carries the project row a

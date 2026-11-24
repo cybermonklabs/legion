@@ -113,6 +113,11 @@ type listenerDeliveryHandlerConfig struct {
 	// (envoy_role_dead_letters_total, reportKeptRoleDeadLetter), under the label result: stored
 	// for one the stream took, refused for one it refused for good, which is not sent again.
 	roleDeadLetters *metrics.Counter
+	// roleKeptExpiryNotices counts the expiry notices a walk sent Dispatch for a copy Dispatch's
+	// outbox kept that it dropped at the end of its hour (envoy_role_kept_expiry_notices_total,
+	// reportKeptCopyExpiry), under the label result: stored for one the stream took, refused for
+	// one it refused for good, which is not sent again.
+	roleKeptExpiryNotices *metrics.Counter
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
 	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
 	roleKeptUndecodable *metrics.Counter

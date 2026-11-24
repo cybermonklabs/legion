@@ -75,6 +75,10 @@ type roleForward struct {
 	// roles.ForwardFenceAge (forward), and the batch's record dates the role's claim by it
 	// (deliveredGraph).
 	resolvedAt time.Time
+	// keepAttempt is the attempt a keep stores its copy for (bus.KeptAttemptMsgID): 0 or 1 for a
+	// batch's own keep and a fallback row's, and the attempt after the one whose copy expired for
+	// a keep the expiry pass makes again (keepExpiredCopiesAgain). Every other forward ignores it.
+	keepAttempt int
 }
 
 // errStaleRoleResolution is a forward whose resolution was roles.ForwardFenceAge old or older when
@@ -685,9 +689,10 @@ func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope
 // A holder that is only unresponsive is the one no-holder case the outbox does not keep, and it
 // stays the pending error above. The outbox sends a pending event again until the session answers
 // and the forward reaches it, or until its record passes the gone horizon and the case above keeps
-// the copy. A copy kept now would wait one hour at most, and the walk that drops it at the end of
-// that hour sends no dead letter for an outbox copy (isOutboxCopy, cmd/listener), so its end would
-// tell nobody.
+// the copy. A copy kept now would wait one hour, and its end would cost a keep of the outbox's
+// bound (maxRoleKeeps) for a session that is still alive: the walk that drops it at the end of
+// that hour tells Dispatch with an expiry notice (cmd/listener, endKeptCopyWithExpiryNotice), and
+// the outbox keeps the event again or records it undelivered (readKeptExpiries).
 //
 // The listener's capability check (frameDeliveryMode) does not apply: a Dispatch envelope's payload
 // is the event itself, which has no top-level delivery key, so the listener reads it as an untagged
@@ -725,9 +730,11 @@ func forwardOf(role string, item contracts.Envelope, resolution roles.Resolution
 // keptOrSkipped is how a role route no live holder can take reaches the role's next holder: a
 // keep of the copy on the role's kept lane, which the holder that claims the role next inside the
 // copy's hour is handed (cmd/listener/role_keep.go), and which the listener's walk drops at the end
-// of that hour with no dead letter, and which a holder that claimed the role while the keep was in
-// flight is handed by the keep itself (handOverKept). The keep carries no holder, so the route is
-// keyed on its role topic as the skip it replaced was, and holds back no session's later events.
+// of that hour with an expiry notice to Dispatch rather than a dead letter, so that the outbox
+// keeps it again or records it undelivered (readKeptExpiries), and which a holder that claimed the
+// role while the keep was in flight is handed by the keep itself (handOverKept). The keep carries
+// no holder, so the route is keyed on its role topic as the skip it replaced was, and holds back
+// no session's later events.
 //
 // One role token is not kept for and skips as it did before the kept lane, under skipped: one no
 // claim can ever name (roles.Valid, the pattern POST /v1/roles/set refuses), since a copy kept
@@ -800,9 +807,13 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 
 // keep stores item on the role's kept lane (bus.KeptRoleSubject) with one JetStream publish,
 // under the id every writer of that lane keeps this message under (bus.KeptMsgID, the dedupe key
-// and the role), so the stream holds one copy of it however often the outbox retries and whether
-// the listener kept a copy of it too. The envelope is stored with its topic the role's and its
-// dedupe key the original's, which is what the listener's own keep stores and what the drain's
+// and the role) for its first keep, or that id with the keep's attempt for a keep the expiry pass
+// makes again (bus.KeptAttemptMsgID, keepAttempt), so the stream holds one copy of each keep
+// however often the outbox retries it and whether the listener kept a copy of it too. The
+// listener reads the attempt back from that id when the copy's hour ends and names it in the
+// expiry notice it sends (cmd/listener/role_keep.go, keptCopyExpiry). The envelope is stored with
+// its topic the role's and its dedupe key the original's, which is what the listener's own keep
+// stores and what the drain's
 // forward to the next holder reads (keepRoleMessage, walkKeptRole), and with the comment's
 // settled mentions by session on it (contracts.Envelope.MentionDedupeKeys, settledKeys), which
 // the holder that claims the role next is keyed by wherever the copy reaches it from: that
@@ -830,7 +841,7 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, item contracts.Envelope, handed *keptHandovers) <-chan error {
 	keptAt := time.Now()
 	item.MentionDedupeKeys = f.settledKeys
-	stored := sender.PublishStoredAsync(bus.KeptRoleSubject(f.keptFor), item, bus.KeptMsgID(item.DedupeKey, f.keptFor))
+	stored := sender.PublishStoredAsync(bus.KeptRoleSubject(f.keptFor), item, bus.KeptAttemptMsgID(item.DedupeKey, f.keptFor, f.keepAttempt))
 	answer := make(chan error, 1)
 	go func() {
 		err := <-stored

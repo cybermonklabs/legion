@@ -536,9 +536,11 @@ copy's payload holds, or by the copy's event id alone where that event names no 
 (`keptCopyNamed`). The stream
 holds one dead letter for each copy, however many walks send it. A copy whose hour ended more
 than an hour before the walk, and that no walk has claimed, is dropped as stale with no dead
-letter. While a lane holds a copy the listener kept with at least twenty minutes of its hour
-left, and no live session holds the role, each sweep raises the role's wake report again, at
-most once for a role in each five-minute interval across every listener. `GET /v1/roles/<role>`
+letter. A copy Dispatch's outbox kept gets no dead letter at all: whatever its age, the walk tells
+Dispatch with an expiry notice instead (below). While a lane holds a copy the listener kept with
+at least twenty minutes of its hour left, and no live session holds the role, each sweep raises
+the role's wake report again, at most once for a role in each five-minute interval across every
+listener. `GET /v1/roles/<role>`
 still answers 404 for an unheld or lapsed role: only the publish route gained the kept answer, and
 the send route's for a send Dispatch marks with its role, whose role moved before it arrived. A
 sender that keeps a queue of its own and redelivers from it asks not to be kept (`keep: false` in
@@ -692,12 +694,26 @@ holder through the one resolution the listener's routes and its lane use (`roles
 Dispatch's events no longer cross `notifications.role.*`. That resolution writes nothing to the
 role bucket here either. A role with no claim, and one whose holder is `gone`, is kept on that
 role's kept lane for one hour for the holder that claims it next, as the listener's own copies
-are, and the `gone` holder's claim is left where it is for the role claim reaper. The listener's
-walk drops an outbox copy at the end of its hour and sends nobody a dead letter for it, so the
-person or session that wrote the Dispatch event is not told. An `unresponsive` holder's event
-stays pending and is retried, as a read that failed is, until that session answers or its
-record passes the gone horizon. A copy kept for it would wait one hour at most, and its end would
-tell nobody. The outbox raises no exception.
+are, and the `gone` holder's claim is left where it is for the role claim reaper. When an outbox
+copy's hour ends with no session taking it, the walk that drops it sends no dead letter: it stores
+an expiry notice on `notifications.envoy.kept.expired.<role>` instead (`bus.KeptCopyExpiry`: the
+event id, the role, the attempt the copy was kept for, its dedupe key, its stream sequence, and when
+it was kept and dropped), one per copy under the message id `envoy.kept-expired.<role>.<sequence>`,
+counted on `envoy_role_kept_expiry_notices_total`. The subject lies under the listener's own kept
+lane, so only a NATS user whose grant publishes every notification topic writes it, no consumer
+filter takes it, no session may register an interest reaching it and the publish route refuses
+it. Dispatch's outbox reads the notices from the stream every 30 seconds, and after every scan,
+with the stored-message read it already holds (`readKeptExpiries`), and records each one in
+`outbox_role_copy_expiries`, keyed by the event, the role and the attempt, so a repeated notice
+reopens the event's delivery to that role once. It then keeps the event's copy again, read back
+from the kept lane by its sequence, under the next attempt (`bus.KeptAttemptMsgID`), or forwards
+it to the session that holds the role by then (`keepExpiredCopiesAgain`); nothing else of the
+event is sent again. After the third keep (`maxRoleKeeps`) has expired, the outbox stops and
+appends a `role.undelivered` event on the event's own issue, document or project, written by a
+system actor so it reaches no role, which a person reads in that owner's history. An
+`unresponsive` holder's event stays pending and is retried, as a read that failed is, until that
+session answers or its record passes the gone horizon: a copy kept for it would spend one of
+those three keeps on a session that is still alive. The outbox raises no exception.
 That forward is stored only: one copy on the holder's agent subject under its own
 `Nats-Msg-Id` (`bus.ForwardMsgID` of the forward's dedupe key and that subject), counted
 reached on the stream's acknowledgement of the copy and on nothing else, with no receipt from
