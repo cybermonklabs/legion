@@ -220,8 +220,6 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		// net/http's error can quote the answering party's words (a Location that does not parse,
-		// read before any redirect policy), so it is named by its class alone (redact.Class).
 		return nil, fmt.Errorf("embed: azure embeddings: %w", redact.Class(err))
 	}
 	defer response.Body.Close()

@@ -167,12 +167,7 @@ func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, cont
 	res := callResult{start: time.Now().UnixNano()}
 	resp, err := a.client.Do(req)
 	if err != nil {
-		// net/http's error can quote the answering party's words (a Location that does not parse,
-		// read before any redirect policy), which can echo the request's bearer, and callers print
-		// it: it prints as the request's address allows (redact.Error), net/http's own line beside
-		// a clean address and the failure's class beside any other. Error rather than Cause: it
-		// answers err itself where that text may print, so the callers' messages, which name the
-		// request by its step and not its URL, read as before.
+		// Error rather than Cause: the callers name the request by its step, so err keeps its URL.
 		err = redact.Error(err, a.base+path)
 	} else {
 		res.status = resp.StatusCode

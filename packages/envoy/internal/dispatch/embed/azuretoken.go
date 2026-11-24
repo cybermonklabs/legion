@@ -155,8 +155,6 @@ func (s *EntraTokenSource) exchange(ctx context.Context) (string, time.Duration,
 	request.Header.Set("Accept", "application/json")
 	response, err := s.http.Do(request)
 	if err != nil {
-		// net/http's error can quote the answering party's words (a Location that does not parse,
-		// read before any redirect policy), so it is named by its class alone (redact.Class).
 		return "", 0, fmt.Errorf("embed: entra token exchange: %w", redact.Class(err))
 	}
 	defer response.Body.Close()

@@ -157,9 +157,6 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	response, err := e.client.Do(request)
 	if err != nil {
-		// net/http's error can quote the answering party's words (a Location that does not parse,
-		// which it reads before any redirect policy), so it prints as the broker's address allows
-		// (redact.Cause): a transport failure's own text, or its class.
 		return nil, fmt.Errorf("%w: ask the broker: %w", errRepositoriesUnknown, redact.Cause(err, e.brokerURL))
 	}
 	defer response.Body.Close()

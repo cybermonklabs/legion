@@ -91,7 +91,7 @@ func NewProber(opts ProberOptions) *Prober {
 // Probe says whether session — the one registered with the current controller capability — is
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
 // both sessions or the holder's state. A lookup that could not be made or got no answer logs its
-// failure through oauth2call.Unanswered, which prints none of net/http's own words for it.
+// failure through oauth2call.Unanswered.
 func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.lookup, nil)
 	if err != nil {

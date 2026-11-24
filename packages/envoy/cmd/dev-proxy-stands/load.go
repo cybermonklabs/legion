@@ -181,8 +181,7 @@ func (o *loadOptions) say(stdout io.Writer, result map[string]any) {
 // its Proxy-Authorization among it, so a print of a refusal's words redacts the credential the
 // CONNECT carried (redact.Carried), as ask's answer does its bearer. http.ReadResponse's error
 // quotes a status line or a header line it could not read, which whatever answers in the proxy's
-// place can write that credential into, so it prints as the bound host's address allows
-// (redact.Cause): a transport failure's own text, or its class.
+// place can write that credential into, so it prints through redact.Cause.
 func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	// url.Parse's error quotes the whole URL, the grant's proxy password with it, so the error names
 	// the flag the URL came from instead.

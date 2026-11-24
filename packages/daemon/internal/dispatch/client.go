@@ -716,11 +716,10 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 // answer sends one request to Dispatch with the daemon's bearer, body as its JSON where body is not
 // nil, bounded by the client's timeout, and answers Dispatch's 2xx answer, read whole
 // (oauth2call.ReadAnswer). A request that could not be made, or that got no answer, names its
-// failure through oauth2call.Unanswered, which prints none of net/http's own words for it, nor
-// x509's, and still unwraps to it, so TransportRefusal reads the failure's type. One that got no
-// answer, or whose answer could not be read, is its transport's failure (transportFailure), and an
-// answer that is not a 2xx is Dispatch's refusal (dispatchError), its status named by its code and
-// the standard phrase.
+// failure through oauth2call.Unanswered, which still unwraps to it, so TransportRefusal reads the
+// failure's type. One that got no answer, or whose answer could not be read, is its transport's
+// failure (transportFailure), and an answer that is not a 2xx is Dispatch's refusal
+// (dispatchError), its status named by its code and the standard phrase.
 func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()

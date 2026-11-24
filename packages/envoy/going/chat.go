@@ -321,9 +321,6 @@ func (c *HTTPClient) Chat(ctx context.Context, request ChatRequest, onText func(
 	httpRequest.Header.Set("Authorization", "Bearer "+token)
 	response, err := c.http.Do(httpRequest)
 	if err != nil {
-		// net/http's error can quote the answering party's words, which can echo the bearer: a
-		// Location that does not parse, read before the redirect check. So it says the failure as
-		// the request's URL allows (redact.Cause): a transport failure's own text, or its class.
 		return nil, fmt.Errorf("going: chat completions: %w", redact.Cause(err, c.url))
 	}
 	defer response.Body.Close()

@@ -138,9 +138,6 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	request.Header.Set("Authorization", "Bearer "+token)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
-		// net/http's error can quote the answering party's words (a Location that does not parse,
-		// read before any redirect policy), so it prints as the broker's address allows
-		// (redact.Cause): a transport failure's own text, or its class.
 		return nil, fmt.Errorf("agent-secrets: %s %s: %w", method, path, redact.Cause(err, c.URL))
 	}
 	defer response.Body.Close()

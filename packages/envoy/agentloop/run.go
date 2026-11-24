@@ -127,12 +127,10 @@ func Run(ctx context.Context, req Request) (Result, error) {
 // quotes the provider's own words. For an answer it refused, anthropic-sdk-go's *Error prints the
 // whole error body (internal/apierror/apierror.go:72-74 of v1.84.0), and the ai-sdk's
 // *provider.APICallError prints its Message (provider/api_call_error.go:50 of v0.1.0-alpha.5),
-// which its openai and openai-compatible providers fill with the answer's own message. For a call
-// that got no answer it prints net/http's error, which quotes a Location that does not parse and
-// a refused redirect's Location in full. Whoever answers in the provider's place can echo the
-// call's credential in any of them. So a refused answer is named by its status alone, its code and
-// Go's standard phrase (redact.StatusLine), and any other failure as the endpoint's address allows
-// (redact.Cause): a transport failure's own text, the redirect's status, or its class.
+// which its openai and openai-compatible providers fill with the answer's own message. Whoever
+// answers in the provider's place can echo the call's credential there. So a refused answer is
+// named by its status alone, its code and Go's standard phrase (redact.StatusLine), and any other
+// failure through redact.Cause.
 func providerFailure(err error, endpoint Endpoint) string {
 	var refused *provider.APICallError
 	if errors.As(err, &refused) && refused.StatusCode != 0 {
