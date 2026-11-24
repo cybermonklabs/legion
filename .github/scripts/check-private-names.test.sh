@@ -555,8 +555,8 @@ write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep t
 touch "$work/compare-not-found"
 run_pr_text
 check "a comparison GitHub cannot make is refused" "$(is "$status" 1)"
-check "names the read and gh's message" \
-  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh: Could not resolve to a commit.)")"
+check "names the read and the file that keeps gh's words" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh; its own words are in ")"
 check "reads no compare route" "$(is "$(contains "$(< "$work/calls")" '^api ')" false)"
 # A total above 1000 goes to the compare route after the first page: the pages GraphQL would serve
 # after it cannot make the list whole.
@@ -842,8 +842,8 @@ items 1101 "$company_proper Labs" > "$work/comments.2"
 echo 2 > "$work/graphql-fails"
 run_pr_text
 check "a second round that fails is refused" "$(is "$status" 1)"
-check "names the read and gh's message" \
-  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh: Something went wrong while executing your query.), so its text cannot be checked")"
+check "names the read and the file that keeps gh's words" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh; its own words are in .*), so its text cannot be checked")"
 check "scans nothing" "$(is "$(contains "$out" 'comment:1101')" false)"
 clean_pr
 jq -nc --argjson author "$app" '[[range(1; 102) | {id: (4000 + .), body: "fine"} + $author]]' > "$work/review-comments.1"
@@ -900,8 +900,8 @@ check "a budget spent past the job's limit is refused" "$(is "$status" 1)"
 check "with no wait" "$(is "$([ "$seconds" -lt 30 ] && echo true || echo false)" true)"
 check "names the reset and the job's limit" \
   "$(contains "$out" "^::error::the API budget is spent until .*, past this job's limit at ")"
-check "names the read it could not make, with gh's words" \
-  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh: API rate limit already exceeded for installation ID 1.)")"
+check "names the read it could not make, and the file that keeps gh's words" \
+  "$(contains "$out" "^::error::GitHub's GraphQL API did not answer the PrText read of #7 (gh; its own words are in ")"
 check "asks that read once" "$(is "$(grep -c '^graphql PrText ' "$work/calls")" 1)"
 
 echo "case: a comment list the script cannot read whole"

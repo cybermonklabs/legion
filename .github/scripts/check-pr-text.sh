@@ -63,6 +63,22 @@
 # GITHUB_EVENT_NAME from this script's environment, so both of those steps map that secret: on
 # the merge queue's group the list is required (check-private-names.sh's header), and this script
 # then exits 2 without it.
+#
+# WHAT IT PRINTS OF GITHUB'S. Whatever answers gh's calls in GitHub's place holds the token gh
+# sends, and writes gh's words and gh's answer; Actions masks a token only by its exact string, and
+# a run on a person's box masks nothing. So gh's words, and git's over a name or a commit id gh
+# answered, are kept in a file under RUNNER_TEMP (TMPDIR, else /tmp, outside Actions) that the line
+# names, with the three digits of the HTTP status gh named; in CI the runner removes RUNNER_TEMP at
+# the job's end. A field of gh's answer is printed only as the reading this check takes of it: a
+# count as a whole number, a commit id as 40 hex digits (a new commit's id that is none is UNKNOWN,
+# refused), a time as a UTC timestamp, an author's association as one of GitHub's, the base branch
+# as a branch name git accepts, and a path as a relative path with each character that is not
+# printable written as <U+XXXX>; one that holds to none of those is named by its field or its
+# place, and kept. And every line this script prints, its own, gh-read.sh's and
+# check-private-names.sh's, passes one filter that writes each run of 8 characters of a token it
+# holds as [redacted]: GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN
+# where set, and what `gh auth token` answers. A run shorter than 8 characters is not filtered, and
+# a run with no token to filter by says so on stderr.
 set -euo pipefail
 
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the pull request event payload}
@@ -72,7 +88,96 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 source "$script_dir/gh-read.sh"
 text=$(mktemp -d)
 work=$(mktemp -d)
-trap 'rm -rf "$text" "$work"' EXIT
+cleanup=("$text" "$work")
+
+# The tokens the output is filtered for (WHAT IT PRINTS OF GITHUB'S), one a line in a file only
+# this user reads, never in a process's arguments.
+(
+  umask 077
+  {
+    gh auth token 2> /dev/null || true
+    printf '\n%s\n%s\n%s\n%s\n' "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" "${GH_ENTERPRISE_TOKEN:-}" \
+      "${GITHUB_ENTERPRISE_TOKEN:-}"
+  } > "$work/tokens"
+)
+# redact_lines: stdin to stdout, line by line as each arrives, with every run of 8 characters of a
+# token in $work/tokens written as [redacted], a stretch of such runs that touch or overlap as one.
+redact_lines() {
+  python3 -c '
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="surrogateescape") as handle:
+    tokens = [t for t in handle.read().split("\n") if len(t) >= 8]
+pieces = {t[i : i + 8] for t in tokens for i in range(len(t) - 7)}
+out = sys.stdout.buffer
+for raw in iter(sys.stdin.buffer.readline, b""):
+    line = raw.decode("utf-8", "surrogateescape")
+    hidden = [False] * len(line)
+    for piece in pieces:
+        at = line.find(piece)
+        while at >= 0:
+            hidden[at : at + 8] = [True] * 8
+            at = line.find(piece, at + 1)
+    shown, i = [], 0
+    while i < len(line):
+        if hidden[i]:
+            while i < len(line) and hidden[i]:
+                i += 1
+            shown.append("[redacted]")
+        else:
+            shown.append(line[i])
+            i += 1
+    out.write("".join(shown).encode("utf-8", "surrogateescape"))
+    out.flush()
+' "$work/tokens"
+}
+if ! grep -qE '^.{8,}$' "$work/tokens"; then
+  echo "check-pr-text: gh auth token answered no token, and no token variable is set, so no line below is filtered for one" >&2
+fi
+# Every line from here passes the filter, stdout's and stderr's each through one of their own. At
+# the exit both are closed and waited for, so the last line is out before the tokens are removed.
+exec 2> >(redact_lines >&2)
+filter_err=$!
+exec > >(redact_lines)
+filter_out=$!
+# At the exit both filters' ends are closed and waited for, so the last line is through before
+# the tokens and the work directories are removed.
+trap 'exec 1>&- 2>&-; wait "$filter_out" "$filter_err" || true; rm -rf "${cleanup[@]}"' EXIT
+
+# kept <file>: copies <file> to a file of its own under RUNNER_TEMP (TMPDIR, else /tmp) that
+# nothing removes, and prints that file's path.
+kept() {
+  local copy
+  copy=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/check-pr-text.XXXXXX") && cat -- "$1" > "$copy" &&
+    printf '%s' "$copy"
+}
+# kept_text <text>: kept for a text, an answer this check does not print.
+kept_text() {
+  printf '%s\n' "$1" > "$work/kept"
+  kept "$work/kept"
+}
+# said <tool> <file>: this script's words for a failed call whose stderr is <file>: the three
+# digits of the last `(HTTP nnn)` it holds, and the file that keeps its words, never those words.
+said() {
+  local http copy
+  http=$(grep -oE '\(HTTP [0-9]{3}\)' "$2" 2> /dev/null | tail -n 1) || true
+  if [ ! -s "$2" ]; then
+    printf '%s said nothing%s' "$1" "${http:+ $http}"
+  elif copy=$(kept "$2"); then
+    printf '%s%s; its own words are in %s' "$1" "${http:+ $http}" "$copy"
+  else
+    printf '%s%s; its own words could not be kept' "$1" "${http:+ $http}"
+  fi
+}
+# whole_number <value>: whether value is a count, a whole number as jq prints one.
+whole_number() { [[ $1 =~ ^-?[0-9]+$ ]]; }
+# utc_time <value>: whether value is a UTC timestamp, as GitHub writes one.
+utc_time() { [[ $1 =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; }
+# time_shown <value>: a time GitHub answered, as the lines below print it: itself when it is a UTC
+# timestamp, else the file that keeps it.
+time_shown() {
+  if utc_time "$1"; then printf '%s' "$1"; else printf 'a time that is no UTC timestamp (it is in %s)' "$(kept_text "$1")"; fi
+}
 
 pull="$work/pull.json"
 if ! jq -e '.pull_request' "$event" > "$pull"; then
@@ -202,7 +307,7 @@ graphql() {
   if ! gh_wait_reset --stderr "$work/gh-error" gh api graphql --input "$work/request.json" \
     > "$answer"; then
     echo "::error::GitHub's GraphQL API did not answer the $operation read of #$number" \
-      "($(head -n 1 "$work/gh-error")), so its text cannot be checked" >&2
+      "($(said gh "$work/gh-error")), so its text cannot be checked" >&2
     exit 1
   fi
 }
@@ -278,6 +383,13 @@ jq -r '.title' "$live" | tr -d '\000' > "$text/title"
 jq -r '.body // ""' "$live" | tr -d '\000' > "$text/body"
 jq -r '.headRefName' "$live" | tr -d '\000' > "$text/branch"
 base_ref=$(jq -r '.baseRefName // "main"' "$live")
+# base_shown: the base branch as the lines below print it: its name where git accepts it as a
+# branch's, else the field and the file that keeps it (WHAT IT PRINTS OF GITHUB'S).
+if git check-ref-format "refs/heads/$base_ref" 2> /dev/null; then
+  base_shown=$base_ref
+else
+  base_shown="the base branch GitHub's GraphQL API named (no branch name git accepts; it is in $(kept_text "$base_ref"))"
+fi
 title_status=0
 if ! grep -qE '^[a-z]+(\([^)]+\))?!?: .+' "$text/title"; then
   echo "::error::PR title must be a conventional commit subject (type(scope): summary). Squash merges use the PR title as the commit subject, and the release workflows version from conventional subjects — this repository's squash merges write an empty body, so the title is the only text they read."
@@ -289,7 +401,7 @@ fi
 commits_json="$work/commits.json"
 broken=$(jq -r '.commits.broken // empty' "$reads")
 if [ -n "$broken" ]; then
-  echo "::error::GitHub's GraphQL API answered no page $broken of the commits from $base_ref to $head," \
+  echo "::error::GitHub's GraphQL API answered no page $broken of the commits from $base_shown to $head," \
     "so they cannot all be checked" >&2
   exit 1
 fi
@@ -301,7 +413,7 @@ if [ "$compare_read" = whole ]; then
       parents: (.parents.totalCount // 0)}]' \
     "$reads" > "$commits_json"
 else
-  echo "check-pr-text: GitHub's GraphQL comparison of $base_ref with $head listed $compare_read" \
+  echo "check-pr-text: GitHub's GraphQL comparison of $base_shown with $head listed $compare_read" \
     "commits, so the compare route reads them instead"
   # GitHub limits this route to 250 commits for a call with no paging parameter: `?per_page=100`
   # is that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every
@@ -358,6 +470,11 @@ write_items() {
     if [ "$trust" = true ]; then
       base64 -d <<< "$body" > "$text/$kind/$id"
     else
+      # GitHub's CommentAuthorAssociation values are printed; any other answer is kept.
+      case $association in
+        COLLABORATOR | CONTRIBUTOR | FIRST_TIMER | FIRST_TIME_CONTRIBUTOR | MANNEQUIN | MEMBER | NONE | OWNER | '<none>') ;;
+        *) association="an association that is none of GitHub's, which is in $(kept_text "$association")" ;;
+      esac
       echo "skipped $kind:$id: its author ($association) is not trusted"
     fi
   done < "$work/items"
@@ -465,11 +582,11 @@ fi
 # names an issue's branch after its key today, and the change that names branches another way adds
 # the branch to this rule.
 key_status=0
-whole history "commits on $base_ref that touch $cutoff_file"
+whole history "commits on $base_shown that touch $cutoff_file"
 skill_commit=$(jq -r '.history.nodes | last | .oid // empty' "$reads")
 cutoff=''
 if [ -z "$skill_commit" ]; then
-  echo "check-pr-text: the issue-key rule is inactive: no commit on $base_ref adds $cutoff_file"
+  echo "check-pr-text: the issue-key rule is inactive: no commit on $base_shown adds $cutoff_file"
 else
   # The earliest release that contains the marker commit is the lowest legion-v version that
   # contains it and has a published release: release.yaml computes each legion version from the
@@ -492,9 +609,9 @@ else
   }
   if ! git clone -q --bare --filter=tree:0 --single-branch --no-tags --branch "$base_ref" "$remote" \
     "$history" 2> "$work/git-error"; then
-    unknown "git could not read $base_ref's history ($(head -n 1 "$work/git-error"))"
+    unknown "git could not read $base_shown's history ($(said git "$work/git-error"))"
   elif ! git -C "$history" cat-file -e "$skill_commit^{commit}" 2> /dev/null; then
-    unknown "$base_ref's history does not hold the commit that added $cutoff_file"
+    unknown "$base_shown's history does not hold the commit that added $cutoff_file"
   elif ! git -C "$history" ls-remote origin 'refs/tags/legion-v*' > "$work/tag-refs" 2> "$work/git-error"; then
     unknown "git could not list the legion-v tags ($(head -n 1 "$work/git-error"))"
   elif [ ! -s "$work/tag-refs" ]; then
@@ -515,7 +632,7 @@ else
       if ! gh_wait_reset --stderr "$work/gh-error" \
         gh api "repos/$repository/releases/tags/$tag" > "$work/release"; then
         if grep -q -F '(HTTP 404)' "$work/gh-error"; then continue; fi
-        unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
+        unknown "GitHub did not answer for the release of $tag ($(said gh "$work/gh-error"))"
         break
       fi
       published=$(jq -r 'select(.draft == false) | .published_at // empty' "$work/release")
@@ -525,14 +642,14 @@ else
         continue
       fi
       if [[ $published < $first_published ]]; then
-        unknown "$tag was published at $published, before $first_tag at $first_published, so the" \
+        unknown "$tag was published at $(time_shown "$published"), before $first_tag at $(time_shown "$first_published"), so the" \
           "legion-v versions are not in publish order and the lowest one is not the earliest"
       fi
       break
     done < "$work/containing"
     if [ "$key_status" -eq 0 ] && [ -n "$first_tag" ]; then
       cutoff=$first_published
-      echo "check-pr-text: the issue-key rule is active since $first_tag, published $first_published"
+      echo "check-pr-text: the issue-key rule is active since $first_tag, published $(time_shown "$first_published")"
     elif [ "$key_status" -eq 0 ]; then
       echo "check-pr-text: the issue-key rule is inactive: no legion-v* release contains the commit" \
         "that added $cutoff_file yet"
@@ -541,12 +658,12 @@ else
 fi
 opened=$(jq -r '.createdAt // empty' "$live")
 if [ -n "$cutoff" ] && [ -n "$opened" ] && [[ $opened < $cutoff ]]; then
-  echo "check-pr-text: #$number was opened at $opened, before the issue-key rule's cutoff, so it" \
+  echo "check-pr-text: #$number was opened at $(time_shown "$opened"), before the issue-key rule's cutoff, so it" \
     "is not read for issue keys"
 elif [ -n "$cutoff" ]; then
   keyed=$(mktemp -d)
   lines_only=$(mktemp -d)
-  trap 'rm -rf "$text" "$work" "$keyed" "$lines_only"' EXIT
+  cleanup+=("$keyed" "$lines_only")
   cp "$text/title" "$text/body" "$keyed/"
   for kind in "${kinds[@]}"; do cp -r "$text/$kind" "$keyed/$kind"; done
   mkdir "$keyed/commit" "$keyed/added"
@@ -680,6 +797,11 @@ AWK
       IFS= read -r -d '' has_patch && IFS= read -r -d '' name && IFS= read -r -d '' old &&
       IFS= read -r -d '' patch; do
       i=$((i + 1))
+      # A count is compared only as a whole number: bash's own error over any other value quotes it.
+      if ! whole_number "$additions"; then
+        reason="GitHub's file $i of $label answers no whole number of added lines"
+        return 1
+      fi
       if [ "$additions" -gt 0 ] && [ "$has_patch" != true ]; then
         reason="GitHub returned no patch for file $i of $label"
         return 1
@@ -714,7 +836,7 @@ AWK
   # differs, or a split or a copy that fails, is refused rather than paired wrong.
   stage_git() {
     local from=$1 to=$2 stage=$3 i=0 s=0 take code old name file_status sections
-    rm -rf "$stage" && mkdir -p "$stage/sections"
+    rm -rf "$stage" "$work/stage-error" && mkdir -p "$stage/sections"
     # A NUL byte is dropped, as the REST path drops it: git reads a file as text when its first
     # NUL comes past byte 8000, and the check's grep -I would skip a staged file that kept it.
     git -C "$history" diff --no-color --no-ext-diff -M -U0 "$from" "$to" 2> "$work/git-error" |
@@ -725,7 +847,7 @@ AWK
     # "diff --git " is a header.
     if ! sections=$(awk -v dir="$stage/sections" '/^diff --git / { if (out != "") close(out); i++; out = dir "/" i }
       i { print > out } END { print i + 0 }' "$work/whole.patch") || ! [[ $sections =~ ^[0-9]+$ ]]; then
-      echo "git's diff could not be split into its file sections" > "$work/git-error"
+      echo "git's diff could not be split into its file sections" > "$work/stage-error"
       return 1
     fi
     while IFS= read -r -d '' code; do
@@ -749,7 +871,7 @@ AWK
       while [ "$take" -gt 0 ]; do
         s=$((s + 1))
         if [ -e "$stage/sections/$s" ] && ! cat "$stage/sections/$s" >> "$stage/$i.patch"; then
-          echo "section $s of git's diff could not be copied into entry $i's patch" > "$work/git-error"
+          echo "section $s of git's diff could not be copied into entry $i's patch" > "$work/stage-error"
           return 1
         fi
         take=$((take - 1))
@@ -757,15 +879,23 @@ AWK
     done < "$work/name-status"
     if [ "$sections" -ne "$s" ]; then
       echo "git's diff holds $sections file sections and its name list $i entries, which take $s" \
-        > "$work/git-error"
+        > "$work/stage-error"
       return 1
     fi
     echo "$i" > "$stage/count"
   }
   # unread <reason>: neither GitHub nor git holds the whole diff, so the lines it adds cannot all
-  # be read: UNKNOWN, and refused.
+  # be read: UNKNOWN, and refused. The cause is stage_git's own words where it gave up itself,
+  # else git's, which can quote a commit id or a branch GitHub answered, so they are kept.
   unread() {
-    echo "::error::UNKNOWN: $1, and git could not read it either ($(head -n 1 "$work/git-error")), so" \
+    local why
+    if [ -s "$work/stage-error" ]; then
+      why=$(< "$work/stage-error")
+      rm -f "$work/stage-error"
+    else
+      why=$(said git "$work/git-error")
+    fi
+    echo "::error::UNKNOWN: $1, and git could not read it either ($why), so" \
       "the lines it adds cannot all be read; it is refused, not passed" >&2
     key_status=2
   }
@@ -779,7 +909,10 @@ AWK
   # place_stage <stage> <part>: each staged entry's added lines under <part>/<path>: in $keyed when
   # the path is new text (an added file, or a renamed or copied one whose path holds a word its old
   # path does not carry), and in $lines_only otherwise. A removed file adds nothing; its removed
-  # lines still carry.
+  # lines still carry. The path is the one the report prints, so it is held to a relative path
+  # (no empty, `.` or `..` part), each character that is not printable written as <U+XXXX>, which
+  # keeps a key beside it a word apart; a path that is none is placed as `file <n>`, its place in
+  # the diff, and kept (WHAT IT PRINTS OF GITHUB'S).
   place_stage() {
     local stage=$1 part=$2 count i file_status name old dest
     count=$(< "$stage/count")
@@ -788,6 +921,13 @@ AWK
       [ "$file_status" != removed ] || continue
       name=$(< "$stage/$i.path")
       old=$(< "$stage/$i.old")
+      if LC_ALL=C grep -q '[^ -~]' <<< "$name"; then
+        name=$(python3 -c 'import sys; print("".join(c if c.isprintable() else "<U+%04X>" % ord(c) for c in sys.argv[1]), end="")' "$name")
+      fi
+      if [ -z "$name" ] || [[ $name == /* || $name == */ || /$name/ == *//* || /$name/ == */./* || /$name/ == */../* ]]; then
+        echo "check-pr-text: file $i of the diff of ${part/#added\//commit } has a path that is no relative path; it is in $(kept "$stage/$i.path")"
+        name="file $i"
+      fi
       case $file_status in
         added) dest="$keyed/$part/$name" ;;
         renamed | copied)
@@ -822,10 +962,18 @@ AWK
   commit_stages=()
   commit_parts=()
   while IFS= read -r sha; do
+    # The id names the commit in every line below, so it is held to GitHub's 40 hex digits.
+    if ! [[ $sha =~ ^[0-9a-f]{40}$ ]]; then
+      echo "::error::UNKNOWN: GitHub lists a commit of #$number from after the cutoff whose id is no 40-hex" \
+        "commit id (it is in $(kept_text "$sha")), so its message and the lines it adds cannot be" \
+        "reported; it is refused, not passed" >&2
+      key_status=2
+      continue
+    fi
     short=${sha:0:12}
     parents=$(jq -r --arg sha "$sha" '.[] | select(.sha == $sha) | .parents' "$commits_json")
     merge=false
-    if [ "$parents" -gt 1 ]; then merge=true; fi
+    if whole_number "$parents" && [ "$parents" -gt 1 ]; then merge=true; fi
     jq -r --arg sha "$sha" --arg head "$head_ref" --arg base "$base_ref" --argjson merge "$merge" '
         def literal: gsub("(?<c>[\\[\\].*+?^${}()|\\\\/-])"; "\\\(.c)");
         def unbranch($ref; $as):
@@ -847,7 +995,10 @@ AWK
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
     total=$(jq -s '.[0].stats.total // -1' "$work/commit-$short")
     reason=''
-    if [ "$listed" -ne "$total" ]; then
+    # Counts are compared only as whole numbers: bash's own error over any other value quotes it.
+    if ! whole_number "$files" || ! whole_number "$listed" || ! whole_number "$total"; then
+      reason="GitHub's files of commit $short answer no whole-number counts"
+    elif [ "$listed" -ne "$total" ]; then
       reason="commit $short changes $total lines, and GitHub listed $listed of them in $files files"
     else
       stage_rest "$work/commit-$short" "$stage" "commit $short" || true
@@ -882,7 +1033,11 @@ AWK
     want_files=$(jq '.changedFiles // -1' "$live")
     want_lines=$(jq '(.additions // -1) + (.deletions // 0)' "$live")
     reason=''
-    if [ "$files" -ne "$want_files" ] || [ "$listed" -ne "$want_lines" ]; then
+    if ! whole_number "$files" || ! whole_number "$listed" || ! whole_number "$want_files" ||
+      ! whole_number "$want_lines"; then
+      reason="#$number holds $merges merge commit(s), so its net diff is read, and GitHub answered no"
+      reason+=" whole-number counts of its files and lines"
+    elif [ "$files" -ne "$want_files" ] || [ "$listed" -ne "$want_lines" ]; then
       reason="#$number holds $merges merge commit(s), so its net diff is read, and GitHub listed $files"
       reason+=" of its $want_files files and $listed of its $want_lines changed lines"
     else
