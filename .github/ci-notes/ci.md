@@ -1582,13 +1582,15 @@ no job of the file it calls starts, and the run the check names (`test / test`) 
 
 A line number names whatever line a later edit moves there, and nothing reads a citation of a
 file the citing change does not touch, so a line-number citation in the CI's own files drifted
-with the next merge that edited the cited file (dispatch://INFRA-4017). A citation under .github
-is therefore one exact token on one line: a backtick, the path of a tracked file from the
-repository root as git ls-files prints it, a hash, a name, a backtick, as in
-`.github/workflows/ci.yaml#browser_image`. Several names are several tokens, each with its path.
+with the next merge that edited the cited file (dispatch://INFRA-4017), and so did the line
+numbers that the //ci: lines of the test files under packages/ cited. A citation under .github,
+or in a //ci: line outside it, is therefore one exact token on one line: a backtick, the path of
+a tracked file from the repository root as git ls-files prints it, a hash, a name, a backtick, as
+in `.github/workflows/ci.yaml#browser_image`. Several names are several tokens, each with its
+path.
 
-.github/scripts/ci_citations.py reads every tracked text file under .github as plain text, and
-claims this much and no more:
+.github/scripts/ci_citations.py reads every tracked text file under .github, and each //ci: line
+of every tracked text file outside it, as plain text, and claims this much and no more:
 - a token whose path is no tracked file fails, and so does a token whose name its file's code
   does not hold. The code is the cited file as its language's own scanner reads it: Python's
   tokenize, the typescript package's parser for TypeScript and JavaScript (one bun run of
@@ -1640,14 +1642,23 @@ release-push.sh is cited by its case arm, `.github/scripts/release-push.sh#relea
 holds the arm's text once, so the rename of the arm alone fails the citation, which a citation
 of its usage line would not. A root of the list that skills-guard.test.ts sweeps is cited by
 its entry, `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`,
-since another string of that file holds the file name alone. Nothing outside .github is read.
-The check runs in the lint job, which every pull request and merge group runs, since a rename
-can be in any file of the repository, after the job's setup-go and its bun install, which its
-scanners need, and its test, .github/scripts/ci-citations.test.sh, runs just before it. The
-TypeScript scanner's bun run resolves typescript from this repository, where the scanner
-stands: in CI from the node_modules that the lint job's bun install --frozen-lockfile fills
-from bun.lock. A local run with no node_modules does not fail on that: Bun installs typescript
-itself into its own cache, at the version the root package.json and bun.lock give.
+since another string of that file holds the file name alone.
+
+Outside .github a //ci: line alone is read: a line whose text, after any whitespace, starts with
+the five characters //ci:, the test that the parser of .github/scripts/ci_filter_sources.py puts
+to each line of a Go file before it reads the rest as what a test reads
+(`.github/scripts/ci_filter_sources.py#DIRECTIVE`). So every line that parser reads is read here,
+and such a line in any other text file is read too, so that a guide's example is held as well.
+Each such line is read alone, as that parser reads it: no rule reads across its end into the next
+line, and a problem names the line it is on. Any other line outside .github, among them a //ci:
+that does not start its line, as in a string or after code, is not read, held or refused. The
+check runs in the lint job, which every pull request and merge group runs, since a rename can be
+in any file of the repository, after the job's setup-go and its bun install, which its scanners
+need, and its test, .github/scripts/ci-citations.test.sh, runs just before it. The TypeScript
+scanner's bun run resolves typescript from this repository, where the scanner stands: in CI from
+the node_modules that the lint job's bun install --frozen-lockfile fills from bun.lock. A local
+run with no node_modules does not fail on that: Bun installs typescript itself into its own
+cache, at the version the root package.json and bun.lock give.
 
 ## A lane label turns on one slow suite on a pull request
 
