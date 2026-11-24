@@ -297,7 +297,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
 		return err
 	}
-	return e.mergeForwardOnEntry(ctx, tx, issue, w)
+	return e.mergeForwardOnEntry(ctx, tx, issue, w, false, true)
 }
 
 // waitForFirstStep ends the stop of w's task of issue, a task stopped before its first step went

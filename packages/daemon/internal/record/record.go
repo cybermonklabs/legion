@@ -1185,11 +1185,11 @@ const (
 	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
 )
 
-// MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
-// in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
-// the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
-// the task at the implementer's place, or a place after it on the task's line). The ask's row goes to it
-// (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
+// MergeForwardAsker is the built-in role asked to merge the base forward for a task of Legion's
+// roles alone: the merger in merging, otherwise the implementer (cybermonklabs/legion#4979).
+// A task with steps uses workflow's implementationAgent for the earlier phases instead, since
+// its implementation role may have another name. The ask keeps the role actually asked in
+// MergeForward.Role; the message validator also uses this fallback to bound the merger's asks.
 func MergeForwardAsker(at phase.Phase) claim.Role {
 	if at == phase.Merging {
 		return claim.RoleMerger

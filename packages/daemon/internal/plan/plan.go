@@ -23,9 +23,9 @@ import (
 )
 
 // Type is the type of work a role does. Legion records it on each step and reads it for the
-// return of a failed step's work, the commit a review step is given and the retro, and, for a
-// role a plan defines, the App the role acts as (the implement App for implementation, the review
-// App for every other type or none), and for nothing else.
+// return of a failed step's work, the implementation agent asked to merge a base forward, the
+// commit a review step is given and the retro, and, for a role a plan defines, the App the role
+// acts as (the implement App for implementation, the review App for every other type or none).
 type Type string
 
 // The types Legion's list starts with; a deployment adds its own in its `role_types`.

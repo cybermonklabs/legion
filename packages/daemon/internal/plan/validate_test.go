@@ -65,7 +65,9 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 func TestValidateRefusesARoleNamedAsAnotherRolesNumberedAgent(t *testing.T) {
 	withBlocks := func(blocks ...string) Plan {
 		p := oneTask("a", "implementer")
-		p.RoleBlocks = blocks
+		for _, name := range blocks {
+			p.Roles = append(p.Roles, PlanRole{Name: name})
+		}
 		return p
 	}
 	held := ", so an agent of each role would hold one claim."

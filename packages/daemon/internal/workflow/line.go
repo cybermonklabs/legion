@@ -61,7 +61,10 @@ type issueDefinitions struct {
 }
 
 func (d issueDefinitions) DefinedRoles() []claim.Role {
-	roles := d.deployment.DefinedRoles()
+	roles := make([]claim.Role, 0, len(d.deployment.Roles)+len(d.planned))
+	for role := range d.deployment.Roles {
+		roles = append(roles, claim.Role(role))
+	}
 	for _, role := range d.planned {
 		roles = append(roles, claim.Role(role.Role))
 	}

@@ -64,10 +64,9 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if pr.State != record.PullRequestOpen || !classify.MergeForwardStands(implementation, place) {
 		return nil
 	}
-	// An ask the record holds of this head, made away from the implementation step, covers the head
-	// wherever the task stands: nothing is asked again, and no walk is read to decide so. The walk
-	// decides only for an ask made at that step (record.MergeForward.Own), which covers that step
-	// alone.
+	// An ask the record holds of this head, made away from the implementation step, covers the
+	// head wherever the task stands. An own-step ask covers only that step, so the supplied walk
+	// decides whether the task has moved on and must ask again.
 	made := pr.MergeForward
 	askedOfHead := made != nil && made.Head == pr.HeadSHA
 	if askedOfHead && !made.Own {
