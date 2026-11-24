@@ -1221,8 +1221,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// this transaction read, before anything is written, and its refusal is left unspent, as the
 	// route's writes nothing, so the same report applies once it is the work of the entry that
 	// stands.
-	if refusal := intake.EntryFence(*issue, fact.Role, served, row.Claim, fact.Entry, row.Entry, row.EntryMovedBack,
-		record.OtherStepsEntry(rows, row), fact.Commit, pr, nil); refusal != nil {
+	if refusal := intake.EntryFence(*issue, fact.Role, served, fact.Entry, row, record.OtherStepsEntry(rows, row), fact.Commit, pr, nil); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, "", row); refusal != nil {

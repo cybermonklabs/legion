@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"bytes"
-	"encoding/json"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -300,13 +299,9 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 			t.Fatalf("after the mergeable read the record holds first read %+v and %q conflicting, want neither", pr.ConflictRead, pr.ConflictingHead)
 		}
 		assertNothingActed(t, pool, phase.Testing)
-		var released []map[string]any
-		for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
-			var entry map[string]any
-			if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == "workflow: a second read did not confirm the conflict" {
-				released = append(released, entry)
-			}
-		}
+		released := jsonLogLines(&logged, func(entry map[string]any) bool {
+			return entry["msg"] == "workflow: a second read did not confirm the conflict"
+		})
 		loggedAt := func(field string, want time.Time) bool {
 			text, _ := released[0][field].(string)
 			at, err := time.Parse(time.RFC3339Nano, text)

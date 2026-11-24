@@ -1228,10 +1228,9 @@ type entered struct {
 //
 // The commit a review read (record.PhaseRow.ReviewedHead) the row holds is agent's own, never
 // another agent's: a step's first run takes agent's (record.AgentsReviewedHead), and so does a run
-// whose row another agent's runs wrote (record.RowWorker), since a later version of the plan, given
-// after stop_task over the same task, can give a step another key's agent. A row that names no
-// claim, as the release before writes a step's row, and a row of no step are the role's own
-// token's. A row agent's own runs wrote keeps its commit.
+// of a row whose worker (record.RowWorker) is not agent, the role's row of no step among them, since
+// a later version of the plan, given after stop_task over the same task, can give a step another
+// key's agent. A row agent's own runs wrote keeps its commit.
 func stepRunRow(issue record.Issue, rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int,
 	agent claim.Token) (record.PhaseRow, bool, error) {
 	row, found := record.StepRowOf(rows, role, task, place)

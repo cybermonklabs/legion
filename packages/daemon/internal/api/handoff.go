@@ -358,7 +358,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			return
 		}
 	}
-	if refusal := intake.EntryFence(*issue, grant.Role, run.served, run.row.Claim, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit,
+	if refusal := intake.EntryFence(*issue, grant.Role, run.served, entry, run.row, run.otherStepsEntry, req.Commit,
 		position.pullRequest, c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return

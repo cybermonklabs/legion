@@ -100,10 +100,11 @@ func rowOnEntry(rows []PhaseRow, role claim.Role, entry int64) (PhaseRow, bool) 
 // workflow's shareReviewedHead), and "" where no such row holds one, so agent reads the whole
 // change. Those rows hold one commit, the newest, so whichever is read holds it. A run of agent's
 // step at place is named it as its own where workflow's stepRunRow says so. A row is agent's only
-// while it names agent's claim: a later version of the plan can give a step of agent's to another
-// agent, whose run then takes the step's row, so an agent whose every row of role on task passed
-// that way is named "", though a review of its own read a commit before. agent "" (an issue whose
-// key names no claims) has no row the reviews write onto, and is named "".
+// while it names agent's claim, and only a run writes another claim on it (workflow's enter): where
+// another agent's run has taken every row of role on task that agent worked, agent is named "",
+// though a review of its own read a commit before. A later version of the plan that gives agent's
+// step to another agent, with no run of it, takes no row. agent "" (an issue whose key names no
+// claims) has no row the reviews write onto, and is named "".
 func AgentsReviewedHead(rows []PhaseRow, role claim.Role, task string, place int, agent claim.Token) string {
 	step := PhaseRow{Role: role, StepTask: task, StepPlace: place, Claim: agent}
 	for _, other := range rows {
@@ -147,12 +148,11 @@ func AgentsOtherRow(row, other PhaseRow) bool {
 
 // AgentsRowOf is role's row among rows that agent ran last, the row whose commit and entry a task
 // queued for agent names (workflow's queuedRow): the role's row now (PhaseRowOf) where that row is
-// agent's, names no agent of its own (NamesItsAgent: a row a clear left or the release before
-// wrote, whose worker is the role's own token, RowWorker), or agent is "" (an issue whose key names
-// no claims). Where the row now is the step of another agent of the role, it is the highest of
-// agent's own rows of role that run a step (rowAbove), and the zero row of role where agent ran
-// none, which names no commit and no entry. So a wake of an earlier step's agent is never named
-// another agent's commit as its own.
+// agent's, names no agent of its own (NamesItsAgent), or agent is "" (an issue whose key names no
+// claims). Where the row now is the step of another agent of the role, it is the highest of agent's
+// own rows of role that run a step (rowAbove), and the zero row of role where agent ran none, which
+// names no commit and no entry. So a wake of an earlier step's agent is never named another agent's
+// commit as its own.
 func AgentsRowOf(rows []PhaseRow, role claim.Role, agent claim.Token) PhaseRow {
 	now := PhaseRowOf(rows, role)
 	if agent == "" || !NamesItsAgent(now) || now.Claim == agent {
@@ -315,11 +315,13 @@ func StandsTwice(role claim.Role, steps []PlanStep) bool {
 }
 
 // NamesItsAgent says whether row names the agent whose runs wrote it: the claim (PhaseRow.Claim)
-// that a step's entry writes on a row that runs a step of the issue's plan (StepTask set). Every
-// other row is the role's own token's (RowWorker): a row of an issue with no plan rows, a row the
-// issue's own new generation cleared (ClearGeneration, and ClearTreeGeneration for the root it
-// re-admits, clear StepTask and keep Claim), a row no entry was raised on, and a row the release
-// before wrote, whose entry writes no claim. Each reader that asks whose a row is asks it here.
+// that a step's entry writes on a row that runs a step of the issue's plan (StepTask set). It is
+// false for a row of an issue with no plan rows, a row the issue's own new generation cleared
+// (ClearGeneration, and ClearTreeGeneration for the root it re-admits, clear StepTask and keep
+// Claim), a row no entry was raised on, and a row the release before wrote, whose entry writes no
+// claim. Only RowWorker reads such a row as the role's own token's. The entry fence asks another
+// question, which claim ran a given entry, and reads the claim alone (ServedClaim, and the row's
+// claim in intake.EntryFence): there a row naming no claim is no other agent's turn.
 func NamesItsAgent(row PhaseRow) bool { return row.StepTask != "" && row.Claim != "" }
 
 // RowWorker is the claim of the agent whose runs wrote row, role's phases row of issue: the claim

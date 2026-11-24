@@ -36,19 +36,15 @@ type completionPosition struct {
 	check          *record.ProductionCheck
 }
 
-// completingRun is the run a completion of a role is of, read from its position: the phase entry
-// that run is on (record.PhaseRow.Entry, 0 on a row no start has stamped), whether the start that
-// raised it moved the issue back (record.PhaseRow.EntryMovedBack), the highest entry another row
-// of that role holds, another step's or the implementer's retro row (record.OtherStepsEntry), that
-// run's row (record.CompletionRow), whose claim is the run's agent's where it names one
-// (record.NamesItsAgent), the claim of the run the served entry is of (record.ServedClaim, served),
-// and the place of its step where the task names the role at two places (0 otherwise), which the
-// completion's key names.
+// completingRun is the run a completion of a role is of, read from its position: that run's row
+// (record.CompletionRow), whose entry, move-back mark and claim the entry fence reads
+// (intake.EntryFence), the highest entry another row of that role holds, another step's or the
+// implementer's retro row (record.OtherStepsEntry), the claim of the run the served entry is of
+// (record.ServedClaim, served), and the place of its step where the task names the role at two
+// places (0 otherwise), which the completion's key names.
 type completingRun struct {
-	entry           int64
-	entryMovedBack  bool
-	otherStepsEntry int64
 	row             record.PhaseRow
+	otherStepsEntry int64
 	served          claim.Token
 	place           int
 }
@@ -60,8 +56,7 @@ type completingRun struct {
 // held to that step's run and keyed by that step's place.
 func (p completionPosition) run(role claim.Role, entry int64, works bool) completingRun {
 	row := record.CompletionRow(p.rows, role, entry, works, p.task, p.at, p.steps)
-	run := completingRun{entry: row.Entry, entryMovedBack: row.EntryMovedBack, otherStepsEntry: record.OtherStepsEntry(p.rows, row), row: row,
-		served: record.ServedClaim(p.rows, role, entry)}
+	run := completingRun{row: row, otherStepsEntry: record.OtherStepsEntry(p.rows, row), served: record.ServedClaim(p.rows, role, entry)}
 	if record.StandsTwice(role, p.steps) {
 		run.place = record.RunPlace(row, p.at, p.steps)
 	}

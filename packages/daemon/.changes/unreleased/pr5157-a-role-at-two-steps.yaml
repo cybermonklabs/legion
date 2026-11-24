@@ -23,15 +23,17 @@ body: |-
   A review step's task names as ` Last reviewed commit: <sha>.` the commit its agent's newest
   deciding review on the task read, at whichever of that agent's steps of the role it was made,
   and a wake or a resume names that agent's own. A step's row holds that commit only while it
-  names the agent: where a later version of the plan gives every step of the role that an agent
-  worked on the task to another agent, the agent's next step of the role names none and reads the
-  whole change. Where the agent has none, the reviewer's task in reviewing, a wake's and a resume's
-  included, and the task of a review step of a role the deployment defines carry ` Commit another
-  agent's review read: <sha>.`, the commit read by the review of the nearest earlier step of the
-  role that another agent worked, whose review read one. A review step of a role the deployment
-  defines records the commit its completion names only where that commit is spelled as a head is,
-  40 lowercase hexadecimal characters, as the head of a reviewer's footer must be; a completion
-  that names any other commit leaves the step's commit where it stood, and the daemon logs why.
+  names the agent, and only a run of the step writes another agent on it: where another agent's
+  run has taken every step of the role that an agent worked on the task, the agent's next step of
+  the role names none and reads the whole change. A later version of the plan that gives the step
+  to another agent who never runs it changes nothing. Where the agent has none, the reviewer's task
+  in reviewing, a wake's and a resume's included, and the task of a review step of a role the
+  deployment defines carry ` Commit another agent's review read: <sha>.`, the commit read by the
+  review of the nearest earlier step of the role that another agent worked, whose review read one.
+  A review step of a role the deployment defines records the commit its completion names only
+  where that commit is spelled as a head is, 40 lowercase hexadecimal characters, as the head of a
+  reviewer's footer must be; a completion that names any other commit leaves the step's commit
+  where it stood, and the daemon logs why.
 
   One migration makes the key of the `phases` table the issue, the role and the step. A daemon of
   the release before cannot write that table, so every project's daemon on the database moves to

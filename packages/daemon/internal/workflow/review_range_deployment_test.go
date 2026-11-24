@@ -3,7 +3,6 @@ package workflow
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
@@ -79,10 +78,10 @@ func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T)
 		names   bool
 		refused bool
 	}{
-		{"the critic, of the type review", "critic", "review", stepCommitX, false, true, false},
-		{"the checker, of the type testing", "checker", "testing", stepCommitX, false, false, false},
-		{"the critic, whose completion names a short SHA", "critic", "review", stepCommitX[:7], false, false, true},
-		{"the control: the critic with its step's commit cleared between the rounds", "critic", "review", stepCommitX, true, false, false},
+		{name: "the critic, of the type review", role: "critic", typ: "review", read: stepCommitX, names: true},
+		{name: "the checker, of the type testing", role: "checker", typ: "testing", read: stepCommitX},
+		{name: "the critic, whose completion names a short SHA", role: "critic", typ: "review", read: stepCommitX[:7], refused: true},
+		{name: "the control: the critic with its step's commit cleared between the rounds", role: "critic", typ: "review", read: stepCommitX, cleared: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -98,16 +97,10 @@ func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T)
 			reportsAtEntry(t, pool, engine, "impl-1", root.Key, root.Generation, claim.RoleImplementer, "", stepCommitW, 0)
 			first := roleRowOf(t, pool, engine, root.Key, tc.role)
 			reportsAtEntry(t, pool, engine, "fail-1", root.Key, root.Generation, tc.role, "fail", tc.read, first.Entry)
-			var refusals []map[string]any
-			for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
-				var entry map[string]any
-				if json.Unmarshal([]byte(line), &entry) != nil {
-					continue
-				}
-				if msg, _ := entry["msg"].(string); strings.HasPrefix(msg, stepCommitStaysLog) {
-					refusals = append(refusals, entry)
-				}
-			}
+			refusals := jsonLogLines(&logged, func(entry map[string]any) bool {
+				msg, _ := entry["msg"].(string)
+				return strings.HasPrefix(msg, stepCommitStaysLog)
+			})
 			if !tc.refused && len(refusals) != 0 {
 				t.Fatalf("the engine logged %v, want no line that the %s's completion moves no reviewed commit", refusals, tc.role)
 			}

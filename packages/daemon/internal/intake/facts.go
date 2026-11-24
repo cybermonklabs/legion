@@ -2060,14 +2060,15 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // row: the completion route on its read, before the fact (api's answerCompletion), which is the
 // early refusal, and the workflow's handoff on the row the fact's own transaction reads (workflow's
 // Engine.handoff), which refuses a completion of an entry raised between the two reads. entry is
-// the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
-// row names (record.PhaseRow.Entry), movedBack whether the move that raised it was a move back
-// (record.PhaseRow.EntryMovedBack), and otherSteps the highest entry another row of the role
-// holds, the row of another of its steps or the implementer's retro row (record.OtherStepsEntry),
-// 0 where the role has no other row; served is the claim the role's row on
-// the served entry names (record.ServedClaim) and holder the claim the row on current names
-// (record.PhaseRow.Claim); issue is the record as the same read holds it, pr the pull request it
-// holds, and pending the claim's queued task, which only the route reads.
+// the entry the claim's worker is on (HandoffComplete.Entry), and row the role's phases row of the
+// run the completion is of (record.CompletionRow, or the workflow's own read of it): its entry,
+// current here (record.PhaseRow.Entry), whether the move that raised it was a move back
+// (record.PhaseRow.EntryMovedBack), and holder, the claim it names (record.PhaseRow.Claim, read
+// raw: a row naming no claim is no other agent's turn, below). otherSteps is the highest entry
+// another row of the role holds, the row of another of its steps or the implementer's retro row
+// (record.OtherStepsEntry), 0 where the role has no other row; served is the claim the role's row
+// on the served entry names (record.ServedClaim); issue is the record as the same read holds it,
+// pr the pull request it holds, and pending the claim's queued task, which only the route reads.
 //
 // Like a completion of a run that is over (HANDOFF_STALE_GENERATION), a completion of a phase
 // entry the issue's phase has moved past is refused, and for the reason the run alone cannot
@@ -2123,8 +2124,9 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // again) and either row naming no claim (one the release before wrote) are no such turn.
 //
 // Every other entry behind the row's is refused (StaleEntry) unless BehindEntryClause takes it.
-func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token, entry, current int64, movedBack bool, otherSteps int64, commit string,
+func EntryFence(issue record.Issue, role claim.Role, served claim.Token, entry int64, row record.PhaseRow, otherSteps int64, commit string,
 	pr *record.PullRequest, pending *supervise.Delivery) *Refusal {
+	current, holder := row.Entry, row.Claim
 	if entry == 0 || current == 0 || entry == current {
 		return nil
 	}
@@ -2140,7 +2142,7 @@ func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token,
 	}
 	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
 	_, _, recordBacked := phase.Handoff(p)
-	if clause := BehindEntryClause(recordBacked, commit, pr, movedBack, entry <= otherSteps); clause != "" {
+	if clause := BehindEntryClause(recordBacked, commit, pr, row.EntryMovedBack, entry <= otherSteps); clause != "" {
 		return StaleEntry(issue.Key, role, p, current, entry, pending, clause)
 	}
 	return nil

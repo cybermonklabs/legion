@@ -411,3 +411,32 @@ func TestALaterReviewerStepsNextRoundIsNamedItsAgentsNewerCommitOfAnEarlierStep(
 		t.Fatalf("step 4's next round task = %q, want it to end %q, agent r's newest commit, step 2's", four.EntryTask, reviewround.Sentences(thirdRead, four.Entry))
 	}
 }
+
+// A role's row of no step, as the release before writes a role's one row, is the role's own
+// token's (record.RowWorker): a step's first run that moves it to the step keeps its commit for
+// that token, and names none to another key's agent, which reads the whole change. Before, such a
+// row kept its commit for any agent.
+func TestARowOfNoStepKeepsItsCommitForTheRolesOwnTokenAlone(t *testing.T) {
+	issue := record.Issue{Key: "LEGION-208", Project: "LEGION"}
+	own, err := stepClaim(issue, issue.Key, claim.RoleReviewer)
+	if err != nil {
+		t.Fatalf("the reviewer's own token: %v", err)
+	}
+	noStep := record.PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer, Entry: 3, ReviewedHead: stepFourRead}
+	for _, tc := range []struct {
+		name  string
+		agent claim.Token
+		want  string
+	}{
+		{name: "the role's own token", agent: own, want: stepFourRead},
+		{name: "another key's agent", agent: agentToken(t, "implementer")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, moves, err := stepRunRow(issue, []record.PhaseRow{noStep}, noStep, claim.RoleReviewer, "a", 2, tc.agent)
+			if err != nil || !moves || row.StepTask != "a" || row.StepPlace != 2 || row.ReviewedHead != tc.want {
+				t.Fatalf("the run of step 2 by %s = step %q/%d, moves %t, commit %q, %v; want step a/2, moved, commit %q",
+					tc.agent, row.StepTask, row.StepPlace, moves, row.ReviewedHead, err, tc.want)
+			}
+		})
+	}
+}
