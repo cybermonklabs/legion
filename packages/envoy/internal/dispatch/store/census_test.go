@@ -1248,7 +1248,9 @@ func requireCensusAdmitsLateIndexes(t *testing.T, versions ...int) {
 // blockRefsIndexCensus is the census of the two migrations of block_refs' index of targets - the
 // build of block_refs_to_source (blockRefsSourceIndex) and the drop of block_refs_to, the index it
 // replaces (dropBlockRefsTargetIndex) - over a database at beforeBlockRefsSourceIndex, a version
-// before them, under options; main's 20261120021308_search_text_versions is pending there too.
+// before them, under options; every migration numbered between the two is pending there too, from
+// 20261118115645 to 20261120122700, main's 20261120021308_search_text_versions and the backfill's
+// four indexes (20261119020700 to 20261119021000) among them.
 // Only version's entry is read, never the verdict of the whole set, for the reason
 // TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It answers that
 // entry, and fails the test when that migration is not pending or touches a table of one byte or
