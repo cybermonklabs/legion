@@ -914,7 +914,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, payload)
 	if err != nil {
-		return 0, oauth2call.Answer{}, false, redact.Unanswered(err, nil, "")
+		return 0, oauth2call.Answer{}, false, oauth2call.Unanswered(err, nil, "")
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -928,7 +928,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: %w", method, path, redact.Unanswered(err, req, ""))
+		return 0, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: %w", method, path, oauth2call.Unanswered(err, req, ""))
 	}
 	defer resp.Body.Close()
 	answer, err := oauth2call.ReadAnswer(resp, int64(limit))

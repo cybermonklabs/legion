@@ -554,8 +554,9 @@ func closedAddress(t *testing.T) string {
 // of its own in its query, and a redirect can name a userinfo too. A read whose redirect leads to
 // a port nothing listens on fails, and Go's client writes the URL it last asked into that error:
 // its query whole, and its user name (it masks only a password). The read is refused with a cause
-// that names the URL the daemon asked and the failure by its class (redact.Unanswered): no part of
-// the redirect's target, which is the answering party's own words, and none of the credential.
+// that names the URL the daemon asked and the failure by its class (oauth2call.Unanswered): no
+// part of the redirect's target, which is the answering party's own words, and none of the
+// credential.
 func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
 	dead := closedAddress(t)
 	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag

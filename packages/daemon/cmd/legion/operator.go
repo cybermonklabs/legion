@@ -187,7 +187,8 @@ var daemonClient = redirects.Refused(http.DefaultClient)
 // oauth2call.ReadAnswer with the record of the request, so a refusal prints with the bearer and any
 // credential the request carried redacted (Answer.Words, refusal), and a caller decodes what it
 // decides on as it came (Answer.Decode). Only a request that got no answer is an error, naming its
-// failure through redact.Unanswered and the URL it asked through the URL rule.
+// failure through oauth2call.Unanswered and the URL it asked as envoy's redact.URL prints it: the
+// URL where it is a plain one, and the words saying it is not printed otherwise.
 func (op operator) do(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	var reader io.Reader
 	if body != nil {
@@ -199,7 +200,7 @@ func (op operator) do(ctx context.Context, method, path string, body any) (oauth
 	}
 	request, err := http.NewRequestWithContext(ctx, method, op.base+path, reader)
 	if err != nil {
-		return oauth2call.Answer{}, redact.Unanswered(err, nil, "")
+		return oauth2call.Answer{}, oauth2call.Unanswered(err, nil, "")
 	}
 	if op.bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+op.bearer)
@@ -209,7 +210,7 @@ func (op operator) do(ctx context.Context, method, path string, body any) (oauth
 	}
 	response, err := daemonClient.Do(request)
 	if err != nil {
-		return oauth2call.Answer{}, redact.Unanswered(err, request, "")
+		return oauth2call.Answer{}, oauth2call.Unanswered(err, request, "")
 	}
 	defer response.Body.Close()
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)

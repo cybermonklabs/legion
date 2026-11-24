@@ -1,5 +1,5 @@
 // Package oauth2calltest is the probe of internal/redact/redacttest for a module outside this one,
-// which cannot import an internal package. It holds three parts:
+// which cannot import an internal package. It holds four parts:
 //
 //   - The box print test: a type of that module that holds an oauth2call.RemoteText is a holder
 //     the gate's holder census lists (cmd/redact-gate), and the holder's print row runs PrintTest
@@ -11,12 +11,15 @@
 //     credentials, and the check's designated assertion, RequireNone, which a print-site row of
 //     that module calls as a row of this module calls redacttest.RequireNone; RequireNoPiece is
 //     the same assertion for a row whose stand-in echoes the credential the request carried too.
+//   - The certificate stand-in: a TLS server whose certificate holds a name with a made-up
+//     credential in it, which crypto/x509 quotes in its error (CertificateServer).
 //
 // It is for tests: Said makes a box with no record of an answer, so the answer census lists every
 // call of it outside a test file (gate.answers.makers).
 package oauth2calltest
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/redact"
@@ -66,6 +69,30 @@ func StatusLineServer(t testing.TB, status int, header, body string) string {
 func CutServer(t testing.TB, status int, body string) string {
 	t.Helper()
 	return redacttest.CutServer(t, status, body)
+}
+
+// CertificateName is redacttest.CertificateName: the name a CertificateServer's certificates
+// hold, which crypto/x509 quotes in its error, holding Token.
+const CertificateName = redacttest.CertificateName
+
+// CertificateFault is redacttest.CertificateFault: the certificate a CertificateServer answers
+// every handshake with, WrongHost or ForgedIssuer.
+type CertificateFault = redacttest.CertificateFault
+
+const (
+	// WrongHost is redacttest.WrongHost: a self-signed certificate valid for CertificateName alone.
+	WrongHost = redacttest.WrongHost
+	// ForgedIssuer is redacttest.ForgedIssuer: a certificate for localhost sent with a forged
+	// authority named CertificateName.
+	ForgedIssuer = redacttest.ForgedIssuer
+)
+
+// CertificateServer is redacttest.CertificateServer: a TLS stand-in answering every handshake with
+// fault's certificates, asked as base (https://localhost:<port>), and trusting, a client whose
+// roots hold its certificate named CertificateName.
+func CertificateServer(t testing.TB, fault CertificateFault) (base string, trusting *http.Client) {
+	t.Helper()
+	return redacttest.CertificateServer(t, fault)
 }
 
 // RequireNone is redacttest.RequireNone, a print-site test's designated assertion: it captures

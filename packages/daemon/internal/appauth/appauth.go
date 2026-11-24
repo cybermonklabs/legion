@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -885,7 +884,7 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 		m.appHeaders(request, jwt)
 		response, err := m.client.Do(request)
 		if err != nil {
-			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", redact.Unanswered(err, request, ""))}
+			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", oauth2call.Unanswered(err, request, ""))}
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			return nil, m.transient(request, response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
@@ -984,7 +983,7 @@ func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken stri
 // those of whatever answers in its place, which can echo the token the read carried. The read asks
 // for login as it came, path-escaped, which keeps a token's letters, so its failure names the read
 // by the login as a message may print it (githubrest.ShownLogin): in GitHub's answer
-// (transientAs) and in the error of a read that got no answer (redact.Unanswered).
+// (transientAs) and in the error of a read that got no answer (oauth2call.Unanswered).
 func (m *Manager) botIdentity(ctx context.Context, login, installationToken string) (GitIdentity, error) {
 	shown := "/users/" + githubrest.ShownLogin(login)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/users/"+url.PathEscape(login), nil)
@@ -996,7 +995,7 @@ func (m *Manager) botIdentity(ctx context.Context, login, installationToken stri
 	request.Header.Set("User-Agent", "legion-daemon")
 	response, err := m.client.Do(request)
 	if err != nil {
-		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", redact.Unanswered(err, request, shown))}
+		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", oauth2call.Unanswered(err, request, shown))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return GitIdentity{}, m.transientAs(request, response, refusalBody(response), shown, fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
@@ -1031,7 +1030,7 @@ func (m *Manager) appSlug(ctx context.Context, jwt string) (string, error) {
 	m.appHeaders(request, jwt)
 	response, err := m.client.Do(request)
 	if err != nil {
-		return "", &TransientError{Err: fmt.Errorf("GitHub App identity lookup: %w", redact.Unanswered(err, request, ""))}
+		return "", &TransientError{Err: fmt.Errorf("GitHub App identity lookup: %w", oauth2call.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return "", m.transient(request, response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))

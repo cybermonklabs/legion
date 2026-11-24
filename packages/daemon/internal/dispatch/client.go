@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/plan"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
@@ -717,10 +716,11 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 // answer sends one request to Dispatch with the daemon's bearer, body as its JSON where body is not
 // nil, bounded by the client's timeout, and answers Dispatch's 2xx answer, read whole
 // (oauth2call.ReadAnswer). A request that could not be made, or that got no answer, names its
-// failure through redact.Unanswered, which prints none of net/http's own words for it. One that
-// got no answer, or whose answer could not be read, is its transport's failure
-// (transportFailure), and an answer that is not a 2xx is Dispatch's refusal (dispatchError), its
-// status named by its code and the standard phrase.
+// failure through oauth2call.Unanswered, which prints none of net/http's own words for it, nor
+// x509's, and still unwraps to it, so TransportRefusal reads the failure's type. One that got no
+// answer, or whose answer could not be read, is its transport's failure (transportFailure), and an
+// answer that is not a 2xx is Dispatch's refusal (dispatchError), its status named by its code and
+// the standard phrase.
 func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -735,7 +735,7 @@ func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) 
 	}
 	request, err := http.NewRequestWithContext(bounded, method, c.baseURL+path, bytes.NewReader(encoded))
 	if err != nil {
-		return oauth2call.Answer{}, fmt.Errorf("create Dispatch %s %s: %w", method, path, redact.Unanswered(err, nil, ""))
+		return oauth2call.Answer{}, fmt.Errorf("create Dispatch %s %s: %w", method, path, oauth2call.Unanswered(err, nil, ""))
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+c.token)
@@ -745,7 +745,7 @@ func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) 
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return oauth2call.Answer{}, fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(redact.Unanswered(err, request, "")))
+		return oauth2call.Answer{}, fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(oauth2call.Unanswered(err, request, "")))
 	}
 	defer response.Body.Close()
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)

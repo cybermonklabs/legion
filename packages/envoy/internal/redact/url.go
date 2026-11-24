@@ -7,13 +7,15 @@
 // can make the redactor print a piece it should have hidden.
 //
 // An error of a request built from that URL (Error, Cause) prints text of its own only beside a
-// clean URL and a request URL Call prints, and only where that text is a transport failure's, text
-// the allow-list passes, or the broker's own OAuth words; beside any other URL it prints the
-// failure's class alone, except words an earlier Error, Cause or Named already gave, which print
-// as given (below). The broker's OAuth words are read by the rule for remote text (Remote), which
-// fails closed: an OAuth error answer (*oauth2.RetrieveError) of the broker's own with a nonempty
-// error code and an empty error_uri prints its error code and error_description each as the rule
-// reads it - ordinary words as the broker wrote them, a URL with no user information and no query
+// clean URL and a request URL Call prints, and only where that text is a transport failure's (a
+// TLS record or certificate failure's by fixed words for its type, since x509's text names what
+// the certificate the answering party sent holds), text the allow-list passes, or the broker's own
+// OAuth words; beside any other URL it prints the failure's class alone, except words an earlier
+// Error, Cause or Named already gave, which print as given (below). The broker's OAuth words are
+// read by the rule for remote text (Remote), which fails closed: an OAuth error answer
+// (*oauth2.RetrieveError) of the broker's own with a nonempty error code and an empty error_uri
+// prints its error code and error_description each as the rule reads it - ordinary words as the
+// broker wrote them, a URL with no user information and no query
 // or fragment value, and WordsNotReadable in place of a field the rule cannot read as clean -
 // since they are the reason for a refusal a person acts on. It is never one that Class or Masked
 // holds, another server's, because printable checks nothing under an error this package already
@@ -210,19 +212,20 @@ func callClean(base, callURL string) bool {
 
 // Error is err as a message may print it, given raw, the configured URL err's request was built
 // from. Where printable passes it, it prints the text printable checked, which is err's own text
-// when no wrapper added words to it, and then it is err itself, so every message reads as before:
-// raw is clean, and that text holds nothing from a URL it may not print but for the error code and
-// error_description of an OAuth answer with an error code and no error_uri, which print as the
-// rule reads them (trustedAnswer, AnswerText). Words a caller wrapped around the failure or around the
-// *url.Error are dropped, since nothing checked them. Otherwise no text of err is printed: the
-// error's text names only the class of the failure (a URL that did not parse, failed name
-// resolution, a refused connection, a timeout, a TLS failure, an HTTP status, or a request that
-// failed otherwise), found on err itself, and the *url.Error's operation with its URL through Call.
-// A line that names a call sits over the text printed of its failure (a called), so Cause and Class
-// of the result print that text and never the line. A call already named, by Error or by a
-// caller's own words for it (Named), keeps that name: its URL is not named again, so a part of it
-// that Named left out does not come back. It unwraps to err, so errors.Is and errors.As still
-// classify the failure.
+// when no wrapper added words to it and it is no TLS record or certificate failure (those print by
+// fixed words for their type, transportWords), and then it is err itself, so every message reads
+// as before: raw is clean, and that text holds nothing from a URL it may not print but for the
+// error code and error_description of an OAuth answer with an error code and no error_uri, which
+// print as the rule reads them (trustedAnswer, AnswerText). Words a caller wrapped around the
+// failure or around the *url.Error are dropped, since nothing checked them. Otherwise no text of
+// err is printed: the error's text names only the class of the failure (a URL that did not parse,
+// failed name resolution, a refused connection, a timeout, a TLS failure, an HTTP status, or a
+// request that failed otherwise), found on err itself, and the *url.Error's operation with its URL
+// through Call. A line that names a call sits over the text printed of its failure (a called), so
+// Cause and Class of the result print that text and never the line. A call already named, by Error
+// or by a caller's own words for it (Named), keeps that name: its URL is not named again, so a part
+// of it that Named left out does not come back. It unwraps to err, so errors.Is and errors.As
+// still classify the failure.
 func Error(err error, raw string) error {
 	if err == nil {
 		return nil
@@ -374,21 +377,23 @@ type Printable interface {
 
 // checked answers the text of err that may print and whether there is any: err's whole text where
 // the allow-list passes it, and otherwise the text of the first error down err's chain
-// (errors.Unwrap) that is itself a transport failure, its own text; the broker's trusted answer,
-// its text with its code and description each read by the rule (AnswerText); or a Printable
-// directly over a trusted answer whose PrintableText holds no control character, that text
-// sanitized. That error's text is the one printed, not the text of err or of any error between the
-// two, so the words of every wrapper above it drop, whoever wrote them: a caller's fmt.Errorf with
-// %w or an error type of its own, and net/http's own too, so a peer that broke the connection
-// mid-answer prints as `unexpected EOF` and not as `net/http: HTTP/1.x transport connection
-// broken: unexpected EOF`. An error that wraps several (errors.Join) ends the walk, since its text
-// is no single error's.
+// (errors.Unwrap) that is itself a transport failure, as transportWords prints it (its own text,
+// or for a TLS record or certificate failure the fixed words for its type); the broker's trusted
+// answer, its text with its code and description each read by the rule (AnswerText); or a
+// Printable directly over a trusted answer whose PrintableText holds no control character, that
+// text sanitized. That error's text is the one printed, not the text of err or of any error
+// between the two, so the words of every wrapper above it drop, whoever wrote them: a caller's
+// fmt.Errorf with %w or an error type of its own, and net/http's own too, so a peer that broke the
+// connection mid-answer prints as `unexpected EOF` and not as `net/http: HTTP/1.x transport
+// connection broken: unexpected EOF`. An error that wraps several (errors.Join) ends the walk,
+// since its text is no single error's.
 //
 // The one way a caller's words still print is through what transport accepts by its type or its
 // method rather than by its value: a *net.OpError or *net.DNSError a caller built, which prints
-// its own fields and whatever error it wraps, and a caller's error type whose Timeout answers
-// true, which prints its whole text. redact cannot tell those from net's own, and net/http's
-// timeout types are unexported, so there is no list to hold them to. No caller builds either.
+// its own fields and whatever error it wraps but a TLS record or certificate failure, and a
+// caller's error type whose Timeout answers true, which prints its whole text. redact cannot tell
+// those from net's own, and net/http's timeout types are unexported, so there is no list to hold
+// them to. No caller builds either.
 func checked(err error) (string, bool) {
 	if text := err.Error(); clean(text) {
 		return text, true
@@ -403,7 +408,7 @@ func checked(err error) (string, bool) {
 			}
 		}
 		if transport(e) {
-			return e.Error(), true
+			return transportWords(e), true
 		}
 		if re, ok := e.(*oauth2.RetrieveError); ok && trustedAnswer(re) {
 			return AnswerText(re), true
@@ -575,34 +580,89 @@ func tlsFailure(err error) bool {
 }
 
 // tlsRecordOrCertificate reports whether err, or an error it wraps, is a TLS record or
-// certificate failure (tlsError).
+// certificate failure (tlsWords).
 func tlsRecordOrCertificate(err error) bool {
-	if err == nil {
-		return false
-	}
-	if tlsError(err) {
-		return true
-	}
-	switch u := err.(type) {
-	case interface{ Unwrap() error }:
-		return tlsRecordOrCertificate(u.Unwrap())
-	case interface{ Unwrap() []error }:
-		for _, e := range u.Unwrap() {
-			if tlsRecordOrCertificate(e) {
-				return true
-			}
-		}
-	}
-	return false
+	_, ok := tlsWords(err)
+	return ok
 }
 
 // tlsError reports whether err itself, not an error it wraps, is a TLS record or certificate
-// failure.
+// failure (tlsErrorWords).
 func tlsError(err error) bool {
-	switch err.(type) {
-	case tls.RecordHeaderError, *tls.CertificateVerificationError,
-		x509.UnknownAuthorityError, x509.HostnameError, x509.CertificateInvalidError:
-		return true
-	}
-	return false
+	_, ok := tlsErrorWords(err)
+	return ok
 }
+
+// transportWords is the text err, a transport failure (transport), prints as: the words for the
+// TLS record or certificate failure it is or wraps (tlsWords), and otherwise its own text, the
+// transport's or the system's fixed words and the addresses the request dialled.
+func transportWords(err error) string {
+	if words, ok := tlsWords(err); ok {
+		return words
+	}
+	return err.Error()
+}
+
+// tlsWords is the words of the first TLS record or certificate failure in err's tree - err itself,
+// then each error it wraps, in the order errors.As walks them - as tlsErrorWords gives them, and
+// whether there is one.
+func tlsWords(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	if words, ok := tlsErrorWords(err); ok {
+		return words, true
+	}
+	switch u := err.(type) {
+	case interface{ Unwrap() error }:
+		return tlsWords(u.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			if words, ok := tlsWords(e); ok {
+				return words, true
+			}
+		}
+	}
+	return "", false
+}
+
+// tlsErrorWords is the words err itself, not an error it wraps, prints as where it is a TLS record
+// or certificate failure, and whether it is one: fixed words for its type, never its own text.
+// x509 writes into that text what the certificate the answering party sent holds - every name it
+// is valid for (HostnameError), the common name of a candidate authority it sent with it
+// (UnknownAuthorityError), a name an issuer's constraint excludes (CertificateInvalidError) - and
+// whoever answers in the server's place chooses those, the request's credential among them if it
+// likes. A certificate crypto/tls could not verify prints its words with the words for x509's
+// reason under it. Every other print of a transport failure's text reads these words
+// (transportWords), so they are the one rule for it.
+func tlsErrorWords(err error) (string, bool) {
+	switch e := err.(type) {
+	case tls.RecordHeaderError:
+		return tlsRecordWords, true
+	case *tls.CertificateVerificationError:
+		if words, ok := tlsErrorWords(e.Err); ok {
+			return tlsUnverifiedWords + ": " + words, true
+		}
+		return tlsUnverifiedWords, true
+	case x509.HostnameError:
+		return x509HostnameWords, true
+	case x509.UnknownAuthorityError:
+		return x509AuthorityWords, true
+	case x509.CertificateInvalidError:
+		return x509InvalidWords, true
+	}
+	return "", false
+}
+
+// The words a TLS record or certificate failure prints as (tlsErrorWords), one for each type
+// crypto/tls and crypto/x509 answer one as. Each is the package's own fixed words for its type
+// where those name nothing of the certificate, so a reader that looks for them still finds them
+// (gax reads "x509: certificate signed by unknown authority" to stop retrying a call), and says
+// what it leaves out where they do.
+const (
+	tlsRecordWords     = "tls: a record the server sent is not TLS this client can read (most often: what listens at the address does not speak TLS)"
+	tlsUnverifiedWords = "tls: failed to verify certificate"
+	x509HostnameWords  = "x509: certificate is not valid for the host asked (the names it is valid for are not printed: the answering party chose them)"
+	x509AuthorityWords = "x509: certificate signed by unknown authority"
+	x509InvalidWords   = "x509: certificate is not valid (x509's reason is not printed: it can quote the certificate, which the answering party chose)"
+)

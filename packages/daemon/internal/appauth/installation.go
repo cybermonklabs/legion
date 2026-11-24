@@ -7,9 +7,9 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // Installations answers whether a GitHub App is installed on a repository. The daemon records an
@@ -142,7 +142,7 @@ func (m *Manager) installedOn(ctx context.Context, role AppRole, repo ghrepo.Rep
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return false, &TransientError{Err: fmt.Errorf("read whether the %s App is installed on %s: %w", role, repo, redact.Unanswered(err, request, ""))}
+		return false, &TransientError{Err: fmt.Errorf("read whether the %s App is installed on %s: %w", role, repo, oauth2call.Unanswered(err, request, ""))}
 	}
 	body := refusalBody(response)
 	switch {

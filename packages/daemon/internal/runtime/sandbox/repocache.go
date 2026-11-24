@@ -29,7 +29,6 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -742,7 +741,7 @@ func (r *Runtime) cacheStreams(ctx context.Context, pod *corev1.Pod, repo ghrepo
 // cacheHealthOf is GET <address>/healthz through client, carrying no credential, decoded, within a
 // call's budget: an error when the answer is a redirect, which the daemon's client never follows
 // (cacheHealthClient), or names a repository other than repo (workspace.CacheRepositoryHeader). A
-// read that got no answer names its failure through redact.Unanswered.
+// read that got no answer names its failure through oauth2call.Unanswered.
 func cacheHealthOf(ctx context.Context, client *http.Client, address string, repo ghrepo.Repository) (repocache.Health, error) {
 	bounded, cancel := call(ctx)
 	defer cancel()
@@ -752,7 +751,7 @@ func cacheHealthOf(ctx context.Context, client *http.Client, address string, rep
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return repocache.Health{}, redact.Unanswered(err, request, "")
+		return repocache.Health{}, oauth2call.Unanswered(err, request, "")
 	}
 	defer response.Body.Close()
 	// A redirect is the answer itself, refused by its status: its Location is the answering

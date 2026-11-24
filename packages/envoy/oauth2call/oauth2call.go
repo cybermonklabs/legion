@@ -9,7 +9,9 @@
 // (internal/redact/testdata/wholeuse/boundary) holds both. Every HTTP client such a module builds
 // or hands a library is oauth2call.RefusalClient's, or a scope's (s.Client), as it is
 // redact.RefusalClient's here. Every answer such a module reads is read through ReadAnswer or
-// StreamAnswer, as it is through redact's here: the answer census (cmd/redact-gate) holds it.
+// StreamAnswer, as it is through redact's here: the answer census (cmd/redact-gate) holds it. A
+// request such a module sends that got no answer prints through Unanswered, the one printer of it
+// both modules share.
 package oauth2call
 
 import (
@@ -98,6 +100,16 @@ func ContainsFold(body []byte, phrase string) bool { return redact.ContainsFold(
 // points at, as fixed text that names the type, the member and the JSON kind and quotes no value,
 // unwrapping to nothing, for a decode of bytes no answer's Decode reads whose error prints.
 func DecodeError(err error, data []byte, into any) error { return redact.DecodeError(err, data, into) }
+
+// Unanswered is redact.Unanswered: err, the failure of an HTTP request that got no answer
+// (http.Client.Do's error, or http.NewRequest's with request nil), as a message may print it:
+// net/http's operation, the request named shown or, where shown is "", by its URL as redact.URL
+// prints it, and the failure by its transport text, a TLS record or certificate failure's fixed
+// words, or its class, never net/http's or x509's text of what the answering party sent. It
+// unwraps to err, so errors.Is and errors.As still find the failure.
+func Unanswered(err error, request *http.Request, shown string) error {
+	return redact.Unanswered(err, request, shown)
+}
 
 // StatusLine is redact.StatusLine: an answer's status line as a message may print it, the code and
 // its standard reason phrase, never the phrase the answering party wrote (Response.Status).
