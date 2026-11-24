@@ -3,25 +3,33 @@ import { openSpec } from "./editor";
 import {
   ANCHOR,
   conversationTurn,
+  expandedComment,
+  expectIssueReference,
   openMarginThread,
+  PERSON_LOGIN,
+  PERSON_REFERENCE,
   questionText,
+  RENDERED_BODY,
   type ReferenceWorld,
   referenceAgent,
   seedReferenceWorld,
 } from "./reference-surfaces";
+import { settledState } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The cards under a reply whose whole text is references: one card per reference, reading as
- * its target's title over two lines of what that target says, in the margin, in the Inbox
- * thread and in a Conversation message alike — the three surfaces the one card predicate is
- * mounted on (`features/refs/Unfurl.tsx`). A reply that writes anything beside its reference
- * shows none, since the reference already reads as the title inline.
+ * The card under a reply whose whole text is one reference, reading as its target's title over
+ * two lines of what that target says, in the margin, in the Inbox thread, in a Conversation
+ * comment and in a Conversation message alike — the surfaces the one card predicate is mounted
+ * on (`features/refs/Unfurl.tsx`). A reply of two or more references draws each of them inline
+ * and no card, so a short note of references reads as prose rather than a column of cards
+ * (dispatch://INFRA-4009 R5); a reply that writes anything beside its references shows none,
+ * since each reference already reads inline.
  */
 
-// Each row seeds the shared world, writes three replies to each of three surfaces and reads
-// three pages.
+// Each row seeds the shared world, writes its replies to each of four surfaces and reads three
+// pages.
 test.setTimeout(180_000);
 
 /** One form a reference-only reply takes, what its card reads as, and where it leads. */
@@ -38,7 +46,8 @@ interface Form {
 const missingIssue = `${baseUrl}/issues/CORE-999999`;
 
 // A card reads as its target's own title, which for an issue is its words alone: the key stands
-// beside a reference drawn inline, never on the card, whose own line already names the issue.
+// beside the issue's status mark where a reference is drawn inline, never on the card, whose own
+// line already names the issue.
 const FORMS: readonly Form[] = [
   {
     href: (world) => `/issues/${world.target.key}`,
@@ -87,8 +96,8 @@ interface Card {
   readonly href: string;
 }
 
-/** Checks that `reply` shows exactly `cards`, in order, each reading as its title and leading
- *  to its target. */
+/** Checks that `reply` shows exactly `cards` - one card, or none - each reading as its title
+ *  and leading to its target. */
 async function expectCards(reply: Locator, cards: readonly Card[]): Promise<void> {
   const links = reply.getByRole("region", { name: "References" }).getByRole("link");
   await expect(links).toHaveCount(cards.length);
@@ -99,16 +108,17 @@ async function expectCards(reply: Locator, cards: readonly Card[]): Promise<void
 }
 
 /** Where `seedReplies` wrote its replies: a margin thread on the host's spec, an open ask in
- *  alice's Inbox, and the host's Conversation messages. */
+ *  alice's Inbox, and the host's Conversation comments and messages. */
 interface Replies {
   readonly root: string;
   readonly ask: string;
+  readonly comments: readonly string[];
   readonly messages: readonly string[];
   readonly count: number;
 }
 
 /** Writes each of `bodies`, in order, as a reply in a margin thread on the host's spec, as a
- *  reply in an open ask's thread, and as a Conversation message. */
+ *  reply in an open ask's thread, as a Conversation comment and as a Conversation message. */
 async function seedReplies(world: ReferenceWorld, bodies: readonly string[]): Promise<Replies> {
   const root = await createComment(
     world.host.key,
@@ -128,17 +138,22 @@ async function seedReplies(world: ReferenceWorld, bodies: readonly string[]): Pr
     await createComment(world.host.key, { ask_id: ask.id, body }, referenceAgent);
   }
   expect(((await getAsk(ask.id)).replies ?? []).map((reply) => reply.body)).toEqual([...bodies]);
+  const comments: string[] = [];
+  for (const body of bodies) {
+    comments.push((await createComment(world.host.key, { body }, referenceAgent)).id);
+  }
   const messages: string[] = [];
   for (const body of bodies) {
     messages.push((await createMessage(world.host.key, { body }, referenceAgent)).id);
   }
-  return { ask: ask.id, count: bodies.length, messages, root: root.id };
+  return { ask: ask.id, comments, count: bodies.length, messages, root: root.id };
 }
 
 /**
  * Opens each surface `seedReplies` wrote to in turn — the margin thread, the Inbox thread and
- * the Conversation — and hands `check` that surface's replies in the order they were written.
- * `settled`, started before each surface is opened, is awaited before its replies are.
+ * the Conversation, its comments expanded and then its messages — and hands `check` that
+ * surface's replies in the order they were written. `settled`, started before each page is
+ * opened, is awaited before its replies are.
  */
 async function readReplies(
   page: Page,
@@ -159,6 +174,16 @@ async function readReplies(
   await page.goto("/");
   const inbox = page.getByTestId(`ask-${replies.ask}`).getByTestId(`thread-${replies.ask}`);
   const inboxReplies = inbox.locator("li");
+  // The ask's thread keeps its two newest replies and folds the earlier ones behind a control
+  // (`thread-layout.ts`), so a thread of more replies is opened first.
+  const fold = inbox.getByRole("button", { name: /^Show \d+ earlier repl/u });
+  const shown = await settledState("the Inbox's ask thread", [
+    ["folded", fold],
+    ["whole", inboxReplies.nth(replies.count - 1)],
+  ]);
+  if (shown === "folded") {
+    await fold.click();
+  }
   await expect(inboxReplies).toHaveCount(replies.count);
   await answered;
   // Drawn order is written order on both threads now: which way a thread reads is the reader's
@@ -169,11 +194,18 @@ async function readReplies(
   answered = settled();
   await page.goto(`/issues/${world.host.key}/conversation`);
   await answered;
+  const comments: Locator[] = [];
+  for (const id of replies.comments) {
+    comments.push(await expandedComment(page, id));
+  }
+  await check(comments);
   await check(replies.messages.map((id) => conversationTurn(page, "message", id)));
 }
 
 for (const form of FORMS) {
-  test(`a reply that is only ${form.name} shows its card in the margin, the Inbox thread and a Conversation message; one with text beside it shows none`, async ({
+  // SLOW(>=2s): seeds the shared world, writes two replies to each of four surfaces and reads
+  // three pages.
+  test(`a reply that is only ${form.name} shows its card in the margin, the Inbox thread, a Conversation comment and a Conversation message; one with text beside it shows none`, async ({
     browser,
   }, testInfo) => {
     const world = await seedReferenceWorld();
@@ -217,8 +249,10 @@ for (const form of FORMS) {
   });
 }
 
-// @pr: The reference-card family's one row on the lane: a reply of two addresses shows a card for each, in all three surfaces.
-test("a reply made only of a bare key and a dispatch:// address shows a card for each in the margin, the Inbox thread and a Conversation message @pr", async ({
+// SLOW(>=2s): seeds the shared world, writes five replies to each of four surfaces and reads
+// three pages.
+// @pr: The reference-card family's one row on the lane: a reply of several references draws them inline and no card, on all four surfaces, beside a reply of one reference that keeps its card.
+test("a reply made only of two issues and an ask draws each inline and no card, and a reply of one of them its card, in the margin, the Inbox thread, a Conversation comment and a Conversation message @pr", async ({
   browser,
 }, testInfo) => {
   const world = await seedReferenceWorld();
@@ -226,22 +260,88 @@ test("a reply made only of a bare key and a dispatch:// address shows a card for
   if (question === undefined) {
     throw new Error("setup: the host's spec declares no q2");
   }
+  const ask = `dispatch://${world.host.key}/ask/${question.id}`;
+  const other = `dispatch://${world.other.key}`;
+  const several = `${world.target.key} ${other} ${ask}`;
   const replies = await seedReplies(world, [
-    `${world.target.key} dispatch://${world.host.key}/ask/${question.id}`,
+    several,
+    `Beside them: ${several} today.`,
+    world.target.key,
+    other,
+    ask,
   ]);
-  const cards = [
-    { href: `/issues/${world.target.key}`, title: world.target.title },
-    { href: `/issues/${world.host.key}/asks/${question.id}`, title: question.question },
-  ];
 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await readReplies(page, testInfo.project.name, world, replies, async ([reply]) => {
-      if (reply === undefined) {
-        throw new Error("one reply");
+    await readReplies(page, testInfo.project.name, world, replies, async (drawn) => {
+      const [all, beside, target, otherIssue, asked] = drawn;
+      if (
+        all === undefined ||
+        beside === undefined ||
+        target === undefined ||
+        otherIssue === undefined ||
+        asked === undefined
+      ) {
+        throw new Error("five replies");
       }
-      await expectCards(reply, cards);
+      // A reply of one reference keeps its one card. The cards are read first: they need every
+      // read the replies of several references need, so those have answered by the time those
+      // replies are asked to show none.
+      await expectCards(target, [
+        { href: `/issues/${world.target.key}`, title: world.target.title },
+      ]);
+      await expectCards(otherIssue, [
+        { href: `/issues/${world.other.key}`, title: world.other.title },
+      ]);
+      await expectCards(asked, [
+        { href: `/issues/${world.host.key}/asks/${question.id}`, title: question.question },
+      ]);
+      // Three references alone, and the same three with words beside them, draw no card: each
+      // reference is drawn inline, an issue as its status mark and its key, named by its key,
+      // its status's words and its title, and the ask as its question.
+      for (const reply of [all, beside]) {
+        await expect(reply.getByRole("region", { name: "References" })).toHaveCount(0);
+        const body = reply.locator(RENDERED_BODY).first();
+        await expectIssueReference(
+          body.locator(`a[data-dispatch-ref="dispatch://${world.target.key}"]`),
+          world.target
+        );
+        await expectIssueReference(body.locator(`a[data-dispatch-ref="${other}"]`), world.other);
+        await expect(body.locator(`a[data-dispatch-ref="${ask}"]`)).toHaveText(question.question);
+      }
+    });
+  } finally {
+    await context.close();
+  }
+});
+
+/** A pull request on GitHub, which Dispatch reads through its GitHub proxy. The fake GitHub
+ *  holds no such pull request, so its card reads as the address it was written as. */
+const PULL_REQUEST = "https://github.com/acme-labs/widgets/pull/7";
+
+// SLOW(>=2s): seeds the shared world, writes two replies to each of four surfaces and reads
+// three pages.
+test("a reply that is only a GitHub pull request shows its card, and one that is only a person shows none, in the margin, the Inbox thread, a Conversation comment and a Conversation message", async ({
+  browser,
+}, testInfo) => {
+  const world = await seedReferenceWorld();
+  const replies = await seedReplies(world, [PULL_REQUEST, PERSON_REFERENCE]);
+
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await readReplies(page, testInfo.project.name, world, replies, async ([pull, person]) => {
+      if (pull === undefined || person === undefined) {
+        throw new Error("two replies");
+      }
+      await expectCards(pull, [{ href: PULL_REQUEST, title: PULL_REQUEST }]);
+      // A person opens no page, so a reply of one is their login, with no link and no card. It
+      // is read once the reference has drawn as the login rather than as written.
+      await expect(person).toContainText(PERSON_LOGIN);
+      await expect(person).not.toContainText(PERSON_REFERENCE);
+      await expect(person.getByRole("link", { name: PERSON_LOGIN })).toHaveCount(0);
+      await expect(person.getByRole("region", { name: "References" })).toHaveCount(0);
     });
   } finally {
     await context.close();

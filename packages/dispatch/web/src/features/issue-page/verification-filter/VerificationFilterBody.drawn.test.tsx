@@ -2108,7 +2108,8 @@ test("an agent that recorded a result is named by its role's word", async () => 
 
 // A check's words are drawn whole through `RowText` from the results read's reading of them
 // (`text_tree`), so a link in them is a link and a reference is named by its target's name,
-// never spelled as its address (R8, INFRA-1196 decision 350). The words are no button, so no
+// never spelled as its address (R8, INFRA-1196 decision 350): an issue by its status mark and its
+// key, its title in its accessible name (INFRA-4009 R1 and R3). The words are no button, so no
 // control holds a link, and a press on a link is the link's own: it neither opens nor shuts the
 // check's facts.
 test("a check's words draw their links from the results read's tree", async () => {
@@ -2125,9 +2126,12 @@ test("a check's words draw their links from the results read's tree", async () =
     const runbook = await waitFor(() => {
       const found = words?.querySelector<HTMLElement>('a[href="https://example.com/runbook"]');
       expect(found ?? null).not.toBeNull();
-      expect(words?.querySelector('a[data-row-reference="dispatch://CORE-2"]')?.textContent).toBe(
-        "CORE-2 Drain the queue"
-      );
+      const core2 = words?.querySelector('a[data-row-reference="dispatch://CORE-2"]');
+      expect(core2?.textContent).toBe(" CORE-2");
+      expect(core2?.getAttribute("aria-label")).toBe("CORE-2, In progress, Drain the queue");
+      expect(
+        core2?.querySelector("svg[data-status-glyph]")?.getAttribute("data-status-glyph")
+      ).toBe("◐");
       return found as HTMLElement;
     });
     expect(view.container.textContent).not.toContain("dispatch://");

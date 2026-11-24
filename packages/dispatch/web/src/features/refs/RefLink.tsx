@@ -7,14 +7,17 @@ import {
   wordsAreAddress,
   wordsFormatting,
 } from "@legion/contracts";
-import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
+import { createContext, type ReactNode, useContext, useLayoutEffect, useState } from "react";
 
+import { StatusGlyph } from "../../components/StatusGlyph";
 import { borderDefault } from "../../theme/classes";
+import { issueReferenceName } from "./issue-reference-name";
 import { isPartyRoute } from "./party-references";
 import { useReferenceHref, useReferenceTarget } from "./reference-target";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
+  issueOfRoute,
   nodeRouteFromHref,
   referenceHref,
   referenceRouteFromHref,
@@ -35,6 +38,13 @@ export interface WordStretch {
 
 /** A reference whose words hold no search mark of their own. */
 const NO_STRETCHES: readonly WordStretch[] = [];
+
+/** Whether a link to an issue whose words its author wrote draws the issue's status mark before
+ *  those words (INFRA-4009 R4): true in a rendered body, the default, and false where a surface
+ *  keeps such a link exactly as its author wrote it - the new issue page's rows, which draw the
+ *  mark only on the references they name themselves (`row-references.ts`), as the document
+ *  editor does. */
+export const WordedLinksMarked = createContext(true);
 
 export interface ReferenceAnchor {
   /** The element the `RefLink` portal renders into: the `<a>` itself, or whatever a surface put
@@ -84,10 +94,19 @@ export interface ReferenceLinking {
  * answered does not exist is its words with no link at all (R8), as the document editor draws
  * it: the element it renders into stops being a link (`unlinkMissingReference`).
  *
+ * An issue is named by its status mark and its key, on one line, and never by its title
+ * (INFRA-4009 R1): the title is in the peek that opens on the link (`RefPreview`) and in the
+ * accessible name the element it renders into carries, the key, the status's words and the
+ * title (`issueReferenceName`, R3). A link to an issue whose words its author wrote draws the
+ * mark before those words (R4), and its name is the mark's and the words'. The mark comes with
+ * the issue's summary, so until that is read, and for an issue that does not exist, the words
+ * the writer wrote stand with no mark; it follows the status as an event reads the summary
+ * again (R2).
+ *
  * A search hit's marks follow the same rule (`marked`). Wherever the words are drawn, the server's
- * marks stay on them exactly as it sent them; only a title drawn in their place is marked, whole,
+ * marks stay on them exactly as it sent them; only a name drawn in their place is marked, whole,
  * since none of its characters is one the server matched. A late answer moves them either way:
- * the words keep their marks while the title loads, the title is marked whole once it comes, and
+ * the words keep their marks while the name loads, the name is marked whole once it comes, and
  * the words have their marks back when the target turns out not to exist.
  *
  * Beside the words goes the picture's thumbnail when the reference names an image artifact. It
@@ -113,7 +132,7 @@ export function RefLink({
    *  author wrote it, or a Markdown link's own text. */
   text: string;
 }): ReactNode {
-  const { known, missing, picture, title } = useReferenceTarget(route, { text: false });
+  const { known, missing, picture, status, title } = useReferenceTarget(route, { text: false });
   // A reference opening no page of this dashboard - a person, whom nothing shows (R5), and any
   // path the gate refuses - gets no href: its element stays no link.
   const href = useReferenceHref(route);
@@ -132,15 +151,45 @@ export function RefLink({
   // uploaded since gets its own load instead of inheriting the last one's failure.
   const [failedPicture, setFailedPicture] = useState<string>();
   // Until the target answers, for an issue the reader cannot read, for a target that does not
-  // exist and for a link whose words its author wrote, the words the author wrote stand.
+  // exist and for a link whose words its author wrote, the words the author wrote stand. An
+  // issue is the issue's own address or a tab of its page (`issueOfRoute`); a link to it whose
+  // words its author wrote draws its mark only where the surface marks such a link.
+  const wordedMarked = useContext(WordedLinksMarked);
+  const issueKey = issueOfRoute(route);
+  const issueStatus =
+    issueKey !== undefined && !missing && title !== undefined && (reads !== "words" || wordedMarked)
+      ? status
+      : undefined;
   const named =
     reads === "words" || missing
       ? undefined
       : reads === "mention"
         ? mentionDrawn({ known, title }, shortForm(route))
-        : title === undefined
-          ? undefined
-          : drawnName(route, title);
+        : issueKey !== undefined
+          ? issueStatus === undefined
+            ? undefined
+            : issueKey
+          : title;
+  // A bare issue reference draws its title nowhere, so its element carries it in its name.
+  const label =
+    issueStatus === undefined || named === undefined || title === undefined
+      ? undefined
+      : issueReferenceName(named, issueStatus, title);
+  useLayoutEffect(() => {
+    if (anchor === undefined || label === undefined) {
+      return;
+    }
+    anchor.setAttribute("aria-label", label);
+    return () => anchor.removeAttribute("aria-label");
+  }, [anchor, label]);
+  const words =
+    named === undefined ? (
+      markedWords(text, marked)
+    ) : marked.length > 0 ? (
+      <SearchMark>{named}</SearchMark>
+    ) : (
+      named
+    );
   return (
     <>
       {picture === undefined || picture === failedPicture ? null : (
@@ -154,28 +203,18 @@ export function RefLink({
           />{" "}
         </>
       )}
-      {named === undefined ? (
-        markedWords(text, marked)
-      ) : marked.length > 0 ? (
-        <SearchMark>{named}</SearchMark>
+      {issueStatus === undefined ? (
+        words
+      ) : named === undefined ? (
+        <>
+          <StatusGlyph status={issueStatus} /> {words}
+        </>
       ) : (
-        named
+        <span className="whitespace-nowrap">
+          <StatusGlyph status={issueStatus} /> {words}
+        </span>
       )}
     </>
-  );
-}
-
-/** The name a reference standing as its own words draws in place of them once its title
- *  resolved: an issue as its key then its title, as the project's issues table writes a key
- *  beside one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the
- *  thing`; anything else as its title. */
-function drawnName(route: DispatchReferenceRoute, title: string): ReactNode {
-  return route.kind === "issue" ? (
-    <>
-      <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
-    </>
-  ) : (
-    title
   );
 }
 

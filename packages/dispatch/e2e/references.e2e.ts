@@ -15,6 +15,7 @@ import {
 import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { sql } from "./psql";
+import { expectIssueReference } from "./reference-surfaces";
 import { settledState } from "./settled";
 import { expect, test } from "./test";
 
@@ -44,8 +45,13 @@ test("an issue and its ask show a cross-project message and structural backlinks
   });
   await expect(issueReferences).toContainText(`Message · ${source.key}`);
   // The excerpt is the head of the message's own body, drawn by the renderer: each address in
-  // it reads as its target's name, and none is left as text.
-  await expect(issueReferences).toContainText(`Depends on ${target.key} Target issue and`);
+  // it reads as its target, an issue as its status mark and its key with its title in its
+  // accessible name (dispatch://INFRA-4009), and none is left as text.
+  await expect(issueReferences).toContainText(`Depends on ${target.key} and`);
+  await expectIssueReference(
+    issueReferences.locator(`a[data-dispatch-ref="dispatch://${target.key}"]`),
+    target
+  );
   await expect(issueReferences).not.toContainText("dispatch://");
   await expect(issueReferences).toContainText(`Child issue · ${child.key}`);
   await expect(issueReferences).toContainText("Child issue");
@@ -130,9 +136,14 @@ test("an open backlink panel follows a mention added, replied to, and removed", 
   await createMessage(source.key, { body: `Blocked on dispatch://${target.key} today.` });
   await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
   // The excerpt is the message's stored text, drawn by the renderer, so the bare address reads as
-  // the target's current name once the target's read lands. Before that it shows
-  // the address as written, for a moment (76 ms measured in the pod), which is no claim to read.
-  await expect(references).toContainText(`Blocked on ${target.key} ${target.title} today.`, live);
+  // the target's status mark and its key, its title in its accessible name, once the target's
+  // read lands (dispatch://INFRA-4009). Before that it shows the address as written, for a
+  // moment (76 ms measured in the pod), which is no claim to read.
+  await expect(references).toContainText(`Blocked on ${target.key} today.`, live);
+  await expectIssueReference(
+    references.locator(`a[data-dispatch-ref="dispatch://${target.key}"]`),
+    target
+  );
 
   const reply = await createComment(source.key, {
     body: `Still blocked on dispatch://${target.key} after the rollback.`,
@@ -404,7 +415,11 @@ test("an issue's backlinks skip an edge of a node kind this build does not know"
   await header.getByRole("button", { name: /^Referenced by \(2\)$/ }).click();
   const references = header.getByRole("region", { name: "Referenced by" });
   await expect(references).toContainText(`Message · ${source.key}`);
-  await expect(references).toContainText(`Waiting on ${target.key} Cited by two builds to land.`);
+  await expect(references).toContainText(`Waiting on ${target.key} to land.`);
+  await expectIssueReference(
+    references.locator(`a[data-dispatch-ref="dispatch://${target.key}"]`),
+    target
+  );
   await expect(references).not.toContainText("Referenced by unavailable.");
 });
 

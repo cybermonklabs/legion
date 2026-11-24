@@ -47,7 +47,8 @@ function blockEdge(
 }
 
 /** The panel over a client that already holds CORE-1's summary: an excerpt that is the head of
- *  a stored body is drawn by the renderer, which reads a reference in it as its target's name. */
+ *  a stored body is drawn by the renderer, which draws a reference in it to CORE-1 as CORE-1's
+ *  status mark and its key. */
 function renderPanel(read: GraphReferences, reference = "dispatch://CORE-1") {
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(read);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -68,13 +69,18 @@ function renderPanel(read: GraphReferences, reference = "dispatch://CORE-1") {
   return { client, getReferences, view };
 }
 
-/** Each row of `source` as [its excerpt's words, the first link it holds]. */
+/** Each row of `source` as [its excerpt's words, the first link it holds]. The status mark before
+ *  an issue's key holds no text, and a space stands between the two. */
 function excerptRows(source: Element): (string | null | undefined)[][] {
   return [...source.querySelectorAll(":scope > ul > li")].map((row) => [
-    row.querySelector("p")?.textContent,
+    row.querySelector("p")?.textContent?.replace(/\s+/g, " "),
     row.querySelector("a")?.getAttribute("href"),
   ]);
 }
+
+/** The element a reference to CORE-1 renders into, once CORE-1's summary is read: it names the
+ *  issue by its key, its status's words and its title. */
+const CORE_1_DRAWN = '[aria-label="CORE-1, In progress, Fix the thing"]';
 
 let restore: (() => void) | undefined;
 afterEach(() => {
@@ -151,14 +157,16 @@ test("two blocks of one document version citing the node are two rows under that
   );
   // Each block its own row, with its own excerpt and a link to that block, its id encoded as
   // encodeBlockId writes it. The excerpt is the head of the block's text, drawn by the renderer:
-  // the address in it reads as the issue's name, never as the characters `dispatch://CORE-1`.
+  // the address in it reads as the issue's status mark and its key, never as the characters
+  // `dispatch://CORE-1`.
   expect(sources[0]?.querySelectorAll(":scope > ul > li")).toHaveLength(2);
   await waitFor(() =>
     expect(excerptRows(sources[0] as HTMLElement)).toEqual([
-      ["Ship it as CORE-1 Fix the thing says.", "/issues/OPS-1/artifacts/notes-md#b-ship%5Fit"],
-      ["And hold the rest for CORE-1 Fix the thing.", "/issues/OPS-1/artifacts/notes-md#b-p2"],
+      ["Ship it as CORE-1 says.", "/issues/OPS-1/artifacts/notes-md#b-ship%5Fit"],
+      ["And hold the rest for CORE-1.", "/issues/OPS-1/artifacts/notes-md#b-p2"],
     ])
   );
+  expect(sources[0]?.querySelectorAll(`${CORE_1_DRAWN} svg[data-status-glyph]`)).toHaveLength(2);
   // Rows written in one version share their time, and still have keys of their own.
   expect(consoleError.mock.calls.some((call) => String(call[0]).includes("same key"))).toBeFalse();
 });
@@ -345,7 +353,7 @@ test("blocks of one comment citing the node are rows under that comment, labelle
   );
   await waitFor(() =>
     expect(excerptRows(sources[0] as HTMLElement)).toEqual([
-      ["Alpha cites CORE-1 Fix the thing.", `/issues/OPS-1/comments/${comment}#b-b1`],
+      ["Alpha cites CORE-1.", `/issues/OPS-1/comments/${comment}#b-b1`],
       ["Beta cites it too.", `/issues/OPS-1/comments/${comment}#b-b2`],
     ])
   );
@@ -356,10 +364,11 @@ test("blocks of one comment citing the node are rows under that comment, labelle
     `/issues/OPS-1/messages/${message}#b-b1`
   );
   await waitFor(() =>
-    expect(sources[1]?.querySelector("p")?.textContent).toBe(
-      "The message cites CORE-1 Fix the thing."
+    expect(sources[1]?.querySelector("p")?.textContent?.replace(/\s+/g, " ")).toBe(
+      "The message cites CORE-1."
     )
   );
+  expect(sources[1]?.querySelector(CORE_1_DRAWN)).not.toBeNull();
 });
 
 test("parts of one ask citing the node are rows under that ask, named as the ask rather than as an artifact", async () => {
@@ -394,8 +403,8 @@ test("parts of one ask citing the node are rows under that ask, named as the ask
   expect(within(panel).queryByRole("link", { name: /^Artifact/ })).not.toBeInTheDocument();
   await waitFor(() =>
     expect(excerptRows(sources[0] as HTMLElement)).toEqual([
-      ["Ship it once CORE-1 Fix the thing lands?", `/issues/OPS-1/asks/${ask}#b-b1`],
-      ["Hold — CORE-1 Fix the thing is not ready.", `/issues/OPS-1/asks/${ask}#b-b3`],
+      ["Ship it once CORE-1 lands?", `/issues/OPS-1/asks/${ask}#b-b1`],
+      ["Hold — CORE-1 is not ready.", `/issues/OPS-1/asks/${ask}#b-b3`],
     ])
   );
 });
@@ -440,8 +449,11 @@ test("a block of a project document's comment links to its comment, with no frag
 
   const panel = await screen.findByRole("region", { name: "Referenced by" });
   await waitFor(() =>
-    expect(panel.querySelector("li li p")?.textContent).toBe("Beta cites CORE-1 Fix the thing.")
+    expect(panel.querySelector("li li p")?.textContent?.replace(/\s+/g, " ")).toBe(
+      "Beta cites CORE-1."
+    )
   );
+  expect(panel.querySelector(`li li p ${CORE_1_DRAWN}`)).not.toBeNull();
   expect(within(panel).getByRole("link", { name: "Comment · CORE" })).toHaveAttribute(
     "href",
     `/projects/CORE/documents/handbook-md?comment=${comment}`

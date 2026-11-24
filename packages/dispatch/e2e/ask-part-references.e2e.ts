@@ -1,4 +1,5 @@
 import { createAsk, createComment, createIssue, createProject, getAsk } from "./api";
+import { expectIssueReference } from "./reference-surfaces";
 import { expect, type Locator, type Page, test } from "./test";
 
 // A part of an ask - its question, each of its options and its answer - is a block of the
@@ -119,8 +120,9 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
     agent
   );
   // The option's stored text, which the panel shows as the row's excerpt: its label, an em dash
-  // and its description, drawn by the renderer, so the address in it reads as the issue's name.
-  const optionText = `Wait — Hold until ${target.key} ${target.title} ships.`;
+  // and its description, drawn by the renderer, so the address in it reads as the issue's status
+  // mark and its key, its title in its accessible name (dispatch://INFRA-4009).
+  const optionText = `Wait — Hold until ${target.key} ships.`;
 
   await page.goto(`/issues/${target.key}`);
   const header = page.getByTestId("issue-header");
@@ -135,6 +137,10 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
   await expect(askSource).toBeVisible();
   await expect(references.getByText(/^Artifact · /)).toHaveCount(0);
   await expect(references.locator(".dispatch-markdown")).toHaveText(optionText);
+  await expectIssueReference(
+    references.locator(`.dispatch-markdown a[data-dispatch-ref="dispatch://${target.key}"]`),
+    target
+  );
   // One row, not two: an ask's own links are its question's, so the option's citation is the
   // part's edge alone.
   await expect(askSource).toHaveCount(1);

@@ -85,6 +85,10 @@ function words(element: HTMLElement): string {
   return (element.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
+/** The element a reference to CORE-1 renders into, once CORE-1's summary is read: it names the
+ *  issue by its key, its status's words and its title, and draws the status mark and the key. */
+const CORE_1_DRAWN = '[aria-label="CORE-1, In progress, Design decision"]';
+
 afterEach(cleanup);
 
 test("a hit inside bold or code text is marked inside the formatting, with no syntax left", async () => {
@@ -108,11 +112,12 @@ test("a hit inside bold or code text is marked inside the formatting, with no sy
   }
 });
 
-test("a hit inside a dispatch:// reference keeps its highlight on the reference's resolved title", async () => {
+test("a hit inside a dispatch:// reference keeps its highlight on the key the reference draws", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
   // q=CORE-1, as Postgres answers it: `Tracked as dispatch://<b>CORE</b><b>-1</b> since
   // Monday` - ts_headline marks the address's words one by one, so the reference stands in three
-  // text nodes. The preview reads it whole, names the issue, and marks the name whole.
+  // text nodes. The preview reads it whole, draws the issue's status mark and its key, and marks
+  // the key whole.
   const bare = stored("a-marked-reference");
   const { preview, rerender, view } = renderPreview({
     highlightClassName: "hit",
@@ -121,13 +126,17 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
     tree: bare.snippet,
   });
   try {
-    await waitFor(() => expect(preview()).toHaveTextContent("Design decision"));
+    await waitFor(() => expect(preview().querySelector(CORE_1_DRAWN)).not.toBeNull());
     const reference = preview().querySelector<HTMLElement>("[data-dispatch-ref]");
     if (reference === null) throw new Error("the reference did not render as one");
-    expect(reference.textContent).toBe("CORE-1 Design decision");
-    expect(marks(preview())).toEqual(["CORE-1 Design decision"]);
-    expect(reference.querySelector("mark")?.textContent).toBe("CORE-1 Design decision");
-    expect(preview().textContent).toBe("Tracked as CORE-1 Design decision since Monday.");
+    expect(reference.textContent?.trim()).toBe("CORE-1");
+    expect(reference.querySelector("svg[data-status-glyph]")).toHaveAttribute(
+      "aria-label",
+      "In progress"
+    );
+    expect(marks(preview())).toEqual(["CORE-1"]);
+    expect(reference.querySelector("mark")?.textContent).toBe("CORE-1");
+    expect(words(preview())).toBe("Tracked as CORE-1 since Monday.");
 
     // The same search over a bare key: `Tracked as <b>CORE</b><b>-1</b> since Monday`.
     const key = stored("a-marked-key");
@@ -137,13 +146,13 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
       markdown: snippetSource(key.markdown),
       tree: key.snippet,
     });
-    await waitFor(() => expect(marks(preview())).toEqual(["CORE-1 Design decision"]));
-    expect(preview().querySelector("[data-dispatch-ref] mark")?.textContent).toBe(
-      "CORE-1 Design decision"
-    );
+    await waitFor(() => expect(marks(preview())).toEqual(["CORE-1"]));
+    expect(preview().querySelector("[data-dispatch-ref] mark")?.textContent).toBe("CORE-1");
+    expect(preview().querySelector(CORE_1_DRAWN)).not.toBeNull();
 
     // q=design on a hand-written link to the same target: a link whose words its author wrote
-    // keeps those words (R8), so the hit is marked where the reader reads it.
+    // keeps those words (R8), after the issue's status mark, so the hit is marked where the
+    // reader reads it.
     const linkHit = stored("a-marked-link-to-a-reference");
     rerender({
       highlightClassName: "hit",
@@ -152,10 +161,11 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
       tree: linkHit.snippet,
     });
     await waitFor(() =>
-      expect(preview().querySelector("[data-dispatch-ref]")?.textContent).toBe("the design")
+      expect(preview().querySelector("[data-dispatch-ref]")?.textContent?.trim()).toBe("the design")
     );
     const linked = preview().querySelector<HTMLElement>("[data-dispatch-ref]");
     expect(linked?.querySelector("mark")?.textContent).toBe("design");
+    expect(linked?.firstElementChild).toHaveAttribute("data-status-glyph", "◐");
     expect(marks(preview())).toEqual(["design"]);
     expect(preview().textContent).not.toContain("](");
   } finally {
@@ -164,14 +174,14 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
   }
 });
 
-test("a hit on a stored autolink's key reads as the reference it links to, its title marked whole", async () => {
+test("a hit on a stored autolink's key reads as the reference it links to, its key marked whole", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
   // q=CORE over the link a document stores for the autolink `<dispatch://CORE-1>`, as Postgres
   // answers it once the cut is widened back to the whole link: `See
   // [dispatch://<b>CORE</b>-1](dispatch://<b>CORE</b>-1) since Monday.` - ts_headline marks the
   // key in the address as well as in the words. The server keeps the mark on the words alone, so
   // the link still points at CORE-1: a link whose words are its own address reads as the issue's
-  // name, and a title drawn in place of marked words is marked whole.
+  // status mark and its key, and a key drawn in place of marked words is marked whole.
   const hit = stored("a-marked-autolink-to-a-reference");
   const { preview, view } = renderPreview({
     highlightClassName: "hit",
@@ -180,13 +190,14 @@ test("a hit on a stored autolink's key reads as the reference it links to, its t
     tree: hit.snippet,
   });
   try {
-    await waitFor(() => expect(preview()).toHaveTextContent("Design decision"));
+    await waitFor(() => expect(preview().querySelector(CORE_1_DRAWN)).not.toBeNull());
     const reference = preview().querySelector<HTMLElement>("[data-dispatch-ref]");
     if (reference === null) throw new Error("the autolink did not render as a reference");
-    expect(reference.textContent).toBe("CORE-1 Design decision");
-    expect(reference.querySelector("mark")?.textContent).toBe("CORE-1 Design decision");
-    expect(marks(preview())).toEqual(["CORE-1 Design decision"]);
-    expect(preview().textContent).toBe("See CORE-1 Design decision since Monday.");
+    expect(reference.textContent?.trim()).toBe("CORE-1");
+    expect(reference.querySelector("svg[data-status-glyph]")).not.toBeNull();
+    expect(reference.querySelector("mark")?.textContent).toBe("CORE-1");
+    expect(marks(preview())).toEqual(["CORE-1"]);
+    expect(words(preview())).toBe("See CORE-1 since Monday.");
     expect(preview().textContent).not.toContain("dispatch://");
     await waitFor(() =>
       expect(reference.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1")

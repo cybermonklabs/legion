@@ -544,18 +544,30 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * every surface beside the tree to name them by (`refs/reference-names.tsx`), each read by the
  * rule a chip naming the target is named by (`treeContext`), so a link and a chip naming one
  * target never disagree, save that a chip draws the page's word for a whole document in place
- * of its name (`ReferenceNameReading.chipWord`): the chip of each answered target, named by
- * `chipNaming`.
+ * of its name (`ReferenceNameReading.chipWord`): the chip of each answered target, and the
+ * status the read answered for it, named by `chipNaming`.
  */
 export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
   const context = treeContext(reads);
-  return chipNaming((reads.targets ?? []).map((target) => context.chipOf(target.ref)));
+  const statuses = new Map<string, string>();
+  for (const target of reads.targets ?? []) {
+    if (target.status !== undefined) statuses.set(target.ref, target.status);
+  }
+  return chipNaming(
+    (reads.targets ?? []).map((target) => context.chipOf(target.ref)),
+    statuses
+  );
 }
+
+/** No status answered: what a caller that names chips with no batched read beside them passes. */
+const NO_STATUSES: ReadonlyMap<string, string> = new Map();
 
 /**
  * How the page names each target the batched reference read answered, by the chip naming it
- * (`targetNaming`), under the chip's own reference (`NodeChip.ref`). Each reference is in one of
- * the four, read from its chip in one walk, so the four cannot disagree.
+ * (`targetNaming`), under the chip's own reference (`NodeChip.ref`), and the status the read
+ * answered for each issue among them (`statuses`, by the same reference). Each reference is in
+ * one of the four sets, read from its chip in one walk, so the four cannot disagree, and each
+ * named issue's status stands beside its reading.
  *
  * - **`readings`**: how each target that something answers to now is named, by its address: the
  *   reading of a chip naming it (`NodeChip.reading`), which the store projects.
@@ -567,19 +579,29 @@ export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "
  * - **`unnamed`**: the references the read answered with nothing to name them by - another
  *   issue's block it sent no words for - which a surface reads for itself, as a link to the
  *   target does (R8).
+ * - **`statuses`**: each named issue's status as the read answered it, by its address, which the
+ *   mark beside a reference to it draws (INFRA-4009 R2).
  */
-export function chipNaming(chips: Iterable<NodeChip>): Omit<PublishedReferences, "asked"> {
+export function chipNaming(
+  chips: Iterable<NodeChip>,
+  statuses: ReadonlyMap<string, string> = NO_STATUSES
+): Omit<PublishedReferences, "asked"> {
   const ambiguous = new Set<string>();
   const gone = new Set<string>();
   const unnamed = new Set<string>();
   const readings = new Map<string, ReferenceNameReading>();
+  const named = new Map<string, string>();
   for (const chip of chips) {
     if (chip.ambiguous === true) ambiguous.add(chip.ref);
     else if (chip.gone) gone.add(chip.ref);
     else if (chip.reading === undefined) unnamed.add(chip.ref);
-    else readings.set(chip.ref, chip.reading);
+    else {
+      readings.set(chip.ref, chip.reading);
+      const status = statuses.get(chip.ref);
+      if (status !== undefined) named.set(chip.ref, status);
+    }
   }
-  return { ambiguous, gone, readings, unnamed };
+  return { ambiguous, gone, readings, statuses: named, unnamed };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

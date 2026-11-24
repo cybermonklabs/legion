@@ -19,12 +19,12 @@ import type { OwnedAsk } from "./ask-name";
 /**
  * The label of every write on an ask - the line the Writes indicator reads - holds the question's
  * plain-text projection (`useQuestionLabel`), never its markdown: the bold goes, and the
- * `dispatch://` address reads as its target's name. CORE-2's summary is in the cache before the
- * card draws, so the name is there at once and what each row reads is the label, never whether
- * the reference resolves.
+ * `dispatch://` address reads as its issue's key alone, with no status and no title. CORE-2's
+ * summary is in the cache before the card draws, so the issue is read at once and what each row
+ * reads is the label, never whether the reference resolves.
  */
 const QUESTION = "**Ship** it? dispatch://CORE-2";
-const PROJECTED = "Ship it? CORE-2 Cut the release";
+const PROJECTED = "Ship it? CORE-2";
 
 const summary: IssueReferenceSummary = {
   documents: [],

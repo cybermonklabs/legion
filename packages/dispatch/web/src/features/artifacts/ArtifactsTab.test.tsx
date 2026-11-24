@@ -660,8 +660,9 @@ test("an issue only other nodes link to shows Referenced by (1) before the secti
     truncated: false,
   };
   // The row's name is drawn as its plain-text projection, which reads the bare key in it, CORE-1,
-  // by CORE-1's summary: the read is answered here, and the row waits for the name it gives, so no
-  // read is left out when the row ends.
+  // once CORE-1's summary answers, as its key alone (INFRA-4009 R6): the same words as written, so
+  // the row waits for the read itself, which is answered here, and no read is left out when the
+  // row ends.
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
     documents: [],
     key: "CORE-1",
@@ -679,10 +680,8 @@ test("an issue only other nodes link to shows Referenced by (1) before the secti
       return closed === null || (closed.querySelector("summary")?.contains(element) ?? false);
     });
     expect(shown).not.toHaveLength(0);
-    await screen.findByRole("link", {
-      hidden: true,
-      name: "This links to CORE-1 Ship the parser.",
-    });
+    await screen.findByRole("link", { hidden: true, name: "This links to CORE-1." });
+    await waitFor(() => expect(getIssueSummary).toHaveBeenCalledWith("CORE-1"));
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
@@ -747,7 +746,7 @@ async function withAddressedRow(
     check(
       await screen.findByRole("link", {
         hidden: true,
-        name: "Decided in CORE-2 Cut the release on Friday.",
+        name: "Decided in CORE-2 on Friday.",
       })
     );
     expect(getIssueSummary).toHaveBeenCalledWith("CORE-2");
@@ -761,10 +760,10 @@ async function withAddressedRow(
 
 // The reading list's `artifacts-reference-name`: a row's name is the words of a link, which hold
 // no markup, so the tab draws its plain-text projection from the tree the read sent of it. The
-// bold goes, and the bare issue address reads as its target's name, CORE-2's key and title, which
-// its own read answers. Drawn as the characters it is, the link would read
+// bold goes, and the bare issue address reads, once CORE-2's own read answers, as its key alone,
+// with no status and no title (INFRA-4009 R6). Drawn as the characters it is, the link would read
 // `Decided in dispatch://CORE-2 on **Friday**.`.
-test("a references row reads a reference in its name as its target's name", async () => {
+test("a references row reads an issue reference in its name as its key alone", async () => {
   await withAddressedRow(addressedAnswer(displayTree(addressedName)), (link) => {
     expect(link).toHaveAttribute("href", `/issues/OPS-1/comments/${addressedComment}`);
     expect(link.textContent).not.toContain("dispatch://");
@@ -773,8 +772,8 @@ test("a references row reads a reference in its name as its target's name", asyn
 
 // A Dispatch from before `name_tree` sends a row's name with no tree: the tab reads the name's
 // parse on the page in its place, never the characters as written, so the address still reads as
-// its target's name.
-test("a references row with no name_tree reads its name's parse, a reference in it as its target's name", async () => {
+// its key alone.
+test("a references row with no name_tree reads its name's parse, an issue reference in it as its key alone", async () => {
   await withAddressedRow(addressedAnswer(undefined), (link) => {
     expect(link).toHaveAttribute("href", `/issues/OPS-1/comments/${addressedComment}`);
     expect(link.textContent).not.toContain("dispatch://");
@@ -783,8 +782,8 @@ test("a references row with no name_tree reads its name's parse, a reference in 
 
 // An ask's name and a message's are the head of a record's text as a comment's is (`nameSource`),
 // so each is drawn as its plain-text projection too: the bold goes, and the bare issue address
-// reads as CORE-2's key and title.
-test("a references row named by an ask's text reads a reference in it as its target's name", async () => {
+// reads as CORE-2's key alone.
+test("a references row named by an ask's text reads an issue reference in it as its key alone", async () => {
   await withAddressedRow(
     addressedAnswer(displayTree(addressedName), "ask", addressedAsk),
     (link) => {
@@ -794,7 +793,7 @@ test("a references row named by an ask's text reads a reference in it as its tar
   );
 });
 
-test("a references row named by a message's text reads a reference in it as its target's name", async () => {
+test("a references row named by a message's text reads an issue reference in it as its key alone", async () => {
   await withAddressedRow(
     addressedAnswer(displayTree(addressedName), "message", addressedMessage),
     (link) => {

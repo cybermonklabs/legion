@@ -1,6 +1,8 @@
 import { writeFile } from "node:fs/promises";
 
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
+import { CREDENTIAL_POLL_INTERVAL_MS } from "../web/src/features/credentials/pending";
+import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import { plannerSession, setLiveSessions } from "./agents";
 import {
   createAgentMessage,
@@ -19,7 +21,7 @@ import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
 import { COMPONENT_MODEL, COMPONENT_REFERENCE, COMPONENT_REPO } from "./reference-surfaces";
-import { expect, type Page, type Request, test } from "./test";
+import { type Browser, expect, type Page, type Request, type TestInfo, test } from "./test";
 import { asUser } from "./users";
 
 // INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
@@ -30,12 +32,83 @@ import { asUser } from "./users";
 // alice's browser is real.
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
 
+/** The page's two polls: the Inbox's credential list (`credentialPendingQuery`,
+ *  `web/src/features/credentials/pending.ts`) and the agent registry (`AgentRegistryPoller`,
+ *  `web/src/features/refs/agent-registry.ts`). Each is a TanStack query whose `refetchInterval` is
+ *  a `setInterval` of 15 s (`QueryObserver`'s `#updateRefetchInterval`), which TanStack starts
+ *  again only when that query's own observer subscribes, changes its options or sees its own query
+ *  update. An issue's status write refreshes neither query - `eventRefreshTargets` names no
+ *  credential key, and the one `agents` key it names is `["agents", "issue-picker"]`, exactly - so
+ *  it neither starts nor resets either timer. A window that spans a tick holds that tick's read,
+ *  which no write sent: two runs of the status writes row counted one against the move to done,
+ *  the credential list once and the registry once. */
+const TIMED_POLLS: readonly string[] = ["/api/v1/credential-requests", "/api/v1/agents"];
+
+/** The intervals of `TIMED_POLLS`, which two constants hold apart (`pending.ts` says why). */
+const POLL_INTERVALS_MS: readonly number[] = [CREDENTIAL_POLL_INTERVAL_MS, AGENT_REGISTRY_POLL_MS];
+
+/** The header `tagTimedPolls` puts on a read that a page starts on a poll's own timer. */
+const TIMED_POLL_HEADER = "x-dispatch-e2e-timed-poll";
+
+/** Where `tagTimedPolls` counts, on the page's `window`, the poll intervals it has wrapped. */
+const TIMED_POLL_COUNT = "dispatchE2eTimedPollIntervals";
+
+/**
+ * Tags each read `page` starts on a poll's own timer, so a counted window can leave those reads
+ * out and still count the same paths whenever anything else sends them. A poll's read starts
+ * inside its timer's callback, before the callback returns: the interval calls `Query.fetch`,
+ * which runs the query function at once (`createRetryer`'s `start`), and the query function
+ * reaches `fetch` through `DispatchApiClient.read`, `exchange` and `answered` with no `await`
+ * before it. So the script wraps the page's `setInterval`: while the callback of an interval of
+ * `POLL_INTERVALS_MS` runs, every `fetch` the page starts carries `TIMED_POLL_HEADER`. A read a
+ * write sets off starts elsewhere - in the event feed's batch timeout, a render or an effect - and
+ * carries none. The script is added after `page.clock.install()`, whose own script runs first, so
+ * it wraps the clock's `setInterval`; `TIMED_POLL_COUNT` says whether it did.
+ */
+async function tagTimedPolls(page: Page): Promise<void> {
+  await page.addInitScript(
+    ({ count, delays, header }) => {
+      let running = 0;
+      const wrapped = { started: 0 };
+      Object.assign(window, { [count]: wrapped });
+      const setIntervalOf = window.setInterval;
+      window.setInterval = ((handler: TimerHandler, timeout?: number, ...rest: unknown[]) => {
+        if (typeof handler !== "function" || !delays.includes(Number(timeout))) {
+          return setIntervalOf(handler, timeout, ...rest);
+        }
+        const callback = handler;
+        wrapped.started += 1;
+        const timed = (...args: unknown[]) => {
+          running += 1;
+          try {
+            callback(...args);
+          } finally {
+            running -= 1;
+          }
+        };
+        return setIntervalOf(timed, timeout, ...rest);
+      }) as typeof window.setInterval;
+      const fetchOf = window.fetch;
+      window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+        if (running === 0) return fetchOf(input, init);
+        const headers = new Headers(
+          init?.headers ?? (input instanceof Request ? input.headers : undefined)
+        );
+        headers.set(header, "1");
+        return fetchOf(input, { ...init, headers });
+      }) as typeof window.fetch;
+    },
+    { count: TIMED_POLL_COUNT, delays: POLL_INTERVALS_MS, header: TIMED_POLL_HEADER }
+  );
+}
+
 /** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
  *  detail since the page opened, and whether any request is still in flight. The event feed rides
  *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
  *  request, so none of these counts it. */
 interface Traffic {
-  /** Path and query of each GET under `/api/` since the last `reset`. */
+  /** Path and query of each GET under `/api/` since the last `reset`, but a poll a page whose
+   *  polls are tagged (`tagTimedPolls`) sent on its own timer. */
   readonly gets: string[];
   /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
   issueReads(key: string): number;
@@ -53,7 +126,9 @@ function watchTraffic(page: Page): Traffic {
     inFlight.add(request);
     const url = new URL(request.url());
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
-    gets.push(`${url.pathname}${url.search}`);
+    const timedPoll =
+      request.headers()[TIMED_POLL_HEADER] === "1" && TIMED_POLLS.includes(url.pathname);
+    if (!timedPoll) gets.push(`${url.pathname}${url.search}`);
     const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
     if (issue !== undefined) {
       const key = decodeURIComponent(issue);
@@ -248,13 +323,15 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     await page.clock.install();
     await page.goto(`/issues/${source.key}/conversation`);
     const turns = page.getByRole("list", { name: "Conversation turns" });
-    // INFRA-869's R4: "A `dispatch://` reference reads as its target's title ... an issue as
-    // its key and title", so each of the 50 links reads `CORE-<n> Budget reference <nn>` where
-    // it read the title alone before.
-    await expect(turns.getByRole("link", { name: /^CORE-\d+ Budget reference \d\d$/ })).toHaveCount(
-      50,
-      { timeout: 60_000 }
-    );
+    // INFRA-4009's R1 and R3: each of the 50 links draws its status mark and its key, with no
+    // title, and is named by its key, its status's words and its title, `CORE-<n>, Triage,
+    // Budget reference <nn>`. A body of two or more references draws no card, so no title is
+    // drawn anywhere in the turns.
+    await expect(
+      turns.getByRole("link", { name: /^CORE-\d+, Triage, Budget reference \d\d$/ })
+    ).toHaveCount(50, { timeout: 60_000 });
+    await expect(turns.locator('a[data-dispatch-ref] svg[data-status-glyph="○"]')).toHaveCount(50);
+    await expect(turns).not.toContainText("Budget reference");
     for (const session of ended) {
       await expect(
         turns.getByRole("link", { exact: true, name: `dispatch://agent/${session}` })
@@ -293,11 +370,12 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     expect(window.length, `GETs in the window, by path:\n${byPath(window)}`).toBeLessThanOrEqual(5);
     expect(untouched, "reads of an issue no write touched").toEqual([]);
 
-    // A change the page shows still lands: a referenced issue's new title in its reference ...
+    // A change the page shows still lands: a referenced issue's new title in its reference's
+    // name ...
     const renamed = `${targets[0]?.title ?? ""} renamed`;
     await patchIssue(targets[0]?.key ?? "", { title: renamed }, bob);
     await expect(
-      turns.getByRole("link", { exact: true, name: `${targets[0]?.key ?? ""} ${renamed}` })
+      turns.getByRole("link", { exact: true, name: `${targets[0]?.key ?? ""}, Triage, ${renamed}` })
     ).toBeVisible({ timeout: 2_000 });
 
     // ... and a child's new status in the open parent's Children tab, which reads the parent's
@@ -314,6 +392,245 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     await alice.close();
   }
 });
+
+/** The page the two rows below read: the Conversation of an issue whose one message, bob's,
+ *  cites 50 issues of CORE by their bare addresses after a line of words, so it draws no card
+ *  before INFRA-4009 or since, and what it reads is what its references read. */
+async function seedCitations() {
+  await createProject({ key: "CORE", name: "Core" });
+  const pad = (index: number) => String(index + 1).padStart(2, "0");
+  const targets = await createIssues(50, (index) => ({
+    project: "CORE",
+    title: `Cited issue ${pad(index)}`,
+  }));
+  const source = await createIssue({ project: "CORE", title: "Citing source" });
+  const addresses = targets.map((target) => `dispatch://${target.key}`);
+  await createMessage(
+    source.key,
+    { body: ["The issues this one waits on:", ...addresses].join("\n") },
+    bob
+  );
+  return { source, targets };
+}
+
+/** The reads of each of `issues`' summaries among `gets`, sorted. */
+function summaryReads(gets: readonly string[], issues: readonly { key: string }[]): string[] {
+  const paths = new Set(issues.map(({ key }) => `/api/v1/issues/${key}/summary`));
+  return gets.filter((get) => paths.has(get)).sort();
+}
+
+/** GETs under `/api/` the first load of the citing page sends, a poll's own tick left out
+ *  (`tagTimedPolls`): the 50 summaries and the 19 reads the page and its shell send whatever the
+ *  message cites. 69 on chromium at #3125's head 1a40d608c2 (this row run over it) and at this
+ *  branch merged with it; 70 at the commit before INFRA-4009 (df87c903eb89), an earlier head of
+ *  #3125. */
+const FIRST_LOAD_GETS = 69;
+
+// INFRA-4009's R8: the status mark adds no read to a page's first load, since each cited issue's
+// mark comes with the summary its name is read from. The row passes unchanged over #3125's head,
+// the commit this branch is built on, so its count is that commit's as well. A tick of the
+// credential list's or the agent registry's 15 s poll is no read of the first load: the page's
+// clock is installed and the polls' reads tagged, as the status writes row does, so a load that
+// takes past 15 s counts the same.
+// SLOW(>=2s): seeding 51 issues, then a page drawing 50 references that each read their target,
+// waited out to half a second of quiet traffic.
+test("first load: a page citing 50 issues sends as many reads as it did before the status mark, one summary of each issue", async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  const { source, targets } = await seedCitations();
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const traffic = watchTraffic(page);
+    await page.clock.install();
+    await tagTimedPolls(page);
+    await page.goto(`/issues/${source.key}/conversation`);
+    const turns = page.getByRole("list", { name: "Conversation turns" });
+    // Each reference is named by its issue's title once its summary is read, at either commit:
+    // after its key in its words before the mark, and in its accessible name, after its key and
+    // its status's words, since.
+    await expect(
+      turns.getByRole("link", { name: /^CORE-\d+(, Triage,)? Cited issue \d\d$/ })
+    ).toHaveCount(50, { timeout: 60_000 });
+    await settled(traffic);
+    // The credential poll has started its timer by now; none wrapped would mean a tick's read is
+    // counted, and the row would only fail more often, never less.
+    expect(
+      await page.evaluate(
+        (count) =>
+          (window as unknown as Record<string, { started: number } | undefined>)[count]?.started,
+        TIMED_POLL_COUNT
+      ),
+      "poll intervals the timed-poll tag wrapped"
+    ).toBeGreaterThan(0);
+    const firstLoad = [...traffic.gets];
+    await writeFile(testInfo.outputPath("first-load-gets.txt"), `${firstLoad.join("\n")}\n`);
+    console.log(
+      `REFETCH-BUDGET [${testInfo.project.name}] GETs under /api/ at the first load: ${firstLoad.length}`
+    );
+    expect(summaryReads(firstLoad, targets), "summary reads of the cited issues").toEqual(
+      targets.map(({ key }) => `/api/v1/issues/${key}/summary`).sort()
+    );
+    expect(firstLoad.length, `GETs at the first load, by path:\n${byPath(firstLoad)}`).toBe(
+      FIRST_LOAD_GETS
+    );
+  } finally {
+    await alice.close();
+  }
+});
+
+// INFRA-4009's R8: a status change of a cited issue costs no more reads than a title change of
+// it, since the summary that names a cited issue is read again on either. A status write also
+// refreshes what counts work by its status whatever the page cites - the rail's priority counts
+// (`["priorities"]`, `web/src/api/event-refresh.ts`) - so the title change it is held to is
+// measured beside the same status write to an issue the page does not cite. Its negative
+// controls: an issue the page comes to cite after its first load has its summary read once, and
+// the control rows below, where a move sets off a read of a poll's path and the row fails.
+/**
+ * The status writes row, whole. Its windows count every GET but a poll's read that the page sent
+ * on the poll's own timer (`tagTimedPolls`, `TIMED_POLLS`). `setOff`, for the control rows, is a
+ * path of `TIMED_POLLS` the page reads once more as soon as each move shows: a read the move sets
+ * off, on no timer, which the move's window counts.
+ */
+async function statusWrites(browser: Browser, testInfo: TestInfo, setOff?: string): Promise<void> {
+  const { source, targets } = await seedCitations();
+  const cited = targets[0];
+  if (cited === undefined) throw new Error("setup: no cited issue");
+  const uncited = await createIssue({ project: "CORE", title: "Uncited issue" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const traffic = watchTraffic(page);
+    // The scheduler's trailing window is fired on this clock rather than waited out.
+    await page.clock.install();
+    await tagTimedPolls(page);
+    await page.goto(`/issues/${source.key}/conversation`);
+    const turns = page.getByRole("list", { name: "Conversation turns" });
+    await expect(
+      turns.getByRole("link", { name: /^CORE-\d+, Triage, Cited issue \d\d$/ })
+    ).toHaveCount(50, { timeout: 60_000 });
+    await eventBarrier(page, traffic, source.key, source.title);
+    await drainRefreshWindow(page, traffic);
+    // Both polls have started their timers by now; none wrapped would mean every poll read is
+    // counted, and the row would only fail more often, never less.
+    expect(
+      await page.evaluate(
+        (count) =>
+          (window as unknown as Record<string, { started: number } | undefined>)[count]?.started,
+        TIMED_POLL_COUNT
+      ),
+      "poll intervals the timed-poll tag wrapped"
+    ).toBeGreaterThan(0);
+    const named = (words: string, title: string) =>
+      turns.getByRole("link", { exact: true, name: `${cited.key}, ${words}, ${title}` });
+    /** The GETs `write` sends, from its first write until the window it leaves is drained.
+     *  `write` waits for what it changes to show, which only its last event can bring. */
+    const windowOf = async (write: () => Promise<void>): Promise<string[]> => {
+      traffic.reset();
+      await write();
+      await drainRefreshWindow(page, traffic);
+      return [...traffic.gets];
+    };
+    const issueReads = (gets: readonly string[]) =>
+      gets.filter((get) => get.startsWith("/api/v1/issues/"));
+
+    const renaming = await windowOf(async () => {
+      await patchIssue(cited.key, { title: `${cited.title} renamed` }, bob);
+      await expect(named("Triage", `${cited.title} renamed`)).toHaveCount(1);
+    });
+    console.log(
+      `REFETCH-BUDGET [${testInfo.project.name}] GETs under /api/ after a rename: ${renaming.length}`
+    );
+
+    for (const { before, glyph, status, words } of [
+      { before: "Triage", glyph: "◐", status: "in_progress", words: "In progress" },
+      { before: "In progress", glyph: "✓", status: "done", words: "Done" },
+    ] as const) {
+      const title = `${cited.title} renamed before ${status}`;
+      // The same status write to the uncited issue, then a rename of the cited one, which shows
+      // only once the event before it was handled too.
+      const owed = await windowOf(async () => {
+        await patchIssue(uncited.key, { status }, bob);
+        await patchIssue(cited.key, { title }, bob);
+        await expect(named(before, title)).toHaveCount(1);
+      });
+      const moving = await windowOf(async () => {
+        await patchIssue(cited.key, { status }, bob);
+        const reference = named(words, title);
+        await expect(reference).toHaveCount(1);
+        await expect(reference.locator("svg[data-status-glyph]")).toHaveAttribute(
+          "data-status-glyph",
+          glyph
+        );
+        if (setOff !== undefined) {
+          await page.evaluate((path) => {
+            void fetch(path);
+          }, setOff);
+        }
+      });
+      console.log(
+        `REFETCH-BUDGET [${testInfo.project.name}] GETs under /api/ after the move to ${status}: ${moving.length}; after a rename beside the uncited issue's move: ${owed.length}`
+      );
+      expect(
+        moving.length,
+        `GETs after the move to ${status}, by path:\n${byPath(moving)}\nafter a rename beside the uncited issue's move:\n${byPath(owed)}`
+      ).toBeLessThanOrEqual(owed.length);
+      // Of an issue, the move reads what the rename read: the cited issue's summary.
+      expect(issueReads(moving), `issue reads after the move to ${status}`).toEqual(
+        issueReads(renaming)
+      );
+    }
+
+    const fresh = await createIssue({ project: "CORE", title: "Newly cited issue" });
+    await createMessage(source.key, { body: `Next, dispatch://${fresh.key} goes out.` }, bob);
+    await expect(
+      turns.getByRole("link", { exact: true, name: `${fresh.key}, Triage, ${fresh.title}` })
+    ).toHaveCount(1);
+    await drainRefreshWindow(page, traffic);
+    expect(summaryReads(traffic.gets, [fresh]), "summary reads of the newly cited issue").toEqual([
+      `/api/v1/issues/${fresh.key}/summary`,
+    ]);
+  } finally {
+    await alice.close();
+  }
+}
+
+// SLOW(>=2s): seeding 52 issues, an event barrier, and seven writes in five windows, each drained
+// to half a second of quiet traffic.
+test("status writes: moving and closing a cited issue each send no more reads than renaming it, and a newly cited issue's summary is read once", async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  await statusWrites(browser, testInfo);
+});
+
+// The status writes row's negative control, for each poll's path: the page reads the path once
+// more as soon as the move to in_progress shows, a read the move sets off and no timer does, and
+// the row fails on the move's count. A row that left the path out of its windows whatever sent it
+// would pass here.
+for (const path of TIMED_POLLS) {
+  // SLOW(>=2s): the status writes row up to its first move: seeding 52 issues, an event barrier
+  // and three windows.
+  test(`status writes' control: a read of ${path} that a move sets off counts against the move, and the row fails`, async ({
+    browser,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const failure = await statusWrites(browser, testInfo, path).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    const message = failure instanceof Error ? failure.message : String(failure);
+    console.log(
+      `REFETCH-BUDGET-CONTROL [${testInfo.project.name}] ${path}: ${message.replaceAll("\n", " | ")}`
+    );
+    expect(failure, "the status writes row fails").toBeInstanceOf(Error);
+    // The failure is the first move's count, and the move's window holds the read it set off.
+    const [moved = ""] = message.split("\nafter a rename");
+    expect(moved).toContain("GETs after the move to in_progress, by path:");
+    expect(moved).toMatch(new RegExp(`^1 × ${path}$`, "m"));
+  });
+}
 
 test("sidebar: an issue event while the sidebar's first reads are in flight discards none of them", async ({
   browser,

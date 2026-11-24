@@ -7,7 +7,7 @@ import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
  *  tick, per open tab, is unremarkable broker load (`useAgents.ts` polls its own list at the same
  *  cadence, for the same reason, but the two are independent constants - nothing ties them). */
-const CREDENTIAL_POLL_INTERVAL_MS = 15_000;
+export const CREDENTIAL_POLL_INTERVAL_MS = 15_000;
 
 /** `null` is a Dispatch with no secrets broker; anything else - even an empty list - is one that
  *  answered. `enabled` and `refetchInterval` below both gate on this one fact through this one

@@ -488,19 +488,32 @@ test("Unfurl cards a #id against the document the body's text belongs to", async
   }
 });
 
-test("Unfurl cards every reference of a body that holds several, in order", async () => {
+// A body of two or more references draws each inline and no card, a GitHub one among them, so it
+// asks nothing: only a body of exactly one reference is shaped like a card.
+test("Unfurl shows no card, and asks nothing, for a body that holds several references", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(coreSummary);
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(blockAskRead);
-  const view = renderUnfurl("CORE-1 dispatch://CORE-1/ask/ask-1");
+  const githubRest = spyOn(api, "githubRest");
+  const views = [
+    renderUnfurl("CORE-1 dispatch://CORE-1/ask/ask-1"),
+    renderUnfurl("https://github.com/owner/repository/pull/2 dispatch://CORE-1"),
+  ];
 
   try {
-    await within(view.container).findByRole("link", { name: /Design decision/ });
-    await within(view.container).findByRole("link", { name: "Which region do we deploy to?" });
-    expect(within(view.container).getAllByRole("link")).toHaveLength(2);
+    for (const view of views) {
+      expect(view.container.querySelector("section")).toBeNull();
+      expect(within(view.container).queryAllByRole("link")).toHaveLength(0);
+    }
+    expect(getIssueSummary).not.toHaveBeenCalled();
+    expect(getAsk).not.toHaveBeenCalled();
+    expect(githubRest).not.toHaveBeenCalled();
   } finally {
+    githubRest.mockRestore();
     getAsk.mockRestore();
     getIssueSummary.mockRestore();
-    view.unmount();
+    for (const view of views) {
+      view.unmount();
+    }
   }
 });
 

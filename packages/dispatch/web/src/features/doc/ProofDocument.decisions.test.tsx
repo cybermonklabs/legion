@@ -362,10 +362,10 @@ test("the open-decision link names its block as encodeBlockId writes it, in its 
 });
 
 // A link's words and its `title` hold no markup, so the open-decision link reads its question's
-// plain-text projection: the bold goes and the address reads as its target's name - the reading
-// list's `document-open-decision`. CORE-2's summary is in the cache before the document draws,
-// so the name is there at once. Drawn as the characters it is, the link would read
-// `**Ship** dispatch://CORE-2 now?`.
+// plain-text projection: the bold goes and the issue's address reads as its key alone, as plain
+// text writes an issue reference (INFRA-4009 R6) - the reading list's `document-open-decision`.
+// CORE-2's summary is in the cache before the document draws, so the key is there at once.
+// Drawn as the characters it is, the link would read `**Ship** dispatch://CORE-2 now?`.
 test("the open-decision link reads its question's plain-text projection", async () => {
   const question = "**Ship** dispatch://CORE-2 now?";
   const decision: Ask = { ...blockAsk, question };
@@ -385,8 +385,8 @@ test("the open-decision link reads its question's plain-text projection", async 
     await sync();
     await waitFor(() => expect(editors).toHaveLength(1));
     const nav = await within(view.container).findByRole("navigation", { name: "Open decisions" });
-    const link = await within(nav).findByRole("link", { name: "Ship CORE-2 Cut the release now?" });
-    expect(link).toHaveAttribute("title", "Ship CORE-2 Cut the release now?");
+    const link = await within(nav).findByRole("link", { name: "Ship CORE-2 now?" });
+    expect(link).toHaveAttribute("title", "Ship CORE-2 now?");
   } finally {
     view.unmount();
   }

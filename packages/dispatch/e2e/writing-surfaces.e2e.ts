@@ -24,6 +24,7 @@ import {
 import { askCard, inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { commentField, pickerRows, pickReference, refPicker } from "./ref-picker";
+import { expectIssueReference } from "./reference-surfaces";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 import {
@@ -455,8 +456,15 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expect
         .poll(async () => (await getArtifactText(world.spec)).markdown, { timeout: 30_000 })
         .toContain(written);
-      // The other reader has it, drawn by the name of what it names.
-      await expect(documentEditor(other)).toContainText(`Ship after ${world.target} Zephyr`);
+      // The other reader has it, drawn as the status mark and the key of the issue it names, the
+      // issue's title in its accessible name (dispatch://INFRA-4009).
+      await expect(documentEditor(other)).toContainText("Ship after");
+      await expectIssueReference(
+        documentEditor(other).locator(
+          `a.dispatch-reference[data-dispatch-href="dispatch://${world.target}"]`
+        ),
+        { key: world.target, status: "triage", title: "Zephyr rollout" }
+      );
 
       // A party picked with `@` is stored as the link that names it, not as the characters of
       // one: a document is read far outside this dashboard - `dispatch read`, an export, the Go

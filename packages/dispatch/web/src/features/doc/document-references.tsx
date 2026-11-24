@@ -11,11 +11,14 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { statusGlyphElement } from "../../components/status-glyph";
+import { issueReferenceName } from "../refs/issue-reference-name";
 import { isPartyRoute } from "../refs/party-references";
 import { fetchReferenceHref, needsSpecSlug, useReferenceTarget } from "../refs/reference-target";
 import { RecordIssue } from "../refs/role-holders";
 import {
   type DispatchReferenceRoute,
+  issueOfRoute,
   parseNodeReference,
   referenceHref,
   shortForm,
@@ -61,11 +64,12 @@ interface ResolvedReference {
   readonly mention: boolean;
 }
 
-/** What one reference's target answered: its current name, and whether Dispatch answered that it
- *  exists with no name of its own - a session it holds a record of that the registry does not
- *  name. */
+/** What one reference's target answered: its current name, an issue's status, and whether
+ *  Dispatch answered that it exists with no name of its own - a session it holds a record of
+ *  that the registry does not name. */
 interface ReferenceName {
   readonly title: string | undefined;
+  readonly status: string | undefined;
   readonly known: boolean;
 }
 
@@ -81,34 +85,45 @@ function ReferenceTitle({
   reference: string;
   route: DispatchReferenceRoute;
 }): null {
-  const { known, title } = useReferenceTarget(route, { text: false });
+  const { known, status, title } = useReferenceTarget(route, { text: false });
   useEffect(() => {
-    onName(reference, title === undefined && !known ? undefined : { known, title });
-  }, [known, onName, reference, title]);
+    onName(reference, title === undefined && !known ? undefined : { known, status, title });
+  }, [known, onName, reference, status, title]);
   // A reference the text no longer holds takes its name with it.
   useEffect(() => () => onName(reference, undefined), [onName, reference]);
   return null;
 }
 
-/** The title the editor draws over `resolved`, or undefined while it draws none. An issue reads
- *  as its key and title, and a mention as a rendered body draws one (`@legion/contracts`'s
- *  `mentionDrawn`): the mention sign and the party's name. A target Dispatch answered exists
- *  with no title of its own - a session it holds a record of that the registry does not name -
- *  is drawn as a link in the words of its reference, as a comment draws it, and its mention as
- *  the sign and the session's short form, so its author's words never pass for a current name;
- *  every other target is drawn once its title answers, and never without one. */
+/** What the editor draws over `resolved`, or undefined while it draws nothing. An issue - its
+ *  own address or a tab of its page (`issueOfRoute`) - reads as its status mark and its key, as a
+ *  rendered body draws it (`RefLink`), with its key, its status's words and its title as its
+ *  accessible name (`issueReferenceName`, INFRA-4009 R3), and a mention as a rendered body draws
+ *  one (`@legion/contracts`'s `mentionDrawn`): the mention sign and the party's name. A target
+ *  Dispatch answered exists with no title of its own - a session it holds a record of that the
+ *  registry does not name - is drawn as a link in the words of its reference, as a comment draws
+ *  it, and its mention as the sign and the session's short form, so its author's words never
+ *  pass for a current name; every other target is drawn once its title answers, and never
+ *  without one. */
 function drawnTitle(
   { mention, reference, route }: ResolvedReference,
   name: ReferenceName | undefined
-): string | undefined {
+): Pick<ReferenceTarget, "label" | "status" | "title"> | undefined {
   const title = name?.title;
   if (mention) {
-    return name === undefined ? undefined : mentionDrawn(name, shortForm(route));
+    const drawn = name === undefined ? undefined : mentionDrawn(name, shortForm(route));
+    return drawn === undefined ? undefined : { title: drawn };
+  }
+  const key = issueOfRoute(route);
+  if (key !== undefined) {
+    const status = name?.status;
+    return title === undefined || status === undefined
+      ? undefined
+      : { label: issueReferenceName(key, status, title), status, title: key };
   }
   if (title !== undefined) {
-    return route.kind === "issue" ? `${route.key} ${title}` : title;
+    return { title };
   }
-  return name?.known === true ? reference : undefined;
+  return name?.known === true ? { title: reference } : undefined;
 }
 
 /**
@@ -143,7 +158,11 @@ export function DocumentReferences({
   const onName = useCallback((reference: string, name: ReferenceName | undefined) => {
     setNames((current) => {
       const now = current[reference];
-      if (now?.title === name?.title && now?.known === name?.known) {
+      if (
+        now?.title === name?.title &&
+        now?.status === name?.status &&
+        now?.known === name?.known
+      ) {
         return current;
       }
       const next = { ...current };
@@ -224,24 +243,23 @@ export function DocumentReferences({
       (mention ? answers.mentions : answers.targets).set(key, null);
     }
     for (const one of resolved) {
-      const title = drawnTitle(one, names[one.reference]);
-      if (title === undefined) {
+      const drawn = drawnTitle(one, names[one.reference]);
+      if (drawn === undefined) {
         continue;
       }
       const { length, reference, route } = one;
       (one.mention ? answers.mentions : answers.targets).set(one.words, {
+        ...drawn,
         // A person opens no page, so their name is drawn as words and no link (R5).
         href: route.kind === "person" ? undefined : reference,
         length,
-        title,
-        titleKey: route.kind === "issue" ? route.key : undefined,
       });
     }
     return answers;
   }, [names, offered, resolved]);
 
   const references: EditorReferences = useMemo(
-    () => ({ mentions, onKeys, scan, targets }),
+    () => ({ mentions, onKeys, scan, statusMark: statusGlyphElement, targets }),
     [mentions, onKeys, scan, targets]
   );
   useEffect(() => {

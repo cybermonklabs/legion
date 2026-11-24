@@ -1,10 +1,10 @@
 import { type ReactNode, type Ref, type RefObject, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
+import { statusGlyph } from "../../components/status-glyph";
 import { pageInkText, pageQuietText, pageRowBorder } from "../../theme/classes";
 import { IssueLine } from "./BlockedByControl";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
-import { statusGlyph } from "./issue-status";
 import { authorText, MARGIN_SECTION_NAMES, type MarginSection, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import type { MarginSections } from "./useMarginSections";

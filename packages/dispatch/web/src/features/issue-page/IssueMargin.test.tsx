@@ -7069,10 +7069,11 @@ test("a pinned comment written in markdown is drawn by its words, without the ma
 });
 
 // R5 and R8 over a pin: its line is its record's one line as the outline draws a node's
-// (`useNodeLine`), so a bare address in the record reads as its target's name - the name the
-// page published for it, an issue's key and then its title - and never as the address. Drawn
-// from the words of the record's reading alone, the line spelled the address out.
-test("a pin's line reads a reference as its target's name", async () => {
+// (`useNodeLine`), so a bare address in the record reads, once the page has named it, as plain
+// text writes an issue reference - its key alone, with no status and no title (INFRA-4009 R6) -
+// and never as the address. Drawn from the words of the record's reading alone, the line spelled
+// the address out.
+test("a pin's line reads an issue reference as its key alone", async () => {
   await warmMarkdownRenderer();
   const id = "7a1c3e5f-9b2d-4e6a-8c0f-1d3b5a7c9e20";
   const address = buildDispatchReference({ key: "CORE-2", kind: "issue" });
@@ -7088,8 +7089,8 @@ test("a pin's line reads a reference as its target's name", async () => {
     await waitFor(() =>
       expect(
         within(pins).getByRole("link").textContent,
-        "the pin does not read its reference as its target's name"
-      ).toBe("Wait on CORE-2 Ship the release first.")
+        "the pin does not read its issue reference as its key alone"
+      ).toBe("Wait on CORE-2 first.")
     );
     expect(within(pins).getByRole("link").textContent).not.toContain("dispatch://");
   } finally {

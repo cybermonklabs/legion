@@ -6,6 +6,8 @@ import {
   COMPONENT_ID,
   COMPONENT_REFERENCE,
   COMPONENT_TITLE,
+  expectIssueReference,
+  type NamedIssue,
   PERSON_LOGIN,
   PERSON_REFERENCE,
   ROLE_REFERENCE,
@@ -25,7 +27,8 @@ import { asUser } from "./users";
  *
  * For each of the thirteen kinds the spec names the picker inserts that kind's address, the
  * comment the reader sends holds exactly what was picked, and every reference in the stored
- * record reads as its node's name and opens that node's own page. A block of a document, a part
+ * record reads as its node's name - an issue as its status mark and its key, its title in its
+ * accessible name - and opens that node's own page. A block of a document, a part
  * of an ask, a block of a comment and a block of a message are reached by opening the node that
  * holds them (the row's **Blocks**), never by a query alone: their text is their holder's, so a
  * query that finds the holder is what puts them within reach. A document of an agent's
@@ -85,8 +88,12 @@ interface Kind {
   /** The address the stored text names, where the pick wrote a mention rather than the address
    *  itself: a party's words are `@` and its name, and the reference is inside the link. */
   readonly names?: string;
-  /** What the stored reference reads as: the node's own name, `@` and the name for a party. */
+  /** What the stored reference reads as: an issue's key, the node's own name, `@` and the name
+   *  for a party. */
   readonly reads: string;
+  /** The issue an issue's reference names, which it draws as its status mark and its key, its
+   *  title in its accessible name (dispatch://INFRA-4009). */
+  readonly issue?: NamedIssue;
   /** The page it opens, from the address the pick wrote. An empty path is no link at all. */
   readonly opens: (address: string) => string;
 }
@@ -121,10 +128,11 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
   // they are reached.
   const kinds: readonly Kind[] = [
     {
+      issue: world.target,
       kind: "issue",
       opens: () => `/issues/${target}`,
       query: "#warm",
-      reads: `${target} Warm the cache`,
+      reads: target,
       row: /^Warm the cache/,
       writes: `dispatch://${target}`,
     },
@@ -344,6 +352,9 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
         continue;
       }
       await expect(link, `${kind.kind}: reads as its node's name`).toHaveText(kind.reads);
+      if (kind.issue !== undefined) {
+        await expectIssueReference(link, kind.issue);
+      }
       await expect(link, `${kind.kind}: opens its node`).toHaveAttribute("href", path);
     }
 

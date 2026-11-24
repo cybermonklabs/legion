@@ -657,7 +657,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     files: ["packages/dispatch/web/src/features/issue-page/IssuePins.tsx"],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/IssueMargin.test.tsx",
-      test: "a pin's line reads a reference as its target's name",
+      test: "a pin's line reads an issue reference as its key alone",
     },
     reach: "/issues/<ISSUE> with the new issue page on, Details' Pinned section",
     reason: `A pin names its record on one line, its first line cut by R1's rule. ${PLAIN_WORDS_REASON}`,
@@ -1132,7 +1132,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     files: ["packages/dispatch/web/src/features/artifacts/ArtifactsTab.tsx"],
     proof: {
       file: "packages/dispatch/web/src/features/artifacts/ArtifactsTab.test.tsx",
-      test: "a references row reads a reference in its name as its target's name",
+      test: "a references row reads an issue reference in its name as its key alone",
     },
     reach: "/issues/<ISSUE>/artifacts, a References or Referenced by row",
     reason: `A row of the issue's references read is a link to the node at its far end, worded with the name the read gives that node, as the server cut it. Where that name is the head of a comment's, an ask's or a message's text, whose \`#id\` is read against that record, it is drawn through this projection; a document's name, an issue's title and a component's are drawn as the characters they are. ${PLAIN_WORDS_REASON}`,
@@ -1168,16 +1168,16 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "priority-description",
   },
-  // The cards under a body: the renderer draws them itself, so no surface pairs a card with a
-  // body by hand.
+  // The card under a body: the renderer draws it itself, so no surface pairs a card with a body
+  // by hand.
   {
     cannotCarry: {
       forms: ["worded-link"],
-      why: "A body draws cards only when it is nothing but references (`Unfurl.tsx`'s `referencesOnly`), and a worded link's words are words of the body's own, so a body that holds one draws no card. The worded link is held on every other rendered surface.",
+      why: "A body draws a card only when it is one reference and nothing else (`Unfurl.tsx`'s `oneReferenceOnly`), and a worded link's words are words of the body's own, so a body that holds one draws no card. The worded link is held on every other rendered surface.",
     },
     files: ["packages/dispatch/web/src/features/refs/MarkdownBody.tsx"],
     reach:
-      "Any rendered body whose text is nothing but references, `.dispatch-markdown` + the cards after it",
+      "Any rendered body whose text is nothing but references, `.dispatch-markdown` + the card after a body of one reference",
     record: true,
     rendered: true,
     surface: "body-reference-cards",
@@ -1198,7 +1198,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     reach:
       "A Dispatch reference card under a body, its first line while the target's title loads and for a target that has none",
     reason:
-      "A card names its target by its title, and by the reference as the body wrote it while the title loads and where the target has none (a session Dispatch knows with no title of its own). A card is drawn only under a body that is nothing but references (`referenceCards`), so what the body wrote is one address, issue key or `#id`, never a link's words: a name, which holds no markdown, so it is shown as the characters it is - the words written, as R8 reads an unresolved reference.",
+      "A card names its target by its title, and by the reference as the body wrote it while the title loads and where the target has none (a session Dispatch knows with no title of its own). A card is drawn only under a body that is one reference and nothing else (`referenceCard`), so what the body wrote is one address, issue key or `#id`, never a link's words: a name, which holds no markdown, so it is shown as the characters it is - the words written, as R8 reads an unresolved reference.",
     record: true,
     rendered: false,
     surface: "reference-card-words",

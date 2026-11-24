@@ -7,6 +7,7 @@ import {
   createNamedVersion,
   createProject,
   createProjectDocument,
+  dashboardOrigin,
   editArtifact,
   getIssue,
   putIssueState,
@@ -22,6 +23,7 @@ import {
   markSpan,
   selectEditorText,
 } from "./editor";
+import { issueReferenceName } from "./reference-surfaces";
 import { navigateInApp } from "./sends";
 import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, type Locator, type Page, test } from "./test";
@@ -820,15 +822,18 @@ test("a past version's comment link lands on its quote in a document with no dia
 // the landing, and thirty paragraphs inserted above the linked quote.
 test("a resolving reference above a linked card does not end the hold", async ({ browser }) => {
   const { comment, issue } = await seedLongDocument();
-  const target = await createIssue({
-    project: "CORE",
-    title: "The calibration needs a much longer title after the reference resolves",
-  });
+  const target = await createIssue({ project: "CORE", title: "Calibrate the astrolabe" });
+  // Each ask cites the target by its dashboard address three times: the address as written is
+  // long, and the issue it resolves to is drawn as its status mark and its key alone
+  // (dispatch://INFRA-4009), so the resolution shortens each ask by lines.
+  const address = `${dashboardOrigin}/issues/${target.key}`;
+  const asks: string[] = [];
   for (const index of [1, 2]) {
-    await createAsk(issue.key, {
+    const ask = await createAsk(issue.key, {
       options: [{ label: "Yes" }, { label: "No" }],
-      question: `Does dispatch://${target.key} need observer ${index} before this document can ship?`,
+      question: `Does ${address} need observer ${index} before this document can ship? ${address} and ${address} hold its readings.`,
     });
+    asks.push(ask.id);
   }
   const context = await asUser(browser, "alice");
   const referenceHeld = Promise.withResolvers<void>();
@@ -844,20 +849,24 @@ test("a resolving reference above a linked card does not end the hold", async ({
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
     await expect(card).toBeInViewport();
-    // Each ask above the card cites the target issue. INFRA-869's R4: "A `dispatch://`
-    // reference reads as its target's title wherever Dispatch shows text ... an issue as its
-    // key and title. A reference whose target is missing shows its address as written." The
-    // summary read is held, so until it lands the words the author wrote stand - the short form
-    // `CORE-2` this read before the issue - and once it lands the key and the long title do,
-    // which is the growth above the card this test is about.
-    const written = `dispatch://${target.key}`;
-    const resolved = `${target.key} ${target.title}`;
-    await expect(sheet.getByRole("link", { exact: true, name: written }).first()).toBeVisible();
-    await expect(sheet.getByRole("link", { exact: true, name: resolved })).toHaveCount(0);
+    // Each ask above the card cites the target issue. The summary read is held, so until it
+    // lands the words the author wrote stand, and once it lands each reference draws the
+    // issue's mark and its key, named by its key, its status's words and its title, which is
+    // the change of height above the card this test is about.
+    const resolved = sheet.getByRole("link", { exact: true, name: issueReferenceName(target) });
+    await expect(sheet.getByRole("link", { exact: true, name: address }).first()).toBeVisible();
+    await expect(resolved).toHaveCount(0);
     await landingSettled(sheet);
+    const firstAsk = sheet.locator(`[data-margin-item="${asks[0]}"]`);
+    const heightOf = async () => (await firstAsk.boundingBox())?.height ?? 0;
+    const written = await heightOf();
+    expect(written).toBeGreaterThan(0);
 
     referenceHeld.resolve();
-    await expect(sheet.getByRole("link", { exact: true, name: resolved })).toHaveCount(2);
+    await expect(resolved).toHaveCount(6);
+    await expect
+      .poll(heightOf, { message: "the resolution moves the asks above the card" })
+      .toBeLessThan(written);
     const before = "Paragraph 34: surrounding context for a long document.";
     const inserted = Array.from(
       { length: 30 },

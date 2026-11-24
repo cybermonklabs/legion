@@ -200,6 +200,17 @@ function isPlainIssueRoute(
   return PLAIN_ISSUE_TABS.some((tab) => tab === route.kind);
 }
 
+/** The key of the issue `route` names as the issue itself: an issue, and a tab of its page whose
+ *  route is the tab itself or its conversation, each of which a reference reads as the issue, as
+ *  `@legion/contracts`'s text reader reads them and `buildDispatchReference` writes them. Each is
+ *  drawn as the issue's status mark and its key (INFRA-4009 R1). Undefined for every other
+ *  route: a document of the issue, its spec among them, and an item on it. */
+export function issueOfRoute(route: DispatchReferenceRoute): string | undefined {
+  return route.kind === "issue" || route.kind === "conversation" || isPlainIssueRoute(route)
+    ? route.key
+    : undefined;
+}
+
 const projectKeyPattern = "[A-Z][A-Z0-9]{1,9}";
 const issueKeyPattern = `${projectKeyPattern}-[1-9]\\d*`;
 const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);

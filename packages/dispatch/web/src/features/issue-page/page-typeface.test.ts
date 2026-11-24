@@ -9,7 +9,8 @@ import { subsetRanges } from "../../fonts/inter/subset-script";
  * writes, whose `unicode-range` is that script's UNICODES (`fonts/inter/subset.test.ts`). A
  * character outside UNICODES is drawn in a face of the reader's own machine, at that face's
  * width, or in none. So every string, template and JSX text of the page's own source - each file
- * of this directory but its tests and fixtures, `page-words.ts` among them - holds only
+ * of this directory but its tests and fixtures, `page-words.ts` among them, and the shared files
+ * the page draws its status mark with (`SHARED_FILES`) - holds only
  * characters UNICODES keeps. A JSX text or attribute string is read as JSX draws it, so a
  * character reference there is the character it names. A comment is not text the page draws,
  * and neither is a regular expression.
@@ -18,11 +19,15 @@ import { subsetRanges } from "../../fonts/inter/subset-script";
  * `SHAPE_NAMES` lists each such character with the files that name it, and is held to them.
  */
 
-/** `issue-status.ts`'s `statusGlyph` names a status's shape by a character, which `StatusGlyph`
- *  draws as an svg with no text; the page's typeface lacks ◐. */
+/** `components/status-glyph.ts`'s `statusGlyph` names a status's shape by a character, which
+ *  `components/StatusGlyph.tsx` draws as an svg with no text; the page's typeface lacks ◐. */
 const SHAPE_NAMES: Readonly<Record<string, readonly string[]>> = {
-  "◐": ["StatusGlyph.tsx", "issue-status.ts"],
+  "◐": ["../../components/status-glyph.ts"],
 };
+
+/** The files outside this directory whose text the page draws: the status mark, which every
+ *  issue reference of Dispatch draws too, so it lives with the shared components. */
+const SHARED_FILES = ["../../components/StatusGlyph.tsx", "../../components/status-glyph.ts"];
 
 const ranges = subsetRanges();
 
@@ -109,9 +114,12 @@ function reading({ character, line, path }: Finding): string {
   return `${path}:${line}: ${character} (U+${point})`;
 }
 
-const pageFiles = readdirSync(import.meta.dir, { encoding: "utf8", recursive: true })
-  .filter((path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) && !/fixture/.test(path))
-  .sort();
+const pageFiles = [
+  ...readdirSync(import.meta.dir, { encoding: "utf8", recursive: true }).filter(
+    (path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path) && !/fixture/.test(path)
+  ),
+  ...SHARED_FILES,
+].sort();
 
 const outside: string[] = [];
 const shapesNamed = new Set<string>();

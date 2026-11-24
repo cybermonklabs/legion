@@ -44,6 +44,7 @@ import {
   unfoldEveryBranch,
   WIDE_NOTE_COLUMNS,
 } from "./issue-page-g";
+import { expectIssueReference } from "./reference-surfaces";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -225,13 +226,19 @@ test("a node draws its kind at the right of its row and every node starts at one
     ).toHaveCount(0);
     await expect(child.locator("[data-node-margin] [data-node-author]")).toHaveCount(0);
 
-    // `r-cites`: the document it cites by the page's word, the child it cites by its key, among
-    // its bold words and its two paragraphs (R4, F14).
+    // `r-cites`: the document it cites by the page's word, the child it cites by its status mark
+    // and its key, its title in its accessible name (dispatch://INFRA-4009 R1 and R3), among its
+    // bold words and its two paragraphs (R4, F14).
     const cites = nodeRow(page, `${seeded.slugs.spec}#b-r-cites`).first();
     await expect(cites.locator("a[data-row-chip]").first()).toHaveText(NODE_TYPE_NAMES.document);
     await expect(rowWords(cites)).not.toContainText("notes.md");
-    await expect(cites.locator(`a[data-row-reference="dispatch://${seeded.child}"]`)).toHaveText(
-      new RegExp(`^${seeded.child}\\b`, "u")
+    await expectIssueReference(
+      cites.locator(`a[data-row-reference="dispatch://${seeded.child}"]`),
+      {
+        key: seeded.child,
+        status: "triage",
+        title: seeded.childTitle,
+      }
     );
     await expect(rowWords(cites).locator("strong")).toHaveCount(1);
     await expect(rowWords(cites).locator("p")).toHaveCount(2);

@@ -574,8 +574,9 @@ test("a cycle names a task by its projected line, not its stored marks", async (
 // A step's line is the task's own one line, read as the outline reads the same task's folded
 // line (`useTaskLine`, `node-line.tsx`'s `useNodeLine`), and no title over one record: an
 // address of another node in it reads by the name the page published for that node from its
-// batched read, an issue's key and then its title, and not as its short form, as the line the
-// names store projects beside the task's name reads it (`KnownReferences.lines`).
+// batched read - an issue, once named, by its key alone, as plain text writes an issue reference
+// (INFRA-4009 R6) - and not as the address its author wrote, as the line the names store projects
+// beside the task's name reads it (`KnownReferences.lines`).
 test("a step's line reads a reference by its target's name, as the task's folded line does", async () => {
   setViewport(1440);
   const cited = "dispatch://CORE-2";
@@ -593,7 +594,7 @@ test("a step's line reads a reference by its target's name, as the task's folded
     asked: new Set([...plan.asked, ...issueName.asked]),
     readings: new Map([...plan.readings, ...issueName.readings]),
   };
-  const line = "Wait for CORE-2 Ship the release to land.";
+  const line = "Wait for CORE-2 to land.";
   const view = renderBody(root, { published });
   try {
     await waitFor(() =>

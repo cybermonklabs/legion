@@ -9,6 +9,7 @@ import {
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
+import { expectIssueReference } from "./reference-surfaces";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -219,7 +220,8 @@ test("an ask hit says whether it is answered, and an answered one shows its late
 // A search for an issue's key, the commonest search there is, over the marks Postgres itself
 // writes: ts_headline marks `CORE-1` as `<b>CORE</b><b>-1</b>`, inside an address and as a bare key
 // alike, so no fixture of this suite decides the shape the palette draws. Each hit that cites the
-// issue reads as its name, with no address left, and the name is marked whole: it is drawn in
+// issue reads as its status mark and its key, its title in its accessible name
+// (dispatch://INFRA-4009), with no address left, and the key is marked whole: it is drawn in
 // place of the words the server marked, so no character of it is one the server matched.
 test("a search for an issue key names the issue in every hit that cites it, marked whole", async ({
   browser,
@@ -241,12 +243,13 @@ test("a search for an issue key names the issue in every hit that cites it, mark
     for (const name of [/^comment /, /^message /]) {
       const hit = dialog.getByRole("option", { name });
       await expect(hit).toHaveCount(1);
-      await expect(hit.locator("mark")).toHaveText([`${cited.key} Gyroscope alignment`]);
+      await expect(hit.locator("mark")).toHaveText([cited.key]);
+      await expectIssueReference(hit.locator("[data-dispatch-ref]"), cited);
       await expect(hit.locator("[data-dispatch-ref] mark")).toHaveCount(1);
       await expect(hit).not.toContainText("dispatch://");
       // A body the headline window holds whole is the hit whole, its stop included
       // (`pmdoc.SearchSnippet`), which ts_headline alone drops.
-      await expect(hit).toContainText(`Tracked as ${cited.key} Gyroscope alignment since Monday.`);
+      await expect(hit).toContainText(`Tracked as ${cited.key} since Monday.`);
     }
   } finally {
     await context.close();
@@ -439,7 +442,7 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
       .getByRole("option", { name: /^comment / })
       .filter({ hasText: "is waiting on" });
     await expect(linked).toHaveCount(1);
-    await expect(linked.locator("mark")).toHaveText([`${issue.key} Bench work`]);
+    await expect(linked.locator("mark")).toHaveText([issue.key]);
     await expect(linked.locator("[data-dispatch-ref] mark")).toHaveCount(1);
   } finally {
     await context.close();
@@ -453,8 +456,8 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
 // a reference the link pass links, so each link holds the server's marks. Wherever the words are
 // drawn they keep those marks as sent: the issue's address while its summary is held, then the
 // issue that does not exist, the document that does not exist and the component of a project with
-// no architecture, which stay words with no link. Only the issue's name, once it answers, is
-// marked, and whole.
+// no architecture, which stay words with no link. Only the issue, once it answers, is marked,
+// and whole: its key, after its status mark (dispatch://INFRA-4009).
 // SLOW(>=2s): two seeded comments, two searches, and a summary read held until the row lets go.
 test("a search mark inside a reference stays on the words as the server sent it, and marks only a title whole", async ({
   browser,
@@ -491,10 +494,8 @@ test("a search mark inside a reference stays on the words as the server sent it,
     await expect(hit.locator("mark")).toHaveText(["CORE", "CORE", "CORE"]);
 
     summaryHeld.resolve();
-    await expect(hit.locator("mark")).toHaveText([`${issue.key} Bench work`, "CORE", "CORE"]);
-    await expect(hit.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
-      `${issue.key} Bench work`
-    );
+    await expect(hit.locator("mark")).toHaveText([issue.key, "CORE", "CORE"]);
+    await expectIssueReference(hit.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`), issue);
     await expect(hit.locator("[data-dispatch-missing]")).toHaveText([
       missingIssue,
       missingDocument,
@@ -524,7 +525,8 @@ test("a search mark inside a reference stays on the words as the server sent it,
 // Tuesday.` answers `design](dispatch://<b>CORE</b>-1) since Tuesday`, no word of the link marked
 // (measured on the pod's Postgres 18, 2026-11-14). The server keeps a mark on the words alone and
 // the address as stored (`pmdoc.DisplaySnippetJSON`), so the autolink is still a reference to
-// the issue and reads as its name, marked whole; and the worded link keeps its words, unmarked,
+// the issue and reads as its status mark and its key, the key marked whole
+// (dispatch://INFRA-4009); and the worded link keeps its words, unmarked,
 // as a reference to the same issue. The palette is a `control` host, so neither is a live link.
 // SLOW(>=2s): two seeded project documents and a search answered by Postgres's headline.
 test("a search hit on a stored autolink's key reads as the issue it links to, and a worded link keeps its words", async ({
@@ -550,12 +552,13 @@ test("a search hit on a stored autolink's key reads as the issue it links to, an
 
     const autolink = dialog.getByRole("option", { name: /^doc / }).filter({ hasText: "Monday" });
     await expect(autolink).toHaveCount(1);
-    await expect(autolink.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
-      `${issue.key} Bench work`
+    await expectIssueReference(
+      autolink.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`),
+      issue
     );
-    await expect(autolink.locator("mark")).toHaveText([`${issue.key} Bench work`]);
+    await expect(autolink.locator("mark")).toHaveText([issue.key]);
     await expect(autolink.locator("[data-dispatch-ref] mark")).toHaveCount(1);
-    await expect(autolink).toContainText(`See ${issue.key} Bench work since Monday.`);
+    await expect(autolink).toContainText(`See ${issue.key} since Monday.`);
     await expect(autolink).not.toContainText("dispatch://");
 
     const worded = dialog.getByRole("option", { name: /^doc / }).filter({ hasText: "Tuesday" });

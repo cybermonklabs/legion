@@ -125,6 +125,7 @@ import {
   treeText,
 } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
+import { expectIssueReference } from "./reference-surfaces";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
@@ -775,11 +776,12 @@ test("with no filter the page is the conversation, each node edited once, folded
       [...new Set(idsOf(whole))].sort(),
       "the rows of the outline are not the nodes of the issue's conversation"
     ).toEqual([...outline.nodes].sort());
-    // The planner's citation of a child is a link to the child, by its key and its title.
-    await expect(
+    // The planner's citation of a child is a link to the child, by its status mark and its key,
+    // its title in its accessible name, since a row opens no peek (dispatch://INFRA-4009).
+    await expectIssueReference(
       rowReference(nodeRow(page, citing.id).first(), `dispatch://${cited}`),
-      `the message that cites ${cited} does not draw it as its key and its title`
-    ).toHaveText(`${cited} ${(await getIssue(cited)).title}`);
+      await getIssue(cited)
+    );
     // The children are rows of the outline's top level, under no other row: the issue itself
     // is no row.
     for (const child of seeded.children.keys) {

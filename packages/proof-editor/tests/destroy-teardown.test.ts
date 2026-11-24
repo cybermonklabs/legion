@@ -42,10 +42,29 @@ function scan(text: string): ReferenceCandidate[] {
   }));
 }
 
-const CORE_1: ReferenceTarget = { href: "dispatch://CORE-1", title: "CORE-1 Fix the thing" };
+/** An issue as the host answers one: drawn as its status mark and its key, named by its label. */
+const CORE_1: ReferenceTarget = {
+  href: "dispatch://CORE-1",
+  label: "CORE-1, In progress, Fix the thing",
+  status: "in_progress",
+  title: "CORE-1",
+};
+
+/** A stand-in for the host's status mark, which holds no words. */
+function statusMark(document: Document, status: string): Element {
+  const mark = document.createElement("i");
+  mark.dataset.statusMark = status;
+  return mark;
+}
 
 function references(targets: Record<string, ReferenceTarget | null>): EditorReferences {
-  return { mentions: new Map(), onKeys: () => {}, scan, targets: new Map(Object.entries(targets)) };
+  return {
+    mentions: new Map(),
+    onKeys: () => {},
+    scan,
+    statusMark,
+    targets: new Map(Object.entries(targets)),
+  };
 }
 
 /** A spec as Dispatch stores one: the address is a link whose text is its own address, written
@@ -89,7 +108,7 @@ test("destroy takes the view down before the ctx that draws it", async () => {
   await withTornDownEditor((handle) => {
     const { view } = handle;
     const title = view.dom.querySelector("code > a.dispatch-reference");
-    expect(title?.textContent).toBe("CORE-1 Fix the thing");
+    expect(title?.textContent).toBe(" CORE-1");
 
     void handle.destroy();
 

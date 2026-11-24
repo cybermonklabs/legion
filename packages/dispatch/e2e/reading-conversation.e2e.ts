@@ -15,7 +15,7 @@ import {
   scopedTo,
   seedReadingWorld,
 } from "./reading-rows";
-import { conversationTurn, RENDERED_BODY } from "./reference-surfaces";
+import { conversationTurn, expectStatusMark, RENDERED_BODY } from "./reference-surfaces";
 import { expect, test } from "./test";
 
 /**
@@ -265,18 +265,28 @@ test("node-row-words: a comment's row on the new issue page draws every form but
 
 /**
  * Holds a row's words on the new issue page to what R8 says of each form they carry: a link that
- * reads as its node's name and opens that node, and nothing left as written. The row names a bare
- * key, an address and a short id with a link pass of its own, from the page's one batched read
- * of what its references point at (`row-references.ts`), and marks each with the reference as it
- * reads it (`data-row-reference`) rather than the renderer's `data-dispatch-ref`, which the
- * reading's own links - a dashboard URL, a party, a worded link - carry; so each form is found by
- * its link's name, whichever drew it. A short id is linked as its address writes it, which the
- * dashboard's own route resolves to its comment (`e2e/prefix-links.e2e.ts`).
+ * reads as its node's name and opens that node, and nothing left as written. An issue reads as
+ * its status mark and its key, named by its key, its status's words and its title, since a row
+ * opens no peek (dispatch://INFRA-4009 R3); a worded link reads as its author's words alone, with
+ * no mark. The row names a bare key, an address and a short id with a link pass of its own, from
+ * the page's one batched read of what its references point at (`row-references.ts`), and marks
+ * each with the reference as it reads it (`data-row-reference`) rather than the renderer's
+ * `data-dispatch-ref`, which the reading's own links - a dashboard URL, a party, a worded link -
+ * carry; so each form is found by its link's name, whichever drew it. A short id is linked as its
+ * address writes it, which the dashboard's own route resolves to its comment
+ * (`e2e/prefix-links.e2e.ts`).
  */
 async function expectRowReadsForms(scope: Locator, world: ReadingWorld): Promise<void> {
-  for (const { form, opens, reads, unread, written } of formReadings(world)) {
-    const link = scope.getByRole("link", { exact: true, name: reads });
-    await expect(link, `the ${form} reads as its node's name`).toHaveCount(1);
+  for (const { form, label, opens, reads, status, unread, written } of formReadings(world)) {
+    const link = scope.getByRole("link", { exact: true, name: label ?? reads });
+    await expect(link, `the ${form} is named by its node's name`).toHaveCount(1);
+    await expect(link, `the ${form} reads as its node's name`).toHaveText(reads);
+    const mark = link.locator("svg[data-status-glyph]");
+    if (label === undefined || status === undefined) {
+      await expect(mark, `the ${form} draws no status mark`).toHaveCount(0);
+    } else {
+      await expectStatusMark(mark, status, `the ${form}`);
+    }
     const prefix = written.slice(written.lastIndexOf("/") + 1);
     await expect(link, `the ${form} opens its node`).toHaveAttribute(
       "href",

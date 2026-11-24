@@ -5,6 +5,8 @@ import { Link } from "react-router-dom";
 import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, ReferenceTargets, UserState } from "../../api/types";
+import { StatusGlyph } from "../../components/StatusGlyph";
+import { statusGlyph, statusTone } from "../../components/status-glyph";
 import {
   pageAvatar,
   pageFailedText,
@@ -65,13 +67,11 @@ import { IssueClaimControl } from "./IssueClaimControl";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { IssuePins } from "./IssuePins";
 import { IssueRouteControl } from "./IssueRouteControl";
-import { statusGlyph, statusTone } from "./issue-status";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
 import { ROW_LINK } from "./row-references";
-import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";

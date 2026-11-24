@@ -15,9 +15,9 @@ beforeAll(async () => {
 afterEach(cleanup);
 
 // A link's words hold no markup, so each match's first line is read as its plain-text
-// projection: the bold goes and a `dispatch://` address reads as its target's name - the reading
-// list's `item-match-first-line`. CORE-2's summary is in the cache before the list draws, so the
-// name is there at once. Drawn as the characters it is, the link would read
+// projection: the bold goes and a `dispatch://` address to an issue reads as the issue's key - the
+// reading list's `item-match-first-line`. CORE-2's summary is in the cache before the list draws,
+// so the issue is read at once. Drawn as the characters it is, the link would read
 // `**Warm** dispatch://CORE-2 first.`.
 test("a match's first line reads its plain-text projection", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -47,9 +47,10 @@ test("a match's first line reads its plain-text projection", async () => {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  expect(
-    await screen.findByRole("link", { name: "Warm CORE-2 Cut the release first." })
-  ).toHaveAttribute("href", "/issues/CORE-1/comments/c0ffee00-0000-4000-8000-000000000001");
+  expect(await screen.findByRole("link", { name: "Warm CORE-2 first." })).toHaveAttribute(
+    "href",
+    "/issues/CORE-1/comments/c0ffee00-0000-4000-8000-000000000001"
+  );
 });
 
 // A match's first line is the head of the match's own text, so it reads a `#id` against that

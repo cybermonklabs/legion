@@ -15,8 +15,9 @@ import { TextAskCard } from "../refs/markdown-cards";
 import { useLoadedEngine } from "../refs/parsed-references";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
+import { WordedLinksMarked } from "../refs/RefLink";
 import { useKnownReferences } from "../refs/reference-names";
-import { parseNodeReference } from "../refs/routes";
+import { issueOfRoute, parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import { documentWord } from "./node-row-chip";
@@ -48,8 +49,9 @@ import { titleReading } from "./tree-drafts";
  * of an issue that exists - is a link to its target, and a person words with no link (R5), named
  * by the one rule every plain line of a record names a reference by (`useRowNames`): from the
  * page's one batched read of what its references point at, which the page publishes
- * (`refs/reference-names.tsx`), and a party by its own read. An issue reads as its key and
- * title, and a block or a document as a chip in place, named as a tie's chip is, in the plain
+ * (`refs/reference-names.tsx`), and a party by its own read. An issue reads as its status mark
+ * and its key, its title in its accessible name, since a row opens no peek, and a block or a
+ * document as a chip in place, named as a tie's chip is, in the plain
  * words the shared projection reads a name to (`tree-drafts.ts`'s `treeContext`, part G's R4),
  * so a numbered step keeps its number (decisions 66 and 88). A short reference that two or more
  * targets answer to names no one of them: the page publishes it as ambiguous, apart from the
@@ -164,6 +166,9 @@ interface RowNames {
   /** The name each reference is drawn by, an issue's title apart from its key, and a block's
    *  first block of words, which a chip in place names it by (`rowReferenceWords`). */
   readonly names: ReadonlyMap<string, string>;
+  /** Each issue's status, whose mark a row draws before its key: the page's batched read's, or
+   *  the issue's own read's where the page read none (`ReferenceName.status`). */
+  readonly statuses: ReadonlyMap<string, string>;
   /** The reads of the references the page reads no name for, which draw nothing. */
   readonly reads: ReactNode;
 }
@@ -174,7 +179,9 @@ interface RowNames {
  * reference in the same words: the name the page published from its batched read, and a party's
  * own read, by the issue the record is on (`issue`), where a role is read. The page's names are
  * read once for each of its answers and shared by every row. An issue's name is its title, which
- * a row draws apart from its key. A block and a whole document are drawn as chips in place,
+ * a row draws in its accessible name beside its status's words, and its status, which the page's
+ * batched read answers beside the name, or the issue's own read where the page read none, is
+ * drawn as its mark before its key. A block and a whole document are drawn as chips in place,
  * named as a tie's chip names them, by the line the page's store projects beside the name
  * (`KnownReferences.lines`): a block by the first block of its words that holds any, and a
  * document by the page's word for it alone, since a chip never draws a document's name, which a
@@ -198,27 +205,31 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
     [found, issue]
   );
   const { names: named, reads } = useReferenceNames(addresses, issue);
-  const names = useMemo(() => {
+  const { names, statuses } = useMemo(() => {
     const byReference = new Map<string, string>();
+    const byStatus = new Map<string, string>();
     for (const one of found) {
-      const name =
-        lines.get(one.reference) ??
-        (documentWord(one.route, issue) === undefined ? named.get(one.reference)?.name : undefined);
+      const answer =
+        documentWord(one.route, issue) === undefined ? named.get(one.reference) : undefined;
+      const name = lines.get(one.reference) ?? answer?.name;
       if (name !== undefined) byReference.set(one.reference, name);
+      if (answer?.status !== undefined) byStatus.set(one.reference, answer.status);
     }
-    return byReference;
+    return { names: byReference, statuses: byStatus };
   }, [found, issue, lines, named]);
   const drawn = useMemo(
     () =>
       found
         .map((one) => {
-          const { key, words: name } = rowReferenceWords(one, names, issue);
-          return `${key ?? ""} ${name}`;
+          const drawn = rowReferenceWords(one, names, statuses, issue);
+          return drawn.key === undefined
+            ? ` ${drawn.words}`
+            : `${drawn.key} ${drawn.status} ${drawn.words}`;
         })
         .join("\n"),
-    [found, issue, names]
+    [found, issue, names, statuses]
   );
-  return { ambiguous, drawn, issues, names, reads };
+  return { ambiguous, drawn, issues, names, reads, statuses };
 }
 
 /** Calls `onRedrawn` after each commit, past the first, in which `drawn`, the words a row's
@@ -492,7 +503,7 @@ function DrawnText({
   // excerpt, or plain words with its references left out (`TreeNode.text`).
   const words = useMemo(() => wordsOf(tree), [tree]);
   const issue = source?.issue;
-  const { ambiguous, drawn, issues, names, reads } = useRowNames(words, issue);
+  const { ambiguous, drawn, issues, names, reads, statuses } = useRowNames(words, issue);
   // After every paint of the reading, and again when the references take their names. The
   // row's pass takes its links out of the tab order as it makes them; a view with tab stops
   // puts them back.
@@ -500,13 +511,15 @@ function DrawnText({
     const element = box.current;
     if (element === null) return;
     dropDirectiveLines(element);
-    linkRowReferences(element, names, issues, issue, ambiguous);
+    linkRowReferences(element, names, statuses, issues, issue, ambiguous);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const route = parseNodeReference(anchor.getAttribute("data-row-reference") ?? "");
-      if (route !== undefined && route.kind !== "issue") anchor.setAttribute(ROW_CHIP, "");
+      if (route !== undefined && issueOfRoute(route) === undefined) {
+        anchor.setAttribute(ROW_CHIP, "");
+      }
       if (tabStops) anchor.removeAttribute("tabindex");
     }
-  }, [ambiguous, issue, issues, names, tabStops]);
+  }, [ambiguous, issue, issues, names, statuses, tabStops]);
   useLayoutEffect(link, [link]);
   useRedrawn(drawn, onRedrawn);
   useOutOfTabOrder(box, !tabStops, { keepScrollers: focused });
@@ -518,15 +531,18 @@ function DrawnText({
       {reads}
       <TextAskCard.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
-            reads no target, and the row's pass links what the words cite (`linkRowReferences`). */}
-        <MarkdownBody
-          markdown={markdown}
-          onRendered={link}
-          referenceText=""
-          source={source}
-          surface="node-row-words"
-          tree={tree}
-        />
+            reads no target, and the row's pass links what the words cite (`linkRowReferences`).
+            A link whose words its author wrote keeps those words alone, with no status mark. */}
+        <WordedLinksMarked.Provider value={false}>
+          <MarkdownBody
+            markdown={markdown}
+            onRendered={link}
+            referenceText=""
+            source={source}
+            surface="node-row-words"
+            tree={tree}
+          />
+        </WordedLinksMarked.Provider>
       </TextAskCard.Provider>
     </div>
   );

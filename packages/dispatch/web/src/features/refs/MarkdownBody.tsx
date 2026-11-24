@@ -327,10 +327,11 @@ interface MarkdownBodyProps {
  * The text those references are read from is `markdown`, unless the caller names another in
  * `referenceText`.
  *
- * A body that is nothing but references draws a card for each of them under itself
- * (`Unfurl`): one renderer draws the record and everything that hangs off it, so no surface
- * pairs a body with a card of its own. Whether a reference in the body is a live link, and
- * whether those cards are drawn at all, is the host's property (`ReferenceHostIs`): inside a
+ * A body that is one reference and nothing else draws its card under itself (`Unfurl`); a body
+ * of two or more references draws each inline and no card. One renderer draws the record and
+ * everything that hangs off it, so no surface pairs a body with a card of its own. Whether a
+ * reference in the body is a live link, and whether that card is drawn at all, is the host's
+ * property (`ReferenceHostIs`): inside a
  * link or a button nothing is a link of its own, and an element that can hold no markup - or a
  * diff, whose point is the characters it swaps - holds this text as the characters it is.
  *
@@ -345,7 +346,7 @@ export function MarkdownBody(props: MarkdownBodyProps): ReactNode {
 }
 
 /** The body as a host that draws markup draws it: painted, with its references linked where the
- *  host links them, and the cards under a body that is nothing but references. */
+ *  host links them, and the card under a body that is one reference and nothing else. */
 function PaintedBody({
   markdown,
   onRendered,
