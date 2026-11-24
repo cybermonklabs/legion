@@ -37,9 +37,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 )
 
 var recordSettings = flag.Bool("record", false, "write testdata/settings-recorded-on-main-*.json instead of comparing; run only on main, as settings_recorded_test.go's head comment says")
@@ -59,7 +59,7 @@ func TestSettingsRecordedOnMain(t *testing.T) {
 		{"aws", api.Deps{SecretsStore: aws.Name, SecretsPrefix: "example/agent-secrets/",
 			SecretsKMSKey:          "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
 			GoogleExchangeAudience: "agent-secrets-vm", Machine: judged}},
-		{"gcp", api.Deps{SecretsStore: secrets.StoreGCP, SecretsPrefix: "projects/000000000000/secrets/agent-secrets-",
+		{"gcp", api.Deps{SecretsStore: gcp.Name, SecretsPrefix: "projects/000000000000/secrets/agent-secrets-",
 			SecretsKMSKey:          "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets",
 			GoogleExchangeAudience: "agent-secrets-vm", Machine: judged}},
 	} {

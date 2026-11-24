@@ -36,8 +36,8 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
@@ -616,7 +616,7 @@ func orDash(s string) string {
 
 // secretBackend is the per-store backend the secret forms call: AWS Secrets Manager
 // (aws.Name, or "" from a broker that predates the `store` setting) or GCP Secret
-// Manager (secrets.StoreGCP), chosen from the broker's GET /v1/settings `store` field. Every
+// Manager (gcp.Name), chosen from the broker's GET /v1/settings `store` field. Every
 // method takes the secret's name under the prefix (secretName's slug); the full store-side name
 // (each backend's own id) is each backend's own concern.
 type secretBackend interface {
@@ -968,7 +968,7 @@ func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSes
 // key ARN's own account and region (checkSettingsKeyARN), for "" or aws.Name - a
 // broker that predates `store` names neither - or GCP Secret Manager, pinned to the project
 // secrets_prefix and kms_key_name's own shape agree on (checkSettingsKMSKeyName), for
-// secrets.StoreGCP. The store credential comes from the environment, not a flag. Any other store
+// gcp.Name. The store credential comes from the environment, not a flag. Any other store
 // is refused before any cloud call.
 func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, error) {
 	switch settings.Store {
@@ -981,7 +981,7 @@ func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, e
 			return nil, err
 		}
 		return &awsBackend{settings: settings, sm: awsStore{sm}, st: st, source: awsSourceOf(sources)}, nil
-	case secrets.StoreGCP:
+	case gcp.Name:
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
 		}

@@ -1,6 +1,6 @@
 //go:build gcplive
 
-package secrets
+package gcp
 
 import (
 	"context"
@@ -13,9 +13,12 @@ import (
 	"time"
 
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
 )
 
 // TestGCPLive runs the store against a real Secret Manager project under Application Default
@@ -26,15 +29,15 @@ import (
 // its own and deleted at the end, so the broker's namespace is untouched.
 //
 //	BROKER_GCP_LIVE_PROJECT=<project number> BROKER_GCP_LIVE_KMS_KEY=<key name> \
-//	  go test -tags gcplive ./internal/cipher/secrets/ -run Live -count=1 -v
+//	  go test -tags gcplive ./internal/cipher/secretstore/gcp/ -run Live -count=1 -v
 func TestGCPLive(t *testing.T) {
 	project, key := envOrSkip(t, "BROKER_GCP_LIVE_PROJECT"), envOrSkip(t, "BROKER_GCP_LIVE_KMS_KEY")
-	if err := ValidGCPKeyName(key); err != nil {
+	if err := ValidKeyName(key); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	client, err := NewGCPClient(ctx)
+	client, err := NewClient(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,10 +52,10 @@ func TestGCPLive(t *testing.T) {
 	idPrefix := "broker-live-" + hex.EncodeToString(nonce[:]) + "-"
 	parent := "projects/" + project
 	prefix := parent + "/secrets/" + idPrefix
-	if err := ValidGCPPrefix(prefix); err != nil {
+	if err := ValidPrefix(prefix); err != nil {
 		t.Fatal(err)
 	}
-	store := NewGCP(client, key)
+	store := New(client, key)
 
 	create := func(name string, onKey bool, annotations map[string]string, value string, expires bool) string {
 		t.Helper()
@@ -171,4 +174,95 @@ func envOrSkip(t *testing.T, name string) string {
 		t.Skipf("%s is not set", name)
 	}
 	return v
+}
+
+// livePrefix answers a prefix of its own in the live project, broker-live-<hex>-, and its parts.
+func livePrefix(t *testing.T, project string) (parent, idPrefix, prefix string) {
+	t.Helper()
+	var nonce [4]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		t.Fatal(err)
+	}
+	idPrefix = "broker-live-" + hex.EncodeToString(nonce[:]) + "-"
+	parent = "projects/" + project
+	prefix = parent + "/secrets/" + idPrefix
+	if err := ValidPrefix(prefix); err != nil {
+		t.Fatal(err)
+	}
+	return parent, idPrefix, prefix
+}
+
+// TestGCPLiveRunsTheStoreContract runs the store contract on the GCP store against the live
+// Secret Manager of the project BROKER_GCP_LIVE_PROJECT names, under Application Default
+// Credentials: each case makes its fixtures under a random broker-live-<hex>- prefix of its own and
+// deletes them when it ends. A secret off the key is on Google's default one, an Unfilled one
+// carries the create label and holds no version, and one scheduled for deletion has an expire_time
+// an hour ahead. With either variable unset each case skips, which scripts/store-live-check.sh
+// counts as a failed run.
+func TestGCPLiveRunsTheStoreContract(t *testing.T) {
+	secretstoretest.StoreContract(t, "gcp", func(t *testing.T) secretstoretest.StoreRig {
+		project, key := envOrSkip(t, "BROKER_GCP_LIVE_PROJECT"), envOrSkip(t, "BROKER_GCP_LIVE_KMS_KEY")
+		if err := ValidKeyName(key); err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		client, err := NewClient(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = client.Close() })
+		parent, idPrefix, prefix := livePrefix(t, project)
+		held := map[string]bool{}
+		t.Cleanup(func() {
+			for name := range held {
+				if err := client.DeleteSecret(context.Background(), &secretmanagerpb.DeleteSecretRequest{Name: name}); err != nil && status.Code(err) != codes.NotFound {
+					t.Errorf("delete %s: %v (delete it by hand)", name, err)
+				}
+			}
+		})
+		return secretstoretest.StoreRig{
+			Store: New(client, key), Prefix: prefix, OffKey: true, Unfilled: true,
+			Put: func(t *testing.T, f secretstoretest.Fixture) {
+				t.Helper()
+				id := idPrefix + f.Slug
+				if f.Outside {
+					id = "x" + id
+				}
+				name := parent + "/secrets/" + id
+				if !held[name] {
+					auto := &secretmanagerpb.Replication_Automatic{}
+					if !f.OffKey {
+						auto.CustomerManagedEncryption = &secretmanagerpb.CustomerManagedEncryption{KmsKeyName: key}
+					}
+					secret := &secretmanagerpb.Secret{
+						Replication: &secretmanagerpb.Replication{Replication: &secretmanagerpb.Replication_Automatic_{Automatic: auto}},
+						Annotations: f.Tags,
+					}
+					if f.Unfilled {
+						secret.Labels = map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}
+					}
+					if f.Deleted {
+						secret.Expiration = &secretmanagerpb.Secret_ExpireTime{ExpireTime: timestamppb.New(time.Now().Add(time.Hour))}
+					}
+					if _, err := client.CreateSecret(ctx, &secretmanagerpb.CreateSecretRequest{Parent: parent, SecretId: id, Secret: secret}); err != nil {
+						t.Fatalf("create %s: %v", id, err)
+					}
+					held[name] = true
+				}
+				if f.Value != "" {
+					if _, err := client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{Parent: name, Payload: &secretmanagerpb.SecretPayload{Data: []byte(f.Value)}}); err != nil {
+						t.Fatalf("add a version to %s: %v", id, err)
+					}
+				}
+			},
+			Remove: func(t *testing.T, slug string) {
+				t.Helper()
+				name := prefix + slug
+				if err := client.DeleteSecret(ctx, &secretmanagerpb.DeleteSecretRequest{Name: name}); err != nil {
+					t.Fatalf("delete %s: %v", name, err)
+				}
+				delete(held, name)
+			},
+		}
+	})
 }

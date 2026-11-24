@@ -56,7 +56,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -65,21 +65,21 @@ import (
 // checkSettingsKMSKeyName refuses, before any GCP call, settings whose secrets_prefix is not a
 // Secret Manager prefix, whose gcp_project does not match the project number secrets_prefix
 // itself names (the broker derives gcp_project from secrets_prefix the same way,
-// internal/cipher/api handlers_secrets.go, secrets.GCPProject), or whose kms_key_name is not a
-// global-location CMEK key name (secrets.ValidGCPKeyName: automatic replication, the only
+// internal/cipher/api handlers_secrets.go, gcp.Project), or whose kms_key_name is not a
+// global-location CMEK key name (gcp.ValidKeyName: automatic replication, the only
 // replication the store serves, takes a global key). This is the GCP counterpart of
 // checkSettingsKeyARN: it ties the project a write lands in to the resource-name prefix the
 // broker itself derived it from, not to a separately-sent field a spoofed or plain-http broker
 // could set on its own to steer a write. Each field a refusal names, and each validator's words,
 // which quote the field, print as the broker's address lets its answer print (Settings.words).
 func checkSettingsKMSKeyName(settings Settings) error {
-	if err := secrets.ValidGCPPrefix(settings.SecretsPrefix); err != nil {
+	if err := gcp.ValidPrefix(settings.SecretsPrefix); err != nil {
 		return fmt.Errorf("the broker's settings name an invalid secrets_prefix: %s", settings.words(err.Error()))
 	}
-	if project := secrets.GCPProject(settings.SecretsPrefix); settings.GCPProject != project {
+	if project := gcp.Project(settings.SecretsPrefix); settings.GCPProject != project {
 		return fmt.Errorf("the broker's settings name project %s, but its secrets prefix %s is in project %s: the broker's settings are inconsistent", settings.words(settings.GCPProject), settings.words(settings.SecretsPrefix), settings.words(project))
 	}
-	if err := secrets.ValidGCPKeyName(settings.KMSKeyName); err != nil {
+	if err := gcp.ValidKeyName(settings.KMSKeyName); err != nil {
 		return fmt.Errorf("the broker's settings name an invalid KMS key name: %s", settings.words(err.Error()))
 	}
 	return nil
@@ -1104,7 +1104,7 @@ func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, er
 
 // readValue reads the secret's value with AccessSecretVersion on versions/latest, the version the
 // broker serves, and refuses one that is empty or not valid UTF-8, as the broker's own read does
-// (secrets.GCP.Read). Its error never holds the value's bytes.
+// (gcp.Store.Read). Its error never holds the value's bytes.
 func (b *gcpBackend) readValue(ctx context.Context, slug string) (string, error) {
 	latest := b.id(slug) + "/versions/latest"
 	out, err := b.client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: latest})

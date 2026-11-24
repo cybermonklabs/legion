@@ -20,8 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -2251,20 +2251,20 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 		t.Fatalf("Load(unset store) = %+v, %v; want %s", cfg, err, aws.Name)
 	}
 
-	gcp := func() map[string]string {
+	gcpEnv := func() map[string]string {
 		e := validEnv()
-		e["BROKER_SECRETS_STORE"] = secrets.StoreGCP
+		e["BROKER_SECRETS_STORE"] = gcp.Name
 		e["BROKER_SECRETS_PREFIX"] = "projects/000000000000/secrets/agent-secrets-"
 		delete(e, "BROKER_SECRETS_KMS_KEY_ARN")
 		e["BROKER_SECRETS_KMS_KEY_NAME"] = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 		return e
 	}
-	cfg, err = Load(env(gcp()))
-	if err != nil || cfg.SecretsStore != secrets.StoreGCP || cfg.SecretsPrefix != "projects/000000000000/secrets/agent-secrets-" || cfg.SecretsKMSKey != gcp()["BROKER_SECRETS_KMS_KEY_NAME"] {
+	cfg, err = Load(env(gcpEnv()))
+	if err != nil || cfg.SecretsStore != gcp.Name || cfg.SecretsPrefix != "projects/000000000000/secrets/agent-secrets-" || cfg.SecretsKMSKey != gcpEnv()["BROKER_SECRETS_KMS_KEY_NAME"] {
 		t.Fatalf("Load(gcp) = %+v, %v", cfg, err)
 	}
 
-	e := gcp()
+	e := gcpEnv()
 	e["BROKER_MINT_TARGETS"] = "ANY_OLD_VALUE"
 	if _, err := Load(env(e)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_MINT_TARGETS is removed; ") {
 		t.Fatalf("Load(BROKER_MINT_TARGETS) = %v, want a refusal naming the removed setting", err)
@@ -2290,16 +2290,16 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 			e["BROKER_SECRETS_KMS_KEY_NAME"] = "projects/example-project/locations/us-west1/keyRings/r/cryptoKeys/k"
 		}, "BROKER_SECRETS_KMS_KEY_NAME: a Cloud KMS key name is projects/"},
 	} {
-		e := gcp()
+		e := gcpEnv()
 		tc.edit(e)
 		if _, err := Load(env(e)); err == nil || !strings.HasPrefix(err.Error(), tc.want) {
 			t.Fatalf("Load(%s) = %v, want a refusal opening %q", name, err, tc.want)
 		}
 	}
 
-	aws := validEnv()
-	aws["BROKER_SECRETS_KMS_KEY_NAME"] = gcp()["BROKER_SECRETS_KMS_KEY_NAME"]
-	if _, err := Load(env(aws)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_SECRETS_KMS_KEY_NAME is not read with BROKER_SECRETS_STORE=aws-secrets-manager; set BROKER_SECRETS_KMS_KEY_ARN instead") {
+	awsEnv := validEnv()
+	awsEnv["BROKER_SECRETS_KMS_KEY_NAME"] = gcpEnv()["BROKER_SECRETS_KMS_KEY_NAME"]
+	if _, err := Load(env(awsEnv)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_SECRETS_KMS_KEY_NAME is not read with BROKER_SECRETS_STORE=aws-secrets-manager; set BROKER_SECRETS_KMS_KEY_ARN instead") {
 		t.Fatalf("Load(aws with the key name set) = %v, want a refusal naming both", err)
 	}
 }
@@ -2309,7 +2309,7 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 // Secret Manager prefix beside gcp-secret-manager, in another project or the same one, is read as
 // it is. Load refuses to start, naming the setting and the rule it breaks: any value under
 // aws-secrets-manager, saying that an AWS source is an ARN a move always changes; a value
-// secrets.ValidGCPPrefix refuses; a value equal to BROKER_SECRETS_PREFIX; and a value that starts
+// gcp.ValidPrefix refuses; a value equal to BROKER_SECRETS_PREFIX; and a value that starts
 // with BROKER_SECRETS_PREFIX, or that BROKER_SECRETS_PREFIX starts with, since a secret under the
 // longer of two such prefixes is under both.
 //
@@ -2321,9 +2321,9 @@ func TestSecondPrefixSetting(t *testing.T) {
 		prefix  = "projects/000000000000/secrets/agent-secrets-"
 		keyName = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 	)
-	gcp := func() map[string]string {
+	onGCP := func() map[string]string {
 		e := validEnv()
-		e["BROKER_SECRETS_STORE"] = secrets.StoreGCP
+		e["BROKER_SECRETS_STORE"] = gcp.Name
 		e["BROKER_SECRETS_PREFIX"] = prefix
 		delete(e, "BROKER_SECRETS_KMS_KEY_ARN")
 		e["BROKER_SECRETS_KMS_KEY_NAME"] = keyName
@@ -2335,11 +2335,11 @@ func TestSecondPrefixSetting(t *testing.T) {
 	}
 
 	for name, e := range map[string]map[string]string{
-		"gcp, unset":  gcp(),
-		"gcp, empty":  with(gcp(), ""),
+		"gcp, unset":  onGCP(),
+		"gcp, empty":  with(onGCP(), ""),
 		"aws, unset":  validEnv(),
 		"aws, empty":  with(validEnv(), ""),
-		"gcp, absent": func() map[string]string { e := gcp(); delete(e, "BROKER_SECRETS_SECOND_PREFIX"); return e }(),
+		"gcp, absent": func() map[string]string { e := onGCP(); delete(e, "BROKER_SECRETS_SECOND_PREFIX"); return e }(),
 	} {
 		cfg, err := Load(env(e))
 		if err != nil || cfg.SecretsSecondPrefix != "" {
@@ -2350,7 +2350,7 @@ func TestSecondPrefixSetting(t *testing.T) {
 		"projects/111111111111/secrets/cipher-",
 		"projects/000000000000/secrets/cipher-",
 	} {
-		cfg, err := Load(env(with(gcp(), second)))
+		cfg, err := Load(env(with(onGCP(), second)))
 		if err != nil || cfg.SecretsSecondPrefix != second || cfg.SecretsPrefix != prefix {
 			t.Fatalf("Load(gcp, second prefix %q) = second prefix %q, prefix %q, %v; want both read as given", second, cfg.SecretsSecondPrefix, cfg.SecretsPrefix, err)
 		}
@@ -2362,15 +2362,15 @@ func TestSecondPrefixSetting(t *testing.T) {
 	}{
 		"under aws-secrets-manager": {with(validEnv(), "projects/111111111111/secrets/cipher-"),
 			[]string{"BROKER_SECRETS_STORE=gcp-secret-manager", "aws-secrets-manager", "an AWS Secrets Manager source is an ARN", "a move to another name always changes"}},
-		"equal to BROKER_SECRETS_PREFIX": {with(gcp(), prefix),
+		"equal to BROKER_SECRETS_PREFIX": {with(onGCP(), prefix),
 			[]string{"is BROKER_SECRETS_PREFIX itself", prefix}},
-		"starting with BROKER_SECRETS_PREFIX": {with(gcp(), prefix+"old-"),
+		"starting with BROKER_SECRETS_PREFIX": {with(onGCP(), prefix+"old-"),
 			[]string{"BROKER_SECRETS_PREFIX", "one starts with the other", prefix + "old-"}},
-		"that BROKER_SECRETS_PREFIX starts with": {with(gcp(), "projects/000000000000/secrets/agent-"),
+		"that BROKER_SECRETS_PREFIX starts with": {with(onGCP(), "projects/000000000000/secrets/agent-"),
 			[]string{"BROKER_SECRETS_PREFIX", "one starts with the other", "projects/000000000000/secrets/agent-"}},
-		"that secrets.ValidGCPPrefix refuses": {with(gcp(), "projects/example-project/secrets/cipher-"),
+		"that gcp.ValidPrefix refuses": {with(onGCP(), "projects/example-project/secrets/cipher-"),
 			[]string{"a Google Secret Manager prefix is projects/<project number>/secrets/", "projects/example-project/secrets/cipher-"}},
-		"with no trailing dash": {with(gcp(), "projects/111111111111/secrets/cipher"),
+		"with no trailing dash": {with(onGCP(), "projects/111111111111/secrets/cipher"),
 			[]string{"a Google Secret Manager prefix is projects/<project number>/secrets/"}},
 	} {
 		cfg, err := Load(env(row.env))

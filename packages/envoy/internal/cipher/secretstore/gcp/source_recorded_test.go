@@ -1,17 +1,32 @@
-package secrets_test
+package gcp_test
 
 // This file holds the source of each secret the GCP store lists, and the source the policy serves
 // it by, to what main answered before the store packages moved. Postgres holds a grant's source
 // (request_secrets.source), so a source whose format changes ends every live grant of a GCP
-// deployment that upgrades. testdata/source-recorded-on-main-gcp.json was written by this file and
-// export_test.go as they were at 414d2709f4b4, at main f57cfa7e2ffe; the AWS half of this file
-// moved with the AWS store to secretstore/aws, whose head comment names the commands.
+// deployment that upgrades. testdata/source-recorded-on-main-gcp.json was written at main
+// f57cfa7e2ffe by internal/cipher/secrets/source_recorded_test.go and export_test.go as they were
+// at 414d2709f4b4, the package the store was in, in a worktree of that commit, from the root of the
+// checkout that holds this file:
+//
+//	git worktree add --detach <tmp>/main f57cfa7e2ffe
+//	git show 414d2709f4b4:packages/envoy/internal/cipher/secrets/source_recorded_test.go > <tmp>/main/packages/envoy/internal/cipher/secrets/source_recorded_test.go
+//	git show 414d2709f4b4:packages/envoy/internal/cipher/secrets/export_test.go > <tmp>/main/packages/envoy/internal/cipher/secrets/export_test.go
+//	go test -C <tmp>/main/packages/envoy ./internal/cipher/secrets/ -run TestSourceFormatRecordedOnMain -args -record
+//	cp <tmp>/main/packages/envoy/internal/cipher/secrets/testdata/source-recorded-on-main-gcp.json packages/envoy/internal/cipher/secretstore/gcp/testdata/
+//	git worktree remove --force <tmp>/main
+//
+// This file is that file's GCP half, moved here with the store, and it writes no record: a record
+// written by the code it checks compares that code with itself and proves nothing. A change to main
+// that adds, drops or changes a source fails this test in its own pull request: that change edits
+// the record there, in the form -record wrote it (json.MarshalIndent with two-space indents and a
+// closing newline), which the test holds the file to, and names itself here with the lines of the
+// record that moved. A moved source ends the live grants that hold it, so that pull request's
+// review decides whether it may move.
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"maps"
 	"os"
@@ -22,12 +37,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore"
-)
+	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 
-var recordSources = flag.Bool("record", false, "write testdata/source-recorded-on-main-*.json instead of comparing; run only on main, as source_recorded_test.go's head comment says")
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
+)
 
 // recordedSource is one secret's sources as a record holds them: the source its store's listing
 // answered, and the one the policy serves it by, which a grant stores.
@@ -36,7 +52,7 @@ type recordedSource struct {
 	Source string `json:"source"`
 }
 
-// recordedSecrets are the two secrets each store holds under its prefix, on the agent-secrets key:
+// recordedSecrets are the two secrets the store holds under its prefix, on the agent-secrets key:
 // a stored secret, and one whose type tag makes the policy serve it by a type source. The policy
 // loads a google-login secret with no profile, so it is the typed one.
 var recordedSecrets = []struct {
@@ -49,11 +65,10 @@ var recordedSecrets = []struct {
 		`{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"r"}`},
 }
 
-// TestSourceFormatRecordedOnMain: each store lists each secret with the source main listed it
+// TestSourceFormatRecordedOnMain: the GCP store lists each secret with the source main listed it
 // with, and the policy serves it by the source main served it by, both on a load (List, Load) and
 // on a reread of the one secret (Describe, LoadOne), which is how the broker serves a secret after
-// a reread and so the source a grant made then stores. With -record it writes the records instead,
-// which the head comment allows at a commit of main alone.
+// a reread and so the source a grant made then stores.
 func TestSourceFormatRecordedOnMain(t *testing.T) {
 	for _, row := range []struct {
 		store  string
@@ -66,11 +81,12 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 	}{
 		{"gcp", "projects/000000000000/secrets/agent-secrets-", func(t *testing.T, prefix string) secretstore.Store {
 			const key = "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
-			held := map[string]secrets.FakeGCPSecretForTest{}
+			f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{}}
 			for _, s := range recordedSecrets {
-				held[prefix+s.slug] = secrets.FakeGCPSecretForTest{Tags: s.tags, Value: s.value}
+				f.Secrets[prefix+s.slug] = &gcptest.FakeSecret{Annotations: s.tags, ReplicationKey: key, VersionKey: key,
+					State: secretmanagerpb.SecretVersion_ENABLED, Value: []byte(s.value)}
 			}
-			return secrets.NewGCP(secrets.StartFakeGCPForTest(t, key, held), key)
+			return gcp.New(gcptest.Start(t, f), key)
 		}, regexp.MustCompile(`^(mint:[a-z-]+:)?projects/[0-9]+/secrets/[A-Za-z0-9_-]+$`)},
 	} {
 		t.Run(row.store, func(t *testing.T) {
@@ -114,27 +130,6 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 			if len(got) != len(recordedSecrets) {
 				t.Fatalf("List answered %d secrets, want the %d this test holds: %+v", len(got), len(recordedSecrets), listings)
 			}
-			if *recordSources {
-				// A record holds one listed and one served source for each secret, so a reread
-				// that answers other sources than the load cannot be recorded.
-				for name, g := range got {
-					if r := reread[name]; r != g {
-						t.Fatalf("%s: the reread lists %q and serves %q, the load lists %q and serves %q; a record holds one of each", name, r.Listed, r.Source, g.Listed, g.Source)
-					}
-				}
-				raw, err := json.MarshalIndent(got, "", "  ")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.MkdirAll(filepath.Dir(record), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(record, append(raw, '\n'), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				t.Logf("wrote %d secrets' sources to %s", len(got), record)
-				return
-			}
 			raw, err := os.ReadFile(record)
 			if err != nil {
 				t.Fatalf("read %s: %v", record, err)
@@ -147,7 +142,7 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 				t.Fatalf("UNKNOWN: %s records no secret, so the check compares nothing", record)
 			}
 			if again, err := json.MarshalIndent(want, "", "  "); err != nil || !bytes.Equal(append(again, '\n'), raw) {
-				t.Fatalf("%s holds an entry or a form -record does not write (%s), which the comparison would not read; write it as -record does", record, recordForm(raw, "secret"))
+				t.Fatalf("%s holds an entry or a form -record did not write (%s), which the comparison would not read; write it as -record did", record, recordForm(raw, "secret"))
 			}
 			for _, name := range slices.Sorted(maps.Keys(want)) {
 				for _, held := range []struct{ what, source string }{
@@ -201,8 +196,8 @@ func sourceText(source string, present bool) string {
 	return strconv.Quote(source)
 }
 
-// recordForm names what makes a record other than what -record writes: each top-level key it
-// holds more than once, of which decoding keeps the last, or else a form written by hand.
+// recordForm names what makes a record other than what -record wrote: each top-level key it holds
+// more than once, of which decoding keeps the last, or else a form written by hand.
 func recordForm(raw []byte, entry string) string {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if _, err := dec.Token(); err != nil {
