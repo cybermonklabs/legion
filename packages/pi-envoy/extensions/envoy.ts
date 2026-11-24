@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { delimiter, dirname, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_STREAM_WATCH_INTERVAL_MS,
@@ -102,6 +102,8 @@ import type { InboundSubscription } from "@legion/envoy-client/inbound-connectio
 import { connectListenerRelay } from "@legion/envoy-client/listener-relay";
 import { machineID } from "@legion/envoy-client/machine";
 import {
+  clientBuild,
+  clientConnectionName,
   connectNats,
   NATS_DIAL_PLAN,
   NATS_DIAL_TOKEN_DROPPED,
@@ -137,6 +139,8 @@ import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
+  keyTakenDetails,
+  keyTakenText,
   type MessageMetadataArguments,
   parseEnvoyToolArguments,
   publishConfirmationText,
@@ -157,6 +161,7 @@ import { type AcceptedUserTurnDelivery, acceptUserTurn } from "@legion/pi-shared
 import {
   AgentStreamPublisher,
   type AgentStreamSettingsState,
+  type DispatchMessageCardDetails,
   modelReference,
 } from "@legion/pi-shared/agent-stream";
 import {
@@ -370,6 +375,36 @@ export function setNatsConnectForTests(
 // file's stand-in, with that file's state. Production callers never call this.
 export function resetNatsConnectForTests(): void {
   delete natsConnectStore[NATS_CONNECT];
+}
+
+/** The directory of this module: `dist/` in a packed build (`dist/envoy.js`), `extensions/` when
+ *  it runs from source. */
+const MODULE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * What this plugin's NATS connection names as its build after its name (`clientConnectionName`),
+ * which legacy-subjects-gate.sh reads from the hub's census of connections: the build-commit stamp
+ * the worker image writes beside the packed bundle, else, for a packed build, the release version
+ * its manifest carries, else none (a plugin run from its source). A test replaces it.
+ */
+let buildSource: { readonly stamp: string; readonly packed: boolean } = {
+  stamp: join(MODULE_DIRECTORY, "build-commit"),
+  packed: basename(MODULE_DIRECTORY) === "dist",
+};
+
+export function setBuildSourceForTests(source: {
+  readonly stamp: string;
+  readonly packed: boolean;
+}): void {
+  buildSource = source;
+}
+
+/** This plugin's build as its NATS connection names it, read at each dial. */
+function connectionBuild(): string | undefined {
+  return clientBuild(
+    buildSource.stamp,
+    buildSource.packed ? { name: packageName, version: packageVersion } : undefined
+  );
 }
 
 /**
@@ -1292,7 +1327,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       standIn?.connect ?? connect,
       natsConnectionOptions({
         servers: natsUrls,
-        name: `omp-${sessionID || "unknown"}`,
+        name: clientConnectionName(`omp-${sessionID || "unknown"}`, connectionBuild()),
         credential: natsCredential,
       }),
       { ...plan, budgetMs: natsDialBudget(left, PASS_AFTER_DIAL_MS, plan) },
@@ -1465,21 +1500,29 @@ export default function envoyExtension(hostApi: PiApi): void {
   });
 
   // A card's message: its `details` name the frame (`ledgerIdentity`), which the host keeps
-  // on the message it writes, beside the wake's card marker. An `inert` card is a steer that starts
-  // no turn on an idle host; a turn streaming when it is handed takes it and runs another model
-  // turn for it, so `UnwrittenFrames` hands an inert card only to a settled host (`hostSettled`).
-  // It carries `details` of its own all the same, the hand-over state `inert`, so a reading of the
-  // stored transcripts says which state held every waiting card; it carries no `envoyCard`, since
-  // the wake tracks no inert card and an id there would name nothing.
+  // on the message it writes, beside the wake's card marker, and the Dispatch message the card
+  // delivers to the session, if it delivers one: the live view draws that message from Dispatch's
+  // store, so the agent stream leaves its card out (`DispatchMessageCardDetails`). An `inert` card
+  // is a steer that starts no turn on an idle host; a turn streaming when it is handed takes it and
+  // runs another model turn for it, so `UnwrittenFrames` hands an inert card only to a settled host
+  // (`hostSettled`). It carries `details` of its own all the same, the hand-over state `inert`, so
+  // a reading of the stored transcripts says which state held every waiting card; it carries no
+  // `envoyCard`, since the wake tracks no inert card and an id there would name nothing.
   // Every other card goes as the wake says (`CardWake.deliveryFor`): an aside with `triggerTurn`,
   // never a steer, so no card waits in the steering queue a person's typed message uses; the wake
   // records a startup card, which goes as a follow-up, before the host has it.
   const handCard = (
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
-    identity: DedupeIdentity | undefined
+    identity: DedupeIdentity | undefined,
+    dispatchMessageId: string | undefined
   ): void => {
-    const known = identity === undefined ? {} : ledgerIdentity(identity);
+    const known = {
+      ...(identity === undefined ? {} : ledgerIdentity(identity)),
+      ...(dispatchMessageId === undefined
+        ? {}
+        : ({ dispatchMessageId } satisfies DispatchMessageCardDetails)),
+    };
     if (deliverAs === "inert") {
       pi.sendMessage(
         {
@@ -1768,12 +1811,19 @@ export default function envoyExtension(hostApi: PiApi): void {
             turn.messageId
           );
         }
+        // The agent's copy names the person's message it answers: a host busy with a turn writes
+        // it at its next prompt and fires `message_end` for it then, and the live view already
+        // holds the report above, keyed on that message, so the stream leaves the copy out
+        // (`DispatchMessageCardDetails`).
         if (handed) {
           pi.sendMessage(
             {
               content: shellCommandMessage(report),
               customType: "envoy-message",
-              details: LOCAL_ENVOY_NOTICE,
+              details: {
+                ...LOCAL_ENVOY_NOTICE,
+                ...({ dispatchMessageId: turn.messageId } satisfies DispatchMessageCardDetails),
+              },
               display: true,
             },
             { deliverAs: "nextTurn", triggerTurn: false }
@@ -2071,6 +2121,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       if (body !== undefined) rendered = renderInbound(raw, session, subject, body);
     }
     const envelope = rendered.envelope;
+    // The Dispatch message a card of this frame delivers to the session, which its `details` name
+    // (`handCard`): a targeted message's delivery, which Dispatch stores for the session. A
+    // targeted comment is no message the session's message list holds.
+    const deliveredMessage =
+      rendered.delivery?.resource === "message" ? rendered.delivery.id : undefined;
     if (envelope !== undefined) noteInbox(envelope);
     // The host wrote the frame, or handled it without writing anything: the ledger records it,
     // so no redelivery shows it again, here or after a restart, and the claim is settled, so
@@ -2162,7 +2217,8 @@ export default function envoyExtension(hostApi: PiApi): void {
           `${storedText(rendered.content, relayed.storedAt)}\n${LATE_BTW_NOTE}`,
           "inert",
           identity,
-          claim
+          claim,
+          deliveredMessage
         );
       } else if (rendered.delivery?.mode === "btw") {
         // A BTW is answered on Dispatch or refused there, never shown as a card: a redelivery
@@ -2255,7 +2311,8 @@ export default function envoyExtension(hostApi: PiApi): void {
             card.content,
             rendered.delivery?.mode === "aside" ? "aside" : "card",
             identity,
-            claim
+            claim,
+            deliveredMessage
           );
           if (outcome !== "closed") markPicturesShown(shownPictures(sessionID), card.shown);
         } else {
@@ -5415,6 +5472,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             ...(typeof idempotencyKey === "string" ? { idempotencyKey } : {}),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_send"), keyTakenDetails(result));
+          }
           return toolSuccess(sendConfirmationText(result), {
             event_id: result.envelope.event_id,
             recipient: result.recipient,
@@ -5434,6 +5494,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             message: stringFor(parameters, "message"),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_publish"), keyTakenDetails(result));
+          }
           // The skip is the listener's own delivery: the role lane skips the holder it resolved
           // when that holder is the message's source, and the fanout skips every interest whose
           // session is that source. The session still gets its own publish from its own

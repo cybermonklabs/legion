@@ -21,6 +21,9 @@ export interface ReviewSeed {
   readonly project: string;
   /** A machine of the seeded registry, which `/machines/:machine` is opened on. */
   readonly machine: string;
+  /** The login whose `/people/:login` page is opened: the person every human write of the
+   *  corpus is made as, so their page lists what they wrote rather than its empty state. */
+  readonly person: string;
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
@@ -32,6 +35,17 @@ export interface ReviewSeed {
   readonly deliveryQuery: string;
   /** The `?at=` value the Pipeline page pins its seven days to. */
   readonly pipelineAt: string;
+  /** The read marks the seed wrote before any row (`markWhatTheShotPagesRead`), which the visual
+   *  rows' guard lets a page write again only exactly as they stand (`e2e/visual-guard.ts`). */
+  readonly readMarks: SeededReadMarks;
+}
+
+/** The read marks a seed wrote: each session's replies marked read, by session id, and each
+ *  document's read version, by document id. A page's write of a mark is a repeat that moves
+ *  nothing only when it names replies the seed marked and the version the seed wrote. */
+export interface SeededReadMarks {
+  readonly agents: Readonly<Record<string, readonly string[]>>;
+  readonly documents: Readonly<Record<string, number>>;
 }
 
 /** The seed the containerised visual review reads, which is `e2e/visual-seed.ts`'s output. A
@@ -410,6 +424,30 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/pipeline?at=${seed.pipelineAt}`,
     pattern: "/pipeline",
     ready: (page) => [page.getByRole("heading", { level: 1, name: "Pipeline" })],
+  },
+  {
+    kind: "reviewed",
+    // Shot in light and dark as well as scanned, which is what `c-person-page` requires of the
+    // page this child adds: a scan reads the DOM, so a page drawn wrongly passes it. The two
+    // baselines under `e2e/__screenshots__/visual/` were written by the `visual` job's own
+    // container, the only renderer whose pixels this comparison is ever against.
+    layers: bothLayers,
+    name: "person",
+    path: (seed) => `/people/${encodeURIComponent(seed.person)}`,
+    pattern: "/people/:login",
+    // The page's own region, exact because the empty state draws
+    // `<section aria-label="Person empty state">` inside it and a substring match would then
+    // find two (the agents row reads its region for the same reason). And one row's own words,
+    // which is what says the store answered: until it does, `PersonPage.tsx` draws a loading
+    // skeleton, and an answer holding nothing draws that empty state - both of which a page
+    // read on the region alone would accept. The words are the comment `e2e/workspace.ts`
+    // writes as this person, so a change to that corpus fails this row rather than a scan.
+    ready: (page) => [
+      page.getByRole("region", { exact: true, name: "Person" }),
+      page
+        .getByRole("list", { name: "Person nodes" })
+        .getByText("Thanks - the order the sender ticked is the whole point."),
+    ],
   },
   {
     kind: "reviewed",

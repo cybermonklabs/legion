@@ -123,7 +123,10 @@ They resolve that App's key on the driver, from the operator's `LEGION_E2E_REVIE
 
 The daemon runs the command with `sh -c` whenever it needs a lease: at boot, and again once fewer
 than 20 minutes remain on a lease it holds.
-Its environment is the daemon's, less the NATS seeds and every variable whose name starts
+At boot it runs each App's command once to read the App's login and once more to prove its key.
+A login read that fails after the release, and is tried again, reads under the same token until
+fewer than 20 minutes remain on it, and an App whose login was read is not read again.
+The command's environment is the daemon's, less the NATS seeds and every variable whose name starts
 `LEGION_GITHUB_`, with two variables the daemon sets:
 `LEGION_GITHUB_OWNER`, the account whose installation token the daemon wants (empty for every
 installation the command may release, which the boot's read of the App's login asks for), and
@@ -488,6 +491,13 @@ trusted`. Put a real tmux binary first on the daemon's `PATH`
 (`mise which tmux` prints its install path), as the live proofs do with `real_bin_path`
 (`scripts/e2e/README.md`).
 
+The private server reads no tmux configuration file: the command that starts it carries
+`-f /dev/null`, so the server's start does not run, or wait for, the operator's `~/.tmux.conf`
+or its plugins. An operator who attaches with `tmux -L legion-<project> attach` gets tmux's
+default keys and options. `source-file` in that client is not local to the client: tmux runs the
+file's commands on the daemon's server, so the file's options, key bindings and plugins then
+apply to that server and to the daemon's sessions and windows.
+
 ## What a pane's Dispatch credential is
 
 A pane's Dispatch bearer is the daemon's own. The daemon reads `dispatch_token_file` once at boot
@@ -773,8 +783,8 @@ provider_keys:
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a pane
-  of a unit drawn into it names, and `instructions`, one markdown file the daemon reads at boot
-  and appends to that pane's prompt.
+  of a unit drawn into it names, `instructions`, one markdown file the daemon reads at boot and
+  appends to that pane's prompt, and `plan`, how the issues drawn into it are done (below).
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
   **The order a pane's `PI_CONFIG_FILES` names them in** is the operator's files
@@ -786,8 +796,8 @@ provider_keys:
   The system prompt ends with each such arm's `instructions` in that same order, after the
   deployment's own.
   The draw is made once, when the unit is opened — a tree's when its lifecycle row is first
-  created, an issue's when the daemon first records that issue — and is recorded with the arm, the
-  mode in force and the instant.
+  created, an issue's when the daemon first records that issue — and is recorded with the arm, its
+  `plan` where it names one, the mode in force and the instant.
   The launch follows the record, not the mode: a unit drawn into an arm keeps that arm's files
   while the project's file still names the arm, whatever the mode is now, and taking the files
   away is taking the arm out of the file.
@@ -805,6 +815,19 @@ provider_keys:
   does.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
+- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
+  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
+  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
+  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
+  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+  The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
+  whatever the file says later.
+  An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
+  most one experiment of a project sets it.
+  The loader refuses a `plan` that is neither `owner` nor `default` (`owner-alone`, which this
+  release does not carry out, among them), an arm that names no `plan` beside one that does, an
+  experiment that sets `plan` at `unit: tree`, and a second experiment of one project that sets
+  `plan`; `legion config check` makes each of these refusals.
 - **`projects.<KEY>.commit_issue_trailer_repos`**, the project's own list, names the repositories
   whose commits carry their issue key
   (`commit_issue_trailer_repos: [acme/widgets]`).

@@ -322,15 +322,17 @@ func (r *busyRelaunchLive) overrides() overrides {
 
 // seed records the five issues as the daemon would hold them at the moment each one's worker
 // began, as claim_compaction_live_test.go's seed does and for its reasons: each a root handed to
-// Legion, in the phase its worker works, holding its tree's admission slot with its lifecycle
-// open, and that worker's claim mid-launch, which this boot relaunches. Each phase worker's claim
-// holds the task its phase's start left pending, which is what keeps admission's repair of a
-// slotted worker holding no task off it (internal/admit/admit.go's resumeSlottedWorkers) — that
-// repair would give the claim its phase's resume task, and every deliver of this driver would be
-// refused `a delivery is already pending` — and every pane answers it before the first step. The
-// root architect's issue stands in accepting, where no phase worker runs, so the repair passes it
-// over as it passes over every architect; its claim holds nothing, as an architect's start leaves
-// it.
+// Legion, in the phase its worker works, with its lifecycle open, an admission slot the seed
+// writes (liveProof.admit), and that worker's claim mid-launch, which this boot relaunches. Each
+// phase worker's claim holds the task its phase's start left pending, which is what keeps
+// admission's repair of a slotted worker holding no task off it (internal/admit/admit.go's
+// resumeSlottedWorkers) — that repair would give the claim its phase's resume task, and every
+// deliver of this driver would be refused `a delivery is already pending` — and every pane
+// answers it before the first step. The root architect's issue stands in accepting, where no
+// phase worker runs, so the repair passes it over as it passes over every architect; its claim
+// holds nothing, as an architect's start leaves it. Its slot is the one a daemon would not hold:
+// accepting keeps none (record.KeepsSlot), so admission's release takes it back (admit's
+// releaseSlots).
 func (r *busyRelaunchLive) seed() {
 	t := r.t
 	t.Helper()
@@ -338,7 +340,7 @@ func (r *busyRelaunchLive) seed() {
 	for _, pane := range r.panes {
 		r.board.show(pane.issue, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		keys := make([]string, 0, len(r.panes))
 		for _, pane := range r.panes {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
@@ -1396,7 +1398,13 @@ func readStandinRequest(body []byte, at time.Time) seenRequest {
 		conversation.WriteString(text)
 	}
 	seen.conversation = conversation.String()
-	last := request.Messages[len(request.Messages)-1]
+	// The newest message the session sent: past any date/cwd reminder the host sends after it
+	// (isDateCwdReminder), which on a run that crosses midnight would read as a prompt.
+	newest := len(request.Messages) - 1
+	for newest > 0 && isDateCwdReminder(request.Messages[newest].Content) {
+		newest--
+	}
+	last := request.Messages[newest]
 	text, prompted := contentText(last.Content)
 	seen.last, seen.prompt = text, prompted && last.Role == "user"
 	return seen

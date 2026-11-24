@@ -85,6 +85,7 @@ func referencePlugin(t *testing.T, dir string, agent, rubric bool) string {
 // (prompts.RoleReferences, merged in), each named with the files that name it. Only Markdown
 // names anything, and a plugin directory that is a link is walked as the directory it names.
 func TestPromptReferencesReadTheSkillsTheAgentsAndTheRolePrompts(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := referencePlugin(t, dir, false, false)
 	agents := filepath.Join(dir, "agents")
@@ -144,6 +145,7 @@ func TestPromptReferencesReadTheSkillsTheAgentsAndTheRolePrompts(t *testing.T) {
 // gate cannot read them from is refused rather than checked as shipping none; absent or null, it
 // ships none.
 func TestReadPluginManifestRefusesSkillsItCannotRead(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name, omp, want string
 		skills          []string
@@ -182,6 +184,7 @@ func TestReadPluginManifestRefusesSkillsItCannotRead(t *testing.T) {
 // model and why; a line it cannot read is refused as such; and no answer at all is refused naming
 // the likely cause.
 func TestAgentModelRefusalReadsTheProbesAnswer(t *testing.T) {
+	t.Parallel()
 	agents := map[string][]string{"oracle": {"dist/skills/legion-oracle/SKILL.md"}}
 	for _, testCase := range []struct {
 		name, output string
@@ -216,6 +219,7 @@ func TestAgentModelRefusalReadsTheProbesAnswer(t *testing.T) {
 // A probe that could not discover the task agents registers no model check, so no answer on their
 // models can come: the refusal is the discovery's alone, and names no slow key as a cause.
 func TestAnAgentDiscoveryThatFailedIsTheWholeRefusal(t *testing.T) {
+	t.Parallel()
 	check := promptCheck{names: promptrefs.New()}
 	check.names[promptrefs.TaskAgents]["oracle"] = []string{"dist/skills/legion-oracle/SKILL.md"}
 

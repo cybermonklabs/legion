@@ -134,6 +134,7 @@ func (r *podUpdateRig) wantForgottenLaunch() {
 // implementer. What names it is the set of claims that have not answered (unansweredClaims), or
 // the members that a gone pod took work from (lostClaims).
 func TestALiveRoundNamesTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
+	t.Parallel()
 	// The bound ends the wait for the implementer. The replacement through the tester's process is
 	// made at the bound, and the bound's own line names the implementer as a claim that did not
 	// answer. Read through the round's sets alone, the implementer holds nothing, so the answers
@@ -202,6 +203,7 @@ func TestALiveRoundNamesTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
 // for the claims the round asks (waitingClaims), the implementer stops the read. Then the line
 // says that no read was made, and the issue is not told what the reviewer left on the disk.
 func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
+	t.Parallel()
 	const reviewer = claim.RoleReviewer
 	rig := forgottenOwedLaunch(t, suspendedRole(reviewer, supervise.SuspendedByDaemon))
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})

@@ -409,6 +409,89 @@ func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 	}
 }
 
+// git hands a pre-push hook the remote's URL as its name too where the push names a URL rather
+// than a remote (`git push https://<token>@github.com/acme/no-such-repo.git`), and such a URL can
+// carry a token as its userinfo, with no password. Nothing the command prints holds the token, on
+// any of its answers: a call it cannot read, update lines it cannot read, a refusal by either
+// check, and GitHub's 404 for the destination. Each row also holds its answer's own words, the
+// push named by its URL with no credential, so a row that took another path, or printed the
+// push's name some other way, fails too. Two rules stand between the token and the terminal, each
+// answer's own Error() (leakguard's errors.go) and the URL rule on every command's stderr
+// (newRoot), and these rows hold the two together; leakguard's
+// TestNoAnswerPrintsACredentialThePushsNameCarries holds the first alone.
+func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
+	const token = "FAKEtok3nZQ9x"
+	remote := "https://" + token + "@github.com/" + noSuchRepo + ".git"
+	shown := "the push to https://github.com/" + noSuchRepo + ".git"
+	root, defaultDir := gitCredentialBundle(t)
+	refusedPush := func(t *testing.T, check, message string) (int, string) {
+		dir, line := aPushFixture(t, message)
+		t.Chdir(dir)
+		t.Setenv("PUBLIC_LEAK_CHECK", leakguardtest.Write(t, t.TempDir(), check))
+		// A local path names no github.com repository, so the guard reads no visibility.
+		return leakCheck(t, line, "pre-push", remote, dir+".git")
+	}
+	var ghNotFound visibilityReadCase
+	for _, read := range visibilityReadCases(shown) {
+		if read.name == "gh's 404" {
+			ghNotFound = read
+		}
+	}
+	if ghNotFound.gh == nil {
+		t.Fatal(`visibilityReadCases holds no "gh's 404" row`)
+	}
+	for _, tc := range []struct {
+		name string
+		code int
+		says string
+		run  func(t *testing.T) (int, string)
+	}{
+		{
+			name: "a call it cannot read", code: leakguard.StatusSetupFailure, says: leakCheckPrePushUsage,
+			run: func(t *testing.T) (int, string) { return leakCheck(t, "", "pre-push", remote) },
+		},
+		{
+			name: "update lines it cannot read", code: leakguard.StatusSetupFailure,
+			says: "LEAK CHECK SETUP ERROR: " + shown + ": git's update lines could not be read",
+			run:  func(t *testing.T) (int, string) { return leakCheck(t, "a b c\n", "pre-push", remote, remote) },
+		},
+		{
+			name: "the shared check refuses", code: leakguard.StatusRefused,
+			says: "LEAK CHECK: refusing " + shown + ": the shared public leak check refused it",
+			run: func(t *testing.T) (int, string) {
+				return refusedPush(t, leakguardtest.Refuses, "a commit of nothing in particular")
+			},
+		},
+		{
+			name: "this repository's own rules refuse", code: leakguard.StatusRefused,
+			says: "LEAK CHECK: refusing " + shown + ": this repository's own private-name rules match it",
+			run: func(t *testing.T) (int, string) {
+				return refusedPush(t, leakguardtest.Passes, "a commit that names "+theLeakCheckHost)
+			},
+		},
+		{
+			name: "GitHub answers 404", code: leakguard.StatusSetupFailure, says: notFoundSays(shown),
+			run: func(t *testing.T) (int, string) {
+				pushVisibilityReadEnv(t, root, defaultDir, ghNotFound)
+				return leakCheck(t, refusedRefDeletion, "pre-push", remote, remote)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, printed := tc.run(t)
+			if code != tc.code {
+				t.Errorf("exited %d, want %d: %s", code, tc.code, strings.ReplaceAll(printed, token, "<the token>"))
+			}
+			if strings.Contains(printed, token) {
+				t.Errorf("printed the token the remote carries: %s", strings.ReplaceAll(printed, token, "<the token>"))
+			}
+			if !strings.Contains(printed, tc.says) {
+				t.Errorf("printed %q, want it to hold %q", strings.ReplaceAll(printed, token, "<the token>"), tc.says)
+			}
+		})
+	}
+}
+
 // `legion leak-check pre-push` to a repository whose owner the gh bundle holds no directory for:
 // the guard's REST read goes through the pod's `gh`, `legion gh`, which refuses it, exit 2, naming
 // the owner, and the real gh never runs. The guard then reads the visibility with git's

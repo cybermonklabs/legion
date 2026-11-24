@@ -136,7 +136,7 @@ done
 
 # Two steps run database-skips.sh, each with the argument list its entry reads: envoy-go's unit
 # step, which runs the module less the race lane's packages, the text checks, internal/integration
-# and the packages envoy-go-checks runs, and envoy-go-race-api's race step, which runs the API
+# and the packages envoy-go-build runs, and envoy-go-race-api's race step, which runs the API
 # package. Each step is read out of the file that holds it, in the directory GitHub runs it from,
 # so the case holds the entry to the steps as written; an argument list the entry does not list is
 # refused, since what the script runs then is a reading nobody made.

@@ -192,7 +192,7 @@ EXCEPTIONS = (
         requirement=(
             "R3 (dispatch://INFRA-1408/spec): envoy-smoke's pulumilive step over infra/host keeps "
             "running the whole package, untagged tests included, because envoy-smoke runs on a "
-            "Dispatch-only change where envoy-infra-go does not, and in such a run those untagged "
+            "Dispatch-only change where envoy-infra-build does not, and in such a run those untagged "
             "tests would otherwise run nowhere."
         ),
     ),
@@ -337,13 +337,13 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
-            (".github/workflows/ci-job-envoy-go-checks.yaml", "Test pmdoc's tables in a build without inlining"),
+            (".github/workflows/ci-job-envoy-go-build.yaml", "Test pmdoc's tables in a build without inlining"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/pmdoc",
         functions=None,
         requirement=(
             "pmdoc's readers must read a table in every build, whatever its inlining. "
-            "envoy-go-checks runs pmdoc's table tests and its display fixture test in a build made "
+            "envoy-go-build runs pmdoc's table tests and its display fixture test in a build made "
             "with -gcflags=all=-l, a mode no other step builds pmdoc in: goldmark builds pmdoc's "
             "readers through an interface Go's initialization order does not look through, so a "
             "reader that copied a variable of pmdoc was handed nil in that build alone, and each "
@@ -388,7 +388,7 @@ BACKEND_COUNT_TESTS = (
 
 # envoy-go's unit step's -skip and --module-except, as ci_job_reads.UNIT_TEST_RUN writes them: the
 # web display fixture's two tests and BACKEND_COUNT_TESTS, and the race lane's packages, the text
-# checks, internal/integration and the packages envoy-go-checks runs.
+# checks, internal/integration and the packages envoy-go-build runs.
 UNIT_SKIP = ("'^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|"
              "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|"
              "TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|"

@@ -73,12 +73,12 @@ off_under() {
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: exactly the nine gated outputs read the pull request's labels"
+echo "case: exactly the fifteen gated outputs read the pull request's labels"
 # A count and the names, so an output whose label term is deleted outright fails here by name
-# rather than leaving the set. A tenth gated suite adds its name to this list.
-gated='dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_smoke'
-check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 9)"
-check "and they are the nine" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
+# rather than leaving the set. A sixteenth gated suite adds its name to this list.
+gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion test'
+check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 15)"
+check "and they are the fifteen" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
 
 echo "case: each of them is on for a merge group and for a push, where no label is read"
 check "a merge group leaves none off" \

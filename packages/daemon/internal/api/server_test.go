@@ -51,22 +51,29 @@ func serveWithTransactions(t *testing.T, src StateSource, txs *fakeStateTransact
 type fakeStateTransactions struct {
 	tx   *fakeTx
 	opts pgx.TxOptions
+	// err is the begin's failure, when set.
+	err error
 }
 
 func (f *fakeStateTransactions) BeginTx(_ context.Context, opts pgx.TxOptions) (pgx.Tx, error) {
 	f.opts = opts
+	if f.err != nil {
+		return nil, f.err
+	}
 	return f.tx, nil
 }
 
 type fakeTx struct {
 	committed  bool
 	rolledBack bool
+	// commitErr is the commit's answer, nil for one that committed.
+	commitErr error
 }
 
 func (t *fakeTx) Begin(context.Context) (pgx.Tx, error) { return t, nil }
 func (t *fakeTx) Commit(context.Context) error {
 	t.committed = true
-	return nil
+	return t.commitErr
 }
 func (t *fakeTx) Rollback(context.Context) error {
 	t.rolledBack = true
@@ -258,6 +265,35 @@ func TestStateRouteLogsNoErrorWhenTheCallerHangsUp(t *testing.T) {
 	}
 	if !strings.Contains(logged.String(), "api: state source failed") {
 		t.Fatalf("log = %s, want the read logged at Debug", logged.String())
+	}
+}
+
+// The state route's log line names the step of its transaction that failed, with the words each
+// step logged before the read ran through store.TransactWith: the begin, or the commit of a read
+// that succeeded, which the server answered as not committed. A search for either line still
+// finds it.
+func TestStateRouteLogsWhichStepOfItsTransactionFailed(t *testing.T) {
+	for _, tc := range []struct {
+		step string
+		txs  *fakeStateTransactions
+		want string
+	}{
+		{"begin", &fakeStateTransactions{err: errors.New("connection refused")}, "api: begin state transaction failed"},
+		{"commit", &fakeStateTransactions{tx: &fakeTx{commitErr: pgx.ErrTxCommitRollback}}, "api: commit state transaction failed"},
+	} {
+		t.Run(tc.step, func(t *testing.T) {
+			var logged bytes.Buffer
+			server := NewServer("127.0.0.1", 8437, Options{State: fakeSource{}, StateTransactions: tc.txs,
+				Log: slog.New(slog.NewJSONHandler(&logged, nil))})
+			recorder := httptest.NewRecorder()
+			server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil))
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500; body %s", recorder.Code, recorder.Body)
+			}
+			if !strings.Contains(logged.String(), `"`+tc.want+`"`) {
+				t.Fatalf("log = %s, want the line %q", logged.String(), tc.want)
+			}
+		})
 	}
 }
 

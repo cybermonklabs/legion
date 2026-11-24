@@ -1326,10 +1326,7 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 // phase role left, as a `jj split` of its work into a described commit leaves one, becomes the
 // incoming phase role's, and the described commit under it keeps its id and its author.
 func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	for _, tc := range []struct {
 		name       string
 		leave      []string // what the previous role ran once README.md was written, nil for nothing
@@ -1433,10 +1430,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 // role's workspace; on a devbox, a checkout), so the adoption runs in the workspace it adopts and
 // leaves the repository the shim runs in as it was.
 func TestAdoptWorkingCopyLeavesTheRepositoryTheShimRunsInUntouched(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	home := t.TempDir()
 	initialize := func(dir string) {
 		t.Helper()
@@ -1529,10 +1523,7 @@ func treeOf(t *testing.T, root string) map[string]string {
 // backend reported it (the index jj rewrites as it snapshots the working copy, as in LEGION-731)
 // or a git command jj ran; and the lock stays.
 func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	for _, tc := range []struct {
 		name string
 		// script is the PATH's jj, given the real jj and the lock.
@@ -1685,10 +1676,7 @@ func TestThePinnedJJCarriesTheChunkedPackPatch(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the chunked pack mapping is Linux's alone: on %s the patched jj reads no JJ_PACK_MAPPED_LIMIT", runtime.GOOS)
 	}
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	const file = "README.md"
 	home := t.TempDir()
 	repository := t.TempDir()

@@ -64,6 +64,7 @@ func (r *podUpdateRig) migrate(version int) {
 // release's mark and publishes nothing, so the role is never asked and the round waits for its
 // bound. It is run by leaving the migrate call out.
 func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCutover(t *testing.T) {
+	t.Parallel()
 	earlier := readyWorker(claim.RoleImplementer)
 	earlier.round, earlier.reasons = podUpdateRound, podUpdateDrift
 	rig := newPodUpdateRig(t, earlier)
@@ -72,7 +73,7 @@ func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCuto
 	}
 	if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 		Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
-		Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound),
+		Text: supervise.UpdateTask(claim.RoleImplementer, podUpdateRound, podUpdateDrift, podUpdateBound),
 	}); err != nil || !written {
 		t.Fatalf("queue the earlier release's ask = %t, %v; want it written", written, err)
 	}
@@ -140,6 +141,7 @@ func (r *podUpdateRig) askedOf(role claim.Role) int {
 // reviewer on 2026-11-17: the sweep marked the claim asked when it enqueued the ask, the row that
 // found no holder finished, and no sweep asked again, so the round waited for its bound.
 func TestPodUpdateAskThatFoundNoHolderIsAskedAgainAndTheRoundEndsLongBeforeItsBound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 	clocks := rig.replacementClocks()
@@ -211,6 +213,7 @@ func TestPodUpdateAskThatFoundNoHolderIsAskedAgainAndTheRoundEndsLongBeforeItsBo
 // main the lost row finished and the sweep's mark stood, and with the take-back of 74ab1cd3 the
 // row found no mark to take back, the sweep's mark landed after it, and no sweep asked again.
 func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
@@ -270,6 +273,7 @@ func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testi
 // and the next sweep asked the session again. On main, with no take-back, every queued row
 // publishes, and a session the first row reached is asked by the second as well.
 func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// unheld is whether the older row runs while the role's topic has no holder.
@@ -283,7 +287,7 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 			rig.drifts(podUpdateDrift)
 			rig.tick()
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound)
+			text := supervise.UpdateTask(claim.RoleImplementer, podUpdateRound, podUpdateDrift, podUpdateBound)
 			for range 2 {
 				if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
@@ -336,6 +340,7 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 // while the relaunch is held inside its Resume. On 74ab1cd3, which published with no lock held,
 // the row publishes while the relaunch holds the claim.
 func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.tick()
@@ -428,6 +433,7 @@ func (p stoppingPublisher) PublishKept(ctx context.Context, topic, message strin
 // wrote the mark under the lane's context: the store refused the write as cancelled, the row
 // answered an error and the stored claim held no mark.
 func TestPodUpdateAskDeliveredAsTheDaemonStopsIsStillMarked(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.tick()

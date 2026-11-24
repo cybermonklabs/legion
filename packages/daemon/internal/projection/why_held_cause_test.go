@@ -44,9 +44,9 @@ type heldFixture struct {
 // The walk is read off a projected state, never from the renderer alone, so the row the pass
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
 // the test: an entry added to the table is given a fixture here. at_work is the one exception:
-// the issues that read it stand past their review and are not held (record.HeldAtWork), one
-// whose tree runs is served no answer (atWorkPastReview), and no fixture here builds the member of
-// a tree that runs nothing that the entry is served to.
+// the issues that read it stand in accepting, retro or merging, which keep no slot, and are not
+// held (record.HeldAtWork), one whose tree runs is served no answer (atWorkInSlotlessPhase), and no
+// fixture here builds the member of a tree that runs nothing that the entry is served to.
 func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
 	// The Dispatch link a blocked fixture adds: LEGION-101 waits on LEGION-900, which is open.
@@ -129,6 +129,26 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
 		gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
 	}
+	// A root held before its retro for the issue beneath it, a parent whose plan has no acceptance
+	// step (record.HoldForChildren), in a running tree under an open gate, and that child at work
+	// holding the row its phase keeps. The held root keeps no row, since retro keeps none.
+	heldParent := treeRoot("LEGION-100", "needs_review", phase.Held)
+	heldParent.Hold = &record.Hold{From: phase.Retro, Reason: record.HoldForChildren}
+	childrenBeforeRetro := projectionStore{
+		issues:     []record.Issue{heldParent, treeMember("LEGION-101", "LEGION-100", "LEGION-100", "in_progress", phase.Implementing)},
+		slots:      []record.Slot{{Issue: "LEGION-101", Index: 0, AdmittedAt: projectedAt}},
+		lifecycles: []string{"LEGION-100"},
+		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+	}
+	// A root whose task was stopped in its merge (record.HoldTaskStopped), where it keeps no row,
+	// in a tree under an open gate.
+	stoppedRoot := treeRoot("LEGION-100", "needs_review", phase.Held)
+	stoppedRoot.Hold = &record.Hold{From: phase.Merging, Reason: record.HoldTaskStopped}
+	taskStopped := projectionStore{
+		issues:     []record.Issue{stoppedRoot},
+		lifecycles: []string{"LEGION-100"},
+		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+	}
 
 	byRoot := []string{"LEGION-100"}
 	fixtures := map[heldEntry]heldFixture{
@@ -170,7 +190,13 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
-			"The daemon has accepted the reviewed head of LEGION-101, which stands above it, and nothing of its own work starts before that issue closes."},
+			"The daemon has accepted the head of LEGION-101 that the last step of its task passed, and LEGION-101 stands above it, so nothing of its own work starts while that issue stands in retro or merging."},
+		{record.HeldChildrenBeforeRetro, api.WhyUnlisted}: {childrenBeforeRetro,
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldChildrenBeforeRetro, HeldBy: []string{"LEGION-101"}},
+			"It passed the last step of its task, which is not the owner's acceptance, so the daemon holds it before its retro while these issues beneath it are still in the workflow: LEGION-101. Its retro does not start while one of them is."},
+		{record.HeldTaskStopped, api.WhyUnlisted}: {taskStopped,
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldTaskStopped},
+			"Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."},
 		{record.HeldUnclassified, api.WhyUnlisted}: {unclassified,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldUnclassified},
 			"The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."},

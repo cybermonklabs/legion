@@ -90,8 +90,9 @@ func (s *server) loadInboxAskFollowers(ctx context.Context, q queryer, askIDs []
 // open ask and can have none, so a caller that does want them (an issue's ask list asked for a
 // thread) merges loadAskAnswersByAsk over the same ask ids itself rather than making every
 // Inbox load scan `events` for answers that cannot exist. It reads on the pool, never inside a
-// transaction, because the reach read ends with a listener call (loadAskReaches).
-func (s *server) loadAskThreads(ctx context.Context, askIDs []string, reader *displayTreeReader) (map[string]askThread, error) {
+// transaction, because the reach read ends with a listener call (loadAskReaches). The replies'
+// blocks are read for who.
+func (s *server) loadAskThreads(ctx context.Context, who model.Actor, askIDs []string, reader *displayTreeReader) (map[string]askThread, error) {
 	threads := make(map[string]askThread, len(askIDs))
 	for _, askID := range askIDs {
 		threads[askID] = askThread{
@@ -106,7 +107,7 @@ func (s *server) loadAskThreads(ctx context.Context, askIDs []string, reader *di
 	}
 
 	q := s.deps.Store.Pool
-	replies, err := s.loadInboxAskReplyChains(ctx, q, askIDs)
+	replies, err := s.loadInboxAskReplyChains(ctx, q, who, askIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -200,8 +201,8 @@ func scanAskReaches(ctx context.Context, q queryer, askIDs []string) (map[string
 }
 
 // loadInboxAskReplyChains groups inboxAskReplyChainsQuery's rows by the ask each belongs to,
-// preserving the query's order within a thread.
-func (s *server) loadInboxAskReplyChains(ctx context.Context, q queryer, askIDs []string) (map[string][]model.Comment, error) {
+// preserving the query's order within a thread, each reply's block read for who.
+func (s *server) loadInboxAskReplyChains(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.Comment, error) {
 	replies := make(map[string][]model.Comment, len(askIDs))
 	for _, askID := range askIDs {
 		replies[askID] = []model.Comment{}
@@ -231,7 +232,7 @@ func (s *server) loadInboxAskReplyChains(ctx context.Context, q queryer, askIDs 
 	for index := range comments {
 		unhydrated[index] = comments[index].comment
 	}
-	hydrated, err := s.hydrateCommentSideTables(ctx, q, unhydrated)
+	hydrated, err := s.hydrateCommentSideTables(ctx, q, who, unhydrated)
 	if err != nil {
 		return nil, fmt.Errorf("hydrate inbox ask replies: %w", err)
 	}

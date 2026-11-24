@@ -37,6 +37,7 @@ import (
 // second. The control deletes the failed review's record from Dispatch's store, its node and its
 // tuples, and the same assertion must then fail on the first issue's failed steps.
 func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 3)
 	want := r.walkThreeRated()
 	r.waitPlans("the three finished issues, each rated", want)
@@ -76,6 +77,7 @@ func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
 // refused PLAN_RATING_REQUIRED, so the contract the claim records is what decides, and the
 // daemon's own view of the claim after the boot must read the old contract.
 func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.walkToRetro()
 	implementer := r.worker(claim.RoleImplementer)
@@ -252,8 +254,8 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 			return fmt.Errorf("%s lists the plan %s of %s at generation %d, want its own, %s of %s at the generation of its records, %d",
 				w.key, plan.ID, plan.Issue, plan.Generation, workflow.PlanID(w.key, retro.Generation), w.key, retro.Generation)
 		case plan.Source != "default" || plan.ArtifactID != nil || plan.Version != nil || len(plan.Tasks) != 1 ||
-			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, workflow.DefaultSteps()):
-			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.key, *plan, workflow.DefaultSteps())
+			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, ownerStepsDefault):
+			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.key, *plan, ownerStepsDefault)
 		}
 		switch {
 		case w.rating == nil && len(got.Ratings) != 0:

@@ -59,6 +59,7 @@ func requireItemIndexed(t *testing.T, database *store.Store, step, query, itemID
 // and an older build's write leave it, and it answers as it does for any other comment: the reply
 // carries the block, and the comment is indexed by the same transaction.
 func TestACommentDeliveryReplyNamesABlockOfAnOwedComment(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -98,6 +99,7 @@ func TestACommentDeliveryReplyNamesABlockOfAnOwedComment(t *testing.T) {
 // a message whose block state is owed and is answered as any other reply is: it carries the
 // block, and the message is indexed by the same transaction.
 func TestAMessageDeliveryReplyNamesABlockOfAnOwedMessage(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)

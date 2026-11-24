@@ -23,6 +23,7 @@ import (
 // task, the news task would have the retry deliver nothing, and the relaunched worker would get the
 // news and no work.
 func TestARetryOfAFailedClaimHoldingOnlyANewsTaskStillDeliversItsPhaseTask(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",

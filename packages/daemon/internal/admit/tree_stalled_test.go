@@ -349,7 +349,7 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 			reason += "\n" + line
 		}
 		return stalledNotice{issue: root, reason: reason + "\nRead the tree and decide what it needs." +
-			" You can ask a role what it waits on. You can move an issue back a phase. You can park the tree."}
+			" You can ask a role what it waits on. You can park the tree."}
 	}
 	want := []stalledNotice{
 		toldOf(stalledRootA, 7,
@@ -872,7 +872,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 
 		const stillness = "The tree has been quiet for 7.0 hours. No agent of the tree is at work."
 		const decide = "\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-			" You can move an issue back a phase. You can park the tree."
+			" You can park the tree."
 		wantDeadlocked := []stalledNotice{
 			{issue: deadAwaiting, reason: deadAwaiting + " has stopped. " + stillness + "\n" + deadAwaiting +
 				" is in awaiting_person. No role works this phase. The record holds no pull request." + decide},
@@ -935,10 +935,10 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 	// `worker_silence_minutes` (workflow.SilentPhaseWorker) — makes no phase change and no
 	// status change, so it gives no slot back and keeps the line moving no more than an idle
 	// claim does. silentWorkerProject seeds the deadlocked project above with one tree more: a
-	// root in merging, which holds no slot, as an issue past its review holds none, so no slot
-	// holder of the project is added, and whose merger is that worker, its last step two hours
-	// before the movement the clock is measured from. silence is the `worker_silence_minutes`
-	// the admission registers, zero for an admission that registers none.
+	// root in merging, which holds no slot, as merging keeps none (record.PhaseKeepsSlot), so no
+	// slot holder of the project is added, and whose merger is that worker, its last step two
+	// hours before the movement the clock is measured from. silence is the
+	// `worker_silence_minutes` the admission registers, zero for an admission that registers none.
 	const deadMerging = "LEGION-820"
 	silentWorkerProject := func(t *testing.T, silence, background time.Duration) (*pgxpool.Pool, *Admission) {
 		t.Helper()
@@ -1100,11 +1100,11 @@ func TestAWorkingTreeIsNeverReportedStalled(t *testing.T) {
 // no word of record.HeldReason (silencedTree's doc says why the table gains no row for it). Its
 // tree is told to nobody while the project's line can move, and, since the link is work outside
 // the tree, where the line cannot move as well (lineHolds.waitsOnWorkOutsideItsTree,
-// TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped). The same link on an issue past its
-// review is no such wait: that issue holds no slot by the phase rule (record.KeepsSlot), needs
-// none and stands in no line, so the walk leaves it behind as an issue already started that has
-// stopped, and its tree is told. A third tree that has simply stopped holds a slot no wait
-// silences, which keeps the project's line moving and is told as the control.
+// TestATreeThatWaitsOnABlockedByLinkIsNeverToldAsStopped). The same link on an issue in merging
+// (or in accepting or retro) is no such wait: that issue holds no slot by the phase rule
+// (record.KeepsSlot), needs none and stands in no line, so the walk leaves it behind as an issue
+// already started that has stopped, and its tree is told. A third tree that has simply stopped
+// holds a slot no wait silences, which keeps the project's line moving and is told as the control.
 //
 // The release runs on a first pass at the moment the movements settle, and the measure is read
 // on a second pass seven hours later, so a release that marked a movement could not hide the
@@ -1137,15 +1137,15 @@ func TestAStartedIssueThatGaveItsSlotBackForAWaitIsAWaitByDesign(t *testing.T) {
 	admission.now = func() time.Time { return settled }
 	tick(t, pool, admission, "release")
 
-	// The premise, read after the release: the issue at work before its review gave its row back
-	// for the wait and stands in the line as the waiting kind; the issue past its review holds no
+	// The premise, read after the release: the issue at work in implementing gave its row back
+	// for the wait and stands in the line as the waiting kind; the issue in merging holds no
 	// row, carries no mark of a release for a wait and stands in no line.
 	if at := issue(t, pool, released).ReleasedForWaitAt; at == nil || !at.Equal(settled) || holdsSlot(t, pool, released) {
 		t.Fatalf("%s = %+v holding a slot %t, want it released for its wait at %v and holding none", released,
 			issue(t, pool, released), holdsSlot(t, pool, released), settled)
 	}
 	if marked := issue(t, pool, pastRev).ReleasedForWaitAt; marked != nil || holdsSlot(t, pool, pastRev) {
-		t.Fatalf("%s carries a release for a wait at %v and holds a slot %t, want neither: past its review it holds no slot to give back",
+		t.Fatalf("%s carries a release for a wait at %v and holds a slot %t, want neither: in merging it holds no slot to give back",
 			pastRev, marked, holdsSlot(t, pool, pastRev))
 	}
 	facts, slots := passFacts(t, pool)
@@ -1165,7 +1165,7 @@ func TestAStartedIssueThatGaveItsSlotBackForAWaitIsAWaitByDesign(t *testing.T) {
 			kinds[released], record.LineWaitingOnIssue)
 	}
 	if kind, stands := kinds[pastRev]; stands {
-		t.Fatalf("%s stands in the line as %v, want it in no line: an issue past its review needs no slot", pastRev, kind)
+		t.Fatalf("%s stands in the line as %v, want it in no line: an issue in merging needs no slot", pastRev, kind)
 	}
 
 	settled = settleMovements(t, pool, released, pastRev, stopped)
@@ -1175,7 +1175,7 @@ func TestAStartedIssueThatGaveItsSlotBackForAWaitIsAWaitByDesign(t *testing.T) {
 	got := stalledRoots(t, pool)
 	slices.Sort(got)
 	if want := []string{pastRev, stopped}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the controller was told of %v, want %v: an issue that gave its slot back for a wait waits by design, and the same link on an issue past its review does not",
+		t.Fatalf("the controller was told of %v, want %v: an issue that gave its slot back for a wait waits by design, and the same link on an issue in merging does not",
 			got, want)
 	}
 }
@@ -1383,11 +1383,11 @@ func TestAWaitOnAChildIsAWaitByDesignOnlyOnceTheChildIsReleased(t *testing.T) {
 	})
 }
 
-// A queued root past its review holds no row and keeps none (slotFor), so its promotion opens
-// its tree whatever the cap says. The liveness clause's free-slot term reads that same decision
-// (capLets): a project whose only slot holder waits by design under a full cap, and whose only
-// line entry is such a root, can still move, and its waiting tree is told to nobody on the pass
-// that opens the carried root's tree.
+// A queued root in accepting, retro or merging holds no row and keeps none (slotFor), so its
+// promotion opens its tree whatever the cap says. The liveness clause's free-slot term reads that
+// same decision (capLets): a project whose only slot holder waits by design under a full cap, and
+// whose only line entry is such a root, can still move, and its waiting tree is told to nobody on
+// the pass that opens the carried root's tree.
 //
 // What fails without the rule: a free-slot term that answers false at a full cap before it
 // reads the line reads the project as unable to move on the very pass that opens the carried

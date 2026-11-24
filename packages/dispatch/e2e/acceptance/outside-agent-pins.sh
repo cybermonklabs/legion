@@ -2,9 +2,10 @@
 # shellcheck disable=SC2154,SC2034 # the leg that sources this file sets what it reads, and reads what it sets
 # The deployed pins and the build Dispatch serves (rows pins and pins-end): outside-agent-tailnet.sh
 # sources this file from beside it, after outside-agent-lib.sh. It defines functions alone. They
-# read the leg's `work`, `newline`, `checkout` and the inputs OUTSIDE_PINS, OUTSIDE_PINS_REPO,
-# OUTSIDE_IMAGE_REVISION_COMMAND and OUTSIDE_TAILNET_DISPATCH_URL, and set `pins_text`,
-# `pins_problem`, `serving_commit`, `serving_fleet` and `serving_problem`.
+# read the leg's `work`, `newline`, `checkout`, `pin_names` (the deployments whose pins are read:
+# `broker dispatch edge-listener`, or `broker dispatch` for the browser gate) and the inputs
+# OUTSIDE_PINS, OUTSIDE_PINS_REPO, OUTSIDE_IMAGE_REVISION_COMMAND and OUTSIDE_TAILNET_DISPATCH_URL,
+# and set `pins_text`, `pins_problem`, `serving_commit`, `serving_fleet` and `serving_problem`.
 #
 # What each service says of the build it serves: Dispatch's /healthz names `commit`, the legion
 # commit its binary was built from, and `fleet_commit`, the commit every live server process serves
@@ -21,12 +22,13 @@ pin_file() {
     [ -r "$1" ] && cp "$1" "$2"
   fi
 }
-# read_pins: sets pins_text, the `name image revision` lines, or pins_problem.
+# read_pins: sets pins_text, the `name image revision` lines of each name pin_names holds, or
+# pins_problem. A line of another name is not read.
 read_pins() {
   local line name file key value image revision found copy
   pins_text=''
   pins_problem=''
-  for name in broker dispatch edge-listener; do
+  for name in $pin_names; do
     found=''
     while IFS= read -r line || [ -n "$line" ]; do
       line=${line%%#*}

@@ -83,7 +83,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.after }}
           HEAD_MESSAGE: ${{ github.event.head_commit.message }}
-          # The commit main pointed at before this push: the dispatched run's envoy-go-checks
+          # The commit main pointed at before this push: the dispatched run's envoy-go-build
           # compares every migration it held with main's tip (ci.yaml's migration-base input), so
           # an edit any commit of the push made is judged, not only the head's.
           BASE_SHA: ${{ github.event.before }}

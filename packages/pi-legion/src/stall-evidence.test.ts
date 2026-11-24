@@ -5,6 +5,7 @@ import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
 import {
   EnvoyApiError,
+  type KeyTakenResult,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
@@ -275,7 +276,11 @@ test("an argument far longer than the bound is cut to it rather than written who
 
 /** What the rig's listener answers one publish: a string makes the publish throw that message,
  * and an `EnvoyApiError` is thrown as the transport throws it. */
-type RigAnswer = Pick<PublishResult, "kept" | "keptUntil"> | string | EnvoyApiError;
+type RigAnswer =
+  | Pick<PublishResult, "kept" | "keptUntil">
+  | KeyTakenResult
+  | string
+  | EnvoyApiError;
 
 interface TellerRig {
   readonly teller: StallWatchdogTeller;
@@ -485,6 +490,29 @@ test("a session never publishes to the role its own session holds", async () => 
     kind: "none",
     why: "the controller's own session is the owner, so its evidence is its transcript and its log",
   });
+});
+
+// A listener answers a notice whose key another sender's message already holds with that
+// message's ids alone, which the client reads as key taken: nothing reached the owner, so the
+// notice is a refusal the log names, and the owner is not told. The control is a delivered
+// answer, which tells the owner.
+test("a stall notice whose key another sender's message holds tells no owner", async () => {
+  const taken = tellerRig();
+  taken.publishAnswer = {
+    keyTaken: { eventId: "event-other", topic: "notifications.role.x", issuedAt: 1 },
+    delivered: false,
+  };
+  expect(await taken.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  expect(taken.warnings.map((line) => line.message)).toContain(
+    "legion: the owner was not told about this session's stuck tool call"
+  );
+
+  const told = tellerRig();
+  told.publishAnswer = {};
+  expect(await told.teller.tellOverdue(evidenceOf())).toMatchObject({ ownerTold: true });
 });
 
 test("a refused publish and a session with Envoy off leave a line in the log", async () => {

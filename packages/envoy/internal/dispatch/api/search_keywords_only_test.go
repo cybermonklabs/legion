@@ -23,6 +23,7 @@ func embedderCalls(embedder *fakeEmbedder) int {
 // that shares no word with it, and costs exactly one call - so the parameter, and nothing else
 // about the request, is what the saving comes from.
 func TestSearchKeywordsOnlyMakesNoEmbeddingCall(t *testing.T) {
+	t.Parallel()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -59,6 +60,7 @@ func TestSearchKeywordsOnlyMakesNoEmbeddingCall(t *testing.T) {
 // TestSearchKeywordsOnlyFalseSearchesByMeaning holds the other accepted value to what it says:
 // keywords_only=false is the request a caller makes when it wants everything, and it embeds.
 func TestSearchKeywordsOnlyFalseSearchesByMeaning(t *testing.T) {
+	t.Parallel()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -82,6 +84,7 @@ func TestSearchKeywordsOnlyFalseSearchesByMeaning(t *testing.T) {
 // not what it answers: the keyword match a query names is on the page exactly as it is without
 // the parameter.
 func TestSearchKeywordsOnlyAnswersTheKeywordHits(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "KWHI", "Astrolabe calibration guide", "Keyword body text.")
 
@@ -98,6 +101,7 @@ func TestSearchKeywordsOnlyAnswersTheKeywordHits(t *testing.T) {
 // and a repeated parameter, under a code of its own, exactly as the project and the page
 // parameters beside it are refused.
 func TestSearchRefusesAnUnreadableKeywordsOnly(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createInteractionIssue(t, handler, "KWBA", "Astrolabe calibration guide", "Keyword body text.")
 
@@ -126,6 +130,7 @@ func TestSearchRefusesAnUnreadableKeywordsOnly(t *testing.T) {
 // the request rather than replacing it: the chips still narrow every leg and the page is still
 // the page that was asked for.
 func TestSearchKeywordsOnlyKeepsTheFiltersAndThePage(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	open := createInteractionIssue(t, handler, "KWFI", "Astrolabe calibration guide", "Keyword body text.")
 	closed := createSearchIssue(t, handler, "KWFI", "Astrolabe mounting bracket", "Keyword body text.")

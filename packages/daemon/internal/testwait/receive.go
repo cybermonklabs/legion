@@ -46,6 +46,26 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	return zero
 }
 
+// ReceiveWithin is one receive from ch (a value, or the close of ch, which gives the zero value)
+// within bound of real time, for a wait whose span is the thing under test, as WithinPolling is
+// for a condition: an answer that comes late is the failure, so the bound is the caller's alone,
+// with no clamp to the test binary's deadline. A receive that has not come by then fails the test
+// with "<what> did not come within <bound>: <why>", why being the caller's reading of the late
+// answer, what the wait proves the call does not do.
+func ReceiveWithin[T any](t *testing.T, bound time.Duration, what, why string, ch <-chan T) T {
+	t.Helper()
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case value := <-ch:
+		return value
+	case <-timer.C:
+	}
+	t.Fatalf("%s did not come within %s: %s", what, bound, why)
+	var zero T
+	return zero
+}
+
 // expiry is a channel that receives once the test binary's deadline less margin has passed, nil
 // (which never receives) under -timeout 0, and the function that releases its timer.
 func expiry(t *testing.T) (<-chan time.Time, func() bool) {

@@ -19,6 +19,7 @@ import (
 // The resume of a cancelled idle release is the other start of this shape (releaseResume), which
 // carries no task at all and so delivers nothing to move either number.
 func TestTheArchitectEntryNumbersStandThroughAWakeStartTheArchitectConfirms(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -160,8 +161,8 @@ func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 	confirmed := task
 	confirmed.ConfirmedAt = r.at.Add(time.Minute)
 	refused := errors.New("the transaction that confirms fails after the delivery's write")
-	if err := r.store.Tx(r.ctx, func(tx pgx.Tx) error {
-		if err := putDelivery(r.ctx, tx, r.reviewer.Token, confirmed); err != nil {
+	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := putDelivery(ctx, tx, r.reviewer.Token, confirmed); err != nil {
 			return err
 		}
 		return refused
@@ -288,7 +289,7 @@ func TestAFoldKeepsAWriteOfTheSameRowThatCommitsWhileItWaits(t *testing.T) {
 	}
 	r.wantTold("after the confirmation", toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
 
-	fill, err := r.store.Pool().Begin(r.ctx)
+	fill, err := r.store.Pool().BeginTx(r.ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the fill: %v", err)
 	}

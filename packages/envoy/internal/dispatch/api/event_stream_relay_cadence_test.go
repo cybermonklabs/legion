@@ -20,6 +20,7 @@ import (
 // still and drops the eager read until it moves; an immediate re-read is never asked twice
 // without the horizon moving between; and no gap schedules nothing.
 func TestEventGapRereadCadence(t *testing.T) {
+	t.Parallel()
 	var gaps eventGapReread
 	defer gaps.stop()
 	for step, want := range []struct {
@@ -64,6 +65,7 @@ const cadenceXid = uint64(1) << 40
 // is an hour here, so only the immediate second observation can publish it, and the relay is idle
 // again once it has.
 func TestEventStreamRelayProvesItsOwnObservationAtOnce(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	relay, horizon := newCadenceRelay(t, deps, database, time.Millisecond)
 	subscription, _, _ := subscribeRelay(t, relay)
@@ -97,6 +99,7 @@ func TestEventStreamRelayProvesItsOwnObservationAtOnce(t *testing.T) {
 // observation taken once the lower id is committed, so the script never claims the write ended
 // before it did.
 func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing.T) {
+	t.Parallel()
 	const coalesce = 2 * time.Second
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")

@@ -15,9 +15,8 @@ import { fileURLToPath } from "node:url";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // What e2e/visual-run.sh tells a reader of a failed run: where a failed row's shots are, if a row
-// ran and failed, and, for a run in reverse order, that a row failing there alone needs a seed
-// mark and not a new baseline; that it never says shots exist, since it cannot tell that a row
-// ran; and that however the run ends, the stack it started is stopped. The script runs
+// ran and failed; that it never says shots exist, since it cannot tell that a row ran; and that
+// however the run ends, the stack it started is stopped. The script runs
 // whole, as CI runs it, with `bun` and `docker` standing in on PATH: the stand-in `bun` prints
 // the stack's last variable for `e2e/harness-up.ts` and holds the stack up as the real one does,
 // writing its pid to `STUB_STACK_PID` where that is set, and the stand-in `docker` exits with the
@@ -51,14 +50,13 @@ exit "$STUB_DOCKER_STATUS"
 chmodSync(join(stubs, "bun"), 0o755);
 chmodSync(join(stubs, "docker"), 0o755);
 
-/** One run of the script with the stand-ins, the container's status and the order given. */
-function visualRun(status: number, order: string | undefined, args: readonly string[]) {
+/** One run of the script with the stand-ins and the container's status. */
+function visualRun(status: number, args: readonly string[]) {
   return runBounded({
     argv: ["sh", "e2e/visual-run.sh", ...args],
     bound: "short",
     cwd: dispatchPackage,
     env: {
-      DISPATCH_E2E_VISUAL_ORDER: order,
       HOME: process.env.HOME,
       PATH: `${stubs}:/usr/bin:/bin`,
       STUB_DOCKER_STATUS: String(status),
@@ -72,27 +70,13 @@ function visualRun(status: number, order: string | undefined, args: readonly str
  *  root, where a reader of a CI log and the job's upload start. */
 const shotsUnder = (directory: string) =>
   `the run failed. If a row ran and failed, its shots (-actual.png, -expected.png, -diff.png) are under ${directory}/.`;
-const seedMark = "write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts)";
 
 test(
-  "a failed run in the normal order names Playwright's own results directory, and nothing of a seed mark",
+  "a failed run names Playwright's own results directory",
   async () => {
-    const run = await visualRun(1, undefined, []);
+    const run = await visualRun(1, []);
     expect(run.code).toBe(1);
     expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/test-results"));
-    expect(run.stderr).not.toContain(seedMark);
-  },
-  rowLimit("short")
-);
-
-test(
-  "a failed run in reverse order names the directory --output gives it, and says a row failing there alone needs a seed mark",
-  async () => {
-    const run = await visualRun(1, "reverse", ["--output=e2e/test-results-reverse"]);
-    expect(run.code).toBe(1);
-    expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/test-results-reverse"));
-    expect(run.stderr).toContain(seedMark);
-    expect(run.stderr).toContain("take no new baseline from this run");
   },
   rowLimit("short")
 );
@@ -100,10 +84,10 @@ test(
 test(
   "--output given as two words names its directory too, and an absolute one is printed as given",
   async () => {
-    const relative = await visualRun(1, undefined, ["--output", "./e2e/elsewhere"]);
+    const relative = await visualRun(1, ["--output", "./e2e/elsewhere"]);
     expect(relative.code).toBe(1);
     expect(relative.stderr).toContain(shotsUnder("packages/dispatch/e2e/elsewhere"));
-    const absolute = await visualRun(1, undefined, [`--output=${stubs}/results`]);
+    const absolute = await visualRun(1, [`--output=${stubs}/results`]);
     expect(absolute.code).toBe(1);
     expect(absolute.stderr).toContain(shotsUnder(`${stubs}/results`));
   },
@@ -117,7 +101,7 @@ test(
   "an empty --output in either form and an --output after -- leave Playwright's own directory named",
   async () => {
     for (const args of [["--output="], ["--output", ""], ["--", "--output=e2e/elsewhere"]]) {
-      const run = await visualRun(1, undefined, args);
+      const run = await visualRun(1, args);
       expect(run.code).toBe(1);
       expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/test-results"));
     }
@@ -128,7 +112,7 @@ test(
 test(
   "the last --output names the directory, as Playwright reads the last one",
   async () => {
-    const run = await visualRun(1, undefined, ["--output=e2e/a", "--output", "e2e/b"]);
+    const run = await visualRun(1, ["--output=e2e/a", "--output", "e2e/b"]);
     expect(run.code).toBe(1);
     expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/b"));
   },
@@ -140,7 +124,7 @@ test(
 test(
   "a directory with a backslash in it is printed as written",
   async () => {
-    const run = await visualRun(1, undefined, ["--output=e2e/a\\tb"]);
+    const run = await visualRun(1, ["--output=e2e/a\\tb"]);
     expect(run.code).toBe(1);
     expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/a\\tb"));
   },
@@ -151,7 +135,7 @@ test(
 test(
   "a directory given with a trailing slash is named with one slash before the dot",
   async () => {
-    const run = await visualRun(1, undefined, ["--output=e2e/x/"]);
+    const run = await visualRun(1, ["--output=e2e/x/"]);
     expect(run.code).toBe(1);
     expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/x"));
     expect(run.stderr).not.toContain("e2e/x//.");
@@ -171,7 +155,7 @@ test(
       ["-G", value],
       ["-xG", value],
     ]) {
-      const run = await visualRun(1, undefined, taken);
+      const run = await visualRun(1, taken);
       expect(run.code).toBe(1);
       expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/test-results"));
     }
@@ -179,7 +163,7 @@ test(
       ["--grep-invert=x", "--output=e2e/is-output"],
       ["-Gx", "--output=e2e/is-output"],
     ]) {
-      const run = await visualRun(1, undefined, counted);
+      const run = await visualRun(1, counted);
       expect(run.code).toBe(1);
       expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/is-output"));
     }
@@ -190,8 +174,7 @@ test(
 // Playwright refuses an argument it cannot read before it runs a row, and exits 1 as a failed row
 // does: `-uG`, whose `G` is no `--update-snapshots` mode, and an option it does not know are two
 // such lists. The script cannot tell that run from one whose rows failed, so no line it prints
-// says that shots exist: the line naming the directory, and the seed hint of a reverse run, each
-// say what holds if a row ran and failed.
+// says that shots exist: the line naming the directory says what holds if a row ran and failed.
 test(
   "no line of a failed run says shots exist, as when Playwright refuses its arguments and runs no row",
   async () => {
@@ -199,15 +182,14 @@ test(
       ["-uG", "--output=e2e/x"],
       ["--output=e2e/x", "--no-such-option"],
     ]) {
-      const run = await visualRun(1, "reverse", refused);
+      const run = await visualRun(1, refused);
       expect(run.code).toBe(1);
       const claims = run.stderr
         .split("\n")
-        .filter((line) => /shots|markWhatTheShotPagesRead/.test(line))
+        .filter((line) => /shots/.test(line))
         .filter((line) => !line.includes("If a row ran and failed"));
       expect(claims).toEqual([]);
       expect(run.stderr).toContain(shotsUnder("packages/dispatch/e2e/x"));
-      expect(run.stderr).toContain(seedMark);
     }
   },
   rowLimit("short", "short")
@@ -250,13 +232,12 @@ test(
 );
 
 test(
-  "a run that passed says nothing of either, on either stream",
+  "a run that passed says nothing of a failure, on either stream",
   async () => {
-    const run = await visualRun(0, "reverse", ["--output=e2e/test-results-reverse"]);
+    const run = await visualRun(0, ["--output=e2e/x"]);
     expect(run.code).toBe(0);
     for (const stream of [run.stderr, run.stdout]) {
       expect(stream).not.toContain("the run failed");
-      expect(stream).not.toContain(seedMark);
     }
   },
   rowLimit("short")
@@ -279,7 +260,7 @@ test(
       ],
       bound: "short",
       cwd: dispatchPackage,
-      env: { ...heldRun(dir, 130, undefined), DISPATCH_E2E_VISUAL_ORDER: "reverse" },
+      env: heldRun(dir, 130, undefined),
       from: import.meta.url,
     });
     expect(read(dir, "status")).toBe("130");
@@ -331,7 +312,7 @@ test(
       ],
       bound: "short",
       cwd: dispatchPackage,
-      env: { ...heldRun(dir, 1, undefined), DISPATCH_E2E_VISUAL_ORDER: "reverse" },
+      env: heldRun(dir, 1, undefined),
       from: import.meta.url,
     });
     expect(read(dir, "status")).toBe("1");
@@ -342,8 +323,10 @@ test(
 
 // A Ctrl-C reaches the run's whole process group: the container stops at once, and the stand-in
 // stack - a job the script started in the background, which a non-interactive shell starts with
-// SIGINT ignored - does not, so the script's own INT trap must stop it. (The real harness keeps a
-// SIGINT listener of its own; this row holds the script's trap, not the harness's.) The run goes
+// SIGINT ignored - does not, so the script's own INT trap must stop it. (The real harness arms no
+// SIGINT listener when it is started with SIGINT ignored, as it is here, where it can read that
+// from its `SigIgn` mask; where it cannot, it arms one, as on main (`armsStopListener` in
+// e2e/signal-ignores.ts). Either way the script's trap stops it; this row holds that trap.) The run goes
 // in a session of its own (`setsid`), so the signal reaches the run's group, read from the
 // container's pid, and not this test's; it waits for the container to start. The group is
 // signalled with `/usr/bin/kill -s INT -- -PGID`. The second run names an `--output` that starts

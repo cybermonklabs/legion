@@ -19,6 +19,7 @@ type askIdentity struct {
 }
 
 func TestAskReadsAttachCanonicalOpenedEventID(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask read identity", "A spec")
 	openResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -184,6 +185,7 @@ func listOpenAsks(t *testing.T, handler http.Handler, sessionID string, since st
 }
 
 func TestListOpenAsksForSession(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Open-ask owner", "A spec")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n")
@@ -324,6 +326,7 @@ func TestListOpenAsksForSession(t *testing.T) {
 }
 
 func TestListOpenAsksRejectsInvalidSelectors(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, target := range []string{
 		"/api/v1/asks/open",
@@ -350,6 +353,7 @@ func listProjectOpenAsks(t *testing.T, handler http.Handler, project string) ope
 // ask on an unlinked project document (artifacts.project_key) — for every author, and stops at
 // the project boundary.
 func TestListOpenAsksForProject(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Project-scope owner", "A spec")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n")
@@ -406,6 +410,7 @@ func TestListOpenAsksForProject(t *testing.T) {
 }
 
 func TestListOpenAsksRequiresExactlyOneScope(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, test := range []struct {
 		target string
@@ -430,6 +435,7 @@ func TestListOpenAsksRequiresExactlyOneScope(t *testing.T) {
 }
 
 func TestTargetedReadsRejectNonUUIDIDsWithA400(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Short ids", "A spec")
 	for _, test := range []struct {
@@ -456,6 +462,7 @@ func TestTargetedReadsRejectNonUUIDIDsWithA400(t *testing.T) {
 // an ask's, a comment's and a message's own routes must answer as the canonical id answers — the
 // item when it exists, and that route's own 404 when nothing carries it.
 func TestTargetedReadsReadAUrnUuidIDAsTheCanonicalID(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "URN ids", "A spec")
 	askID := createIssueAsk(t, handler, issue.Key, "Which store do we use?")
@@ -485,6 +492,7 @@ func TestTargetedReadsReadAUrnUuidIDAsTheCanonicalID(t *testing.T) {
 // spelling answers that route's own refusal. Each pair below is measured over live HTTP: the
 // canonical id's answer first, which is what the URN spelling must give too.
 func TestRoutesThatResolveNoPrefixReadAUrnUuidIDAsTheCanonicalID(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	const unknown = "00000000-0000-4000-8000-000000000000"
 	if response := sessionRequest(t, handler, http.MethodGet, "/api/v1/handoffs/urn:uuid:"+unknown, nil); response.Code != http.StatusNotFound {
@@ -506,6 +514,7 @@ func TestRoutesThatResolveNoPrefixReadAUrnUuidIDAsTheCanonicalID(t *testing.T) {
 }
 
 func TestResolveAskRejectsNumberedIDWithClientGuidance(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/3/resolve", map[string]any{
 		"kind": "resolved", "reason": "Resolved elsewhere", "actor": sessionActor(),
@@ -519,6 +528,7 @@ func TestResolveAskRejectsNumberedIDWithClientGuidance(t *testing.T) {
 // Every ask indexed from a document block names that document on the wire, however many
 // asks the issue detail lists at once.
 func TestIssueDetailAttachesTheBlockArtifactToEveryBlockAsk(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})

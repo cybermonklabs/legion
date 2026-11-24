@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"sync"
@@ -273,19 +274,31 @@ func (kv *faultyDeleteKeyValue) Delete(key string, opts ...nats.DeleteOpt) error
 	return kv.KeyValue.Delete(key, opts...)
 }
 
+// lostToAReplicatingWrite is what nats.go v1.55.0 answers a Delete with nats.LastRevision that the
+// leader of a bucket of more than one copy refuses while another write of the key is still being
+// replicated: JetStream's wrong last sequence as error 10164, wrapped in nats.ErrKeyRevisionMismatch.
+// nats.ErrKeyExists matches 10071 alone, so it does not match this refusal; bus.IsCASConflict does.
+func lostToAReplicatingWrite() error {
+	refused := &nats.APIError{Code: 400, ErrorCode: nats.JSErrCodeStreamWrongLastSequenceConstant, Description: "wrong last sequence"}
+	return fmt.Errorf("%w: %w", refused, nats.ErrKeyRevisionMismatch)
+}
+
 // Q6 folds DeleteIf's fenced-delete fallback into bus.DeleteAt, which triggers on one
-// compare-and-swap predicate (bus.IsCASConflict - a wrong last sequence, reported as nats.ErrKeyExists
-// for a key holding a value and as a raw "wrong last sequence" otherwise), where the old DeleteIf
-// triggered on errors.Is(nats.ErrKeyExists) alone. Two outcomes change, and each row is red with
-// the old ErrKeyExists check put back (delete.go):
-//   - a raw wrong last sequence over a record the server wrote now re-reads from the leader and
-//     deletes it (EntryDeleted); the old check misses the raw refusal and answers EntryUnanswered.
+// compare-and-swap predicate (bus.IsCASConflict: a wrong last sequence, 10071 or 10164), where the
+// old DeleteIf triggered on errors.Is(nats.ErrKeyExists) alone, which matches 10071 alone. Two
+// outcomes change, and each row is red with the old ErrKeyExists check put back (delete.go):
+//   - a wrong last sequence ErrKeyExists does not match over a record the server wrote now re-reads
+//     from the leader and deletes it (EntryDeleted); the old check misses that refusal and answers
+//     EntryUnanswered.
 //   - a non-CAS failure of that server-written delete now answers EntryUnanswered; the old code
 //     retried it and answered EntryKeptAfterLostRace.
 func TestSessionRegistryDeleteIf_Q6ChangedOutcomes(t *testing.T) {
-	// A "wrong last sequence" refusal that errors.Is(nats.ErrKeyExists) does not match, only the
-	// string check in bus.IsCASConflict does: the case Q6's predicate catches and the old one missed.
-	rawWrongLastSeq := errors.New("nats: wrong last sequence: 5")
+	// A wrong last sequence that errors.Is(nats.ErrKeyExists) does not match and bus.IsCASConflict
+	// does: the case Q6's predicate catches and the old one missed.
+	rawWrongLastSeq := lostToAReplicatingWrite()
+	if errors.Is(rawWrongLastSeq, nats.ErrKeyExists) || !bus.IsCASConflict(rawWrongLastSeq) {
+		t.Fatalf("the fault %v: errors.Is(nats.ErrKeyExists) = %t, bus.IsCASConflict = %t; want false, true", rawWrongLastSeq, errors.Is(rawWrongLastSeq, nats.ErrKeyExists), bus.IsCASConflict(rawWrongLastSeq))
+	}
 	for _, tc := range []struct {
 		name      string
 		key       string
@@ -350,12 +363,13 @@ func TestSessionRegistryDeleteIf_Q6ChangedOutcomes(t *testing.T) {
 // DeleteIf's own switch case, apart from the fenced-delete fallback inside bus.DeleteAt that the Q6
 // rows above drive: a key that becomes a plain delete marker between DeleteIf's read and its fenced
 // delete. The read finds the session's registration and every condition admits it; the fenced delete
-// at that revision is then refused with a raw "wrong last sequence", which errors.Is(nats.ErrKeyExists)
-// does not match and only bus.IsCASConflict catches; and bus.DeleteAt leaves the refusal standing,
-// since the leader holds a marker, not a record the server wrote. DeleteIf's `case bus.IsCASConflict`
-// re-reads the key, finds it gone, and answers EntryDeleted. The Q6 rows' faults are consumed inside
-// bus.DeleteAt, so this is the only row that reaches DeleteIf's own switch: with that case put back to
-// errors.Is(err, nats.ErrKeyExists), the raw refusal falls through to EntryUnanswered with an error.
+// at that revision is then refused with a wrong last sequence errors.Is(nats.ErrKeyExists) does not
+// match (lostToAReplicatingWrite) and bus.IsCASConflict catches; and bus.DeleteAt leaves the refusal
+// standing, since the leader holds a marker, not a record the server wrote. DeleteIf's
+// `case bus.IsCASConflict` re-reads the key, finds it gone, and answers EntryDeleted. The Q6 rows'
+// faults are consumed inside bus.DeleteAt, so this is the only row that reaches DeleteIf's own
+// switch: with that case put back to errors.Is(err, nats.ErrKeyExists), the refusal falls through
+// to EntryUnanswered with an error.
 func TestSessionRegistryDeleteIf_AKeyThatBecameAMarkerReReadsAndAnswersDeleted(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)
@@ -373,13 +387,13 @@ func TestSessionRegistryDeleteIf_AKeyThatBecameAMarkerReReadsAndAnswersDeleted(t
 		}
 		// The key becomes a plain delete marker between DeleteIf's read and its fenced delete: a real
 		// unconditional delete lands through the embedded handle (no fault counted), so the stream's
-		// leader holds a marker, and the fenced delete the fault stands in for would be refused with a
-		// raw "wrong last sequence" over the deleted key.
+		// leader holds a marker, and the fenced delete the fault stands in for is refused as a write
+		// that lost to another write of the key still being replicated.
 		if err := faulty.KeyValue.Delete(key); err != nil {
 			t.Errorf("mark %s: %v", key, err)
 		}
 		marked = true
-		return errors.New("nats: wrong last sequence: 1")
+		return lostToAReplicatingWrite()
 	})
 	outcome, err := r.DeleteIf(ctx, key, DeleteConditions{ClientInstanceID: "instance-victim"})
 	if err != nil {

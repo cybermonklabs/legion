@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -99,10 +100,10 @@ func pauseBeforeRetry(ctx context.Context) bool {
 // role lane hands the wait over and reports it later. The outcome is the stream's acknowledgement
 // that it stored the forward, nothing more: the holder answers no receipt and reads the stored
 // copy from its session consumer (startRoleForward).
-func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item contracts.Envelope, msgID string, window time.Duration) error {
+func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item contracts.Envelope, msgID string, window time.Duration) (bus.StoredAck, error) {
 	wait, err := cfg.forwardRole(subject, item, msgID, window)
 	if err != nil {
-		return err
+		return bus.StoredAck{}, err
 	}
 	return wait()
 }
@@ -115,13 +116,25 @@ func forwardRefused(err error) bool {
 	return errors.Is(err, bus.ErrRefused) || errors.Is(err, bus.ErrPublishDenied)
 }
 
-// confirm records that the stream stored the message under dedupeKey for sessionID through the
-// route. The route's own record (listenerDeps.confirmed) is what a later send of the same key
-// reads, so envoy-client's retry of a send skips a recipient the first attempt stored it for; the
-// delivery handlers' cache is told too, so they do not deliver the same key to it again.
-func (d *listenerDeps) confirm(dedupeKey, sessionID string) {
-	d.confirmed.Record(dedupeKey, sessionID)
-	d.delivery.dedupeCache.Record(dedupeKey, sessionID)
+// confirm records that the stream stored item, the message under its dedupe key, for sessionID
+// through the route, at sequence. The route's own record (listenerDeps.confirmed) is what a later
+// send of the same key reads, so envoy-client's retry of a send skips a recipient the first
+// attempt stored it for; the delivery handlers' cache is told too, so they do not deliver the same
+// key to it again. It also records the forward under the request that made it
+// (forwardRequest), which a later echo of the same request reads (settledBeforeForward).
+func (d *listenerDeps) confirm(item contracts.Envelope, sessionID string, sequence uint64) {
+	d.confirmed.RecordStored(item.DedupeKey, sessionID, sequence)
+	d.confirmed.RecordForward(forwardRequest(item), sessionID, sequence)
+	d.delivery.dedupeCache.Record(item.DedupeKey, sessionID)
+}
+
+// forwardRequest is the key the route's record keeps a role forward under for an echo to read:
+// everything that makes two role sends the same request, which a repeat of one has in common with
+// it - the sender (source and source_session), the role topic and the dedupe key - so a repeat
+// reads the forward of its own request and never one another sender, or the same sender to
+// another role, made under the same key.
+func forwardRequest(item contracts.Envelope) string {
+	return strings.Join([]string{item.Source, item.SourceSession, item.Topic, item.DedupeKey}, "\x00")
 }
 
 // roleSend is one role message through the publish route. The route does not publish on the role
@@ -152,9 +165,10 @@ type roleSend struct {
 	// holders this send's answers may name (edgeScope.holderConfirmed).
 	scope *edgeScope
 	item  contracts.Envelope
-	// expectsReply is the expects_reply this send's answers write (expectsReplyAnswer, api.go):
-	// the request's own bytes, whichever of the field's spellings it wrote. The envelope the
-	// holder is forwarded is untouched by it, and carries the parsed value.
+	// expectsReply is the request's own expects_reply bytes, whichever of the field's spellings
+	// it wrote, which each answer writes back for the envelope it answers (expectsReplyAnswer,
+	// api.go): the forwarded envelope's, or the kept copy's for a repeat a keep answers (kept). The
+	// envelope the holder is forwarded is untouched by it, and carries the parsed value.
 	expectsReply json.RawMessage
 	role         string
 	// keep is the request's keep field as the route read it, true when it set none: whether
@@ -176,6 +190,18 @@ type roleSend struct {
 	// the 200 and the 202 carry it, as the subscribe and claim routes' answers carry theirs.
 	warnings []string
 	attempts int
+	// duplicate is whether the forward this send answers is another request's copy the stream
+	// already held, which is then the stored forward's envelope (deliveredHeld). A forward this
+	// very send made on an earlier attempt, whose acknowledgement was lost, is its own copy and
+	// carries no duplicate.
+	duplicate bool
+	// sender is who the request speaks for, which decides how much of a copy the stream or the
+	// kept lane already held the 200 or the 202 may carry (requestSender.answer).
+	sender requestSender
+	// unanswered is set once a forward of this send failed with no refusal, which may have stored
+	// the message for the holder it went to (sendToRole), so a copy a later duplicate verdict names
+	// may be that forward's (deliveredHeld).
+	unanswered bool
 }
 
 // shownHolder is the holder this send's answers may name: result for a holder the scope shows and the
@@ -202,7 +228,9 @@ func (s *roleSend) hold(result roles.Resolution) {
 
 // settle counts and logs the send's outcome, the one delivery line a send writes, once its answer
 // is written. It counts and logs as delivery_status the label the role lane gives the same outcome,
-// and logs the outcome itself as reason.
+// and logs the outcome itself as reason. Its event_id is the copy the stream or the kept lane held
+// where the send answered one (requestRecord.held), as the request's own line names it, whatever
+// the answer carries.
 func (s *roleSend) settle(outcome sendOutcome) {
 	s.d.delivery.messagesDelivered.Inc([2]string{"delivery_status", outcome.deliveryStatus()})
 	level := slog.LevelWarn
@@ -210,7 +238,11 @@ func (s *roleSend) settle(outcome sendOutcome) {
 	case sendDelivered, sendSkipped, sendDedupe, sendUnclaimed, sendKept:
 		level = slog.LevelInfo
 	}
-	s.d.delivery.logger.DeliveryLog(level, "listener publish role send", s.holder, s.item.Topic, s.item.EventID, outcome.deliveryStatus(),
+	eventID := s.item.EventID
+	if s.record.held != "" {
+		eventID = s.record.held
+	}
+	s.d.delivery.logger.DeliveryLog(level, "listener publish role send", s.holder, s.item.Topic, eventID, outcome.deliveryStatus(),
 		slog.String("reason", string(outcome)),
 		slog.String("dedupe_key", s.item.DedupeKey),
 		slog.Int("attempts", s.attempts),
@@ -221,8 +253,51 @@ func (s *roleSend) settle(outcome sendOutcome) {
 // holder's record put it in, which GET /v1/roles/<role> names the same way (shown).
 func (s *roleSend) delivered(outcome sendOutcome) {
 	s.record.holder = s.holder
-	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.shown.Holder, HolderState: s.shown.HolderState, Warnings: s.warnings})
+	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: expectsReplyAnswer(s.expectsReply, s.item.ExpectsReply), Holder: s.shown.Holder, HolderState: s.shown.HolderState, Duplicate: s.duplicate, Warnings: s.warnings})
 	s.settle(outcome)
+}
+
+// deliveredHeld answers a forward the stream already held on recipient's agent subject, as
+// delivered does: 200 with the answer of the forward the stream holds at seq, read back
+// (storedCopy) with the forward mark taken off its dedupe key, so the request's record line and
+// the delivery line name the copy the stream holds; the forward whole for its own sender, and for
+// anyone else the key-taken answer or the envelope this send built (requestSender.answer).
+// recipient is the holder this send forwards to, or, for an echo's repeat, the earlier holder the
+// route stored this key's forward for (settledBeforeForward); the answer still names the holder
+// this send resolved. duplicate is whether the copy is another request's, which is when its
+// event_id is not this send's: a forward this very send made on an earlier attempt, whose
+// acknowledgement was lost, carries this send's own. A copy that cannot be read, a sequence of 0
+// among them, is answered as a refused forward is (refused): the 503 refuseBusUnavailable writes
+// for errStoredCopyUnread, marking the charge with nothing more than the forward already did.
+// After a forward of this send that failed with no refusal (unanswered), the copy may be that
+// forward's, so the 503 says maybe_stored too (mayBeOwnUnread), as the send and topic routes'
+// does after a resend (publishHeld). The read's error names recipient's agent subject: refused
+// judges the holder this send resolved (shownForwardError), and an echo's earlier holder, which
+// this send did not resolve, is named at the edge only where the stream's leader confirms its
+// record is a writer's registration the scope shows (edgeScope.namesHolderConfirmed), and
+// otherwise answered in the listener's own words (hideHolder); a confirmation read that does not
+// answer fails closed to naming no holder, as shownHolder does.
+func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint64, outcome sendOutcome) {
+	held, err := storedCopy(ctx, s.d.client, contracts.LegacyAgentSubject(recipient), s.forwarded(), seq)
+	if err != nil {
+		if s.unanswered {
+			err = mayBeOwnUnread{err}
+		}
+		if recipient != s.holder {
+			readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+			named, namedErr := s.scope.namesHolderConfirmed(readCtx, s.d.sessions, recipient)
+			cancel()
+			if namedErr != nil || !named {
+				err = hideHolder(s.d.delivery.logger, "edge listener read no stored copy of a role forward to an earlier holder; its answer names no holder",
+					s.role, recipient, "read role "+s.role+"'s forward to its earlier holder", err)
+			}
+		}
+		s.refused(err)
+		return
+	}
+	held.DedupeKey = strings.TrimPrefix(held.DedupeKey, roleForwardDedupePrefix)
+	s.duplicate = s.record.answerStored(&s.item, held, s.sender)
+	s.delivered(outcome)
 }
 
 // noHolder answers a role with no live holder. For a state the listener keeps for (roleKeepable:
@@ -279,34 +354,39 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // exactly one delivery line.
 //
 // A repeat of a dedupe key whose copy is still on the lane inside its hour stored nothing new
-// (storeKeptRoleCopy), so the answer is that first copy's envelope and event id, and the request's
-// record line and the send's delivery line name it too: the send's envelope becomes the copy's.
-// Such a repeat is forgiven: it costs its sender nothing, though noHolder's wake report marked
-// its charge, unless an earlier forward of the same send failed with no refusal, which may have
-// stored the message for the holder it went to and marked the charge so (sendToRole).
+// (storeKeptRoleCopy), so the answer comes from that first copy, and the request's record line
+// and the send's delivery line name its event id: the copy whole for its own sender, and for
+// anyone else the key-taken answer or the envelope this send built (requestSender.answer). Such a
+// repeat is forgiven: it costs its sender nothing, though noHolder's wake report marked its
+// charge, unless an earlier forward of the same send failed with no refusal, which may have stored
+// the message for the holder it went to and marked the charge so (sendToRole).
 //
 // 202 rather than 200, so a sender tells the three answers of a role send apart by status alone:
 // 200, the message is with a live holder; 202, no live session holds the role and the message
 // waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
-// fallback must run. INFRA-514's architect decided it on 2026-10-31.
+// fallback must run, as decided on 2026-10-31.
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	if kept.repeat {
 		s.record.charge.forgive()
 	}
-	s.item = kept.item
+	// The kept copy is another request's when its event_id is not this send's, whether the keep
+	// read it as a repeat or answered its own resend or in-process refusal with it, which the 202
+	// says with duplicate as a 200 does (deliveredHeld), and which tells a client the key-taken
+	// answer another sender gets (requestSender.answer) from a whole one.
+	duplicate := s.record.answerStored(&s.item, kept.item, s.sender)
 	s.hold(result)
-	s.record.item = &s.item
 	s.record.holder = s.holder
 	// At the edge a lapsed holder the scope does not show is named as no holder at all, as GET
 	// /v1/roles/<role> names it (shownHolder, which hold called).
 	answer := listenerwire.PublishResponse{
 		Envelope:     s.item,
-		ExpectsReply: s.expectsReply,
+		ExpectsReply: expectsReplyAnswer(s.expectsReply, s.item.ExpectsReply),
 		Holder:       s.shown.Holder,
 		HolderState:  s.shown.HolderState,
 		Kept:         true,
 		KeptReason:   s.shown.State,
 		KeptUntil:    kept.until,
+		Duplicate:    duplicate,
 		Warnings:     s.warnings,
 	}
 	if s.shown.LastSeen != 0 {
@@ -333,15 +413,16 @@ func (s *roleSend) unresolved(err error) {
 }
 
 // refused answers a forward NATS refuses however often it is sent, or one the listener's grant
-// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refusal's own text
+// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it, and a stored copy that
+// could not be read back (deliveredHeld) the same way. The refusal's own text, and the read's,
 // names the subject the forward went to, the holder's agent subject, so at the edge, for a holder
 // the scope does not show, the answer is in the listener's own words under the same status, and
-// the refusal goes to the log (shownForwardError). The refused forward stored nothing, so it marks
+// the error goes to the log (shownForwardError). The refused forward stored nothing, so it marks
 // nothing: an earlier forward of the same send that may have stored the message has marked the
 // charge already (sendToRole).
 func (s *roleSend) refused(err error) {
 	s.record.holder = s.holder
-	s.record.refuseBusUnavailable(s.w, s.shownForwardError("edge listener's forward of a role message was refused; its answer names no holder", err))
+	s.record.refuseBusUnavailable(s.w, s.shownForwardError("edge listener's forward of a role message was refused, or its stored copy not read; its answer names no holder", err))
 	s.settle(sendFailed)
 }
 
@@ -406,10 +487,25 @@ func (s *roleSend) windowEnded(inProcess error) {
 
 // settledBeforeForward judges the message to a holder the send has not checked yet, whose session
 // entry is entry, by beforeForward, the rules the role lane applies before it forwards, and reports
-// whether it answered: an echo (the source session holds the role) or a holder this route already
-// stored this dedupe key for, both answered 200 with nothing forwarded; a holder that cannot take
-// the payload's delivery mode, answered 403 with the refusal sendHandler gives,
-// recorded capability_refused as sendHandler records it.
+// whether it answered: an echo (the source session holds the role), answered 200 with nothing
+// forwarded; a holder this route already stored this dedupe key for, answered as that stored
+// forward with nothing forwarded (deliveredHeld: 200 with it, or the stored-copy 503 when it
+// cannot be read back); a holder that cannot take the payload's delivery mode, answered 403 with
+// the refusal sendHandler gives, recorded capability_refused as sendHandler records it.
+//
+// An echo is answered with its own envelope, which no forward stored, unless the route's record
+// names a forward the stream stored for another holder for the same request: the same sender,
+// role and dedupe key (forwardRequest, dedupe.Cache.Forward) - a session that sent to the role,
+// took it, and repeats. The record is written for each holder a send of the request was answered
+// for past the echo check: a forward the stream confirmed (confirm), and a repeat the route's
+// record answered (the forwardRepeat case below), such as another sender's under the same key,
+// or the same sender's to another role the same holder holds. So it never names the echo's
+// holder, which is the request's own source session (beforeForward).
+// The repeat is answered as that stored forward (deliveredHeld on the earlier holder's subject),
+// never with the new envelope built for the repeat, whose event_id no stored message carries.
+// The record is the listener's own and lasts 10 minutes; a repeat after that or on another
+// listener answers its own new envelope, as at main. No stream lookup finds the earlier forward
+// by the request alone, since its message id names the earlier holder's subject.
 //
 // None of those answers marks the charge: each stores nothing, and an earlier forward of the same
 // send that failed with no refusal, which may have stored the message for the holder it went to,
@@ -419,15 +515,30 @@ func (s *roleSend) windowEnded(inProcess error) {
 // handlers' cache: agentSubjectDelivery and fanoutDelivery record a key there for every delivery
 // they make or hand over, so a role send under a key one of them saw would be answered 200 for a
 // holder the route never forwarded it to.
-func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
+func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.SessionEntry) bool {
 	verdict := beforeForward(s.item, s.holder, entry, s.d.confirmed.Seen)
 	switch verdict.kind {
 	case forwardAllowed:
 		return false
 	case forwardEcho:
-		s.delivered(sendSkipped)
+		if earlier, seq, stored := s.d.confirmed.Forward(forwardRequest(s.item)); stored {
+			s.deliveredHeld(ctx, earlier, seq, sendSkipped)
+		} else {
+			s.delivered(sendSkipped)
+		}
 	case forwardRepeat:
-		s.delivered(sendDedupe)
+		// The route stored this key's forward for this holder, and its record keeps the
+		// sequence the stream holds that forward at, which is the copy this repeat answers. A
+		// record that lapsed since the verdict read it is forwarded again, which the stream
+		// answers as a duplicate naming the same copy.
+		seq, recorded := s.d.confirmed.Stored(s.item.DedupeKey, s.holder)
+		if !recorded {
+			return false
+		}
+		// Recorded under this request too, as a forward the stream confirmed is (confirm), so
+		// its sender's repeat after it takes the role, an echo, answers the same copy.
+		s.d.confirmed.RecordForward(forwardRequest(s.item), s.holder, seq)
+		s.deliveredHeld(ctx, s.holder, seq, sendDedupe)
 	default:
 		s.record.holder = s.holder
 		// The refusal names the holder and its title, which an edge answer names only for a
@@ -468,13 +579,15 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
 // none outlasts it: a send whose window ends is answered 504, unless its last forward ended while
 // an earlier forward under its Nats-Msg-Id was still in process, which is the 503 maybe_stored
-// (windowEnded). expectsReply is the expects_reply its answers write (expectsReplyAnswer, api.go),
-// the request's own dialect; the envelope this send forwards and keeps carries the envelope's own
-// value. scope is the edge's scope of the request, nil on every other listener: an answer names
-// only a holder it shows (edgeScope.holderConfirmed), and the send forwards to the holder whatever
-// it names. warnings is what its 200 and 202 name of the topic's old form.
-func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
-	send := &roleSend{w: w, record: record, d: d, ctx: ctx, scope: scope, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
+// (windowEnded). expectsReply is the request's own expects_reply bytes, which each answer writes
+// back for the envelope it answers (expectsReplyAnswer, api.go); the envelope this send forwards
+// and keeps carries the envelope's own value. scope is the edge's scope of the request, nil on
+// every other listener: an answer names only a holder it shows (edgeScope.holderConfirmed), and
+// the send forwards to the holder whatever it names. sender is who the request speaks for
+// (senderOf), which decides how much of a copy the stream or the kept lane already held an answer
+// carries. warnings is what its 200 and 202 name of the topic's old form.
+func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, sender requestSender, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
+	send := &roleSend{w: w, record: record, d: d, ctx: ctx, scope: scope, item: item, sender: sender, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
@@ -493,12 +606,11 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 		return
 	}
 	send.hold(first)
-	if send.settledBeforeForward(first.Entry) {
+	if send.settledBeforeForward(ctx, first.Entry) {
 		return
 	}
 	checked := send.holder
-	forwarded := send.item
-	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
+	forwarded := send.forwarded()
 	resolved := first
 	// inProcess is the error of the send's last forward when that forward ended while an earlier
 	// forward under its Nats-Msg-Id was still in process, and nil otherwise (windowEnded).
@@ -524,7 +636,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 		case resolved.State == roles.Live:
 			if send.holder != checked {
 				checked = send.holder
-				if send.settledBeforeForward(resolved.Entry) {
+				if send.settledBeforeForward(ctx, resolved.Entry) {
 					return
 				}
 			}
@@ -538,11 +650,23 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 			// The forward carries the same Nats-Msg-Id on every attempt, so the stream, which
 			// captures agent subjects, keeps one copy of it per message and recipient however
 			// many attempts this send makes.
-			err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
+			ack, err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
-				d.confirm(item.DedupeKey, send.holder)
+				d.confirm(item, send.holder, ack.Sequence)
 				send.record.charge.stored()
+				if ack.Duplicate {
+					send.deliveredHeld(ctx, send.holder, ack.Sequence, sendDelivered)
+					return
+				}
 				send.delivered(sendDelivered)
+				return
+			}
+			if errors.Is(err, bus.ErrDuplicateWithoutSequence) {
+				// The stream answered the forward a duplicate of a copy it names no sequence of,
+				// and no later reply comes: the 503 that asks again, at once, costing what a
+				// forward that may have been stored costs.
+				send.record.charge.stored()
+				send.deliveredHeld(ctx, send.holder, 0, sendDelivered)
 				return
 			}
 			if forwardRefused(err) {
@@ -550,8 +674,10 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 				return
 			}
 			// A forward that failed with no refusal may have been stored for its holder, so it
-			// costs its sender one whatever this send answers next.
+			// costs its sender one whatever this send answers next, and a copy a later verdict
+			// names may be its own (deliveredHeld).
 			send.record.charge.stored()
+			send.unanswered = true
 			// The error is kept as the answer may give it, judged now by the holder this forward
 			// went to (shownForwardError): a later pass may hold another holder, one the edge
 			// shows, while the error names this one's agent subject.
@@ -567,4 +693,12 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 		}
 	}
 	send.windowEnded(inProcess)
+}
+
+// forwarded is the envelope this send forwards to a holder: its own, under the role forward's
+// dedupe key (roleForwardDedupePrefix and the envelope's key), on the holder's agent subject.
+func (s *roleSend) forwarded() contracts.Envelope {
+	forwarded := s.item
+	forwarded.DedupeKey = roleForwardDedupePrefix + s.item.DedupeKey
+	return forwarded
 }
