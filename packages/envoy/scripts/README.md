@@ -764,6 +764,32 @@ skipped. Its
 nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
 the 10 minutes in its time budget.
 
+## store-live-check.sh
+
+Runs one secret store's live contract tests against that store's real service and counts
+what they did, so a live run that ran nothing cannot read as a pass:
+
+```bash
+BROKER_GCP_LIVE_PROJECT=<project number> BROKER_GCP_LIVE_KMS_KEY=<key name> \
+  packages/envoy/scripts/store-live-check.sh gcp
+```
+
+The store is named by its registry id. Today the one store with live tests is `gcp`
+(`go test -tags gcplive -run Live ./internal/cipher/secretstore/gcp/`), whose
+`TestGCPLiveRunsTheStoreContract` makes each contract case's fixtures under a random
+`broker-live-<hex>-` prefix of that project and deletes them when the case ends.
+
+It prints `passed=N skipped=M failed=K` and each skipped or failed test's name, and exits 0
+only when N is above zero and M and K are both zero. A skip counts as a failure because a
+live test skips when its variables are unset, which is the shape a live run fails in: the
+tests pass, nothing ran, and the run looks green. A run that wrote no event at all prints
+`UNKNOWN: go test wrote no events` and exits 1, so an empty set is never read as a pass, and
+a run whose store variables are unset is refused by name before go test runs.
+`store-live-check.test.sh` holds it to seven rows behind a stub `go` on `PATH`, which
+`envoy-go-checks` runs as "Isolation test for store-live-check.sh": a run whose tests all
+passed, one with a skip, one with a failed case, one that wrote no event, one with the
+store's variables unset, one naming no store, and one naming a store with no live tests.
+
 ## aws-moto-check.sh
 
 Runs the built `agent-secrets` against moto's AWS, with no AWS account:
