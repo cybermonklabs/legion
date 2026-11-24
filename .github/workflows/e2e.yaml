@@ -149,7 +149,7 @@ jobs:
       - if: matrix.bun
         uses: ./.github/actions/setup-bun
       - if: matrix.bun
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       # The three proofs that start the Go daemon: it refuses to boot without jj, and names it
       # (`missing required daemon tools: jj`), as run 40957651922 showed. This installs the jj the

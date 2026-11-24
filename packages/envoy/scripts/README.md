@@ -1456,9 +1456,9 @@ on one Postgres and one NATS, and for the browser suite's cross-build run
 (`packages/dispatch/e2e/cross-build.multiprocess.e2e.ts`), which drives one build's page against
 the other build's server. It extracts `git archive <commit>` into `<dir>/src`, so it makes no
 worktree or branch, and builds each part as that commit's own image build does:
-`bun install --frozen-lockfile`, the contracts' `gen:go` and `build`, `bun run build:web`, the
-commit's own `packages/envoy-client/scripts/build-dispatch-cli.sh`, and `go build ./cmd/dispatch`
-with `GOTOOLCHAIN=auto` and `-ldflags "-X main.buildCommit=<sha>"`.
+`bun install --frozen-lockfile --ignore-scripts`, the contracts' `gen:go` and `build`,
+`bun run build:web`, the commit's own `packages/envoy-client/scripts/build-dispatch-cli.sh`, and
+`go build ./cmd/dispatch` with `GOTOOLCHAIN=auto` and `-ldflags "-X main.buildCommit=<sha>"`.
 
 ```bash
 packages/envoy/scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"

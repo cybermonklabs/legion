@@ -23,10 +23,12 @@ name: CI job proof-sdk-offline
 # line.
 #
 # github.com itself is not faulted, and that is measured rather than assumed. A cold runner
-# install makes one request to github.com and one to release-assets.githubusercontent.com, and
-# none to any of the three hosts above (job 128647167946's own tally). That pair is a release
-# asset, which is how a dependency's install script fetches a prebuilt binary; it is not this
-# route, and faulting github.com turned the job red on it (job 128643900648). The host this
+# install that ran its dependencies' lifecycle scripts made one request to github.com and one to
+# release-assets.githubusercontent.com, and none to any of the three hosts above (job
+# 128647167946's own tally). That pair was better-sqlite3's install script fetching its prebuilt
+# binary from a GitHub release; it is not this route, and faulting github.com turned the job red
+# on it (job 128643900648). Every install of CI now runs with --ignore-scripts, so the pair is
+# gone from the tally, and this job still faults only the route's own hosts. The host this
 # route has to use is api.github.com, which the merge-base drive showed, failing on
 # https://api.github.com/repos/sjawhar/proof-sdk/tarball/dc6a852 with six refusals on that host
 # and none on the others. These three are the hosts this issue's check names. The last step's
@@ -135,7 +137,7 @@ jobs:
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       # The same install again, over the cache and the node_modules the step above left: the
       # requirement is that no install reaches those hosts, warm or cold.
@@ -144,7 +146,7 @@ jobs:
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       # The verdict, read off the proxy's log: every refusal it wrote while the two installs
       # ran. In `--mode fail` the proxy refuses a faulted host and every subdomain of one and

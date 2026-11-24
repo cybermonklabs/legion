@@ -31,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       # The suites below read some of contracts' values through plain Node resolution rather than
       # through the workspace's "bun" export condition: e2e/__tests__/row-configurations.test.ts
       # spawns Playwright, whose own resolution reads contracts' built dist/. Without this step

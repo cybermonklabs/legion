@@ -159,7 +159,7 @@ jobs:
           cache: false
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - name: Resolve the previous build's commit
         id: previous
         run: |
@@ -413,7 +413,7 @@ jobs:
           cache: false
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       # No cache: the head is a new commit in every run.
       - name: Build this tree as the previous build
         env:

@@ -174,7 +174,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       # As ci-job-dispatch-ui.yaml's step of this name, for its reason:
       # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, and
       # outside-edge-refusals-input.test.ts the edge-refusal check, each of which must refuse to run

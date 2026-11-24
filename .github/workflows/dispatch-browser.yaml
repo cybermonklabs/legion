@@ -136,7 +136,7 @@ jobs:
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       # why: .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
@@ -249,7 +249,7 @@ jobs:
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-builds-contracts
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
@@ -323,7 +323,7 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-contracts
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
@@ -402,7 +402,7 @@ jobs:
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - name: Build contracts for dispatch e2e
         # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-job-builds-contracts
         run: bun run build:dispatch
@@ -471,7 +471,7 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - name: Build contracts for dispatch e2e
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-builds-contracts
         run: bun run build:dispatch
@@ -532,7 +532,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       # why: .github/ci-notes/dispatch-browser.md#why-every-legs-blob-report-is-downloaded-without-merge-multiple-and-the-two-layouts-it-lands-in
       - name: Download every leg's blob report
         id: download-blobs

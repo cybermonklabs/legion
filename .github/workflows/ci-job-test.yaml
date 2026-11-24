@@ -334,7 +334,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       # release-push.test.sh renders its fold-notes cases with the real changie; where changie is
       # absent, as on a developer's machine, those cases print a SKIP line and count nothing.

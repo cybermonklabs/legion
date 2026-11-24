@@ -31,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - name: Build contracts for Envoy client
         run: bun run build
         working-directory: packages/contracts

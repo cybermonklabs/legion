@@ -188,7 +188,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
@@ -282,7 +282,7 @@ jobs:
           # of an Actions cache under 9 GB.
           cache: ${{ matrix.arch == 'amd64' }}
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - name: Generate Go contracts
         run: bun run gen:go
         working-directory: packages/contracts

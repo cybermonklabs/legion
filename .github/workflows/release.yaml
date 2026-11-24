@@ -309,7 +309,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.version.outputs.skip != 'true'
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
@@ -433,7 +433,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.version.outputs.skip != 'true'
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
@@ -556,7 +556,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.version.outputs.skip != 'true'
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
