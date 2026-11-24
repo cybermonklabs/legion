@@ -125,6 +125,23 @@ check "names the file, the line and L" \
   "$(contains "$err" "^::error file=$changes/one.yaml::$changes/one.yaml:2: declares daemon API contract 3, above L = 2")"
 restore
 
+echo "case: fragments that declare their number with the verbs fragments use"
+put "$clone" "$changes/one.yaml" \
+  $'kind: Added\nbody: The plugin\'s daemon API contract is 1; a caller at contract 0 reads it as before.'
+run_check
+check "one that is the number its commit gave: exits 0" "$(is "$status" 0)"
+check "one that is the number its commit gave: is counted with the declarations, not listed" \
+  "$(contains "$err" ' 2 declarations of a fragment.s own number are each one its commit gave its entries, 0 refused; 3 other')"
+put "$clone" "$changes/two.yaml" $'kind: Changed\nbody: The daemon API contract stays 1.'
+put "$clone" "$changes/numberless.yaml" $'kind: Removed\nbody: |-\n  The daemon API contract of this plugin\n  moves to 3.'
+run_check
+check "exits 1" "$(is "$status" 1)"
+check "refuses one that stays a number its commit did not give" \
+  "$(contains "$err" "^::error file=$changes/two.yaml::$changes/two.yaml:2: declares daemon API contract 1, and the commit of main that added this fragment, $(git -C "$upstream" rev-parse --short=10 HEAD~2) (entry 2), gave its own entries 2 in $version")"
+check "refuses one that moves to a number above L, after the words that say which it is" \
+  "$(contains "$err" "^::error file=$changes/numberless.yaml::$changes/numberless.yaml:4: declares daemon API contract 3, above L = 2")"
+restore
+
 echo "case: fragments main does not hold yet"
 put "$clone" "$changes/new-below.yaml" $'kind: Fixed\nbody: A fix beside daemon API contract 2.'
 run_check

@@ -313,6 +313,29 @@ run_check "$root"
 refused "a fragment the base holds, edited to name contract 3"
 check "names it" "$(contains "$out" '^::error file=packages/daemon/.changes/unreleased/base.yaml::')"
 
+# The phrasings the repository's fragments say their number with besides `contract <n>`: a verb
+# before it, and words before the verb that say which number it is, across a line break.
+root=$(repository fragment-verbs)
+put "$root" packages/daemon/.changes/unreleased/is.yaml $'kind: Changed\nbody: The daemon API contract is 3.'
+put "$root" packages/daemon/.changes/unreleased/moves.yaml $'kind: Changed\nbody: The daemon API contract moves to 3.'
+put "$root" packages/daemon/.changes/unreleased/stays.yaml $'kind: Fixed\nbody: The daemon API contract stays 3.'
+put "$root" packages/pi-legion/.changes/unreleased/declares.yaml \
+  $'kind: Changed\nbody: |-\n  The daemon API contract this plugin\n  declares is 3.'
+commit "$root"
+run_check "$root"
+refused "fragments that say their contract is, moves to or stays 3"
+check "names the contract that is 3" \
+  "$(contains "$out" '^::error file=packages/daemon/.changes/unreleased/is.yaml::packages/daemon/.changes/unreleased/is.yaml:2: names daemon API contract 3, above L = 2')"
+check "names the contract that moves to 3" "$(contains "$out" '^::error file=packages/daemon/.changes/unreleased/moves.yaml::.*moves.yaml:2: names daemon API contract 3, above')"
+check "names the contract that stays 3" "$(contains "$out" '^::error file=packages/daemon/.changes/unreleased/stays.yaml::.*stays.yaml:2: names daemon API contract 3, above')"
+check "names the number after the words that say which it is" \
+  "$(contains "$out" '^::error file=packages/pi-legion/.changes/unreleased/declares.yaml::.*declares.yaml:4: names daemon API contract 3, above')"
+
+root=$(repository fragment-verbs-below)
+put "$root" packages/daemon/.changes/unreleased/new.yaml $'kind: Changed\nbody: The daemon API contract is 2.'
+commit "$root"
+passes "$root" "a fragment whose contract is 2"
+
 echo "rule 6: a merged fixture or frozen record changes only as a correction"
 root=$(repository fixture-corrected)
 put "$root" "$fixture" '{"answers": [{"answer": "state", "addKeyPaths": ["c"]}]}'
