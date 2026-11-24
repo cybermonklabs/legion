@@ -100,14 +100,15 @@ import {
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { joinUrl } from "@legion/contracts/url-join";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
 import { type WriteEvent, type WriteState, writeStep } from "./write-outcome";
 
 /** What names the Dispatch URL in a text where the URL does not parse (`urlForText`,
- *  `requestForText`). The configuration refuses such a URL before a client is made
- *  (`dispatch-config.ts`). */
+ *  `requestForText`, and a request's URL, `#url`). The configuration refuses such a URL before a
+ *  client is made (`dispatch-config.ts`). */
 const DISPATCH_URL_SETTING = "the configured Dispatch URL";
 
 export type {
@@ -2591,11 +2592,14 @@ export class DispatchClient {
     return new DispatchWriteUnsettledError(last, progress.sent, write.key, unanswered);
   }
 
+  /**
+   * The request URL of `path`, each segment escaped, with `query`'s members as its own query: the
+   * path joined onto the configured URL's path, the configured query kept ahead of the request's
+   * own (`joinUrl`). Resolved against the URL's text with a slash appended, a URL with a query
+   * would take the slash into the query and lose both its query and its path.
+   */
   #url(path: readonly string[], query?: object): string {
-    const url = new URL(
-      `${path.map((segment) => encodeURIComponent(segment)).join("/")}`,
-      `${this.#baseUrl}/`
-    );
+    const params = new URLSearchParams();
     if (query) {
       for (const [name, value] of Object.entries(query)) {
         // A boolean is sent as `true` or `false`, the two words every route that reads one
@@ -2605,13 +2609,20 @@ export class DispatchClient {
         // `/api/v1/search/results` and then arrive with the flag gone, and the server would
         // answer by meaning the search asked it to skip.
         if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-          url.searchParams.set(name, String(value));
+          params.set(name, String(value));
         } else if (Array.isArray(value)) {
-          for (const item of value) url.searchParams.append(name, String(item));
+          for (const item of value) params.append(name, String(item));
         }
       }
     }
-    return url.toString();
+    const ref = path.map((segment) => encodeURIComponent(segment)).join("/");
+    try {
+      return joinUrl(this.#baseUrl, params.size === 0 ? ref : `${ref}?${params}`).toString();
+    } catch {
+      // An escaped path and query are always a relative reference, so what is refused is the URL,
+      // named by its setting: it can carry a credential in its user info or its query.
+      throw new Error(`${DISPATCH_URL_SETTING} is not an absolute URL with a host (not printed)`);
+    }
   }
 
   /**

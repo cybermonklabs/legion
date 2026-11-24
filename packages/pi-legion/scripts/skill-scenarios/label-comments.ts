@@ -37,6 +37,7 @@
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
+import { joinUrl } from "@legion/contracts/url-join";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   backoffMs,
@@ -191,7 +192,9 @@ function stateMessage(issue: string, comment: Comment): string {
 const USAGE =
   "usage: label-comments.ts --since <RFC 3339> --until <RFC 3339> --out <dir> (--gateway <url> --key-command <file> | --key-file <file>)";
 
-/** Where the model calls go, and how each call gets its key. */
+/** Where the model calls go, and how each call gets its key. `url` is the messages endpoint:
+ *  `v1/messages` joined onto the route's URL, its path and query kept (`joinUrl`), since appended
+ *  to the text of a URL with a query it would sit inside the query. */
 interface ModelRoute {
   readonly url: string;
   readonly key: () => Promise<string>;
@@ -278,7 +281,7 @@ async function label(
     let response: Response;
     let text: string;
     try {
-      response = await fetchImpl(`${route.url}/v1/messages`, {
+      response = await fetchImpl(route.url, {
         method: "POST",
         headers: {
           "x-api-key": await route.key(),
@@ -466,7 +469,7 @@ function modelRoute(args: Arguments): ModelRoute | string {
     if ((mode & 0o077) !== 0) {
       return `--key-file ${keyFile} can be read by its group or by others. Make it 0600.`;
     }
-    return { url: ANTHROPIC_URL, key: () => readKeyFile(keyFile) };
+    return { url: joinUrl(ANTHROPIC_URL, "v1/messages").href, key: () => readKeyFile(keyFile) };
   }
   if (gateway === undefined || keyCommand === undefined) return refusal;
   let url: URL;
@@ -478,7 +481,7 @@ function modelRoute(args: Arguments): ModelRoute | string {
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     return `--gateway ${gateway} is not an http or https URL`;
   }
-  return { url: gateway.replace(/\/+$/, ""), key: () => runKeyCommand(keyCommand) };
+  return { url: joinUrl(gateway, "v1/messages").href, key: () => runKeyCommand(keyCommand) };
 }
 
 /** The whole run. Returns the exit status: 0, 1 (a read or a label failed) or 2 (refused). */

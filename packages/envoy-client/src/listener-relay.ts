@@ -53,7 +53,7 @@
 // after it handled every frame the socket sent before it, every `sub` included), the status events
 // `disconnect` and `reconnect`, a drain and a close.
 
-import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { joinUrl } from "@legion/contracts/url-join";
 import type { RequestCredential } from "./bearer";
 import { type BrokerSessionName, sessionName } from "./broker-credential";
 import type { InboundUnavailable, RelayHeaders } from "./consumer-delivery";
@@ -133,9 +133,11 @@ const BunWebSocket = WebSocket as unknown as new (
 ) => Bun.WebSocket;
 
 /** The relay socket of `session` at the listener `url`, in its http(s) form: what the proof of
- *  the upgrade names as its `htu`. */
+ *  the upgrade names as its `htu`, less any query (`DpopKey.proof`). The route is joined onto the
+ *  URL's path, its query kept (`joinUrl`): appended to the text of a URL with a query, it would
+ *  sit inside the query and the upgrade would ask the URL's own path. */
 export function relaySocketUrl(url: string, session: string): string {
-  return `${withoutTrailingSlashes(url)}/v1/sessions/${encodeURIComponent(session)}/relay`;
+  return joinUrl(url, `v1/sessions/${encodeURIComponent(session)}/relay`).href;
 }
 
 /**

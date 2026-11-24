@@ -443,3 +443,38 @@ describe("postSlackReply", () => {
     }
   }, 30_000);
 });
+
+// The post goes to chat.postMessage joined onto SLACK_POST_API_URL's path, the URL's query kept as
+// a query. Appended to the URL's text, the method sat inside the query
+// (`/api?team=T00000000/chat.postMessage`) and the post asked `/api`. The stand-in records the
+// path and the query of each request; a URL with no query is posted to as before. The 30 s limit
+// is the hang guard of the test above: each case runs the broker's stand-in and a poster.
+describe("the post goes to chat.postMessage joined onto SLACK_POST_API_URL's path", () => {
+  for (const [name, apiPath, path, query] of [
+    ["query", "/api?team=T00000000", "/api/chat.postMessage", "?team=T00000000"],
+    ["query-trailing-slash", "/api/?team=T00000000", "/api/chat.postMessage", "?team=T00000000"],
+    ["no-query", "/api", "/api/chat.postMessage", ""],
+    ["trailing-slash", "/api/", "/api/chat.postMessage", ""],
+  ] as const) {
+    test(name, async () => {
+      const asked: string[] = [];
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch(request) {
+          asked.push(request.url);
+          return Response.json({ ok: true, channel: "C00000000", ts: "1700000000.000200" });
+        },
+      });
+      cleanups.push(() => server.stop(true));
+      const { env } = brokerEnvironment("granted", `http://127.0.0.1:${server.port}${apiPath}`);
+
+      expect(await outcome(env)).toBe(
+        JSON.stringify({ channel: "C00000000", threadTs: reply.threadTs, ts: "1700000000.000200" })
+      );
+      expect(asked.map((url) => [new URL(url).pathname, new URL(url).search])).toEqual([
+        [path, query],
+      ]);
+    }, 30_000);
+  }
+});

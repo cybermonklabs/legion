@@ -30,6 +30,7 @@ import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secre
 import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { callLibrary, LibraryError, RemoteText, refusalFetch } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { joinUrl } from "@legion/contracts/url-join";
 import {
   allowInsecureRequests,
   Configuration,
@@ -275,7 +276,7 @@ export function brokerRefusal(
 ): BrokerRefusedError | BrokerTradeFailedError {
   if (
     error instanceof LibraryError &&
-    error.name === "ResponseBodyError" &&
+    error.answeredOAuthError &&
     error.status >= 400 &&
     error.status < 500
   ) {
@@ -808,7 +809,9 @@ export class BrokerTokenClient {
       form["actor_token_type"] =
         actor.tokenType === SUBJECT_TOKEN_TYPE_GOOGLE ? ACTOR_TOKEN_TYPE_MACHINE : actor.tokenType;
     }
-    const endpoint = this.#brokerUrl + TOKEN_PATH;
+    // Joined, not appended: appended to the text of a broker URL with a query, the route would sit
+    // inside the query and the trade would ask the URL's own path.
+    const endpoint = joinUrl(this.#brokerUrl, TOKEN_PATH).href;
     const raw: { body: unknown } = { body: undefined };
     const config = callLibrary(
       () =>

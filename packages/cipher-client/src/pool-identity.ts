@@ -7,6 +7,7 @@
 
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, requestForText, urlForText } from "@legion/contracts/log-text";
+import { joinUrl } from "@legion/contracts/url-join";
 import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
@@ -21,7 +22,8 @@ import {
 export const DEFAULT_SECURITY_TOKEN_SERVICE_URL = "https://sts.googleapis.com/v1/token";
 
 /** Google's own IAM Credentials service, whose `generateIdToken` mints the identity token the
- *  broker reads (Go's `DefaultIAMCredentialsURL`). An origin: the resource path is built here. */
+ *  broker reads (Go's `DefaultIAMCredentialsURL`). An origin: the resource path is joined onto
+ *  it here. */
 export const DEFAULT_IAM_CREDENTIALS_URL = "https://iamcredentials.googleapis.com";
 
 /** What the security token service answers: a federated access token, spendable at IAM
@@ -153,21 +155,17 @@ function googleErrorCode(text: string): string {
  * names the call that failed, with Google's status and reason where it answered one, and never a
  * token. A service is named by the shared rule (`urlForText`; the mint as a request built on IAM
  * Credentials' base, `requestForText`), a request that got no answer by its error's class
- * (`errorClass`), and no error keeps another as its cause.
+ * (`errorClass`), and no error keeps another as its cause. The mint's resource is joined onto IAM
+ * Credentials' URL, its path and query kept (`joinUrl`, Go's `urljoin.Join`); a URL that does not
+ * parse fails the mint as "not a valid URL", as Go's does.
  */
 export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   const securityTokenService = holdUrlUserinfo(
     options.securityTokenServiceUrl ?? DEFAULT_SECURITY_TOKEN_SERVICE_URL
   );
-  holdUrlUserinfo(options.iamCredentialsUrl ?? DEFAULT_IAM_CREDENTIALS_URL);
-  const iamCredentials = (options.iamCredentialsUrl ?? DEFAULT_IAM_CREDENTIALS_URL).replace(
-    /\/$/,
-    ""
-  );
-  const account = pathEscape(options.serviceAccount);
-  const mintEndpoint = `${iamCredentials}/v1/projects/-/serviceAccounts/${account}:generateIdToken`;
+  const iamCredentials = holdUrlUserinfo(options.iamCredentialsUrl ?? DEFAULT_IAM_CREDENTIALS_URL);
+  const mintPath = `v1/projects/-/serviceAccounts/${pathEscape(options.serviceAccount)}:generateIdToken`;
   const securityTokenServiceShown = urlForText(securityTokenService, STS_SETTING);
-  const mintEndpointShown = requestForText(iamCredentials, mintEndpoint, IAM_SETTING);
   const send = options.fetch ?? fetch;
 
   /**
@@ -261,6 +259,16 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   /** IAM Credentials' half: the federated access token spent on one `generateIdToken` for the
    *  managed identity, with `includeEmail` set (Go's `generateIDToken`). */
   const generateIdToken = async (federated: string, signal: AbortSignal | undefined) => {
+    let mintEndpoint: string;
+    try {
+      mintEndpoint = joinUrl(iamCredentials, mintPath).href;
+    } catch {
+      // joinUrl's error quotes neither text; the URL is named as the shared rule names it.
+      throw new Error(
+        `mint this machine's identity token at ${urlForText(iamCredentials, IAM_SETTING)}: not a valid URL`
+      );
+    }
+    const mintEndpointShown = requestForText(iamCredentials, mintEndpoint, IAM_SETTING);
     let token: string;
     try {
       token = await call(

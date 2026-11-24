@@ -1,10 +1,10 @@
-// packages/envoy-client/src/__tests__/url-join.test.ts
+// packages/contracts/src/url-join.test.ts
 //
 // `joinUrl` (url-join.ts): a path joined onto a configured URL's path, its query kept ahead of the
 // path's own, and refusals in words that quote neither text.
 
 import { describe, expect, test } from "bun:test";
-import { joinUrl } from "../url-join";
+import { joinUrl } from "./url-join";
 
 /** The credential the refused bases and refs carry in their user information and their query; no
  *  error of `joinUrl` may hold it, or any other part of either text. */

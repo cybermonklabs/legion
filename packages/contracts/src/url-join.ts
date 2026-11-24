@@ -1,4 +1,4 @@
-// packages/envoy-client/src/url-join.ts
+// packages/contracts/src/url-join.ts
 //
 // A request URL built from a configured URL's text and a path: the path joined onto the configured
 // URL's path, the configured query kept ahead of the path's own, user information, host and port
@@ -6,7 +6,8 @@
 // text sits inside its query or its fragment where it has one (`http://host/api?key=v` with
 // `/v1/x` appended is `http://host/api?key=v/v1/x`), so the request goes to another path and the
 // query's value changes. It is the TypeScript side of the Go modules' `urljoin.Join`, with the same
-// rules.
+// rules, and it sits in this package so envoy-client's and cipher-client's requests join through
+// one copy.
 
 /** What `joinUrl` throws for a base that does not parse or has no host. It quotes no part of the
  *  base: the `TypeError` the URL parser throws carries the text it refused (`input`), user

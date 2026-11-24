@@ -499,6 +499,13 @@ export class LibraryError extends Error {
   readonly thrownClass: string;
   /** The class of the error the library's own error was thrown over, "" where none. */
   readonly causeClass: string;
+  /** Whether the library threw oauth4webapi's `ResponseBodyError`: the issuer or the broker
+   *  answered a 4xx whose body is an OAuth error, so {@link status}, {@link code} and
+   *  {@link description} are that answer's. It reads the code that library gives the class
+   *  (`RESPONSE_BODY_ERROR`, "OAUTH_RESPONSE_BODY_ERROR"), never {@link name}: the library names an
+   *  error by its `constructor.name`, which a subclass or a bundle that renames the class changes,
+   *  and any error can be named so. Every client reads a refusal by this, in one place. */
+  readonly answeredOAuthError: boolean;
 
   constructor(thrown: unknown) {
     const error = thrown instanceof Error ? thrown : undefined;
@@ -523,6 +530,7 @@ export class LibraryError extends Error {
     this.thrownClass = errorClass(thrown);
     const cause = error?.cause;
     this.causeClass = cause instanceof Error ? errorClass(cause) : "";
+    this.answeredOAuthError = stringMember(thrown, "code") === "OAUTH_RESPONSE_BODY_ERROR";
   }
 }
 
