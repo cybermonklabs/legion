@@ -13,12 +13,12 @@ import (
 )
 
 // TestACacheAskThatGotNoAnswerNamesTheCacheByItsSchemeHostAndPath: --cache-url is what the pod is
-// told, and it can carry a fragment. The cache's path is appended to the URL as it is written, so
-// the fragment takes the path into it. The tar's ask of a cache that never answers (its address is
-// one nothing listens at) fails in unpackCache's error with the failure named through
-// oauth2call.Unanswered, by the URL the ask asked: its scheme, host and path alone, none of the
-// fragment. The twin shows net/http's own error of the same ask holds the credential. Captures
-// workspace.unanswered-name/fragment.
+// told, and it can carry a fragment, which net/http's own error of the URL's text quotes. The tar's
+// ask of a cache that never answers (its address is one nothing listens at) fails in unpackCache's
+// error with the failure named through oauth2call.Unanswered, by the URL the ask asked: its scheme,
+// host and path alone (the cache's path with /tar joined onto it, the fragment dropped), none of the
+// fragment. The twin shows net/http's own error of the URL's text with /tar appended holds the
+// credential. Captures workspace.unanswered-name/fragment.
 func TestACacheAskThatGotNoAnswerNamesTheCacheByItsSchemeHostAndPath(t *testing.T) {
 	const token = "w3kd8-not-a-secret-token-5b0f"
 	dead := redirectstest.Dead(t)
@@ -38,7 +38,7 @@ func TestACacheAskThatGotNoAnswerNamesTheCacheByItsSchemeHostAndPath(t *testing.
 			t.Fatal("unpackCache answered no error")
 		}
 		oauth2calltest.RequireNoPiece(t, "workspace.unanswered-name/fragment", err.Error(), token)
-		if want := `Get "http://` + dead + `": dial tcp ` + dead + ": "; !strings.HasPrefix(err.Error(), want) {
+		if want := `Get "http://` + dead + `/tar": dial tcp ` + dead + ": "; !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("unpackCache's error is %q, want it to begin %q", err, want)
 		}
 	})

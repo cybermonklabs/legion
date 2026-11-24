@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
-	"strings"
 
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -175,8 +175,11 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	}
 	callCtx, cancel := context.WithTimeout(ctx, req.Bounds.Time)
 	defer cancel()
-	url := strings.TrimSuffix(req.Model.Endpoint.BaseURL, "/") + decidePath
-	post, err := http.NewRequestWithContext(callCtx, http.MethodPost, url, bytes.NewReader(body))
+	endpoint, err := decideURL(req.Model.Endpoint.BaseURL)
+	if err != nil {
+		return DecideResult{}, err
+	}
+	post, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, err)
 	}
@@ -256,6 +259,21 @@ func readDecisions(answer redact.Answer) (map[string]Decision, *systemOneUsage, 
 		answers[name] = a.decision(legends.Answers[name].Legend)
 	}
 	return answers, decided.Usage, nil
+}
+
+// decideURL is the URL a decision is posted to: base, the endpoint's base URL, with decidePath
+// joined onto its path (url.URL.JoinPath), its query kept and its fragment, which no request
+// sends, dropped, where decidePath appended to base's text would sit inside a query or a fragment
+// and the endpoint would be asked another path. A base URL that does not parse is refused in
+// fixed words: url.Parse's error quotes it whole, user information and query included.
+func decideURL(base string) (string, error) {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("agentloop: the %s endpoint's base URL does not parse", SystemOne)
+	}
+	joined := parsed.JoinPath(decidePath)
+	joined.Fragment, joined.RawFragment = "", ""
+	return joined.String(), nil
 }
 
 // validate is whether the request is one that can be made at all: it has its time bound, an

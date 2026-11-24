@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -88,7 +87,6 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 	if err != nil {
 		return Issue{}, err
 	}
-	base := issueURL(d.baseURL, key)
 	// Only these three fields of the issue read are decoded. The route answers the whole
 	// issue with its artifacts, children and open asks (api.issueDetail), and the judge reads
 	// none of that, nor the assignee, which Assignee decodes on its own so the shape of one
@@ -98,7 +96,7 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 		Title  string `json:"title"`
 		Status string `json:"status"`
 	}
-	if err := d.readIssue(ctx, base, token, key, &row); err != nil {
+	if err := d.readIssue(ctx, token, key, &row); err != nil {
 		return Issue{}, err
 	}
 	issue := Issue{Key: row.Key, Title: row.Title, Status: row.Status}
@@ -106,7 +104,7 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 	var doc struct {
 		Markdown string `json:"markdown"`
 	}
-	switch status, err := d.get(ctx, base+"/artifacts/spec/text", token, &doc); {
+	switch status, err := d.get(ctx, token, &doc, append(issueRoute(key), "artifacts/spec/text")...); {
 	case err != nil:
 		return Issue{}, err
 	case status == http.StatusOK:
@@ -135,21 +133,21 @@ func (d Dispatch) Assignee(ctx context.Context, key string) (string, error) {
 	var row struct {
 		Assignee string `json:"assignee"`
 	}
-	if err := d.readIssue(ctx, issueURL(d.baseURL, key), token, key, &row); err != nil {
+	if err := d.readIssue(ctx, token, key, &row); err != nil {
 		return "", err
 	}
 	return row.Assignee, nil
 }
 
-// issueURL is the address of the issue key names under baseURL.
-func issueURL(baseURL, key string) string {
-	return strings.TrimSuffix(baseURL, "/") + "/api/v1/issues/" + url.PathEscape(key)
+// issueRoute is the route of the issue key names, as get joins it onto the Dispatch's path.
+func issueRoute(key string) []string {
+	return []string{"api/v1/issues", url.PathEscape(key)}
 }
 
 // readIssue makes the one issue GET Issue and Assignee share, decoding into what each of them
 // reads of it: a 404 is ErrNoIssue and every other answer that is not 200 an error.
-func (d Dispatch) readIssue(ctx context.Context, endpoint, token, key string, into any) error {
-	switch status, err := d.get(ctx, endpoint, token, into); {
+func (d Dispatch) readIssue(ctx context.Context, token, key string, into any) error {
+	switch status, err := d.get(ctx, token, into, issueRoute(key)...); {
 	case err != nil:
 		return err
 	case status == http.StatusNotFound:
@@ -189,7 +187,6 @@ func (d Dispatch) Ask(ctx context.Context, id string) (Ask, error) {
 	if err != nil {
 		return Ask{}, err
 	}
-	endpoint := strings.TrimSuffix(d.baseURL, "/") + "/api/v1/asks/" + url.PathEscape(id)
 	// Only these fields of the ask are decoded. The route answers the ask with its replies,
 	// its edits, its followers and where its anchor stands (api.askRead), and the judge reads
 	// none of that: an answer is the person's decision, and a thread under it is not.
@@ -209,7 +206,7 @@ func (d Dispatch) Ask(ctx context.Context, id string) (Ask, error) {
 			} `json:"answer"`
 		} `json:"ask"`
 	}
-	switch status, err := d.get(ctx, endpoint, token, &row); {
+	switch status, err := d.get(ctx, token, &row, "api/v1/asks", url.PathEscape(id)); {
 	case err != nil:
 		return Ask{}, err
 	case status == http.StatusNotFound:
@@ -233,14 +230,27 @@ func (d Dispatch) Ask(ctx context.Context, id string) (Ask, error) {
 	return ask, nil
 }
 
-// get makes one authorized GET and, on 200 alone, decodes as much of the answer as into names.
-// It hands back whatever status came, so each caller decides for itself which of them is a
-// failure; a call that was never answered, and a 200 whose body is past maxDispatchAnswer or is
-// not the JSON into expects, is an error.
-func (d Dispatch) get(ctx context.Context, endpoint, token string, into any) (int, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+// get makes one authorized GET of route, joined onto the path of the Dispatch's URL
+// (url.URL.JoinPath) with its query kept and its fragment, which no request sends, dropped: a route
+// appended to the URL's text would sit inside a query or a fragment, and Dispatch would be asked
+// another path. On 200 alone it decodes as much of the answer as into names. It hands back
+// whatever status came, so each caller decides for itself which of them is a failure; a call that
+// was never answered, and a 200 whose body is past maxDispatchAnswer or is not the JSON into
+// expects, is an error. A Dispatch URL that does not parse, or whose joined URL does not parse
+// again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape), is refused
+// in the judge's own words: url.Parse's error, which http.NewRequest's carries, quotes the URL
+// whole, user information and query included. BROKER_JUDGE_DISPATCH_URL is held to parse before
+// the broker starts (config.Load); a Dispatch built directly is not.
+func (d Dispatch) get(ctx context.Context, token string, into any, route ...string) (int, error) {
+	base, err := url.Parse(d.baseURL)
 	if err != nil {
-		return 0, fmt.Errorf("the judge's Dispatch read could not be built: %w", err)
+		return 0, errors.New("the judge's Dispatch read could not be built: the Dispatch URL does not parse")
+	}
+	endpoint := base.JoinPath(route...)
+	endpoint.Fragment, endpoint.RawFragment = "", ""
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return 0, errors.New("the judge's Dispatch read could not be built: the URL it joined does not parse")
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/json")
