@@ -295,9 +295,6 @@ func (c *comparisonReader) mergeCommitOf(ctx context.Context, pull delivery.Merg
 // per read of the results. A commit holds itself, and that costs no read; every other pair is
 // delivery's (delivery.Branches.CommitHolds), which keeps GitHub's answer for good.
 func (c *comparisonReader) holds(ctx context.Context, repo, commit, merge string) delivery.HoldAnswer {
-	if commit == merge {
-		return delivery.Holds
-	}
 	key := [3]string{strings.ToLower(repo), commit, merge}
 	if answer, memoized := c.holdAnswers[key]; memoized {
 		return answer
