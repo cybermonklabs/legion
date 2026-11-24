@@ -564,20 +564,27 @@ func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function str
 		f.Why = "no inventory entry names this site"
 		return
 	}
-	// The box's own record walk (redact.recordBoxes) reaches every type a caller decodes an answer
-	// into, box-holding ones by design: it hands each box its record through the box's own method
-	// and reads no storage, which the box census holds, since that census allows the storage to be
-	// read only by the box's rule and comparison methods. An entry may name such a walk only in the
-	// box's own package; anywhere else a reflection that reaches the box fails as before.
-	if exempt.RecordsBoxes {
+	mode, err := exempt.mode()
+	if err != nil {
+		// load refuses such an entry; a census given one unloaded passes no site by it.
+		f.Why = "its inventory entry is refused: " + err.Error()
+		return
+	}
+	switch mode {
+	case byRecordsBoxes:
+		// The box's own record walk (redact.recordBoxes) reaches every type a caller decodes an
+		// answer into, box-holding ones by design: it hands each box its record through the box's
+		// own method and reads no storage, which the box census holds, since that census allows the
+		// storage to be read only by the box's rule and comparison methods. An entry may name such
+		// a walk only in the box's own package; anywhere else a reflection that reaches the box
+		// fails as before.
 		if w.path != w.boxPkg || kind != "reflect" {
 			f.Why = "records_boxes names a reflection outside the box's package, or no reflect call"
 			return
 		}
 		f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); the box's own walk, which hands each box its record and reads no storage"
 		return
-	}
-	if exempt.ExportedFieldsOnly {
+	case byExportedFieldsOnly:
 		switch {
 		case ast.IsExported(w.g.inv.Gate.Box.Field):
 			f.Why = "exported_fields_only names a walk of exported fields, and the box's storage field is exported"
@@ -589,8 +596,7 @@ func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function str
 			f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); it reads an exported field alone, and the box keeps its text in unexported fields"
 		}
 		return
-	}
-	if exempt.GuardedPackage != "" {
+	case byGuardedPackage:
 		if ok, why := w.guardedPackageRead(call, parents, kind, what, exempt.GuardedPackage); ok {
 			f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); "+why
 		} else {

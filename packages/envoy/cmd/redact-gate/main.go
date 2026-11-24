@@ -140,16 +140,16 @@ type holderRow struct {
 	Test   string `json:"test"` // the print test's row id
 }
 
-// reflectionExempt is a reflection or unsafe site the reflection census allows, with the types it
-// reaches, which the census checks hold no box storage and no external error type. RecordsBoxes
-// names the box's own record walk instead, in the box's package alone, which reaches box-holding
-// types to hand each box its record. ExportedFieldsOnly names a walk that reads exported fields
-// alone, each reflect.Value.Field it calls under a t.Field(i).IsExported() guard on its own index,
-// which the census checks in place of the types it reaches: the box keeps its text in unexported
-// fields. GuardedPackage names a reflection of a value whose type no static type names (a
-// library's unexported type behind an interface), allowed for the one read guardedPackageRead
-// (guarded.go) states, which the census checks, with the package GuardedPackage names, in place
-// of the types it reaches.
+// reflectionExempt is a reflection or unsafe site the reflection census allows, in one of the
+// ways reflectionMode names: by the types it reaches (Operands), which the census checks hold no
+// box storage and no external error type, or by one of three modes in their place. RecordsBoxes
+// names the box's own record walk, in the box's package alone, which reaches box-holding types to
+// hand each box its record. ExportedFieldsOnly names a walk that reads exported fields alone, each
+// reflect.Value.Field it calls under a t.Field(i).IsExported() guard on its own index: the box
+// keeps its text in unexported fields. GuardedPackage names a reflection of a value whose type no
+// static type names (a library's unexported type behind an interface), allowed for the one read
+// guardedPackageRead (guarded.go) states, which the census checks with the package GuardedPackage
+// names. An entry sets at most one mode, and none with operands (mode; load refuses it otherwise).
 type reflectionExempt struct {
 	File               string   `json:"file"`
 	Function           string   `json:"function"`
@@ -158,6 +158,42 @@ type reflectionExempt struct {
 	ExportedFieldsOnly bool     `json:"exported_fields_only"`
 	GuardedPackage     string   `json:"guarded_package"`
 	Why                string   `json:"why"`
+}
+
+// reflectionMode is the one way a reflection entry allows its site.
+type reflectionMode int
+
+const (
+	byOperands reflectionMode = iota // the types it reaches, its operands
+	byRecordsBoxes
+	byExportedFieldsOnly
+	byGuardedPackage
+)
+
+// mode is the one way e allows its site, or an error where e sets two modes, or a mode and
+// operands, which the mode's check would not read.
+func (e reflectionExempt) mode() (reflectionMode, error) {
+	mode, set := byOperands, []string(nil)
+	for _, m := range []struct {
+		on   bool
+		mode reflectionMode
+		name string
+	}{
+		{e.RecordsBoxes, byRecordsBoxes, "records_boxes"},
+		{e.ExportedFieldsOnly, byExportedFieldsOnly, "exported_fields_only"},
+		{e.GuardedPackage != "", byGuardedPackage, "guarded_package"},
+	} {
+		if m.on {
+			mode, set = m.mode, append(set, m.name)
+		}
+	}
+	switch {
+	case len(set) > 1:
+		return 0, fmt.Errorf("it sets %s, and an entry allows its site in one way", strings.Join(set, " and "))
+	case len(set) == 1 && len(e.Operands) > 0:
+		return 0, fmt.Errorf("it sets %s and lists operands, which %s does not read", set[0], set[0])
+	}
+	return mode, nil
 }
 
 type gateConfig struct {
@@ -493,6 +529,11 @@ func (g *gate) load(needSites bool) error {
 			return fmt.Errorf("gate.row_timeout: %v", err)
 		}
 		g.rowTimeout = d
+	}
+	for _, e := range g.inv.Gate.Reflection {
+		if _, err := e.mode(); err != nil {
+			return fmt.Errorf("reflection entry %s (%s): %v", e.Function, e.File, err)
+		}
 	}
 	if !needSites {
 		return nil
