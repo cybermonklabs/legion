@@ -1,0 +1,237 @@
+{
+  "recorded_at": "8517faba31ac145fc0d50c067ba50291b2b1e598",
+  "recorded_by": "BROKER_TEST_DATABASE_URL=… go test -tags recordprincipals -run TestRecordStoredPrincipals -count=1 ./internal/cipher/enroll/",
+  "rows": [
+    {
+      "column": "enrollments.carry_principal",
+      "case": "a machine enrols its own session under a session name",
+      "caller": {
+        "kind": "google",
+        "account": "example-fleet@example-project.iam.gserviceaccount.com",
+        "thumbprint": "NFUHduotOHm3vWFKFQglO3HNrV4KNMAJMk_EgUj9kMg",
+        "service": "example-fleet",
+        "session": "record-carry-machine-session"
+      },
+      "value": "google:example-fleet@example-project.iam.gserviceaccount.com"
+    },
+    {
+      "column": "enrollments.carry_principal",
+      "case": "a person's sign-in enrols a session under a session name",
+      "caller": {
+        "kind": "google",
+        "person": "ada@example.com",
+        "machine_account": "example-fleet@example-project.iam.gserviceaccount.com",
+        "thumbprint": "vCPyrgGi0bLxpOeWzkTvJo_YWe0_CKRNUjBmlNkLlws",
+        "service": "example-fleet",
+        "session": "record-carry-signin-session"
+      },
+      "value": "person:ada@example.com"
+    },
+    {
+      "column": "enrollments.carry_principal",
+      "case": "a pod its daemon's login enrols under a session name",
+      "caller": {
+        "kind": "kubernetes",
+        "account": "system:serviceaccount:legion:legion-worker",
+        "pod_uid": "record-carry-pod-uid",
+        "service": "legion-daemon",
+        "session": "record-carry-pod-session",
+        "launcher_account": "system:serviceaccount:legion:legion-daemon"
+      },
+      "value": "account:system:serviceaccount:legion:legion-worker launched-by account:system:serviceaccount:legion:legion-daemon"
+    },
+    {
+      "column": "enrollments.owner",
+      "case": "a machine enrols its own session",
+      "caller": {
+        "kind": "google",
+        "account": "example-fleet@example-project.iam.gserviceaccount.com",
+        "thumbprint": "odmXd6FoLGjzdTTtGjgPUmHZzYN2vKCMALwTFilIpmU",
+        "service": "example-fleet",
+        "session": "record-owner-machine-session"
+      },
+      "value": "machine:example-fleet/example-fleet@example-project.iam.gserviceaccount.com#odmXd6FoLGjzdTTtGjgPUmHZzYN2vKCMALwTFilIpmU"
+    },
+    {
+      "column": "enrollments.owner",
+      "case": "a person's sign-in enrols a session",
+      "caller": {
+        "kind": "google",
+        "person": "ada@example.com",
+        "machine_account": "example-fleet@example-project.iam.gserviceaccount.com",
+        "thumbprint": "0y9bl_fpF044CSN3GTDtC5ARzdCJs1u7XPOtjPn3S9o",
+        "service": "example-fleet",
+        "session": "record-owner-signin-session"
+      },
+      "value": "person:ada@example.com"
+    },
+    {
+      "column": "enrollments.owner",
+      "case": "a pod its launcher enrols under a claim",
+      "caller": {
+        "kind": "kubernetes",
+        "account": "system:serviceaccount:legion:legion-worker",
+        "pod_uid": "record-claim-pod-uid",
+        "service": "legion-daemon",
+        "claim": "legion-acme-acme-12-planner",
+        "session": "record-claim-session",
+        "launcher_account": "system:serviceaccount:legion:legion-daemon"
+      },
+      "value": "claim:system:serviceaccount:legion:legion-daemon/legion-acme-acme-12-planner"
+    },
+    {
+      "column": "enrollments.owner",
+      "case": "a slot of a pod that states no claim",
+      "caller": {
+        "kind": "kubernetes",
+        "account": "system:serviceaccount:legion:legion-worker",
+        "pod_uid": "record-slot-pod-uid",
+        "service": "legion-daemon",
+        "slot": "planner-g1",
+        "session": "record-slot-session",
+        "launcher_account": "system:serviceaccount:legion:legion-daemon"
+      },
+      "value": "machine:legion-daemon/record-slot-pod-uid/planner-g1"
+    },
+    {
+      "column": "launcher_credentials.subject",
+      "case": "a Kubernetes service account logs in with its token",
+      "caller": {
+        "kind": "kubernetes",
+        "account": "system:serviceaccount:example-ns:example-daemon",
+        "pod_uid": "record-daemon-uid-1",
+        "thumbprint": "7T7HSPaIWdRrhy0ag-ArJRAHd2mxQVuapoH-UavBRYY",
+        "service": "legion-daemon"
+      },
+      "value": "system:serviceaccount:example-ns:example-daemon"
+    },
+    {
+      "column": "launcher_credentials.subject",
+      "case": "a machine on a Compute Engine instance trades for its launcher credential",
+      "caller": {
+        "kind": "google",
+        "account": "example-fleet@example-project.iam.gserviceaccount.com",
+        "compute": {
+          "project": "example-project",
+          "zone": "example-zone-a",
+          "instance": "example-machine-1",
+          "instance_id": "1234567890"
+        },
+        "thumbprint": "zgU2QA4wQdpkgFDjM6Ie7hGCELirn5DBD08BT1thnoE",
+        "service": "example-fleet"
+      },
+      "value": "example-fleet@example-project.iam.gserviceaccount.com@example-project/example-zone-a/1234567890#zgU2QA4wQdpkgFDjM6Ie7hGCELirn5DBD08BT1thnoE"
+    },
+    {
+      "column": "launcher_credentials.subject",
+      "case": "a machine with no Compute Engine claims trades for its launcher credential",
+      "caller": {
+        "kind": "google",
+        "account": "example-fleet@example-project.iam.gserviceaccount.com",
+        "thumbprint": "ReiNqyT0RNNLLYnCAgEG1ASKbSphft8QQh5F4_QAzQU",
+        "service": "example-fleet"
+      },
+      "value": "example-fleet@example-project.iam.gserviceaccount.com#ReiNqyT0RNNLLYnCAgEG1ASKbSphft8QQh5F4_QAzQU"
+    },
+    {
+      "column": "launcher_credentials.subject",
+      "case": "a person's sign-in on a machine trades for its launcher credential",
+      "caller": {
+        "kind": "google",
+        "person": "ada@example.com",
+        "machine_account": "example-fleet@example-project.iam.gserviceaccount.com",
+        "compute": {
+          "project": "example-project",
+          "zone": "example-zone-a",
+          "instance": "example-machine-1",
+          "instance_id": "1234567890"
+        },
+        "thumbprint": "zbQ47T4pPzZ70-HZpjn9yj7Ega-dLqRgvwh0btt_Xa8",
+        "service": "example-fleet"
+      },
+      "value": "signin:ada@example.com|example-fleet@example-project.iam.gserviceaccount.com#zbQ47T4pPzZ70-HZpjn9yj7Ega-dLqRgvwh0btt_Xa8"
+    },
+    {
+      "column": "oauth_session_bindings.principal",
+      "case": "a dev box's machine login trades for a session name",
+      "caller": {
+        "kind": "devbox",
+        "person": "ada@example.com",
+        "session": "record-devbox-session"
+      },
+      "value": "person:ada@example.com"
+    },
+    {
+      "column": "oauth_session_bindings.principal",
+      "case": "a machine trades its Google identity token for a session name",
+      "caller": {
+        "kind": "google",
+        "account": "example-fleet@example-project.iam.gserviceaccount.com",
+        "compute": {
+          "project": "example-project",
+          "zone": "example-zone-a",
+          "instance": "example-machine-1",
+          "instance_id": "1234567890"
+        },
+        "service": "example-fleet",
+        "session": "record-machine-session"
+      },
+      "value": "google:example-fleet@example-project.iam.gserviceaccount.com"
+    },
+    {
+      "column": "oauth_session_bindings.principal",
+      "case": "a person's sign-in on a machine trades for a session name",
+      "caller": {
+        "kind": "google",
+        "person": "ada@example.com",
+        "machine_account": "example-fleet@example-project.iam.gserviceaccount.com",
+        "compute": {
+          "project": "example-project",
+          "zone": "example-zone-a",
+          "instance": "example-machine-1",
+          "instance_id": "1234567890"
+        },
+        "service": "example-fleet",
+        "session": "record-signin-session"
+      },
+      "value": "person:ada@example.com"
+    },
+    {
+      "column": "oauth_session_bindings.principal",
+      "case": "a pod of an account entry trades for a session name",
+      "caller": {
+        "kind": "kubernetes",
+        "account": "system:serviceaccount:example-ns:example-worker",
+        "pod_uid": "record-pod-uid-1",
+        "person": "ada@example.com",
+        "session": "record-pod-session"
+      },
+      "value": "account:system:serviceaccount:example-ns:example-worker"
+    },
+    {
+      "column": "oauth_session_bindings.principal",
+      "case": "a read entry's pod trades for the session its entry fixes",
+      "caller": {
+        "kind": "kubernetes",
+        "account": "system:serviceaccount:example-ns:example-reader",
+        "pod_uid": "record-reader-uid-1",
+        "service": "example-reader",
+        "session": "record-read-session"
+      },
+      "value": "account:system:serviceaccount:example-ns:example-reader"
+    },
+    {
+      "column": "oauth_session_bindings.principal",
+      "case": "a workflow run trades for a session name",
+      "caller": {
+        "kind": "github",
+        "repository": "example-org/example-repo",
+        "workflow": ".github/workflows/release.yaml",
+        "ref": "refs/heads/main",
+        "person": "ada@example.com",
+        "session": "record-workflow-session"
+      },
+      "value": "workflow:example-org/example-repo/.github/workflows/release.yaml@refs/heads/main"
+    }
+  ]
+}
