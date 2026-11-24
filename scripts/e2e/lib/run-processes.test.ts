@@ -551,7 +551,7 @@ host.test(
 host.test(
   "a walk whose reader a signal ended is no answer in an EXIT trap after a passing run either: listening_holders and run_processes exit 2",
   () => {
-    // Inside a trap a bare `exit` exits with the status from before the trap, not the last
+    // Inside an EXIT trap a bare `exit` exits with the status from before the trap, not the last
     // command's. Each walk's substitution exited through one when its reader failed, so after
     // `exit 0` a find or a grep that a signal ended read 0, and both walks answered 0.
     killedReaderWalks("killed-trap", true);
@@ -642,13 +642,13 @@ host.test(
 host.test(
   "a sweep in an EXIT trap after a failed command still stops the run's processes",
   async () => {
-    // A driver's EXIT trap runs the sweep after `fail` has exited 1. Inside a trap a bare `exit`
-    // exits with the status from before the trap, not the last command's, and the walk's
+    // A driver's EXIT trap runs the sweep after `fail` has exited 1. Inside an EXIT trap a bare
+    // `exit` exits with the status from before the trap, not the last command's, and the walk's
     // substitution exited through one when xargs exited 123: the walk read 1, printed `procs_naming:
-    // xargs exited 1`, and the sweep stopped no process. xargs exits 123 in every walk of a real
-    // machine, which holds environments this user may not read; the row's proc root holds one
-    // entry whose environ grep cannot read, a directory, whatever user runs the row, at pid 0,
-    // which is no process's.
+    // xargs exited 1`, and the sweep stopped no process. xargs exits 123 once a batch meets an
+    // environment this user may not read, as a walk of a machine with another user's processes
+    // does; the row's proc root holds one entry whose environ grep cannot read, a directory,
+    // whatever user runs the row, at pid 0, which is no process's.
     const work = join(dir, "exit-trap");
     mkdirSync(work);
     const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });

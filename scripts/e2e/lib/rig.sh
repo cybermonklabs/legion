@@ -245,8 +245,9 @@ listening_holders() {
   }
   # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
   # `|| exit "$?"` keeps find's status and keeps a caller's ERR trap (`set -E`) from firing inside the
-  # substitution for the unreadable entries every walk meets. It names the status, since inside a
-  # trap a bare `exit` exits with the status from before the trap (procs_naming, lib/process-tree.sh).
+  # substitution for the unreadable entries every walk meets. It names the status, since inside an
+  # EXIT trap a bare `exit` exits with the status from before the trap (procs_naming,
+  # lib/process-tree.sh).
   mapfile -t holders < <(printf '%s\0' "${entries[@]}" | LC_ALL=C find -files0-from - -maxdepth 1 -lname "socket:\\[$inodes\\]" 2>"$err" || exit "$?")
   wait "$!" || status=$?
   complaint=

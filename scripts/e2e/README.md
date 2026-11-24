@@ -6995,7 +6995,7 @@ A marked process whose name holds a newline and a `) ` is still named and ended.
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
 it signals no pid whose start time is not the one its walk read;
 and it ends a child a marked process started under `env -i`, which carries no mark, with or without a grace, also when the grace's SIGTERM ends the process that started it.
-It still ends them from an `EXIT` trap that runs after a command exited 1, over a proc root that also holds an environment `grep` cannot read, as every walk of a real machine does.
+It still ends them from an `EXIT` trap that runs after a command exited 1, over a proc root that also holds an environment `grep` cannot read, as a walk of a machine with another user's processes does.
 Every process a row signals, and every harness shell, runs in a process group of its own ([`lib/own-group.ts`](#libown-groupts)).
 
 ## lib/own-group.ts
@@ -7043,7 +7043,7 @@ It needs nothing of its caller's.
 Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
 Both read their `find`'s stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk, and fails when there is none.
 A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an unreadable `/proc/net/tcp`, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
-Each walk's substitution exits with its reader's own status by name (`|| exit "$?"`): inside a trap a bare `exit` exits with the status from before the trap, so in a run's `EXIT` trap a bare one gave the run's status for the reader's, and after `exit 1` the sweep stopped no process, while after `exit 0` a reader a signal ended read as a whole walk.
+Each walk's substitution exits with its reader's own status by name (`|| exit "$?"`): inside an `EXIT` trap a bare `exit` exits with the status from before the trap, so there a bare one gave the run's status for the reader's, and after `exit 1` the sweep stopped no process, while after `exit 0` a reader a signal ended read as a whole walk.
 
 ```sh
 . "$root/scripts/e2e/lib/process-tree.sh"     # sourced, never run

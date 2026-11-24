@@ -177,7 +177,7 @@ host.test(
 host.test(
   "a find that a signal ends is reported with 2 from an EXIT trap after a passing run too",
   async () => {
-    // Inside a trap a bare `exit` exits with the status from before the trap, not the last
+    // Inside an EXIT trap a bare `exit` exits with the status from before the trap, not the last
     // command's. The walk's substitution exited through one when its find failed, so after `exit 0`
     // a find a signal ended read 0, and a walk that read nothing found no leftover.
     const root = procRootOf(dir, [await sleeper()]);
