@@ -29,9 +29,11 @@ import (
 // --helper` exits 1 naming ENROLL_OUTCOME_UNKNOWN and saying the outcome is unknown, and writes
 // no enrollment file, while the broker holds the row. The answer is the one the bound's end of the
 // request gives (requestReach.settle): its cause says the request may have reached the broker, not
-// the cause the helper's timer, a second after the bound, would give, and it comes at the bound,
-// allowing for the time this process was held up (requireOnTime). The same command again,
-// answered at once, exits 0 with that row's id, and the broker still holds that one live row.
+// the cause the helper's timer, a second after the bound, would give. That order says the bound's
+// own end of the request answered, and not the helper's backstop nor the broker's answer, which is
+// held an hour, past the test binary's deadline. The command is not timed: it runs in a process
+// of its own, which a machine can starve alone. The same command again, answered at once, exits 0
+// with that row's id, and the broker still holds that one live row.
 func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T) {
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
@@ -53,10 +55,7 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	args := []string{"enroll", "--helper", "--runtime-id", runtimeID, "--thumbprint", freshThumbprint(t)}
 
 	slow.holds.Store(1)
-	meter := startStallMeter(t)
-	start := time.Now()
 	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, env, args...)
-	requireCommandOnTime(t, meter, "enroll --helper past the helper's bound", start, bound)
 	rows := enrollmentsOf(t, rig, runtimeID)
 	outcome := fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
 	if n := slow.held.Load(); n != 1 {

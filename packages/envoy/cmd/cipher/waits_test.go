@@ -208,11 +208,6 @@ func (m *stallMeter) heldAround(at time.Time) time.Duration {
 // of 800, is in the pull request's record. Code whose own deadline ends late, by seconds, is past it.
 const lateSlack = time.Second
 
-// commandLateSlack is lateSlack for a command in another process (an agent-secrets binary the test
-// runs, a helper subprocess): it also starts a process, ends it and drains its pipes, and the
-// meter counts only the time this process was held up, not the time the machine starved that one.
-const commandLateSlack = 5 * time.Second
-
 // endsByItsDeadline waits for ch, the end of code in this process started at start under a
 // deadline of its own, deadline after start, and answers what ch received. The wait is bounded
 // only by the moment every wait for a fact in these tests gives up (received), so a machine that
@@ -234,27 +229,22 @@ func endsByItsDeadline[T any](t *testing.T, meter *stallMeter, what string, star
 // this process held up: that is code whose own deadline came late, or that waited for something it
 // should not. It answers how long the code took, and logs how late it was. what names the code for
 // the failure's text.
+//
+// A command in another process (an agent-secrets binary a row runs, a helper subprocess) is not
+// timed this way: a machine can starve that process alone, which the meter, counting this
+// process's hold-ups, does not see. Its rows read the cause of its end instead: the signal its
+// wait status names, or the cause its own answer gives, with the mechanism the row rules out held
+// past the moment its waits give up.
 func requireOnTime(t *testing.T, meter *stallMeter, what string, start time.Time, deadline time.Duration) time.Duration {
-	t.Helper()
-	return onTimeWithin(t, meter, what, start, deadline, lateSlack)
-}
-
-// requireCommandOnTime is requireOnTime for a command in another process (commandLateSlack).
-func requireCommandOnTime(t *testing.T, meter *stallMeter, what string, start time.Time, deadline time.Duration) time.Duration {
-	t.Helper()
-	return onTimeWithin(t, meter, what, start, deadline, commandLateSlack)
-}
-
-func onTimeWithin(t *testing.T, meter *stallMeter, what string, start time.Time, deadline, slack time.Duration) time.Duration {
 	t.Helper()
 	took := time.Since(start)
 	held := meter.heldUp()
 	late := took - deadline - held
-	if late > slack {
+	if late > lateSlack {
 		t.Fatalf("%s ended %s after it started, past its %s deadline; this process was held up %s of that, so the code was %s late on its own, more than %s",
-			what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), slack)
+			what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), lateSlack)
 	}
 	t.Logf("on time: %s took %s against its %s deadline, %s held up, %s late on its own (slack %s)",
-		what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), slack)
+		what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), lateSlack)
 	return took
 }

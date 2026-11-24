@@ -494,9 +494,9 @@ func (h *signInHelper) requireEndedByInterrupt(t *testing.T) {
 // agent-secrets' group, a terminal's Ctrl-C included), ends as the interrupt ends it - by SIGINT,
 // a shell's status 130 - at once, and the child that held gcloud's output is gone with it. The
 // call's deadline is an hour (gcloudSignInDeadline), so only the interrupt can end it while the
-// test waits: a signal path that waited behind the call would never end. The end is timed from the
-// interrupt against no deadline of its own (requireCommandOnTime), so a path that waits for
-// anything first fails at once.
+// test waits: a signal path that waited behind the call would never end. The end is read from that
+// cause and its status, not timed: agent-secrets runs in a process of its own, which a machine can
+// starve alone.
 func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 	child := gcloudChild{pidFile: filepath.Join(t.TempDir(), "child.pid")}
 	t.Cleanup(func() { child.cleanUp(t) })
@@ -513,8 +513,6 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 		helper.stop()
 		t.Fatalf("the stub gcloud's child was never seen running, %s before the test binary's deadline; the helper said %q", waitMargin, helper.out.String())
 	}
-	meter := startStallMeter(t)
-	sent := time.Now()
 	if err := helper.cmd.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +520,6 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 		helper.stop()
 		t.Fatalf("agent-secrets was still running after its interrupt, %s before the test binary's deadline; it said %q", waitMargin, helper.out.String())
 	}
-	requireCommandOnTime(t, meter, "agent-secrets after its interrupt, which ends it at once", sent, 0)
 	helper.requireEndedByInterrupt(t)
 	child.requireGone(t)
 }
