@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
@@ -278,7 +279,7 @@ func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, er
 		}
 		return "", err
 	}
-	return curlAnswer(response.Exit, response.Stdout, response.Stderr, slug)
+	return curlAnswer(response.Exit, response.Stdout, response.Stderr, slug, token)
 }
 
 // curlMissing is errNoCurlRead, naming the path, where the guard's curl is no regular file, and
@@ -348,9 +349,9 @@ func (g *Guard) CurlGet(ctx context.Context, path, token string) (CurlResponse, 
 		stderr:  &stderr,
 	})
 	if err != nil {
-		return CurlResponse{}, procgroup.Said(err, visibilityBody(printed)+"\n"+stderr.String())
+		return CurlResponse{}, procgroup.Said(err, shownSaid(visibilityBody(printed)+"\n"+stderr.String(), token))
 	}
-	return CurlResponse{Exit: status, Stdout: printed, Stderr: stderr.String()}, nil
+	return CurlResponse{Exit: status, Stdout: printed, Stderr: stderr.String(), token: token}, nil
 }
 
 // CurlResponse is a GET through curl that curl ended itself (Guard.CurlGet). Exit is curl's exit
@@ -358,10 +359,16 @@ func (g *Guard) CurlGet(ctx context.Context, path, token string) (CurlResponse, 
 // --fail. Stdout is the status line, the headers and the body, as --include prints them, and
 // Stderr is what curl said of a failure. Its methods read GitHub's answer out of Stdout with the
 // guard's own parse of that output, the one curlAnswer reads the visibility read's answer with.
+//
+// token is the token the read was sent with, kept so that what this quotes of curl's words
+// redacts every run of it (Unreached): whatever answers in GitHub's place can echo the token
+// back in the body, and curl prints the body. Nothing else reads it, and it is no part of what a
+// caller decides on: Exit, Stdout and Stderr are the answer as it came.
 type CurlResponse struct {
 	Exit   int
 	Stdout string
 	Stderr string
+	token  string
 }
 
 // Status is the HTTP status of GitHub's answer, 0 where curl printed no status line, and the
@@ -383,13 +390,15 @@ func (r CurlResponse) RateLimit() error {
 
 // Unreached is the *transportError of a curl that got no answer from GitHub (curlUnreached), and
 // nil for any other: a curl that printed a status line heard GitHub, whatever its exit. Its text
-// quotes curl as it printed, unmasked, for a caller that names the repository it read anyway; the
-// visibility read masks it (curlAnswer).
+// quotes what curl printed as the rule reads it, every run of the read's token redacted
+// (shownSaid), with the repository unmasked, for a caller that names the repository it read
+// anyway; the visibility read masks it too (curlAnswer).
 func (r CurlResponse) Unreached() error {
 	if httpStatus, _ := r.Status(); !curlUnreached(r.Exit, httpStatus) {
 		return nil
 	}
-	return &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", r.Exit, strings.TrimSpace(strings.TrimSpace(r.Body())+" "+strings.TrimSpace(r.Stderr)))}
+	quoted := shownSaid(strings.TrimSpace(strings.TrimSpace(r.Body())+" "+strings.TrimSpace(r.Stderr)), r.token)
+	return &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", r.Exit, quoted)}
 }
 
 // curlInherits is which names of the caller's environment the curl read keeps: those a program
@@ -452,15 +461,15 @@ func curlUnreached(exit, httpStatus int) bool {
 // rateLimitFrom reads gh's answer, is a *rateLimitError. GitHub's 404 is a *notFoundError. A 200
 // whose body's visibility is public, private or internal, read as gh's is, is the answer. Anything
 // else is an error.
-func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
+func curlAnswer(status int, stdout, stderr, slug, token string) (Visibility, error) {
 	masked := maskPath(slug)
 	body := visibilityBody(stdout)
 	httpStatus, _ := responseHeaders(stdout)
 	if status != 0 {
 		if curlUnreached(status, httpStatus) {
-			return "", &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", status, said(body, stderr, slug))}
+			return "", &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", status, said(body, stderr, slug, token))}
 		}
-		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", masked, status, said(body, stderr, slug))
+		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", masked, status, said(body, stderr, slug, token))
 	}
 	if limited := rateLimitFrom(stdout); limited != nil {
 		return "", limited
@@ -469,13 +478,13 @@ func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 		return "", &notFoundError{slug: slug}
 	}
 	if httpStatus != http.StatusOK {
-		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", masked, httpStatus, said(body, stderr, slug))
+		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", masked, httpStatus, said(body, stderr, slug, token))
 	}
 	var answer struct {
 		Visibility string `json:"visibility"`
 	}
 	if err := json.Unmarshal([]byte(body), &answer); err != nil {
-		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %v", masked, err)
+		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %w", masked, oauth2call.DecodeError(err, []byte(body), &answer))
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(answer.Visibility))); visibility {
 	case Public, Private, Internal:
@@ -524,7 +533,7 @@ func (g *Guard) ghToken(ctx context.Context, slug string) (string, error) {
 		stderr: &stderr,
 	})
 	if err != nil {
-		return "", procgroup.Said(err, stderr.String())
+		return "", procgroup.Said(err, shownSaid(stderr.String()))
 	}
 	if status != 0 {
 		return "", fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String(), slug))
