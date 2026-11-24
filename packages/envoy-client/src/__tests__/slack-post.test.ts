@@ -456,29 +456,25 @@ describe("the post goes to chat.postMessage joined onto SLACK_POST_API_URL's pat
     ["no-query", "/api", "/api/chat.postMessage", ""],
     ["trailing-slash", "/api/", "/api/chat.postMessage", ""],
   ] as const) {
-    test(
-      name,
-      async () => {
-        const asked: string[] = [];
-        const server = Bun.serve({
-          port: 0,
-          hostname: "127.0.0.1",
-          fetch(request) {
-            asked.push(request.url);
-            return Response.json({ ok: true, channel: "C00000000", ts: "1700000000.000200" });
-          },
-        });
-        cleanups.push(() => server.stop(true));
-        const { env } = brokerEnvironment("granted", `http://127.0.0.1:${server.port}${apiPath}`);
+    test(name, async () => {
+      const asked: string[] = [];
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch(request) {
+          asked.push(request.url);
+          return Response.json({ ok: true, channel: "C00000000", ts: "1700000000.000200" });
+        },
+      });
+      cleanups.push(() => server.stop(true));
+      const { env } = brokerEnvironment("granted", `http://127.0.0.1:${server.port}${apiPath}`);
 
-        expect(await outcome(env)).toBe(
-          JSON.stringify({ channel: "C00000000", threadTs: reply.threadTs, ts: "1700000000.000200" })
-        );
-        expect(asked.map((url) => [new URL(url).pathname, new URL(url).search])).toEqual([
-          [path, query],
-        ]);
-      },
-      30_000
-    );
+      expect(await outcome(env)).toBe(
+        JSON.stringify({ channel: "C00000000", threadTs: reply.threadTs, ts: "1700000000.000200" })
+      );
+      expect(asked.map((url) => [new URL(url).pathname, new URL(url).search])).toEqual([
+        [path, query],
+      ]);
+    }, 30_000);
   }
 });

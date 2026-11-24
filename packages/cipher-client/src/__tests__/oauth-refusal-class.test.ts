@@ -19,10 +19,13 @@ const ENDPOINT = "http://broker.test/v1/oauth/token";
 class RenamedResponseBodyError extends ResponseBodyError {}
 
 test("an OAuth error answered under another class name is the broker's refusal", () => {
-  const thrown = new RenamedResponseBodyError("server responded with an error in the response body", {
-    cause: { error: "invalid_grant", error_description: "the broker refused this request" },
-    response: new Response(null, { status: 400 }),
-  });
+  const thrown = new RenamedResponseBodyError(
+    "server responded with an error in the response body",
+    {
+      cause: { error: "invalid_grant", error_description: "the broker refused this request" },
+      response: new Response(null, { status: 400 }),
+    }
+  );
   // The library names it by its class: the name is not ResponseBodyError, the code is the class's.
   expect([thrown.name, thrown.code]).toEqual([
     "RenamedResponseBodyError",

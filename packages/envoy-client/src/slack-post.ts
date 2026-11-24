@@ -319,19 +319,16 @@ export async function postSlackReply(
       `the reply links ${internal}, an address inside the cluster nobody in Slack can open; link Dispatch's dashboard instead (dispatch prints it when DISPATCH_PUBLIC_URL is set); nothing was posted`
     );
   }
-  const override = env[SLACK_POST_API_URL_VARIABLE];
-  if (override !== undefined && override !== "" && !allowedAPIURL(override)) {
+  const apiUrl = env[SLACK_POST_API_URL_VARIABLE] || SLACK_API_URL;
+  if (!allowedAPIURL(apiUrl)) {
     // Its value is not quoted: a URL can carry user info or a token in its query.
     throw new Error(
       `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host; nothing was posted`
     );
   }
-  // The method joined onto the API's path, the API URL's query kept as its query. Appended to the
-  // URL's text, it sat inside a query (`/api?team=T1/chat.postMessage`) and asked `/api`.
-  const url = joinUrl(
-    override === undefined || override === "" ? SLACK_API_URL : override,
-    "chat.postMessage"
-  ).href;
+  // Joined, not appended: appended to the text of a URL with a query, the method would sit inside
+  // the query (`/api?team=T1/chat.postMessage`) and the post would ask `/api`.
+  const url = joinUrl(apiUrl, "chat.postMessage").href;
   const { PATH: searchPath = "" } = env;
   const client = Bun.which("agent-secrets", { PATH: searchPath });
   if (client === null) {
@@ -349,7 +346,12 @@ export async function postSlackReply(
     {
       env,
       stdin: new Blob([
-        JSON.stringify({ url, channel: reply.channel, thread_ts: reply.threadTs, text: reply.text }),
+        JSON.stringify({
+          url,
+          channel: reply.channel,
+          thread_ts: reply.threadTs,
+          text: reply.text,
+        }),
       ]),
       stdout: "pipe",
       stderr: "pipe",

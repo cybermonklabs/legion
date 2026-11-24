@@ -2595,8 +2595,8 @@ export class DispatchClient {
   /**
    * The request URL of `path`, each segment escaped, with `query`'s members as its own query: the
    * path joined onto the configured URL's path, the configured query kept ahead of the request's
-   * own (`joinUrl`). Resolved against the URL's text with a slash appended, a configured query
-   * took the slash, so the request lost both that query and the URL's path.
+   * own (`joinUrl`). Resolved against the URL's text with a slash appended, a URL with a query
+   * would take the slash into the query and lose both its query and its path.
    */
   #url(path: readonly string[], query?: object): string {
     const params = new URLSearchParams();
@@ -2619,8 +2619,8 @@ export class DispatchClient {
     try {
       return joinUrl(this.#baseUrl, params.size === 0 ? ref : `${ref}?${params}`).toString();
     } catch {
-      // The escaped path and query are never refused, so the URL is: in fixed words, since the
-      // URL can carry a credential in its user info or its query.
+      // An escaped path and query are always a relative reference, so what is refused is the URL,
+      // named by its setting: it can carry a credential in its user info or its query.
       throw new Error(`${DISPATCH_URL_SETTING} is not an absolute URL with a host (not printed)`);
     }
   }

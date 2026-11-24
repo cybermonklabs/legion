@@ -269,8 +269,8 @@ function brokerConfiguration(
   return config;
 }
 
-/** The OAuth error code of a refusal of the broker's (a LibraryError the broker's OAuth error
- *  answered, `answeredOAuthError`), as it came, and an empty field for any other failure. */
+/** The OAuth error code the broker refused with (a LibraryError whose `answeredOAuthError` is
+ *  set), as it came, and an empty field for any other failure. */
 function refusedCode(error: unknown): RemoteText {
   return error instanceof LibraryError && error.answeredOAuthError
     ? error.code
