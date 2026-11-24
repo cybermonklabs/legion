@@ -2897,10 +2897,9 @@ func (i Issue) OwnersRowRole() claim.Role {
 // makes no claim token.
 func (i Issue) StepWorker(p phase.Phase) (claim.Role, claim.Token, error) {
 	if role := i.OwnersRowRole(); role != "" && p == i.Phase {
-		owner, err := OwnerClaim(i)
-		return role, owner, err
+		return StepRecipient(i, role, true)
 	}
-	return i.RoleAt(p), "", nil
+	return StepRecipient(i, i.RoleAt(p), false)
 }
 
 // MergeForwardWorker is the worker a hold or a landed of a merge forward (step) goes to where

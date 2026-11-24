@@ -6,6 +6,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
+// StepRecipient addresses a message to role's worker. Where the owner does that work, the
+// recipient is the issue's own architect, whatever claim the step's phases row names. Otherwise
+// the claim is left for that row to name (WorkerClaim). Callers judge owner from the issue's
+// current place or the plan step whose worker they need.
+func StepRecipient(issue Issue, role claim.Role, owner bool) (claim.Role, claim.Token, error) {
+	if owner {
+		token, err := OwnerClaim(issue)
+		return role, token, err
+	}
+	return role, "", nil
+}
+
 // Worker is who works one place of a task on its plan rows (PlaceWorker): the role of the place,
 // the agent that does it, and the place, from 1, of the step that agent was given.
 type Worker struct {

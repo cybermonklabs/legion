@@ -522,11 +522,8 @@ func (e *Engine) workAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 		return roleRecipient{}, false, nil
 	}
 	role := claim.Role(w.Steps[step.Position-1].Role)
-	var token claim.Token
-	var err error
-	if w.OwnerAt(step) {
-		token, err = record.OwnerClaim(issue)
-	} else {
+	_, token, err := record.StepRecipient(issue, role, w.OwnerAt(step))
+	if err == nil && token == "" {
 		token, err = e.stepToken(ctx, tx, issue, w, step, at, role)
 	}
 	if err != nil {

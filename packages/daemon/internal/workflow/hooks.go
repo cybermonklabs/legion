@@ -165,23 +165,20 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 		hook.Name, count, from, to, reached)})
 }
 
-// roleRowWorker is the claim of the worker on role's step in issue's task on w, issue's walk, for a
-// role a hook names that is none of Legion's roles of a step (fireHook): a role the deployment
-// defines, or the merger. It is the claim role's phases row names (record.WorkerClaim), and the
-// owner's own claim (record.OwnerClaim) where that row runs a step of w's task the owner works
-// (Walk.OwnerAt), a step of the key owner. There the row names the claim the step's start wrote,
-// which can be the architect above (ownerAgent), an architect that does not do the step, while the
-// owner does it, since its owner-step and its report are the owner's, and every message to the
-// worker of an owner's step reaches the owner (record.Issue.StepWorker). The merger's row runs the
-// merge, place 0, which is never the owner's.
+// roleRowWorker is the worker of role's recorded step in issue's task, for a hook role with no
+// built-in phase. StepRecipient selects the owner where the plan gives it that step. Otherwise
+// WorkerClaim reads the phases row, including a merger's row at place 0.
 func (e *Engine) roleRowWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role) (claim.Token, error) {
 	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
 		return "", err
 	}
-	if row := record.PhaseRowOf(rows, role); row.StepTask != "" && row.StepTask == w.Task && row.StepPlace > 0 &&
-		w.OwnerAt(record.TaskPlace{Kind: record.PlaceStep, Position: row.StepPlace}) {
-		return record.OwnerClaim(issue)
+	row := record.PhaseRowOf(rows, role)
+	owner := row.StepTask != "" && row.StepTask == w.Task && row.StepPlace > 0 &&
+		w.OwnerAt(record.TaskPlace{Kind: record.PlaceStep, Position: row.StepPlace})
+	_, token, err := record.StepRecipient(issue, role, owner)
+	if err != nil || token != "" {
+		return token, err
 	}
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
