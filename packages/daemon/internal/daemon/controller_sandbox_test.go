@@ -305,13 +305,14 @@ type controllerSandboxRig struct {
 // The worker stream listens on a port of the rig's own rather than one the kernel picks at each
 // bind (testConfig's 0): a pod's launcher dials the stream named in its command for the pod's
 // life, so the second boot must listen where the first pod dials, as a deployment's fixed
-// worker_stream_port does. The rig holds a listening socket on that port, and another on the API
-// port, from its start until the test ends (heldSocket), and each boot serves on descriptors of its
-// own of the two (heldSocketListen, through overrides.listen and overrides.streamListen): a
-// daemon's stop closes its descriptors and the rig's keep both sockets listening, so no other
-// program can take either port before the first boot or between the two. A port found free and
-// given back would be any program's to take before the daemon bound it, and on a shared CI runner
-// one was taken, which failed the boot with `bind: address already in use`.
+// worker_stream_port does. The rig holds a listening socket on that port (heldSocket), and takes
+// the one testConfig holds on the API port (takeHeldSocket), from its start until the test ends;
+// each boot serves on descriptors of its own of the two (heldSocketListen, through
+// overrides.listen and overrides.streamListen). A daemon's stop closes its descriptors and the
+// rig's keep both sockets listening, so no other program can take either port before the first
+// boot or between the two. A port found free and given back would be any program's to take before
+// the daemon bound it, and on a shared CI runner one was taken, which failed the boot with
+// `bind: address already in use`.
 // The probe interval is a second, so the runtime's sweep of every watched claim, which a boot's
 // re-adoption is held against (controllerSandboxSettled), runs several times inside the test's
 // own window.
@@ -327,8 +328,7 @@ func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *cont
 	cfg := workflowConfig(t, natsURL)
 	cfg.PostgresDSN = pool.Config().ConnString()
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
-	apiSocket, apiPort := heldSocket(t)
-	cfg.Port, cfg.DaemonURL = apiPort, "http://127.0.0.1:"+strconv.Itoa(apiPort)
+	apiSocket := takeHeldSocket(t, net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
 	streamSocket, streamPort := heldSocket(t)
 	cfg.WorkerStreamPort = streamPort
 	cfg.ProbeInterval = time.Second
