@@ -18,6 +18,8 @@ import (
 	kmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // Local stands in, in memory, for the AWS calls the broker and the agent-secrets CLI make: Secrets
@@ -64,7 +66,7 @@ type LocalSecret struct {
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	// CreatedAt, when set, is when the secret was created, which ListSecrets and DescribeSecret
 	// answer as its CreatedDate. Unset, they answer none, which the policy reads as a secret whose
-	// age it cannot tell (secrets.Listing.Created).
+	// age it cannot tell (secretstore.Listing.Created).
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 }
 
@@ -84,21 +86,21 @@ func LocalARN(name string) string {
 // under gcp-secret-manager, so a request a local run or a test makes there freezes the source one
 // made on Secret Manager freezes, projects/<number>/secrets/<id>, and not a LocalARN. Read takes
 // that name, which a Local answers by name as it does by its ARN.
-func ResourceNamed(store Store) Store { return resourceNamed{store} }
+func ResourceNamed(store secretstore.Store) secretstore.Store { return resourceNamed{store} }
 
 // resourceNamed is ResourceNamed's store.
-type resourceNamed struct{ Store }
+type resourceNamed struct{ secretstore.Store }
 
-func (r resourceNamed) List(ctx context.Context, prefix string) ([]Listing, error) {
-	listings, err := r.Store.List(ctx, prefix)
+func (r resourceNamed) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
+	listings, err := r.Store.List(ctx, prefix, opts)
 	for i := range listings {
 		listings[i].Source = listings[i].ID
 	}
 	return listings, err
 }
 
-func (r resourceNamed) Describe(ctx context.Context, id string) (Listing, error) {
-	listing, err := r.Store.Describe(ctx, id)
+func (r resourceNamed) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+	listing, err := r.Store.Describe(ctx, id, opts)
 	if err == nil {
 		listing.Source = listing.ID
 	}

@@ -12,7 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -56,7 +56,7 @@ const ServableMessage = "agent secret policy no longer refused"
 const PendingMessage = "agent secret policy waiting for a value"
 
 // PendingValueWindow is how long after its creation a secret `agent-secrets secret create` made
-// before its value (secrets.Listing.Unfilled) is waiting for one (ReasonPendingValue) rather than
+// before its value (secretstore.Listing.Unfilled) is waiting for one (ReasonPendingValue) rather than
 // refused (ReasonNoCurrentValue). It is also the create's value deadline: a create with nothing of
 // the entry typed by then ends its read and discards the secret, so no secret is pending that its
 // create has given up on. A create whose entry is under way at the deadline reads on until the
@@ -87,9 +87,9 @@ const LoadRecoveredMessage = "agent secret policy load succeeded again"
 // ValueReadFailedMessage is the line Current writes, at WARN, when it reads a type secret's stored
 // value to decode it (ReasonValueMalformed) and the read fails while that secret's reads had not
 // been failing: name (the secret's whole name in the store), version (the version of the value it
-// read, secrets.Listing.Version) and error (the store's error, which names the call and the class
+// read, secretstore.Listing.Version) and error (the store's error, which names the call and the class
 // of the failure, such as AccessDeniedException, PermissionDenied or a deadline, and never a byte
-// of the value). A read whose value is not text (secrets.ErrValueNotText) is no failed read but
+// of the value). A read whose value is not text (secretstore.ErrValueNotText) is no failed read but
 // the decoder's case, ReasonValueMalformed. A failed read decodes nothing and keeps a
 // value-malformed refusal of the version it read, but a failed read of a version listed since
 // that refusal ends it, the secret servable again until a read decodes the new version. Each load
@@ -129,7 +129,7 @@ const (
 	// value would make it servable.
 	ReasonNoCurrentValue = "no-current-value"
 	// ReasonPendingValue: a secret `agent-secrets secret create` made before its value
-	// (secrets.Listing.Unfilled: the create label and no version) that the store created less than
+	// (secretstore.Listing.Unfilled: the create label and no version) that the store created less than
 	// PendingValueWindow ago, still waiting for that value. It is no refusal: the secret is in
 	// Set.Pending, not Set.Refused, so it is in no broker_unservable_secrets series, and Current
 	// writes PendingMessage for it, once. A request for it is refused ErrPendingValue. Once the
@@ -217,7 +217,7 @@ const (
 	// what the owner who wrote it meant to stop.
 	ReasonProjectTagMisspelled = "project-tag-misspelled"
 	// ReasonValueMalformed: a type secret's stored value is one secrets.ParseValue refuses under
-	// its type, or one that is not text (secrets.ErrValueNotText), so no release could
+	// its type, or one that is not text (secretstore.ErrValueNotText), so no release could
 	// mint from it. It is no tag's: a load sets it from the value Current reads and decodes once
 	// for each version, type it lists, and a mint sets it from its own decode
 	// (Current.RefuseValue). It is keyed on the secret and the version refused: later loads keep
@@ -342,7 +342,7 @@ type Loader struct {
 	// and re-describes what a single-name read settled. Secrets Manager's DescribeSecret shows a
 	// write at once; Secret Manager documents its GetSecret as eventually consistent too, so
 	// there a reread settles a name only once Secret Manager does.
-	Store secrets.Store
+	Store secretstore.Store
 	// Prefix is the namespace every agent secret's name starts with: a Secrets Manager name
 	// prefix ending in "/", or a Secret Manager one, projects/<number>/secrets/<id prefix>-.
 	Prefix string
@@ -403,7 +403,7 @@ func (l Loader) clock() time.Time {
 func (l Loader) Load(ctx context.Context) (*Set, error) {
 	now := l.clock()
 	l.StoreReads.Inc(readList)
-	listings, err := l.Store.List(ctx, l.Prefix)
+	listings, err := l.Store.List(ctx, l.Prefix, secretstore.ReadOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +439,7 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 // refusalOf is the Refusal of the secret ls lists for reason, with detail: its owner tag as the
 // store holds it, or "" for the two reasons that tag is itself the fault, missing or malformed, and
 // its superseded-by tag as written.
-func refusalOf(ls secrets.Listing, reason, detail string) Refusal {
+func refusalOf(ls secretstore.Listing, reason, detail string) Refusal {
 	switch reason {
 	case ReasonOwnerTagMissing, ReasonOwnerTagMalformed:
 		return Refusal{Reason: reason, Detail: detail, SupersededBy: ls.Tags[TagSupersededBy]}
@@ -449,7 +449,7 @@ func refusalOf(ls secrets.Listing, reason, detail string) Refusal {
 
 // pendingOf is the Pending of the secret ls lists waiting for its value: its owner tag, when
 // the store created it, and its superseded-by tag.
-func pendingOf(ls secrets.Listing) Pending {
+func pendingOf(ls secretstore.Listing) Pending {
 	return Pending{Owner: ls.Tags[TagOwner], Created: ls.Created, SupersededBy: ls.Tags[TagSupersededBy]}
 }
 
@@ -519,9 +519,9 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 		return Lookup{}, err
 	}
 	l.StoreReads.Inc(readDescribe)
-	ls, err := l.Store.Describe(ctx, id)
+	ls, err := l.Store.Describe(ctx, id, secretstore.ReadOptions{})
 	switch {
-	case errors.Is(err, secrets.ErrNotFound):
+	case errors.Is(err, secretstore.ErrNotFound):
 		return Lookup{Reason: ReasonAbsent}, nil
 	case err != nil:
 		return Lookup{}, err
@@ -549,7 +549,7 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 // and that refusal's detail where it has one (a proxy tag's, proxyTags). It asks the store whether
 // the secret is on the agent-secrets key only after every tag check, so a secret refused for its
 // name or tags costs no key lookup; a failed lookup is an error.
-func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now time.Time) (Secret, string, string, error) {
+func (l Loader) secret(ctx context.Context, slug string, ls secretstore.Listing, now time.Time) (Secret, string, string, error) {
 	s, reason, err := l.storedSecret(ctx, slug, ls)
 	if err != nil || reason != "" {
 		return Secret{}, reason, "", err
@@ -698,7 +698,7 @@ func kindMaxGrant(kind proxyrules.Kind, maxGrant time.Duration) string {
 
 // storedSecret is secret up to its proxy tags and its value: the secret's name and every tag but
 // proxy and proxy-narrowed, answering the reason it is refused when it is.
-func (l Loader) storedSecret(ctx context.Context, slug string, ls secrets.Listing) (Secret, string, error) {
+func (l Loader) storedSecret(ctx context.Context, slug string, ls secretstore.Listing) (Secret, string, error) {
 	if !slugPattern.MatchString(slug) {
 		return Secret{}, ReasonNameMalformed, nil
 	}

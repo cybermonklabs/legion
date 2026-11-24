@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -24,10 +25,10 @@ func pendingLine(id, owner string, firstLoad bool) string {
 
 // createdWithoutValue is a secret owned by owner at tier agent, holding no value, that the store
 // created at created, carrying the create label `agent-secrets secret create` gives a secret it
-// makes before its value (secrets.CreateLabel).
+// makes before its value (secretstore.CreateLabel).
 func createdWithoutValue(name string, created time.Time) secrets.LocalSecret {
 	s := policytest.Secret(name, owner, policy.TierAgent, "")
-	s.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+	s.Tags[secretstore.CreateLabel] = "0123456789abcdef0123456789abcdef"
 	s.CreatedAt = &created
 	return s
 }

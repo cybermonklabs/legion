@@ -43,6 +43,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 var recordSources = flag.Bool("record", false, "write testdata/source-recorded-on-main-*.json instead of comparing; run only on main, as source_recorded_test.go's head comment says")
@@ -76,13 +77,13 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 	for _, row := range []struct {
 		store  string
 		prefix string
-		open   func(t *testing.T, prefix string) secrets.Store
+		open   func(t *testing.T, prefix string) secretstore.Store
 		// form is what every source the record holds for this store must match, so a record
 		// taken against a fake that answers a shape no real store answers is refused here
 		// rather than freezing that shape for the moves to be held to.
 		form *regexp.Regexp
 	}{
-		{"aws", "example/agent-secrets/", func(t *testing.T, prefix string) secrets.Store {
+		{"aws", "example/agent-secrets/", func(t *testing.T, prefix string) secretstore.Store {
 			const key = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 			local := secrets.NewLocal()
 			for _, s := range recordedSecrets {
@@ -90,7 +91,7 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 			}
 			return secrets.AWS{Client: realARNs{local}, KMS: local, KeyARN: key}
 		}, regexp.MustCompile(`-[a-z0-9]{6}$`)},
-		{"gcp", "projects/000000000000/secrets/agent-secrets-", func(t *testing.T, prefix string) secrets.Store {
+		{"gcp", "projects/000000000000/secrets/agent-secrets-", func(t *testing.T, prefix string) secretstore.Store {
 			const key = "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 			held := map[string]secrets.FakeGCPSecretForTest{}
 			for _, s := range recordedSecrets {
@@ -103,7 +104,7 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 			record := filepath.Join("testdata", "source-recorded-on-main-"+row.store+".json")
 			store := row.open(t, row.prefix)
 			ctx := context.Background()
-			listings, err := store.List(ctx, row.prefix)
+			listings, err := store.List(ctx, row.prefix, secretstore.ReadOptions{})
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
@@ -124,7 +125,7 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 					t.Fatalf("%s is not served (refused: %+v); want each recorded secret served", name, set.Refused)
 				}
 				got[name] = recordedSource{Listed: ls.Source, Source: secret.Source}
-				described, err := store.Describe(ctx, ls.ID)
+				described, err := store.Describe(ctx, ls.ID, secretstore.ReadOptions{})
 				if err != nil {
 					t.Fatalf("Describe %s: %v", ls.ID, err)
 				}
