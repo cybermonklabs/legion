@@ -137,9 +137,6 @@ type namedReason struct {
 // MostReasons of its kind are, counted past them, so reason is called only for a reason named.
 func (r *reasons) add(kind cause, task string, reason func() string) {
 	r.found[kind]++
-	if r.found[kind] > MostReasons {
-		return
-	}
 	r.last[kind] = len(r.named)
 	r.named = append(r.named, namedReason{Refusal: Refusal{Task: task, Reason: reason()}, kind: kind})
 }
