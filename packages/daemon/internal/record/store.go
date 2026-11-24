@@ -3149,14 +3149,24 @@ var claimRowSQL = `update outbox set lease_token = $7, lease_until = $8
 		returning ` + outboxColumns
 
 // RenewOutboxLease moves the lease on row id to until while leaseToken still holds it, so a lane
-// running a long row keeps it from the lapse that would let another claim it mid-run. False is a
-// lease no longer the caller's: lapsed and claimed by another, or the row finished.
-func (s *Postgres) RenewOutboxLease(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, until time.Time) (bool, error) {
+// running a long row keeps it from the lapse that would let another claim it mid-run. renewed
+// false is a lease no longer the caller's, and gone says whether that is because the row is
+// finished rather than leased by another. gone is read by a statement of its own, after the
+// update: an update that waited on the lock of a transaction finishing the row finds it deleted
+// once that commits, which only a later statement's snapshot shows.
+func (s *Postgres) RenewOutboxLease(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, until time.Time) (renewed, gone bool, err error) {
 	tag, err := tx.Exec(ctx, "update outbox set lease_until = $3 where id = $1 and lease_token = $2", id, leaseToken, until)
 	if err != nil {
-		return false, fmt.Errorf("renew the lease of outbox row %d: %w", id, err)
+		return false, false, fmt.Errorf("renew the lease of outbox row %d: %w", id, err)
 	}
-	return tag.RowsAffected() == 1, nil
+	if tag.RowsAffected() == 1 {
+		return true, false, nil
+	}
+	var present bool
+	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where id = $1)", id).Scan(&present); err != nil {
+		return false, false, fmt.Errorf("read whether outbox row %d is finished: %w", id, err)
+	}
+	return false, !present, nil
 }
 
 // NextDue is the earliest moment after now one of issue's rows of kinds comes due: the least

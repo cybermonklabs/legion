@@ -253,7 +253,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	t.Logf("before the migration the task number write is refused: %v", err)
 
 	// The fixture stands just below this migration, so the run applies it and every embedded
-	// migration above it — at this release the twenty-seven recorded after it,
+	// migration above it — at this release the twenty-eight recorded after it,
 	// 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
 	// 20261114020537_claim_entry_handshake, 20261114031356_merge_queue_removal,
 	// 20261114061900_phase_entry_verbatim, 20261115194357_project_pause,
@@ -274,6 +274,8 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	// default),
 	// 20261122160000_design_news_credit_at_turn_start (which writes design_news_told_in again to
 	// read turn_started, a column this migration adds),
+	// 20261123050533_idle_release_keeps_no_workspace (which drops workspace_bundles and adds
+	// idle_release_declines and issue_releases.turn_start),
 	// 20261123165139_experiment_assignment_plan (which adds experiment_assignments.plan at its
 	// default), 20261123212127_claim_start_failure_after_ready (which empties
 	// claims.last_start_failure on every claim stored ready, working or idle) and

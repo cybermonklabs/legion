@@ -61,22 +61,6 @@ func plain(n int) []byte {
 	return fmt.Appendf(nil, `{"type":"fake_frame","n":%d}`, n)
 }
 
-// bundleResult is a frame over the line limit, which toDaemonChunked sends as an rpc_chunk
-// sequence, with the line it encodes to and the number of chunks that carry it.
-func bundleResult(t *testing.T) (frame shimwire.Frame, line []byte, chunks int) {
-	t.Helper()
-	frame = shimwire.BundleWorkspaceResult{ID: "bundle-1", OK: true, SizeBytes: 1 << 20, Bundle: bytes.Repeat([]byte{0xa5}, 1<<20)}
-	line, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("encode the bundle result: %v", err)
-	}
-	chunks = (len(line) + shimwire.ChunkPayloadBytes - 1) / shimwire.ChunkPayloadBytes
-	if len(line) < shimwire.MaxFrameBytes || chunks < 3 {
-		t.Fatalf("the bundle result is %d bytes in %d chunks, want a sequence of three chunks or more", len(line), chunks)
-	}
-	return frame, line, chunks
-}
-
 // reassembled reads lines as the daemon's reader would on a stream of its own: one sequence,
 // from its chunk 0 and in order, back into the frame it carries.
 func reassembled(t *testing.T, lines []string) []byte {
@@ -112,11 +96,12 @@ func reassembled(t *testing.T, lines []string) []byte {
 // breaks again while the sequence is replayed leaves it whole for the one after.
 func TestASequenceABrokenConnectionCutIsReplayedWholeFromItsFirstChunk(t *testing.T) {
 	s, _ := outboxShim()
-	frame, line, chunks := bundleResult(t)
+	line, sequence := ompSequence(t)
+	chunks := len(sequence)
 
 	first := attachConn(s, 3) // a plain line, chunks 0 and 1, and it breaks under chunk 2
 	s.out.send(plain(1))
-	s.toDaemonChunked(frame)
+	s.out.send(sequence...) // one frame, as the pump hands Oh My Pi's sequence over (chunkHold)
 	s.out.send(plain(2))
 	if !first.closed {
 		t.Fatal("the broken connection was left open; closing it is what tells the daemon's reader")
@@ -132,7 +117,7 @@ func TestASequenceABrokenConnectionCutIsReplayedWholeFromItsFirstChunk(t *testin
 		t.Fatalf("the replay is %d lines, want %d: the sequence's %d chunks and the plain line behind them: %.80q", got, chunks+1, chunks, third.lines)
 	}
 	if got := reassembled(t, third.lines[:chunks]); !bytes.Equal(got, line) {
-		t.Fatalf("the replayed sequence carries %d bytes, want the %d of the bundle result", len(got), len(line))
+		t.Fatalf("the replayed sequence carries %d bytes, want the %d of Oh My Pi's agent_end", len(got), len(line))
 	}
 	if got := third.lines[chunks]; got != string(plain(2)) {
 		t.Fatalf("the replay ends with %.80s, want the plain line sent after the sequence", got)
@@ -158,10 +143,12 @@ func TestATrimmedBacklogDropsAWholeSequenceNeverItsHeadAlone(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, logged := outboxShim()
-			frame, line, chunks := bundleResult(t)
+			line, sequence := ompSequence(t)
+			chunks := len(sequence)
 			s.out.send(plain(0))
 			s.out.send(plain(1))
-			s.toDaemonChunked(frame)
+			// One frame, as the pump hands Oh My Pi's sequence over (chunkHold).
+			s.out.send(sequence...)
 			last := backlogLimit + tc.over - chunks // plain lines 2 to last-1 bring the total there
 			for n := 2; n < last; n++ {
 				s.out.send(plain(n))
@@ -174,7 +161,7 @@ func TestATrimmedBacklogDropsAWholeSequenceNeverItsHeadAlone(t *testing.T) {
 					t.Fatalf("the replay is %d lines, want the sequence's %d first", len(replay), chunks)
 				}
 				if got := reassembled(t, replay[:chunks]); !bytes.Equal(got, line) {
-					t.Fatalf("the kept sequence carries %d bytes, want the %d of the bundle result", len(got), len(line))
+					t.Fatalf("the kept sequence carries %d bytes, want the %d of Oh My Pi's agent_end", len(got), len(line))
 				}
 				rest = replay[chunks:]
 			} else {
@@ -327,53 +314,6 @@ func TestASequenceOhMyPiWritesIsReplayedWholeFromItsFirstChunkAfterABreak(t *tes
 	}
 	if got := second.lines[len(sequence)]; got != string(plain(2)) {
 		t.Fatalf("the replay ends with %.80s, want the plain line written after the sequence", got)
-	}
-}
-
-// The shim's own chunked frame, a bundle result (toDaemonChunked), can be sent while Oh My Pi is
-// halfway through writing a sequence. The two go out one after the other, each whole, and neither
-// lands between two chunks of the other: the daemon's reader builds one sequence at a time, and a
-// chunk 0 in the middle of one abandons it.
-func TestABundleResultSentWhileOhMyPiWritesASequenceNeverLandsBetweenItsChunks(t *testing.T) {
-	s, _ := outboxShim()
-	ompFrame, sequence := ompSequence(t)
-	bundle, bundleLine, bundleChunks := bundleResult(t)
-	conn := attachConn(s, math.MaxInt)
-
-	stdout, pumped := pumpOf(t, s)
-	writeLines(t, stdout, plain(1))
-	// Eight chunks of some 350 KiB each are far more than a pipe holds (64 KiB on Linux), so when
-	// the last write returns the pump has read the first of them: a pump that forwarded each line
-	// as it read it would have sent them ahead of the bundle result.
-	writeLines(t, stdout, sequence[:8]...)
-	s.toDaemonChunked(bundle)
-	writeLines(t, stdout, sequence[8:]...)
-	writeLines(t, stdout, plain(2))
-	_ = stdout.Close()
-	<-pumped
-
-	lines := conn.lines
-	if want := len(sequence) + bundleChunks + 2; len(lines) != want {
-		t.Fatalf("the connection took %d lines, want %d: two plain lines and the %d and %d chunks of the two sequences", len(lines), want, len(sequence), bundleChunks)
-	}
-	if lines[0] != string(plain(1)) || lines[len(lines)-1] != string(plain(2)) {
-		t.Fatalf("the connection took %.80s first and %.80s last, want the two plain lines around the sequences", lines[0], lines[len(lines)-1])
-	}
-	between := lines[1 : len(lines)-1]
-	head, err := shimwire.Decode([]byte(between[0]))
-	chunk, ok := head.(shimwire.RPCChunk)
-	if err != nil || !ok {
-		t.Fatalf("the line after the first plain one is %.80s, want an rpc_chunk", between[0])
-	}
-	ompLines, bundleLines := between[:len(sequence)], between[len(sequence):]
-	if chunk.ChunkID != ompChunkID {
-		bundleLines, ompLines = between[:bundleChunks], between[bundleChunks:]
-	}
-	if got := reassembled(t, ompLines); !bytes.Equal(got, ompFrame) {
-		t.Fatalf("Oh My Pi's sequence carries %d bytes, want the %d of its agent_end", len(got), len(ompFrame))
-	}
-	if got := reassembled(t, bundleLines); !bytes.Equal(got, bundleLine) {
-		t.Fatalf("the bundle result's sequence carries %d bytes, want the %d of the bundle result", len(got), len(bundleLine))
 	}
 }
 

@@ -275,8 +275,8 @@ func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, droppe
 // (Handle, after both the named ignore's refusal and the row that acted): the claim is in the
 // state the gate found, with no process and no wake of its own, which is where a refusal, an
 // ignore and a forget-session each leave it — and the launch the wake holds is still owed. It is
-// parked again by the park the gate itself makes (parkWake), at the same release moment, for
-// whatever is left of the wait: the token was taken once, so this costs nothing and the wakes
+// parked again by the park the gate itself makes (parkWake), at the same release moment, which
+// fires at once if it has passed: the token was taken once, so this costs nothing and the wakes
 // behind it keep their turns.
 //
 // A claim that records a process takes no wake back, which is what the locator in the guard
@@ -300,7 +300,7 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 	if dropped.pause != 0 {
 		err = m.pauseGate(ctx, dropped, dropped.pause)
 	} else {
-		err = m.parkWake(ctx, dropped, max(dropped.at.Sub(m.deps.Clock.Now()), 0))
+		err = m.parkWake(ctx, dropped)
 	}
 	if err != nil {
 		m.log.Warn("supervise: the wake that keeps its turn could not be written; it waits in memory alone",

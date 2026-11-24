@@ -1746,7 +1746,7 @@ Its old tree's cleanup does not wait on a claim of it that runs nothing;
 each of its claims is re-pointed to its new tree before its first start there, and binds that tree's epoch;
 and its root launch takes over the Sandbox its old tree left, if the cleanup has not reached it yet:
 the Sandbox is relabelled for the new tree (`ensureSandbox`, `internal/runtime/sandbox/relaunch.go`), and whether it is that Sandbox or one made afresh, the launch brings a new pod, with a disk of its own or on the kept volume of a relabelled Sandbox, and the roles resume from the session table.
-A role still in a turn when the old tree closed holds that close's suspension until the turn ends, or, for the turn of a task the worker took, until the worker's report that names the task (contract 248), and the carry's new generation can reach the issue before the close's suspend row of a role has run at all, after a stop of the old tree finished without acting (a production check's look start supersedes the linger's suspend), or before that look's start, already past its fences, brings its claim up in the old tree.
+A role still in a turn when the old tree closed holds that close's suspension until the turn ends, or, for the turn of a task the worker took, until the worker's report that names the task (contract 274), and the carry's new generation can reach the issue before the close's suspend row of a role has run at all, after a stop of the old tree finished without acting (a production check's look start supersedes the linger's suspend), or before that look's start, already past its fences, brings its claim up in the old tree.
 So the move itself, a hand-over, an orphan carry or an adoption, queues a suspend of the old tree for every role of the issue (`Engine.StopLeftTree`, `internal/workflow/adopt.go`).
 Every row of the old tree serves an earlier generation, but such a suspend or tree close still stops a claim that stands in the old tree, waiting while its claim's machine is still to come (a rolling restart).
 The cleanup waits on every claim still running in its tree, so a claim that no stop reached would hold it, and the old root's next run with it, until the new tree started the issue, which a carried child held on a blocker or behind the admission cap does not do.
@@ -2798,7 +2798,8 @@ It adds no table, column or outbox kind.
 
 **This block runs before the task numbers' block.**
 The task numbers' block drops `turn_started`, which this function reads, so with this function left standing every read of what an audience took fails once that block has run.
-The release before this one is contract 232, the one whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-4508`, cybermonklabs/legion#5271's `httpStatus` and `unprompted` of `POST /legion/v1/claims/turn-outcome`, as main releases it after cybermonklabs/legion#5303, its newest migration cybermonklabs/legion#5303's `20261123224717_members_owed`: it carries `20261119203047_design_news` and not the task numbers, so the rollback to it runs this block and the task numbers' block and nothing between them.
+The release before this one is contract 246, the one whose `packages/daemon/internal/api/version.go` carries the entry for the pod hold, cybermonklabs/legion#4960's `podHold` on each issue of `GET /legion/v1/state`, as main releases it after cybermonklabs/legion#4869, its newest migration still cybermonklabs/legion#5303's `20261123224717_members_owed`: it carries `20261119203047_design_news` and not the task numbers, so the rollback to it runs this block and the task numbers' block and nothing between them.
+A rollback to contract 232, or to any release before it, crosses contract 246, which takes no step of its own beyond pinning the worker image with the daemon, since it adds no migration and no `legion.yaml` key, and it, like any rollback to a release before cybermonklabs/legion#4869, crosses `20261123050533_idle_release_keeps_no_workspace`, which needs a step of its own: the way back of its section, [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), run before this block with every daemon of the database stopped, which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start`, which neither block reads, and deletes its version row.
 A rollback to contract 228, or to any release before it, crosses contract 232, which takes no step of its own beyond pinning the worker image with the daemon: it adds no migration and no `legion.yaml` key.
 A rollback to contract 220, or to any release before it, crosses contract 228 and takes its steps ([Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages)), which, with the daemon stopped, delete the project's unsent `intake-gave-up` controller notices and its open failures, rows neither block reads, and keep the version row of `20261120144241_intake_failures` and its three tables.
 A rollback to a release before cybermonklabs/legion#5303 also crosses `20261123224717_members_owed`, which needs a step of its own: the way back in that migration's header, its last paragraph, run first, before this block, with every daemon of the database stopped, which drops `issues.members_owed`, a column neither block reads, and deletes its version row.
@@ -3136,7 +3137,7 @@ A role's own push is what keeps its work, and work a role did not push before th
 Where the round passed over a role the daemon suspended, the daemon first reads the issue's workspace through a role whose process runs in the pod, once every role the round asks has answered and no turn runs, and it writes on the issue what the read found where the read found work or failed, and, on a kept volume that the issue's next pod mounts, that the work is on that volume; a replacement the bound lets through over a role the round asks that has not answered, or over a turn, makes no read, and the read pushes and saves nothing ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 A role whose running plugin predates the contract that added the op is asked all the same:
 its message tells it to push its work, let its subagents and background jobs finish or stop them, push what they made, put scratch evidence on Dispatch and end its turn, and its round ends at the bound whatever it does, so its pod is replaced like every other and the role resumes in its own session on the new image.
-A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either, unless that plugin takes no task, a contract below 248 (`supervise.TaskTakeContract`): the idle release takes such a role's pod instead of waiting for its round ("Contract discipline" below).
+A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either, unless that plugin takes no task, a contract below 274 (`supervise.TaskTakeContract`): the idle release takes such a role's pod instead of waiting for its round ("Contract discipline" below).
 What holds a round past its bound is a claim an operator's own suspension holds, a pod replacement the cluster refuses, a pod the runtime cannot read, two pods at once, or no process in the round's pod where an operator holds a role of the round or the runtime cannot say which pod the issue's Sandbox holds,
 and the daemon reports such a round to the project's controller as `update-stalled`, once, after the bound has passed.
 After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
@@ -3645,6 +3646,7 @@ The migrations recorded above this one are these.
 20261120144241_intake_failures, of dispatch://INFRA-1575, adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`, and touches none of the six, so the block holds over it and leaves the three tables standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 20261122160000_design_news_credit_at_turn_start, of dispatch://INFRA-2811, writes the function `design_news_told_in` of 20261119203047_design_news again to read `pending_task_deliveries.turn_started`, and touches none of the six, so the block holds over it; a rollback past it runs its own block first, [Rolling back the release that credits a holder's news at its take's turn](#rolling-back-the-release-that-credits-a-holders-news-at-its-takes-turn), then the way back in the header of 20261121170714_dispatch_issue_applied_seq, then, in a rollback to contract 217 or to any release before it, which crosses cybermonklabs/legion#4611's contract 219, the way back in the header of 20261117034837_issue_plans, with every project's daemon on the database stopped and once for each project ([Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps)), then the block of "Task numbers (store migration 20261113175649)" below, which drops that column: each in the order of its version, from the highest down.
+20261123050533_idle_release_keeps_no_workspace drops `workspace_bundles` and adds the table `idle_release_declines` and the column `issue_releases.turn_start`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section first, [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start` and deletes its version row.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
@@ -3700,8 +3702,8 @@ this release finds no row for that tree, runs it in no arm — so it too changes
 Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
 Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
 
-**Tasks the worker takes (daemon API contract 248).**
-A release at contract 248 hands a worker its task as a value it takes, not as a prompt the daemon pushes:
+**Tasks the worker takes (daemon API contract 274).**
+A release at contract 274 hands a worker its task as a value it takes, not as a prompt the daemon pushes:
 the daemon writes the number of each claim's task under the claim's token in the task bucket `legion_tasks` on Envoy's NATS, the Envoy listener relays each value to the session that holds the claim's role, and the worker asks the daemon to take the task (`POST /legion/v1/claims/take`) once its host is idle, so the worker stream carries no task at all.
 The daemon opens the bucket at every boot before it supervises anything, creating it where it does not exist yet, and refuses to boot when it cannot, naming the bucket and the subject its NATS user was refused ([Configuration](#configuration) lists the daemon user's grant, and what a daemon whose grant lacks only the bucket's other subjects, which that open does not use, logs once it runs);
 a daemon whose NATS user is the pane seed's, the session user every pane shares, holds no grant on the bucket and is refused all the same, told to take a user of its own (`nats_daemon_nkey_seed_file`).
@@ -3728,8 +3730,8 @@ Nothing stops step 3 before step 2:
 a daemon of this release refuses to boot only where its NATS user cannot open or create the bucket, and with no listener relaying the values a worker reads its value only at its registration, right after its ready, at each regain of its role and at each new epoch of its relay (`bootLegionClaim`, `packages/pi-shared/src/legion-claim-core.ts`).
 `legion state` then names every running claim whose value nobody reported seeing for a whole `worker_take_timeout_seconds` (`task values nobody reported seeing`, `unseenTaskValues` in `--json`), which charges no worker: the daemon writes such a value again once per that bound.
 
-A worker whose plugin is below contract 248 (`supervise.TaskTakeContract`) takes no task, so step 3 moves it as soon as the daemon can ("Contract discipline" below):
-a worker the stale-plugin lane can relaunch is relaunched onto the current plugin even inside the pod update round the image change opens, and a Claude Code role in a pod, whose plugin only its pod's image moves, has its pod released by the idle release once it is in no turn, its unpushed work saved as a bundle first ([Idle release](#idle-release)).
+A worker whose plugin is below contract 274 (`supervise.TaskTakeContract`) takes no task, so step 3 moves it as soon as the daemon can ("Contract discipline" below):
+a worker the stale-plugin lane can relaunch is relaunched onto the current plugin even inside the pod update round the image change opens, and a Claude Code role in a pod, whose plugin only its pod's image moves, has its pod released by the idle release once it is in no turn and the release's workspace check finds no work that origin does not hold ([Idle release](#idle-release)).
 That release runs on the idle release's tick, so a daemon whose idle release is off (`runtime.kubernetes.idle_release.idle_minutes: 0`) makes none:
 each such Claude Code role waits for its pod's update round, which replaces the pod at its bound at the latest, and its operator replaces those pods sooner, beside the two restarts above, by deleting each one's issue Sandbox once its roles have pushed (`kubectl -n legion delete sandbox <name>`).
 Deleting the pod alone does not move it: Agent Sandbox recreates a Running Sandbox's pod from the Sandbox's own template, which names the image the pod was launched on.
@@ -3748,7 +3750,7 @@ A pending task's `take_told` names each of the claim's records whose `toldBy` is
 It drops the push path's three marks on a pending task, which a task the worker takes has no use for:
 `pending_task_deliveries.delivered_at`, `marked_by` and `prompted`.
 
-To roll this release back to contract 232, the release just before it (the one whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-4508`, cybermonklabs/legion#5271's `httpStatus` and `unprompted` of `claims/turn-outcome`, as main releases it after cybermonklabs/legion#5303, whose newest store migration is #5303's 20261123224717_members_owed), stop the daemon, run the block of [Rolling back the release that credits a holder's news at its take's turn](#rolling-back-the-release-that-credits-a-holders-news-at-its-takes-turn), and then run the twenty-two statements below, which leave the store at the earlier release's schema and at that release's own version, 20261123224717:
+To roll this release back to contract 246, the release just before it (the one whose `packages/daemon/internal/api/version.go` carries the entry for the pod hold, cybermonklabs/legion#4960's `podHold` of `GET /legion/v1/state`, as main releases it after cybermonklabs/legion#4869, whose newest store migration is still #5303's 20261123224717_members_owed), stop the daemon, run the block of [Rolling back the release that credits a holder's news at its take's turn](#rolling-back-the-release-that-credits-a-holders-news-at-its-takes-turn), and then run the twenty-two statements below, which leave the store at the earlier release's schema and at that release's own version, 20261123224717:
 every database this release migrated records 20261123224717_members_owed above this migration's own 20261113175649, so the version the store reports is that release's before the block and after it, and the block deletes no row but this migration's.
 A rollback to a release before #5303 runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row, so there the store reports #5278's 20261123212127, that release's own, before the block and after it.
 
@@ -3784,7 +3786,7 @@ SQL
 It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>` for the supervise rows whose payload carried the key, `UPDATE <m>` for the merge-forward rows whose payload carried either of its two keys, `UPDATE <f>` for the claims whose failure cause it rewrote, `UPDATE <p>` for those whose pending cause it rewrote, fourteen more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
 a rerun prints a `NOTICE` for each of the seventeen columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0` four times, `DELETE 0` and `COMMIT`, and changes nothing.
 The three `add column`s come first because the earlier release cannot read the claims table without them:
-its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 232), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
+its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 246), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
 They come back at the defaults their own migrations gave them, which that release reads as a task it has queued and not yet sent:
 it sends an unconfirmed pending task at its claim's next ready, as it sends any task it queued itself, and reads a confirmed one as a turn under way.
 The first `update` takes `origin` back out of every supervise row of the outbox, as the phase entry's block takes out `entry` and `resendEntry`:
@@ -3806,14 +3808,16 @@ every claim stands at task 1 again, or at 0, whatever number it stood at before 
 The one record a number outlives the rollback in is `processed_events`, which nothing prunes:
 an accepted take's confirmation is applied once under an event id that names the task's delivery id beside its number (`confirmationEventID` in `internal/daemon`), so the confirmation of a task numbered 1 again is not taken for one of the task 1 the claim took before the rollback.
 Nothing else reads a number across the rollback, since the earlier release's worker takes no value and the epochs and revisions start empty again.
-The block needs no migration recorded after this one whose way back has not already run to build on the fourteen columns it drops, and at this release twenty-six of the twenty-seven recorded after it touch none of them:
-20261113181500_architect_stalled_notices adds the table `architect_stalled_notices`, 20261113182000_architect_entry_upgrade writes the root architects' `phases` rows, their claims' `given_entry` and `served_entry` and that table's marks, 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns, 20261114031356_merge_queue_removal rewrites `outbox_kind_check`, 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, 20261115194357_project_pause adds the tables `project_pauses`, `project_pause_stops` and `project_pause_pod_holds`, `pod_resumes.clock_at` with the trigger that fills it, `pod_resumes.pause_id` and `outbox.held_by_pause`, and rewrites no kind list, 20261116144907_claim_sessions adds the table `claim_sessions` and fills it from each claim's session, its file and the session it last abandoned, 20261116165926_role_holders_publish rewrites `outbox_kind_check` again and adds the unique index `outbox_role_holders_publish_issue_unique`, 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named` and ends each task a reviewer's row stores with the review round's two sentences, 20261117000528_outbox_kinds_with_the_step_record rewrites `outbox_kind_check` a third time, 20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads `issues` and `phases`, 20261117023932_outbox_kinds_with_the_plan_record rewrites `outbox_kind_check` a fourth time, 20261117034837_issue_plans (cybermonklabs/legion#4611) adds the tables `issue_plans`, `plan_tasks` and `plan_steps` and the columns `phases.step_task` and `phases.step_place`, and rewrites no kind list, 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, 20261117112334_pull_request_statuses adds `pull_requests.statuses`, 20261117200337_update_ask_marks_at_delivery clears `claims.update_tasked_at` where that claim's ask still waits in the outbox, 20261119003157_conflict_reads_and_merge_forward rewrites `outbox_kind_check` a fifth time, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, 20261119203047_design_news (cybermonklabs/legion#3995) adds the tables `design_news_told`, `design_changes` and `design_history_unread`, eight functions and the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, and rewrites `outbox_kind_check` a sixth time with `design_changes`, 20261120012547_set_back_observed_seq changes no table and runs no statement, 20261120042902_claim_agent_resume_generation adds `claims.agent_resume_generation` at its default, 0, and rewrites no kind list, 20261120055717_dispatch_issue_value_sequences adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and rewrites no kind list, 20261120144241_intake_failures (cybermonklabs/legion#4590) adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`, and rewrites no kind list, 20261121170714_dispatch_issue_applied_seq (cybermonklabs/legion#4903) adds `dispatch_issues.applied_seq` at its default, 0, and rewrites no kind list, 20261123165139_experiment_assignment_plan (cybermonklabs/legion#4930) adds `experiment_assignments.plan` at its default, the empty word, and rewrites no kind list, 20261123212127_claim_start_failure_after_ready (cybermonklabs/legion#5278) empties `claims.last_start_failure` on every claim stored ready, working or idle, and rewrites no kind list, and 20261123224717_members_owed (cybermonklabs/legion#5303) adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and rewrites no kind list.
+The block needs no migration recorded after this one whose way back has not already run to build on the fourteen columns it drops, and at this release twenty-seven of the twenty-eight recorded after it touch none of them:
+20261113181500_architect_stalled_notices adds the table `architect_stalled_notices`, 20261113182000_architect_entry_upgrade writes the root architects' `phases` rows, their claims' `given_entry` and `served_entry` and that table's marks, 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns, 20261114031356_merge_queue_removal rewrites `outbox_kind_check`, 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, 20261115194357_project_pause adds the tables `project_pauses`, `project_pause_stops` and `project_pause_pod_holds`, `pod_resumes.clock_at` with the trigger that fills it, `pod_resumes.pause_id` and `outbox.held_by_pause`, and rewrites no kind list, 20261116144907_claim_sessions adds the table `claim_sessions` and fills it from each claim's session, its file and the session it last abandoned, 20261116165926_role_holders_publish rewrites `outbox_kind_check` again and adds the unique index `outbox_role_holders_publish_issue_unique`, 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named` and ends each task a reviewer's row stores with the review round's two sentences, 20261117000528_outbox_kinds_with_the_step_record rewrites `outbox_kind_check` a third time, 20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads `issues` and `phases`, 20261117023932_outbox_kinds_with_the_plan_record rewrites `outbox_kind_check` a fourth time, 20261117034837_issue_plans (cybermonklabs/legion#4611) adds the tables `issue_plans`, `plan_tasks` and `plan_steps` and the columns `phases.step_task` and `phases.step_place`, and rewrites no kind list, 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, 20261117112334_pull_request_statuses adds `pull_requests.statuses`, 20261117200337_update_ask_marks_at_delivery clears `claims.update_tasked_at` where that claim's ask still waits in the outbox, 20261119003157_conflict_reads_and_merge_forward rewrites `outbox_kind_check` a fifth time, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, 20261119203047_design_news (cybermonklabs/legion#3995) adds the tables `design_news_told`, `design_changes` and `design_history_unread`, eight functions and the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, and rewrites `outbox_kind_check` a sixth time with `design_changes`, 20261120012547_set_back_observed_seq changes no table and runs no statement, 20261120042902_claim_agent_resume_generation adds `claims.agent_resume_generation` at its default, 0, and rewrites no kind list, 20261120055717_dispatch_issue_value_sequences adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and rewrites no kind list, 20261120144241_intake_failures (cybermonklabs/legion#4590) adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`, and rewrites no kind list, 20261121170714_dispatch_issue_applied_seq (cybermonklabs/legion#4903) adds `dispatch_issues.applied_seq` at its default, 0, and rewrites no kind list, 20261123050533_idle_release_keeps_no_workspace (cybermonklabs/legion#4869) drops `workspace_bundles` and adds the table `idle_release_declines` and the column `issue_releases.turn_start`, and rewrites no kind list, 20261123165139_experiment_assignment_plan (cybermonklabs/legion#4930) adds `experiment_assignments.plan` at its default, the empty word, and rewrites no kind list, 20261123212127_claim_start_failure_after_ready (cybermonklabs/legion#5278) empties `claims.last_start_failure` on every claim stored ready, working or idle, and rewrites no kind list, and 20261123224717_members_owed (cybermonklabs/legion#5303) adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and rewrites no kind list.
 20261119203047_design_news reads no column this block drops or puts back: its functions read `pending_task_deliveries.confirmed_at`, which both releases keep, and its four columns stand through the block, so the block reverses nothing of it, and the two hold in either order.
 The twenty-fourth, 20261122160000_design_news_credit_at_turn_start, is this release's own: it writes cybermonklabs/legion#3995's function `design_news_told_in` again, reading `pending_task_deliveries.turn_started`, which this block drops.
-So its block, [Rolling back the release that credits a holder's news at its take's turn](#rolling-back-the-release-that-credits-a-holders-news-at-its-takes-turn), runs before this one and writes #3995's text of the function back, and every rollback of this release starts with it, after the way back of 20261123224717 and the step of 20261123165139 where the rollback crosses those too.
-20261123212127_claim_start_failure_after_ready, above both, needs nothing: it carries no way back, since an earlier release reads the start failures it emptied as none recorded.
-20261123224717_members_owed, above all three, carries a way back of its own, the last paragraph of its header, which drops `issues.members_owed` and deletes its version row, with every daemon of the database stopped; it reads nothing that block or this one drops or writes back.
-The release before this one carries the other twenty-six: it is contract 232, the one whose `version.go` carries the entry for `INFRA-4508`, cybermonklabs/legion#5271's `httpStatus` and `unprompted` of `claims/turn-outcome`, as main releases it after cybermonklabs/legion#5303, its newest migration #5303's 20261123224717_members_owed, so the rollback to it runs that block and this one and leaves the twenty-six standing.
+So its block, [Rolling back the release that credits a holder's news at its take's turn](#rolling-back-the-release-that-credits-a-holders-news-at-its-takes-turn), runs before this one and writes #3995's text of the function back, and every rollback of this release starts with it, after the way back of 20261123224717, the step of 20261123165139 and the way back of 20261123050533 where the rollback crosses those too.
+20261123050533_idle_release_keeps_no_workspace, above both, carries a way back of its own, the SQL of [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start` and deletes its version row, with every daemon of the database stopped; it reads nothing that block or this one drops or writes back.
+20261123212127_claim_start_failure_after_ready, above all three, needs nothing: it carries no way back, since an earlier release reads the start failures it emptied as none recorded.
+20261123224717_members_owed, above all four, carries a way back of its own, the last paragraph of its header, which drops `issues.members_owed` and deletes its version row, with every daemon of the database stopped; it reads nothing that block or this one drops or writes back.
+The release before this one carries the other twenty-seven: it is contract 246, the one whose `version.go` carries the entry for the pod hold, cybermonklabs/legion#4960's `podHold` of `GET /legion/v1/state`, as main releases it after cybermonklabs/legion#4869, its newest migration still #5303's 20261123224717_members_owed, so the rollback to it runs that block and this one and leaves the twenty-seven standing.
+A rollback to contract 232, or to any release before it, crosses contract 246, which takes no step of its own beyond pinning the worker image with the daemon, since it adds no migration and no `legion.yaml` key, and it, like any rollback to a release before cybermonklabs/legion#4869, crosses 20261123050533_idle_release_keeps_no_workspace, and so runs that migration's own way back before that block.
 A rollback to a release before cybermonklabs/legion#5303 also crosses 20261123224717_members_owed, and so runs that migration's own way back first, before that block.
 A rollback to contract 228, or to any release before it, crosses contract 232, which takes no step of its own beyond pinning the worker image with the daemon: it adds no migration and no `legion.yaml` key.
 A rollback to contract 220, or to any release before it, crosses contract 228, and so also takes that release's steps ([Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages)), which, with the daemon stopped, delete the project's unsent `intake-gave-up` controller notices and its open failures, rows neither that block nor this one reads, and keep the version row of 20261120144241_intake_failures and its three tables, which no earlier release reads.
@@ -3829,7 +3833,8 @@ A rollback to a release before 20261120055717_dispatch_issue_value_sequences run
 Contract 160's two other migrations, 20261111090000_volume_trim_notices and 20261111091500_claim_pod_end, are numbered below this one, so every database records them before it, and neither touches the fourteen columns.
 The earlier release also refuses this release's two keys, `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, as keys it does not know (`unknown key worker_take_timeout_seconds`), so take them out of `legion.yaml` before you pin it, where the file sets them.
 A rollback past this release to contract 87, across 20261111225552_phase_entry, crosses every release between the two, and runs their ways back newest first, with the daemon stopped and before the earlier image is pinned:
-the way back in the header of `20261123224717_members_owed.up.sql` first, cybermonklabs/legion#5303's, which drops `issues.members_owed` and deletes its version row, with every daemon of the database stopped;
+the way back of [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace) first, cybermonklabs/legion#4869's, which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start` and deletes its version row, with every daemon of the database stopped;
+then the way back in the header of `20261123224717_members_owed.up.sql`, cybermonklabs/legion#5303's, which drops `issues.members_owed` and deletes its version row, with every daemon of the database stopped;
 then cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready, which needs nothing, since it carries no way back and an earlier release reads the start failures it emptied as none recorded;
 then the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages), contract 228's, which delete the project's unsent `intake-gave-up` controller notices and its open failures and keep the version row of 20261120144241_intake_failures and its three tables;
 then the step of [Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done), contract 220's, which takes `plan` out of `legion.yaml` and runs no statement;
@@ -3850,7 +3855,7 @@ then the steps of [Rolling back the release that records each step](#rolling-bac
 then the way back in the header of `20261117112334_pull_request_statuses.up.sql`, which no earlier release needs, since none names `pull_requests.statuses`, and which clears for the roll-forward a list of commit statuses that no earlier release keeps current;
 then the way back of [Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read), which contract 87's strict decode of a start row needs, since this release writes `roundNamed` on a reviewer's;
 then the `delete` of [Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch), which leaves no row of its kind behind;
-then the block of "A root's architect in the phase entry (daemon API contract 146)" above, which reverses the four of those twenty-six migrations that are the root architect's entry, all but the six kind lists, the five other migrations of contract 152, contract 160's 20261116144907_claim_sessions, contract 178's 20261115194357_project_pause, contract 188's 20261120055717_dispatch_issue_value_sequences, contract 189's 20261120042902_claim_agent_resume_generation, contract 205's 20261120012547_set_back_observed_seq, contract 228's 20261120144241_intake_failures, whose tables stand, cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, contract 220's 20261123165139_experiment_assignment_plan, contract 219's 20261117034837_issue_plans, whose own way back has run, cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready, which carries none, cybermonklabs/legion#5303's 20261123224717_members_owed, whose own way back has run, and cybermonklabs/legion#3995's 20261119203047_design_news, whose own four statements are its way back;
+then the block of "A root's architect in the phase entry (daemon API contract 146)" above, which reverses the four of those twenty-seven migrations that are the root architect's entry, all but the six kind lists, the five other migrations of contract 152, contract 160's 20261116144907_claim_sessions, contract 178's 20261115194357_project_pause, contract 188's 20261120055717_dispatch_issue_value_sequences, contract 189's 20261120042902_claim_agent_resume_generation, contract 205's 20261120012547_set_back_observed_seq, contract 228's 20261120144241_intake_failures, whose tables stand, cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, cybermonklabs/legion#4869's 20261123050533_idle_release_keeps_no_workspace, whose own way back has run, contract 220's 20261123165139_experiment_assignment_plan, contract 219's 20261117034837_issue_plans, whose own way back has run, cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready, which carries none, cybermonklabs/legion#5303's 20261123224717_members_owed, whose own way back has run, and cybermonklabs/legion#3995's 20261119203047_design_news, whose own four statements are its way back;
 then the `delete` of [Rolling back the release that tells the merger of a merge-queue removal](#rolling-back-the-release-that-tells-the-merger-of-a-merge-queue-removal);
 then the five statements of [Rolling back the release whose update round ends at its bound](#rolling-back-the-release-whose-update-round-ends-at-its-bound), without which contract 87, whose claim read names `update_answered_by_turn_end` and `update_reasked_for_push_check`, reads no claim;
 then the steps of [Rolling back the release that frees the slot past review](#rolling-back-the-release-that-frees-the-slot-past-review) (contract 111) and of [Rolling back the release that names what nothing starts](#rolling-back-the-release-that-names-what-nothing-starts) (contract 98);
@@ -3887,7 +3892,7 @@ The pod update round is untouched by all this: it replaces a pod and its disk, s
 
 A claim in an open pod update round is the one stale claim the lane leaves alone:
 it is served on the contract it records until the round ends, since the round replaces its pod and the role comes back in the new pod on the new image's plugin (`StaleRefusesCalls` in `internal/supervise/plugin.go`, `staleForTheLane` in `internal/daemon/daemon.go`).
-That rule is reversed for a claim whose plugin takes no task, a contract below 248 (`supervise.TaskTakeContract`, `TakesNoTask`), the contract at which a worker takes its task rather than being sent it:
+That rule is reversed for a claim whose plugin takes no task, a contract below 274 (`supervise.TaskTakeContract`, `TakesNoTask`), the contract at which a worker takes its task rather than being sent it:
 on its old contract such a claim takes none of its tasks until its round ends, and the rollout that moves a project's daemon and worker image together opens a round over every issue pod (`PodDrift`), so every such worker of the fleet would wait out a round.
 So such a claim is refused inside a round as outside one, and the lane relaunches it onto the current plugin there, whose process then takes its tasks.
 
@@ -3939,8 +3944,8 @@ the process would come up on the same image's plugin, register the same contract
 Such a claim is therefore relaunched by nothing, and the rule is the runtime and the role's backend together, never the backend alone (`noPluginInstall`, `packages/daemon/internal/daemon/daemon.go`):
 no `StalePlugin` is posted for a Claude Code claim of a pod at any contract, round or no round (`refreshStalePlugins`), and a registration of that claim still on the old contract is accepted, uncharged, rather than relaunched (`staleRegistration`).
 What carries it is the update round over its pod, which asks it like every other role and ends at its bound whatever it answers, so the new image reaches it with nothing asked of an operator.
-A Claude Code role in a pod whose plugin takes no task (its registered process below contract 248, `supervise.TaskTakeContract`) is the exception, since it waits for a prompt this daemon never sends:
-the idle release takes its pod instead ([Idle release](#idle-release)), without waiting out the idle period and past the three holds that keep a pod behind for a relaunch or a round to replace (the pod's image, a live claim's contract, an open round), the workspace's unpushed work saved as a bundle first as at every release.
+A Claude Code role in a pod whose plugin takes no task (its registered process below contract 274, `supervise.TaskTakeContract`) is the exception, since it waits for a prompt this daemon never sends:
+the idle release takes its pod instead ([Idle release](#idle-release)), without waiting out the idle period and past the three holds that keep a pod behind for a relaunch or a round to replace (the pod's image, a live claim's contract, an open round), once the workspace check finds no work that origin does not hold, as at every release.
 Every other condition of the release holds such a pod as it holds any pod (a turn in progress, background work its session reported, a reminder due, a root's wait on a person), so a role in a turn has its pod released at that turn's end, and the role comes back in a pod built from the configured image, whose claude-envoy takes its tasks.
 Such a release logs `idle release: releasing an issue's pod whose Claude Code role runs a plugin that takes no task, so the role comes back on the configured image` with the `claim`, its `pluginContract` and `taskTakeContract`, and each role's stop gives that reason.
 A pod that already runs the configured image is kept, since the pod replacing it would bring the same plugin back, and the daemon logs, once for each claim and contract, the Error `idle release: a Claude Code role runs a plugin that takes no task, and its pod already runs the configured image, so no release can bring it one that does; move the worker image`, naming the `claim`, its `pluginContract`, `taskTakeContract` and the `image`.
@@ -4563,7 +4568,7 @@ When that get does not answer within its bound, because the NATS server is loade
 The stored-message get reaches a deployment with the envoy-infra release that carries it:
 until then the daemon runs as before, except that a reconcile's holds wait for the poller, and the lag's oldest message is `unavailable`.
 The task bucket's entries are not optional in that way, though a boot asks only those the bucket's open uses:
-a daemon of contract 248 or later refuses to boot, naming the bucket and the subject refused ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), when its user lacks the bucket stream's info, or, where the bucket does not exist yet, the account info, the notification stream's info, the create, or, when another daemon created the bucket first, the update.
+a daemon of contract 274 or later refuses to boot, naming the bucket and the subject refused ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), when its user lacks the bucket stream's info, or, where the bucket does not exist yet, the account info, the notification stream's info, the create, or, when another daemon created the bucket first, the update.
 A grant that lacks any other of them boots, and each call that needs the missing subject is refused, logged as below (`NATS refused the daemon a permission`) with that subject:
 without the key writes no value is written and no worker is handed a task (`supervise: the task value could not be written; it is written again at the claim's next chance` at warn);
 without the gets a registration's answer carries no value (`api: the registration answers no task value: the task bucket could not be read` at warn) and `claims/task` answers 500 `TASK_VALUE_UNAVAILABLE`;
@@ -7686,8 +7691,8 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   issue's Sandbox and the role Secrets it owned`.
   The pod's disk went with the pod before the Sandbox did;
 
-- **the pod is released**: no role of the issue has a turn in progress or a turn due for the idle period, so the daemon saves the workspace's unpushed work as a git bundle, suspends each live claim with the source `released` and runs the stop above's teardown ([Idle release](#idle-release)).
-  The issue stays in the workflow, and the next wake for one of its roles brings a new pod, which restores the bundle before any role starts;
+- **the pod is released**: no role of the issue has a turn in progress or a turn due for the idle period, and the workspace read finds nothing that no branch or tag on origin holds, so the daemon suspends each live claim with the source `released` and runs the stop above's teardown ([Idle release](#idle-release)).
+  The issue stays in the workflow, and the next wake for one of its roles brings a new pod, whose workspace provisioning makes from the issue's pushed branch;
 
 - **the tree closes**: at the linger's expiry its cleanup foreground-deletes every issue Sandbox of the tree, in any order (`CleanupTree`, `internal/runtime/sandbox/cleanup.go`), and hands none over
   — a child carried into a tree of its own gets a Sandbox of its own at its next launch, since there is no disk left to hand it;
@@ -7733,7 +7738,7 @@ An operator's suspension is never passed over: the round waits for the operator 
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to do the first three steps and end its turn, since its round ends at the bound whatever it does.
 The end of a turn is no answer at any contract: only the `ready_for_update` call answers the round.
-A claim whose plugin takes no task, a contract below 248 (`supervise.TaskTakeContract`), is asked like any other but not left on that plugin for the round's length: the stale-plugin lane relaunches it onto the current plugin inside the round, and the idle release takes the pod of a Claude Code role on such a plugin ("Contract discipline" above).
+A claim whose plugin takes no task, a contract below 274 (`supervise.TaskTakeContract`), is asked like any other but not left on that plugin for the round's length: the stale-plugin lane relaunches it onto the current plugin inside the round, and the idle release takes the pod of a Claude Code role on such a plugin ("Contract discipline" above).
 An answer stands until the round ends, through every later turn of that role, and the daemon refuses an answered role's take of a new task until the round ends (the hold `update-round`, `answeredOpenRound`), writing the task's value again at the round's end:
 work a later turn commits and does not push goes with the disk, since the answer is not taken back for it.
 A role whose subagent or background job finishes after its answer is told to push what it made and to answer again with the same id, and the second answer takes the place of the first.
@@ -7780,7 +7785,7 @@ Nor is a side head that no working copy and no bookmark reaches, although such a
 The replacement's line, `supervise: the pod of this update round is replaced and the round is over`, names each claim with a session that the round did not wait for and that had not answered, a failed claim or a claim the round passed over (`notWaitedFor`), and what the read found, or why it made no read.
 Where the read found work or failed, the daemon writes one message on the issue that names each of those claims with its state, and the commits, the change in the working copy or the read's error (`workspaceLostMessage`); a read that finds no work writes nothing on the issue.
 Where the pod's disk is a kept volume that the issue's next pod mounts (`roundKeptVolume`), that message says the work is still on that volume rather than lost, as the message of a pod that went before its round does ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-The read pushes nothing, saves no bundle and keeps nothing of the disk, so it holds to the decision above, and it changes no decision of the round: the replacement is made at the same sweep whatever the read found.
+The read pushes nothing and keeps nothing of the disk, so it holds to the decision above, and it changes no decision of the round: the replacement is made at the same sweep whatever the read found.
 The read is bounded by one sweep interval, and a read that runs out of it has failed.
 A shim built before the read passes the frame to its agent, which refuses it, and the daemon reads that refusal as a read that failed.
 
@@ -7903,7 +7908,6 @@ What does reach it is what lives elsewhere
 — each role's session, a row in the session database ([Selecting the store](#selecting-the-store));
 the issue's branch on GitHub, `legion/<KEY>`, which every pushed turn is in;
 the issue's record in the daemon's own Postgres; and the repository's cache, which fills the next pod's feed.
-A release adds one thing to that list: the git bundle of the workspace's unpushed work, which the daemon holds in its own database until the next pod restores it ([Idle release](#idle-release)).
 
 A pod's lifetime is not a role's, and this paragraph is the one place that says how they differ.
 A pod is created by a launch — the issue's first, one that finds no live pod (after a suspension, say, or after an update round ended the pod), or one that must replace the pod (the first end above)
@@ -7916,7 +7920,7 @@ In an issue's ordinary run that is five of its six roles: the first launch creat
 So only a new or replacement pod provisions afresh, and an agent resumed into a pod created after the one it last worked in finds a workspace newer than its session's last write;
 it is told so before its next turn, by `LEGION_WORKSPACE_RECREATED` and the message its plugin saves from it ([Selecting the store](#selecting-the-store)).
 An agent's unpushed work is lost with the pod at every end above but one, and never at a role start into a live pod, which is why a phase pushes what it has done.
-The one is a release, which keeps it as a bundle in the daemon's database and nowhere else ([Idle release](#idle-release)).
+The one is a release, which takes no pod whose workspace holds such work ([Idle release](#idle-release)).
 On a kept volume, a new pod finds the workspace as the last pod left it, unpushed work included, and its agents are told `LEGION_WORKSPACE_RECREATED=false` ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 
 A near-full disk slows jj's working-copy snapshot before a push, which is why `legion push`'s grant lives `credential.pushTTL` (5 minutes) in place of the usual 60 seconds (`internal/credential/grants.go`;
@@ -8043,7 +8047,7 @@ A launch that resets the volume of a Sandbox that is already `Suspended` writes 
 Each launch writes the mark before it deletes the Sandbox, and it deletes the Sandbox only after the pod is gone.
 So when the launch stops before that delete, for example because its wait for the pod runs out or the daemon stops, the next launch resets the volume on the mark.
 The Sandbox that the reset makes carries no mark.
-A reset loses all the work on the volume that no role pushed, except work that an idle release saved as a bundle, which the new pod restores.
+A reset loses all the work on the volume that no role pushed.
 
 `legion workspace-init fetch` and `legion workspace-init provision` exit 3 for a cause outside the volume, which a new volume does not cure:
 
@@ -8090,8 +8094,6 @@ Have each role push its work first, because the reset deletes all the work on th
 
 Never delete the claim by hand.
 Agent Sandbox then makes a new, empty claim under the live Sandbox.
-That Sandbox is older than a bundle that an idle release saved, so the daemon reads the bundle as work that the volume holds, and drops it.
-The work in that bundle is then lost.
 
 **The move of a volume.**
 A `ReadWriteOnce` volume attaches to one node.
@@ -8119,10 +8121,6 @@ Each role's `$HOME`, its `/tmp` and a test Postgres are not on the volume, so th
 `workspace-fetch` fetches only the difference into the feed that it finds, and `workspace-init` keeps the clone and the workspace that it finds.
 An agent that resumes on a kept volume is told `LEGION_WORKSPACE_RECREATED=false`, because the workspace keeps the creation record of its first pod.
 
-A pod of a kept Sandbox that was made before an idle release saved its bundle gets no bundle, and the daemon drops the bundle, because the volume holds that work.
-A pod on a new volume restores a bundle, as a pod with an ephemeral volume does.
-A new volume is the first volume of a Sandbox, or the volume after a reset or after a change of the disk shape.
-
 **What an agent plants.**
 On a kept volume, what an agent plants reaches the issue's next pod and its agents.
 A file that an agent writes on the volume is there for each later pod of the issue, and so is configuration that starts a program ([A shell on an issue's disk](#a-shell-on-an-issues-disk)).
@@ -8146,12 +8144,12 @@ A phase worker whose phase is open is reminded five minutes after a turn that di
 Each live claim of the pod must also have reported to the daemon, after its last turn, that it runs no background work, and the pod must run the image the daemon's configuration names with every live claim on the daemon's current contract.
 The pod of a root that waits on a person's answer in `awaiting_person` is kept until that answer comes; its children are not.
 A pod held past the idle period is held for one of those reasons, and the daemon records which one.
-One more reason holds a pod that is otherwise idle: a saved bundle of its unpushed work that no pod has restored yet (`bundle_unrestored`, below).
+One more reason holds a pod that is otherwise idle: its workspace holds work that no branch or tag on origin holds, which the release's first act reads (`unpushed_work`, below), or that act could not read the workspace (`workspace_unread`).
 A project's pause holds a pod too, under `paused` or `pause_held` ([Pausing a project](#pausing-a-project)).
 
-The rule changes for one claim: a live Claude Code role in the pod whose registered process runs a plugin that takes no task, a contract below 248 (`supervise.TaskTakeContract`), whose plugin no relaunch can move because it is the image's own (`oldPlugin` and `IdleRelease` in `internal/workflow/idle.go`).
+The rule changes for one claim: a live Claude Code role in the pod whose registered process runs a plugin that takes no task, a contract below 274 (`supervise.TaskTakeContract`), whose plugin no relaunch can move because it is the image's own (`oldPlugin` and `IdleRelease` in `internal/workflow/idle.go`).
 Its pod, where it does not run the configured image, is released without waiting out the idle period and past the image, contract and update-round holds, while every other reason above still holds it, so a role in a turn has its pod released at that turn's end; its pod, where it runs the configured image already, is kept and the claim logged once as an Error, since a release would bring the same plugin back ("Contract discipline" above).
-That release is the three acts below like any other, the bundle saved first, and its role stops name why it was made rather than an idle period.
+That release is the three acts below like any other, the workspace check first, so a pod whose workspace holds work that origin does not hold is kept, and its role stops name why it was made rather than an idle period.
 It runs on the idle release's own tick, so with `idle_minutes: 0` it does not run at all: such a pod waits for its update round, and the operator replaces it sooner at the rollout ("Tasks the worker takes", under [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
 
 The daemon releases a pod for a second reason: no claim of the issue is live at all, which leaves a pod no claim owns.
@@ -8160,13 +8158,16 @@ A claim is live while it is not `failed`, not `retired` and not `suspended`, so 
 The daemon releases that issue's Sandbox once the issue has had no live claim for the same idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default), measured as the newest write to any claim row of the issue.
 This release runs the third act below and no other: it deletes the pod, the disk that pod owns and the issue's Sandbox with the six role Secrets it owns.
 Where the Sandbox owns a kept volume, it deletes the pod and the seven Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-It saves no git bundle and it changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
-The daemon cannot save that work: it reads a workspace only over a role process, and a pod with no live claim runs none.
+It reads no workspace and it changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
+The daemon cannot read that workspace: it reads a workspace only over a role process, and a pod with no live claim runs none.
+It reads the decline of the issue's idle release instead:
+where the last read that could read the workspace found a commit or a change that origin does not hold, and the pod is the one that read was made in, the rule keeps the pod (`unowned_unpushed_work`), since its disk holds that work.
+A start row into that same pod does not end the hold; where the runtime cannot say which pod it holds, a start row after the decline does.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch, except on a kept volume, where it finds the workspace as the stopped roles left it.
 
-Of the reasons that hold such a pod past the idle period, the daemon writes three to its hold records, each under a name of its own:
-a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), and a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`).
-A project's pause adds a fourth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
+Of the reasons that hold such a pod past the idle period, the daemon writes four to its hold records, each under a name of its own:
+a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`), and a decline says the disk holds unpushed work (`unowned_unpushed_work`).
+A project's pause adds a fifth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
 The rule answers six reasons more, which the daemon counts in the per-pass line of its log and writes to no record:
 the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue or its tree root has left the workflow or lingers (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
 `unowned_sandbox_gone` is the word an operator reads most, and it is no fault.
@@ -8180,9 +8181,25 @@ A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinar
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
 The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
 
-A release is three acts, in this order, and the daemon gives it an id (`issue_releases.id`) that its mark, its bundle and the restore report of the pod that puts that bundle back all carry:
+The daemon also closes the pod of a child that has left the workflow while its tree runs on, which neither release takes.
+The child's park or close is its one close:
+it suspends or closes each claim of the child and deletes the child's Sandbox, and nothing of its running tree closes it again.
+An operator's resume, task or retry and the controller's fresh session start a claim without reading the standing of its issue, so a claim of such a child can run again after that close, in a pod built again for it.
+Once that pod has had no turn in progress, no delivery waiting for a role of it and no background work reported for the idle period, the idle pass finishes the close (`workflow.LeftPodClose`):
+it suspends each live claim for the daemon, which keeps the claim's session, and suspends the issue's Sandbox, which deletes it with the pod and the disk.
+Where a live claim stands, the pass first queues the workspace check alone, through that role's shim, as the idle release reads it:
+a read that finds nothing origin does not hold queues the stops and the suspension, and a read that finds work, or fails, records a decline and keeps the pod under `unpushed_work` or `workspace_unread`, with the role told once, as below.
+While that check waits on the lane the pass holds the pod as its own act under way (`releasing`), which no record counts.
+The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, with no read, since no role runs to read through, which no pass decided before;
+it keeps such a pod where a decline says its disk holds work that origin does not hold, as the release of a pod no claim owns keeps one (`unowned_unpushed_work`).
+A child whose Sandbox the runtime does not hold, which is nearly every such child, is passed over with no line and no record.
+A pause keeps the pod (`paused`, `pause_held`), and so do a stopped claim that still records a process (`unowned_claim_process`) and an operator's suspension (`unowned_operator_suspended`).
+Every other pod of an issue that has left the workflow, or whose tree lingers, is held as `tree_not_live` while its close is still to come or still running:
+a lingering tree is closed when its linger ends, a root that has left the workflow has had its tree's close already or belongs to the operator, an open look of the issue's production check ends with a close of its own, and a role stop or a Sandbox suspension of the issue that is still queued is that close at work.
 
-- the workspace's unpushed work is saved as a git bundle in the daemon's own database (below);
+A release is three acts, in this order, and the daemon gives it an id (`issue_releases.id`) that its mark carries:
+
+- the release reads the workspace through a live role's shim (the `workspace-work` frame, the read a pod update round makes too), and declines unless the workspace holds nothing that no branch or tag on origin holds (below);
 
 - each live claim of the pod is suspended with a source of its own, `released` (`supervise.SuspendedByReleased`).
   That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the operator's retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
@@ -8269,29 +8286,45 @@ A start the daemon queues for a phase worker itself does as the first does: a ph
 A start the daemon queues for a child's own architect does as the first does too: the child's first phase start queues one, and each later phase start of the child queues one for an architect that failed, the move into `accepting` among them (`childArchitectStart` and `reviveArchitect`, `internal/workflow`).
 Such a release arms no backstop, and it leaves the issue's wake marks and the open backstops of an earlier release as it found them.
 
-What the saved bundle holds is every visible commit the remote does not already hold, on any head, the working copy's own change, and each local bookmark that points at such a commit.
-A commit a remote bookmark or a tag reaches is left out: the new pod's workspace fetch brings it back, and a clone of this repository holds thousands of tags, each of which jj makes a visible head.
-Its base commits are the ones a new pod's workspace fetch already has: the default branch and the issue's branch on the remote.
-It never reaches GitHub.
-sjawhar/legion is public and a working copy holds every file that is not ignored, so a save to a branch would publish files no agent chose to push and could start CI; the daemon's database is private and starts nothing.
-A bundle above 40 MiB, or a save that fails, stops the release, and the daemon records that reason.
-Only the pod's own launcher receives the bundle, over the launcher's authenticated connection, in `launcher_bundle` frames each under the 1 MiB frame limit (`shimwire.MaxFrameBytes`), and the launcher restores it in the roles container before any role starts, never in the token-holding `workspace-fetch` container.
-The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when a wake cancels the release.
-A bundle is offered to one pod and one only: the first pod of the issue that is not the pod the work came off to ask for it, which in an ordinary release is the pod the teardown's next launch made.
-That pod is sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
-A pod of a kept Sandbox that was made before the save is sent no bundle, and the daemon drops the bundle, because the volume holds that work, so no `bundle_unrestored` hold keeps that pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-A restore that fails, and a refusal, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
-The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, checks it with `git bundle list-heads <KEY>.bundle`, and unbundles it into any clone of the repository, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
-A bundle stays through a linger and a park, and goes when its issue is done or its tree closes.
-A release of a pod no claim owns neither takes a bundle nor deletes one, so a bundle an earlier release of the same issue saved stays where it is, and the issue's next pod is offered it as before.
-The `bundle_unrestored` hold does not keep such a pod either, since that release saves no bundle over the one the database holds.
-On an ephemeral disk nothing else is kept: `$TMPDIR` and its contents, every ignored file, every file jj does not snapshot (above its `snapshot.max-new-file-size`), each role's home with the Oh My Pi state and `local://` files under it, a test Postgres with its databases, and the workspace's CodeGraph index all go with the pod.
+What the read counts is every commit under a working copy or a local bookmark that no remote branch or tag reaches, and a change in the working copy (`workspaceWorkRevset`, `internal/shim/workspace_work.go`).
+A commit with no change and no description counts for nothing, and so does a commit that a remote branch or tag reaches:
+it is on GitHub, and the next pod's workspace fetch brings it back.
+So the heads of branches the remote deleted after their merge, which Legion's clones keep visible (`git.abandon-unreachable-commits = false`), and `main`'s commits newer than the issue's branch read as nothing unpushed.
+The one work the read does not count is a commit that no working copy and no local bookmark reaches, such as a side head a role left with `jj new <base>` over its own change, so a release can take such a commit;
+counting every visible head would count the deleted branches above.
+The wake task of a release and the plugin's recreated-workspace notice say so in the same words (`internal/workflow/workspace-after-release.txt`).
+The read's answer names the working-copy commit and the commits it found, and the daemon takes an answer only where each is 40 lowercase hexadecimal digits:
+the ids come from the pod's jj, and the daemon writes them into the hold record and the role's message.
+A read that finds work declines the release:
+the daemon cancels it before any role stops, so the pod stays as it was with the work in it, and the role the release read through
+— the worker of the issue's open phase where it is live, else the first live role
+— gets one Envoy message on its role topic naming the commits and the change and saying that the release waits for its push.
+The daemon pushes nothing on a role's behalf and keeps no copy of the workspace.
+A read that fails declines the release too, since it cannot show the workspace holds nothing, and tells nobody.
+The decline is recorded in `idle_release_declines` in the cancel's own transaction, with the hold `unpushed_work` or `workspace_unread`, the work the read found and the pod it read.
+While it stands, every idle pass holds the pod under that reason and marks no release, writes no outbox row, asks no shim and sends no second message.
+It ends when a role of the issue starts a turn after the last read began (`claims.last_turn_start` against `checked_at`, so a turn that starts while the read runs counts), when a role process is started again, or when the runtime holds another pod for the issue than the one the read was made in (a relaunch that rebuilt the pod);
+a `workspace_unread` decline also ends an hour after the last read.
+A read that finds nothing origin does not hold deletes the decline, so no rule keeps the pod for work that read found gone.
+The next pass after its end that finds the pod idle again reads the workspace once more.
+A read that finds the same work as the decline on record, through the same role (the same working-copy commit, count of commits and change), keeps the decline's moment, `declined_at`, and tells nobody:
+the role was told already, and the turn its message starts is the turn that allowed this read, so the message, the turn and the read do not come back every idle period.
+A role that takes over, such as the next phase's worker, is told once.
+A read that fails keeps the work the read before it found, and the role it told.
+A whole turn that starts after the release's mark cancels the release at its workspace check, at a role stop or at the teardown:
+the mark records the newest turn of the pod's claims (`issue_releases.turn_start`), and a later one is the pod given work since.
+The close of a left pod likewise stops no role after a clean read where a claim started a turn after the pass that queued its check: the check carries that pass's newest turn start, so a turn that began before the read and ended while it ran holds the close too.
+Each `suspend` the close then queues, and its Sandbox suspension, carry that turn start too, so a role whose turn starts after the check decided and before the lane runs its stop is not stopped: the stop finishes without acting, the Sandbox suspension finishes without acting as well, so no row of the close is left to delete the disk once that role stops by another route, and the next idle pass decides the close again with a read of its own.
+The check's own row finishes in the transaction that records what the check decided, the close's stops or a decline, fenced on the run's lease: a run whose lease another lane took writes nothing, and a check whose commit reply is lost is not run again, where a second read would come after the stop took the role's shim away, and would decline a close already done.
+Before this release, the daemon saved the workspace's unpushed work as a git bundle in its database and restored it into the next pod;
+nothing reads or writes such a bundle now ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)).
+On an ephemeral disk nothing else is kept:
+`$TMPDIR` and its contents, every ignored file, every file jj does not snapshot (above its `snapshot.max-new-file-size`), each role's home with the Oh My Pi state and `local://` files under it, a test Postgres with its databases, and the workspace's CodeGraph index all go with the pod.
 A kept volume keeps the parts of that list that are on the volume: `$TMPDIR`, the ignored files, the files jj does not snapshot and the CodeGraph index.
 Each role's home and a test Postgres are not on the volume, so they go with the pod there too.
-A restore whose base commit is gone writes a notice that names what it could not bring back.
 
-This is the release's own form of [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod), which stays the operator's procedure for a pod the daemon is not releasing.
-The two answer the same question differently because one runs inside the pod and the other outside it: the shim builds the bundle as the role's own process, with the configuration and credentials that role already has, while an operator's `kubectl exec` shell would read every role's credentials and obey configuration any role can write, which is why that procedure runs `tar` alone.
+The release carries nothing out of a pod: a pod whose workspace holds work that origin does not hold stays, and [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) stays the operator's procedure for a pod that must go with such work in it.
+The release's read runs as a role's own process, with the configuration that role already has, where an operator's `kubectl exec` shell would read every role's credentials and obey configuration any role can write, which is why that procedure runs `tar` alone.
 The release pushes nothing and brings no credential in.
 
 One setting governs both periods:
@@ -8320,10 +8353,17 @@ The daemon keeps a record of each release, each resume and each pod held past th
 A role of an issue pod reads the deployment's records with the `legion` tool's `read_release_records`, whose one argument `since` is the RFC 3339 instant its window starts at.
 The plugin posts them on `POST /legion/v1/claims/release-records` with the claim token and secret its registration left in the session's own process, so no role handles that credential and nothing writes it to disk; the route takes it in the body because a query string would put the secret in every proxy and access log between the pod and the daemon.
 The op answers every release, resume and hold of the window, oldest first, and the counts a report is written from over them; what those are is in the tool's own description, which is where they are written out.
-A release of a pod no claim owns writes a release record of its own, with no role in it and no bundle bytes, and `read_release_records` reports it with the rest.
+A release of a pod no claim owns writes a release record of its own, with no role in it, and `read_release_records` reports it with the rest; every release record this daemon writes has `bundleBytes` 0, which only a release before the workspace check filled.
 No operator claim route reports it, because that release changes no claim, so the record and the daemon's log are the whole of what an operator reads about it.
 The log carries one line that ends each such release, which names the issue, the Sandbox and the state of each claim of the issue.
 It carries one more line for each pass that decided at least one pod, naming how many pods that pass decided, how many it released and how many it held for each reason.
+
+Each issue of `GET /legion/v1/state` carries the standing hold of its pod as `podHold`, so a reader of the state learns why a quiet pod still runs without the pod's records or the database.
+It is `{reason, firstAt, at, detail}`: the rule's name for the hold, as the hold records spell it; the first pass of the hold's streak; the newest pass; and the hold's detail, cut to its first 200 characters and absent when the record holds none.
+A streak stands until a later pass of its pod ends it, so a hold whose `at` is long past is one that no pass has read since.
+The key is absent when no hold stands on the pod: a pod the rule has not held, a pod it released, a pod whose streak a later pass ended, and a pod held for a reason the daemon writes to no record.
+The daemon reads the holds from `pod_holds` in the state's own transaction, in one statement for the whole project.
+A caller whose plugin declares a contract below 246 is served every issue without the key (`withoutPodHold` in `internal/api/shaping.go`).
 
 #### Rolling back idle release
 
@@ -8334,12 +8374,10 @@ An earlier daemon (`legion-v19.0.0`, or any release at daemon API contract 47 or
 
 - its stranded-claim report lists every released phase worker of a running tree, since that report passes over a suspended claim only for a `ByRule` source (`stranded.go` at that tag), so an operator reading it after the rollback meets one line per released claim;
 
-- its launcher knows neither `launcher_bundle` frame (they arrive at daemon API contract 48), so no pod it starts restores a saved bundle, and the work in that bundle reaches no workspace again.
+- its launcher knows neither `launcher_bundle` frame (they arrive at daemon API contract 48), so no pod it starts restores a saved bundle.
 
-**Every released pod's unpushed work is lost in the rollback unless this release pushes it first.**
-That work is in the bundle and nowhere else, and no role can push it while its pod is gone, so the push needs a pod, which only this release can bring back.
-While this release still runs, list the released claims (`legion claims list --json`), resume each one (`legion claims resume --claim <token>`, or any wake of the list above), wait for each pod to be Ready and its restore to land, and ask each role with work in hand, through Dispatch, to push it to `legion/<KEY>`, confirming each push as the cutover does ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk), step 1).
-For an issue whose push you cannot confirm, carry its work out of the resumed pod before you pin the earlier image ([Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod)).
+A release since the workspace check (migration `20261123050533`) took only pods whose workspace held no commit on a working copy or a bookmark that origin does not hold and no working-copy change, so a pod it released holds no such work to lose.
+A pod an earlier release took may have left its work in a saved bundle; such a bundle is gone with `workspace_bundles` once this release has migrated ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace) says how to copy one out first).
 
 Then stop this release's daemon, and leave the claims in a state the earlier release acts on:
 
@@ -8347,17 +8385,16 @@ Then stop this release's daemon, and leave the claims in a state the earlier rel
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 update claims set suspended_by = 'daemon' where state = 'suspended' and suspended_by = 'released';
-delete from workspace_bundles;
 commit;
 SQL
 ```
 
-It prints `UPDATE <n>` and `DELETE <n>`; a rerun prints `UPDATE 0` and `DELETE 0`.
+It prints `UPDATE <n>`; a rerun prints `UPDATE 0`.
 The `update` hands each released claim to the earlier release's own resume by rule, which starts a claim that owns its issue's current phase at the next boot and leaves the rest suspended until their next start, each on its own session.
-The `delete` removes the saved bundles, which are whole copies of a workspace in a table the earlier release never reads: leave none behind.
+A release before the workspace check had this block delete its saved bundles from `workspace_bundles` too; that table is gone since `20261123050533`, whose way back makes it again, empty.
 
 The database needs no restore for this step.
-This release's migrations are forward-only and drop nothing: `20261101201850_claim_suspended_by_released.up.sql` only widens the `claims_suspended_by_check` constraint to allow `released`, which the earlier release never writes, and the bundle and record tables stay as tables it never reads.
+This release's migrations change no table the earlier release reads, beyond one: `20261101201850_claim_suspended_by_released.up.sql` only widens the `claims_suspended_by_check` constraint to allow `released`, which the earlier release never writes, and `20261123050533_idle_release_keeps_no_workspace.up.sql` drops `workspace_bundles`, whose way back is run first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)).
 So a later upgrade back to this release needs no migration of its own, and the `schema_version` rows are left as they are.
 Nothing in the namespace is deleted for this rollback: a released issue has no Sandbox and no pod, and a resumed one has the pod this release gave it, which the earlier release treats as any other issue pod.
 
@@ -8367,7 +8404,7 @@ Roll the listener back with the daemon, or set `idle_minutes: 0` and wait out th
 This section adds the released claims and the saved bundles to a rollback and replaces no step of another: this release changes neither the pod layout nor the volume layout, so [Rolling back this release](#rolling-back-this-release) and [Rolling back the upgrade](#rolling-back-the-upgrade) stand as written for the releases they name.
 A release of a pod no claim owns adds one step of its own, for such a release in flight when the daemon goes back.
 Its mark carries the rule that wrote it (`issue_releases.kind`) and no build before this change reads that column (`readReleaseMark`, `internal/store/issue_release.go`), so an earlier daemon runs the idle teardown over it:
-it records an earlier release's bundle bytes as this release's, it logs that the issue's roles resume in the same sessions although every claim of the issue is stopped, and it arms backstops, which deletes every wake mark and every open backstop of the issue and arms at most one again, for the open phase role alone.
+it logs that the issue's roles resume in the same sessions although every claim of the issue is stopped, and it arms backstops, which deletes every wake mark and every open backstop of the issue and arms at most one again, for the open phase role alone.
 A claim an earlier idle release left `released` under any other role then loses its backstop and gets none in its place, so only a delivery, a start or an operator's resume brings that claim back.
 The window is the gap between the pass that marks such a release and its teardown row running, which is seconds, so leave no release of this kind in it:
 let the releases in flight finish before you stop this release's daemon, and then, with the daemon stopped, clear any mark still standing.
@@ -8381,8 +8418,38 @@ SQL
 ```
 
 It prints `DELETE <n>`, and `DELETE 0` once every such release has finished.
-The teardown row of a mark this deletes finds no mark and finishes without acting, which costs nothing: that release suspends no claim and saves no bundle, so the pod it would have taken stands, and the earlier release has no rule that releases a pod no claim owns.
+The teardown row of a mark this deletes finds no mark and finishes without acting, which costs nothing: that release suspends no claim, so the pod it would have taken stands, and the earlier release has no rule that releases a pod no claim owns.
 An issue whose pod this rule has already released stands with no Sandbox and no pod, which the earlier release builds again at the next start of a claim of that issue.
+
+#### Rolling back the release that keeps no saved workspace
+
+Migration `20261123050533_idle_release_keeps_no_workspace.up.sql` drops `workspace_bundles`, where the release before saved a released pod's unpushed work, adds `idle_release_declines` and adds `issue_releases.turn_start`.
+Before the upgrade, drain the releases in flight, and copy out every saved bundle worth keeping:
+a release that the earlier daemon marked and whose save ran, but whose teardown had not run, would take its pod after the upgrade with its bundle dropped.
+With the earlier daemon still running, wait until `select issue from issue_releases` prints no row, then stop it.
+For each row of `select issue, release_id, size_bytes from workspace_bundles`, write the bundle out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, check it with `git bundle list-heads <KEY>.bundle`, and fetch it into a clone of the repository; the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
+Then tell the roles of each such issue, through Dispatch, where their copied work is: a role the earlier daemon released wakes on this release with no bundle restored, and its wake task and its plugin's notice say only that an idle release made by a release before this one lost the work it had not pushed.
+
+The release before reads and writes `workspace_bundles` at every idle pass and every role start, so a rollback to it runs this block first, with every daemon of the database stopped, before the earlier image is pinned.
+A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`) is no row the release before can read, and nor is that close's `suspend` or `issue_suspend`, whose payload names `turnStart`, so let the outbox run dry of them first: `select count(*) from outbox where kind = 'issue_bundle' or payload ? 'turnStart'` prints 0.
+It is the last paragraph of the migration's header, and the two say the same statements:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+create table public.workspace_bundles (issue text primary key, bundle bytea not null, size_bytes bigint not null, at timestamptz not null, head text not null, tips jsonb not null default '[]'::jsonb, bookmarks jsonb not null default '{}'::jsonb, release_id bigint not null check (release_id > 0), attempt_pod_uid text, attempt_at timestamptz, source_pod_uid text not null check (source_pod_uid <> ''), attempt_outcome text, constraint workspace_bundles_attempt_whole check ((attempt_pod_uid is null) = (attempt_at is null)), constraint workspace_bundles_attempt_outcome check (case when attempt_pod_uid is null then attempt_outcome is null else attempt_outcome in ('sent', 'refused_older') end));
+drop table public.idle_release_declines;
+alter table public.issue_releases drop column if exists turn_start;
+delete from public.schema_version where version = 20261123050533;
+commit;
+SQL
+```
+
+It makes `workspace_bundles` again, empty and in the shape the release before reads, drops `idle_release_declines` and `issue_releases.turn_start`, which the release before never reads, and deletes the migration's version row, so the next start of this release runs the migration again.
+Every daemon that shares the database moves together, on the way up and on the way back, since these tables hold every project's rows.
+A bundle the earlier daemon saves after the rollback is dropped by that roll forward, so copy it out first as above.
+A pod this release started still runs a launcher with no restore: the earlier daemon's `launcher_bundle` slices close that launcher's connection, its start fails once, and the retry starts the role with the workspace the pod has, since the earlier daemon spent the bundle's one attempt on the first send.
+An earlier daemon's `bundle-workspace` frame reaches this release's shim as an unknown command and is refused, so that daemon cancels the release and keeps the pod.
 
 ### Pausing a project
 
@@ -8492,9 +8559,9 @@ These rules pass over it:
   An ask that was queued before the pause and that the pause held runs after the resume, and where the role it asks is still stopped, the claim's machine refuses the ask before any publish (`UpdateAskSuspended`, `supervise.Machine.PublishUpdateAsk`), so the ask wakes nothing and the round asks that role again once its agent is ready.
   A role of the pod that nothing wakes takes no turn before the round's bound.
 
-An idle release that was under way when the pause began is decided at its save step (`store.IssueReleaseSave`).
-A release that had not saved its workspace by then is cancelled and keeps its pod, whatever had reached its roles first.
-A release that saved before the pause finishes as it does while the project runs, and its pod goes.
+An idle release that was under way when the pause began is decided at its workspace check (`store.IssueReleaseCheck`).
+A release whose workspace check had not run by then is cancelled and keeps its pod, whatever had reached its roles first.
+A release whose workspace check ran before the pause finishes as it does while the project runs, and its pod goes.
 A wake that cancels a release while the project is paused queues no resume: the daemon records each role that the release had stopped as stopped by the pause.
 
 A hold ends in one of three ways, and its record says which (`project_pause_pod_holds.ended_why`):

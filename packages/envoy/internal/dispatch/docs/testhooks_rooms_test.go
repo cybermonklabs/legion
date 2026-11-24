@@ -15,6 +15,7 @@ import (
 // closed nothing (a refusal for the room's peers, a document no room holds), and records the time
 // of each settlement-resumption pass that armed a document's owed settlement.
 func TestRoomCountersCountServiceClosesAndSettlementResumptions(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")

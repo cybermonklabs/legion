@@ -40,16 +40,23 @@
 -- 20261121170714_dispatch_issue_applied_seq runs between the two as well, before that one): it
 -- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
--- this file again. The release before this one, contract 232 (the one whose
--- internal/api/version.go carries the entry for INFRA-4508, cybermonklabs/legion#5271's
--- httpStatus and unprompted of claims/turn-outcome) as main releases it after #5303, whose newest
--- migration is #5303's 20261123224717_members_owed, carries 20261119203047 and not the task
--- numbers, and then reads the function it wrote; a rollback to a release before #5303 also
--- crosses 20261123224717, which needs a step of its own: the way back in its own header, its last
--- paragraph, run first, before this block, with every daemon of the database stopped, which drops
--- issues.members_owed, a column this block does not read, and deletes its version row; a
--- rollback to contract 228 or before crosses 232, which takes no step of its own beyond pinning
--- the worker image with the daemon: it adds no migration and no legion.yaml key; a
+-- this file again. The release before this one, contract 246 (the one whose
+-- internal/api/version.go carries the entry for the pod hold, cybermonklabs/legion#4960's podHold
+-- of GET /legion/v1/state) as main releases it after #4869, whose newest migration is still
+-- #5303's 20261123224717_members_owed, carries 20261119203047 and not the task numbers, and then
+-- reads the function it wrote; a rollback to contract 232 or before crosses 246, which takes no
+-- step of its own beyond pinning the worker image with the daemon, since it adds no migration and
+-- no legion.yaml key, and it, like any rollback to a release before #4869, crosses 20261123050533,
+-- which needs a step of its own: the way back in its own header, its last paragraph
+-- (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace"), run before this
+-- block, with every daemon of the database stopped, which makes workspace_bundles again, empty,
+-- drops idle_release_declines and issue_releases.turn_start, which this block does not read, and
+-- deletes its version row; a rollback to a release before #5303 also crosses 20261123224717,
+-- which needs a step of its own: the way back in its own header, its last paragraph, run first,
+-- before this block, with every daemon of the database stopped, which drops issues.members_owed,
+-- a column this block does not read, and deletes its version row; a rollback to contract 228 or
+-- before crosses 232, which takes no step of its own beyond pinning the worker image with the
+-- daemon: it adds no migration and no legion.yaml key; a
 -- rollback to contract 220 or before crosses 228 and takes that release's steps, which delete
 -- the project's unsent intake-gave-up controller notices and its open failures and touch nothing
 -- this block reads (docs/kubernetes.md, "Rolling back the release that gives up on intake

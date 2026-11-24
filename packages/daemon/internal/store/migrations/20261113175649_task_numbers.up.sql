@@ -217,7 +217,7 @@
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
 -- after this one builds on the fourteen columns it drops whose way back has not already run, and
--- at this release twenty-six of the twenty-seven recorded after it touch none of them:
+-- at this release twenty-seven of the twenty-eight recorded after it touch none of them:
 -- 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
@@ -257,6 +257,9 @@
 -- cleared_pull_requests and pull_request_settled_heads, and rewrites no kind list,
 -- 20261121170714_dispatch_issue_applied_seq (cybermonklabs/legion#4903) adds
 -- dispatch_issues.applied_seq at its default, 0, and rewrites no kind list,
+-- 20261123050533_idle_release_keeps_no_workspace (cybermonklabs/legion#4869) drops
+-- workspace_bundles and adds the table idle_release_declines and the column
+-- issue_releases.turn_start, and rewrites no kind list,
 -- 20261123165139_experiment_assignment_plan (cybermonklabs/legion#4930) adds
 -- experiment_assignments.plan at its default, '', and rewrites no kind list,
 -- 20261123212127_claim_start_failure_after_ready (cybermonklabs/legion#5278) empties
@@ -271,22 +274,32 @@
 -- writes #3995's function design_news_told_in again, reading pending_task_deliveries.turn_started,
 -- which this block drops, so its way back, the last paragraph of its header, runs before this
 -- block and writes #3995's text of the function back; every rollback of this release starts with
--- it, after the way back of 20261123224717 and the step of 20261123165139 where the rollback
--- crosses those too.
--- 20261123212127_claim_start_failure_after_ready, above both, needs nothing: it carries no way
--- back, since an earlier release reads the start failures it emptied as none recorded.
--- 20261123224717_members_owed, above all three, carries a way back of its own, the last paragraph
+-- it, after the way back of 20261123224717, the step of 20261123165139 and the way back of
+-- 20261123050533 where the rollback crosses those too.
+-- 20261123050533_idle_release_keeps_no_workspace, above both, carries a way back of its own, the
+-- last paragraph of its header (docs/kubernetes.md, "Rolling back the release that keeps no saved
+-- workspace"), which makes workspace_bundles again, empty, drops
+-- idle_release_declines and issue_releases.turn_start and deletes its version row, with every
+-- daemon of the database stopped; it reads nothing 20261122160000's way back or this block drops
+-- or writes back.
+-- 20261123212127_claim_start_failure_after_ready, above all three, needs nothing: it carries no
+-- way back, since an earlier release reads the start failures it emptied as none recorded.
+-- 20261123224717_members_owed, above all four, carries a way back of its own, the last paragraph
 -- of its header, which drops issues.members_owed and deletes its version row, with every daemon of
 -- the database stopped; it reads nothing 20261122160000's way back or this block drops or writes
--- back. The release before this one carries the other twenty-six: it is contract 232, the one
--- whose internal/api/version.go carries the entry for INFRA-4508, cybermonklabs/legion#5271's
--- httpStatus and unprompted of claims/turn-outcome, as main releases it after #5303, its newest
--- migration #5303's 20261123224717_members_owed, so the rollback to it runs 20261122160000's
--- way back and this block and leaves the twenty-six standing. A rollback to a release before
--- #5303 also crosses 20261123224717_members_owed, and so runs that migration's own way back first,
--- before 20261122160000's. A rollback to contract 228, or to any release before it, crosses
--- contract 232, which takes no step of its own beyond pinning the worker image with the daemon:
--- it adds no migration and no legion.yaml key. A rollback to contract 220, or to any
+-- back. The release before this one carries the other twenty-seven: it is contract 246, the one
+-- whose internal/api/version.go carries the entry for the pod hold, cybermonklabs/legion#4960's
+-- podHold of GET /legion/v1/state, as main releases it after #4869, its newest migration still
+-- #5303's 20261123224717_members_owed, so the rollback to it runs 20261122160000's way back and
+-- this block and leaves the twenty-seven standing. A rollback to contract 232, or to any release
+-- before it, crosses contract 246, which takes no step of its own beyond pinning the worker image
+-- with the daemon, since it adds no migration and no legion.yaml key, and it, like any rollback to
+-- a release before #4869, crosses 20261123050533_idle_release_keeps_no_workspace, and so runs that
+-- migration's own way back before 20261122160000's. A rollback to a release before #5303 also
+-- crosses 20261123224717_members_owed, and so runs that migration's own way back first, before
+-- 20261122160000's. A rollback to contract 228, or to any release before it, crosses contract
+-- 232, which takes no step of its own beyond pinning the worker image with the daemon: it adds no
+-- migration and no legion.yaml key. A rollback to contract 220, or to any
 -- release before it, crosses contract 228, and so also takes that release's steps
 -- (docs/kubernetes.md, "Rolling back the release that gives up on intake messages"), which, with
 -- the daemon stopped, delete the project's unsent intake-gave-up controller notices and its open
@@ -335,7 +348,10 @@
 -- so every database records them before it, and neither touches the fourteen columns. A rollback
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
--- them: the way back in the header of 20261123224717_members_owed first, #5303's, which drops
+-- them: the way back in the header of 20261123050533_idle_release_keeps_no_workspace first,
+-- #4869's, which makes workspace_bundles again, empty, drops idle_release_declines and
+-- issue_releases.turn_start and deletes its version row, with every daemon of the database
+-- stopped; the way back in the header of 20261123224717_members_owed, #5303's, which drops
 -- issues.members_owed and deletes its version row, with every daemon of the database stopped;
 -- #5278's 20261123212127_claim_start_failure_after_ready, which needs nothing, since it carries
 -- no way back and an earlier release reads the start failures it emptied as none recorded;
@@ -389,13 +405,14 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those twenty-six that are
+-- of its kind behind; contract 146's block, which reverses the four of those twenty-seven that are
 -- the root architect's entry (all but the six kind lists, the five other migrations of contract
 -- 152, contract 160's 20261116144907_claim_sessions, contract 178's 20261115194357_project_pause,
 -- contract 188's 20261120055717_dispatch_issue_value_sequences, contract 189's
 -- 20261120042902_claim_agent_resume_generation, contract 205's
 -- 20261120012547_set_back_observed_seq, contract 228's 20261120144241_intake_failures, whose
--- tables stand, #4903's 20261121170714_dispatch_issue_applied_seq,
+-- tables stand, #4903's 20261121170714_dispatch_issue_applied_seq, #4869's
+-- 20261123050533_idle_release_keeps_no_workspace, whose own way back has run,
 -- contract 220's 20261123165139_experiment_assignment_plan, contract 219's
 -- 20261117034837_issue_plans, whose own way back has run, #5278's
 -- 20261123212127_claim_start_failure_after_ready, which carries none, #5303's

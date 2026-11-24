@@ -14,7 +14,6 @@ package shim
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -222,7 +221,7 @@ type shim struct {
 	started time.Time
 
 	// commands is what every git and jj the shim starts builds its budget on (runAdoption,
-	// runBundle), each keeping a budget of its own on top of it. Each of those commands
+	// readWorkspaceWork), each keeping a budget of its own on top of it. Each of those commands
 	// runs in a process group of its own now (internal/procgroup), which is a group the SIGHUP a
 	// tmux kill-pane gives every process of the pane does not reach, so the shim's own end is what
 	// passes that stop on: a command left on context.Background() runs on against a clone every
@@ -379,7 +378,7 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -393,9 +392,6 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.AdoptWorkingCopy:
 		s.answer(func() { s.adopt(f) })
-		return
-	case shimwire.BundleWorkspace:
-		s.answer(func() { s.bundleWorkspace(f) })
 		return
 	case shimwire.WorkspaceWork:
 		s.answer(func() { s.workspaceWork(f) })
@@ -560,16 +556,16 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 // chunkHold is the rpc_chunk sequence of OMP's that the pump is reading — a frame over the line
 // limit, such as a long turn's agent_end — held until its last chunk is read and then sent to the
 // outbox as one frame. So a connection that breaks under it leaves the whole sequence, from its
-// chunk 0, for the next, and nothing the shim sends of its own (a bundle result's sequence,
-// toDaemonChunked) lands between two of its chunks. A line that does not continue the sequence —
-// one that is not a chunk, a chunk at a place the daemon's reader refuses (shimwire's
-// RPCChunk.Placement, the check that reader makes first: an id empty or over its bound, a count
-// under two or over the most a sequence may declare, an index under zero or at or past its count),
-// a chunk of another sequence, or an index that is not the next — sends what is held first, as one
-// frame, and so does the pump's end: the daemon's reader drops that broken sequence as it would
-// have, and nothing changes order. The first two go alone after it, as every line went before the
-// pump held sequences. So the pump holds one sequence at most, which OMP writes back to back, and
-// no more of it than a sequence may declare, each line under the line limit.
+// chunk 0, for the next, and nothing the shim sends of its own lands between two of its chunks. A
+// line that does not continue the sequence — one that is not a chunk, a chunk at a place the
+// daemon's reader refuses (shimwire's RPCChunk.Placement, the check that reader makes first: an id
+// empty or over its bound, a count under two or over the most a sequence may declare, an index
+// under zero or at or past its count), a chunk of another sequence, or an index that is not the
+// next — sends what is held first, as one frame, and so does the pump's end: the daemon's reader
+// drops that broken sequence as it would have, and nothing changes order. The first two go alone
+// after it, as every line went before the pump held sequences. So the pump holds one sequence at
+// most, which OMP writes back to back, and no more of it than a sequence may declare, each line
+// under the line limit.
 type chunkHold struct {
 	out   *outbox
 	lines [][]byte
@@ -743,39 +739,6 @@ func (s *shim) finish(code int, err error) {
 	})
 }
 
-// toDaemonChunked sends a frame that may be larger than one line: under the limit it is one line,
-// and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks), handed
-// to the outbox as one frame so it reaches a connection whole from its chunk 0 or waits whole for
-// the next, as the pump hands over OMP's own sequences (chunkHold). The bundle result is this
-// shim's one frame that can be: everything else it sends of its own fits a line.
-func (s *shim) toDaemonChunked(frame shimwire.Frame) {
-	line, err := json.Marshal(frame)
-	if err != nil {
-		s.log.Printf("[worker-shim] could not encode a %s frame: %v", frame.FrameType(), err)
-		return
-	}
-	if len(line) < shimwire.MaxFrameBytes {
-		s.out.send(line)
-		return
-	}
-	chunks, err := shimwire.SplitChunks(rand.Text(), line)
-	if err != nil {
-		s.log.Printf("[worker-shim] could not chunk a %s frame of %d bytes: %v", frame.FrameType(), len(line), err)
-		return
-	}
-	lines := make([][]byte, len(chunks))
-	for i, chunk := range chunks {
-		encoded, err := json.Marshal(chunk)
-		if err != nil {
-			s.log.Printf("[worker-shim] could not encode an rpc_chunk frame: %v", err)
-			return
-		}
-		lines[i] = encoded
-		chunks[i] = shimwire.RPCChunk{} // encoded carries its data now, so the chunk's copy can go
-	}
-	s.out.send(lines...)
-}
-
 // envValue is name's value in env, the last assignment winning as it does for a process started
 // with env; empty when env assigns none.
 func envValue(env []string, name string) string {
@@ -860,11 +823,11 @@ func summarize(line []byte, typ string) string {
 // ahead of anything newer — when the next connection is acked (createShimBridge's forward and
 // onConnect, worker-shim.ts).
 //
-// A frame is one line, or the whole rpc_chunk sequence of a frame too large for one: the shim's
-// own (toDaemonChunked) or OMP's (chunkHold). The outbox moves frames, never part of one: the
-// daemon's reader reassembles a sequence only from its chunk 0 on one stream, so a sequence is
-// written, held, replayed and dropped whole. One a connection breaks under waits from its chunk 0
-// for the next, and the part the broken connection carried is its reader's to drop.
+// A frame is one line, or the whole rpc_chunk sequence of one of OMP's frames too large for one
+// line (chunkHold). The outbox moves frames, never part of one: the daemon's reader reassembles a
+// sequence only from its chunk 0 on one stream, so a sequence is written, held, replayed and
+// dropped whole. One a connection breaks under waits from its chunk 0 for the next, and the part
+// the broken connection carried is its reader's to drop.
 //
 // What the backlog dropped since a connection last took it whole is what the next hello says
 // (whole, shimwire.Hello2.BacklogWhole), and a connection whose hello said it dropped nothing is

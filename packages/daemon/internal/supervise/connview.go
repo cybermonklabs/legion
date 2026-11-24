@@ -217,7 +217,7 @@ func (m *Machine) reconnectFromClose() {
 	if a, armed := m.timers[TimerRegistration]; armed && !a.due.Before(due) {
 		return
 	}
-	m.arm(TimerRegistration, max(due.Sub(m.deps.Clock.Now()), 0), "")
+	m.armAt(TimerRegistration, due, "")
 }
 
 // armReconnectForTask arms the reconnect deadline whole from now over a pending task the claim's

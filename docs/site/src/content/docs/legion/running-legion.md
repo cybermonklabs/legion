@@ -1354,7 +1354,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
    first move back after the upgrade.
 
-   **The first upgrade to a release where a worker takes its task** (daemon API contract 248)
+   **The first upgrade to a release where a worker takes its task** (daemon API contract 274)
    goes out in this order, so nothing is used before it exists: first the `envoy-infra` release
    whose grants carry the task bucket `legion_tasks` (the daemon's user may create, update, read,
    write and purge it, the listener's user may only read it, and no session user gets anything of
@@ -1370,10 +1370,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    ([Observe](#observe)). A worker whose plugin predates the release takes no task, so the daemon
    moves it: a worker it can relaunch is relaunched onto the current plugin even inside the update
    round the new image opens, and a role on Claude Code, whose plugin only its pod's image moves,
-   has its pod released by the idle release once nothing else holds it, its unpushed work saved
-   first. Beside that, the operator restarts two kinds of worker the daemon cannot move: a
-   controller an operator started (stop `legion controller start` and run it again from this
-   release, which the daemon's refusal of the old plugin asks for anyway), and every worker of a
+   has its pod released by the idle release once nothing else holds it and its workspace holds no
+   work that origin does not hold. Beside that, the operator restarts two kinds of worker the
+   daemon cannot move: a controller an operator started (stop `legion controller start` and run it
+   again from this release, which the daemon's refusal of the old plugin asks for anyway), and
+   every worker of a
    daemon that cannot relaunch plugins, one that knows no plugin pair
    (`runtime.kubernetes.plugins` unset and a binary that links none), which takes no task until a
    pod built from the new image replaces its pod: its update round does that at its bound at the
@@ -1612,15 +1613,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   round read longest ago, although the read is the only moment the line prints — the wait an
   operator acts on is the one a head has sat through.
 
-  The `agents in a tool call` line names every claim whose agent is in a tool call the daemon has
-  seen the start of and no end of: how many, and each by issue and role with the tool, the call id
-  the stream's start and end frames pair by, and when the daemon received that start (`none` when
-  no agent is in one). It is the shape a stalled turn leaves behind, which is what
-  `worker_stall_backstop_hours` above acts on, so a call that has been open for hours is the one
-  to look at. The call's arguments are in no column of this surface or any other: the daemon keeps
-  their length and a fingerprint alone, because a shell command routinely holds a credential. The
-  project controller's claim is on no issue and so on no part of this line; `legion claims list`
-  prints each claim's open call in the same shape, in its last column, the controller's included.
+  The `agents in a tool call` line names every working claim whose agent is in a tool call the
+  daemon has seen the start of and no end of: how many, and each by issue and role with the tool,
+  the call id the stream's start and end frames pair by, and when the daemon received that start
+  (`none` when no agent is in one). A retired or suspended claim keeps the call it was last in on
+  its record, and the line leaves it out, since no turn of that claim is in flight. It is the
+  shape a stalled turn leaves behind, which is what `worker_stall_backstop_hours` above acts on,
+  so a call that has been open for hours is the one to look at. The call's arguments are in no
+  column of this surface or any other: the daemon keeps their length and a fingerprint alone,
+  because a shell command routinely holds a credential. The project controller's claim is on no
+  issue and so on no part of this line; `legion claims list` prints each claim's open call in the
+  same shape, in its last column, the controller's included.
   A shell command Oh My Pi backgrounded (a plain one still running after about a minute, or at
   once when a message is steered into the turn) is an ended call here while its process runs on:
   `none` says no agent is parked in a call, not that nothing runs on its machine.

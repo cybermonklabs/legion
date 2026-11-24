@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // moveStoreAboveTheBuild applies, in one transaction, a type migration of the release after this
@@ -117,7 +118,7 @@ func TestAStoreSchemaAboveTheBuildInstallsItsOwnVersionAndClosesTheDocumentSocke
 			OnSwitch: func() { service.CloseDocumentSockets() },
 		}).Run(installing)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stopInstalling()
 		<-stopped
 	})
@@ -148,6 +149,7 @@ func TestAStoreSchemaAboveTheBuildInstallsItsOwnVersionAndClosesTheDocumentSocke
 // run in that gap through the service's hook (afterSocketAdmitted), once; the socket opened after
 // it is admitted.
 func TestASchemaSwitchBetweenASocketsAdmissionAndItsHoldClosesTheSocket(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -168,7 +170,7 @@ func TestASchemaSwitchBetweenASocketsAdmissionAndItsHoldClosesTheSocket(t *testi
 		}
 		t.Fatalf("open the socket a switch overtakes: %s, %v; want an upgrade the server closes", status, err)
 	}
-	t.Cleanup(func() { _ = overtaken.Close() })
+	testcleanup.Add(t, func() { _ = overtaken.Close() })
 	requireClosedForTheSchema(t, overtaken, "the socket whose admission a switch overtook")
 	if !switched.Load() {
 		t.Fatalf("the switch never ran in the gap: the hook was not reached")

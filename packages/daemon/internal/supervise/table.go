@@ -1688,7 +1688,7 @@ func (m *Machine) askRestoredTurn(ctx context.Context) {
 			"askedAt", m.askedAt)
 	}
 	if _, armed := m.timers[TimerRegistration]; !armed {
-		m.arm(TimerRegistration, max(m.askedAt.Add(m.reconnectBound()).Sub(m.deps.Clock.Now()), 0), "")
+		m.armAt(TimerRegistration, m.askedAt.Add(m.reconnectBound()), "")
 	}
 }
 
