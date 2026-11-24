@@ -379,6 +379,8 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 	if base == "" {
 		base = defaultBase
 	}
+	// An empty path parses the base and holds it to the rule every call's join reads it by:
+	// an absolute URL with a host, its query kept and its fragment dropped.
 	origin, err := urljoin.Join(base, "")
 	if err != nil {
 		return nil, fmt.Errorf("the GitHub API base URL: %w", err)
