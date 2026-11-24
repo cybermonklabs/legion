@@ -148,8 +148,8 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 }
 
 // writeHeadOnBase stores one pull request head row whose base branch the caller names: the
-// row delivery.BaseBranchMergedFor answers an issue's merged branch from, where the row is
-// merged. The conflict clause writes every column either caller means to write, so a second
+// row delivery.Attributor.MergeOfIssue answers an issue's merges from, where the row is merged.
+// The conflict clause writes every column either caller means to write, so a second
 // row for the same pull request leaves none of them as the first write left it.
 //
 // A merged row holds a time of merge, mergedHeadsAt and its number in seconds, so of two merged
@@ -2065,7 +2065,7 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 // The merged issue of a repository this process has never named a default branch for: the
 // restart whose first `GET /repos/{owner}/{repo}` failed, which delivery.Branches holds for
 // delivery.BranchCommitStaleAfter, and every repository of a deployment holding no App key.
-// The branch the work merged into is read from the database (delivery.BaseBranchMergedFor)
+// The branch the work merged into is read from the database (delivery.Attributor.MergeOfIssue)
 // and costs no call to GitHub, so the check compares with that branch alone and the stored
 // yes at it places the merge commit.
 //
@@ -3197,7 +3197,7 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 	// 4. An issue that resolved to a repository, merged into a branch, and resolves to none
 	// now, its project's default cleared after the merge — the issue whose project's default
 	// was removed, and the issue whose parent moved. This pins the deep review's finding on
-	// #3530: the merged row delivery.BaseBranchMergedFor reads by issue key alone goes on naming
+	// #3530: the merged row delivery.Attributor.MergeOfIssue reads by issue key alone keeps naming
 	// `integration/x`, so a branch walk chosen before anything tests the repository reached
 	// onNamedBranch with none and answered `unknown`/`read_failed` for every result, against
 	// what the surface's own rule says — an issue that resolves to no repository is never

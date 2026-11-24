@@ -166,10 +166,6 @@ func TestTheNewestMergeIsTheLastToMergeNotTheLastEdited(t *testing.T) {
 			!sameTime(merged[0].MergedAt, mergeTestTime(t, second)) {
 			t.Fatalf("MergeOfIssue(%s)[0] = %+v, want #5's merge commit, base, final head and time", issue, merged[0])
 		}
-		branch, err := BaseBranchMergedFor(ctx, pool, issue)
-		if err != nil || branch != "release" {
-			t.Fatalf("BaseBranchMergedFor(%s) = %q, %v; want release, the base of #5, which merged last", issue, branch, err)
-		}
 	}
 
 	t.Run("written as heads", func(t *testing.T) {
@@ -428,9 +424,8 @@ func TestTheLandingOfABranchIsItsNewestMergedPullRequestWhoseFinalHeadHoldsTheMe
 }
 
 // An issue's merge in a repository it links a pull request of is the newest of the merged pull
-// requests it links there: MergeIn lists them, newest merge first, and BaseBranchMergedIn names
-// the newest one's base. Asked of the issue's own repository, which no link of it can name, it
-// answers nothing.
+// requests it links there: MergeIn lists them, newest merge first, with each one's base. Asked of
+// the issue's own repository, which no link of it can name, it answers nothing.
 func TestTheLinkedMergeIsTheNewestLinkedPullRequestsMerge(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -466,10 +461,6 @@ func TestTheLinkedMergeIsTheNewestLinkedPullRequestsMerge(t *testing.T) {
 	}
 	if linked[0].MergeCommitSHA != mergeOfFive || linked[0].BaseRef != "main" || linked[0].HeadSHA != headOfFive {
 		t.Fatalf("MergeIn(%s, acme/tools)[0] = %+v, want #9's merge commit, base and final head", issue, linked[0])
-	}
-	branch, err := unrenamed().BaseBranchMergedIn(ctx, pool, issue, "acme/tools")
-	if err != nil || branch != "main" {
-		t.Fatalf("BaseBranchMergedIn(%s, acme/tools) = %q, %v; want main, the base of #9", issue, branch, err)
 	}
 	own, err := unrenamed().MergeIn(ctx, pool, issue, "acme/widgets")
 	if err != nil || len(own) != 0 {
