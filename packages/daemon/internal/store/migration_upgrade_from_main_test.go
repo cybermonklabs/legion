@@ -201,8 +201,9 @@ import (
 // (migration_20261123212127_test.go reads it).
 // dispatch://INFRA-5471's mark of a re-admission that still owes its tree's members their return
 // (20261123224717) is applied after all of these but the waiting line's issue priority
-// (20261124060500) and touches no outbox_kind_check either: it adds issues.members_owed and marks
-// the roots whose re-admitted generation no promotion has opened.
+// (20261124060500) and #5349's cause times (20261124073512), and touches no outbox_kind_check
+// either: it adds issues.members_owed and marks the roots whose re-admitted generation no
+// promotion has opened.
 // The waiting line's issue priority (20261124060500) is applied after all of these but #5349's
 // cause times (20261124073512) and touches no outbox_kind_check: it adds issues.priority, null on
 // every row it finds, which reads as an issue with no priority.
