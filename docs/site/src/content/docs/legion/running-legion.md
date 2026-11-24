@@ -1462,8 +1462,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   that have not started, by the Dispatch rank of each issue's tree root and then its own. A
   priority changed in Dispatch moves the issue at the next admission pass, and priority takes no
   slot back from work that runs. The order is strict and nothing ages: while a higher priority
-  keeps issues waiting, no issue of a lower one, and none with no priority, reaches a free slot,
-  however long it has waited. Each line gives the issue's key, its place in the line, the part
+  has an issue that can take a slot, no issue of a lower one, and none with no priority, reaches
+  a free slot, however long it has waited; an entry that waits on another issue is passed over,
+  as Waiting says. Each line gives the issue's key, its place in the line, the part
   it stands in (`returned` or `starting`) and the daemon's own sentence for that place: what put
   the issue in the line and when, the priority it waits at and where that priority came from,
   where it stands among the issues of its own priority and part, and whether
