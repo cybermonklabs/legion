@@ -21,12 +21,26 @@ type mockHTTPMCPServer struct {
 	closeCh              chan struct{}
 	notifyAfterSubscribe bool
 	failInitialize       bool
+	// refusal is the message of the initialize refusal failInitialize sends, "initialization
+	// rejected" unless an option sets it. readRefusal, where set, is the message of an error every
+	// resources/read is answered with, and readResult, where set, the JSON of the result every one
+	// is answered with.
+	refusal     string
+	readRefusal string
+	readResult  string
+}
+
+// jsonString is s as a JSON string.
+func jsonString(s string) string {
+	data, _ := json.Marshal(s)
+	return string(data)
 }
 
 func newMockHTTPMCPServer(opts ...func(*mockHTTPMCPServer)) *mockHTTPMCPServer {
 	m := &mockHTTPMCPServer{
 		notifyAfterSubscribe: true,
 		closeCh:              make(chan struct{}),
+		refusal:              "initialization rejected",
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -91,7 +105,7 @@ func newMockHTTPMCPServer(opts ...func(*mockHTTPMCPServer)) *mockHTTPMCPServer {
 		switch req.Method {
 		case "initialize":
 			if m.failInitialize {
-				m.sendSSE("message", fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"error":{"code":-32600,"message":"initialization rejected"}}`, req.ID))
+				m.sendSSE("message", fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"error":{"code":-32600,"message":%s}}`, req.ID, jsonString(m.refusal)))
 			} else {
 				m.sendSSE("message", fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2024-11-05","capabilities":{"resources":{"subscribe":true}},"serverInfo":{"name":"mock-http","version":"1.0.0"}}}`, req.ID))
 			}
@@ -101,10 +115,17 @@ func newMockHTTPMCPServer(opts ...func(*mockHTTPMCPServer)) *mockHTTPMCPServer {
 			m.sendSSE("message", fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{}}`, req.ID))
 			if m.notifyAfterSubscribe {
 				time.Sleep(50 * time.Millisecond)
-				m.sendSSE("message", `{"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"whatsapp://messages/15551234567/5551234567@s.whatsapp.net"}}`)
+				m.notify("whatsapp://messages/15551234567/5551234567@s.whatsapp.net")
 			}
 		case "resources/read":
-			m.sendSSE("message", fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"contents":[{"uri":"whatsapp://messages/15551234567/5551234567@s.whatsapp.net","text":"Hello from HTTP mock"}]}}`, req.ID))
+			switch {
+			case m.readRefusal != "":
+				m.sendSSE("message", fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"error":{"code":-32002,"message":%s}}`, req.ID, jsonString(m.readRefusal)))
+			case m.readResult != "":
+				m.sendSSE("message", fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":%s}`, req.ID, m.readResult))
+			default:
+				m.sendSSE("message", fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"contents":[{"uri":"whatsapp://messages/15551234567/5551234567@s.whatsapp.net","text":"Hello from HTTP mock"}]}}`, req.ID))
+			}
 		}
 		w.WriteHeader(http.StatusAccepted)
 	})
@@ -121,6 +142,11 @@ func (m *mockHTTPMCPServer) sendSSE(eventType, data string) {
 	}
 	fmt.Fprintf(m.sseConn, "event: %s\ndata: %s\n\n", eventType, data)
 	m.sseWriter.Flush()
+}
+
+// notify sends, on the stream, the notification that the resource uri changed.
+func (m *mockHTTPMCPServer) notify(uri string) {
+	m.sendSSE("message", `{"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":`+jsonString(uri)+`}}`)
 }
 
 func (m *mockHTTPMCPServer) disconnectSSE() {
