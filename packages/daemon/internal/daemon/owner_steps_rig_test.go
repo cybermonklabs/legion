@@ -39,8 +39,9 @@ type ownerStepsRig struct {
 	specs map[string]string
 }
 
-// stepAnswer is how the agent of one step of a walk answers: pass, or fail, a tester's verdict
-// fail or a review that requests changes, which returns the task to its implementer.
+// stepAnswer is how the agent of one step of a walk answers: pass, or fail, a tester's check that
+// fails at the head it tested or a review that requests changes, which returns the task to its
+// implementer.
 type stepAnswer string
 
 const (
@@ -287,7 +288,16 @@ func (r *ownerStepsRig) runStep(step string, answer stepAnswer, next phase.Phase
 		}
 		r.work(claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, next)
 	case step == "tester":
-		r.work(claim.RoleTester, "test", api.HandoffCompleteRequest{Summary: "the criteria read " + string(answer), Verdict: string(answer)}, next)
+		// A tester's completion carries no verdict: the check state of the head it tested decides
+		// its step, a pass for answerPass and a fail for answerFail, which the store holds before
+		// the completion names that head, as Dispatch's event of the tester's result puts it there
+		// (testedAs). finish holds the pass of a round that moves into reviewing itself.
+		c := r.worker(claim.RoleTester)
+		c.take()
+		if answer != answerPass || next != phase.Reviewing {
+			testedAs(t, r.st.Pool(), r.key, stepRecordsHead, answer == answerPass)
+		}
+		r.finish(c, "test", api.HandoffCompleteRequest{Summary: "the criteria read " + string(answer), Commit: stepRecordsHead}, next)
 	case step == "reviewer":
 		state := "APPROVED"
 		if answer == answerFail {
