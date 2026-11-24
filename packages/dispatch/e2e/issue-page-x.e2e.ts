@@ -674,7 +674,8 @@ async function expectAtItsPlace(page: Page, read: ProposedPage): Promise<void> {
   );
 }
 
-/** `j` and `k` reach statement 8's row and leave it as they do any row: from the row above it
+/** `j` and `k` reach statement 8's row and leave it as they do any row, whatever the page draws
+ *  next to it - the lens and the plan task that serves it stand under it: from the row above it
  *  `j` reaches it and the next `j` goes to the row under it, and `k` comes back the same way. */
 async function expectKeysPassStatement8(page: Page, { seeded }: ProposedPage): Promise<void> {
   const { ids } = seeded;
@@ -683,7 +684,10 @@ async function expectKeysPassStatement8(page: Page, { seeded }: ProposedPage): P
   const above = items[at - 1];
   const under = items[at + 1];
   expect(above?.readId ?? null, "no row stands above statement 8").not.toBeNull();
-  expect(under?.readId, "statement 8, drawn open, has no row under it but its lens").toBe(ids.lens);
+  expect(
+    under?.readId ?? null,
+    "no row stands under statement 8, which is drawn open"
+  ).not.toBeNull();
   const start = nodeRow(page, above?.id ?? "").first();
   await start.focus();
   await expect(start).toBeFocused();
@@ -1564,18 +1568,17 @@ async function expectQuestionReached(page: Page, read: SeededPage): Promise<void
   );
 }
 
-/** `q` from the row above the overtaken question focuses it, as it focuses any open question. */
+/** `q` from the open question that stands before the overtaken one focuses it, as it focuses any
+ *  open question: from a question `q` goes to the next one in the tree's order, and from any other
+ *  row to the first, so the press is made on the question before the overtaken one, whatever rows
+ *  the page draws between them. */
 async function expectQReaches(page: Page, read: SeededPage): Promise<void> {
-  const { plain, seeded, traffic } = read;
+  const { plain, seeded, traffic, treeId } = read;
   const { ids } = seeded;
   await gotoSettled(page, traffic, plain);
   await drawnRowId(page, ids.overtakenQuestion, "the overtaken question");
-  const items = await treeItemsDrawn(page);
-  const above = items[items.findIndex((item) => item.readId === ids.overtakenQuestion) - 1];
-  expect(above?.readId, "the row above the overtaken question is not the open question").toBe(
-    ids.openQuestion
-  );
-  const start = nodeRow(page, above?.id ?? "").first();
+  const start = nodeRow(page, treeId(ids.openQuestion)).first();
+  await expect(start, "the open question is no row of the outline").toHaveCount(1);
   await start.focus();
   await expect(start).toBeFocused();
   await page.keyboard.press("q");
@@ -1583,7 +1586,7 @@ async function expectQReaches(page: Page, read: SeededPage): Promise<void> {
     page,
     read,
     ids.overtakenQuestion,
-    "q from the row above the overtaken question"
+    "q from the question before the overtaken one"
   );
 }
 
