@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `legion claude-bridge` sends each turn's report to the daemon's turn-outcome route joined onto
+  the path of the pane's `LEGION_DAEMON_URL`, with the URL's query kept and its fragment dropped.
+  Before, the route was appended to the URL's text, so a URL with a query or a fragment took the
+  route into it: `http://host/daemon?sig=...` posted to `/daemon` with the route inside the query,
+  and the daemon never counted the report. A URL with neither goes where it went. A
+  `LEGION_DAEMON_URL` that does not parse as a URL now starts no reporter, with one line that says
+  so and does not print the value, where each turn's report failed on its own line.
+time: 2026-11-24T15:40:47Z
+custom:
+    Issue: pr4368

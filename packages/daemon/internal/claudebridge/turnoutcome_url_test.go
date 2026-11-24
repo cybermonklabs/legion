@@ -19,7 +19,8 @@ import (
 // told, and it can carry a path, a query or a fragment. A report goes to the daemon's path with the
 // turn-outcome route joined onto it, the query kept and the fragment dropped, where the route
 // appended to the URL's text sat inside the query or the fragment and the daemon was asked a path
-// it does not serve. A stand-in daemon records the path and the query each report reaches it with.
+// it does not serve. A stand-in daemon records the path and the query each report reaches it with,
+// and the report's URL is the one it reaches, which holds no fragment: no request sends one.
 func TestATurnReportGoesToTheRouteJoinedOntoTheDaemonsPath(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "boot-token")
 	if err := os.WriteFile(tokenFile, []byte("boot-token\n"), 0o600); err != nil {
@@ -47,6 +48,13 @@ func TestATurnReportGoesToTheRouteJoinedOntoTheDaemonsPath(t *testing.T) {
 			reports := startTurnReports(Config{DaemonURL: daemon.URL + c.suffix, BootTokenFile: tokenFile, Generation: 4}, log.New(&logged, "", 0))
 			if reports == nil {
 				t.Fatalf("the bridge started no reporter: %q", logged.String())
+			}
+			want := daemon.URL + c.path
+			if c.query != "" {
+				want += "?" + c.query
+			}
+			if reports.url != want {
+				t.Errorf("a LEGION_DAEMON_URL ending %q gave the report the URL %q, want %q", c.suffix, reports.url, want)
 			}
 			reports.post(claim.TurnOutcomeRequest{BootToken: reports.bootToken, Generation: reports.generation, Sequence: 1, Outcome: claim.TurnClean})
 			select {
