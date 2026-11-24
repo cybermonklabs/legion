@@ -167,12 +167,12 @@ func undecidedIDRoutes(routes []apiRoute) []string {
 type routeScopeSet []string
 
 // routeDecl is one route as the file that declares it states it. Every route of this package is a
-// file of its own, route_<path>+<method>.go (cmd/dispatch-route-adopt's routeFileName says how a
-// pattern is written into the name), and that file holds one declaration, `var _ =
-// declareRoute(routeDecl{...})`, whose fields are every fact Dispatch knows of the route: two
-// changes that add different routes touch no file in common. Add a route by adding such a file,
-// never a mux.HandleFunc line: routes() mounts what is declared, GET /api/v1 lists it, and the
-// OpenAPI document is emitted from it.
+// file of its own, route_<path>+<method>.go (internal/dispatch/routefile says how a pattern is
+// written into the name, and TestEachRouteIsDeclaredInTheFileItsNameNames holds each file to it),
+// and that file holds one declaration, `var _ = declareRoute(routeDecl{...})`, whose fields are
+// every fact Dispatch knows of the route: two changes that add different routes touch no file in
+// common. Add a route by adding such a file, never a mux.HandleFunc line: routes() mounts what is
+// declared, GET /api/v1 lists it, and the OpenAPI document is emitted from it.
 type routeDecl struct {
 	Method      string
 	Pattern     string
@@ -182,12 +182,9 @@ type routeDecl struct {
 	// (*server).getIssue. routes() binds it to the server it builds the table for.
 	Handler func(*server, http.ResponseWriter, *http.Request)
 
-	// TestHook is a route mounted only with Deps.TestHooksEnabled. The live-socket disconnect
-	// and rotate hooks, the quiesce hook and the stream publish hook act on every process
-	// serving the database, answering once each has (test_hooks_fanout.go); the outside-schema
-	// and newer-content hooks write the stored history, which every process reads; and the room,
-	// room-counter, persistence and live-write hooks, the slow-write arm, the new-issue settings
-	// and the queued messages each act on the process whose call they land on.
+	// TestHook is a route mounted only with Deps.TestHooksEnabled: a hook a test arms or reads,
+	// which no deployment serves. What each hook does, and whether it acts on every process
+	// serving the database or on the one its call lands on, is its own file's to say.
 	TestHook bool
 
 	// WriteClass is what a mutating route's write belongs to, which Register's project-scope
@@ -277,35 +274,6 @@ func declareRoute(route routeDecl) routeDecl {
 	return route
 }
 
-// declaredRoute is the declaration of one route, by "<method> <pattern>", test hooks included.
-func declaredRoute(name string) (routeDecl, bool) {
-	for _, route := range routeRegistry {
-		if route.Method+" "+route.Pattern == name {
-			return route, true
-		}
-	}
-	return routeDecl{}, false
-}
-
-// duplicateRoutes names, sorted, every "<method> <pattern>" that more than one of routes
-// declares. Each route has one file, so a second declaration of one is a file copied and left
-// unchanged, or two changes that each added the route under a name of their own; either way the
-// table would hold two rows of one route, and ServeMux refuses the second.
-func duplicateRoutes(routes []routeDecl) []string {
-	seen := make(map[string]int, len(routes))
-	for _, route := range routes {
-		seen[route.Method+" "+route.Pattern]++
-	}
-	var duplicates []string
-	for name, count := range seen {
-		if count > 1 {
-			duplicates = append(duplicates, fmt.Sprintf("%s is declared %d times", name, count))
-		}
-	}
-	sort.Strings(duplicates)
-	return duplicates
-}
-
 // readRoutesNotGET names, sorted, every route of routes that states ReadScope and is not a GET
 // route. register refuses to mount a table that holds one: a POST, PUT, PATCH or DELETE route is
 // a write, which a read-only token is minted never to make.
@@ -318,6 +286,22 @@ func readRoutesNotGET(routes []apiRoute) []string {
 	}
 	sort.Strings(refused)
 	return refused
+}
+
+// readOnlyRefusalText is what every route a read-only token may not call answers it
+// (refuseReadOnlyToken): the routes that do state ReadScope, in the order routes() answers them,
+// which is by pattern and then method. The declarations have no written order of their own, since
+// each route is a file, so this is the order GET /api/v1 and the OpenAPI document list routes in
+// too. No client reads the message: it is prose for the person holding the token.
+func readOnlyRefusalText(routes []apiRoute) string {
+	var listed []string
+	for _, route := range routes {
+		if route.ReadScope {
+			listed = append(listed, route.Method+" "+route.Pattern)
+		}
+	}
+	return "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
+		strings.Join(listed, ", ") + "): nothing ran"
 }
 
 // apiRoute is one mounted route: its declaration, read through it by promotion, with its handler
@@ -395,7 +379,8 @@ func (s *server) bound(handler func(*server, http.ResponseWriter, *http.Request)
 	return func(w http.ResponseWriter, r *http.Request) { handler(s, w, r) }
 }
 
-// routeIndexEntries renders the table for GET /api/v1, sorted by path then method.
+// routeIndexEntries renders the table for GET /api/v1. routes() answers the table sorted by
+// pattern then method, which is the order the index is read in, so nothing is sorted again here.
 func routeIndexEntries(routes []apiRoute) []routeIndexEntry {
 	entries := make([]routeIndexEntry, len(routes))
 	for index, route := range routes {
@@ -407,12 +392,6 @@ func routeIndexEntries(routes []apiRoute) []routeIndexEntry {
 			Description: route.Description,
 		}
 	}
-	sort.Slice(entries, func(left, right int) bool {
-		if entries[left].Path != entries[right].Path {
-			return entries[left].Path < entries[right].Path
-		}
-		return entries[left].Method < entries[right].Method
-	})
 	return entries
 }
 

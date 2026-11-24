@@ -12,10 +12,10 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).holdRoomPersistence,
 	TestHook:    true,
 	WriteClass:  scopeProject,
-	// The document test hooks, which address the live room this process holds under the
-	// document's own id and read no row of the artifacts table, so they answer no 404 of a
-	// document that does not exist and resolve no prefix: a short id written at one of them
-	// reaches the hook as the caller wrote it, as every other value does.
+	// The hook addresses the live room this process holds under the document's own id and reads
+	// no row of the artifacts table, so it answers no 404 of a document that does not exist and
+	// resolves no prefix: a short id written at it reaches the hook as the caller wrote it, as
+	// every other value does.
 	ID:    &idRoute{Reason: "a test hook's document id, naming a live room rather than a stored document"},
 	Shape: routeShape{Status: http.StatusNoContent, Request: holdPersistenceInput{}},
 })

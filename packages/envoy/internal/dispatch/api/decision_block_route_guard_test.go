@@ -111,7 +111,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 		checks := decisionBlockChecked(graph, routes[name])
 		reason, exempt := decisionBlockExempt[name]
 		route, _ := declaredRoute(name)
-		shape, shaped := route.Shape, route.Shape.Status != 0
+		shape, shaped := route.Shape, route.Shape.stated()
 		switch {
 		case exempt:
 			t.Logf("%s: exempt — %s", name, reason)
@@ -165,7 +165,7 @@ func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
 			continue
 		}
 		route, _ := declaredRoute(name)
-		if route.Shape.Status == 0 || !requestCarriesBody(route.Shape.Request) {
+		if !route.Shape.stated() || !requestCarriesBody(route.Shape.Request) {
 			t.Errorf("the guard reads no body string on %s, the route that stores one", name)
 		}
 		if !decisionBlockChecked(graph, handlers) {

@@ -14,8 +14,8 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).createArtifactVersionReview,
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	// The review that names the version its caller read settles what the review above settles,
-	// with that version as a guard.
+	// The review that names the version its caller read settles what POST
+	// /api/v1/artifacts/{id}/reviews settles, with that version as a guard.
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
 	Shape: routeShape{
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createArtifactReviewInput{},

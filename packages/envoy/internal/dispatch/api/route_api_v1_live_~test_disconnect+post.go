@@ -12,6 +12,5 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).disconnectLiveSockets,
 	TestHook:    true,
 	WriteClass:  scopeDeployment,
-	// The test hooks, mounted only with Deps.TestHooksEnabled (routes()).
-	Shape: routeShape{Status: http.StatusOK, Response: testHookOK{}},
+	Shape:       routeShape{Status: http.StatusOK, Response: testHookOK{}},
 })

@@ -549,15 +549,18 @@ type liveWritePauseQuery struct {
 	Wait string `query:"wait"`
 }
 
+// stated reports whether a route declared this shape. Every shape answers with some status, so a
+// Shape whose Status is 0 is one the route never stated.
+func (shape routeShape) stated() bool { return shape.Status != 0 }
+
 // shapelessRoutes names every route whose declaration states no shape. A route with no shape is a
 // route the generated document would leave out, which is how "one definition of the API" stops
 // holding: a client would be given no type for it and would hand-write one. register refuses to
-// mount such a table, as it refuses a write class it cannot decide (undecidableWrites). Every
-// shape answers with some status, so a Shape whose Status is 0 is one the route never stated.
+// mount such a table, as it refuses a write class it cannot decide (undecidableWrites).
 func shapelessRoutes(routes []apiRoute) []string {
 	var shapeless []string
 	for _, route := range routes {
-		if route.Shape.Status == 0 {
+		if !route.Shape.stated() {
 			shapeless = append(shapeless, route.Method+" "+route.Pattern+": no shape (its declaration's Shape)")
 		}
 	}

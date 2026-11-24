@@ -134,31 +134,6 @@ func (d dirTree) filesNaming(word string) ([]string, error) {
 	return names, nil
 }
 
-// routeFilesIn is every route file of a directory, by name, with its bytes.
-func routeFilesIn(dir string) (map[string][]byte, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	files := map[string][]byte{}
-	for _, entry := range entries {
-		if entry.IsDir() || !isRouteFile(entry.Name()) {
-			continue
-		}
-		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			return nil, err
-		}
-		files[entry.Name()] = content
-	}
-	return files, nil
-}
-
-// isRouteFile reports whether a file name is one routeFileName writes.
-func isRouteFile(name string) bool {
-	return strings.HasPrefix(name, "route_") && strings.HasSuffix(name, ".go") && strings.Contains(name, "+")
-}
-
 // mergeFile is git merge-file's three-way merge of one file: the merged bytes, and whether they
 // hold a conflict.
 func (g gitRepo) mergeFile(ours, base, theirs []byte, labels [3]string) ([]byte, bool, error) {

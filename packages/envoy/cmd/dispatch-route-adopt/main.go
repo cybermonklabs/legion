@@ -49,9 +49,16 @@
 //	go run ./cmd/dispatch-route-adopt split -rev <commit> -out <dir>
 //
 // writes the route files the old layout at <commit> splits into, and nothing else, into <dir>. It
-// is how main's route files were made: splitting main's old table again reproduces them byte for
-// byte, which is what lets the adopt step above find a route the branch did not touch unchanged
-// on main's side.
+// is how main's route files were made: splitting main's old table again writes each route's
+// declaration as the committed file holds it, which is what lets the adopt step above find a
+// route the branch did not touch unchanged on main's side. The comments differ: a comment the old
+// maps wrote above a group of entries came out on the group's first route alone, where it said
+// nothing, and those were rewritten by hand once.
+//
+// The tool is for the branches open when the routes moved into files. Once each of them has
+// merged or closed, delete it: the file-name rule it writes names with is
+// internal/dispatch/routefile's, which package api's own test holds every route file to
+// (TestEachRouteIsDeclaredInTheFileItsNameNames), so nothing of the rule is lost with it.
 package main
 
 import (

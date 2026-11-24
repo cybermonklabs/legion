@@ -223,7 +223,7 @@ A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
-Dispatch serves it on the routes its read list names (the routes whose declaration states `ReadScope`, `routeDecl` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
+Dispatch serves it on the routes its read list names (the routes whose declaration states `ReadScope`, `routeDecl` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture`, `GET /api/v1/issues/{key}/steps` and `GET /api/v1/projects/{key}/plans`.
 Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.

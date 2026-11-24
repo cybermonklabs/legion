@@ -120,8 +120,9 @@ func openAPIDocument() (*openapi31.Spec, error) {
 	spec.Info.WithTitle("Dispatch HTTP API")
 	spec.Info.WithVersion("1")
 	spec.Info.WithDescription(
-		"Generated from the Go route table (internal/dispatch/api/routes_table.go) and the Go " +
-			"types beside it (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never " +
+		"Generated from Dispatch's route declarations (one file per route in " +
+			"internal/dispatch/api) and the Go types they name (routes_shapes.go) by " +
+			"`envoy-dispatch openapi`. Edit those, never " +
 			"this document: it is committed so a client's types can be rendered from it, and " +
 			"`envoy-dispatch openapi --check` refuses a tree where it is stale.")
 

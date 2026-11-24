@@ -4,15 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/routefile"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -140,6 +146,39 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 	}
 }
 
+// declaredRoute is the declaration of one route, by "<method> <pattern>", test hooks included.
+// Only a test reads one route out of the registry by name: the package itself reads the whole
+// registry (routes()).
+func declaredRoute(name string) (routeDecl, bool) {
+	for _, route := range routeRegistry {
+		if route.Method+" "+route.Pattern == name {
+			return route, true
+		}
+	}
+	return routeDecl{}, false
+}
+
+// duplicateRoutes names, sorted, every "<method> <pattern>" that more than one of routes
+// declares. Each route has one file, so a second declaration of one is a file copied and left
+// unchanged, or two changes that each added the route under a name of their own; either way the
+// table would hold two rows of one route, and ServeMux refuses the second. The walk is a test's:
+// the file-name rule is what stops the second declaration from being written
+// (TestEachRouteIsDeclaredInTheFileItsNameNames), and this is what fails where one was.
+func duplicateRoutes(routes []routeDecl) []string {
+	seen := make(map[string]int, len(routes))
+	for _, route := range routes {
+		seen[route.Method+" "+route.Pattern]++
+	}
+	var duplicates []string
+	for name, count := range seen {
+		if count > 1 {
+			duplicates = append(duplicates, fmt.Sprintf("%s is declared %d times", name, count))
+		}
+	}
+	sort.Strings(duplicates)
+	return duplicates
+}
+
 // No route is declared twice: a route file copied and left unchanged, or two branches that each
 // added one route under a file name of their own, would leave two declarations of one method and
 // pattern, which merge with no conflict since they are two files. The walk is over the registry
@@ -167,6 +206,126 @@ func TestNoRouteIsDeclaredTwice(t *testing.T) {
 			t.Fatalf("the walk answered %q, want %q", duplicates, want)
 		}
 	})
+}
+
+// Each route is declared in the file routefile.Name gives its method and pattern, and that file
+// declares that route alone. The name is what makes two branches that add one route meet as one
+// file added twice, which git refuses to merge, rather than as two files that merge cleanly and
+// leave the route declared twice. The walk reads the package's own source, so a file whose name
+// nobody held to the rule fails here rather than at a merge.
+func TestEachRouteIsDeclaredInTheFileItsNameNames(t *testing.T) {
+	t.Parallel()
+	declaredIn := map[string][]string{}
+	for _, file := range goFilesOfThisPackage(t) {
+		name := filepath.Base(file)
+		if !routefile.Is(name) {
+			continue
+		}
+		for _, route := range routesDeclaredIn(t, file) {
+			declaredIn[name] = append(declaredIn[name], route)
+		}
+	}
+	if len(declaredIn) != len(routeRegistry) {
+		t.Fatalf("%d route files declare routes and the registry holds %d", len(declaredIn), len(routeRegistry))
+	}
+	for _, route := range routeRegistry {
+		want, err := routefile.Name(route.Method, route.Pattern)
+		if err != nil {
+			t.Errorf("%s %s: %v", route.Method, route.Pattern, err)
+			continue
+		}
+		declared := declaredIn[want]
+		if len(declared) != 1 || declared[0] != route.Method+" "+route.Pattern {
+			t.Errorf("%s %s is declared in %v, want %s alone", route.Method, route.Pattern, declared, want)
+		}
+	}
+}
+
+// routesDeclaredIn is every "<method> <pattern>" a file of this package declares, read from its
+// source: the Method and Pattern of each declareRoute(routeDecl{...}) it holds.
+func routesDeclaredIn(t *testing.T, file string) []string {
+	t.Helper()
+	var routes []string
+	ast.Inspect(parseAPIFile(t, file), func(node ast.Node) bool {
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		if fun, named := call.Fun.(*ast.Ident); !named || fun.Name != "declareRoute" || len(call.Args) != 1 {
+			return true
+		}
+		literal, isLiteral := call.Args[0].(*ast.CompositeLit)
+		if !isLiteral {
+			return true
+		}
+		var method, pattern string
+		for _, element := range literal.Elts {
+			pair, keyed := element.(*ast.KeyValueExpr)
+			key, named := pair.Key.(*ast.Ident)
+			if !keyed || !named {
+				continue
+			}
+			switch key.Name {
+			case "Method":
+				selector, isSelector := pair.Value.(*ast.SelectorExpr)
+				if !isSelector {
+					t.Fatalf("%s: its Method is no http.Method constant", file)
+				}
+				method = strings.ToUpper(strings.TrimPrefix(selector.Sel.Name, "Method"))
+			case "Pattern":
+				switch value := pair.Value.(type) {
+				case *ast.BasicLit:
+					unquoted, err := strconv.Unquote(value.Value)
+					if err != nil {
+						t.Fatalf("%s: %v", file, err)
+					}
+					pattern = unquoted
+				case *ast.Ident:
+					// A pattern another file declares a constant for, such as goingCataloguePath.
+					pattern = patternOfConstant(t, value.Name)
+				default:
+					t.Fatalf("%s: its Pattern is neither a string nor a constant", file)
+				}
+			}
+		}
+		if method != "" && pattern != "" {
+			routes = append(routes, method+" "+pattern)
+		}
+		return false
+	})
+	return routes
+}
+
+// patternOfConstant is the value of a package-level string constant a route's Pattern names.
+func patternOfConstant(t *testing.T, name string) string {
+	t.Helper()
+	for _, file := range goFilesOfThisPackage(t) {
+		for _, declared := range parseAPIFile(t, file).Decls {
+			general, isGeneral := declared.(*ast.GenDecl)
+			if !isGeneral || general.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range general.Specs {
+				value := spec.(*ast.ValueSpec)
+				for index, ident := range value.Names {
+					if ident.Name != name || index >= len(value.Values) {
+						continue
+					}
+					literal, isLiteral := value.Values[index].(*ast.BasicLit)
+					if !isLiteral {
+						t.Fatalf("the constant %s is no string literal", name)
+					}
+					unquoted, err := strconv.Unquote(literal.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return unquoted
+				}
+			}
+		}
+	}
+	t.Fatalf("no file of this package declares the constant %s", name)
+	return ""
 }
 
 // The Inbox route's description states the rule the person a question reaches is resolved by —

@@ -15,7 +15,7 @@ var _ = declareRoute(routeDecl{
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Kind: "artifact", Blocks: true, NotFound: "ARTIFACT_NOT_FOUND", BlockNotFound: "TARGET_NOT_FOUND"},
 	// Keeping a decision records the person's agreement with it ("Kept by" in the web app), which
-	// takes it out of what waits on their review, so it settles what a person settles too.
+	// takes it out of what waits on their review, so it settles what a person settles.
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: model.DecisionKeep{}, Request: keepDecisionInput{},

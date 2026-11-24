@@ -296,6 +296,14 @@ func TestTheAdoptStepIsNotRunTwiceOverOneMerge(t *testing.T) {
 	if !slices.Equal(report.conflicted, []string{file}) {
 		t.Fatalf("the first run left %v in conflict, want %s alone", report.conflicted, file)
 	}
+	// The conflict is git's, so git refuses the commit until the person resolves it. Without
+	// that, main's version of the route sits in the index and a plain commit records it.
+	if output, err := repo.run("git", "commit", "-q", "--no-edit"); err == nil {
+		t.Fatalf("git committed a merge holding an unresolved route: %s", output)
+	}
+	if listed := repo.git("ls-files", "-u", "--", filepath.Join(apiDir, file)); strings.Count(listed, "\n") != 3 {
+		t.Fatalf("git's index holds %q for %s, want its three stages", listed, file)
+	}
 
 	carried := repo.read(tableFile) + "\n// carried by hand\n"
 	repo.write(tableFile, carried)
@@ -303,20 +311,99 @@ func TestTheAdoptStepIsNotRunTwiceOverOneMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every route the branch changed is in its file now, in conflict, so a second run is refused
+	// and what was carried into routes_table.go stays.
 	if _, err := adopt(found); err == nil || !strings.Contains(err.Error(), "has run on it already") {
-		t.Fatalf("a second run over the resolved merge was not refused: %v", err)
+		t.Fatalf("a second run over the adopted merge was not refused: %v", err)
 	}
 	if repo.read(tableFile) != carried {
 		t.Fatal("the refused second run changed what was carried into routes_table.go")
 	}
-
-	repo.git("checkout", "-m", "--", filepath.Join(apiDir, tableFile))
-	if _, err := adopt(found); err != nil {
-		t.Fatalf("adopt over the conflicted table again: %v", err)
-	}
 	if markers := strings.Count(repo.read(file), "<<<<<<< "); markers != 1 {
-		t.Fatalf("%s holds %d conflict markers after the second run, want the first run's one", file, markers)
+		t.Fatalf("%s holds %d conflict markers after the refused second run, want the first run's one", file, markers)
 	}
+}
+
+// A person may resolve routes_table.go and routes_shapes.go by hand before running the step, as
+// `git checkout --theirs` does. The branch's routes are then in no file, so the step runs: it is
+// what writes them. The control is the same merge with the step already run, which is refused.
+func TestTheAdoptStepRunsAfterTheSharedFilesAreResolvedByHand(t *testing.T) {
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	repo.addRouteOn("branch-a", base, "a")
+	repo.moveMain()
+	repo.git("checkout", "-q", "branch-a")
+	if output, err := repo.run("git", "merge", "--no-edit", "main"); err == nil {
+		t.Fatalf("merging main stopped on no conflict: %s", output)
+	}
+	for _, name := range []string{tableFile, shapesFile} {
+		repo.git("checkout", "--theirs", "--", filepath.Join(apiDir, name))
+		repo.git("add", "--", filepath.Join(apiDir, name))
+	}
+	found, err := findRepo(repo.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := adopt(found)
+	if err != nil {
+		t.Fatalf("adopt after the shared files were resolved by hand: %v", err)
+	}
+	file, _ := routeFileName("GET", "/api/v1/adopt-test-a")
+	if !slices.Equal(report.written, []string{file}) || report.left() {
+		var out bytes.Buffer
+		report.print(&out)
+		t.Fatalf("the step did not write %s alone:\n%s", file, out.String())
+	}
+	if _, err := adopt(found); err == nil || !strings.Contains(err.Error(), "has run on it already") {
+		t.Fatalf("the control failed: a run after the routes were written was not refused: %v", err)
+	}
+}
+
+// A row under any condition but the hooks' own is refused, not split as always mounted: a branch
+// that narrowed the hooks' `if` would otherwise have its 15 hooks written ungated, and they mount
+// in production. The control is the same table unchanged, which splits.
+func TestARowUnderAnotherConditionIsRefused(t *testing.T) {
+	t.Parallel()
+	table := fixture(t, oldTableFixture)
+	if _, err := splitOldLayout(oneFileTree{tableFile: table, shapesFile: fixture(t, oldShapesFixture), "going_paths.go": goingPathsFile}); err != nil {
+		t.Fatalf("the control failed: the frozen table does not split: %v", err)
+	}
+	for _, condition := range []string{
+		"s.deps.TestHooksEnabled && s.deps.Store != nil",
+		"s.deps.TestHooksEnabled || s.deps.Store == nil",
+		"hooksEnabled(s.deps)",
+	} {
+		narrowed := strings.Replace(table, "if s.deps.TestHooksEnabled {", "if "+condition+" {", 1)
+		if narrowed == table {
+			t.Fatal("the frozen table has no test hooks' block to narrow")
+		}
+		_, err := splitOldLayout(oneFileTree{tableFile: narrowed, shapesFile: fixture(t, oldShapesFixture), "going_paths.go": goingPathsFile})
+		if err == nil || !strings.Contains(err.Error(), "a condition this reader does not know the meaning of") {
+			t.Errorf("splitting a table whose hooks stand under `if %s` answered %v, want a refusal", condition, err)
+		}
+	}
+}
+
+// oneFileTree is package api as a map of file names to their text.
+type oneFileTree map[string]string
+
+func (t oneFileTree) read(name string) ([]byte, error) {
+	content, held := t[name]
+	if !held {
+		return nil, os.ErrNotExist
+	}
+	return []byte(content), nil
+}
+
+func (t oneFileTree) filesNaming(word string) ([]string, error) {
+	var names []string
+	for name, content := range t {
+		if strings.Contains(content, word) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names, nil
 }
 
 // A statement the branch writes in the test hooks' block, beside their rows, is shared code the

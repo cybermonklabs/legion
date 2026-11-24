@@ -130,26 +130,6 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 	} else if !baseOld {
 		return nil, fmt.Errorf("the merge base %s holds the route files already, so the branch's table is no old layout this can split", base)
 	}
-	// The step runs once per merge. It takes routes_table.go and routes_shapes.go whole from the
-	// new side, so a second run over a merge whose two files are resolved would overwrite what the
-	// person carried into them by hand. They are in conflict on the first run, since the branch
-	// changed the old table and the new side replaced it; once neither is, the step has run.
-	unmerged, err := repo.unmerged()
-	if err != nil {
-		return nil, err
-	}
-	pending := false
-	for _, name := range []string{tableFile, shapesFile} {
-		content, err := os.ReadFile(filepath.Join(repo.root, apiDir, name))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		pending = pending || slices.Contains(unmerged, path.Join(apiDir, name)) || hasConflictMarkers(content)
-	}
-	if !pending {
-		return nil, fmt.Errorf("neither %s nor %s is in conflict: this merge needs no adoption, or the adopt step has run on it already, and a second run would overwrite what was carried into them by hand", tableFile, shapesFile)
-	}
-
 	baseFiles, err := splitOldLayout(gitTree{repo, base})
 	if err != nil {
 		return nil, fmt.Errorf("split the merge base's routes: %w", err)
@@ -157,6 +137,20 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 	branchFiles, err := splitOldLayout(gitTree{repo, oldRev})
 	if err != nil {
 		return nil, fmt.Errorf("split %s's routes: %w", report.oldSide, err)
+	}
+	// The step runs once per merge, because it takes routes_table.go and routes_shapes.go whole
+	// from the new side and a second run would overwrite what the person carried into them by
+	// hand. "It has run" is read from the routes themselves, not from those two files: a person
+	// may resolve them before running this, and then the branch's routes are in no file yet. The
+	// run is needless only where every route the branch added or changed is already in the tree
+	// as the branch states it, or in conflict with main's.
+	missing, err := routesNotAdopted(filepath.Join(repo.root, apiDir), baseFiles, branchFiles)
+	if err != nil {
+		return nil, err
+	}
+	if len(missing) == 0 {
+		return nil, fmt.Errorf("every route %s adds or changes is already in its file: this merge needs no adoption, or the adopt step has run on it already, and a second run would overwrite what was carried into %s and %s by hand",
+			report.oldSide, tableFile, shapesFile)
 	}
 	dir := filepath.Join(repo.root, apiDir)
 	var stage, remove []string
@@ -168,6 +162,20 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 		}
 	}
 	slices.Sort(names)
+	// merge is one route's three-way merge, recorded in the report: merged where the two sides
+	// settle, and in conflict where they do not, which the loop then writes into the index.
+	merge := func(name string, ours, base, theirs []byte) ([]byte, error) {
+		merged, conflict, err := repo.mergeFile(ours, base, theirs, labels)
+		if err != nil {
+			return nil, err
+		}
+		if conflict {
+			report.conflicted = append(report.conflicted, name)
+		} else {
+			report.merged = append(report.merged, name)
+		}
+		return merged, nil
+	}
 	for _, name := range names {
 		baseContent, inBase := baseFiles[name]
 		branchContent, inBranch := branchFiles[name]
@@ -197,15 +205,9 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 				stage = append(stage, name)
 				continue
 			default:
-				merged, conflict, err := repo.mergeFile(current, nil, branchContent, labels)
+				branchContent, err = merge(name, current, nil, branchContent)
 				if err != nil {
 					return nil, err
-				}
-				branchContent = merged
-				if conflict {
-					report.conflicted = append(report.conflicted, name)
-				} else {
-					report.merged = append(report.merged, name)
 				}
 			}
 		case !inBranch: // the branch removed it
@@ -228,15 +230,9 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 			case bytes.Equal(current, baseContent):
 				report.updated = append(report.updated, name)
 			default:
-				merged, conflict, err := repo.mergeFile(current, baseContent, branchContent, labels)
+				branchContent, err = merge(name, current, baseContent, branchContent)
 				if err != nil {
 					return nil, err
-				}
-				branchContent = merged
-				if conflict {
-					report.conflicted = append(report.conflicted, name)
-				} else {
-					report.merged = append(report.merged, name)
 				}
 			}
 		}
@@ -245,6 +241,14 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 		}
 		if !slices.Contains(report.conflicted, name) {
 			stage = append(stage, name)
+			continue
+		}
+		// A conflict this step cannot resolve is written into the index as one, so git refuses to
+		// commit the path until the person resolves it and runs `git add`. Without this, main's
+		// version of the route sits in the index at stage 0, which a plain `git commit` records,
+		// and the branch's change is left in the working tree alone.
+		if err := repo.recordConflict(name, current, baseContent, branchContent); err != nil {
+			return nil, err
 		}
 	}
 
@@ -344,7 +348,7 @@ func sharedCode(name string, content []byte) (string, error) {
 					return false
 				}
 			case *ast.IfStmt:
-				if string(content[offset(n.Cond.Pos()):offset(n.Cond.End())]) != "s.deps.TestHooksEnabled" {
+				if string(content[offset(n.Cond.Pos()):offset(n.Cond.End())]) != hooksCondition {
 					return true
 				}
 				// The test hooks' rows, `rows = append(rows, routeRow{...}, ...)`: each run of routeRow

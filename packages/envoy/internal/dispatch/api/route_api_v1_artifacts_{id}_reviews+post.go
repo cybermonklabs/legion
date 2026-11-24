@@ -14,8 +14,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).createArtifactReview,
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	// The rows that settle what a person settles: a document's review, a credential's fate, and
-	// a personal token's own scopes, which a credential may not widen past its own.
+	// A review settles what a person settles, so it needs the approve scope beside person.
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
 	Shape: routeShape{
 		Status: http.StatusCreated, Response: model.ArtifactReview{}, Request: createArtifactReviewInput{},

@@ -10,8 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Read one comment with its thread.",
 	Handler:     (*server).getComment,
-	// A comment's own routes. The reads and the thread writes answer writeHandlerError's
-	// NOT_FOUND; the two delivery routes answer COMMENT_NOT_FOUND of their own.
+	// The read answers writeHandlerError's NOT_FOUND for a comment id no row holds.
 	ID:    &idRoute{Kind: "comment", NotFound: "NOT_FOUND"},
 	Shape: routeShape{Status: http.StatusOK, Response: commentRead{}},
 })

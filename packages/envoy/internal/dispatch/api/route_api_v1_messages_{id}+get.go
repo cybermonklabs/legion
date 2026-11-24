@@ -12,8 +12,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getMessageThread,
 	// A message, by any id in its conversation. The issue form names an owner, so a prefix of
 	// it is looked for among that issue's messages alone; the owner-free forms look among
-	// every message, a direct conversation's included. The reads answer NOT_FOUND and the
-	// three delivery routes MESSAGE_NOT_FOUND.
+	// every message, a direct conversation's included. The read answers NOT_FOUND.
 	ID:    &idRoute{Kind: "message", NotFound: "NOT_FOUND"},
 	Shape: routeShape{Status: http.StatusOK, Response: messageRead{}},
 })

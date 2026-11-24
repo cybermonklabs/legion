@@ -24,6 +24,11 @@ const (
 	routeScopesName     = "routeScopes"
 	readScopeRoutesName = "readScopeRoutes"
 	routeShapesName     = "routeShapes"
+
+	// hooksCondition is the one condition of routes() whose rows are the test hooks', mounted
+	// only where Deps.TestHooksEnabled is set. readRows refuses a row under any other condition,
+	// and sharedCode cuts the rows of this one alone.
+	hooksCondition = "s.deps.TestHooksEnabled"
 )
 
 // tree is the files of one revision of package api: a commit read through git, or a directory.
@@ -152,7 +157,7 @@ func readOldLayout(src tree) ([]*oldRoute, map[string]string, error) {
 		return string(sources[name][fset.Position(node.Pos()).Offset:fset.Position(node.End()).Offset])
 	}
 
-	routes, err := readRows(fset, parsed[tableFile], text, imports, src)
+	routes, err := readRows(fset, parsed[tableFile], func(node ast.Node) string { return text(tableFile, node) }, imports, src)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -212,7 +217,7 @@ func readOldLayout(src tree) ([]*oldRoute, map[string]string, error) {
 
 // readRows reads the rows of routes(): the []routeRow literal, and the routeRow literals the test
 // hooks append under `if s.deps.TestHooksEnabled`.
-func readRows(fset *token.FileSet, file *ast.File, text func(string, ast.Node) string, imports map[string]string, src tree) ([]*oldRoute, error) {
+func readRows(fset *token.FileSet, file *ast.File, text func(ast.Node) string, imports map[string]string, src tree) ([]*oldRoute, error) {
 	body := routesBody(file)
 	if body == nil {
 		return nil, fmt.Errorf("%s holds no func (s *server) routes()", tableFile)
@@ -225,13 +230,33 @@ func readRows(fset *token.FileSet, file *ast.File, text func(string, ast.Node) s
 		ast.Inspect(node, func(node ast.Node) bool {
 			switch n := node.(type) {
 			case *ast.IfStmt:
-				if text(tableFile, n.Cond) == "s.deps.TestHooksEnabled" {
+				condition := text(n.Cond)
+				if condition == hooksCondition {
 					walk(n.Body, true)
 					if n.Else != nil {
 						walk(n.Else, hook)
 					}
 					return false
 				}
+				// Any other condition decides whether its rows mount, and this reader does not know
+				// what it decides, so a row under it is refused rather than written as always
+				// mounted. `if s.deps.TestHooksEnabled && s.deps.Store != nil` is such a condition:
+				// read as a hooks block it would be right, read as none it writes 15 hooks ungated.
+				ast.Inspect(n, func(inner ast.Node) bool {
+					literal, isLiteral := inner.(*ast.CompositeLit)
+					if !isLiteral {
+						return true
+					}
+					if ident, named := literal.Type.(*ast.Ident); !named || ident.Name != "routeRow" {
+						return !isRowSlice(literal.Type)
+					}
+					if problem == nil {
+						problem = fmt.Errorf("routes() holds a row under `if %s`, a condition this reader does not know the meaning of, so whether it mounts cannot be read: %s",
+							condition, text(literal))
+					}
+					return false
+				})
+				return false
 			case *ast.CallExpr:
 				if ident, ok := n.Fun.(*ast.Ident); ok && ident.Name == "append" && len(n.Args) > 1 {
 					if err := noCommentBetween(fset, file, n.Lparen, n.Rparen, n.Args[1:]); err != nil && problem == nil {
@@ -246,7 +271,7 @@ func readRows(fset *token.FileSet, file *ast.File, text func(string, ast.Node) s
 					for _, element := range n.Elts {
 						row, ok := element.(*ast.CompositeLit)
 						if !ok {
-							problem = fmt.Errorf("a row of routes() is no composite literal: %s", text(tableFile, element))
+							problem = fmt.Errorf("a row of routes() is no composite literal: %s", text(element))
 							continue
 						}
 						rows = append(rows, row)
@@ -273,20 +298,20 @@ func readRows(fset *token.FileSet, file *ast.File, text func(string, ast.Node) s
 	routes := make([]*oldRoute, 0, len(rows))
 	for _, row := range rows {
 		if len(row.Elts) != 5 {
-			return nil, fmt.Errorf("a row of routes() has %d columns, want 5: %s", len(row.Elts), text(tableFile, row))
+			return nil, fmt.Errorf("a row of routes() has %d columns, want 5: %s", len(row.Elts), text(row))
 		}
 		for _, element := range row.Elts {
 			if _, keyed := element.(*ast.KeyValueExpr); keyed {
-				return nil, fmt.Errorf("a row of routes() names its columns, which this reader does not read: %s", text(tableFile, row))
+				return nil, fmt.Errorf("a row of routes() names its columns, which this reader does not read: %s", text(row))
 			}
 		}
 		route := &oldRoute{
-			methodExpr: text(tableFile, row.Elts[0]), patternExpr: text(tableFile, row.Elts[1]),
-			authExpr: text(tableFile, row.Elts[2]), descriptionExpr: text(tableFile, row.Elts[3]),
+			methodExpr: text(row.Elts[0]), patternExpr: text(row.Elts[1]),
+			authExpr: text(row.Elts[2]), descriptionExpr: text(row.Elts[3]),
 			testHook: hooks[row], packages: map[string]bool{},
 		}
 		method, ok := row.Elts[0].(*ast.SelectorExpr)
-		if !ok || !strings.HasPrefix(method.Sel.Name, "Method") || text(tableFile, method.X) != "http" {
+		if !ok || !strings.HasPrefix(method.Sel.Name, "Method") || text(method.X) != "http" {
 			return nil, fmt.Errorf("a row's method is no http.Method constant: %s", route.methodExpr)
 		}
 		route.method = strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
@@ -307,8 +332,8 @@ func readRows(fset *token.FileSet, file *ast.File, text func(string, ast.Node) s
 			return nil, fmt.Errorf("a row's pattern is neither a string nor a constant: %s", route.patternExpr)
 		}
 		handler, ok := row.Elts[4].(*ast.SelectorExpr)
-		if !ok || text(tableFile, handler.X) != "s" {
-			return nil, fmt.Errorf("%s %s: its handler is no method of the server (s.<method>): %s", route.method, route.pattern, text(tableFile, row.Elts[4]))
+		if !ok || text(handler.X) != "s" {
+			return nil, fmt.Errorf("%s %s: its handler is no method of the server (s.<method>): %s", route.method, route.pattern, text(row.Elts[4]))
 		}
 		route.handler = handler.Sel.Name
 		route.key = route.method + " " + route.pattern

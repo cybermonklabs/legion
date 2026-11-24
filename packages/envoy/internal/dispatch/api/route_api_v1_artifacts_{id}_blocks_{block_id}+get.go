@@ -12,8 +12,8 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Where one block stands in a document: its path from the top-level block down (type, id, child index), and for a table block, row or cell the table's id, the row index (0 is the header), the cell's column index, the text of the header cell drawn above it and the row's cells; 404 TARGET_NOT_FOUND for an id the live document does not hold.",
 	Handler:     (*server).getArtifactBlockPath,
-	// The two routes that also name a block of that document, each answering TARGET_NOT_FOUND
-	// for a block id the document does not hold.
+	// The path names a block of the document too, and TARGET_NOT_FOUND is the answer for a block
+	// id the document does not hold.
 	ID:    &idRoute{Kind: "artifact", Blocks: true, NotFound: "ARTIFACT_NOT_FOUND", BlockNotFound: "TARGET_NOT_FOUND"},
 	Shape: routeShape{Status: http.StatusOK, Response: model.BlockPath{}},
 })

@@ -14,9 +14,8 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: fmt.Sprintf("Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over %d characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).", contracts.IssueTitleMax),
 	Handler:     (*server).createIssue,
-	// The rows that write an object belonging to one project: its issue, its project, its
-	// document, its ask, its comment, or a message on one of its issues. The issue create
-	// leads them by path and is the one of them whose project its address does not name.
+	// The issue create is the one write of a project's own objects whose project its address
+	// does not name: createIssue reads it from the body and makes the check itself.
 	WriteClass: scopeProjectInBody,
 	Shape: routeShape{
 		Status: http.StatusCreated, Response: model.Issue{}, Request: createIssueInput{}, Advice: writeAdvice{},

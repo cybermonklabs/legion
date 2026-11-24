@@ -833,18 +833,12 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// A route that a read-only token may call and that is not a GET is a write, which would
 		// be opened to a token minted only to read, so the table is refused rather than mounted
 		// (routeDecl.ReadScope).
-		panic("api.Register: the route table's read list names a route that is not a GET row the table mounts: " + strings.Join(refused, "; "))
+		panic("api.Register: a route that is not a GET states ReadScope, which a read-only token may call: " + strings.Join(refused, "; "))
 	}
-	// After the check above, so the list it names is GET routes alone, and before the first row
-	// is wrapped, since every row the list does not name answers it (refuseReadOnlyToken).
-	var readList []string
-	for _, route := range routes {
-		if route.ReadScope {
-			readList = append(readList, route.Method+" "+route.Pattern)
-		}
-	}
-	s.readOnlyRefusal = "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
-		strings.Join(readList, ", ") + "): nothing ran"
+	// After the check above, so the routes it names are GET routes alone, and before the first
+	// route is wrapped, since every route that does not state ReadScope answers it
+	// (refuseReadOnlyToken).
+	s.readOnlyRefusal = readOnlyRefusalText(routes)
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
 		// A catalogue entry naming a row this table does not hold or does not class as a write,

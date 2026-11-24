@@ -16,8 +16,8 @@ var _ = declareRoute(routeDecl{
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a credential request id"},
 	// Dismissing an expired credential request settles nothing: nobody decided it before its
-	// deadline and nobody can now, so taking it off the Inbox needs the person alone, as the
-	// Inbox's own Dismiss above does, and not approve.
+	// deadline and nobody can now, so taking it off the Inbox needs the person scope alone, as
+	// POST /api/v1/me/inbox/dismiss does, and not approve.
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Shape: routeShape{
 		// POST /v1/credential-requests/{record}/dismiss (cipher.Client.Dismiss). Dispatch

@@ -12,6 +12,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -150,6 +151,34 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 		walked, liveSocketPattern, listed, walked-listed+1, contracts.DispatchReadOnlyToken)
 }
 
+// The refusal every other route answers names the routes a read-only token may call, in the order
+// the server mounts them, which is by pattern and then method (routes()). The declarations have no
+// written order of their own - each route is a file - so this is the one order the message can
+// have, and it is the order GET /api/v1 and the OpenAPI document list routes in. No client reads
+// the message; it is prose for the person holding the token.
+func TestTheReadOnlyRefusalNamesTheReadRoutesInTheOrderTheyAreMounted(t *testing.T) {
+	t.Parallel()
+	var want []string
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if route.ReadScope {
+			want = append(want, route.Method+" "+route.Pattern)
+		}
+	}
+	if len(want) < 2 {
+		t.Fatalf("%d routes state ReadScope, so no order is proved here", len(want))
+	}
+	if !slices.IsSortedFunc(want, func(left, right string) int {
+		leftMethod, leftPattern, _ := strings.Cut(left, " ")
+		rightMethod, rightPattern, _ := strings.Cut(right, " ")
+		return cmp.Or(strings.Compare(leftPattern, rightPattern), strings.Compare(leftMethod, rightMethod))
+	}) {
+		t.Fatalf("the read routes are mounted in the order %q, which is not by pattern then method", want)
+	}
+	if got := readOnlyRefusalText((&server{deps: Deps{TestHooksEnabled: true}}).routes()); !strings.Contains(got, "("+strings.Join(want, ", ")+")") {
+		t.Fatalf("the read-only refusal is %q, want it to name %q", got, strings.Join(want, ", "))
+	}
+}
+
 // readListAnswers is what each route of the read list answers the mounted walk below at its probe
 // path, which names a project with no architecture source and an issue Dispatch does not hold: its
 // handler's own answer, which a request the gate refused could not carry. A route added to the
@@ -234,12 +263,12 @@ func withRouteRegistry(t *testing.T, routes []routeDecl) {
 	t.Cleanup(func() { routeRegistry = kept })
 }
 
-// TestRegisterRefusesAReadOnlyListOfNoMountedGETRow: a route that is not a GET and states
+// TestRegisterRefusesARouteThatStatesReadScopeAndIsNoGET: a route that is not a GET and states
 // ReadScope would open that write to a token minted only to read, so Register refuses it and
 // names the route. It replaces the package's declarations for its length, so it is not parallel.
-func TestRegisterRefusesAReadOnlyListOfNoMountedGETRow(t *testing.T) {
+func TestRegisterRefusesARouteThatStatesReadScopeAndIsNoGET(t *testing.T) {
 	if refusal := registerRefusal(t); refusal != "" {
-		t.Fatalf("api.Register refused the read list as it stands: %s", refusal)
+		t.Fatalf("api.Register refused the routes that state ReadScope as they stand: %s", refusal)
 	}
 	const name = "POST /api/v1/issues/{key}/comments"
 	planted := slices.Clone(routeRegistry)
@@ -250,15 +279,15 @@ func TestRegisterRefusesAReadOnlyListOfNoMountedGETRow(t *testing.T) {
 	planted[index].ReadScope = true
 	withRouteRegistry(t, planted)
 	refusal := registerRefusal(t)
-	if !strings.Contains(refusal, "read list") || !strings.Contains(refusal, name) {
-		t.Fatalf("api.Register with %s on the read list refused %q, want a refusal of the read list naming it", name, refusal)
+	if !strings.Contains(refusal, "ReadScope") || !strings.Contains(refusal, name) {
+		t.Fatalf("api.Register with %s stating ReadScope refused %q, want a refusal naming it", name, refusal)
 	}
 }
 
-// TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET: the check register runs names,
-// sorted, each route that states ReadScope and is a write, and passes a GET route whether the
-// deployment serves it or only a server with its test hooks in does.
-func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
+// TestTheReadOnlyListCheckNamesEveryRouteThatStatesReadScopeAndIsNoGET: the check register runs
+// names, sorted, each route that states ReadScope and is a write, and passes a GET route whether
+// the deployment serves it or only a server with its test hooks in does.
+func TestTheReadOnlyListCheckNamesEveryRouteThatStatesReadScopeAndIsNoGET(t *testing.T) {
 	t.Parallel()
 	if refused := readRoutesNotGET(readOnlyTable()); len(refused) != 0 {
 		t.Fatalf("the read list as it stands is refused: %v", refused)
