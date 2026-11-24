@@ -326,9 +326,13 @@ describe("Stage 4b's teardown of done's cleanup pull request", () => {
       closeFails: close502,
     });
     expect(r.code).toBe(1);
-    expect(r.stdout).toContain(
-      `   could not close the run's cleanup pull request ${url(4)}: ${close502}\n`
+    // gh's refusal is kept in a file under the evidence directory, which the line names (gh_kept).
+    expect(r.stdout).toMatch(
+      new RegExp(
+        `   could not close the run's cleanup pull request ${url(4).replaceAll(".", "\\.")}; gh's own words are in \\S+/evidence/gh/cleanup-close-4\\.log\\n`
+      )
     );
+    expect(r.stdout).not.toContain(close502);
     expect(r.stdout).toContain(
       "   deleted the run's cleanup branch proof/clean-main-legsmoke from sjawhar/legion-smoke\n"
     );
@@ -342,8 +346,10 @@ describe("Stage 4b's teardown of done's cleanup pull request", () => {
       listFails: close502,
     });
     expect(r.code).toBe(1);
-    expect(r.stdout).toContain(
-      `   could not list the open pull requests on sjawhar/legion-smoke, so the run's cleanup pull request ${url(1)} may still be open (gh's reason is on stderr)\n`
+    expect(r.stdout).toMatch(
+      new RegExp(
+        `   could not list the open pull requests on sjawhar/legion-smoke, so the run's cleanup pull request ${url(1).replaceAll(".", "\\.")} may still be open; gh's own words are in \\S+/evidence/gh/cleanup-open-pull-requests\\.err\\n`
+      )
     );
     expect(r.pr(1)).toBe("OPEN");
   });
@@ -445,9 +451,12 @@ describe("Stage 3's teardown of smoke-main-clean's cleanup pull request", () => 
       closeFails: close502,
     });
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain(
-      `could not close the run's cleanup pull request ${url(5)}: ${close502}\n`
+    expect(r.stderr).toMatch(
+      new RegExp(
+        `could not close the run's cleanup pull request ${url(5).replaceAll(".", "\\.")}; gh's own words are in \\S+/evidence/gh/cleanup-close-5\\.log\\n`
+      )
     );
+    expect(r.stderr).not.toContain(close502);
     expect(r.stderr).not.toContain("cleanup warning:");
     untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
   });

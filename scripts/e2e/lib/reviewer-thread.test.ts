@@ -61,13 +61,19 @@ function threadsFixture(
 }
 
 function run(fixture: string, call: string) {
+  // The lib keeps the page gh answered, and gh's and jq's own words, under the evidence directory
+  // (gh_kept, gh_quiet, gh_jq), taken from the lib beside the functions under test.
+  const evidence = join(dir, `evidence-${Math.random().toString(36).slice(2)}`);
   const result = Bun.spawnSync(
     [
       "bash",
       "-c",
       `set -Eeuo pipefail
-repo=sjawhar/legion-smoke pr_number=1
+repo=sjawhar/legion-smoke pr_number=1 evidence="$EVIDENCE"
 implement_app_login='example-implement[bot]' review_app_login='${reviewApp}[bot]'
+${fn("gh_kept")}
+${fn("gh_quiet")}
+${fn("gh_jq")}
 ${fn("role_app")}
 ${fn("role_app_slug")}
 ${fn("review_threads")}
@@ -75,7 +81,7 @@ ${fn("reviewer_thread")}
 ${call}
 `,
     ],
-    { env: { PATH: `${bin}:${process.env.PATH}`, GH_GRAPHQL_FIXTURE: fixture } }
+    { env: { PATH: `${bin}:${process.env.PATH}`, GH_GRAPHQL_FIXTURE: fixture, EVIDENCE: evidence } }
   );
   return {
     code: result.exitCode,
