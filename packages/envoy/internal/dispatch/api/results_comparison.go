@@ -310,7 +310,7 @@ func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlo
 		return noBases(model.ReasonReadFailed)
 	}
 	merged := len(own.pulls) > 0 || len(linked.repos) > 0
-	if !merged && check.When == checkWhenAfterMerge {
+	if len(own.pulls) == 0 && check.When == checkWhenAfterMerge {
 		return noBases(model.ReasonNotMerged)
 	}
 	compared := c.branchesIn(ctx, check, *repo, false, merged)
