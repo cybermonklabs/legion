@@ -2136,8 +2136,8 @@ type Store interface {
 	// and ClearTreeGeneration leave the count: the generation is part of the record's id already,
 	// and the count only rises.
 	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error)
-	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
-	// of the latest, unchanged: the zero StepStart where the place has no row.
+	// StepStarts is the count of starts of place on issue with the agent, the moment, the run and
+	// the start totals of the latest, unchanged: the zero StepStart where the place has no row.
 	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
 	// OpenStep is the open run of a step of issue whose start wrote the latest moment, of the
 	// several an issue can have open (Postgres.OpenStep), and the zero StepEntry where none is open.
@@ -2155,6 +2155,21 @@ type Store interface {
 	// StepRuns is every row of starts of each of issues, by issue and place, in one read: what the
 	// end of a step's run reads of the issues one fact touched (workflow's settleRuns).
 	StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]IssueStepRun, error)
+	// KeepStartTotals keeps what the latest start of place on issue read of its agent, on the
+	// place's row, which the run's end reads with the start. The next start of the place clears it.
+	KeepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, start StartTotals) error
+	// AgentLaunches is the claim agent's generation now, whether its row records a process, and
+	// each of its launch rows from the generation since on (Postgres.AgentLaunches).
+	AgentLaunches(ctx context.Context, tx pgx.Tx, agent claim.Token, since uint64) (AgentLaunches, error)
+	// KeepRead keeps read as the newest read of the launch key where its Read is above the one the
+	// store holds. A launch with no row gets its row.
+	KeepRead(ctx context.Context, tx pgx.Tx, key LaunchKey, read LaunchRead) error
+	// KeepFinal keeps final as the final totals of the launch key where the store holds none. A
+	// launch with no row gets its row.
+	KeepFinal(ctx context.Context, tx pgx.Tx, key LaunchKey, final LaunchRead) error
+	// StepAgentClaims is each claim not retired whose agent a fact of issue can start or end a
+	// step of: the issue's own claims and the architect of its tree.
+	StepAgentClaims(ctx context.Context, tx pgx.Tx, issue string) ([]claim.Token, error)
 	// PutPlan stores version v of the plan of v's issue at v's generation, with the tasks it
 	// gives and their steps. The same version given twice is refused, and so is a step of a task
 	// it does not give. A task the generation holds already takes the version's text and

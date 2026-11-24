@@ -139,6 +139,48 @@ func TestPutStepWritesAnEndUnderTheNamesTheRouteReads(t *testing.T) {
 	}
 }
 
+// The end of a step names the model its role was set to and each model that answered, under the
+// names Dispatch's route reads. A write that does not know them leaves both out, so Dispatch keeps
+// what it holds: a null answers would read as a statement. A step with no call states an empty
+// list, which Dispatch keeps as one, apart from not knowing.
+func TestPutStepSendsAnswersOnlyWhereKnown(t *testing.T) {
+	const id = "2d3e4f5a-6b7c-5d8e-9f0a-1b2c3d4e5f6a"
+	ended := time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
+	setModel := "anthropic/claude-opus-5"
+	end := func(setModel *string, answers *[]ModelCalls) StepWrite {
+		return StepWrite{Task: "default", Step: 4, Kind: "step", Role: "reviewer", Type: "review",
+			Agent: "legion-leg-leg-1-reviewer", Generation: 1, EndedAt: &ended, SetModel: setModel, Answers: answers}
+	}
+	for _, tc := range []struct {
+		name    string
+		write   StepWrite
+		present map[string]string
+		absent  []string
+	}{
+		{name: "a step whose answers are not known", write: end(nil, nil), absent: []string{"set_model", "answers"}},
+		{name: "a step with no call", write: end(&setModel, &[]ModelCalls{}),
+			present: map[string]string{"set_model": `"anthropic/claude-opus-5"`, "answers": `[]`}},
+		{name: "a step two models answered", write: end(&setModel,
+			&[]ModelCalls{{Model: "anthropic/claude-opus-5", Calls: 41}, {Model: "anthropic/claude-haiku-4-5", Calls: 3}}),
+			present: map[string]string{"set_model": `"anthropic/claude-opus-5"`,
+				"answers": `[{"model":"anthropic/claude-opus-5","calls":41},{"model":"anthropic/claude-haiku-4-5","calls":3}]`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := putStep(t, id, tc.write)
+			for name, want := range tc.present {
+				if got, ok := body[name]; !ok || string(got) != want {
+					t.Errorf("the body writes %s as %q (written: %t), want %s", name, got, ok, want)
+				}
+			}
+			for _, name := range tc.absent {
+				if raw, ok := body[name]; ok {
+					t.Errorf("the body writes %s as %s, want it left out", name, raw)
+				}
+			}
+		})
+	}
+}
+
 // putStep writes the record id of LEG-1 through the client to Dispatch's step route as a test plays
 // it. It returns the body that route read.
 func putStep(t *testing.T, id string, write StepWrite) map[string]json.RawMessage {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1253,5 +1254,93 @@ func TestAMergeForwardReviewTellsTheArchitectAndTheWorkerOfThePhase(t *testing.T
 		if got := review.Message("LEGION-208", pr); !strings.HasSuffix(got, want) {
 			t.Errorf("the review in %s reads %q, want it to end %q", at, got, want)
 		}
+	}
+}
+
+// The end of a step names the model its role was set to and each model that answered, with its
+// calls. Dispatch refuses a whole write that breaks a rule of those two fields (400 STEP_INPUT),
+// which ends the row, and the step's end would never land. So the record is held to Dispatch's
+// rules where it is queued and where a stored row is read: at most the 16 answers a step record
+// holds, at least one call each, each model once, and every name in the form of a step's agent
+// text. A list with no entry, a step with no call, is taken and stored as one. A record that
+// does not know its answers leaves the field out.
+func TestAStepRecordPayloadHoldsItsAnswersToTheirRules(t *testing.T) {
+	ended := time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
+	end := func(setModel *string, answers *[]ModelCalls) StepRecord {
+		model := "anthropic/claude-opus-5"
+		return StepRecord{ID: stepRecordID, Task: "default", Step: 4, Kind: "step", Role: "reviewer", Type: "review",
+			Agent: "legion-leg-leg-1-reviewer", Generation: 1, Model: &model, SetModel: setModel, Answers: answers, EndedAt: &ended}
+	}
+	sixteen := make([]ModelCalls, 0, 17)
+	for i := range 16 {
+		sixteen = append(sixteen, ModelCalls{Model: fmt.Sprintf("anthropic/model-%02d", i), Calls: uint64(i + 1)})
+	}
+	seventeen := append(slices.Clone(sixteen), ModelCalls{Model: "anthropic/model-16", Calls: 1})
+	sixteenJSON, err := json.Marshal(sixteen)
+	must(t, err)
+	for _, tc := range []struct {
+		name     string
+		record   StepRecord
+		setModel string
+		answers  string
+	}{
+		{name: "a step whose answers are not known", record: end(nil, nil), setModel: "<absent>", answers: "<absent>"},
+		{name: "a step with no call", record: end(new("anthropic/claude-opus-5"), &[]ModelCalls{}),
+			setModel: `"anthropic/claude-opus-5"`, answers: `[]`},
+		{name: "a step two models answered", record: end(new("anthropic/claude-opus-5"),
+			&[]ModelCalls{{Model: "anthropic/claude-opus-5", Calls: 41}, {Model: "anthropic/claude-haiku-4-5", Calls: 3}}),
+			setModel: `"anthropic/claude-opus-5"`,
+			answers:  `[{"model":"anthropic/claude-opus-5","calls":41},{"model":"anthropic/claude-haiku-4-5","calls":3}]`},
+		{name: "a step the most models answered", record: end(nil, &sixteen), setModel: "<absent>", answers: string(sixteenJSON)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, err := NewOutboxRow("LEG-1", tc.record, ended)
+			if err != nil {
+				t.Fatalf("the record was refused: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			must(t, json.Unmarshal(row.Payload, &fields))
+			for name, want := range map[string]string{"set_model": tc.setModel, "answers": tc.answers} {
+				got, written := fields[name]
+				if !written && want != "<absent>" || written && string(got) != want {
+					t.Errorf("the payload writes %s as %s (written: %t), want %s", name, got, written, want)
+				}
+			}
+			decoded, err := DecodeOutboxPayload(OutboxRow{ID: 80, Kind: OutboxKindStepRecord, Payload: row.Payload})
+			if err != nil {
+				t.Fatalf("the stored payload was refused: %v", err)
+			}
+			if got, ok := decoded.(StepRecord); !ok || !reflect.DeepEqual(got, tc.record) {
+				t.Fatalf("the stored payload reads as %+v, want %+v", decoded, tc.record)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		record StepRecord
+		reason string
+	}{
+		{name: "17 answers", record: end(nil, &seventeen), reason: "answers hold 17 entries, more than the 16 a step record holds"},
+		{name: "a model with no call", record: end(nil, &[]ModelCalls{{Model: "anthropic/claude-opus-5", Calls: 2}, {Model: "anthropic/x", Calls: 0}}),
+			reason: "answers entry 2 (anthropic/x) has 0 calls"},
+		{name: "a model listed twice", record: end(nil, &[]ModelCalls{{Model: "anthropic/x", Calls: 2}, {Model: "anthropic/x", Calls: 1}}),
+			reason: "answers name anthropic/x twice"},
+		{name: "an answer outside the form", record: end(nil, &[]ModelCalls{{Model: "a b", Calls: 2}}),
+			reason: `answers entry 1 names "a b", which is not an agent's text`},
+		{name: "an empty answer", record: end(nil, &[]ModelCalls{{Model: "", Calls: 2}}),
+			reason: `answers entry 1 names "", which is not an agent's text`},
+		{name: "a set model outside the form", record: end(new("a b"), nil),
+			reason: `set model "a b" is not an agent's text`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewOutboxRow("LEG-1", tc.record, ended); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("NewOutboxRow = %v, want a refusal naming %q", err, tc.reason)
+			}
+			payload, err := json.Marshal(tc.record)
+			must(t, err)
+			if _, err := DecodeOutboxPayload(OutboxRow{ID: 81, Kind: OutboxKindStepRecord, Payload: payload}); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("DecodeOutboxPayload of the stored row = %v, want a refusal naming %q", err, tc.reason)
+			}
+		})
 	}
 }

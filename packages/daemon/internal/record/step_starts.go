@@ -43,10 +43,16 @@ const (
 // raised: a step that was running when the release deployed. StartedAt is zero where the moment
 // is unknown: an end of such a step whose role's entry recorded none.
 type StepStart struct {
-	Starts    int64
-	Agent     string
-	StartedAt time.Time
-	Run       StepRun
+	Starts      int64
+	Agent       string
+	StartedAt   time.Time
+	Run         StepRun
+	StartTotals *StartTotals
+}
+
+// KeepStartTotals has no behaviour in the red run's tree.
+func (s *Postgres) KeepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, start StartTotals) error {
+	return nil
 }
 
 // RaiseStepStarts counts one more start of place on issue, marks its run open whatever the run
