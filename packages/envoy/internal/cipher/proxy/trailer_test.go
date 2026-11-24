@@ -39,8 +39,9 @@ func chunkedWithTrailer(t *testing.T, name, value, body string) *http.Request {
 	}
 	// The command signed without naming a body hash, so the proxy reads the body and hashes it
 	// itself, which is the path this test is about. A request that names one is signed again
-	// from that name and its body is streamed, so its trailers follow the request upstream and
-	// no scan before the forward holds them; nothing here sends that shape.
+	// from that name and its body is streamed: the proxy copies the trailer map before any value
+	// has arrived in it, so such a trailer reaches the service with its names and without its
+	// values, and nothing here sends that shape.
 	request.Header.Del("X-Amz-Content-Sha256")
 	return request
 }
