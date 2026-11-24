@@ -3847,8 +3847,11 @@ GATES = [
     # The two-build job's Go step alone, behind a gate of its own, so the TAG_RUNS pairing below
     # holds envoy_go to what this step reads - cmd/dispatch's twobuild closure, the CLI
     # twobuild_cli_test.go runs and the scripts the step leans on - and not to the browser half's
-    # reads, which a change to cmd/dispatch's untagged tests never needs.
-    gate("dispatch_two_builds_go", TWO_BUILDS_JOB, step=TWO_BUILDS_STEP, runs=[ceiling_run(TWO_BUILDS_JOB)],
+    # reads, which a change to cmd/dispatch's untagged tests never needs. The dispatch-two-builds-same
+    # job runs under this filter too (its if: reads the input dispatch_two_builds_go), so its
+    # sizing step's go run is this gate's as well as dispatch_two_builds'.
+    gate("dispatch_two_builds_go", TWO_BUILDS_JOB, step=TWO_BUILDS_STEP,
+         runs=[ceiling_run(TWO_BUILDS_JOB), ceiling_run(TWO_BUILDS_SAME_JOB, job_file(TWO_BUILDS_JOB))],
          exact=[two_builds_go_step(), two_builds_same_step()], reads=two_builds_go_reads()),
 
     gate("listener_server_change", "listener-server-change", exact=[

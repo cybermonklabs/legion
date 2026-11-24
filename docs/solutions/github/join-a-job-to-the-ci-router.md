@@ -315,11 +315,14 @@ fails the pull request that adds it.
   job runs, pinned to the script's whole line. The check fails when a job's `run:` step starts a
   go command (`go test`, `vet`, `build`, `run`, `list`, `install`, `generate`) nothing claims.
   A `script_run`'s why cites, with `at()`, each step that starts the script, and the check holds
-  that list both ways: a cited step that is gone fails, and so does a `run:` step a filter gates
-  whose text names the script, unless a `script_run` of the script, in a gate on that job or that
-  step, cites it. So a new step that runs a declared script (another
-  `forced-order.sh -server <version>`) fails the check until a `Run` of the script in its gate
-  cites it.
+  that list both ways: a cited step that is gone fails, and so does a step a filter gates that
+  names the script, unless, for every filter that gates it, a `script_run` of the script in a
+  gate of that filter on the same job cites it. The step's text is read with the workspace
+  (`$GITHUB_WORKSPACE` in any spelling), its `env:`, its matrix values, its caller's inputs and a
+  composite action's own steps put in, so `"$GITHUB_WORKSPACE/packages/envoy/scripts/forced-order.sh"
+  -server <version>` is read like the plain path. A new step that runs a declared script fails
+  the check until a `Run` of the script in each of its gates cites it; cite a step by its `id:`
+  when another step of the job shares its name.
   It reduces a claimed command only in its simple form: one line of `go test|vet|build`,
   relative package paths and only `-v`, `-race`, `-count=N`, `-timeout D`, `-buildvcs=false` and
   one `-tags T`, that is its step's whole `run:` script (split at `\n` alone, stripped of spaces
