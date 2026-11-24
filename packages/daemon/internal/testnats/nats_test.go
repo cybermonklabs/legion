@@ -69,33 +69,24 @@ func TestAFailedStartLeavesNoContainer(t *testing.T) {
 	}
 }
 
-// A start Docker refuses because something took a probed port before the publish is tried again
-// on a fresh address and ports (start), and the server the retry runs is the one its caller
-// configured: an nkey server refuses a client with no credential and admits its user there, as at
-// a first start. testcontainers reads a configuration file's reader to its end as it creates the
-// container (v0.41.0 lifecycle.go:159), before Docker refuses the publish at the start, so a retry
-// handed the first attempt's reader copies an empty configuration in, and that server admits
-// anyone. The row takes the first probe's client port at its address once the probe lets it go,
-// as another program can, and requires the start to have been tried again: a first start Docker
-// did not refuse checks no retry. Docker refuses only where this process can hold the port it
-// publishes: on a daemon on this machine. On a daemon on another machine the row fails as UNKNOWN,
-// naming the daemon, rather than fail on a probe count that says nothing of the configuration.
+// A start Docker refuses as in use is tried again on a fresh address and ports (start), and the
+// server the retry runs is the one its caller configured: an nkey server refuses a client with no
+// credential and admits its user there, as at a first start. testcontainers reads a configuration
+// file's reader to its end as it creates the container (v0.41.0 lifecycle.go:159), before Docker
+// refuses the publish at the start, so a retry handed the first attempt's reader copies an empty
+// configuration in, and that server admits anyone. Docker refuses a publish once every port it
+// tried of the range start gives it is held (publishedRange). A range from lastPublishedPort holds
+// that port alone, so the row takes that port at the first probe's address and hands the first
+// start that range for its client port, and requires the start to have been tried again: a first
+// start Docker did not refuse checks no retry. Docker refuses only where this process can take a
+// port Docker publishes: on a daemon on this machine. On a daemon on another machine the row
+// fails as UNKNOWN, naming the daemon, rather than fail on a probe count that says nothing of the
+// configuration.
 func TestAStartRetriedAfterARefusedPublishEnforcesItsUsers(t *testing.T) {
 	if server, _, err := external(); err == nil && server != "" {
 		t.Skipf("%s names a running NATS server, so the package starts no container", externalURLEnv)
 	}
-	if local, err := localDaemon(context.Background()); err != nil {
-		t.Fatalf("find where the Docker daemon publishes a container's ports: %v", err)
-	} else if !local {
-		daemon := "another machine"
-		if provider, err := testcontainers.NewDockerProvider(); err == nil {
-			if host, err := provider.DaemonHost(context.Background()); err == nil {
-				daemon = host
-			}
-			provider.Close()
-		}
-		t.Fatalf("UNKNOWN: the Docker daemon is at %s, not this machine, so this process cannot hold the port Docker publishes there and cannot make Docker refuse a start; run the row against a daemon on this machine", daemon)
-	}
+	requireLocalDaemon(t)
 	probe := loopbackPorts
 	t.Cleanup(func() { loopbackPorts = probe })
 	probes := 0
@@ -105,12 +96,13 @@ func TestAStartRetriedAfterARefusedPublishEnforcesItsUsers(t *testing.T) {
 		if err != nil || probes > 1 {
 			return host, ports, err
 		}
-		taken, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(ports[0])))
+		taken, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(lastPublishedPort)))
 		if err != nil {
-			return "", nil, fmt.Errorf("take the probed client port %s:%d: %w", host, ports[0], err)
+			return "", nil, fmt.Errorf("take %s:%d, the one port of a range from it: %w", host, lastPublishedPort, err)
 		}
 		t.Cleanup(func() { _ = taken.Close() })
-		t.Logf("took %s, the first probe's client port, once the probe let it go", taken.Addr())
+		t.Logf("took %s and handed the first start the range of that port alone for its client port", taken.Addr())
+		ports[0] = lastPublishedPort
 		return host, ports, nil
 	}
 	user, err := nkeys.CreateUser()
