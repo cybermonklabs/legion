@@ -65,28 +65,38 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 		t.Fatalf("admission.waiting = %#v, want %#v: this test reads each member of that line", got.Admission.Waiting, line)
 	}
 	holds, waits := true, false
+	// None of the five has a priority, of its own or by its tree root, so each is placed after
+	// P3 and carries a null priority, and its sentence says so and counts within that band.
+	none := api.PriorityView(record.NoPriority)
 	want := map[string]api.WaitingLineView{
 		"LEGION-10": {Place: 1, Length: 5, Part: "returned", Kind: "first_phase", PartPlace: 1, PartLength: 3,
-			HoldsSlot: &holds, Since: &opened,
-			Reason: "Its design gate opened at " + opened.UTC().Format(time.RFC3339) + ". It is 1st of 3 issues whose work came back. " +
+			HoldsSlot: &holds, Since: &opened, Priority: &none,
+			Reason: "Its design gate opened at " + opened.UTC().Format(time.RFC3339) + ". " +
+				"It has no priority, so it waits after every issue at P0 to P3. " +
+				"It is 1st of 3 issues with no priority whose work came back. " +
 				"It already holds its admission slot, so it resumes at the next pass whatever the cap says."},
 		"LEGION-12": {Place: 2, Length: 5, Part: "returned", Kind: "returning", PartPlace: 2, PartLength: 3,
-			HoldsSlot: &waits, Since: &owedAt,
-			Reason: "Its work came back at " + owedAt.UTC().Format(time.RFC3339) + ". It is 2nd of 3 issues whose work came back, " +
-				"and they take the free slots first."},
+			HoldsSlot: &waits, Since: &owedAt, Priority: &none,
+			Reason: "Its work came back at " + owedAt.UTC().Format(time.RFC3339) + ". " +
+				"Neither it nor its tree root LEGION-10 has a priority, so it waits after every issue at P0 to P3. " +
+				"It is 2nd of 3 issues with no priority whose work came back, " +
+				"and they take the free slots before the issues with no priority that have not started."},
 		"LEGION-40": {Place: 3, Length: 5, Part: "returned", Kind: "answered", PartPlace: 3, PartLength: 3,
-			HoldsSlot: &holds, Since: &answeredAt,
+			HoldsSlot: &holds, Since: &answeredAt, Priority: &none,
 			Reason: "A person answered it, and its work came back at " + answeredAt.UTC().Format(time.RFC3339) + ". " +
-				"It is 3rd of 3 issues whose work came back. It already holds its admission slot, " +
+				"It has no priority, so it waits after every issue at P0 to P3. " +
+				"It is 3rd of 3 issues with no priority whose work came back. It already holds its admission slot, " +
 				"so it resumes at the next pass whatever the cap says."},
 		"LEGION-20": {Place: 4, Length: 5, Part: "starting", Kind: "queued_root", PartPlace: 1, PartLength: 2,
-			HoldsSlot: &waits, RootRank: "A", OwnRank: "A", RootKey: "LEGION-20",
-			Reason: "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank, " +
-				"and 3 issues whose work came back stand ahead of all of them."},
+			HoldsSlot: &waits, RootRank: "A", OwnRank: "A", RootKey: "LEGION-20", Priority: &none,
+			Reason: "It has not started. It has no priority, so it waits after every issue at P0 to P3. " +
+				"It is 1st of 2 issues with no priority that have not started, by its own Dispatch rank, " +
+				"and 3 issues with no priority whose work came back stand ahead of all of them."},
 		"LEGION-11": {Place: 5, Length: 5, Part: "starting", Kind: "first_phase", PartPlace: 2, PartLength: 2,
-			HoldsSlot: &waits, RootRank: "M", OwnRank: "N", RootKey: "LEGION-10",
-			Reason: "It has not started. It is 2nd of 2 issues that have not started, " +
-				"by the Dispatch rank of its tree root LEGION-10, and 3 issues whose work came back stand ahead of all of them."},
+			HoldsSlot: &waits, RootRank: "M", OwnRank: "N", RootKey: "LEGION-10", Priority: &none,
+			Reason: "It has not started. Neither it nor its tree root LEGION-10 has a priority, so it waits after every issue at P0 to P3. " +
+				"It is 2nd of 2 issues with no priority that have not started, " +
+				"by the Dispatch rank of its tree root LEGION-10, and 3 issues with no priority whose work came back stand ahead of all of them."},
 	}
 	for _, member := range line {
 		view := got.Issues[member].WaitingLine

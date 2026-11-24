@@ -314,23 +314,38 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, assignmentPlanContract,
-	// which states that contract in its header as every plugin from shapedAnswersContract on
-	// does, is served at the recorded contract at or below it (recordedContractAtOrBelow),
-	// OwnerPlanContract, so it stands below that row alone and the log holds that row's line and
-	// nothing else. This subtest does not catch a strip applied beside the loop, because it reads
-	// both its expectation and its answer from stateNarrowings; the subtests below, which name
-	// their lines as literals, are what catch that.
+	// told what it lost: a caller one contract below the highest row, priorityContract, which
+	// states that contract in its header as every plugin from shapedAnswersContract on does, is
+	// served at the recorded contract at or below it (recordedContractAtOrBelow),
+	// assignmentPlanContract, so it stands below that row alone and the log holds that row's line
+	// and nothing else. The populated state gives every issue a priority, null included, and each
+	// member of the waiting line the priority that placed it, so the body carries neither key
+	// only because the strip took it. This subtest does not catch a strip applied beside the
+	// loop, because it reads both its expectation and its answer from stateNarrowings; the
+	// subtests below, which name their lines as literals, are what catch that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
 		state := populatedState(t)
 		highest := stateNarrowings[len(stateNarrowings)-1].contract
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), highest-1)
 
-		for _, row := range assignmentsOf(t, body, "LEGION-209") {
-			if _, carried := row["plan"]; carried {
-				t.Errorf("the body served to a caller below %d carries an assignment's `plan`, the key that contract added: %v",
-					highest, row)
+		lined := 0
+		for key, view := range issueViews(t, body) {
+			if value, carried := view["priority"]; carried {
+				t.Errorf("the body served to a caller below %d carries %s's `priority` %v, the key that contract added",
+					highest, key, value)
 			}
+			line, inLine := view["waitingLine"].(map[string]any)
+			if !inLine {
+				continue
+			}
+			lined++
+			if value, carried := line["priority"]; carried {
+				t.Errorf("the body served to a caller below %d carries %s's waitingLine `priority` %v, the key that contract added",
+					highest, key, value)
+			}
+		}
+		if lined == 0 {
+			t.Fatal("the populated state serves no member of the waiting line: this subtest proves nothing of waitingLine's `priority`")
 		}
 		want := narrowingsExpected(state, highest-1)
 		if len(want) != 1 {

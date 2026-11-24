@@ -531,10 +531,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					}
 				}
 				if !tc.priority {
-					delete(issue, "priority")
-					if line, carried := issue["waitingLine"].(map[string]any); carried {
-						delete(line, "priority")
-					}
+					stripPriority(issue)
 				}
 				// The issues' answer and the line's own fields are one contract and one
 				// strip, which state_caller_test's stripAnswerKeys states and this reads:

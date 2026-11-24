@@ -237,6 +237,34 @@ func withoutAssignmentPlanKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutPriorityKeys is a state body with no issue carrying `priority` and no waitingLine
+// carrying `priority`, which is what a caller below priorityContract is served of a state that
+// carries them (api's withoutPriority). It serves the table below as withoutQuietKeys does.
+func withoutPriorityKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		stripPriority(issue.(map[string]any))
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its priorities: %v", body, err)
+	}
+	return encoded
+}
+
+// stripPriority takes the two keys priorityContract added off one issue of a decoded body: its
+// own `priority` and its waitingLine's.
+func stripPriority(issue map[string]any) {
+	delete(issue, "priority")
+	if line, carried := issue["waitingLine"].(map[string]any); carried {
+		delete(line, "priority")
+	}
+}
+
 // withoutMergeWaitKey is a state body with no issue carrying `mergeWait`, which is what a caller
 // below mergeWaitContract is served of a state (api's withoutMergeWait). It serves the table
 // below as withoutQuietKeys does: a row's baseline is the full state with exactly the keys that
@@ -643,6 +671,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// the contract that added it), so a pod at it or above is served the key and every older
 		// pod is not.
 		plans bool
+		// priority is whether the caller is served each issue's `priority` and its waitingLine's
+		// `priority` (priorityContract, the contract that added both), so a caller at it is
+		// served the keys and every older one is not.
+		priority bool
 		// caches is whether the caller is served the repository-cache-room row's `source`,
 		// `caches` (cachesSourceContract, the contract that added the word). The word is a value,
 		// held back from every caller whose pod's lowest contract is below that contract
@@ -732,9 +764,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// repositoriesLiveContract writes, each assignment's `plan` and the caches source among
 		// them, and the row names DaemonAPIVersion: a later contract than shapedAnswersContract has
 		// landed, so the two are no longer equal.
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, caches: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, caches: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, caches: true},
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -778,8 +810,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// repositoryAppsContract is served the repositories' `apps` and neither the pause, nor
 			// those keys, nor the `plan`; and a pod at pauseContract is served the pause and
 			// neither those keys nor the `plan`. No pod's claims place a caller at
-			// assignmentPlanContract either, so only the three rows served this daemon's own body
-			// are served each assignment's `plan`.
+			// assignmentPlanContract or priorityContract either, so only the three rows served
+			// this daemon's own body are served each assignment's `plan` and each issue's and
+			// waiting member's `priority`.
 			// Every row of a pod is below repositoriesLiveContract too, which no pod's claims
 			// place a caller at (callerKind.reaches), so each is served the repositories block
 			// in contract 152's shape before any key of it is taken out (withRepositoriesAt152),
@@ -822,6 +855,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				}
 				if !tc.plans {
 					want = withoutAssignmentPlanKeys(t, want)
+				}
+				if !tc.priority {
+					want = withoutPriorityKeys(t, want)
 				}
 				if !tc.caches {
 					want = withoutCachesSources(t, want)
@@ -913,6 +949,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "entryQueuedAt")
 				delete(issue, "entryConfirmedAt")
 				delete(issue, "architectStalls")
+				// Every row that reaches here is below priorityContract too, so neither the
+				// issue nor its waitingLine carries `priority`.
+				stripPriority(issue)
 				if !tc.quiet {
 					delete(issue, TreeMovedAtField)
 					delete(issue, QuietHoursField)
