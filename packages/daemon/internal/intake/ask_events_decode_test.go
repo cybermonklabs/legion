@@ -106,6 +106,10 @@ func TestADeletedReplyDecodesAsItsReplyAndACorrectionAsNoFact(t *testing.T) {
 				"deleted_at": deletedAt, "deleted_by": deletedBy, "thread_root_id": "comment-root"}},
 			{"message.edited", map[string]any{"id": "message-1", "body": "The staging run is green again.", "edited_at": deletedAt}},
 			{"message.deleted", map[string]any{"id": "message-1", "body": "", "deleted_at": deletedAt, "deleted_by": deletedBy}},
+			// A deleted message's message.created, as every read of the log serves it: its marks and
+			// no body. The intake reads no message's body, so it is no fact and no failure, and never
+			// a message the intake gives up on (main's #4590).
+			{"message.created", map[string]any{"id": "message-1", "deleted_at": deletedAt, "deleted_by": deletedBy}},
 		} {
 			if decoded := decode(t, correction.eventType, person, correction.payload); decoded.Fact != nil || len(decoded.Unread) != 0 {
 				t.Fatalf("%s from %s decoded to %#v, unread %q; want no fact", correction.eventType, from, decoded.Fact, decoded.Unread)

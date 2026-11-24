@@ -172,6 +172,33 @@ func TestLabelSetterPassesOverDeletedPostsAndCorrections(t *testing.T) {
 	}
 }
 
+// The intake's walk of the event log (walkIssueEvents, main's #4590) reads a deleted post's
+// events as every read of the log serves them - a comment.created or message.created with
+// deleted_at and deleted_by and no body - and the author's corrections of its posts. It reads no
+// post's body, so none of them is an error: the walk passes over each and gives the issue's own
+// events alone, and no deleted post is ever a message the intake fails on and gives up on.
+func TestWalkIssueEventsPassesOverADeletedPostsEventsWithNoError(t *testing.T) {
+	const deleted = `"deleted_at":"2026-10-14T17:30:00Z","deleted_by":{"kind":"user","id":"user-1"}`
+	events := []json.RawMessage{
+		issueLogEvent(1, "issue.created", "user"),
+		logEvent(2, "message.created", "user", `{"id":"m-1","issue_key":"LEGION-755",`+deleted+`}`),
+		logEvent(3, "comment.created", "user", `{"id":"c-1","issue_key":"LEGION-755",`+deleted+`}`),
+		logEvent(4, "message.deleted", "user", `{"id":"m-1","issue_key":"LEGION-755","body":"",`+deleted+`}`),
+		logEvent(5, "message.edited", "user", `{"id":"m-2","issue_key":"LEGION-755","body":"Still green.","edited_at":"2026-10-14T17:30:00Z"}`),
+		issueLogEvent(6, "issue.updated", "session", "legion"),
+	}
+	var given []int64
+	for event, err := range walkIssueEvents(events) {
+		if err != nil {
+			t.Fatalf("walkIssueEvents over a log holding a deleted post's events: %v", err)
+		}
+		given = append(given, event.Seq)
+	}
+	if !slices.Equal(given, []int64{1, 6}) {
+		t.Fatalf("walkIssueEvents gave the events at %v, want the issue's own, at 1 and 6", given)
+	}
+}
+
 // A log the daemon cannot read names no setter it can act on: LabelSetter returns the walk's error
 // (TestWalkIssueEventsRefusesAnEventItCannotDecode), here for an issue event with no payload, so
 // the consumer delivers the fact again rather than treating the label as nobody's.
