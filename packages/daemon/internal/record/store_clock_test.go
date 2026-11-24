@@ -148,8 +148,6 @@ func clockRows() []clockRow {
 			never: "the close of a pod's open resumes inside the idle release (ReleaseIdleIssue); a replay releases no pod"},
 		{statement: nowStatement{"internal/store/wake.go", "(*PodRecords).ClosePodGoneResume"},
 			never: "reached only through workflow.Config.Pods, the engine's wake of a claim whose pod a release took (workflow's wakeReleased); a replay's engine runs with no Pods, since a replay releases no pod"},
-		{statement: nowStatement{"internal/store/workspace_bundles.go", "(*Store).TakeWorkspaceBundleForRestore"},
-			never: "the Kubernetes runtime's restore of a workspace into a new pod (internal/daemon's kubernetes.go); a replay starts no pod"},
 		{statement: nowStatement{"internal/treelifecycle/lifecycle.go", "ReserveCleanup"},
 			never: "the outbox's close of a tree after its fact commits (store.Store.ReserveWorkflowTreeCleanup, ReserveOperatorTreeCleanup); a replay finishes a close row without releasing a tree"},
 		{statement: nowStatement{"internal/treelifecycle/lifecycle.go", "ConfirmCleanup"},

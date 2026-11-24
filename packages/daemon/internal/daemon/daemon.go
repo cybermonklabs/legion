@@ -180,6 +180,9 @@ type overrides struct {
 	environ []string
 	// orphanSweep is how often orphans are reconciled; zero is orphanSweepInterval.
 	orphanSweep time.Duration
+	// outboxSweep is how often the outbox sweeps its lanes (outbox.sweepEvery, which attach hands
+	// it); zero is outboxLease.
+	outboxSweep time.Duration
 	// controllerRetry is the first wait before a failed daemon-launched controller is retried; zero
 	// is controllerRetryFirst.
 	controllerRetry time.Duration
@@ -489,6 +492,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
+		workflow.outboxSweep = o.outboxSweep
 		workflow.catchUpRetryDelay = o.catchUpRetry
 		plan.identity = workflow.identity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
