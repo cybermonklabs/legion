@@ -124,7 +124,7 @@ func RequireEcho(t testing.TB, request *http.Request, credential string) {
 	response, err := http.DefaultClient.Do(request)
 	if err == nil {
 		_ = response.Body.Close()
-		t.Fatalf("net/http answered %s %s %s with no error: the rows cannot see one", request.Method, request.URL.Redacted(), response.Status)
+		t.Fatalf("net/http answered %s %s with status %d and no error: the rows cannot see one", request.Method, request.URL.Redacted(), response.StatusCode)
 	}
 	if !strings.Contains(err.Error(), credential) {
 		t.Fatalf("net/http's own error holds no echo of the credential, so the rows cannot see a leak: %q", err)
