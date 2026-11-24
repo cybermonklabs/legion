@@ -2479,8 +2479,8 @@ test("read_state's summary prints the pause's line while the project is paused a
   const paused = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   const pausedLine =
     "paused: pause 7 since 2026-09-22T09:09:00Z by the controller (session ses_controller): " +
-    "the model provider is refusing every turn; waits on 1 claim — LEGION-208 implementer; " +
-    "holds 2 rows";
+    "the model provider is refusing every turn; waits on 1 claim — " +
+    "LEGION-208 implementer (claim legion-legion-legion-208-implementer); holds 2 rows";
   expect(pauseLines(paused)).toEqual([pausedLine]);
 
   const running = await summaryLinesOf(
@@ -2513,25 +2513,25 @@ test("read_state's summary prints the pause's line while the project is paused a
       ...pause,
       waitsOn: [
         {
-          claim: "legion-infra-infra-100-architect",
-          issue: "INFRA-100",
+          claim: "legion-legion-legion-100-architect",
+          issue: "LEGION-100",
           role: "architect",
           askedAt: "2026-11-16T08:00:00Z",
         },
         {
-          claim: "legion-infra-infra-101-tester",
-          issue: "INFRA-101",
+          claim: "legion-legion-legion-101-tester",
+          issue: "LEGION-101",
           role: "tester",
           askedAt: "2026-11-16T08:00:00Z",
         },
       ],
-      held: [{ id: 41, kind: "notice", issue: "INFRA-100", waitedSeconds: 30 }],
+      held: [{ id: 41, kind: "notice", issue: "LEGION-100", waitedSeconds: 30 }],
     },
   });
   expect(pauseLines(await summaryLinesOf(recordingDaemon({ state: waiting }).daemon))).toEqual([
     "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; " +
-      "waits on 2 claims — INFRA-100 architect (claim legion-infra-infra-100-architect), " +
-      "INFRA-101 tester (claim legion-infra-infra-101-tester); holds 1 row",
+      "waits on 2 claims — LEGION-100 architect (claim legion-legion-legion-100-architect), " +
+      "LEGION-101 tester (claim legion-legion-legion-101-tester); holds 1 row",
   ]);
 });
 
