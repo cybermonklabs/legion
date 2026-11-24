@@ -3666,16 +3666,16 @@ package api
 // below this contract calls them (the state still names no suspender, StrandedClaim); a
 // suspension held for the agent's turn, and a retry whose start the issue's phase queued, answer
 // 202. The actions are the controller's alone. The controller's suspension is recorded as its
-// own, `controller`, a new supervise.SuspendSource that `claims.suspended_by` admits from migration
-// 20261115060739: it holds against the daemon's rules as the operator's does, its own resume lifts
-// it, and the operator's suspension outranks it. So the operator claim routes' `suspendedBy` and
-// `suspensionHeldBy` gain the value `controller`, which only the operator's bearer reads; no shape
-// moves. The controller's resume_agent, suspend, stop and retry, and its fresh session, are
-// refused an agent the operator's own suspension holds, held for a turn or landed, with `409
-// SUSPENDED_BY_OPERATOR`, nothing of the claim changed; its compaction is not, and refuses such an
-// agent in its own codes. Its retry and resume of an agent whose claim is stored working and that
-// no such suspension holds are refused `409 CLAIM_IN_A_TURN`. The controller gets one more route
-// of its own beside these (#4065):
+// own, `controller`, a new supervise.SuspendSource that `claims.suspended_by` admits from
+// migration 20261115060739: it holds against the daemon's rules as the operator's does, its own
+// resume lifts it, and the operator's suspension outranks it. So the operator claim routes'
+// `suspendedBy` and `suspensionHeldBy` gain the value `controller`, which only the operator's
+// bearer reads; no shape moves. The controller's resume_agent, suspend, stop and retry, and its
+// fresh session, are refused an agent the operator's own suspension holds, held for a turn or
+// landed, with `409 SUSPENDED_BY_OPERATOR`, nothing of the claim changed; its compaction is not,
+// and refuses such an agent in its own codes. Its retry and resume of an agent whose claim is
+// stored working and that no such suspension holds are refused `409 CLAIM_IN_A_TURN`. The
+// controller gets one more route of its own beside these (#4065):
 // `POST /legion/v1/issues/pod-update` takes `api.PodUpdateRequest` (`grantId`, `issue`) and
 // opens the daemon's update round over that issue's pod as a drift opens one: each role of the
 // pod is asked to push its work and answer ready_for_update, and the pod is replaced once each
@@ -3856,10 +3856,10 @@ package api
 // each of the 482 open pull requests, 2026-11-24T13:41:35Z to 13:44:24Z). The merge of main
 // `4e851eb1`, which still declares 232, keeps 234: no open head but this one declares it (read at
 // the head of each of the 480 open pull requests, 2026-11-24T15:09:20Z to 15:12:03Z). The merge of
-// main `7e75126f`, which declares 246 (#4960, the pod hold's entry), moves this entry from 234 to
-// 248: 240 (#3712, #3993, #4539 and #4771), 241 (#4049, #4392 and #4682), 242 (#4596), 243 (#5349),
-// 244 (#3831), 245 (#5158), 246 (#4194) and 247 (#4580 and #5384) are other open pull requests',
-// and no open head declares 248 (read at the head of each of the 477 open pull requests,
+// main `7e75126f`, which declares 246 (#4960, the pod hold's entry), moves this entry from 234
+// to 248: 240 (#3712, #3993, #4539 and #4771), 241 (#4049, #4392 and #4682), 242 (#4596), 243
+// (#5349), 244 (#3831), 245 (#5158), 246 (#4194) and 247 (#4580 and #5384) are other open pull
+// requests', and no open head declares 248 (read at the head of each of the 477 open pull requests,
 // 2026-11-24T15:47:51Z to 15:50:22Z). The merge of main `69fcd649`, which still declares 246, keeps
 // 248 though #3993, #4049 and #4392 declare it too: while cybermonklabs/legion#5399, under which no
 // branch picks this number by hand, is open, a branch keeps the number it holds rather than take a
