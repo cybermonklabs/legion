@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -92,26 +91,26 @@ var (
 	errNotAnIssueKey  = errors.New("json: a string that is not an issue key in Dispatch's shape")
 )
 
+// UnmarshalJSON decodes a JSON string holding an id of Dispatch's shape (shapedMember).
 func (id *dispatchID) UnmarshalJSON(data []byte) error {
 	s, err := shapedMember(data, isDispatchID, errNotADispatchID)
 	*id = dispatchID(s)
 	return err
 }
 
+// UnmarshalJSON decodes a JSON string holding an issue key of Dispatch's shape (shapedMember).
 func (k *issueKey) UnmarshalJSON(data []byte) error {
 	s, err := shapedMember(data, isIssueKey, errNotAnIssueKey)
 	*k = issueKey(s)
 	return err
 }
 
-// shapedMember is the string data holds, where inShape takes it; "" for a JSON null and for the
-// empty string, which name nothing, as every reader of one of these members reads them; and
-// notInShape for any other string. A JSON value that is no string is encoding/json's own type
-// error for a string, which names no value.
+// shapedMember is the string data holds, where inShape takes it; "" for a JSON null, which
+// encoding/json decodes into a string as nothing at all, and for the empty string, neither of
+// which names anything, as every reader of one of these members reads them; and notInShape for
+// any other string. A JSON value that is no string is encoding/json's own type error for a
+// string, which names no value.
 func shapedMember(data []byte, inShape func(string) bool, notInShape error) (string, error) {
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return "", nil
-	}
 	var s string
 	if err := json.Unmarshal(data, &s); err != nil {
 		return "", err
