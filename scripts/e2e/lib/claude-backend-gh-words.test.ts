@@ -46,7 +46,7 @@ echo "read $repo"`,
   };
 }
 
-for (const script of ["claude-backend-tmux.sh"]) {
+for (const script of ["claude-backend-tmux.sh", "claude-backend-sandbox.sh"]) {
   describe(`${script}'s read of the smoke repository prints no word of gh's`, () => {
     test("gh's own words on a failed read are kept in a file the refusal names", () => {
       const run = readRepo(script, `echo 'gh: ${MARKER} (HTTP 502)' >&2\nexit 1`);

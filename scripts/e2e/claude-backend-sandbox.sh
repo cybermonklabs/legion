@@ -1039,6 +1039,15 @@ remove_run_branch() {
     printf 'could not delete %s branch legion/%s\n' "$repo" "$issue" >&2
   fi
 }
+# require_smoke_repo_read: the devbox's ordinary gh reads the smoke repository. Whatever answers gh
+# in GitHub's place holds gh's token and writes gh's stderr, so gh's own words are kept in
+# $evidence/gh/repo-view.err, which outlives the run, and a refusal names that file and never
+# quotes it.
+require_smoke_repo_read() {
+  mkdir -p "$evidence/gh"
+  gh repo view "$repo" --json name >/dev/null 2>"$evidence/gh/repo-view.err" ||
+    fail "the devbox's ordinary gh cannot read $repo; gh's own words are in $evidence/gh/repo-view.err"
+}
 # require_app_tokens_home fails, naming what is wrong, unless XDG_RUNTIME_DIR, where the App
 # credential files go under bridge, is set and is a directory the devbox user owns, of mode 0700,
 # on a tmpfs (or a ramfs): no other user can list or read the files, and they never reach a disk.
@@ -1297,7 +1306,7 @@ else
 fi
 read_app_logins
 require_proof_human
-gh repo view "$repo" --json name >/dev/null || fail "the devbox's ordinary gh cannot read $repo"
+require_smoke_repo_read
 case "$pod_reachability" in
   aws-private-ip)
     imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
