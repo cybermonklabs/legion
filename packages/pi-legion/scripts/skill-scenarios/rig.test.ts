@@ -22,6 +22,7 @@ import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { DAEMON_MODULE, workerPane } from "./daemon-pane";
+import { headsCases } from "./heads-scenarios";
 import { RIG_WORLD } from "./rig-world";
 import {
   JUDGE_OMP,
@@ -2142,9 +2143,12 @@ describe("services_up", () => {
   });
 });
 
-// cmd_batch of reviewer-own-head runs each of its six cases <runs> times for each label, each
-// as a run of its own. A stand-in rig.sh records each run's arguments, which cmd_batch hands to
-// `rig.sh run` through xargs, and a stand-in go records the build of the runs' natsd.
+// cmd_batch of reviewer-own-head runs each of its cases <runs> times for each label, each as a
+// run of its own. A stand-in rig.sh records each run's arguments, which cmd_batch hands to
+// `rig.sh run` through xargs, and a stand-in go records the build of the runs' natsd. The cases a
+// batch runs are the scenario's rows of heads-scenarios.txt, the catalog rig.sh's heads_cases
+// reads, so each row below takes its cases from that catalog (headsCases): a case the catalog
+// gains is a case the rows expect.
 describe("cmd_batch", () => {
   // Catches: a batch that runs one case alone, gives two runs one index (and so one PR number and
   // one commit time), drops the case from a run's arguments, or builds no natsd for the runs.
@@ -2172,14 +2176,9 @@ describe("cmd_batch", () => {
       [here, rigWork]
     );
     expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
-    const cases = [
-      "sibling-fails",
-      "ci-only",
-      "no-implementer",
-      "no-tester",
-      "no-verdict-fail",
-      "no-verdict-pass",
-    ];
+    const cases = headsCases("reviewer-own-head");
+    expect(cases).toContain("sibling-fails");
+    expect(cases).not.toContain("");
     let index = 0;
     const want = ["head", "ablate-head"].flatMap((label) =>
       cases.flatMap((which) =>
@@ -2194,8 +2193,8 @@ describe("cmd_batch", () => {
   });
 
   // Catches: a run whose name leaves out its case, so the cases' batches of one label, each
-  // numbered from 1, replace each other's runs; a case outside the six; and a run directory whose
-  // own name tells its agent the scenario, the case or the label (each is in the map alone).
+  // numbered from 1, replace each other's runs; a case outside the catalog's; and a run directory
+  // whose own name tells its agent the scenario, the case or the label (each is in the map alone).
   test("cmd_run names a reviewer-own-head run by its case in the map, in a directory of a random name, and refuses another case", () => {
     // rig.sh resolves its work directory's path once (realpath), as this does.
     const rigWork = realpathSync(freshDir("run-work"));
@@ -2236,8 +2235,9 @@ describe("cmd_batch", () => {
     expect(existsSync(first)).toBe(false);
     const refused = bash(script, [rigWork, "frobnicate"]);
     expect(refused.code).toBe(1);
+    const cases = headsCases("reviewer-own-head");
     expect(refused.stderr).toContain(
-      "'frobnicate' is not sibling-fails, ci-only, no-implementer, no-tester, no-verdict-fail or no-verdict-pass"
+      `'frobnicate' is not ${cases.slice(0, -1).join(", ")} or ${cases.at(-1)}`
     );
   });
 
@@ -2276,8 +2276,8 @@ describe("cmd_batch", () => {
 
   // Catches: an architect-pass-and-fail batch that runs its own world alone, or its cases alone; a
   // case run whose name leaves out its case, so it replaces the scenario's own run of that number;
-  // and a case outside the two.
-  test("architect-pass-and-fail runs its own world and both no-verdict cases, each case run named by its case", () => {
+  // and a case outside the catalog's.
+  test("architect-pass-and-fail runs its own world and each case the catalog lists, each case run named by its case", () => {
     const here = freshDir("architect-batch-here");
     const rigWork = freshDir("architect-batch-work");
     writeFileSync(path.join(here, "rig.sh"), `printf '%s\\n' "$*" >>"${here}/runs"\n`);
@@ -2301,10 +2301,14 @@ describe("cmd_batch", () => {
       [here, rigWork]
     );
     expect({ code: batch.code, stderr: batch.stderr }).toEqual({ code: 0, stderr: "" });
+    const worlds = headsCases("architect-pass-and-fail");
+    expect(worlds).toContain("");
+    expect(worlds).toContain("no-verdict-fail");
     let index = 0;
     const want = ["head", "ablate-states-read"].flatMap((label) =>
-      ["", " no-verdict-fail", " no-verdict-pass"].map(
-        (which) => `run architect-pass-and-fail ${label} 1 ${++index} 1700000000${which}`
+      worlds.map(
+        (which) =>
+          `run architect-pass-and-fail ${label} 1 ${++index} 1700000000${which ? ` ${which}` : ""}`
       )
     );
     const runs = readFileSync(path.join(here, "runs"), "utf8").split("\n").filter(Boolean);
@@ -2339,7 +2343,10 @@ describe("cmd_batch", () => {
     expect(readFileSync(path.join(own, "ran"), "utf8")).toBe("4 1700000000 \n");
     const refused = bash(script, [work, "frobnicate"]);
     expect(refused.code).toBe(1);
-    expect(refused.stderr).toContain("'frobnicate' is not no-verdict-fail or no-verdict-pass");
+    const cases = worlds.filter(Boolean);
+    expect(refused.stderr).toContain(
+      `'frobnicate' is not ${cases.slice(0, -1).join(", ")} or ${cases.at(-1)}`
+    );
   });
 
   // Catches: a task that still names the tester's verdict for a label of today, where the daemon
