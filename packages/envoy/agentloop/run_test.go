@@ -713,8 +713,9 @@ func TestACallThatLosesItsConnectionIsRetriedOnce(t *testing.T) {
 // endpoint's credential on every request it carries, and Go's own client strips Authorization
 // on a cross-domain redirect before a transport runs, so following one would hand the token to
 // whatever server the Location names. The client's redirect check fails the call instead, with
-// a detail naming the host the redirect points at, and the server the redirect points at hears
-// nothing at all. A redirect is not retried: the endpoint answers the run's one model call once.
+// a detail naming the redirect's status and not its host, which is the answering party's own
+// words, and the server the redirect points at hears nothing at all. A redirect is not retried:
+// the endpoint answers the run's one model call once.
 // That holds for the transport's one retry too: a call that loses its connection before the
 // redirect answers is asked again a second later, meets the redirect, and follows it no further,
 // so the endpoint gets the call and its retry and answers once. The redirecting endpoint redirects
@@ -808,10 +809,14 @@ func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 			if fault != FaultProviderError {
 				t.Errorf("fault %q, want %q: a redirect is the provider failing the call: %s", fault, FaultProviderError, detail)
 			}
-			// The host the redirect names, so a caller reading the detail can see
-			// where the call was sent and why it went no further.
-			if host := target.server.Listener.Addr().String(); !strings.Contains(detail, host) {
-				t.Errorf("the detail is %q, want the redirect's target host, %s, named in it", detail, host)
+			// The redirect's status, so a caller reading the detail can see why the call went
+			// no further, and never the host the Location names: whoever answers in the
+			// endpoint's place writes the Location, and can write the credential into its host.
+			if want := "307 Temporary Redirect, a redirect, which is never followed"; !strings.Contains(detail, want) {
+				t.Errorf("the detail is %q, want the redirect named by its status: %q", detail, want)
+			}
+			if host := target.server.Listener.Addr().String(); strings.Contains(detail, host) {
+				t.Errorf("the detail is %q, want the redirect's target host, %s, not named in it", detail, host)
 			}
 			got := target.attempts()
 			if len(got) != 0 {
