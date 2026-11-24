@@ -13,17 +13,20 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A listener whose ENVOY_OIDC_ACCOUNTS names no account — a list emptied by mistake — refuses to
 // start, naming the setting, rather than reading it as unset and admitting every pod of the
-// cluster; the same listener with the setting empty starts, as one with it unset does.
+// cluster; the same listener with the setting empty starts, as one with it unset does. A refused
+// start is killed only with 30 s left of the test binary's deadline, so a loaded machine that
+// starts the binary late kills no start that would have refused on its own.
 func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 	issuer := oidctest.New(t)
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	for _, value := range []string{"   ", ", ,"} {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t, 30*time.Second))
 		cmd := exec.CommandContext(ctx, binary)
 		cmd.Env = []string{
 			"PORT=0", "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_MACHINE_ID=oidc-accounts-blank", "NATS_URLS=" + uri,

@@ -503,9 +503,12 @@ func TestAReadThatFindsFewerBytesThanItCountedFails(t *testing.T) {
 // A read of a push's diff ends with the push's bound while git's diff has not exited, and a
 // process git started has left git's process group (setsid) and holds the diff's pipe until the
 // test ends: the read is refused as a setup failure naming the bound. The stand-in runs every
-// other git at once and, for the diff, runs the real git and then stays in its foreground until
-// the bound stops it. The escaped process holds standard output alone: one that held standard
-// error too would keep exec's copy of it running.
+// other git at once and, for the diff, marks that it started, runs the real git and then stays in
+// its foreground until the bound stops it. The escaped process holds standard output alone: one
+// that held standard error too would keep exec's copy of it running. The bound is due 4 s after
+// the call and passes then, but not before the diff has started (deadlinePassedOnceStarted): on a
+// loaded machine the shared check and the gits before the diff can take longer than 4 s, and a
+// bound that passed then stopped one of them, whose refusal names the bound too.
 func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err != nil {
 		t.Skip("no setsid on this machine")
@@ -513,13 +516,16 @@ func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.
 	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing in particular\n"})
 	git := fixturegit.CompiledGit(t)
 	hold := holdUntilEnd(t)
+	started := filepath.Join(t.TempDir(), "started")
 	guard := gitFirst(t, "case \" $* \" in\n"+
-		"*\" --unified=0 \"*) setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  '"+git+"' \"$@\"\n  "+hold+" ;;\n"+
+		"*\" --unified=0 \"*) : > "+shQuote(started)+"\n  setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  '"+git+"' \"$@\"\n  "+hold+" ;;\n"+
 		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
+	ctx := deadlinePassedOnceStarted(t, 4*time.Second, started)
 	var err error
 	answered(t, "the push whose diff an escaped process holds", func() { err = guard.Push(ctx, push.req) })
+	if _, statErr := os.Stat(started); statErr != nil {
+		t.Fatalf("the push's diff never started (%v), so its bound stopped no diff: %v", statErr, err)
+	}
 	says(t, setupFailure(t, err), "was stopped by its bound")
 }
 

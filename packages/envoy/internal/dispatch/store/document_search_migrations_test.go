@@ -27,6 +27,7 @@ const (
 // needs no gigabyte, over a database at 20261101182447, where artifact_versions is already above
 // that.
 func TestCensusExemptsTheDocumentSearchTriggerFromTheTableLimit(t *testing.T) {
+	t.Parallel()
 	store := openMigratedTestStore(t, documentSearchTable)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(),
 		migrationsThrough(t, documentSearchTrigger), pgmigrate.CensusOptions{TableLimit: 1})
@@ -52,6 +53,7 @@ func TestCensusExemptsTheDocumentSearchTriggerFromTheTableLimit(t *testing.T) {
 // migration. The trigger's migration is the one that touches artifact_versions, and the test
 // above is why it may.
 func TestTheDocumentSearchMigrationsTouchOnlyWhatTheyMustLock(t *testing.T) {
+	t.Parallel()
 	for _, migration := range []struct {
 		name  string
 		files string

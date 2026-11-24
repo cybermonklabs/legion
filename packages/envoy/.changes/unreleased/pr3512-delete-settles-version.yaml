@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The delete of a comment whose pending insert suggestion it rejects writes the document's next
+  version, without the insert's words, in its own transaction (docs.SettleVersion), so no store
+  built from the latest version - search, the related-item check, a block's latest text and name -
+  gives them once the delete commits.
+time: 2026-11-20T21:35:07Z
+custom:
+    Issue: pr3512

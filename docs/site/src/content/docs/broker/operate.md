@@ -627,7 +627,7 @@ broker refuses to start, naming the entry or the account, on:
   could then enrol the person's pods as its own workers;
 - a mapped account whose login service a `BROKER_VM_SERVICES` entry names, since the broker
   registers those services as owners a secret may name too;
-- a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person;
+- a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person or lists with no person;
 - a mapped account that a `BROKER_POD_REGISTRARS` entry names as its registrar, since the person's
   pod would then choose the session names other pods exchange under (a mapped account on the pod
   side of an entry is not refused);
@@ -756,23 +756,78 @@ setting says. A roll serves the previous release beside this one against one dat
 A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
 tokens write as one person: in the one Dispatch project the entry names, or, for an entry that names
-no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write.
+no project (`<service account>==<person>`), wherever Dispatch's own rules let that person write. An
+entry may name neither a person nor a project (`<service account>==`, or
+`<service account>===<session>` to fix its session): its tokens name no person and no project and
+name the account as their service, so they act as the account itself, write wherever Dispatch's own
+rules let a credential naming no project write, and are recorded under that account. That includes
+the writes that belong to the deployment rather than to one project and need no OAuth scope:
+priorities (`POST`, `PATCH` and `DELETE /api/v1/priorities`), a new project with its default
+assignee (`POST /api/v1/projects`), the delivery settings (`PUT /api/v1/settings/delivery`), a
+project's Legion daemon URL (`PUT` and `DELETE /api/v1/projects/{key}/legion/daemon`) and default
+repository (`PUT /api/v1/projects/{key}/default-repository`), and the delivery session groups
+(`POST`, `PATCH` and `DELETE /api/v1/delivery/session-groups`). The broker refuses to start on an
+entry that names a project and no person: an entry that names a project names its person, so no
+token held to a project is personless. A broker of a build older than the entry naming no person
+refuses to start on one, and an Envoy listener or a Dispatch of a build older than it answers such
+a token `401`, so deploy the broker, Dispatch and every Envoy listener before you write one. For the
+same reason, before you roll the broker, Dispatch or an Envoy listener back to a build older than
+this release, remove every entry that names no person and redeploy the broker: an older broker
+refuses to start on such an entry and restarts in a loop, and an older Dispatch or listener answers
+the account's tokens `401`. Bring the session images' pi-envoy and claude-envoy builds that carry
+the same release's `dispatch` command there first too: an older `dispatch whoami` ignores
+Dispatch's `sign_in_required` and tells such a session that its writes are refused, though they
+succeed.
 `BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
 `<service account>=<service>=<session>` entries, for example
 `BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.
-The token of such an entry holds the OAuth scope `read` alone and the project scope `none`, names
-that service and that session, and names no person and no project. Dispatch serves it on the routes
-its read list names, today `GET /api/v1/projects/{key}/architecture` alone, and answers it
-`403 READ_ONLY_TOKEN` on every other route. That token reads the whole answer of
-`GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
-source, each component, and every issue of the project, closed and iceboxed ones included. No
-setting holds a read entry to some projects. The Envoy listener answers it `401`. Both settings need
+The token of such an entry, traded with no scope, holds the OAuth scope `read` alone and the project
+scope `none`, names that service and that session, and names no person and no project. Dispatch
+serves it on the GET routes it classes as reads, and answers it `403 READ_ONLY_TOKEN` on every other
+route. That token reads every read of Dispatch that needs no OAuth scope, for every project: each
+issue, closed and iceboxed ones included, with its documents, comments and asks. No setting holds a
+read entry to some projects. The Envoy listener answers it `401`. Both settings need
 `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`, and the broker refuses to start on a
 read entry without the audience. It also refuses an entry with a missing field, a namespace's
 `default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is
 `shared`, and an account that one setting lists twice or that both settings list. A broker of a
 build older than this setting does not read it, so it mints those accounts no token. The boot line
 `token exchange state=on` counts the read entries as `read_accounts`.
+
+No setting turns on a read trade. Every trade the exchange takes may ask for the scope `read`
+(`scope=read`), and its token keeps the identity the same trade would have had and writes nothing
+([Concepts](/legion/broker/concepts/#sessions-and-enrollment)). Such a trade may name a cut
+(`as_of`), an RFC 3339 time with at most six fractional digits, no later than the trade. The broker
+refuses each of these with `400 invalid_request`, naming what is wrong:
+
+- A cut on a trade that does not ask for `read`, a cut later than the trade, a cut at the zero
+  time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and a cut in any
+  other form.
+- `launcher_credential=true` on a read trade, which makes, moves and extends no credential.
+- A `DPoP-Holder` header on a trade that does not ask for `read`, a holder proof that does not
+  verify, and a holder proof signed with the DPoP proof's own key.
+- A person's read trade with no `DPoP-Holder` proof.
+- A read token that would be bound to a key that a live launcher credential is bound to, a read
+  entry's token traded with no scope included. The answer names the cure.
+
+A person's read trade whose sign-in holds no launcher credential yet is refused
+`400 invalid_grant`, naming `agent-secrets login`. One whose credential has lapsed is refused
+`400 invalid_grant` too, naming the cure: one ordinary trade of the sign-in, which `agent-secrets`
+makes and which renews the credential. A driver that renews a read token for a copy elsewhere
+keeps the sign-in trading ordinarily as well. The other side of the key rule is refused where a
+key another live credential holds is refused, with a code or a hint of its own that names the read
+token and the cure, a new key: a device login's approval and a token login whose key a live read
+token is bound to are `409 KEY_BINDS_READ_TOKEN`, beside the `409 KEY_HOLDS_LIVE_CREDENTIAL` of a
+key another live credential holds, and a Google machine's or a person's trade is
+`400 invalid_grant`.
+
+The broker keeps a token narrowed to reading in a table of its own, which migration 0042 adds
+(`oauth_narrowed_access_tokens`), and decides at each introspection whether it is still live: its
+own row, the launcher credential it names and, for a machine login's trade, that login's access
+token must all be live. A broker of an older build reads nothing of that table, so while the
+broker rolls, an older replica answers a narrowed token's introspection inactive and refuses it as
+a subject token, and a revoke or a retire that replica makes still ends the token. A Dispatch or a
+listener of an older build refuses a narrowed token's project scope, so it answers the token `401`.
 
 A machine holding a Google identity token — a Compute Engine VM, a pod on Google Kubernetes
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's
@@ -875,8 +930,10 @@ enrolled under the old one stop renewing when it lapses, and a box enrolled with
 `agent-secrets enroll --helper` is enrolled again by running that command again.
 
 Only a trade that asks for a credential holds one, and a trade asks unless it says otherwise, so
-`agent-secrets` and the helper hold theirs by doing nothing. A person's sign-in cannot do
-otherwise: a sign-in holds its credential, so a trade of a person's that declined one is refused
+`agent-secrets` and the helper hold theirs by doing nothing. A trade that asks for the scope `read`
+is the exception: it never asks, makes, moves or extends a credential, and it is refused
+`400 invalid_request` when it sends `launcher_credential=true`. A person's ordinary trade cannot
+decline: a sign-in holds its credential, so a trade of a person's that declined one is refused
 `400 invalid_request`. The clients that
 want a Dispatch token and read no secret — the `dispatch` command, the Oh My Pi and Claude Code
 plugins, `envoy-send` — decline it, since each of them makes a key per process and per session
@@ -1997,6 +2054,12 @@ either.
   its host up or dialled it, and every attempt was given up for that, so its error says nothing
   about the service; a dial one of whose addresses failed on its own before the command left
   keeps that failure's class).
+  The one exception to `refused` is the private destinations
+  (`BROKER_PROXY_PRIVATE_UPSTREAM`): an allowed request of a host they name is dialled at that host's
+  destination's address only when every address that address resolves to is one this list refuses,
+  and never a loopback, link-local, unspecified, multicast or cloud metadata address, or any
+  tunnelled or translated address (its NAT64, 6to4, Teredo, IPv4-compatible, IPv4-translated or
+  ISATAP form); a tunnel or a plain-HTTP request to those addresses stays `refused`.
   `reason` is the broker's own words. The `address` is the one refused, as `ip:port`, for
   `refused`; empty for `unresolved` and for a lookup that was `cancelled`; and for `unreachable`
   and a dial that was `cancelled`, the addresses dialled, as `ip:port` each, separated by spaces,

@@ -1,6 +1,7 @@
 package shim_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,24 +14,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-const (
-	// commandBudget is the budget the requests below carry: long enough that a command still
-	// running when the shim is stopped can only be one the stop did not reach, short enough that
-	// such a command is gone within the minute rather than outliving the test binary.
-	commandBudget = 20 * time.Second
-	// stopLimit is how long the shim may take to return once its context ends. The whole stop is
-	// the command's SIGTERM to its process group, the moment the group needs to go, the agent's
-	// own SIGTERM and its exit: tens of milliseconds, with the rest for a loaded machine.
-	stopLimit = 5 * time.Second
-)
+// stopLimit is how long the shim may take to return once its context ends. The whole stop is the
+// command's SIGTERM to its process group, the moment the group needs to go, the agent's own
+// SIGTERM and its exit: tens of milliseconds, with the rest for a loaded machine. The requests
+// below carry a budget far past it (farBudget), counted from when the shim reads the request, so a
+// command still running when the shim is stopped can only be one the stop did not reach, however
+// long a loaded machine took to start the command's group before the stop.
+const stopLimit = 5 * time.Second
 
 // A shim command ends with the shim itself. Under the tmux runtime a `kill-pane` gives every
-// process of the pane SIGHUP (internal/runtime/tmux's stop), and the jj of a save or an adoption
+// process of the pane SIGHUP (internal/runtime/tmux's stop), and the jj of a read or an adoption
 // used to get it because it shared the pane's process group. Each command has a group of its own
 // now, so that signal reaches the shim alone (internal/procgroup), and the shim is what has to
 // pass the stop on: every command site builds its context from the one Run was given, so the stop
 // ends the command at once instead of leaving it to run against the clone every role of the issue
-// shares until its own budget ends it — up to five minutes for a save.
+// shares until its own budget ends it.
 //
 // What each case reads is the command's own end: its whole process group — the leader and the
 // child it had started — was signalled, and the shim returned without waiting for the command's
@@ -75,15 +73,14 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			workspace: func(t *testing.T) string { return t.TempDir() },
 			request: shimwire.AdoptWorkingCopy{
 				ID: "adopt-1", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
-				TimeoutMs: int(commandBudget.Milliseconds()),
+				TimeoutMs: farBudget(t),
 			},
 		},
 		{
-			name:      "the release's save",
-			workspace: bundleSkeleton,
-			request: shimwire.BundleWorkspace{
-				ID: "bundle-1", Issue: "INFRA-3098", MaxBytes: 40 << 20,
-				TimeoutMs: int(commandBudget.Milliseconds()),
+			name:      "the workspace read",
+			workspace: func(t *testing.T) string { return t.TempDir() },
+			request: shimwire.WorkspaceWork{
+				ID: "read-1", Issue: workIssue, TimeoutMs: farBudget(t),
 			},
 		},
 	} {
@@ -95,10 +92,10 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			select {
 			case <-r.done:
 			case <-time.After(stopLimit):
-				t.Fatalf("the shim was still running %v after its stop: its jj outlives the stop and ends only at the request's own %v budget; log:\n%s",
-					stopLimit, commandBudget, r.log)
+				t.Fatalf("the shim was still running %v after its stop: its jj outlives the stop and ends only at the request's own budget, far past it; log:\n%s",
+					stopLimit, r.log)
 			}
-			t.Logf("the shim returned %v after its stop; the request's own budget was %v", time.Since(started), commandBudget)
+			t.Logf("the shim returned %v after its stop", time.Since(started))
 			for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
 				if !testwait.Holds(stopLimit, testwait.Poll, func() bool { return strings.Contains(recorded(t, record), want) }) {
 					t.Errorf("the request's jj recorded\n%swant a line %q: the stop signals the command's whole process group", recorded(t, record), want)
@@ -110,7 +107,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 	t.Run("the daemon's shutdown, which reaches the shim as a frame and not as a signal", func(t *testing.T) {
 		r, p, record, _ := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
 			ID: "adopt-2", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
-			TimeoutMs: int(commandBudget.Milliseconds()),
+			TimeoutMs: farBudget(t),
 		})
 
 		started := time.Now()
@@ -118,10 +115,10 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		select {
 		case <-r.done:
 		case <-time.After(stopLimit):
-			t.Fatalf("the shim was still running %v after the daemon's shutdown: its jj outlives that stop and ends only at the request's own %v budget; log:\n%s",
-				stopLimit, commandBudget, r.log)
+			t.Fatalf("the shim was still running %v after the daemon's shutdown: its jj outlives that stop and ends only at the request's own budget, far past it; log:\n%s",
+				stopLimit, r.log)
 		}
-		t.Logf("the shim returned %v after the daemon's shutdown; the request's own budget was %v", time.Since(started), commandBudget)
+		t.Logf("the shim returned %v after the daemon's shutdown", time.Since(started))
 		for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
 			if !strings.Contains(recorded(t, record), want) {
 				t.Errorf("the request's jj recorded\n%swant a line %q by the time the shim returned: the stop of the command's whole process group is this process's own to send, and after it has returned there is nobody left to send it",
@@ -138,7 +135,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		// SIGTERM this case reads and well past the step below that reads the bound.
 		r, p, record, clock := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
 			ID: "adopt-3", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
-			TimeoutMs: int(commandBudget.Milliseconds()),
+			TimeoutMs: farBudget(t),
 		}, "FAKE_OMP_IGNORE_SIGTERM=1", "HANGING_JJ_IGNORE_SIGTERM=1")
 
 		started := time.Now()
@@ -195,7 +192,7 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 	t.Run("the daemon's shutdown, with the commands' whole stop span spent inside the agent's grace", func(t *testing.T) {
 		r, p, _, clock := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
 			ID: "adopt-4", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
-			TimeoutMs: int(commandBudget.Milliseconds()),
+			TimeoutMs: farBudget(t),
 		}, "FAKE_OMP_IGNORE_SIGTERM=1")
 
 		p.send(t, shimwire.Shutdown{})
@@ -277,7 +274,7 @@ func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame,
 	return r, p, record, clock
 }
 
-// hangingJJ writes a `jj` that outlives any budget a test here gives it, in a directory of its
+// hangingJJ writes a `jj` that runs until a stop or its test's end, in a directory of its
 // own put first on PATH: the shim runs PATH's jj, the one the pane's own shell runs. It starts a
 // child of its own, which a command's SIGTERM reaches only because that signal goes to the whole
 // process group (internal/procgroup), and both it and the child say in the record when they were
@@ -293,15 +290,22 @@ func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame,
 // behind holding the command's output pipes until it gives up on its own (measured on this
 // machine with the stop these rows send: 3 of 60 stops of this shape left one behind, and 0 of
 // 60 of the loop below). A trap is then acted on within one sleep of its arrival, which is
-// milliseconds against the seconds every bound here allows, and each gives up after a minute, so
-// a run whose stop never comes leaves nothing behind for long. HANGING_JJ_IGNORE_SIGTERM=1 keeps
-// both of them running once they have recorded that signal, for the one case that needs its
-// command still in flight when the shim drains: procgroup's SIGKILL at the end of the command's
-// own grace is then what ends them.
+// milliseconds against the seconds every bound here allows. Each runs until the test's cleanup
+// writes its release, or until this test process is gone: never for a span of its own, so a run
+// whose stop never comes leaves nothing behind past its test, and no case reads a jj that its own
+// exit ended. HANGING_JJ_IGNORE_SIGTERM=1 keeps both of them running once they have recorded that
+// signal, for the one case that needs its command still in flight when the shim drains:
+// procgroup's SIGKILL at the end of the command's own grace is then what ends them.
 func hangingJJ(t *testing.T) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "jj-record")
 	bin := t.TempDir()
+	release := filepath.Join(t.TempDir(), "release")
+	t.Cleanup(func() {
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Errorf("release the hanging jj: %v", err)
+		}
+	})
 	script := `#!/bin/sh
 if [ "$1" = "--the-jjs-own-child" ]; then
   trap 'printf "its child caught SIGTERM\n" >>"$HANGING_JJ_RECORD"; [ "$HANGING_JJ_IGNORE_SIGTERM" = 1 ] || exit 0' TERM
@@ -311,10 +315,8 @@ else
   "$0" --the-jjs-own-child &
   printf 'the jj is running\n' >>"$HANGING_JJ_RECORD"
 fi
-ticks=0
-while [ "$ticks" -lt 1200 ]; do
+while [ ! -e '` + release + `' ] && kill -0 ` + fmt.Sprint(os.Getpid()) + ` 2>/dev/null; do
   sleep 0.05
-  ticks=$((ticks+1))
 done
 `
 	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
@@ -333,24 +335,4 @@ func recorded(t *testing.T, record string) string {
 		t.Fatalf("read the jj's record: %v", err)
 	}
 	return string(body)
-}
-
-// bundleSkeleton is the two files of a jj workspace the save reads before it starts a command
-// (workspace.GitDir): the repository directory and the git directory it names. Nothing here runs
-// a real jj or git — the save's first command is the hanging jj — so the git directory needs to
-// exist and hold nothing.
-func bundleSkeleton(t *testing.T) string {
-	t.Helper()
-	workspace := t.TempDir()
-	store := filepath.Join(workspace, ".jj", "repo", "store")
-	git := filepath.Join(workspace, ".git")
-	for _, dir := range []string{store, git} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(store, "git_target"), []byte(git+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return workspace
 }

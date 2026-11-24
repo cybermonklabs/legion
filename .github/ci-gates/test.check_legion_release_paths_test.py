@@ -1,0 +1,13 @@
+# The check_legion_release_paths_test filter's gate: what job test reads.
+GATE = harness("check_legion_release_paths_test", "Test the legion release path check and the legion build it asks",
+        f"{SCRIPTS}/check-legion-release-paths.test.sh", [
+    (f"{SCRIPTS}/check-legion-release-paths.sh",
+     "the script under test, symlinked into every fixture (check-legion-release-paths.test.sh's fixture function)"),
+    (f"{SCRIPTS}/release-push.sh",
+     "symlinked into every fixture of both harnesses: the check runs its version-paths, and the build script's "
+     "targets its legion-targets"),
+    (f"{SCRIPTS}/release-build-legion.sh",
+     "symlinked into every fixture beside it: the check runs its modes"),
+    (f"{SCRIPTS}/release-build-legion.test.sh",
+     "the step's second harness, which tests the build script's build and modes and sources test-lib.sh too"),
+])

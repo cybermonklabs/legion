@@ -90,6 +90,7 @@ func refusals(report *pgmigrate.Report) []string {
 // census file, and the database is left as it was: the version table does not move and the rows
 // are still there.
 func TestCensusRefusesAPendingMigrationWhoseCensusCountsRowsAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'bad'), (2, 'bad'), (3, 'bad'), (4, 'good')"); err != nil {
@@ -121,6 +122,7 @@ func TestCensusRefusesAPendingMigrationWhoseCensusCountsRowsAndWritesNothing(t *
 
 // Zero violators pass, and the report names the table the migration touches with its count and size.
 func TestCensusPassesAtZeroAndNamesTheTouchedTable(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'good'), (2, 'good')"); err != nil {
@@ -153,6 +155,7 @@ func TestCensusPassesAtZeroAndNamesTheTouchedTable(t *testing.T) {
 // URL that asks for the simple protocol, under which pgx would otherwise send it as one text and
 // Postgres would run every statement. Either way the table is unchanged.
 func TestCensusRefusesACensusThatWrites(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for name, tc := range map[string]struct{ census, urlSuffix, wantCode string }{
 		"a write in a CTE": {
@@ -195,6 +198,7 @@ func TestCensusRefusesACensusThatWrites(t *testing.T) {
 // the quote after it, so a literal could run on where Load read code. Under off, '\\' is one
 // backslash and this census answers -1.
 func TestCensusReadsItsStringLiteralsWithStandardConformingStrings(t *testing.T) {
+	t.Parallel()
 	_, url := migratedToOne(t)
 	report, err := census(context.Background(), url+"&standard_conforming_strings=off", withCheck(`select length('\\') - 2`), pgmigrate.CensusOptions{})
 	if err != nil {
@@ -213,6 +217,7 @@ func TestCensusReadsItsStringLiteralsWithStandardConformingStrings(t *testing.T)
 // quotes after it are one quote inside the literal, and the literal never ends. Read as Load reads
 // them, each census answers 0.
 func TestCensusReadsItsTextWithBackslashQuoteSafeEncodingAndClientEncodingUTF8(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct{ urlSuffix, census string }{
 		"backslash_quote off":  {"&backslash_quote=off", `select length(E'a\'') - 2`},
 		"client_encoding SJIS": {"&client_encoding=SJIS", `select length(E'Á\'') - 2`},
@@ -246,6 +251,7 @@ func TestCensusReadsItsTextWithBackslashQuoteSafeEncodingAndClientEncodingUTF8(t
 // the setting's doing. The runner's pool holds one connection, so 0003 runs on the connection 0002
 // set.
 func TestCensusExemptsNoMigrationTheRunnerReadsAsOtherStatements(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'good'), (2, 'good'), (3, 'good')"); err != nil {
@@ -351,6 +357,7 @@ create table sp_domdefed (id int, sp sp_domdef);
 // session. The capture reads the table, not the session through the pool, because the runner's
 // reset clears the session before the connection goes back to the pool.
 func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// sessionUser is the role that the sixth row's default gives session_authorization. It is a
 	// superuser, so that without the reset the runner goes on as that role and the column shows
@@ -501,6 +508,7 @@ func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *
 // plain-text secrets, so the report names the census file and the SQLSTATE and nothing of the
 // message.
 func TestCensusNeverPrintsRowContentWhenACensusFails(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	const sentinel = "ghp_SENTINEL_NEVER_PRINTED_7f3a"
@@ -523,6 +531,7 @@ func TestCensusNeverPrintsRowContentWhenACensusFails(t *testing.T) {
 // A census that names a column the database lacks refuses, and since that error points into the
 // census's own text (its position), the report prints Postgres's message, which names the column.
 func TestCensusRefusesACensusNamingAMissingColumn(t *testing.T) {
+	t.Parallel()
 	_, url := migratedToOne(t)
 	report, err := census(context.Background(), url, withCheck("select count(*) from things where colour = 'bad'"), pgmigrate.CensusOptions{})
 	if err != nil {
@@ -535,6 +544,7 @@ func TestCensusRefusesACensusNamingAMissingColumn(t *testing.T) {
 
 // A census that answers anything but one integer in one row is a defect and refuses.
 func TestCensusRefusesAMalformedCensus(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct{ census, want string }{
 		"two columns": {"select 1, 2", "answered 2 columns"},
 		// A bare select answers one row of no columns; reading its first value would panic.
@@ -564,6 +574,7 @@ func TestCensusRefusesAMalformedCensus(t *testing.T) {
 // applying that migration, which takes the very locks it measures. Here the database is at 0001,
 // 0002 creates others and 0003's census names it; the refusal says such a release cannot pass.
 func TestCensusRefusesACensusNamingWhatOnlyAnEarlierPendingMigrationCreates(t *testing.T) {
+	t.Parallel()
 	_, url := migratedToOne(t)
 	set := fstest.MapFS{
 		"migrations/0001_things.up.sql":              censusBase["migrations/0001_things.up.sql"],
@@ -588,6 +599,7 @@ func TestCensusRefusesACensusNamingWhatOnlyAnEarlierPendingMigrationCreates(t *t
 // refuse and no session holding a lock on one, so the census passes it with one line: a new
 // stack's first deploy takes the census like every later one.
 func TestCensusPassesAFreshDatabase(t *testing.T) {
+	t.Parallel()
 	store := openEmptyTestStore(t)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationFiles, pgmigrate.CensusOptions{})
 	if err != nil {
@@ -602,6 +614,7 @@ func TestCensusPassesAFreshDatabase(t *testing.T) {
 // migration from the first over what it holds. The census refuses it on the first migration,
 // naming the table, even where every census answers 0.
 func TestCensusRefusesADatabaseHoldingTablesButRecordingNoVersion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	if _, err := store.Pool.Exec(ctx, "create table things (id integer, kind text)"); err != nil {
@@ -621,6 +634,7 @@ func TestCensusRefusesADatabaseHoldingTablesButRecordingNoVersion(t *testing.T) 
 // would read as fresh, and the runner cannot create anything on it either. The census cannot be
 // taken there, and says why.
 func TestCensusCannotBeTakenWhereTheSearchPathNamesNoSchema(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'bad')"); err != nil {
@@ -639,6 +653,7 @@ func TestCensusCannotBeTakenWhereTheSearchPathNamesNoSchema(t *testing.T) {
 // census misspells the one it means. A census that let it pass would let 0003 fail at boot on the
 // very row it exists to count.
 func TestCensusRefusesAMissingColumnBehindAnEarlierPendingMigration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'bad')"); err != nil {
@@ -663,6 +678,7 @@ func TestCensusRefusesAMissingColumnBehindAnEarlierPendingMigration(t *testing.T
 // version above the highest it does. A database that recorded 3 out of order (by hand, or one that
 // ran a branch) still applies 0002 at boot, so the census takes 0002's census too.
 func TestCensusTakesEveryVersionTheRunnerHasNotRecordedAsPending(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	if _, err := store.Pool.Exec(ctx, "create table others (id integer)"); err != nil {
@@ -695,6 +711,7 @@ func TestCensusTakesEveryVersionTheRunnerHasNotRecordedAsPending(t *testing.T) {
 // regclass misses is a row's, not one a migration creates, so the refusal gives no advice about an
 // earlier pending migration.
 func TestCensusNeverPrintsARowValueAnInputFunctionQuotes(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct{ census, code string }{
 		"regclass": {"select count(*) from things where kind::regclass is not null", "SQLSTATE 42P01"},
 		"regtype":  {"select count(*) from things where kind::regtype is not null", "SQLSTATE 42704"},
@@ -729,6 +746,7 @@ func TestCensusNeverPrintsARowValueAnInputFunctionQuotes(t *testing.T) {
 // grant: the server is asked by making it in a transaction that is rolled back, and a login that
 // cannot skips the test, except on GitHub Actions, where it fails (testdb.SkipOutsideCI).
 func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, base := migratedToOne(t)
 	suffix := randomDatabaseSuffix(t)
@@ -829,6 +847,7 @@ func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 // needs a role with REPLICATION and a server with max_wal_senders above 0 (the default is 10),
 // not wal_level=logical, which only logical decoding needs.
 func TestCensusRefusesAWALSenderHoldingALockInATransaction(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	config := store.Pool.Config().ConnConfig.Config.Copy()
@@ -878,6 +897,7 @@ func TestCensusRefusesAWALSenderHoldingALockInATransaction(t *testing.T) {
 // A touched table above the limit refuses on its size and is not counted; the limit is injected so
 // the test needs no gigabyte.
 func TestCensusRefusesATouchedTableAboveTheLimit(t *testing.T) {
+	t.Parallel()
 	_, url := migratedToOne(t)
 	report, err := census(context.Background(), url, withCheck("select 0"), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
@@ -896,6 +916,7 @@ func TestCensusRefusesATouchedTableAboveTheLimit(t *testing.T) {
 // artifact_versions) passes over a database at 0121 with the limit at one byte, and the report
 // prints artifact_versions above that limit with why the migration is exempt.
 func TestCensusExemptsAMigrationOfOnlyCatalogStatementsFromTheTableLimit(t *testing.T) {
+	t.Parallel()
 	store := openMigratedTestStore(t, 121)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 122), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
@@ -923,6 +944,7 @@ func TestCensusExemptsAMigrationOfOnlyCatalogStatementsFromTheTableLimit(t *test
 // exempts the migration as alter table, refuses nothing, and prints artifact_versions above the
 // limit with why the migration is exempt.
 func TestCensusAdmitsTheShippedRenderStampMigrationAboveTheLimit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 20261103085451)
 	report, err := census(ctx, store.Pool.Config().ConnString(), migrationsThrough(t, 20261103085452), pgmigrate.CensusOptions{TableLimit: 1})
@@ -967,6 +989,7 @@ func TestCensusAdmitsTheShippedRenderStampMigrationAboveTheLimit(t *testing.T) {
 // applies to, at any size. Their later neighbour 20261105084017 is catalog-only too: nullable
 // text columns, unvalidated CHECK constraints, functions and triggers read no existing row.
 func TestCensusExemptsTheShippedEmbeddingTriggerDropsAtAnyTableSize(t *testing.T) {
+	t.Parallel()
 	store := openMigratedTestStore(t, 20261102122400)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261105084017), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
@@ -997,6 +1020,7 @@ func TestCensusExemptsTheShippedEmbeddingTriggerDropsAtAnyTableSize(t *testing.T
 // The one-byte limit is the existing size fixture: every nonempty table is over it, so admission
 // proves the rule is independent of size, including a production embeddings table over 1 GiB.
 func TestCensusAdmitsSplitWindowMigrationsAndRefusesTheOldIndexShape(t *testing.T) {
+	t.Parallel()
 	store := openMigratedTestStore(t, 20261102122400)
 	set := migrationsThrough(t, 20261102233630)
 	for _, oldShape := range []bool{false, true} {
@@ -1055,6 +1079,7 @@ func TestCensusAdmitsSplitWindowMigrationsAndRefusesTheOldIndexShape(t *testing.
 // migration on embeddings' size - which is a refused deploy (cmd/dispatch/README.md). That is
 // the whole reason the index is a migration of its own.
 func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *testing.T) {
+	t.Parallel()
 	store := openMigratedTestStore(t, 20261108070100)
 	set := migrationsThrough(t, 20261110155257)
 	for _, oldShape := range []bool{false, true} {
@@ -1146,6 +1171,7 @@ func queuedStateCensus(t *testing.T, version int) *pgmigrate.MigrationCensus {
 // default and its own check not valid: every statement a catalog-only alter table, so the census
 // exempts it from the table limit on both tables.
 func TestCensusExemptsTheQueuedStateMigrationAtAnyTableSize(t *testing.T) {
+	t.Parallel()
 	entry := queuedStateCensus(t, 20261114081434)
 	if entry.TableSizeExemption != "alter table" {
 		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "alter table")
@@ -1162,6 +1188,7 @@ func TestCensusExemptsTheQueuedStateMigrationAtAnyTableSize(t *testing.T) {
 // 20261114081435 is one marked, non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS, which the
 // census admits over message_deliveries at any size: its scans hold off no ordinary write.
 func TestCensusAdmitsTheTakenDeliveriesIndexAtAnyTableSize(t *testing.T) {
+	t.Parallel()
 	entry := queuedStateCensus(t, 20261114081435)
 	if !entry.ConcurrentIndex {
 		t.Errorf("ConcurrentIndex = false, want the marked concurrent build admitted: %+v", entry)
@@ -1171,6 +1198,7 @@ func TestCensusAdmitsTheTakenDeliveriesIndexAtAnyTableSize(t *testing.T) {
 // 20261114081436 is a plain drop index, RESTRICT by default, which the census exempts from the
 // table limit on message_deliveries, the table behind the index it drops.
 func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T) {
+	t.Parallel()
 	entry := queuedStateCensus(t, 20261114081436)
 	if entry.TableSizeExemption != "drop index" {
 		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "drop index")
@@ -1180,10 +1208,78 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 	}
 }
 
+// TestCensusAdmitsTheBackfillIndexes holds the census to admitting the four indexes envoy-dispatch
+// backfill-graph-store reads through for each batch: two on events (20261119020700 on the document
+// and the version an artifact.version event names, 20261119020800 on the comment a comment.created
+// event names), and the two its walks read in their order (20261119020900 on the block rows naming
+// no node, 20261119021000 on the block references naming no node), over production as the release
+// before them leaves it (requireCensusAdmitsLateIndexes): production's events is above the table
+// limit, so only a concurrent build's exemption admits an index on it, and so would a block table
+// that grows past it.
+func TestCensusAdmitsTheBackfillIndexes(t *testing.T) {
+	requireCensusAdmitsLateIndexes(t, 20261119020700, 20261119020800, 20261119020900, 20261119021000)
+}
+
+// requireCensusAdmitsLateIndexes holds the census to admitting each of versions, the ascending
+// versions of migrations that each build one concurrent, non-unique index, over a database that
+// holds every other migration of the shipped set. That is production once a release without them
+// is deployed: they sort before versions that release applied, and the runner applies every
+// version it has not recorded, so its next deploy census holds them alone pending. The limit is
+// one byte, so every table is over it and each is admitted only by a concurrent build's
+// exemption, which the limit never applies to at any size, but only while no earlier pending
+// migration runs a DO block: one voids the exemption of every later pending migration
+// (pgmigrate.Census, laterEventTrigger). Only each entry is read, never the verdict of the whole
+// set, for the reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+func requireCensusAdmitsLateIndexes(t *testing.T, versions ...int) {
+	t.Helper()
+	ctx := context.Background()
+	late := map[int]bool{}
+	for _, version := range versions {
+		late[version] = true
+	}
+	store := openMigratedTestStore(t, versions[0]-1)
+	migrations := shippedMigrations(t)
+	for _, migration := range migrations {
+		if migration.Version < versions[0] || late[migration.Version] {
+			continue
+		}
+		if err := store.applyMigration(ctx, migrations, migration); err != nil {
+			t.Fatalf("apply %s: %v", migration.Name, err)
+		}
+	}
+	report, err := census(ctx, store.Pool.Config().ConnString(), migrationFiles, pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	pending := make([]int, 0, len(report.Pending))
+	for _, entry := range report.Pending {
+		pending = append(pending, entry.Migration.Version)
+		if !late[entry.Migration.Version] {
+			continue
+		}
+		if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
+			t.Errorf("the census did not admit migration %d as a concurrent index: %+v", entry.Migration.Version, entry)
+		}
+		if len(entry.Tables) == 0 {
+			t.Errorf("%s touches no table, which leaves the limit nothing to exempt it from", entry.Migration.Name)
+		}
+		for _, table := range entry.Tables {
+			if !table.Exists || table.Bytes <= 1 {
+				t.Errorf("%s: %s is %d bytes, which leaves the limit nothing to exempt it from", entry.Migration.Name, table.Name, table.Bytes)
+			}
+		}
+	}
+	if !slices.Equal(pending, versions) {
+		t.Errorf("pending = %v, want %v alone; report:\n%s", pending, versions, reportText(report))
+	}
+}
+
 // blockRefsIndexCensus is the census of the two migrations of block_refs' index of targets - the
 // build of block_refs_to_source (blockRefsSourceIndex) and the drop of block_refs_to, the index it
 // replaces (dropBlockRefsTargetIndex) - over a database at beforeBlockRefsSourceIndex, a version
-// before them, under options; main's 20261120021308_search_text_versions is pending there too.
+// before them, under options; every migration numbered between the two is pending there too, from
+// 20261118115645 to 20261120122700, main's 20261120021308_search_text_versions and the backfill's
+// four indexes (20261119020700 to 20261119021000) among them.
 // Only version's entry is read, never the verdict of the whole set, for the reason
 // TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It answers that
 // entry, and fails the test when that migration is not pending or touches a table of one byte or
@@ -1221,6 +1317,7 @@ func blockRefsIndexCensus(t *testing.T, version int, options pgmigrate.CensusOpt
 // (TestCensusStillRefusesAnIndexOrAColumnDefaultOnATableAboveTheLimit): the build is then to take
 // the concurrent form, which has the size exception of its own.
 func TestCensusAdmitsTheBlockRefsSourceIndexUnderTheTableLimitAndRefusesItAbove(t *testing.T) {
+	t.Parallel()
 	under := blockRefsIndexCensus(t, blockRefsSourceIndex, pgmigrate.CensusOptions{})
 	if len(under.Refusals) != 0 || under.TableSizeExemption != "" || under.ConcurrentIndex {
 		t.Errorf("under the limit: refusals %q, exemption %q, concurrent index %v; want the plain build admitted, with no exemption", under.Refusals, under.TableSizeExemption, under.ConcurrentIndex)
@@ -1243,6 +1340,7 @@ func TestCensusAdmitsTheBlockRefsSourceIndexUnderTheTableLimitAndRefusesItAbove(
 // lock_timeout keeps the census's catalog reads on (pgmigrate's exempt.go), so the exemption names
 // both kinds.
 func TestCensusExemptsTheDropOfTheBlockRefsTargetIndexAtAnyTableSize(t *testing.T) {
+	t.Parallel()
 	entry := blockRefsIndexCensus(t, dropBlockRefsTargetIndex, pgmigrate.CensusOptions{TableLimit: 1})
 	if len(entry.Refusals) != 0 {
 		t.Errorf("refusals = %q, want none", entry.Refusals)
@@ -1261,6 +1359,7 @@ func TestCensusExemptsTheDropOfTheBlockRefsTargetIndexAtAnyTableSize(t *testing.
 // ddl_command_end, so an event trigger on that event takes a migration of only drops out of the
 // exemption exactly as one on create trigger does.
 func TestCensusDoesNotExemptACatalogMigrationAnEventTriggerRunsOn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	for _, statement := range []string{
@@ -1330,6 +1429,7 @@ func TestCensusDoesNotExemptACatalogMigrationAnEventTriggerRunsOn(t *testing.T) 
 // them as `text default 'x'::text`, `bigint not null default 0` and
 // `set default gen_random_uuid()`.
 func TestCensusStillRefusesAnIndexOrAColumnDefaultOnATableAboveTheLimit(t *testing.T) {
+	t.Parallel()
 	for name, migration := range map[string]string{
 		"an index":                    "create index things_kind on things (kind)",
 		"a volatile column default":   "alter table things add column token uuid default gen_random_uuid()",
@@ -1407,7 +1507,7 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 	deadline := time.Now().Add(pgmigrate.LockTimeout - time.Second)
 	for {
 		var waiting bool
-		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted)").Scan(&waiting); err != nil {
+		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted and database = (select oid from pg_database where datname = current_database()))").Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting {
@@ -1456,6 +1556,7 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 // EXCLUSIVE holder under a statement timeout shorter than the lock timeout, so Postgres cancels it
 // as a statement timeout (57014), as it cancels a slow count of a large table.
 func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "things", "access exclusive")), 10)
@@ -1477,6 +1578,7 @@ func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testi
 // census refuses a census naming what its schema lacks, so a shipped one that did would refuse
 // every deploy carrying it; this catches it at review instead.
 func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	migrations := shippedMigrations(t)
 	store := openEmptyTestStore(t)
@@ -1511,6 +1613,7 @@ func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 // cannot know where releases split, so every census that reads what a migration from
 // censusRequiredFrom on creates names that migration: the author's word that it ships first.
 func TestEveryShippedCensusNamesTheNewMigrationsItReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	conn, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
@@ -1528,6 +1631,7 @@ func TestEveryShippedCensusNamesTheNewMigrationsItReads(t *testing.T) {
 // and both files until the census names 0002, and a census that reads only what 0001 made, older
 // than the rule's first number, needs nothing.
 func TestTheCensusPairCheckNamesACensusReadingWhatANewMigrationCreates(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	set := fstest.MapFS{
 		"migrations/0001_things.up.sql":          censusBase["migrations/0001_things.up.sql"],
@@ -1561,6 +1665,7 @@ func TestTheCensusPairCheckNamesACensusReadingWhatANewMigrationCreates(t *testin
 // every deploy. The check names the census, what it reads and the migration until the census
 // names that migration.
 func TestTheCensusPairCheckNamesACensusReadingWhatANewMigrationRenamesOrRetypes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for name, tc := range map[string]struct{ change, check, census, want string }{
 		"a renamed column": {
@@ -1667,6 +1772,7 @@ func holdLock(t *testing.T, store *Store, table, mode string) uint32 {
 // A session that has held a lock on a touched table for longer than the bound refuses, naming the
 // session; the same hold on a table no pending migration touches does not.
 func TestCensusRefusesALockHeldOnATouchedTableByAnOldTransaction(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	if _, err := store.Pool.Exec(ctx, "create table untouched (id integer)"); err != nil {
@@ -1707,6 +1813,7 @@ func TestCensusRefusesALockHeldOnATouchedTableByAnOldTransaction(t *testing.T) {
 // as none. So the census is taken again until its diagnosis reads the wait, and every other part
 // of the refusal is held to that same census.
 func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	holder, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
@@ -1760,6 +1867,7 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 // 0003 as well as 0002, which names things itself. 0002 adds the key in each form a migration
 // writes it: in an alter table, inside a DO block, and behind the usual guard on pg_constraint.
 func TestCensusFollowsAForeignKeyAnEarlierPendingMigrationAdds(t *testing.T) {
+	t.Parallel()
 	for name, adds := range map[string]string{
 		"in an alter table": "alter table things add column parent_id integer references parent on delete cascade",
 		"inside a DO block": "do $$ begin alter table things add column parent_id integer references parent on delete cascade; end $$",
@@ -1804,6 +1912,7 @@ func TestCensusFollowsAForeignKeyAnEarlierPendingMigrationAdds(t *testing.T) {
 // the SQLSTATE and the holder, and the census still finishes its report: the wait gave up inside a
 // savepoint, so it left the transaction usable.
 func TestCensusRefusesATouchedTableItCannotReadWithinTheLockTimeout(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := holdLock(t, store, "things", "access exclusive")
@@ -1829,6 +1938,7 @@ func TestCensusRefusesATouchedTableItCannotReadWithinTheLockTimeout(t *testing.T
 // of ask_followers refuses it, and so does a session holding ask_followers in ACCESS EXCLUSIVE,
 // since at boot the migration's cascade would wait on either until its lock timeout.
 func TestCensusChecksTheTablesAForeignKeyReachesFromARowTheMigrationWrites(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 55)
 	for _, statement := range []string{
@@ -1889,6 +1999,7 @@ func TestCensusChecksTheTablesAForeignKeyReachesFromARowTheMigrationWrites(t *te
 
 // On a database carrying every migration the census has nothing pending and passes.
 func TestCensusOnAMigratedDatabaseHasNothingPending(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	report, err := Census(ctx, store.Pool.Config().ConnString())

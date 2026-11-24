@@ -125,7 +125,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(cwd, fmt.Sprintf("standin-%d.json", report.Pid)), encoded, 0o600); err != nil {
+	// The report is written whole under a name of its own and then renamed into place, so a reader
+	// that finds the file finds all of it, never the empty or partial file os.WriteFile leaves
+	// between its create and its write.
+	path := filepath.Join(cwd, fmt.Sprintf("standin-%d.json", report.Pid))
+	if err := os.WriteFile(path+".tmp", encoded, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(path+".tmp", path); err != nil {
 		return err
 	}
 	if err := post(daemon+"/legion/v1/claims/ready", claim.ReadyRequest{

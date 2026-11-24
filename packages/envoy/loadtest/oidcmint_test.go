@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -28,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
@@ -224,8 +224,10 @@ func startCopyIssuer(t *testing.T, subjects ...string) (string, minted) {
 // a verifier that takes anything.
 func TestTheCopysIssuerServesTheKeyEveryMintedSubjectVerifiesUnder(t *testing.T) {
 	issuer, run := startCopyIssuer(t, testDispatchSubject, testRunnerSubject)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Each read of the issuer is a `sh serve.sh` process of its own, so the calls' one bound is
+	// the test binary's deadline (testwait.Context), not a span a loaded machine can spend
+	// starting those processes; each read still has internal/oidc's own bound.
+	ctx := testwait.Context(t)
 
 	// Built as cmd/listener builds it from ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE
 	// (oidc.NewLazyVerifier), with the discovery its background run makes done here first.

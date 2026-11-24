@@ -5,13 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // git and jj, which run in a managed repository's checkout, start without either raw NATS seed the
-// daemon holds.
+// daemon holds. The git's budget is the rest of the test binary's deadline: its environment is the
+// row's subject, and a budget a loaded machine could reach before the git printed it would fail
+// the row with nothing wrong.
 func TestWorkspaceCommandsGetNoNATSSeed(t *testing.T) {
 	// Unique values, so that only a variable a seed reached can hold one (envlisting).
 	paneSeed, daemonSeed := envlisting.Unique("pane-seed-"), envlisting.Unique("daemon-seed-")
@@ -21,7 +23,8 @@ func TestWorkspaceCommandsGetNoNATSSeed(t *testing.T) {
 	if err := os.WriteFile(git, []byte("#!/bin/sh\nenv\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewRunner(10*time.Second, map[string]string{"git": git}).Run(context.Background(), Command{Argv: []string{"git", "status"}, Dir: t.TempDir(), Timeout: 10 * time.Second})
+	timeout := testwait.Remaining(t)
+	result, err := NewRunner(timeout, map[string]string{"git": git}).Run(context.Background(), Command{Argv: []string{"git", "status"}, Dir: t.TempDir(), Timeout: timeout})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

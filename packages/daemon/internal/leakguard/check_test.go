@@ -672,28 +672,30 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
 // The bound is what was left of the caller's deadline when the child started (Guard.run), so the
-// row reads the figures the guard made, never a count of seconds the test supposes: on a loaded
-// machine the guard's own work before the child, the shared check above all, takes longer and
-// leaves the child less of the caller's 2 s. The line is held to the stop beneath it, and the stop
-// to the caller's deadline (stopSaid), never to the two seconds whole.
+// row reads the figures the guard made, never a count of seconds the test supposes. The caller's
+// deadline is 2 s after the call and passes there, but not before the stand-in program has
+// started (deadlinePassedOnceStarted): on a loaded machine the guard's own work before the child,
+// the shared check above all, can take longer than 2 s, and a deadline that passed then stopped
+// the check, not the program. The line is held to the stop beneath it, and the stop to the
+// caller's deadline (stopSaid), never to the two seconds whole.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
-	// neverAnswers is the PATH entry of a directory whose one program is name, which sleeps past
-	// any test binary's deadline, in front of the test's own PATH: the guard's lookup finds it
-	// before the real one, and the check's bash still finds everything else.
-	neverAnswers := func(t *testing.T, name string) string {
+	// neverAnswers is the PATH entry of a directory whose one program is name, which marks started
+	// and sleeps past any test binary's deadline, in front of the test's own PATH: the guard's
+	// lookup finds it before the real one, and the check's bash still finds everything else.
+	neverAnswers := func(t *testing.T, name, started string) string {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexec sleep 86400\n"), 0o700); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n: >"+shQuote(started)+"\nexec sleep 86400\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
 	t.Run("the gh visibility read", func(t *testing.T) {
+		started := filepath.Join(t.TempDir(), "started")
 		guard := New(Options{
 			Check: leakguardtest.Write(t, t.TempDir(), passes),
-			Env:   append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh")),
+			Env:   append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh", started)),
 		})
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
+		ctx := deadlinePassedOnceStarted(t, 2*time.Second, started)
 		var err error
 		began := time.Now()
 		answered(t, "the text whose gh visibility read never answers", func() {
@@ -702,9 +704,9 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		says(t, setupFailure(t, err), "could not be read: "+stopSaid(t, ctx, err, "gh", began))
 	})
 	t.Run("a git read of the push's records", func(t *testing.T) {
-		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git"))
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
+		started := filepath.Join(t.TempDir(), "started")
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git", started))
+		ctx := deadlinePassedOnceStarted(t, 2*time.Second, started)
 		// A local commit and a ref the destination does not hold yet: the guard asks git for the
 		// repository's remotes and then for the commits the push would add, which are reads the
 		// stand-in git never answers.
@@ -719,4 +721,36 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		answered(t, "the push whose git read never answers", func() { err = guard.Push(ctx, req) })
 		says(t, setupFailure(t, err), "the push's commits could not be read: "+stopSaid(t, ctx, err, "git", began))
 	})
+}
+
+// deadlinePassedOnceStarted is a caller's context whose deadline is due bound after the call and
+// passes then, but not before the file at started is there, which the stand-in program writes as
+// its first act. It ends as a deadline does (testwait.StandInDeadline: its Err and its cause
+// context.DeadlineExceeded). Its Deadline is the moment it is due until it passes, and the moment
+// it passed from then on, so a program that started after the due moment still reads a bound
+// that is what was left of the deadline when it started.
+func deadlinePassedOnceStarted(t *testing.T, bound time.Duration, started string) context.Context {
+	t.Helper()
+	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
+	t.Cleanup(cancel)
+	due := time.Now().Add(bound)
+	whenWritten(ctx, started, func() {
+		time.Sleep(time.Until(due))
+		pass(context.DeadlineExceeded)
+	})
+	return dueDeadline{Context: ctx, due: due}
+}
+
+// dueDeadline is a context whose deadline reads as due until the context it wraps has a deadline
+// of its own: the moment a stand-in deadline passed.
+type dueDeadline struct {
+	context.Context
+	due time.Time
+}
+
+func (d dueDeadline) Deadline() (time.Time, bool) {
+	if at, ok := d.Context.Deadline(); ok {
+		return at, true
+	}
+	return d.due, true
 }

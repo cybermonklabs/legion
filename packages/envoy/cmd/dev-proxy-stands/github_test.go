@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestTheInstallationPermissionsFlagSetsWhatAnInstallationHolds: --installation-permissions
@@ -67,7 +68,9 @@ func TestTheInstallationPermissionsFlagSetsWhatAnInstallationHolds(t *testing.T)
 
 // TestTheInstallationPermissionsFlagRefusesWhatItCannotRead: each malformed value, an owner
 // named twice, and an owner no --installation installs the App on are usage errors, exit 2, each
-// naming what it refuses, before any stand is served.
+// naming what it refuses, before any stand is served. A run is killed only with 30 s left of the
+// test binary's deadline, so a loaded machine that starts the binary late kills no run that would
+// have refused on its own.
 func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 	binary := buildStands(t)
 	for _, c := range []struct {
@@ -84,7 +87,7 @@ func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 		{"an owner the App is not installed on", []string{"--installation-permissions", "other-org=contents:read"}, "other-org, on which no --installation installs the App"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, 30*time.Second))
 			defer cancel()
 			cmd := exec.CommandContext(ctx, binary, append([]string{"--dir", t.TempDir()}, c.args...)...)
 			output, err := cmd.CombinedOutput()

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // imageOmp is an `omp` that answers each of the image's probes by its own plan, one step per
@@ -30,6 +32,8 @@ type imageOmp struct{ dir, invocation string }
 func newImageOmp(t *testing.T, agents, load, session []string) imageOmp {
 	t.Helper()
 	dir := t.TempDir()
+	// What the fake leaves running ends at the test's cleanup, if no stop has ended it first (held).
+	t.Cleanup(func() { _ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o644) })
 	for kind, plan := range map[string][]string{"agents": agents, "load": load, "session": session} {
 		if err := os.WriteFile(filepath.Join(dir, kind+".plan"), []byte(strings.Join(plan, "\n")+"\n"), 0o644); err != nil {
 			t.Fatalf("write the %s plan: %v", kind, err)
@@ -37,6 +41,9 @@ func newImageOmp(t *testing.T, agents, load, session []string) imageOmp {
 	}
 	script := `#!/bin/sh
 dir=` + shellprefix.Literal(dir) + `
+# held stands in for a process that hangs: it runs until a signal ends it or the test's cleanup
+# writes release, and never ends on a timer of its own.
+held() { until [ -e "$dir/release" ]; do sleep 0.05; done; }
 # The pod's load arm, three extensions, comes before the pane's, one, whose glob would swallow it.
 case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json") kind=load lane=pod ;;
@@ -71,8 +78,8 @@ agents:available-then-die) echo LEGION_OMP_AGENTS=available >&2; echo "database 
 # A pass that takes its time, as Oh My Pi does on a loaded machine: longer than a budget of a
 # second or two, and far inside the rig's.
 agents:available-slowly) sleep 2; echo LEGION_OMP_AGENTS=available >&2; exit 0 ;;
-# Answers, then hangs past the rig's answerBudget, so the budget cuts it only after the answer.
-agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; exec sleep 120 ;;
+# Answers, then hangs (held), so the budget cuts it only after the answer.
+agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; held; exit 0 ;;
 load:yes) printf "$legion$with_envoy" >&2; exit 0 ;;
 load:no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 load:elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$dir/elsewhere/pi-legion/dist/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
@@ -88,7 +95,8 @@ session:accepts) exit 0 ;;
 session:dies) echo "database is locked" >&2; exit 1 ;;
 session:killed) echo "database is locked" >&2; kill -KILL $$ ;;
 *:denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
-*:hang) exec sleep 30 ;;
+# Writes that the kind's attempt n hangs, the fact a row's budget passes at (hangsUnder).
+*:hang) : >"$dir/$kind.hanging.$n"; held; exit 0 ;;
 esac
 echo "fake omp: no step $step for $kind" >&2; exit 65
 `
@@ -181,28 +189,58 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 	}, &logged
 }
 
-// The two attempt budgets of the gate rigs, the boot gate's (gateUnder) and the image probe's
+// The attempt budget of the gate rigs, the boot gate's (gateUnder) and the image probe's
 // (imageGateUnder). answerBudget is one no attempt of a fake that answers comes near, however
 // loaded the machine: a pass that ran past a budget of a second or two was cut off and asked
 // again, and the probe ran once more than its case said. The slowest answering attempt measured
 // was about 8 s, at a load average of 1,200 on 288 CPUs. An attempt that answers and then hangs
 // keeps it, and its hang outlasts it, so the budget cuts it only after the answer: each such case
-// takes the budget's length. hangBudget is the budget of a case whose cut attempts answer nothing
-// (hangsUnder), short so that each attempt it cuts off costs the suite little; such a case runs no
-// attempt that must answer in time, so no probe that answers runs before the one that hangs, and
-// its attempts are counted from the gate (its refusal and its transient lines), since an attempt
-// cut off before the fake wrote its count leaves none.
-const (
-	answerBudget = 20 * time.Second
-	hangBudget   = 500 * time.Millisecond
-)
+// takes the budget's length. An attempt that hangs before it answers anything is cut at a fact of
+// its run instead (hangsUnder).
+const answerBudget = 20 * time.Second
 
-// hangsUnder gives gate hangBudget, bounded to attempts, where plan holds a step that hangs before
-// it answers anything, and leaves it as it is otherwise.
-func hangsUnder(gate *pluginGate, plan []string, attempts int) {
-	if slices.Contains(plan, "hang") {
-		gate.timeout, gate.retry.Attempts = hangBudget, attempts
+// hangsUnder bounds gate to attempts, where plan holds a step that hangs before it answers
+// anything, and has each attempt's budget pass, as the gate's own budget does
+// (testwait.StandInDeadline), once that attempt's stand-in hangs: the fake's hang step writes
+// hanging(n), for its attempt n, before it hangs, and the k-th attempt the gate runs passes once
+// hanging(k) exists. That is a fact of the run, never a time, so no load can pass a budget before
+// its stand-in has started, where the run would answer the context's error in place of a cut, and
+// the fake runs every attempt the gate counts. gate.timeout stays answerBudget, the budget the
+// gate's refusal names. An attempt that ends on its own is left to end; one whose stand-in has not
+// hung by the end of the row's bound is cancelled instead, and the row fails naming it at its
+// cleanup. A plan with no hang step leaves gate as it is.
+func hangsUnder(t *testing.T, gate *pluginGate, plan []string, attempts int, hanging func(n int) string) {
+	t.Helper()
+	if !slices.Contains(plan, "hang") {
+		return
 	}
+	gate.retry.Attempts = attempts
+	until := time.Now().Add(testwait.Bounded(t, answerBudget, cutRunMargin))
+	var started, missed atomic.Int32
+	gate.expire = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		attempt, pass, cancel := testwait.StandInDeadline(ctx)
+		marker := hanging(int(started.Add(1)))
+		hung := func() bool {
+			_, err := os.Stat(marker)
+			return err == nil
+		}
+		go func() {
+			ended := testwait.Holds(time.Until(until), testwait.Poll, func() bool { return attempt.Err() != nil || hung() })
+			switch {
+			case hung():
+				pass(context.DeadlineExceeded)
+			case !ended:
+				missed.Add(1)
+				cancel()
+			}
+		}()
+		return attempt, cancel
+	}
+	t.Cleanup(func() {
+		if n := missed.Load(); n > 0 {
+			t.Errorf("%d attempts' stand-ins had not hung by the end of the row's bound, so their budgets passed at no fact of the run", n)
+		}
+	})
 }
 
 // A pod loads the Envoy and Legion plugins as its two explicit extension roots, in that order,
@@ -490,7 +528,7 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, []string{"available"}, []string{"yes"}, testCase.plan)
 			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
-			hangsUnder(&gate, testCase.plan, testCase.attempts)
+			hangsUnder(t, &gate, testCase.plan, testCase.attempts, func(n int) string { return filepath.Join(f.dir, "session.hanging."+strconv.Itoa(n)) })
 
 			err := gate.verifySessionStorage(context.Background())
 
@@ -502,7 +540,7 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 					t.Errorf("verifySessionStorage = %v, want a refusal saying %q", err, want)
 				}
 			}
-			if n := f.attempts(t, "session"); n > testCase.attempts || (n < testCase.attempts && !slices.Contains(testCase.plan, "hang")) {
+			if n := f.attempts(t, "session"); n != testCase.attempts {
 				t.Errorf("the session-storage probe ran %d times, want %d", n, testCase.attempts)
 			}
 			if got, want := strings.Count(logged.String(), "failed transiently"), testCase.attempts-1; got != want {
@@ -513,7 +551,8 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 }
 
 // The image probe's retry is bounded: an image build has no supervisor, so a probe that never
-// answers ends the build naming the budget and what the last attempt said.
+// answers ends the build naming the budget and what the last attempt said. A probe cut off every
+// time has each attempt cut once its stand-in hangs (hangsUnder), so the fake ran each attempt.
 func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -522,7 +561,7 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 		kind                  string
 	}{
 		{"pi.agents cut off every time", []string{"hang"}, []string{"refuses"},
-			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after 500ms"}, "agents"},
+			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after " + answerBudget.String()}, "agents"},
 		{"Oh My Pi dying before the resolver every time", []string{"available"}, []string{"dies"},
 			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "exited 1 without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
 		// A signal's death has no status: read as one, it was `exited -1 without naming …`.
@@ -532,7 +571,7 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := newImageOmp(t, testCase.agents, []string{"yes"}, testCase.session)
 			gate, logged := imageGateUnder(t, f, contractCurrent, 3)
-			hangsUnder(&gate, testCase.agents, 3)
+			hangsUnder(t, &gate, testCase.agents, 3, func(n int) string { return filepath.Join(f.dir, testCase.kind+".hanging."+strconv.Itoa(n)) })
 
 			err := gate.verifyImage(context.Background())
 
@@ -541,7 +580,7 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 					t.Errorf("verifyImage = %v, want an error saying %q", err, want)
 				}
 			}
-			if n := f.attempts(t, testCase.kind); n > 3 || (n < 3 && !slices.Contains(testCase.agents, "hang")) {
+			if n := f.attempts(t, testCase.kind); n != 3 {
 				t.Errorf("the %s probe ran %d times, want the bound, 3", testCase.kind, n)
 			}
 			if got := strings.Count(logged.String(), "failed transiently"); got != 2 {

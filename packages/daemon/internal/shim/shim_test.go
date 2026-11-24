@@ -467,7 +467,21 @@ type peer struct {
 
 func (p *peer) next(t *testing.T) shimwire.Frame {
 	t.Helper()
-	if err := p.conn.SetReadDeadline(time.Now().Add(waitLimit)); err != nil {
+	return p.nextWithin(t, waitLimit)
+}
+
+// answer is the shim's next frame read under the rest of the test binary's deadline
+// (testwait.Remaining) rather than waitLimit: the answer to a request whose commands run under a
+// budget as far (farBudget), which a loaded machine can hold past any fixed span.
+func (p *peer) answer(t *testing.T) shimwire.Frame {
+	t.Helper()
+	return p.nextWithin(t, testwait.Remaining(t))
+}
+
+// nextWithin is the shim's next frame, read within bound.
+func (p *peer) nextWithin(t *testing.T, bound time.Duration) shimwire.Frame {
+	t.Helper()
+	if err := p.conn.SetReadDeadline(time.Now().Add(bound)); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
 	line, err := p.r.ReadLine()
@@ -614,7 +628,10 @@ var theChecker = leakguard.CheckerVar + "=" + func() string {
 
 // installedCheck is the directory the pod's launcher installs the check the daemon served into,
 // made the way the launcher makes it: a GitHub-shaped tarball of installedFiles, packed
-// (leakguard.PackTarballManifest) and installed at tag (leakguard.InstallServed).
+// (leakguard.PackTarballManifest) and installed at tag (leakguard.InstallServed). The install
+// runs the check's --help, and its bound is the rest of the test binary's deadline
+// (testwait.Remaining): a bound counted from before that run starts is no subject here, and a
+// loaded machine can hold the run past any fixed span.
 func installedCheck(t *testing.T, tag string) string {
 	t.Helper()
 	members := map[string]leakguardtest.Member{}
@@ -631,7 +648,7 @@ func installedCheck(t *testing.T, tag string) string {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "leak-check")
-	ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancel()
 	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper}); err != nil {
 		t.Fatal(err)
@@ -1086,17 +1103,28 @@ func TestShutdownOfAChildThatHonoursSIGTERMExitsWithItsStatus(t *testing.T) {
 }
 
 // fakeJJ writes a `jj` that records how it was run and then does what mode says, in a directory
-// of its own put first on PATH: the shim runs PATH's jj, the one the pane's own shell runs.
+// of its own put first on PATH: the shim runs PATH's jj, the one the pane's own shell runs. In
+// mode hang, once its record is whole, it marks so (recordedMark) and runs until the test's
+// cleanup writes its release, or until this test process is gone: never for a span of its own,
+// so no answer comes, and no assertion holds, by the jj's own exit.
 func fakeJJ(t *testing.T) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "jj-invocation")
 	bin := t.TempDir()
+	release := filepath.Join(t.TempDir(), "release")
+	t.Cleanup(func() {
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Errorf("release the hanging jj: %v", err)
+		}
+	})
 	script := `#!/bin/sh
 printf '%s\n' "$@" >> "$FAKE_JJ_RECORD"
 printf 'JJ_USER=%s\nJJ_EMAIL=%s\n' "$JJ_USER" "$JJ_EMAIL" >> "$FAKE_JJ_RECORD"
 case "$FAKE_JJ_MODE" in
 fail) echo "Error: the working copy is stale" >&2; exit 3 ;;
-hang) exec sleep 30 ;;
+hang)
+  : >"` + recordedMark("$FAKE_JJ_RECORD") + `"
+  while [ ! -e '` + release + `' ] && kill -0 ` + fmt.Sprint(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
@@ -1106,12 +1134,83 @@ esac
 	return record
 }
 
+// recordedMark is the file fakeJJ writes in mode hang once its record is whole.
+func recordedMark(record string) string { return record + ".recorded" }
+
+// farBudget is the TimeoutMs of a request whose budget is not a row's subject: the rest of the
+// test binary's deadline (testwait.Remaining). A budget is counted from when the shim reads the
+// request, before its commands start, so a fixed one can pass on a loaded machine before they
+// have done their work; this one is far from their own end, and the answer is read as far
+// (peer.answer).
+func farBudget(t *testing.T) int {
+	t.Helper()
+	return int(testwait.Remaining(t).Milliseconds())
+}
+
+// timedOutOnceRecorded sends request, whose budget is the row's subject, to a shim whose PATH's
+// jj is fakeJJ in mode hang, and answers the shim's answer from a run of the right order: one in
+// which the jj was seen to have written its whole record (recordedMark) before the budget could
+// pass. The budget is counted from when the shim read the request, so it passes no sooner than
+// its TimeoutMs after the send. A loaded machine can hold the jj past that before it writes a
+// line, and the budget's stop then ends it with its record unwritten: a run that shows nothing of
+// a jj that outlives its budget. Such a run, one the budget cut, is sent again until a run of the
+// right order comes, within a minute. A run whose answer is no timeout is no run the budget cut,
+// and is answered as it is.
+func timedOutOnceRecorded(t *testing.T, p *peer, request shimwire.AdoptWorkingCopy, record string) shimwire.Frame {
+	t.Helper()
+	budget := time.Duration(request.TimeoutMs) * time.Millisecond
+	mark := recordedMark(record)
+	within := testwait.Bounded(t, time.Minute, budget+procgroup.StopGrace+procgroup.WaitDelay+time.Second)
+	until := time.Now().Add(within)
+	for runs := 1; ; runs++ {
+		for _, path := range []string{record, mark} {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("clear the jj's record before run %d: %v", runs, err)
+			}
+		}
+		stop, seen := make(chan struct{}), make(chan time.Time, 1)
+		go func() {
+			defer close(seen)
+			for {
+				if _, err := os.Stat(mark); err == nil {
+					seen <- time.Now()
+					return
+				}
+				select {
+				case <-stop:
+					return
+				case <-time.After(testwait.Poll):
+				}
+			}
+		}()
+		sent := time.Now()
+		p.send(t, request)
+		answer := p.answer(t)
+		close(stop)
+		at, recorded := <-seen
+		if recorded && at.Before(sent.Add(budget)) {
+			return answer
+		}
+		if result, ok := answer.(shimwire.AdoptWorkingCopyResult); !ok || !strings.Contains(result.Error, "Command timed out") {
+			return answer
+		}
+		if time.Now().Before(until) {
+			t.Logf("run %d: the jj was not seen to have written its whole record before its %s budget could pass, so the budget may have cut it first; sent again", runs, budget)
+			continue
+		}
+		t.Fatalf("no run of the right order in %d runs over %s: in each, the jj was seen to have written its whole record only after its %s budget could pass", runs, within, budget)
+	}
+}
+
 // `adopt-working-copy` is answered by the shim itself: the one shared adoption command, run by
 // the jj on the shim's PATH on the workspace LEGION_WORKSPACE names — never the directory the
 // shim happens to run in — under the identity the daemon named and within its budget, and OMP
 // never sees the frame. A shim missing LEGION_WORKSPACE refuses, naming it (a PATH without jj is
 // TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH's case). A failure answers `ok: false`
-// with the command's report rather than taking the agent down.
+// with the command's report rather than taking the agent down. A row whose request names no
+// TimeoutMs runs under farBudget, its budget no subject of it. The row whose jj outlives its
+// budget is judged only on a run in which the jj had written its whole record before the budget
+// could pass (timedOutOnceRecorded).
 func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -1124,14 +1223,14 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 	}{
 		{
 			name:    "a clean run",
-			request: shimwire.AdoptWorkingCopy{ID: "a1", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test", TimeoutMs: 5000},
+			request: shimwire.AdoptWorkingCopy{ID: "a1", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test"},
 			ok:      true,
 			ranJJ:   true,
 		},
 		{
 			name:     "jj fails",
 			mode:     "fail",
-			request:  shimwire.AdoptWorkingCopy{ID: "a2", JJUser: "u", JJEmail: "u@example.test", TimeoutMs: 5000},
+			request:  shimwire.AdoptWorkingCopy{ID: "a2", JJUser: "u", JJEmail: "u@example.test"},
 			errorHas: []string{"Command failed (exit 3)", "jj log", "the working copy is stale"},
 			ranJJ:    true,
 		},
@@ -1172,10 +1271,20 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 			p := daemon.accept(t)
 			p.open(t)
 
-			p.send(t, tc.request)
-			got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult)
-			if !ok || got.ID != tc.request.ID || got.OK != tc.ok {
-				t.Fatalf("the shim answered %#v, want a result for %s with ok=%v", got, tc.request.ID, tc.ok)
+			request := tc.request
+			if request.TimeoutMs == 0 {
+				request.TimeoutMs = farBudget(t)
+			}
+			var answer shimwire.Frame
+			if tc.mode == "hang" {
+				answer = timedOutOnceRecorded(t, p, request, record)
+			} else {
+				p.send(t, request)
+				answer = p.answer(t)
+			}
+			got, ok := answer.(shimwire.AdoptWorkingCopyResult)
+			if !ok || got.ID != request.ID || got.OK != tc.ok {
+				t.Fatalf("the shim answered %#v, want a result for %s with ok=%v", got, request.ID, tc.ok)
 			}
 			for _, want := range tc.errorHas {
 				if !strings.Contains(got.Error, want) {
@@ -1282,9 +1391,9 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 			p := daemon.accept(t)
 			p.open(t)
 
-			request := shimwire.AdoptWorkingCopy{ID: "path", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test", TimeoutMs: 5000}
+			request := shimwire.AdoptWorkingCopy{ID: "path", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test", TimeoutMs: farBudget(t)}
 			p.send(t, request)
-			got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult)
+			got, ok := p.answer(t).(shimwire.AdoptWorkingCopyResult)
 			if !ok || got.ID != request.ID || got.OK != tc.ok {
 				t.Fatalf("the shim answered %#v, want a result for %s with ok=%v", got, request.ID, tc.ok)
 			}
@@ -1395,8 +1504,8 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			run(t, cfg, newClock())
 			p := daemon.accept(t)
 			p.open(t)
-			p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: 10000})
-			if got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult); !ok || !got.OK {
+			p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: farBudget(t)})
+			if got, ok := p.answer(t).(shimwire.AdoptWorkingCopyResult); !ok || !got.OK {
 				t.Fatalf("the shim answered %#v, want a successful adoption", got)
 			}
 			if ran, err := os.ReadFile(record); err != nil || string(ran) != tc.ran {
@@ -1459,8 +1568,8 @@ func TestAdoptWorkingCopyLeavesTheRepositoryTheShimRunsInUntouched(t *testing.T)
 	run(t, cfg, newClock())
 	p := daemon.accept(t)
 	p.open(t)
-	p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: 10000})
-	if got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult); !ok || !got.OK {
+	p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: farBudget(t)})
+	if got, ok := p.answer(t).(shimwire.AdoptWorkingCopyResult); !ok || !got.OK {
 		t.Fatalf("the shim answered %#v, want a successful adoption", got)
 	}
 	after := treeOf(t, decoy)
@@ -1568,8 +1677,8 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 			run(t, cfg, newClock())
 			p := daemon.accept(t)
 			p.open(t)
-			p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: 10000})
-			got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult)
+			p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: farBudget(t)})
+			got, ok := p.answer(t).(shimwire.AdoptWorkingCopyResult)
 			if !ok || got.OK {
 				t.Fatalf("the shim answered %#v, want a failed adoption", got)
 			}
@@ -1629,8 +1738,8 @@ func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testin
 	run(t, cfg, newClock())
 	p := daemon.accept(t)
 	p.open(t)
-	p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: 10000})
-	got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult)
+	p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: farBudget(t)})
+	got, ok := p.answer(t).(shimwire.AdoptWorkingCopyResult)
 	if !ok || got.ID != "adopt" || got.OK {
 		t.Fatalf("the shim answered %#v, want the failed adoption", got)
 	}
@@ -1848,4 +1957,37 @@ func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 			sh.log.awaitLine(t, shimwire.TypeToolExecutionStart+" bash "+summary, 1)
 		})
 	}
+}
+
+// jjRun runs one jj command in the workspace it reads, as every jj a test starts must
+// (docs/testing.md).
+func jjRun(t *testing.T, home, dir string, args ...string) string {
+	t.Helper()
+	return workspaceCommand(t, home, dir, append([]string{"jj"}, args...))
+}
+
+// jjGit runs one git command in the workspace it reads, as jjRun runs a jj.
+func jjGit(t *testing.T, home, dir string, args ...string) string {
+	t.Helper()
+	return workspaceCommand(t, home, dir, append([]string{"git"}, args...))
+}
+
+// workspaceCommand runs one jj or git of a fixture's workspace under the isolated environment
+// this package's fixtures use (fixtureenv.Isolated), so no command of a test reads the git or jj
+// configuration, the credentials or the LEGION_ variables of whoever runs the tests — in a pod, of
+// the role whose live workspace this binary stands in. Isolated's own JJ_CONFIG names a file that
+// does not exist, which is what keeps the host's jj configuration out; the fixture writes none of
+// its own.
+//
+// home is the fixture's, and the shim under test is given the same one, so the two read one
+// configuration (docs/testing.md). It is outside the workspace: a fixture asserts on what the
+// workspace holds, and a home under it would put jj's and git's own files into the very change
+// under test.
+func workspaceCommand(t *testing.T, home, dir string, args []string) string {
+	t.Helper()
+	return fixturegit.Isolated(t, home).With(
+		"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
+		"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
+		"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test",
+	).Run(dir, args...)
 }

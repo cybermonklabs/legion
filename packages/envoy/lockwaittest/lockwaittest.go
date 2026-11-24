@@ -1,7 +1,7 @@
 // Package lockwaittest spells the read a Go test of this repository makes to learn that a
 // PostgreSQL backend waits on a lock: Waiting, a condition on a row of pg_stat_activity, and
 // WaitingOn, the same for one kind of lock. docs/testing.md, "A test reads a lock wait from
-// pg_locks", states the rule; this documentation is its detail.
+// pg_locks", states the rule; this documentation gives its reason and what was measured.
 //
 // # Why pg_locks
 //
@@ -25,38 +25,9 @@
 //
 // # The check
 //
-// Envoy's internal/textcheck (lock_wait_reads_test.go) holds the three Go modules to this: Envoy,
-// Envoy's infra and the daemon, each walked alone. It fails on a root that holds no go.mod, and on
-// a module in which it read no Go file. It reads every Go string literal and names:
-//
-//   - this package's predicate written out anywhere but in this file: the select of the backends
-//     pg_locks holds an ungranted request of, with or without one locktype condition and no
-//     other, followed by the parenthesis that closes it or by the end of the literal, in whatever
-//     statement holds it (pid in, pid not in, exists, a with query);
-//   - a wait event compared with a lock by its exact value: wait_event_type with Lock, or
-//     wait_event with a lock type such as advisory; by =, <> or !=, or by like, ilike or their
-//     negations, in either order, or tested against a list (in, not in) that holds the value; the
-//     column qualified (a.wait_event_type) or not, alone, inside one call (coalesce, lower) or
-//     inside one pair of parentheses, and cast (::text); the value as a string or as an escape
-//     string (E'Lock').
-//
-// It does not see:
-//
-//   - the predicate written another way: its conditions in the other order, with a table alias,
-//     or as the start of a longer statement;
-//   - a wait event matched by a pattern rather than its exact value, such as like 'Lock%';
-//   - the column inside two calls or two pairs of parentheses, such as
-//     lower(trim(wait_event_type));
-//   - a list in which a parenthesis comes before the lock value, such as in (lower('x'), 'Lock');
-//   - a comparison made in Go, of a wait_event_type the test scanned;
-//   - a statement built from pieces: a value passed as a bind parameter, a column and a value in
-//     two literals joined by +, or a format verb;
-//   - another operator, such as = any(...), or a literal in a testdata directory;
-//   - a test that decides on one sample of a wait event other than a lock's.
-//
-// A read of one lock from pg_locks, by relation or by advisory key, a read of one backend's request
-// by its pid, and a read of the waiters behind one backend (pg_blocking_pids) do not write the
-// predicate out, and the check leaves them alone.
+// Envoy's internal/textcheck holds the three Go modules (Envoy, Envoy's infra and the daemon) to
+// this. TestEveryTestReadsALockWaitThroughLockwaittest's doc comment, in lock_wait_reads_test.go,
+// lists the forms it names and the forms it does not see.
 package lockwaittest
 
 // Waiting is the condition, on a row of pg_stat_activity, that its backend waits on a lock:

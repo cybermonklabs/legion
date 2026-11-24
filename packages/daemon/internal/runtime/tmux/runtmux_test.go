@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,45 +13,101 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A tmux client that exits on its own did not time out, however long pipeDrainDelay then holds
 // runTmux open for something still holding its output pipes (a server that took the client's
-// stdio over the socket): its exit is its answer. In the first case the timeout is 100 ms short of
-// pipeDrainDelay, so the run always returns past it, while the client still has 900 ms to exit
-// under load; a runTmux that read a timeout from the deadline having passed would report the
-// client's own exit 3 as a timeout. In the second the client exits 0 well inside its timeout; a
-// runTmux that took exec.ErrWaitDelay for a failure would report that success as an error.
-func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *testing.T) {
-	for name, testCase := range map[string]struct {
-		exit    int
-		timeout time.Duration
-	}{
-		"an exit 3, the pipes held past the timeout": {3, pipeDrainDelay - 100*time.Millisecond},
-		"an exit 0 inside the timeout":               {0, time.Minute},
-	} {
+// stdio over the socket): its exit is its answer. The timeout is the rest of the test binary's
+// deadline, far from the client's own exit on a loaded machine. With exit 3 the run keeps the
+// client's own exit and no timeout; with exit 0, a runTmux that took exec.ErrWaitDelay for a
+// failure would report that success as an error. What holds the pipes runs until the test's
+// cleanup releases it (heldChild), so every run is held past pipeDrainDelay.
+func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipes(t *testing.T) {
+	for name, exit := range map[string]int{"an exit 3": 3, "an exit 0": 0} {
 		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			pidFile := filepath.Join(dir, "lingering.pid")
-			t.Cleanup(func() { killPIDFile(pidFile) })
-			client := fakeTmuxClient(t, dir, "echo answered; sleep 30 & echo $! >"+pidFile+"; exit "+strconv.Itoa(testCase.exit))
-			r := &Runtime{tmuxPath: client, commandTimeout: testCase.timeout, environ: []string{"PATH=" + os.Getenv("PATH")}}
+			timeout := testwait.Remaining(t)
+			client := fakeTmuxClient(t, t.TempDir(), "echo answered\n"+heldChild(t)+"\nexit "+strconv.Itoa(exit))
+			r := &Runtime{tmuxPath: client, commandTimeout: timeout, environ: []string{"PATH=" + os.Getenv("PATH")}}
 
 			started := time.Now()
 			res, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
 			elapsed := time.Since(started)
 
 			if err != nil {
-				t.Fatalf("runTmux = %v after %s, want the client's own exit %d", err, elapsed, testCase.exit)
+				t.Fatalf("runTmux = %v after %s, want the client's own exit %d", err, elapsed, exit)
 			}
 			if elapsed < pipeDrainDelay {
 				t.Fatalf("runTmux returned after %s, inside pipeDrainDelay: nothing held the pipe, so this run proves nothing", elapsed)
 			}
-			if res.timedOut != 0 || res.exitCode != testCase.exit || strings.TrimSpace(res.stdout) != "answered" {
-				t.Errorf("runTmux = exit %d, timed out %s, stdout %q after %s; want exit %d, no timeout, and the answer: the client exited on its own inside its %s timeout",
-					res.exitCode, res.timedOut, res.stdout, elapsed, testCase.exit, testCase.timeout)
+			if res.timedOut != 0 || res.exitCode != exit || strings.TrimSpace(res.stdout) != "answered" {
+				t.Errorf("runTmux = exit %d, timed out %s, stdout %q after %s; want exit %d, no timeout, and the answer: the client exited on its own, its timeout far away",
+					res.exitCode, res.timedOut, res.stdout, elapsed, exit)
 			}
 		})
+	}
+}
+
+// A tmux client that exits on its own did not time out, however much of pipeDrainDelay, which
+// then holds runTmux open for something still holding the client's pipes, passes after its
+// timeout: a runTmux that read a timeout from the deadline having passed would report the
+// client's own exit 3 as a timeout. The timeout is 100 ms short of pipeDrainDelay, so a run whose
+// client exits inside it returns past it.
+//
+// Only a run whose client was seen reaped before its timeout could pass is judged. Go reaps the
+// client in Wait once it has exited, and the deadline comes no sooner than the timeout after the
+// row called runTmux. A kill sent to a client Go has reaped finds nothing, and does not count
+// (procgroup.KilledByContext), so in such a run the timeout passed while the pipes were held and
+// ended nothing. A loaded machine can hold the client past a timeout counted from before the
+// client started, and that run, which the timeout's kill ended, shows nothing of this: the row
+// runs the client again until a run of the right order comes, within a minute.
+func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *testing.T) {
+	const timeout = pipeDrainDelay - 100*time.Millisecond
+	within := testwait.Bounded(t, time.Minute, pipeDrainDelay+time.Second)
+	until := time.Now().Add(within)
+	for runs := 1; ; runs++ {
+		dir := t.TempDir()
+		leader := filepath.Join(dir, "leader")
+		client := fakeTmuxClient(t, dir, "echo $$ >'"+leader+"'\necho answered\n"+heldChild(t)+"\nexit 3")
+		r := &Runtime{tmuxPath: client, commandTimeout: timeout, environ: []string{"PATH=" + os.Getenv("PATH")}}
+		reaped := make(chan time.Time, 1)
+		go func() {
+			defer close(reaped)
+			if testwait.Holds(within, testwait.Poll, func() bool {
+				pid := pidIn(leader)
+				return pid > 0 && errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+			}) {
+				reaped <- time.Now()
+			}
+		}()
+
+		called := time.Now()
+		res, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
+		elapsed := time.Since(called)
+		at, seen := <-reaped
+
+		if !seen {
+			t.Fatalf("run %d: the client was not seen reaped within %s (runTmux = exit %d, timed out %s, error %v after %s)",
+				runs, within, res.exitCode, res.timedOut, err, elapsed)
+		}
+		if !at.Before(called.Add(timeout)) {
+			if time.Now().Before(until) {
+				continue
+			}
+			t.Fatalf("no run of the right order in %d runs over %s: in each, the client was seen reaped only after its %s timeout could pass", runs, within, timeout)
+		}
+		if err != nil {
+			t.Fatalf("run %d: runTmux = %v after %s, want the client's own exit 3", runs, err, elapsed)
+		}
+		if elapsed < pipeDrainDelay {
+			t.Fatalf("run %d: runTmux returned after %s, inside pipeDrainDelay: nothing held the pipe, so this run proves nothing", runs, elapsed)
+		}
+		if res.timedOut != 0 || res.exitCode != 3 || strings.TrimSpace(res.stdout) != "answered" {
+			t.Errorf("run %d: runTmux = exit %d, timed out %s, stdout %q after %s; want exit 3, no timeout, and the answer: the client was reaped before its %s timeout could pass",
+				runs, res.exitCode, res.timedOut, res.stdout, elapsed, timeout)
+		}
+		return
 	}
 }
 
@@ -294,15 +351,45 @@ func fakeTmuxClient(t *testing.T, dir, body string) string {
 }
 
 // killPIDFile kills the process named by the PID pidFile holds, left running past a test's own
-// assertions by design (a backgrounded sleep standing in for what holds a client's pipes).
+// assertions by design (heldChild's child, standing in for what holds a client's pipes).
 func killPIDFile(pidFile string) {
-	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		return
+	if pid := pidIn(pidFile); pid > 0 {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
+// heldChild is lines of a fake client's shell script that start a child holding the client's
+// output pipes, as a tmux server that took the client's stdio can, and go on once the child has
+// written its pid. The child runs until the test's cleanup writes its release, and kills it, or
+// until this test process is gone: never for a span of its own, so no run ends, and no assertion
+// holds, by the child's own exit.
+func heldChild(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	pidFile, release, holder := filepath.Join(dir, "pid"), filepath.Join(dir, "release"), filepath.Join(dir, "hold")
+	t.Cleanup(func() {
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Errorf("release the held child: %v", err)
+		}
+		killPIDFile(pidFile)
+	})
+	script := fmt.Sprintf("echo $$ >'%[1]s.tmp' && mv '%[1]s.tmp' '%[1]s'\nwhile [ ! -e '%[2]s' ] && kill -0 %[3]d 2>/dev/null; do sleep 0.05; done\n",
+		pidFile, release, os.Getpid())
+	if err := os.WriteFile(holder, []byte(script), 0o600); err != nil {
+		t.Fatalf("write the held child's script: %v", err)
+	}
+	return "sh '" + holder + "' &\nwhile [ ! -s '" + pidFile + "' ]; do sleep 0.01; done"
+}
+
+// pidIn is the pid a client's shell wrote to path, once the whole line is there, and 0 before.
+func pidIn(path string) int {
+	raw, err := os.ReadFile(path)
+	if err != nil || !strings.HasSuffix(string(raw), "\n") {
+		return 0
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		return
+	if err != nil || pid <= 0 {
+		return 0
 	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	return pid
 }

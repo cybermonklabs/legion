@@ -21,7 +21,7 @@ Take the verb phrase out and ask: what literally happens? Write that. If you can
 |---|---|
 | land the change, land the PR | merge it, release it, deploy it, apply it — whichever one it is |
 | unblock the work | X can start once Y merges |
-| name the problem, name the owner, name a date | say the problem; who owns it is X; Y is left, and at the measured rate it ends on <date> |
+| name the problem, name the owner, name a date | say the problem; who owns it is X; Y is left, and Z decides when it ends |
 | it pays for itself, that pays | it costs $16,306 and returns $60,379 a month |
 | carry it to X, carry the finding | tell X; send it to X; put it on the issue |
 | this shows the gap, the number shows | the gap is 12 of 30; the number is 1.17 |

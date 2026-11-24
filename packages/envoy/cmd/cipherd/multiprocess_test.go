@@ -38,6 +38,8 @@
 
 package main
 
+//ci:reads packages/envoy/internal/cipher/store/migrations/* countMigrations globs ../../internal/cipher/store/migrations/*.up.sql
+
 import (
 	"context"
 	"encoding/json"
@@ -947,10 +949,11 @@ func TestTwoBrokers(t *testing.T) {
 	// the handler, with nothing faked and nothing sleeping in the broker.
 	t.Run("6_ADrainingProcessFailsReadinessAndServesOn", func(t *testing.T) {
 		const (
-			// drain is this broker's BROKER_DRAIN_SECONDS: long enough to get both observations
-			// out inside the window, short enough that the row pays for no budget it does not
-			// use.
-			drain = 5 * time.Second
+			// drain is this broker's BROKER_DRAIN_SECONDS, the longest config.Load takes: the
+			// window both observations must fall in. The row ends it itself, with a second signal
+			// once it has both, so a loaded machine that holds either one up closes no window
+			// before it, and the row pays for no drain it does not use.
+			drain = 120 * time.Second
 			// oldShutdownBudget is what main.go's shutdownTimeout was before it became the
 			// write timeout: the figure this row exists to outlive.
 			oldShutdownBudget = 10 * time.Second
@@ -1022,6 +1025,9 @@ func TestTwoBrokers(t *testing.T) {
 			t.Fatalf("GET /v1/settings at %s, %s into its drain, = %d %s; want 200 — a draining broker serves every route but its health check",
 				solo.Process.Addr, time.Since(signalled).Round(time.Millisecond), status, body)
 		}
+		// Both observations fell inside the drain; a second signal ends it, as an operator's
+		// "stop it now" does, and the broker goes on to finish the refresh it holds.
+		solo.Process.Terminate(t)
 
 		// This wait IS the experiment, and it is the only bare sleep in this file: the claim is
 		// about a request still in flight when the old ten-second shutdown budget would have run
@@ -1087,9 +1093,11 @@ func TestTwoBrokers(t *testing.T) {
 	// neither of them signalled, put the retag on the peer within milliseconds. What this row
 	// changes is the signal, and nothing else.
 	t.Run("7_ADrainingPodStillTakesAPeersReread", func(t *testing.T) {
-		// drain is long enough to hold the whole observation inside the window in which the pod
-		// is still being sent traffic, which is what the row is about.
-		const drain = 30 * time.Second
+		// drain is the longest BROKER_DRAIN_SECONDS config.Load takes, so the whole observation
+		// falls inside the window in which the pod is still being sent traffic, which is what
+		// the row is about, with the most room a loaded machine can take from it. The cleanup's
+		// signal, the second, ends the drain (startBroker).
+		const drain = 120 * time.Second
 		stopping := startBrokerFleet(t, binary, []time.Duration{0, drain})
 		serving, draining := stopping.Processes[0], stopping.Processes[1]
 

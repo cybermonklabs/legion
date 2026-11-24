@@ -450,13 +450,13 @@ func CanonicalBlockRef(value string) (Ref, bool) {
 // `PROJECT/artifact/<slug>/ask/<id>`), optionally pinned to revision N of the ask's parts, or a
 // block of a comment (`KEY/comment/<id>`, or a project document's
 // `PROJECT/artifact/<slug>/comment/<id>`), optionally pinned to revision N of that comment, or of
-// an issue's message (`KEY/message/<id>`). A message never changes, so a pinned message block is
-// no reference. The id is read with any valid percent-encoding (EncodeBlockID writes one), so
-// `%40` is an `@` in the id and a raw `@` is only ever the pin. Any other fragment, a raw `@` that
-// does not start a well-formed pin, a versioned document, an agent conversation's document, or an
-// id that is empty or does not decode names nothing. (Extract holds the block's id to
-// MaxBlockIDBytes and its whole target id to MaxTargetBytes in text, inBound.) A document version
-// shows only as an `@` in the document part: no key or slug holds one.
+// an issue's message (`KEY/message/<id>`). A message records no revisions, so a pinned message
+// block is no reference. The id is read with any valid percent-encoding (EncodeBlockID writes
+// one), so `%40` is an `@` in the id and a raw `@` is only ever the pin. Any other fragment, a raw
+// `@` that does not start a well-formed pin, a versioned document, an agent conversation's
+// document, or an id that is empty or does not decode names nothing. (Extract holds the block's id
+// to MaxBlockIDBytes and its whole target id to MaxTargetBytes in text, inBound.) A document
+// version shows only as an `@` in the document part: no key or slug holds one.
 func parseBlock(document, fragment string) (Ref, bool) {
 	encoded, ok := strings.CutPrefix(fragment, "b-")
 	if !ok || strings.Contains(document, "@") {

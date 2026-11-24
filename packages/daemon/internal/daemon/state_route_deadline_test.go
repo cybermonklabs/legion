@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -65,6 +66,23 @@ func daemonBackends(t *testing.T, pool *store.Pool, application, condition strin
 		t.Fatalf("count the backends of %s that are %s: %v", application, condition, err)
 	}
 	return count
+}
+
+// awaitOneLockWaiter waits until one backend of pool's own database waits on a lock, read from
+// pg_locks (lockwaittest.Waiting): a statement the test started is blocked on a transaction the
+// test holds.
+// It counts by database rather than by application name, since each test clones a database of its
+// own (isolatedOutboxPool), so the count reads that test's backends alone.
+func awaitOneLockWaiter(t *testing.T, pool *store.Pool, what string) {
+	t.Helper()
+	testwait.Eventually(t, what, func() bool {
+		var waiting int
+		if err := pool.QueryRow(context.Background(),
+			"select count(*) from pg_stat_activity where datname = current_database() and "+lockwaittest.Waiting).Scan(&waiting); err != nil {
+			t.Fatalf("count the backends waiting on a lock: %v", err)
+		}
+		return waiting == 1
+	})
 }
 
 // A state read that does not finish is ended by the route's own deadline: the client is answered

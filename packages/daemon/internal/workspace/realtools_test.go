@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The two rows of this file drive the stop procgroup.Configure gives every git and jj of this
@@ -105,11 +106,11 @@ func locksUnder(t *testing.T, dir string) []string {
 
 // slowCleanFilter is the clean filter the repository of TestARealGitStoppedAtItsBudgetLeavesNoLock
 // runs on every path it adds. git runs a filter through a shell, so this is a command line and
-// not an argv, and it sleeps far past that row's budget: the budget's end, never the filter's own
-// exit, is what ends that git. It is what holds .git/index.lock open for as long as the row
-// needs, because neither runner gives a command a pipe that stays open — execRunner.Run passes no
-// standard input at all and RunCommand passes a byte slice that ends at once — so a git waiting
-// on its own standard input could not serve.
+// not an argv, and it sleeps far past the moment that row's budget passes: the budget's end,
+// never the filter's own exit, is what ends that git. It is what holds .git/index.lock open for
+// as long as the row needs, because neither runner gives a command a pipe that stays open —
+// execRunner.Run passes no standard input at all and RunCommand passes a byte slice that ends at
+// once — so a git waiting on its own standard input could not serve.
 const slowCleanFilter = "sleep 300; cat"
 
 // A real git the budget stops leaves no lock behind. git holds .git/index.lock for the whole of
@@ -118,13 +119,15 @@ const slowCleanFilter = "sleep 300; cat"
 // fails on it (dispatch://INFRA-3098, procgroup.StopGrace). The repository is a real one whose
 // `filter.slow.clean` sleeps past the budget and whose .gitattributes points every path at that
 // filter, and the add runs through execRunner.Run, the runner provisioning's own git goes
-// through, under a budget shorter than the sleep: what the row reads is the production stop's
-// own SIGTERM reaching a real git that holds a real lock. That the git left on its SIGTERM, and
-// not on the SIGKILL the stop sends a group that outlives procgroup.StopGrace, is read from the
-// git's own wait status, not from a clock: git's lockfile handler removes its lock and raises the
-// signal again, so a git its SIGTERM ended ends signaled SIGTERM, and one the SIGKILL ended ends
-// signaled SIGKILL. The row holds no wall-clock ceiling, which a loaded runner can pass with
-// nothing wrong.
+// through, under a budget that passes once the git holds .git/index.lock
+// (budgetPassedOnceExists), long before the sleep ends: what the row reads is the production
+// stop's own SIGTERM reaching a real git that holds a real lock. A budget counted from before the
+// git started could pass, on a loaded machine, before the git had taken the lock. That the git
+// left on its SIGTERM, and not on the SIGKILL the stop sends a group that outlives
+// procgroup.StopGrace, is read from the git's own wait status, not from a clock: git's lockfile
+// handler removes its lock and raises the signal again, so a git its SIGTERM ended ends signaled
+// SIGTERM, and one the SIGKILL ended ends signaled SIGKILL. The row holds no wall-clock ceiling,
+// which a loaded runner can pass with nothing wrong.
 func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	git := realTool(t, "git")
 	root := t.TempDir()
@@ -140,11 +143,11 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 		}
 	}
 
-	budget := time.Second
-	done := make(chan struct{})
-	defer close(done)
-	appeared := whenLockAppears(filepath.Join(repository, ".git", "index.lock"), done)
-	run := NewRunner(budget, map[string]string{"git": git})
+	// The git's own Timeout is the rest of the test binary's deadline: the budget that ends it is
+	// the caller's, and execRunner.Run bounds the git by both.
+	ctx := budgetPassedOnceExists(t, filepath.Join(repository, ".git", "index.lock"))
+	timeout := testwait.Remaining(t)
+	run := NewRunner(timeout, map[string]string{"git": git})
 
 	var ended atomic.Pointer[os.ProcessState]
 	hook := func(command Command, state *os.ProcessState) {
@@ -155,16 +158,15 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	exitedHook.Store(&hook)
 	t.Cleanup(func() { exitedHook.Store(nil) })
 	started := time.Now()
-	result, err := run.Run(context.Background(), Command{Dir: repository, Argv: []string{"git", "add", "work.txt"}, Timeout: budget})
+	result, err := run.Run(ctx, Command{Dir: repository, Argv: []string{"git", "add", "work.txt"}, Timeout: timeout})
 	elapsed := time.Since(started)
 
-	select {
-	case took := <-appeared:
-		t.Logf("the git had taken .git/index.lock %s into its %s budget, and the run returned after %s", took.Sub(started), budget, elapsed)
-	default:
-		t.Fatalf("the git never took .git/index.lock inside its %s budget, so this run proves nothing about the lock its stop removes (Run = exit %d, timed out %t, error %v, stderr %q)",
-			budget, result.ExitCode, result.TimedOut, err, result.Stderr)
+	passed, ok := ctx.Deadline()
+	if !ok {
+		t.Fatalf("the git never took .git/index.lock, so its budget never passed and this run proves nothing about the lock its stop removes (Run = exit %d, timed out %t, error %v after %s, stderr %q)",
+			result.ExitCode, result.TimedOut, err, elapsed, result.Stderr)
 	}
+	t.Logf("the git had taken .git/index.lock %s into the run, where its budget passed, and the run returned after %s", passed.Sub(started), elapsed)
 	// exec reports a command whose Cancel succeeded as the context's error, so a Run that read
 	// that error before its own kill would report this git as one it could not run.
 	if err != nil {

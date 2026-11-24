@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -77,6 +80,14 @@ func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
 // The shim dies with its pane, so the bridge's stdout has no reader through its shutdown, while
 // Claude Code's last lines are still read and answered: a frame the bridge writes then fails, is
 // logged, and ends nothing, rather than SIGPIPE ending the bridge before it removes its inbox.
+//
+// The bridge kills Claude Code claudebridge.Grace after its SIGTERM, on a clock of its own process
+// that this row cannot move, and the stand-in answers the SIGTERM, with the tool call and its exit
+// 0, only after the bridge has sent it: a loaded machine can hold the stand-in past the grace, and
+// that run, which the kill ended, shows nothing of this. Only a run whose stand-in was seen to exit
+// before the grace could pass is judged: the bridge sends its SIGTERM no sooner than the row's
+// SIGHUP, and the kill comes no sooner than the grace after that. The row starts the bridge again
+// until a run of the right order comes, within a minute.
 func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 	// The stand-in answers the bridge's SIGTERM with a tool call, which the bridge shows on the pane
 	// with a frame to the shim.
@@ -84,15 +95,65 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 	if err := os.WriteFile(toolCall, []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p := startClaudeBridge(t, "trap 'kill $!; cat "+toolCall+"; exit 0' TERM\n"+
-		"sleep 86400 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
-	state, left := p.hangUp()
-	if code := state.ExitCode(); code != 0 || !strings.Contains(p.logged(), "could not write to the shim") {
-		t.Errorf("the bridge given SIGHUP with no shim ended %v, want exit 0, Claude Code's status, after logging the frame it could not write:\n%s", state, p.logged())
+	within := testwait.Bounded(t, time.Minute, testBoundMargin)
+	until := time.Now().Add(within)
+	for runs := 1; ; runs++ {
+		pidFile := filepath.Join(t.TempDir(), "claude.pid")
+		p := startClaudeBridge(t, "echo $$ >'"+pidFile+"'\ntrap 'kill $!; cat "+toolCall+"; exit 0' TERM\n"+
+			"sleep 86400 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
+		// The stand-in writes its pid before it marks itself ready, which startClaudeBridge awaits.
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Fatalf("run %d: the stand-in's pid: %v", runs, err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil {
+			t.Fatalf("run %d: the stand-in's pid %q: %v", runs, raw, err)
+		}
+		exited := make(chan time.Time, 1)
+		go func() {
+			defer close(exited)
+			if testwait.Holds(within, testwait.Poll, func() bool { return standInExited(pid) }) {
+				exited <- time.Now()
+			}
+		}()
+
+		hungUp := time.Now()
+		state, left := p.hangUp()
+		at, seen := <-exited
+
+		if !seen {
+			t.Fatalf("run %d: the stand-in (pid %d) was not seen to exit within %s (the bridge ended %v):\n%s", runs, pid, within, state, p.logged())
+		}
+		if !at.Before(hungUp.Add(claudebridge.Grace)) {
+			if time.Now().Before(until) {
+				continue
+			}
+			t.Fatalf("no run of the right order in %d runs over %s: in each, the stand-in was seen to exit only after the bridge's %s grace could pass", runs, within, claudebridge.Grace)
+		}
+		if code := state.ExitCode(); code != 0 || !strings.Contains(p.logged(), "could not write to the shim") {
+			t.Errorf("run %d: the bridge given SIGHUP with no shim ended %v, want exit 0, Claude Code's status, after logging the frame it could not write:\n%s", runs, state, p.logged())
+		}
+		if len(left) > 0 {
+			t.Errorf("run %d: the bridge given SIGHUP with no shim left %q in TMPDIR", runs, left)
+		}
+		return
 	}
-	if len(left) > 0 {
-		t.Errorf("the bridge given SIGHUP with no shim left %q in TMPDIR", left)
+}
+
+// standInExited reports whether the process pid has exited: there is no such process, its parent
+// having reaped it, or it is a zombie its parent has yet to reap. A stat that cannot be read leaves
+// the answer to the next call's kill.
+func standInExited(pid int) bool {
+	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		return true
 	}
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+	return len(fields) > 0 && fields[0] == "Z"
 }
 
 // Claude Code ends a turn and exits while the shim reads slowly: the bridge waits for the shim to

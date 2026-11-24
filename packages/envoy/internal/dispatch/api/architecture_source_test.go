@@ -212,18 +212,25 @@ func newArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp) (http.Handle
 // renames, as a boot gives the server the pairs it read.
 func newRenamingArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp, renames refs.Renames) (http.Handler, *store.Store) {
 	t.Helper()
+	options := architectureAppOptions(t, fake)
+	options.renames = renames
+	handler, database, _ := newTestServer(t, options)
+	return handler, database
+}
+
+// architectureAppOptions is the options of a server whose GitHub App reads fake's repositories,
+// for a test that sets more options of its own.
+func architectureAppOptions(t *testing.T, fake *fakeGitHubApp) testServerOptions {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	github := githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
-	handler, database, _ := newTestServer(t, testServerOptions{
+	return testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: github,
-		renames:       renames,
-	})
-	return handler, database
+		githubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP}),
+	}
 }
 
 // archFiles and infraFiles are the models of two sources with no component id in common:

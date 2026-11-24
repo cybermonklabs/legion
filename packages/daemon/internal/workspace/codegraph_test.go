@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -168,9 +169,12 @@ esac
 	}
 }
 
+// waitFor waits for done, asking every 20 ms, within a minute or what is left of the test binary's
+// deadline less a second when that is sooner (testwait.Bounded): what each caller waits for is a
+// process or a heartbeat a loaded machine can make slow, and no caller's span is what it tests.
 func waitFor(t *testing.T, done func() bool, what string) {
 	t.Helper()
-	testwait.WithinPolling(t, 10*time.Second, 20*time.Millisecond, what, done)
+	testwait.WithinPolling(t, testwait.Bounded(t, time.Minute, time.Second), 20*time.Millisecond, what, done)
 }
 
 // TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing proves the acceptance criterion directly:
@@ -374,8 +378,11 @@ esac
 
 	// A process actually named "codegraph" in its own argv, so codegraphLockHeldByLiveProcess's
 	// /proc/<pid>/cmdline check — the PID-reuse hardening — sees what a real builder's PID would.
+	// It runs until the test's cleanup kills it, or until this test process is gone, never for a
+	// span of its own: the lock names a live builder for as long as the warm-up takes to read it.
 	builderScript := filepath.Join(binDir, "codegraph-builder")
-	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nexec -a codegraph sleep 60\n"), 0o700); err != nil {
+	hold := "while kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.05; done"
+	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nexec -a codegraph sh -c '"+hold+"'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	builder := exec.Command(builderScript)
@@ -1192,38 +1199,172 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
 		}
 	})
+	// initRan is whether a warm-up started the stub's init: its call log names it, or, where the
+	// bound ended the stub before its first line, the warm-up's own line names `codegraph init`.
+	initRan := func(t *testing.T, callLog, stderr string) bool {
+		t.Helper()
+		return slices.Contains(stubCalls(t, callLog), "init") || strings.Contains(stderr, "codegraph init")
+	}
+	// The bound is a package variable, a duration a clock counts from before the stub starts, so a
+	// loaded machine can reach it before the stub has printed what the line must name. Only a run
+	// whose stub printed first is judged: the stub marks a file once its line is out, and a run
+	// without the mark runs the warm-up again, over a workspace of its own, until a run of the
+	// right order comes, within a minute. A run in which the warm-up never started the stub's init
+	// fails at once.
 	t.Run("a build its own bound ended: the timeout named", func(t *testing.T) {
 		bound := codegraphTimeout
 		codegraphTimeout = time.Second
 		t.Cleanup(func() { codegraphTimeout = bound })
-		callLog := filepath.Join(t.TempDir(), "calls.log")
-		dir := t.TempDir()
-		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; exec sleep 30 ;;\n")
-		captured := captureStderr(t)
+		within := testwait.Bounded(t, time.Minute, boundRunMargin)
+		until := time.Now().Add(within)
+		for runs := 1; ; runs++ {
+			scratch := t.TempDir()
+			callLog, printed := filepath.Join(scratch, "calls.log"), filepath.Join(scratch, "printed")
+			dir := t.TempDir()
+			fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; : >'"+printed+"'; exec sleep 30 ;;\n")
+			captured := captureStderr(t)
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
-		want := "[legion] codegraph init for " + dir + " timed out after 1s: parsing 512 files\n"
-		if stderr := captured(); !strings.Contains(stderr, want) {
-			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
+			warmCodegraphIndex(context.Background(), dir, time.Now())
+			stderr := captured()
+			if _, err := os.Stat(printed); err != nil {
+				if !initRan(t, callLog, stderr) {
+					t.Fatalf("run %d: the warm-up never started the stub's init (calls %v):\n%s", runs, stubCalls(t, callLog), stderr)
+				}
+				if time.Now().Before(until) {
+					t.Logf("run %d is not judged: the bound ended the stub's init before it had printed its line:\n%s", runs, stderr)
+					continue
+				}
+				t.Fatalf("no run of the right order in %d runs over %s: in each, the bound ended the stub's init before it had printed its line", runs, within)
+			}
+			want := "[legion] codegraph init for " + dir + " timed out after 1s: parsing 512 files\n"
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("run %d: stderr lacks the line %q:\n%s", runs, want, stderr)
+			}
+			return
 		}
 	})
 	// A build killed by some other signal before its bound, whose child then holds its pipes past
-	// the bound, was ended by that signal and not by the bound: the bound's cancel never ran.
+	// the bound, was ended by that signal and not by the bound: the bound's cancel never ran. The
+	// child runs until the test's cleanup releases it (heldChild), so the run returns only once
+	// codegraphStopGrace has passed since the build's exit, past the bound. The bound is a package
+	// variable a clock counts from before the build starts, so a loaded machine can reach it
+	// before Go has reaped the build, and its cancel then meets a build not yet reaped, or one that
+	// has not yet written its pid. Only a run whose build was reaped within a second of the
+	// warm-up's start, and so before a bound counted from later than that, is judged (watchReap); a
+	// run of the other order runs the warm-up again, over a workspace of its own, until a run of
+	// the right order comes, within a minute. A run in which the warm-up never started the stub's
+	// init fails at once.
 	t.Run("a build a signal ended before its bound, its pipes held past it: the signal named", func(t *testing.T) {
 		bound := codegraphTimeout
 		codegraphTimeout = time.Second
 		t.Cleanup(func() { codegraphTimeout = bound })
-		callLog := filepath.Join(t.TempDir(), "calls.log")
-		dir := t.TempDir()
-		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; sleep 2 & kill -KILL $$ ;;\n")
-		captured := captureStderr(t)
+		within := testwait.Bounded(t, time.Minute, boundRunMargin)
+		until := time.Now().Add(within)
+		for runs := 1; ; runs++ {
+			scratch := t.TempDir()
+			callLog, leader := filepath.Join(scratch, "calls.log"), filepath.Join(scratch, "leader")
+			dir := t.TempDir()
+			fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo $$ >'"+leader+"'; echo 'parsing 512 files' >&2\n"+heldChild(t, false)+"\nkill -KILL $$ ;;\n")
+			captured := captureStderr(t)
+			reaped := watchReap(leader)
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
-		want := "[legion] codegraph init for " + dir + " was ended by signal: killed: parsing 512 files\n"
-		if stderr := captured(); !strings.Contains(stderr, want) {
-			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
+			started := time.Now()
+			warmCodegraphIndex(context.Background(), dir, started)
+			returned := time.Now()
+			stderr := captured()
+			reaped.stop()
+
+			if reaped.seen.IsZero() && !initRan(t, callLog, stderr) {
+				t.Fatalf("run %d: the warm-up never started the stub's init (calls %v):\n%s", runs, stubCalls(t, callLog), stderr)
+			}
+			if !reaped.seen.IsZero() && reaped.gone.IsZero() {
+				t.Fatalf("run %d: the stub's init, pid in %s, was still not reaped once the warm-up had returned:\n%s", runs, leader, stderr)
+			}
+			if reaped.seen.IsZero() || !reaped.gone.Before(started.Add(codegraphTimeout)) {
+				if time.Now().Before(until) {
+					t.Logf("run %d is not judged: the stub's init wrote its pid at %v and was reaped at %v after the warm-up's start (zero where it never did), not both inside its %s bound:\n%s",
+						runs, sinceOrZero(reaped.seen, started), sinceOrZero(reaped.gone, started), codegraphTimeout, stderr)
+					continue
+				}
+				t.Fatalf("no run of the right order in %d runs over %s: in each, the stub's init was reaped no sooner than its %s bound", runs, within, codegraphTimeout)
+			}
+			if !returned.After(reaped.seen.Add(codegraphTimeout)) {
+				t.Fatalf("run %d: the warm-up returned %s after the stub's init wrote its pid, inside its %s bound: nothing held the pipes past the bound, so this run proves nothing", runs, returned.Sub(reaped.seen), codegraphTimeout)
+			}
+			want := "[legion] codegraph init for " + dir + " was ended by signal: killed: parsing 512 files\n"
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("run %d: stderr lacks the line %q:\n%s", runs, want, stderr)
+			}
+			return
 		}
 	})
+}
+
+// boundRunMargin is what the rows above that run the warm-up again until a run of the right order
+// comes leave of the test binary's deadline (testwait.Bounded): a warm-up's two codegraph runs,
+// each at most its one-second bound and codegraphStopGrace's wait for its pipes, and a second for
+// the row to fail in.
+const boundRunMargin = 2*(time.Second+codegraphStopGrace) + time.Second
+
+// reapWatch is what watchReap saw of a process that writes its pid to a file: seen, when it first
+// read that pid, and gone, when the pid first answered ESRCH, which it does once Go has reaped the
+// process (a zombie still answers). Each is read after the fact it stands for; one the watch never
+// saw is the zero time. Both are written before stop returns.
+type reapWatch struct {
+	stopped    chan struct{}
+	done       chan struct{}
+	seen, gone time.Time
+}
+
+// watchReap looks, every testwait.Poll until the process is gone or stop is called, for the
+// process whose pid path holds.
+func watchReap(path string) *reapWatch {
+	watch := &reapWatch{stopped: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(watch.done)
+		ticker := time.NewTicker(testwait.Poll)
+		defer ticker.Stop()
+		for !watch.look(path) {
+			select {
+			case <-watch.stopped:
+				watch.look(path)
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return watch
+}
+
+// look reads the pid path holds and asks once whether that process is gone, recording what it
+// saw, and answers whether it was.
+func (w *reapWatch) look(path string) bool {
+	pid := pidIn(path)
+	if pid == 0 {
+		return false
+	}
+	if w.seen.IsZero() {
+		w.seen = time.Now()
+	}
+	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		w.gone = time.Now()
+		return true
+	}
+	return false
+}
+
+// stop ends the watch after one last look and waits for it.
+func (w *reapWatch) stop() {
+	close(w.stopped)
+	<-w.done
+}
+
+// sinceOrZero is how long after start moment was, or 0 where moment is the zero time.
+func sinceOrZero(moment, start time.Time) time.Duration {
+	if moment.IsZero() {
+		return 0
+	}
+	return moment.Sub(start)
 }
 
 // TestNextCodegraphStep table-tests the pure decision warmCodegraphIndex runs on: a parsed

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testPlugins is the pair an installing launch's spec carries in these tests.
@@ -569,28 +570,54 @@ func TestAClaudeLaunchMakesItsSharedNpmCacheWhateverItFinds(t *testing.T) {
 // home and both against one shared BUN_INSTALL_CACHE_DIR, with a stand-in bun at the script's own
 // bun path that logs `start <id>`, holds, then logs `end <id>` to one shared file — the same
 // stand-in substitution bunInstallArgs makes, so what runs is the script the daemon renders and
-// no production signature widens for the test. The hold is 300ms: long enough that two unlocked
-// installs, which reach bun within a few milliseconds of each other, overlap every time, and
-// short enough that the whole test stays near a second. Each line is one printf to a file opened
-// in append mode, so the two writers cannot garble each other. unlock strips the rendered flock
+// no production signature widens for the test. Each line is one printf to a file opened in
+// append mode, so the two writers cannot garble each other. unlock strips the rendered flock
 // prefix, which is how the negative control runs the identical harness with no lock. The scripts
 // may well fail after the install — the contract check's `node -e` has no package.json to read —
 // so the exit codes are ignored and the proof is the log alone.
+//
+// An install holds until both scripts have arrived, and then 300 ms more. A script arrives at the
+// lock, which a stand-in flock at the script's own flock path marks before it runs the real flock
+// on the same words, and at bun, which marks again. So the locked run's first install holds the
+// lock until the second is at it, and a lock that lets the second through, or a wait that fails
+// at once (`-n`, `-w 0`), shows inside the 300 ms as an overlap or as an install that never ran;
+// the unlocked run's two installs overlap every time. A hold the other script never reaches ends
+// with the test (its cleanup's release, or this test process gone). The lock's wait is the rest
+// of the test binary's deadline, not installLockWait's, which a loaded machine could spend while
+// the first install held the lock;
+// TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline holds that derivation.
 func installLockProbe(t *testing.T, unlock bool) []string {
 	t.Helper()
 	dir := t.TempDir()
-	logPath, cache, stub := filepath.Join(dir, "log"), filepath.Join(dir, "cache"), filepath.Join(dir, "bun")
+	logPath, cache, stub, flock := filepath.Join(dir, "log"), filepath.Join(dir, "cache"), filepath.Join(dir, "bun"), filepath.Join(dir, "flock")
+	marks, release := filepath.Join(dir, "marks"), filepath.Join(dir, "release")
+	if err := os.Mkdir(marks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Errorf("release the stand-in installs: %v", err)
+		}
+	})
+	arrived := ": >\"$LEGION_TEST_MARKS/$LEGION_TEST_ID\"\n"
 	body := "#!/bin/sh\n" +
 		"printf 'start %s\\n' \"$LEGION_TEST_ID\" >> \"$LEGION_TEST_LOG\"\n" +
+		arrived +
+		fmt.Sprintf("while { [ ! -e \"$LEGION_TEST_MARKS/a\" ] || [ ! -e \"$LEGION_TEST_MARKS/b\" ]; } && [ ! -e %s ] && kill -0 %d 2>/dev/null; do sleep 0.01; done\n",
+			shellprefix.Literal(release), os.Getpid()) +
 		"sleep 0.3\n" +
 		"printf 'end %s\\n' \"$LEGION_TEST_ID\" >> \"$LEGION_TEST_LOG\"\n" +
 		"exit 0\n"
 	if err := testexec.WriteFile(stub, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := testexec.WriteFile(flock, []byte("#!/bin/sh\n"+arrived+"exec /usr/bin/flock \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wait := int(testwait.Remaining(t) / time.Second)
 	var wg sync.WaitGroup
 	for _, id := range []string{"a", "b"} {
-		script := startScript(filepath.Join(dir, "state-"+id), 3, testPlugins(), "", installLockWait(2*time.Second, 3))
+		script := startScript(filepath.Join(dir, "state-"+id), 3, testPlugins(), "", wait)
 		script = strings.Replace(script, "/usr/local/bin/bun", stub, 1)
 		if unlock {
 			// Everything from flock's own path through the locked directory goes, so the control
@@ -601,12 +628,15 @@ func installLockProbe(t *testing.T, unlock bool) []string {
 				t.Fatalf("the rendered script does not take /usr/bin/flock on the cache, so the control cannot strip it:\n%s", script)
 			}
 			script = script[:start] + script[end+len("-- \"$cache\" "):]
+		} else {
+			script = strings.Replace(script, "/usr/bin/flock ", flock+" ", 1)
 		}
 		cmd := exec.Command("sh", "-c", script, startName, "0", "true")
 		cmd.Env = append(os.Environ(),
 			"BUN_INSTALL_CACHE_DIR="+cache,
 			"LEGION_TEST_LOG="+logPath,
 			"LEGION_TEST_ID="+id,
+			"LEGION_TEST_MARKS="+marks,
 		)
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
@@ -617,7 +647,12 @@ func installLockProbe(t *testing.T, unlock bool) []string {
 			_ = cmd.Wait()
 		}()
 	}
-	wg.Wait()
+	exited := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(exited)
+	}()
+	testwait.Receive(t, "both rendered installs to exit", exited)
 	recorded, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("neither script ran the stand-in bun: %v", err)
@@ -665,9 +700,9 @@ func overlapped(lines []string) (overlap bool, err error) {
 // another's start and its end, which is the property the cold-entry race needs and which a
 // substring assertion over the script's text cannot tell from `-n` or `-w 0`. The same harness
 // with the lock stripped is the negative control, in this same run: without it a pair that merely
-// happened not to overlap would pass vacuously. The control is given a few attempts, since it is
-// a race it must win rather than a certainty, and a control that never interleaves is a broken
-// harness, failed here rather than reported green.
+// happened not to overlap would pass vacuously. Each install holds until the other has arrived
+// (installLockProbe), so the control interleaves every time, and a control that does not is a
+// broken harness, failed here rather than reported green.
 func TestTwoRenderedInstallsSerialiseOnTheSharedBunCache(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no /bin/sh in this environment")
@@ -683,19 +718,14 @@ func TestTwoRenderedInstallsSerialiseOnTheSharedBunCache(t *testing.T) {
 		t.Fatalf("two locked installs overlapped, so the lock serialises nothing: %q", locked)
 	}
 
-	const controlAttempts = 5
-	for attempt := 1; attempt <= controlAttempts; attempt++ {
-		unlocked := installLockProbe(t, true)
-		overlap, err := overlapped(unlocked)
-		if err != nil {
-			t.Fatalf("the control run's log: %v", err)
-		}
-		if overlap {
-			return
-		}
-		t.Logf("control attempt %d did not interleave: %q", attempt, unlocked)
+	unlocked := installLockProbe(t, true)
+	overlap, err = overlapped(unlocked)
+	if err != nil {
+		t.Fatalf("the control run's log: %v", err)
 	}
-	t.Fatalf("the lockless control never interleaved in %d attempts: the harness proves nothing, so the locked run above passed vacuously", controlAttempts)
+	if !overlap {
+		t.Fatalf("the lockless control did not interleave: the harness proves nothing, so the locked run above passed vacuously: %q", unlocked)
+	}
 }
 
 // queuedInstalls and installBudget are what the wait must be big enough for, from the feature

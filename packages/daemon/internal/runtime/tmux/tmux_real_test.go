@@ -1,5 +1,8 @@
 package tmux
 
+//ci:builds packages/daemon ./cmd/legion standins go build .../daemon/cmd/legion
+//ci:reads packages/daemon/cmd/legion/testdata/gh-help/** TestRealTmuxPaneResolvesThisDaemonsLegionCLI
+
 // The real-tmux tests. Each test gets a private tmux server of its own (its own socket name under
 // its own TMUX_TMPDIR), the real `legion worker-shim` built from cmd/legion, the stand-in OMP built
 // from testdata, an httptest daemon serving the two claim routes the stand-in calls, and a
@@ -154,13 +157,15 @@ type bootClaim struct {
 }
 
 // fakeDaemon serves POST /legion/v1/claims/register and /ready as the real routes will: the boot
-// token resolves to a claim or the registration is refused.
+// token resolves to a claim or the registration is refused. registeredAt holds, for each
+// registration, how many readies had come before it.
 type fakeDaemon struct {
-	server    *httptest.Server
-	mu        sync.Mutex
-	claims    map[string]bootClaim
-	registers []claim.RegisterRequest
-	readies   []claim.ReadyRequest
+	server       *httptest.Server
+	mu           sync.Mutex
+	claims       map[string]bootClaim
+	registers    []claim.RegisterRequest
+	registeredAt []int
+	readies      []claim.ReadyRequest
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -180,6 +185,7 @@ func newFakeDaemon() *fakeDaemon {
 		}
 		d.mu.Lock()
 		d.registers = append(d.registers, body)
+		d.registeredAt = append(d.registeredAt, len(d.readies))
 		d.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(claim.RegisterResponse{
 			ClaimToken: c.token, Tree: c.tree, Issue: c.issue, Role: c.role, Generation: c.generation, Secret: "capability",
@@ -208,17 +214,20 @@ func (d *fakeDaemon) resolve(bootToken string) (bootClaim, bool) {
 }
 
 // awaitReady waits for the agent holding bootToken to register and then declare itself ready,
-// returning its registration.
+// returning its registration. Only a ready that came after that registration counts: a resumed
+// agent registers as the session its previous incarnation was, whose ready came before, and a
+// wait that took that ready returned before the resumed agent had written its report or
+// declared itself ready.
 func (d *fakeDaemon) awaitReady(t *testing.T, bootToken string) claim.RegisterRequest {
 	t.Helper()
 	var registration claim.RegisterRequest
-	eventually(t, 20*time.Second, "the agent to register and declare ready", func() bool {
+	eventually(t, "the agent to register and declare ready", func() bool {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		for _, r := range d.registers {
+		for i, r := range d.registers {
 			if r.BootToken == bootToken {
 				registration = r
-				for _, ready := range d.readies {
+				for _, ready := range d.readies[d.registeredAt[i]:] {
 					if ready.SessionID == r.SessionID {
 						return true
 					}
@@ -316,7 +325,7 @@ func (s *streamStub) Conn(token claim.Token) (runtime.Conn, bool) {
 func (s *streamStub) await(t *testing.T, token claim.Token) *stubConn {
 	t.Helper()
 	var conn *stubConn
-	eventually(t, 20*time.Second, "the shim of "+string(token)+" to connect", func() bool {
+	eventually(t, "the shim of "+string(token)+" to connect", func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		c, ok := s.conns[token]
@@ -428,10 +437,6 @@ func (c *stubConn) Compact(context.Context, string, time.Duration) error {
 	return errors.New("the stream stub does not compact sessions")
 }
 
-func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runtime.WorkspaceBundle, error) {
-	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
-}
-
 func (c *stubConn) WorkspaceWork(context.Context, string, time.Duration) (runtime.WorkspaceWork, error) {
 	return runtime.WorkspaceWork{}, errors.New("the stream stub reads no workspace")
 }
@@ -444,9 +449,12 @@ func (c *stubConn) AgentSecretsToken(context.Context) (string, error) {
 	return "", errors.New("the stream stub reads no projected token")
 }
 
+// awaitEvent waits for a frame of type want from the shim, bounded by the rest of the test binary's
+// deadline (testwait.Remaining), so a frame a loaded machine makes slow still arrives.
 func (c *stubConn) awaitEvent(t *testing.T, want string) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
+	within := testwait.Remaining(t)
+	deadline := time.After(within)
 	for {
 		select {
 		case got := <-c.events:
@@ -454,7 +462,7 @@ func (c *stubConn) awaitEvent(t *testing.T, want string) {
 				return
 			}
 		case <-deadline:
-			t.Fatalf("no %s frame arrived", want)
+			t.Fatalf("no %s frame arrived within %s", want, within)
 		}
 	}
 }
@@ -506,9 +514,8 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	// daemon's HOME (PaneEnvironment), so the operator's own configuration ran in each rig's
 	// server, and the new-session that starts it returned only once that file had run: a `run`
 	// line in it (tpm's, which calls tmux again for each option of each plugin) took 4 to 13 s
-	// on a loaded machine, against 0.1 s with no file, and past the CommandTimeout below the
-	// new-session of a Spawn or a Resume failed. What an operator configures is no part of what
-	// these tests prove.
+	// on a loaded machine, against 0.1 s with no file, and the new-session of each Spawn or
+	// Resume waited for it. What an operator configures is no part of what these tests prove.
 	home := filepath.Join(dir, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
@@ -533,7 +540,12 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 }
 
 // newRuntime is a runtime on the rig's server — a second one is a restarted daemon — recording
-// every argv it hands tmux.
+// every argv it hands tmux. Its stop grace and its command timeout are the rest of the test
+// binary's deadline. Each is a clock counted from before what it waits on has acted, a stand-in's
+// own end after its shutdown frame or a tmux client's answer, and a loaded machine can spend a
+// span of seconds before either: a graceful stop then killed its pane, or a launch failed on a
+// client its timeout killed. A row whose subject is one of them sets its own (the impatient
+// runtimes' grace, the hung socket's timeout).
 func (r *rig) newRuntime(adjust ...func(*Options)) *Runtime {
 	r.t.Helper()
 	opts := Options{
@@ -544,10 +556,10 @@ func (r *rig) newRuntime(adjust ...func(*Options)) *Runtime {
 		EnvoyURL:             "http://127.0.0.1:9020",
 		NatsURLs:             []string{"nats://127.0.0.1:4222"},
 		Launchers:            ompOnly(shellprefix.Word(r.omp)),
-		StopGrace:            5 * time.Second,
+		StopGrace:            testwait.Remaining(r.t),
 		ProbeInterval:        100 * time.Millisecond,
 		AdoptTimeout:         5 * time.Second,
-		CommandTimeout:       10 * time.Second,
+		CommandTimeout:       testwait.Remaining(r.t),
 		Conns:                r.stream,
 		Environ:              r.environ,
 		Executable:           func() (string, error) { return r.legion, nil },
@@ -638,11 +650,12 @@ func (r *rig) workspace(issue string) string {
 	return filepath.Join(r.stateDir, "workspaces", issue)
 }
 
-func eventually(t *testing.T, within time.Duration, what string, done func() bool) {
+// eventually waits for done, a step of the rig's real processes, bounded by the rest of the test
+// binary's deadline (testwait.Remaining): a step a loaded machine makes slow still passes, and a
+// step that never comes still fails, naming what it waited for.
+func eventually(t *testing.T, what string, done func() bool) {
 	t.Helper()
-	if !testwait.Holds(within, 50*time.Millisecond, done) {
-		t.Fatalf("timed out after %s waiting for %s", within, what)
-	}
+	testwait.WithinPolling(t, testwait.Remaining(t), 50*time.Millisecond, what, done)
 }
 
 func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {
@@ -658,18 +671,20 @@ func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {
 // returns once its process no longer runs, and the pane then passes through states a single probe
 // cannot call Gone (LEGION-274): the exited process not yet reaped, whose pane still lists its pid
 // with an empty command line (NotRecordedProcess), and, for the server's last pane, the server
-// exiting under the probe's own list-panes. Both converge on Gone.
+// exiting under the probe's own list-panes. Both converge on Gone, within the rest of the test
+// binary's deadline (testwait.Remaining), however slowly a loaded machine makes them.
 func awaitGone(t *testing.T, rt *Runtime, loc runtime.Locator, after string) {
 	t.Helper()
 	var obs runtime.Observation
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
+	within := testwait.Remaining(t)
+	if !testwait.Holds(within, 20*time.Millisecond, func() bool {
 		obs = probe(t, rt, loc)
 		if obs.Kind == runtime.Alive {
 			t.Fatalf("Probe after %s = %+v: the stopped process is running", after, obs)
 		}
 		return obs.Kind == runtime.Gone
 	}) {
-		t.Fatalf("Probe after %s = %+v, want gone within 10s", after, obs)
+		t.Fatalf("Probe after %s = %+v, want gone within %s", after, obs, within)
 	}
 }
 
@@ -709,7 +724,7 @@ func procEnviron(t *testing.T, pid int) map[string]string {
 func descendant(t *testing.T, root int, name string) int {
 	t.Helper()
 	found := 0
-	eventually(t, 20*time.Second, name+" under pid "+strconv.Itoa(root), func() bool {
+	eventually(t, name+" under pid "+strconv.Itoa(root), func() bool {
 		children := map[int][]int{}
 		entries, _ := os.ReadDir("/proc")
 		for _, entry := range entries {
@@ -744,7 +759,8 @@ func descendant(t *testing.T, root int, name string) int {
 // readReport is what the Oh My Pi stand-in recorded about its own launch. The stand-in writes it
 // as it starts, which is after the pane exists and after its agent registered, so the file is
 // waited for rather than read once: on a loaded machine the process is running before its first
-// write lands, and reading in that window is not a failed launch.
+// write lands, and reading in that window is not a failed launch. The stand-in renames the report
+// into place whole, so the file this finds is never one it is still writing.
 func readReport(t *testing.T, workspace string, pid int) map[string]any {
 	t.Helper()
 	path := filepath.Join(workspace, fmt.Sprintf("standin-%d.json", pid))
@@ -778,10 +794,13 @@ func hasKillPane(argvs [][]string) bool {
 // A spawned agent's whole life on a real server: it opens, registers, is ready, answers a prompt
 // through its pane, runs under exactly the environment the runtime promises, stops gracefully when
 // asked, resumes as the same session, and — when it will not end itself — is killed after the
-// grace.
+// grace. The graceful stop runs under the rig's grace, the rest of the test binary's deadline, so
+// the runtime kills no pane before the agent has ended itself, however slowly a loaded machine
+// brings that end; the agent that will not end itself is stopped by a runtime whose grace is
+// 500 ms, which only the kill ends. The row's own bound is the rest of the deadline too.
 func TestRealTmuxLifecycle(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancel()
 	spec := r.spec("LEGION-1", "LEGION-1", claim.RoleArchitect)
 
@@ -1315,7 +1334,7 @@ func TestRealTmuxUncertainOnABrokenSocket(t *testing.T) {
 			if obs.Kind != runtime.Uncertain || obs.Locator.Incarnation != loc.Incarnation {
 				t.Errorf("sweep %d reported %+v, want uncertain", i, obs)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Remaining(t)):
 			t.Fatalf("sweep %d reported nothing", i)
 		}
 	}
@@ -1413,7 +1432,7 @@ func TestRealTmuxReconcilesAWindowWhoseReportWasLost(t *testing.T) {
 	// The pane marks its window as this runtime's from its own shell, after tmux has started it, and
 	// reconciliation reaps only a marked window: the start command names the worker-shim from the
 	// pane's creation, so waiting for that alone let a loaded host reconcile before the mark was set.
-	eventually(t, 30*time.Second, "the unrecorded worker-shim pane to mark its window", func() bool {
+	eventually(t, "the unrecorded worker-shim pane to mark its window", func() bool {
 		for _, line := range strings.Split(panes(), "\n") {
 			fields := strings.SplitN(line, "\t", 4)
 			if len(fields) == 4 && fields[2] == r.rt.Socket() && strings.Contains(fields[3], "worker-shim") {
@@ -1495,7 +1514,7 @@ func TestRealTmuxReconcileOrphans(t *testing.T) {
 		if obs.Kind != runtime.Alive || obs.Locator.Incarnation != live.Incarnation {
 			t.Errorf("the restarted daemon's sweep reported %+v, want the known pane alive", obs)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the restarted daemon's sweep reported nothing")
 	}
 }
@@ -1528,7 +1547,7 @@ func TestRealTmuxObserveReportsGoneOnce(t *testing.T) {
 	// (internal/supervise/machine.go:806), and the sweep untracks on either, so it reports either
 	// once (observe.go:58-60). The deadline names the last observation, since a classifier stuck on
 	// Uncertain or Alive and a sweep gone silent would otherwise fail alike.
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(testwait.Remaining(t))
 	var last runtime.Observation
 	for final := false; !final; {
 		select {

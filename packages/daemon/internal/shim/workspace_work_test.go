@@ -185,8 +185,8 @@ func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.
 	p := daemon.accept(t)
 	p.open(t)
 
-	p.send(t, shimwire.WorkspaceWork{ID: "read-2", Issue: workIssue, TimeoutMs: 120_000})
-	got, ok := p.next(t).(shimwire.WorkspaceWorkResult)
+	p.send(t, shimwire.WorkspaceWork{ID: "read-2", Issue: workIssue, TimeoutMs: farBudget(t)})
+	got, ok := p.answer(t).(shimwire.WorkspaceWorkResult)
 	if !ok || got.ID != "read-2" || got.OK {
 		t.Fatalf("the shim answered %#v, want the refusal of read-2", got)
 	}
@@ -255,8 +255,9 @@ func newWorkFixture(t *testing.T) *workFixture {
 }
 
 // read is the real shim's answer to one workspace-work frame, asked over the daemon's end of the
-// worker stream, with the shim's environment naming the fixture's workspace. It also holds that Oh
-// My Pi read nothing of the read.
+// worker stream, with the shim's environment naming the fixture's workspace. Its budget is no
+// subject of a row, so it is far (farBudget), and the answer is read as far. It also holds that
+// Oh My Pi read nothing of the read.
 func (f *workFixture) read() shimwire.WorkspaceWorkResult {
 	f.t.Helper()
 	path := socketPath(f.t)
@@ -268,8 +269,8 @@ func (f *workFixture) read() shimwire.WorkspaceWorkResult {
 	run(f.t, cfg, newClock())
 	p := daemon.accept(f.t)
 	p.open(f.t)
-	p.send(f.t, shimwire.WorkspaceWork{ID: "read-1", Issue: workIssue, TimeoutMs: 120_000})
-	got, ok := p.next(f.t).(shimwire.WorkspaceWorkResult)
+	p.send(f.t, shimwire.WorkspaceWork{ID: "read-1", Issue: workIssue, TimeoutMs: farBudget(f.t)})
+	got, ok := p.answer(f.t).(shimwire.WorkspaceWorkResult)
 	if !ok || got.ID != "read-1" {
 		f.t.Fatalf("the shim answered %#v, want the result of read-1", got)
 	}

@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    No git that provisioning starts leaves git's automatic maintenance running. Every git it starts,
+    the one jj starts for its fetch included, reads `gc.auto=0` and `maintenance.auto=false` among
+    provisioning's pinned settings, whatever the clone's own configuration says. Before, each fetch
+    started `git maintenance run --auto --detach`, whose `git gc --auto` held the clone's
+    `HEAD.lock` while jj exported the refs that fetch moved, so an issue pod's workspace-init
+    failed now and then with `A lock could not be obtained for reference "HEAD"`, and the daemon
+    read that failure as the pod's death and relaunched its roles.

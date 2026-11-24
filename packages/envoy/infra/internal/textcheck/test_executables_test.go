@@ -1,5 +1,7 @@
 package textcheck
 
+//ci:reads packages/envoy/infra/**/*.go TestEveryProgramFileIsWrittenUnderTheForkLock calls testexec.RequireGuarded on ../.., whose Unguarded (packages/envoy/testexec/testexec.go:145) walks it (unguarded.go:85), passes over node_modules, vendor, testdata and dot directories (:94), and :169 parses every .go file under packages/envoy/infra it finds, test files included
+
 import (
 	"testing"
 
