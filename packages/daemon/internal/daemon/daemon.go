@@ -225,6 +225,11 @@ type overrides struct {
 	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
+	// streamListen takes the worker stream's listener for the address the stream binds
+	// (stream.Options.Listen); nil, in production, binds it. A test whose two daemons must listen
+	// on one worker_stream_port hands over a socket it holds across both, so the port is never free
+	// between its pick and a bind (controllerSandboxRig).
+	streamListen func(network, address string) (net.Listener, error)
 	// strandedReported runs once the boot's report of the claims nothing will wake has finished,
 	// whether it logged or not (reportStranded); nil, in production, is nothing. The report runs
 	// beside the API, so a test that asserts on its line waits for this rather than for /healthz.
@@ -1022,6 +1027,8 @@ type plan struct {
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
 	beforeDecision func(claim.Token, supervise.Event)
+	// streamListen is overrides.streamListen; nil binds the worker stream's address.
+	streamListen func(network, address string) (net.Listener, error)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1145,7 +1152,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1761,7 +1768,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
 	sup.beforeDecision = p.beforeDecision
 	listener, err := stream.Listen(draining, p.stream,
-		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
+		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log, Listen: p.streamListen})
 	if err != nil {
 		cancel()
 		endDrain()
