@@ -479,9 +479,8 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.
 	// timeout itself is held by TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRenew.
 	const bound = 500 * time.Millisecond
 	r := reclaimedIdentityRigNeverAnswering(t, bound)
-	armed := make(chan time.Duration, 1)
-	ends := make(chan func(), 1)
-	r.srv.setFirstConfirmTimer(func(b time.Duration, end func()) { armed <- b; ends <- end })
+	timers := make(chan armed, 1)
+	r.srv.setFirstConfirmTimer(func(b time.Duration, end func()) { timers <- armed{b, end} })
 
 	// The register that admits the session and starts its enroll loop, whose confirming renew
 	// the gate then swallows. With no wait asked for it answers at once.
@@ -508,12 +507,12 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.
 		t.Fatalf("register --wait answered %+v (%v) before the first renew's bound ended; it waits for the confirmation in flight", got.resp, got.err)
 	default:
 	}
-	if got := testwait.Receive(t, "the first confirming renew's bound to be armed", armed); got != bound {
-		t.Fatalf("the first confirming renew runs under a bound of %s; want the Server's FirstConfirmBound, %s", got, bound)
+	timer := testwait.Receive(t, "the first confirming renew's bound to be armed", timers)
+	if timer.bound != bound {
+		t.Fatalf("the first confirming renew runs under a bound of %s; want the Server's FirstConfirmBound, %s", timer.bound, bound)
 	}
-	endBound := testwait.Receive(t, "the end of the first confirming renew's bound", ends)
 	started := time.Now()
-	endBound() // the first confirming renew's bound ends now, with the register waiting on it
+	timer.end() // the first confirming renew's bound ends now, with the register waiting on it
 	got := <-replies
 	elapsed := time.Since(started)
 	if got.err != nil || got.resp.Code != CodeNoCredential || elapsed > 5*time.Second {

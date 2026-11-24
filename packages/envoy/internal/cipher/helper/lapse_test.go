@@ -222,9 +222,9 @@ func TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt(t *testing.T)
 // TestRegisterWaitWaitsForTheReEnrollmentAfterALapse: a lapse reopens the session's ready
 // channel, so `register --wait` from inside a lapsed session waits for its re-enrollment instead
 // of returning at once with the session still enrolling. The re-enrollment is held at the fake's
-// enroll gate until the register call is blocked in registerReply's select on that channel, so the
-// test cannot pass by arriving after the session enrolled again: a register that does not wait
-// answers while the gate is still shut, and the test fails.
+// enroll gate until the register call is blocked in waitForRegister's select on that channel, so
+// the test cannot pass by arriving after the session enrolled again: a register that does not
+// wait answers while the gate is still shut, and the test fails.
 func TestRegisterWaitWaitsForTheReEnrollmentAfterALapse(t *testing.T) {
 	t.Parallel()
 	r, lapsed, _ := lapseRig(t, failAlways)
@@ -392,9 +392,9 @@ func startRegister(t *testing.T, r *rig, sessionID *string) <-chan callAnswer {
 
 // registerWaitBlocked starts a `register --wait` (startRegister) from this process for sessionID
 // — nil for a register that names none — against the rig's one session, and returns its answer's
-// channel once the call is blocked in registerReply's select. The call answering first fails the
-// test: a register that waits must not answer before the enrollment it waits for has reached the
-// session.
+// channel once the call is blocked in waitForRegister's select. The call answering first fails
+// the test: a register that waits must not answer before the enrollment it waits for has reached
+// the session.
 //
 // It knows the call is blocked from the rig's own Server (registerWaiting), never from the
 // process: other tests' Servers park registers in registerReply too while the package runs in

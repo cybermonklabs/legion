@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -52,11 +53,13 @@ func wantSettled(t *testing.T, what string, resp Response, code string, elapsed,
 // the timer answers first and the row fails for no fault of the helper. At 20 s no load does.
 const timerSlack = 20 * time.Second
 
-// answerMargin is how long after an op's bound, counted from the op's start, its own answer may
-// come in the rows that read that answer. The op returns as soon as its context ends at the
-// bound, so its answer is due then; the margin is load's allowance and nothing more, and it holds
-// the answer to its bound on its own, apart from the slowed timer: an op that answered seconds
-// after its context ended would lose to production's 1 s timer, and fails here.
+// answerMargin is how long after an op's context ends (at its bound, or at the helper's stop) its
+// own answer may come in the rows that read that answer: counted from the op's start in the rows
+// whose bound ends it, and from the lock's release or from the stop in the rows that end it so.
+// The op returns as soon as its context ends, so its answer is due then; the margin is load's
+// allowance and nothing more, and it holds the answer on its own, apart from the slowed timer: an
+// op that answered seconds after its context ended would lose to production's 1 s timer, and
+// fails here.
 const answerMargin = 2 * time.Second
 
 // slowTimer bounds srv's broker-call ops at bound, with brokerCall's timer answering timerSlack
@@ -173,14 +176,11 @@ func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.
 	}
 
 	// Once the lock is released the op ends at once: its context ended at the bound.
-	opened := time.Now()
 	open()
 	// The op logs its result once it ends; by then any request it made has reached the fake.
 	ended := `msg="a broker call answered as unknown has ended" op=enroll-session-key`
-	waitFor(t, func() bool { return strings.Contains(out.String(), ended) })
-	if late := time.Since(opened); late > answerMargin {
-		t.Fatalf("the op ended %s after the lock it waited on was released; want within %s, since its context had ended at the bound", late, answerMargin)
-	}
+	waitUpTo(t, answerMargin, func() bool { return strings.Contains(out.String(), ended) },
+		fmt.Sprintf("the op did not end within %s of the lock it waited on being released, though its context had ended at the bound", answerMargin))
 	r.fake.mu.Lock()
 	arrivals := r.fake.enrollArrivals
 	r.fake.mu.Unlock()
@@ -253,16 +253,12 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 		return r.fake.enrollArrivals == 1
 	})
 
-	stopped := time.Now()
 	r.cancel()
+	// The op's context ended with Serve's, so the op answers at once and Serve returns then.
 	select {
 	case <-r.served:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Serve did not return within 10 s of its context ending")
-	}
-	// The op's context ended with Serve's, so the op answers at once and Serve returns then.
-	if late := time.Since(stopped); late > answerMargin {
-		t.Fatalf("Serve returned %s after its context ended; want within %s: the op it waits on must answer once its context ends", late, answerMargin)
+	case <-time.After(answerMargin):
+		t.Fatalf("Serve did not return within %s of its context ending: the op it waits on must answer once its context ends", answerMargin)
 	}
 	// Serve has returned, so the answer must already be on the connection: read what is there now,
 	// without waiting for more. A Serve that returned before the answer was written leaves nothing.

@@ -273,10 +273,6 @@ func TestADrainNoRestartFollowsEndsAtItsBound(t *testing.T) {
 		t.Fatalf("log line %q; want one WARN line %q naming the bound 1s", line, DrainEndedMessage)
 	}
 
-	type armed struct {
-		bound time.Duration
-		end   func()
-	}
 	timers := make(chan armed, 2)
 	r.srv.setDrainTimer(func(d time.Duration, end func()) { timers <- armed{d, end} })
 	if d := r.call(t, Request{Op: "drain"}); !d.OK || len(d.Sessions) != 0 || !r.srv.Registry.Draining() {
@@ -303,6 +299,13 @@ func TestADrainNoRestartFollowsEndsAtItsBound(t *testing.T) {
 	if last := lines[len(lines)-1]; len(lines) != 2 || !strings.Contains(last, "level=WARN") || !strings.Contains(last, "bound=1s") {
 		t.Fatalf("log lines %q; want a second WARN line %q naming the bound 1s in:\n%s", lines, DrainEndedMessage, logs.String())
 	}
+}
+
+// armed is one call of a Server's timer seam (setDrainTimer, setFirstConfirmTimer): the bound the
+// timer was armed with, and the function that ends it, which the row calls when it chooses.
+type armed struct {
+	bound time.Duration
+	end   func()
 }
 
 // TestDrainWithSessionsSetsNothing: a drain that finds sessions answers them and leaves the

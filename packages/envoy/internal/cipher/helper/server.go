@@ -48,9 +48,9 @@ type Server struct {
 	FirstConfirmBound time.Duration
 	// BrokerCallBound bounds each broker-call op (login, enroll-session-key,
 	// unenroll-session-key) as a whole: the op's context ends at the bound, and the helper
-	// answers at the bound plus 1 s whatever the op is doing (brokerCall). Zero, which is what
-	// cmd/cipher-helper leaves it, means DefaultBrokerCallBound; a row that reads the
-	// bound sets one short enough to be quick.
+	// answers at the bound plus DefaultBrokerCallSlack whatever the op is doing (brokerCall).
+	// Zero, which is what cmd/cipher-helper leaves it, means DefaultBrokerCallBound; a row that
+	// reads the bound sets one short enough to be quick.
 	BrokerCallBound time.Duration
 	// calls counts the connections Serve accepted that may still owe a broker call's answer, and
 	// pending is the same count as a number, for the "connections" attribute of the line Serve
@@ -108,12 +108,12 @@ type Server struct {
 // Serve accepts until ctx ends. Each connection carries one request.
 //
 // It returns only once every broker-call op it accepted has written its answer, so a helper that
-// stops (cmd/cipher-helper exits when Serve returns) never closes a client's connection
-// with no answer while a broker call runs. On a stop ctx has ended, so each op's own context has
-// ended with it, and the wait is at most the bound plus 1 s (brokerCall), in practice the time it
-// takes to write the answers. Each connection is counted before its handler starts, since an Add
-// that moves a WaitGroup's count up from zero must come before the Wait it would hold, and the
-// handler gives the count back as soon as it has read a request that is not a broker call: no
+// stops (cmd/cipher-helper exits when Serve returns) never closes a client's connection with no
+// answer while a broker call runs. On a stop ctx has ended, so each op's own context has ended
+// with it, and the wait is at most the bound plus the timer's slack (brokerCall), in practice the
+// time it takes to write the answers. Each connection is counted before its handler starts, since
+// an Add that moves a WaitGroup's count up from zero must come before the Wait it would hold, and
+// the handler gives the count back as soon as it has read a request that is not a broker call: no
 // other op holds the stop, whatever it waits on (a register's wait_seconds does not watch ctx). A
 // connection whose request is still being read holds it for at most that read's 5 s deadline.
 func (s *Server) Serve(ctx context.Context, ln *net.UnixListener) error {
@@ -295,10 +295,6 @@ func (s *Server) reply(conn net.Conn, resp Response) {
 // revoke goes on after the answer (retire). No other op calls the broker before it answers.
 var brokerCallOps = map[string]func(cause string) Response{"login": loginUnknown, "enroll-session-key": enrollUnknown, "unenroll-session-key": unenrollUnknown}
 
-// DefaultBrokerCallSlack is how long after an op's bound brokerCall's timer answers it, when the
-// Server names no other (brokerCallSlack).
-const DefaultBrokerCallSlack = time.Second
-
 // brokerCallBound is this Server's bound on one broker-call op: BrokerCallBound when it is set,
 // DefaultBrokerCallBound otherwise.
 func (s *Server) brokerCallBound() time.Duration {
@@ -318,14 +314,14 @@ func (s *Server) brokerCallTimerSlack() time.Duration {
 }
 
 // brokerCall runs call, the broker-call op named op, under the bound B (brokerCallBound), and
-// answers by B + S, S the timer's slack (brokerCallTimerSlack, 1 s), whatever the op is doing. It
-// sets conn's deadline 4 s past that, B + S + 4 s, which with every op's 5 s for its read and its
-// write keeps the connection open past the latest answer. call runs on a goroutine of its own,
-// under ctx (Serve's) ended at B, and the answer is the first of its result and a timer at
-// B + S. On the timer the answer is brokerCallOps[op](cause),
-// the op's own refusal for an outcome it does not know, and a WARN names the op and the bound;
-// when the op ends after that, its result is logged too, so an operator can see what the broker
-// did.
+// answers by B + S, S the timer's slack (brokerCallTimerSlack, DefaultBrokerCallSlack unless a test
+// sets another), whatever the op is doing. It sets conn's deadline at B + S + 4 s, which is B + 5 s
+// at the default slack, the 5 s every op has for its read and its write, so the connection stays
+// open past the latest answer. call runs on a goroutine of its own, under ctx (Serve's) ended at
+// B, and the answer is the first of its result and a timer at B + S. On the timer the answer is
+// brokerCallOps[op](cause), the op's own refusal for an outcome it does not know, and a WARN names
+// the op and the bound; when the op ends after that, its result is logged too, so an operator can
+// see what the broker did.
 //
 // What ends the wait, in each state the op can be in while the client waits:
 //
