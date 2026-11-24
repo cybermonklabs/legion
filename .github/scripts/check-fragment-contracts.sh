@@ -7,11 +7,13 @@
 # packages/daemon/internal/api/version.go numbers 51, and declares no 47.
 #
 # So this check reads each fragment, every file under a `.changes` directory, with no regard to
-# case. A fragment declares its own number with the words `daemon API contract <n>`. The check
-# finds the commit of main's first-parent line that added the fragment (`git log --first-parent
-# --diff-filter=A`), and the numbers that commit gave its own entries: the `// <n>: ` headers its
-# diff adds to version.go, less any it takes out. It refuses a declared number that is not one of
-# them, and a declared number above L, the greatest number of
+# case. A fragment declares its own number with the words `daemon API contract <n>`, or with the
+# verbs fragments say it with (`daemon API contract is <n>`, `... stays <n>`, `... moves to <n>`,
+# each also after up to three words that say which number it is). The check finds the commit of
+# main's first-parent line that added the fragment (`git log --first-parent --diff-filter=A`), and
+# the numbers that commit gave its own entries: the `// <n>: ` headers its diff adds to version.go,
+# less any it takes out. It refuses a declared number that is not one of them, and a declared
+# number above L, the greatest number of
 # packages/contracts/fixtures/daemon-api/released-contracts.json: an entry made after the numbered
 # ones has no number until main takes it, so its fragment names the entry's id.
 #
@@ -20,11 +22,12 @@
 # contract (pr3206-slot-until-work-ends.yaml says "the `waiting-for-slot` notice that daemon API
 # contract 58 declared"), so it is listed with the other numbers below, and refused only above L.
 #
-# Every other contract number a fragment names (`contract <n>`, or `contracts <n> and <n>`, the
-# pattern check-daemon-api-contract.sh reads fragments with) is listed on stdout, one line each:
-# the file and line, the number and the words around it. The reviewer sorts each: a number of the
-# fragment's own change must be one of the numbers its commit added, and any other number is
-# context. The check exits 0 when it refuses nothing, whatever it lists.
+# Every other contract number a fragment names (`contract <n>`, `contract is <n>` and the other
+# verbs, or `contracts <n> and <n>`, the pattern check-daemon-api-contract.sh reads fragments with)
+# is listed on stdout, one line each: the file and line, the number and the words around it. The
+# reviewer sorts each: a number of the fragment's own change must be one of the numbers its commit
+# added, and any other number is context. The check exits 0 when it refuses nothing, whatever it
+# lists.
 #
 # It reads git objects only: commits and trees for the log, and version.go's blobs at the commits
 # that added a declaring fragment, so a blobless fetch of main is enough (git fetches each blob
@@ -53,11 +56,18 @@ RELEASED = "packages/contracts/fixtures/daemon-api/released-contracts.json"
 # A header of version.go that a commit's diff adds or takes out: `// <n>: `, the blank after the
 # colon keeping out prose that wraps at a time of day (`// 22:48Z`).
 HEADER = re.compile(r"^([+-])// (\d+):[ \t]")
-DECLARED = re.compile(r"\bdaemon\s+api\s+contract\s+(\d+)", re.I)
-# The pattern check-daemon-api-contract.sh reads fragments with: `contract <n>`, or
-# `contracts <n>, <n> and <n>` (a list, a range).
+# A fragment declares its own number with the words `daemon API contract <n>`, or with the verbs
+# NAMED reads beside them (`daemon API contract is <n>`, `daemon API contract moves to <n>`).
+DECLARED = re.compile(
+    r"\bdaemon\s+api\s+contract(?:(?:\s+[a-z]+){0,3}?\s+(?:is|stays|moves\s+to))?\s+(\d+)", re.I
+)
+# The pattern check-daemon-api-contract.sh reads fragments with: `contract <n>`, the same with the
+# verbs its fragments use (`contract is <n>`, `contract stays <n>`, `contract moves to <n>`, after
+# up to three words that say which number it is), or `contracts <n>, <n> and <n>` (a list, a
+# range).
 NAMED = re.compile(
-    r"\bcontract\s+(\d+)|\bcontracts\s+(\d+(?:(?:\s*,\s*|\s*[-\u2013]\s*|\s+(?:and|or|to|through)\s+)\d+)*)",
+    r"\bcontract(?:(?:\s+[a-z]+){0,3}?\s+(?:is|stays|moves\s+to))?\s+(\d+)"
+    r"|\bcontracts\s+(\d+(?:(?:\s*,\s*|\s*[-\u2013]\s*|\s+(?:and|or|to|through)\s+)\d+)*)",
     re.I,
 )
 COMMIT = "\x01"
@@ -150,8 +160,8 @@ paths = sorted(
     ).split("\0")
     if p and Path(p).is_file()
 )
-# Each number a fragment names, in its order: (its line, the number, whether the words
-# `daemon API contract <n>` declare it, the words around it).
+# Each number a fragment names, in its order: (its line, the number, whether DECLARED's words
+# declare it, the words around it).
 named: dict[str, list[tuple[int, int, bool, str]]] = {}
 for path in paths:
     try:

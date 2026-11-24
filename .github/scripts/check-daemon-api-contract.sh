@@ -116,9 +116,14 @@ HEADER = re.compile(r"^// (\d+):[ \t]")
 # A paragraph that starts `Correction:`: such a comment line, after a blank comment line.
 CORRECTION = re.compile(r"^//\s+Correction:")
 # A contract number a fragment names: `contract <n>`, or `contracts <n>, <n> and <n>` (a list, a
-# range), whatever the case. check-fragment-contracts.sh reads fragments with the same pattern.
+# range), whatever the case. The one number is also named with the verbs the repository's
+# fragments use, `contract is <n>`, `contract stays <n>` and `contract moves to <n>`, and with up to
+# three words before the verb that say which number it is (`contract fixture is <n>`, `contract
+# this plugin declares is <n>`): a fragment that says its number so names it as surely.
+# check-fragment-contracts.sh reads fragments with the same pattern.
 NAMED = re.compile(
-    r"\bcontract\s+(\d+)|\bcontracts\s+(\d+(?:(?:\s*,\s*|\s*[-\u2013]\s*|\s+(?:and|or|to|through)\s+)\d+)*)",
+    r"\bcontract(?:(?:\s+[a-z]+){0,3}?\s+(?:is|stays|moves\s+to))?\s+(\d+)"
+    r"|\bcontracts\s+(\d+(?:(?:\s*,\s*|\s*[-\u2013]\s*|\s+(?:and|or|to|through)\s+)\d+)*)",
     re.I,
 )
 
