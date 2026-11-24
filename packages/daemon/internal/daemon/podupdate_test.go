@@ -2601,13 +2601,9 @@ func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *t
 		<-released
 	})
 	relaunching := rig.tokens[claim.RoleTester]
-	// The goroutine takes a hold mark of its own (store.ForConcurrentWorker), as every goroutine
-	// this rig starts beside its own calls does: the rig's ctx carries one mark, and a decision
-	// holding a connection on it would have the pool refuse the test's own read beside it.
-	relaunch := store.ForConcurrentWorker(rig.ctx)
 	go func() {
 		m, _ := rig.sup.Machine(relaunching)
-		_ = m.Handle(relaunch, supervise.RuntimeObservation{
+		_ = m.Handle(rig.ctx, supervise.RuntimeObservation{
 			Observation: runtime.Observation{Locator: *rig.claimOf(claim.RoleTester).Locator, Kind: runtime.Gone, Detail: "the process ended"},
 		})
 	}()
@@ -2707,6 +2703,9 @@ func holdMachineInDecision(t *testing.T, ctx context.Context, rt *fake.Runtime, 
 		}
 	})
 	t.Cleanup(release)
+	// The decision runs beside the test, so it takes a hold mark of its own
+	// (store.ForConcurrentWorker): the mark is one flag per context, and a connection the decision
+	// held on ctx's mark would have the pool refuse the test's own read beside it.
 	go func() { decided <- m.Handle(store.ForConcurrentWorker(ctx), supervise.StreamClosed{Claim: token}) }()
 	testwait.Receive(t, fmt.Sprintf("%s's probe to wait inside the runtime", who), inside)
 	if m.Deciding() == nil {
