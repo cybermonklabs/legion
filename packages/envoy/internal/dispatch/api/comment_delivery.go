@@ -1035,16 +1035,23 @@ func mentionsDecideRoutes(created model.Event) bool {
 // loadCommentCreatedEvent reads comment's comment.created event within the comment's owner, so
 // the read walks that owner's events by its (issue_key, seq) or (artifact_id, seq) index instead
 // of matching the payload id across the whole log. A comment has one comment.created event, and
-// both callers ask about recent comments, so the walk starts from the owner's newest event.
+// every caller asks about a recent comment, so the walk starts from the owner's newest event.
+//
+// The event names its owner's project as every reader of the log reads it (eventSelect, and the
+// outbox's readBatchSQL): the issue's or the document's, the value the append read from the same
+// row (events.Broker's lockEventOwner), which no route changes afterwards (project_scope.go). The
+// event row cannot hold it, since its project_key names a project's own event alone
+// (events_one_owner, migration 0027). Each caller builds a mention's frame from this event (a
+// retry, the delivery sweep, a keyed repeat), as the comment's create builds its first one from the
+// event it appended, and a frame of a document's comment has no issue: its event's project is all a
+// reader of the frame has to tell whose document it is.
 func (s *server) loadCommentCreatedEvent(ctx context.Context, q queryer, comment model.Comment) (model.Event, error) {
 	ownerColumn, ownerID := commentEventOwner(comment)
 	var event model.Event
 	var actor, payload []byte
-	if err := q.QueryRow(ctx, `
-		select id, issue_key, artifact_id::text, coalesce(project_key, ''), seq, type, actor, notify, created_at, payload
-		from events
-		where `+ownerColumn+` = $1 and type = 'comment.created' and payload ->> 'id' = $2
-		order by seq desc
+	if err := q.QueryRow(ctx, eventSelect+`
+		where e.`+ownerColumn+` = $1 and e.type = 'comment.created' and e.payload ->> 'id' = $2
+		order by e.seq desc
 		limit 1
 	`, ownerID, comment.ID).Scan(
 		&event.ID, &event.IssueKey, &event.ArtifactID, &event.Project, &event.Seq, &event.Type,

@@ -69,8 +69,7 @@ func sqlState(err error) (string, string) {
 // differing only in a backslash or a non-ASCII character are different keys.
 func TestTheBlockIDKeyIndexesHoldIDsPastTheKeyLimit(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeBlockIDKey)
+	store := openMigratedTestStore(t, beforeBlockIDKey)
 	seedBlockIndexIssue(t, store)
 	document := insertReturningID(t, store, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)

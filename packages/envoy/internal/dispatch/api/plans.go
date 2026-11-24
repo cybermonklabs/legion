@@ -12,11 +12,12 @@ import (
 )
 
 // The plan each run of an issue ran from, which the Legion daemon of the issue's project writes
-// when the run's work starts (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's
-// finished issues (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro
-// gave it with the reason, the time from the first start of its step records to the last end,
-// and its count of failed steps. Both live in internal/dispatch/workflowstore, the one writer of
-// the nodes and tuples that hold the plans and the step records.
+// when the run's work starts and again at each later version of the owner's plan that Legion takes
+// (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's finished issues
+// (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro gave it with the
+// reason, the time from the first start of its step records to the last end, and its count of
+// failed steps. Both live in internal/dispatch/workflowstore, the one writer of the nodes and
+// tuples that hold the plans and the step records.
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
 // event and reads the issue with no open check. The read writes nothing, reads the project, then
@@ -56,7 +57,8 @@ type planTaskInput struct {
 }
 
 // putIssuePlan writes the plan of one run of an issue and answers it as it stands after the
-// write. Each field is set once, so a plan sent again changes nothing.
+// write. A write of a version above the one the plan holds replaces its source, document, version
+// and tasks, and every other write changes nothing (workflowstore.PutPlan).
 func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	var input planRecordInput
 	if err := decodeJSON(r, &input); err != nil {

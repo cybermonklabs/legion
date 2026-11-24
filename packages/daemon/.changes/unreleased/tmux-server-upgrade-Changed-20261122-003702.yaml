@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The tmux runtime's private server outlives a daemon restart, so a server that an earlier release
+  started keeps the configuration it read when it started, the operator's `~/.tmux.conf` and its
+  plugins included, until it ends. The `-f /dev/null` of this release takes effect at the next start
+  of the server, after it ends or the machine restarts.
