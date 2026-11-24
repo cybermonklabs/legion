@@ -162,7 +162,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "LastStartFailureAt", Column: ColumnAgents, Keys: []string{"lastStartFailureAt"},
 		Reason: "when the daemon recorded the start failure beside it, which says how long the claim has failed to start"},
 	{Field: "LastReady", Column: ColumnAgents, Keys: []string{"lastReady"},
-		Reason: "when the agent last said it could be prompted, which is what dates the death's cause above"},
+		Reason: "when the agent last said it could be prompted, against which `lastDeathAt` says whether the running agent survived the death above"},
 	{Field: "TurnOutcomes", Column: ColumnWithheld,
 		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
 	{Field: "Abandoned", Column: ColumnWithheld,

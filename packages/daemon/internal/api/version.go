@@ -3403,11 +3403,10 @@ package api
 // /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
 // `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
 // 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
-// which wrote no time (`api.ClaimView`, `causeInstant`). The claim keeps both in the store's
-// `claims` table (`20261124073512_claim_cause_times`), so a daemon restart keeps them, and the
-// daemon writes each with its cause and at no other time: at every death and every failed start
-// it records, one whose text is the same as the cause it replaces included, and, for the start
-// failure, at the agent's ready that drops it (`supervise.Claim.LastDeathAt`). The records of 243
+// which wrote no time (`api.ClaimView`). The claim keeps both in the store's `claims` table
+// (`20261124073512_claim_cause_times`), so a daemon restart keeps them, and each is set and
+// cleared only together with its cause, so a cause recorded again with the same text carries its
+// new time (the rule `supervise.Claim.LastDeathAt` states). The records of 243
 // hold the two keys on every claim view, and no record below 243 does: a caller whose contract
 // (the one it states, else its pod's lowest) is below 243 is served every claim view without
 // them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`). The operator's claim view

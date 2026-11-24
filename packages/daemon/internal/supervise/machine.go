@@ -367,19 +367,18 @@ type Claim struct {
 	// under the runtime's own bound (deathCause).
 	//
 	// LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside each, by
-	// its own clock, and zero where that cause is empty (dispatch://INFRA-5645). Each is written
-	// with its cause and at no other time: every death and every failed start the daemon records
-	// writes it again, one whose text is the same as the cause it replaces included, and the
-	// ready that drops the start failure clears its time with it. A reader tells an old cause
-	// from a current one by it, which the text alone does not say: a claim keeps its death's
-	// cause through every later ready. A cause an earlier release recorded has no time, since
-	// that release wrote none (the migration that added the columns backfilled nothing).
+	// its own clock, and zero where that cause is empty (dispatch://INFRA-5645). The rule: each is
+	// set and cleared only together with its cause, so a cause recorded again with the same text
+	// is given its new time, and whatever drops a cause drops its time. A reader tells an old
+	// cause from a current one by it, which the text alone does not say: a claim keeps its
+	// death's cause through every later ready. A cause an earlier release recorded has no time,
+	// since that release wrote none (the migration that added the columns backfilled nothing).
 	//
-	// LastReady is when the agent last said it could be prompted, which says how old the death's
-	// cause is beside it. All five are persisted: the operator reading a claim after a restart is
-	// the one who has to act on them, and the death's cause is what the record of that death names
-	// (endDied, EndedWork), which the restarted worker is told (RelaunchSentence,
-	// interruptedTask).
+	// LastReady is when the agent last said it could be prompted. LastDeathAt dates the death: a
+	// LastDeathAt before LastReady is a death the running agent survived. All five are persisted:
+	// the operator reading a claim after a restart is the one who has to act on them, and the
+	// death's cause is what the record of that death names (endDied, EndedWork), which the
+	// restarted worker is told (RelaunchSentence, interruptedTask).
 	LastDeathCause     string
 	LastDeathAt        time.Time
 	LastStartFailure   string

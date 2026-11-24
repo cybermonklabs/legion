@@ -981,14 +981,13 @@ type ClaimView struct {
 	// start did not produce a running agent — a launcher that refused it, a failed init container,
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
-	// questions. LastReady dates the death's cause: a death older than it is one the agent running
-	// now has already survived. The claim drops its start failure when its agent says it is ready
-	// (supervise.Claim.LastStartFailure says which older claims can still hold one from before).
-	// LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside each
-	// (causeTimesContract): each is absent when its cause is, and beside a cause an earlier release
-	// recorded, which wrote no time (causeInstant). A cause recorded again with the same text
-	// carries its new time, so a reader tells a death of an hour ago from one of days ago, which the
-	// text alone does not say.
+	// questions. LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside
+	// each (causeTimesContract), set and cleared only with it, as supervise.Claim.LastDeathAt
+	// states; each is absent beside a cause an earlier release recorded, which wrote no time.
+	// LastDeathAt dates the death: a LastDeathAt before LastReady is a death the agent running now
+	// has survived. The claim drops its start failure, with its time, when its agent says it is
+	// ready (supervise.Claim.LastStartFailure says which older claims can still hold one from
+	// before).
 	LastDeathCause     string     `json:"lastDeathCause,omitempty"`
 	LastDeathAt        *time.Time `json:"lastDeathAt,omitempty"`
 	LastStartFailure   string     `json:"lastStartFailure,omitempty"`
@@ -1128,16 +1127,17 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// What the daemon last saw this claim's agent do, which the stall backstop and an
 		// operator read alike; nil for a claim whose agent has not stepped (StepViewOf).
 		Step: StepViewOf(c.Step),
-		// When the agent last began and last ended a turn, and when it last said it could be
-		// prompted, each absent until it happens: they are what tells a worker still making
-		// progress from one wedged in a turn, and the ready is what dates the death's cause below.
+		// When the agent last began and last ended a turn, when it last said it could be
+		// prompted, and when each cause was recorded, each absent until it happens: they are what
+		// tells a worker still making progress from one wedged in a turn, and a LastDeathAt before
+		// the ready is a death the running agent survived.
 		LastTurnStart:      instant(c.LastTurnStart),
 		LastTurnEnd:        instant(c.LastTurnEnd),
 		LastReady:          instant(c.LastReady),
 		LastDeathCause:     c.LastDeathCause,
-		LastDeathAt:        causeInstant(c.LastDeathCause, c.LastDeathAt),
+		LastDeathAt:        instant(c.LastDeathAt),
 		LastStartFailure:   c.LastStartFailure,
-		LastStartFailureAt: causeInstant(c.LastStartFailure, c.LastStartFailureAt),
+		LastStartFailureAt: instant(c.LastStartFailureAt),
 		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
@@ -1146,17 +1146,6 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		PendingCause:   c.PendingCause,
 		LeakCheckCause: c.LeakCheckCause,
 	}
-}
-
-// causeInstant is the time the daemon recorded cause, as a claim view and the operator's claim
-// view serve it beside the cause (supervise.Claim.LastDeathAt and LastStartFailureAt): nil where
-// the cause is empty, so a view never carries a time beside no cause, and nil beside a cause an
-// earlier release recorded, which wrote no time.
-func causeInstant(cause string, at time.Time) *time.Time {
-	if cause == "" {
-		return nil
-	}
-	return instant(at)
 }
 
 // StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the

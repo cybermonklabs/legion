@@ -295,7 +295,7 @@ func populatedState(t *testing.T) State {
 	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
 	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
 	architectDied := time.Date(2026, 9, 22, 9, 15, 21, 0, time.UTC)
-	architectStartFailed := time.Date(2026, 9, 22, 9, 15, 33, 0, time.UTC)
+	architectStartFailed := time.Date(2026, 9, 22, 9, 15, 50, 0, time.UTC)
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
