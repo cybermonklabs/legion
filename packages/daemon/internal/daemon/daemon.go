@@ -2216,7 +2216,9 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // claim the pass read within that bound; one line names how many it did not read, and the next
 // sweep reads them.
 func (s *supervision) bootStalePlugins() {
-	pass, end := context.WithTimeout(store.ForConcurrentWorker(s.supervisor.ctx), cmp.Or(s.staleBootBound, stalePluginBootBound))
+	// The control: the pass without its own bound (the test must fail at about two read bounds).
+	_ = cmp.Or(s.staleBootBound, stalePluginBootBound)
+	pass, end := context.WithCancel(store.ForConcurrentWorker(s.supervisor.ctx))
 	defer end()
 	s.refreshStalePlugins(pass, s.claims, "boot")
 }
