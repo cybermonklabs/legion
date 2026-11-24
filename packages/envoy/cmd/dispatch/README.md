@@ -4558,13 +4558,15 @@ Within one issue, the largest amount by which an event was older than an event w
 
 **What a read at a cut costs.**
 `TestAsOfCostOnACorpusCopy` (`internal/dispatch/api/as_of_cost_test.go`) times the statements of the past-time reads against a copy of production's events, and skips unless `DISPATCH_ASOF_CORPUS_URL` names one.
-On a copy of 843,238 events in a gVisor pod, 13 of the past-time figures were within their bounds: 2 s for a read, and for a search the time of the same search at the present plus 3 s.
-The listing of every issue at a cut took 3.9 s at 2026-11-10T00:00Z and 8.5 s at the copy's newest event, where the present listing took 1.6 s in the same pod.
+`TestAsOfMeaningCostOnASyntheticCorpus` (`as_of_meaning_cost_test.go`) times a search with meaning on a corpus it makes up at production's counts, 1,647,646 windows of random vectors among them, and skips unless `DISPATCH_ASOF_SYNTHETIC_URL` names an empty database.
+Each opens its database with `jit` off, as Cloud SQL runs: with `jit` on, compiling a search with meaning at a cut took 7.5 s of 8.3 s.
+On a copy of 843,238 events in a gVisor pod, the listing of every issue at a cut took 3.9 s at 2026-11-10T00:00Z and 8.5 s at the copy's newest event, where the present listing took 1.6 s in the same pod.
 The listing names `issues` in about 11 places, and each reads the state of every issue through the shadow.
-A search for the commonest word took 5.8 s at 2026-11-10T00:00Z, against a bound of 5.68 s, and 13.5 s at the newest event.
-A search for a common word took 7.1 s at the newest event, against a bound of 4.18 s.
-Each match joins the state of its item at the cut, 0.5 to 0.8 ms for each match, and a filter of status, author, project or time needs those joins before the first page.
-Meaning search was not timed, because a copy of the events holds no embeddings, and the document leg was timed on empty text.
+A search at a cut ranks the matches of each kind of post on their rank first, and reads the post and its issue at the cut only for the rows that can enter the kind's first 100 (`searchAsOfBoundedPosts`); a filter of status, author or time, and a query of excluded words alone, read every match.
+On a copy of 1,127,985 events in the pod, a keyword search for the commonest word at the copy's newest event took 5.5 to 6.3 s on its first run after a restart of PostgreSQL and 3.7 to 4.3 s warm, against 11.8 s and 5.5 s when each match read its post and its issue; a common word took 2.5 to 2.9 s and 1.8 to 2.2 s.
+A query of excluded words alone at that event, which matches nearly every post, took 19 s warm.
+On the synthetic corpus, on 16 vCPUs, a search with meaning at a cut took 0.85 to 1.6 s warm and at most 3.7 s on a first run after a restart, against 1.9 s at the present.
+Random vectors spread the HNSW graph unlike production's embeddings, so that is no measure of production's meaning arms, and the copy of the events holds no document text, so the document leg was timed on empty text.
 
 ## Routes
 
