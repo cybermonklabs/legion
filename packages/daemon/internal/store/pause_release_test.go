@@ -288,7 +288,9 @@ func TestACancelWhilePausedAtStepArmsTheBackstopOfTheRoleOfTheStep(t *testing.T)
 	at := pausedAt.Add(time.Minute)
 
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
-		ReleaseCancelPause{At: at, Backstop: time.Hour, OpenRoleAt: openWorker})
+		ReleaseCancelPause{At: at, Backstop: time.Hour, OpenWorker: func(ctx context.Context, tx pgx.Tx, issue string) (claim.Token, error) {
+			return record.ReadWorkerClaim(ctx, records, tx, "legion", issue, checker)
+		}})
 	if err != nil {
 		t.Fatalf("cancel the release while paused: %v", err)
 	}
