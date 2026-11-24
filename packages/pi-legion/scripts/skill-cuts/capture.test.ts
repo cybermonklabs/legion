@@ -18,6 +18,7 @@ import {
   type Capture,
   type CaptureOptions,
   captureBody,
+  capturePaths,
   extensionErrors,
   type HintWriter,
   listingOf,
@@ -42,11 +43,13 @@ import {
   userTurnKey,
 } from "./capture";
 import { type Case, type Profile, pathHash } from "./cases";
+import { Refused } from "./common";
 import {
   buildContext,
   type ContextRecord,
   cacheKey,
   localSource,
+  type RepoSource,
   skillFrontmatter,
 } from "./context";
 import { BudgetSpent, type MessagesBody } from "./gateway";
@@ -2967,6 +2970,138 @@ test("a saved capture whose record holds no harness record is refused", () => {
   expect(() => savedCapture(files)).toThrow("was made before the harness-string rule");
   writeFileSync(files.record, JSON.stringify({ case: "c", arm: "old", harness: { replaced: [] } }));
   expect(savedCapture(files)?.record.case).toBe("c");
+});
+
+/** Saves a capture of `c`'s arm old under `outDir`, as captureBody reads one back: a body, and a
+ *  record whose context installed alpha from the arm and each of `copies` from its repository. */
+function saveOldCapture(
+  outDir: string,
+  c: Case,
+  copies: readonly ContextRecord["skills"][number][]
+): { body: string; record: string } {
+  const files = capturePaths(outDir, c.id, "old");
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(files.body, JSON.stringify({ model: "claude-sonnet-5-5", messages: [] }));
+  writeFileSync(
+    files.record,
+    JSON.stringify({
+      case: c.id,
+      arm: "old",
+      harness: { head: null, replaced: [] },
+      context: { skills: [{ name: "alpha", from: "arm" }, ...copies] },
+    })
+  );
+  return files;
+}
+
+/** The record of the copy of acme/skills' `skills/<name>` at `commit` a context installs, under
+ *  its cache key, or under `key`. */
+function skillsCopy(
+  name: string,
+  commit = COMMIT,
+  key = cacheKey("acme/skills", commit, `skills/${name}`)
+): ContextRecord["skills"][number] {
+  return { name, from: { repo: "acme/skills", commit, path: `skills/${name}`, key } };
+}
+
+// Catches: a replay of a saved capture that builds its context again, reading its repositories,
+// though the cache holds every copy the capture installed.
+test("a saved capture whose cache holds every installed copy its record names is read back with no read of any repository", async () => {
+  const root = path.join(dir, "copies-present");
+  const c = f1Case("c-present");
+  writeTree(path.join(root, "old"), { "SKILL.md": OLD_SKILL, "references/x.md": X });
+  const arm = buildArm(
+    c,
+    "old",
+    { old: path.join(root, "old"), new: path.join(root, "old") },
+    root
+  );
+  const cacheDir = path.join(root, "cache");
+  for (const [name, text] of [
+    ["beta", BETA_SKILL],
+    ["delta", DELTA_SKILL],
+  ] as const) {
+    writeTree(path.join(cacheDir, "skills", cacheKey("acme/skills", COMMIT, `skills/${name}`)), {
+      "SKILL.md": text,
+    });
+  }
+  const outDir = path.join(root, "out");
+  saveOldCapture(outDir, c, [skillsCopy("beta"), skillsCopy("delta")]);
+  const reads: string[] = [];
+  const read = async (what: string): Promise<never> => {
+    reads.push(what);
+    throw new Error(`no read is expected: ${what}`);
+  };
+  const source: RepoSource = {
+    name: "no repository",
+    file: (repo, _commit, file) => read(`file ${file} of ${repo}`),
+    tree: (repo, _commit, at) => read(`tree ${at} of ${repo}`),
+    link: (repo, _commit, file) => read(`link ${file} of ${repo}`),
+  };
+  const saved = await captureBody(c, arm, {
+    outDir,
+    scratchDir: path.join(root, "scratch"),
+    cacheDir,
+    source,
+    hints,
+    session: SESSION,
+  });
+  expect({ made: saved.made, reads }).toEqual({ made: false, reads: [] });
+});
+
+// Catches: a saved capture replayed with other copies than the ones it was made with, where the
+// case's profile now names another commit of a copy than its record does, or the record keeps a
+// copy under another cache key than the build gives it.
+test("a saved capture whose installed copies, made again, differ from the ones its record names is refused, naming the case, the arm and the copy", async () => {
+  const root = path.join(dir, "copies-differ");
+  const repos = path.join(root, "repos");
+  writeTree(path.join(repos, "acme/skills", COMMIT), {
+    "skills/beta/SKILL.md": BETA_SKILL,
+    "skills/delta/SKILL.md": DELTA_SKILL,
+  });
+  writeTree(path.join(repos, "acme/project", COMMIT), {
+    ".claude/CLAUDE.md": "# Made-up user rules\n\nKeep each answer short.\n",
+  });
+  writeTree(path.join(root, "old"), { "SKILL.md": OLD_SKILL, "references/x.md": X });
+  const options: CaptureOptions = {
+    outDir: path.join(root, "out"),
+    scratchDir: path.join(root, "scratch"),
+    cacheDir: path.join(root, "cache"),
+    source: localSource(repos),
+    hints,
+    session: SESSION,
+  };
+  const other = "fedcba9876543210fedcba9876543210fedcba98";
+  const betaKey = cacheKey("acme/skills", COMMIT, "skills/beta");
+  for (const [id, was, wasWords] of [
+    // The case file was built again after the capture: its profile names another commit of beta.
+    [
+      "c-moved",
+      skillsCopy("beta", other),
+      `beta from skills/beta of acme/skills at ${other} (cache key ${cacheKey("acme/skills", other, "skills/beta")})`,
+    ],
+    // The record keeps beta under a key the build does not give it.
+    [
+      "c-rekeyed",
+      skillsCopy("beta", COMMIT, "0".repeat(32)),
+      `beta from skills/beta of acme/skills at ${COMMIT} (cache key ${"0".repeat(32)})`,
+    ],
+  ] as const) {
+    const c = f1Case(id);
+    const dirs = { old: path.join(root, "old"), new: path.join(root, "old") };
+    const arm = buildArm(c, "old", dirs, path.join(root, "arms"));
+    const files = saveOldCapture(options.outDir, c, [was, skillsCopy("delta")]);
+    const refused = await captureBody(c, arm, options).catch((caught: unknown) => caught);
+    expect(refused).toBeInstanceOf(Refused);
+    expect((refused as Error).message).toBe(
+      `case ${id} arm old: the saved capture ${files.record} installed ${wasWords} where the case's profile now gives beta from skills/beta of acme/skills at ${COMMIT} (cache key ${betaKey}), so a replay of it would answer a read of that skill from another copy than the one it was made with: make it again under a new --out`
+    );
+  }
+  // The context each refusal built again is gone; the copies it made stay in the cache.
+  expect(readdirSync(path.join(options.scratchDir, "copies"))).toEqual([]);
+  expect(readFileSync(path.join(options.cacheDir, "skills", betaKey, "SKILL.md"), "utf8")).toBe(
+    BETA_SKILL
+  );
 });
 
 // Catches: every left-out plugin said to have failed its build, whatever left it out.

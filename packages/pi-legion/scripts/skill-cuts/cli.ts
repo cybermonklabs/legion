@@ -249,7 +249,8 @@
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
  * runs record that id and their place in the order. A replay answers a reply's reads of skill
  * files (the case's skill from the arm, another skill of the profile from the copy its capture
- * installed, context.ts's `installedCopies` of the capture's record under `--cache-dir`), and each
+ * installed, context.ts's `installedCopies` of the capture's record under `--cache-dir`, made again
+ * before the replays where the cache lacks it, capture.ts's `restoreCopies`), and each
  * run records each answered round's reads (`skillReads`) and is judged on those rounds' read calls
  * and the reply after them. A written case's runs also answer, from the shared checkout of its
  * repository at its commit under `--cache-dir` (`sharedCheckout`), at most 5 rounds of read-only
@@ -402,6 +403,7 @@ import {
   captureBody,
   capturePaths,
   gatewayHints,
+  restoreCopies,
   type SessionFacts,
   savedCapture,
   sessionFacts,
@@ -5367,8 +5369,12 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       values.repos === undefined ? githubRemote(repo) : path.join(values.repos, `${repo}.git`),
     capture: async (c, arm) => {
       const outDir = armCaptureDir(given.out, arm, texts);
+      const scratchDir = path.join(scratch, "captures");
       const saved = savedCapture(capturePaths(outDir, c.id, arm.name), arm);
-      if (saved !== undefined) return saved;
+      if (saved !== undefined) {
+        await restoreCopies(c, arm, saved, { source, cacheDir, scratchDir });
+        return saved;
+      }
       if (models === undefined || omp === undefined) {
         throw new Error(
           `case ${c.id} has no capture of its ${arm.name} arm in ${outDir}, and no --models is given to make one`
@@ -5380,7 +5386,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       return captureBody({ ...c, model }, arm, {
         omp,
         outDir,
-        scratchDir: path.join(scratch, "captures"),
+        scratchDir,
         cacheDir,
         source,
         models,

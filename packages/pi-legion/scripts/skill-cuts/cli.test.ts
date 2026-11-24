@@ -770,7 +770,8 @@ const BETA_FROM = {
  *  in its user text, and the arm's read result of SKILL.md in place of F2's, or, for none, no read.
  *  An `openai/<id>` case's body is F8 changed the same way, and goes with no header. Each record
  *  names the skills its context installed: alpha from the arm (none installs no alpha), and beta
- *  from BETA_FROM. */
+ *  from BETA_FROM, whose cache entry it writes in `<dir>/cache`, the cache `behaviour` gives the
+ *  commands, as such a capture leaves it. */
 function recordCaptures(
   s: Scenario,
   arms: readonly ArmName[],
@@ -819,9 +820,12 @@ function recordCaptures(
       );
     }
   }
+  writeSkill(path.join(s.dir, "cache", "skills", BETA_FROM.key), {
+    "SKILL.md": "---\nname: beta\ndescription: Use for the beta greeting.\n---\n",
+  });
 }
 
-/** The arguments of `behaviour <command>` for `s`, and `extra`. */
+/** The arguments of `behaviour <command>` for `s`, with `<dir>/cache` as its cache, and `extra`. */
 function behaviour(command: string, s: Scenario, ...extra: string[]): string[] {
   const { config, keyFile } = setup();
   return [
@@ -841,6 +845,8 @@ function behaviour(command: string, s: Scenario, ...extra: string[]): string[] {
     s.casesFile,
     "--scratch",
     path.join(s.dir, "scratch"),
+    "--cache-dir",
+    path.join(s.dir, "cache"),
     ...extra,
   ];
 }
@@ -1480,16 +1486,7 @@ describe("behaviour", () => {
     writeGhStandIn(path.join(bin, "gh"), log, truncatedSkillsTree(commit));
     const { omp, models } = standInContext(s, "c04", bin);
     const env = { ...ENV, PATH: `${bin}:${ENV.PATH ?? ""}` };
-    const args = behaviour(
-      "screen",
-      s,
-      "--models",
-      models,
-      "--omp",
-      omp,
-      "--cache-dir",
-      path.join(s.dir, "cache")
-    );
+    const args = behaviour("screen", s, "--models", models, "--omp", omp);
     const routes = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
 
     const first = await cli(args, env);
@@ -3734,12 +3731,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
     const { omp, models } = standInContext(s, "c-autoload", s.dir);
     answer = behaviourStandIn;
     const ran = await cli(
-      behaviour(
-        "screen",
-        s,
-        ...["--models", models, "--omp", omp, "--repos", repos],
-        ...["--cache-dir", path.join(s.dir, "cache")]
-      )
+      behaviour("screen", s, ...["--models", models, "--omp", omp, "--repos", repos])
     );
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     const fault = `injection-unrebuildable: autoload-no-block: case c-autoload: its agent alpha-reviewer (packages/agents-pack/agents/reviewer.md of acme/legion at ${commit}) autoloads alpha, and its messages hold no autoloaded block of it`;
@@ -4845,14 +4837,13 @@ describe("behaviour: a replay's reads of skill files", () => {
   test("a reply that reads another installed skill is answered from the copy its capture installed, and each run records each answered round's reads and is judged on the act after them", async () => {
     const s = scenario("other-read", LOSS_SKILL(), [{ id: "c04" }]);
     recordCaptures(s, ["old", "new", "none"]);
-    const cacheDir = path.join(s.dir, "cache");
-    writeSkill(path.join(cacheDir, "skills", BETA_FROM.key), { "SKILL.md": BETA_TEXT });
+    writeSkill(path.join(s.dir, "cache", "skills", BETA_FROM.key), { "SKILL.md": BETA_TEXT });
     // Every run reads beta first, and acts once beta's text is in its body.
     answer = (body) =>
       isJudgement(body) || JSON.stringify(body.messages).includes("Load alpha before")
         ? behaviourStandIn(body)
         : readReply("skill://beta");
-    const ran = await cli(behaviour("screen", s, "--cache-dir", cacheDir));
+    const ran = await cli(behaviour("screen", s));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     const c = result(s.out, "c04");
     expect(passes(c, "screen")).toEqual({ old: SCREEN_RUNS, new: 0, none: 0 });
@@ -4868,6 +4859,39 @@ describe("behaviour: a replay's reads of skill files", () => {
         name: "read",
         input: { path: "skill://beta" },
       });
+    }
+  }, 120_000);
+
+  // Catches: a saved capture replayed on a machine whose cache lacks the copy its record names
+  // (the cache is not kept with --out), so every run that reads that skill fails with no verdict
+  // (`the installed copy of beta, <dir>, is not a directory`) and its replay calls are paid.
+  test("a saved capture whose cache lacks the installed copy its record names has it made again from its repository before the replays, and a read of it is answered from that copy", async () => {
+    const s = scenario("other-read-restored", LOSS_SKILL(), [{ id: "c04" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    // The cache of a new machine holds no copy of beta; beta's repository holds it.
+    const copy = path.join(s.dir, "cache", "skills", BETA_FROM.key);
+    rmSync(copy, { recursive: true });
+    const repos = path.join(s.dir, "repos");
+    writeSkill(path.join(repos, BETA_FROM.repo, BETA_FROM.commit, BETA_FROM.path), {
+      "SKILL.md": BETA_TEXT,
+    });
+    answer = (body) =>
+      isJudgement(body) || JSON.stringify(body.messages).includes("Load alpha before")
+        ? behaviourStandIn(body)
+        : readReply("skill://beta");
+    const ran = await cli(behaviour("screen", s, "--repos", repos));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(readFileSync(path.join(copy, "SKILL.md"), "utf8")).toBe(BETA_TEXT);
+    const c = result(s.out, "c04");
+    expect(passes(c, "screen")).toEqual({ old: SCREEN_RUNS, new: 0, none: 0 });
+    // Each run read beta in its one answered round and was judged: no replay failed, to be run
+    // again.
+    const runs = c.stages.screen?.runs ?? [];
+    expect(runs).toHaveLength(3 * SCREEN_RUNS);
+    for (const run of runs) {
+      expect(run.skillReads).toEqual([
+        [{ skill: "beta", file: "SKILL.md", by: "skill", from: "copy", isError: false }],
+      ]);
     }
   }, 120_000);
 

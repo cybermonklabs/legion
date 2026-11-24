@@ -119,7 +119,8 @@
  * Skill reads follow the behaviour replay's rule (the architect, 2026-11-22T18:58Z and
  * 18:59:51Z). On Oh My Pi, a reply whose every tool call reads a skill file is answered as
  * replay.ts answers one: a read of another skill the profile installs from that skill's installed
- * copy (context.ts's `installedCopies` of the capture's record), a read of a skill it does not
+ * copy (context.ts's `installedCopies` of the capture's record, made again before the runs where
+ * the cache lacks it, capture.ts's `restoreCopies`), a read of a skill it does not
  * install with Oh My Pi's unknown-skill result, a read of another file of the tested skill from
  * its directory. Then the body goes again with the reply and the answers, at most MAX_SKILL_ROUNDS
  * times. A run comes to one of four outcomes (RunOutcome):
@@ -261,6 +262,7 @@ import {
   type RecordedLine,
   rawBodyFile,
   renamedListingBlocks,
+  restoreCopies,
   rewriteBody,
   type SavedHead,
   type SessionFacts,
@@ -1880,6 +1882,14 @@ class LoadTest {
       this.daemonImages.get(task.id)
     );
     let capture = savedCapture(files, arm);
+    const scratchDir = path.join(this.root, "captures");
+    if (capture !== undefined) {
+      await restoreCopies(c, arm, capture, {
+        source: this.o.source,
+        cacheDir: this.o.cacheDir,
+        scratchDir,
+      });
+    }
     if (capture === undefined && models !== undefined) {
       const { name, renamedFrom } = this.settings;
       const listing = profile.profile.recordedListing;
@@ -1898,7 +1908,7 @@ class LoadTest {
       capture = await captureBody(c, arm, {
         omp: this.o.omp,
         outDir: path.dirname(files.body),
-        scratchDir: path.join(this.root, "captures"),
+        scratchDir,
         cacheDir: this.o.cacheDir,
         source: this.o.source,
         models,
