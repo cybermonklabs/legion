@@ -265,3 +265,35 @@ describe("the session the check's writes act as", () => {
     }
   });
 });
+
+// The health read goes to /healthz joined onto the Dispatch URL's path, the URL's query kept as a
+// query. Appended to the URL's text, the route sat inside the query (`/dispatch?key=v/healthz`) and
+// Dispatch was asked `/dispatch`. A URL with no query is asked as before.
+describe("the health read's URL", () => {
+  for (const [name, at, query] of [
+    ["keeps the Dispatch URL's path and query", "/dispatch?key=v", "?key=v"],
+    ["keeps the Dispatch URL's path with no query", "/dispatch", ""],
+  ] as const) {
+    test(name, async () => {
+      const asked: string[][] = [];
+      const server = Bun.serve({
+        port: 0,
+        fetch(request) {
+          const url = new URL(request.url);
+          asked.push([url.pathname, url.search]);
+          return Response.json({ ok: true });
+        },
+      });
+      try {
+        const live = liveDispatch({
+          url: `http://127.0.0.1:${server.port}${at}`,
+          credential: bearerCredential("t"),
+        });
+        await live.healthz();
+        expect(asked).toEqual([["/dispatch/healthz", query]]);
+      } finally {
+        server.stop(true);
+      }
+    });
+  }
+});

@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { SQL } from "bun";
 import { z } from "zod";
+import { joinUrl } from "../../packages/contracts/src/url-join";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchClient,
@@ -492,7 +493,8 @@ export async function runChecks(options: Options, deps: CheckDependencies): Prom
 }
 
 export function liveDispatch(config: DispatchConfig): DispatchReads {
-  // `dispatchSettings` already trimmed the URL's trailing slashes.
+  // Each route is joined onto the Dispatch URL's path, its query kept (`joinUrl`): appended to the
+  // text of a URL with a query, the route would sit inside the query.
   // The bearer, or the access token this machine traded its own identity for, with the proof
   // that goes with it; the coverage read goes around DispatchClient, so it presents it itself.
   const credential = config.credential;
@@ -501,11 +503,15 @@ export function liveDispatch(config: DispatchConfig): DispatchReads {
   return {
     // Public: it is sent no token.
     healthz: () =>
-      readJson(`${config.url}/healthz`, {}, (status) => status === 200 || status === 503),
+      readJson(
+        joinUrl(config.url, "healthz").href,
+        {},
+        (status) => status === 200 || status === 503
+      ),
     search: (query, options) => client().search(query, options),
     issue: (key) => client().getIssue(key),
     coverage: async () => {
-      const url = `${config.url}/api/v1/search/coverage`;
+      const url = joinUrl(config.url, "api/v1/search/coverage").href;
       const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
       return readJson(
         url,

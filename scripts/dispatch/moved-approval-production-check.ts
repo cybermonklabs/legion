@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { joinUrl } from "../../packages/contracts/src/url-join";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchClient,
@@ -507,10 +508,9 @@ async function runDocEditCommand(
 }
 
 export function liveDispatch(config: DispatchConfig): DispatchWrites {
-  // `dispatchSettings` already trimmed the URL's trailing slashes. Every write acts as the
-  // session this process is, which is the session the approval request is opened by and the one
-  // the writes that move it belong to. An empty DISPATCH_SESSION_ID names no session, as an
-  // unset one does: pi-envoy leaves it "" while its session has no id.
+  // Every write acts as the session this process is, which is the session the approval request is
+  // opened by and the one the writes that move it belong to. An empty DISPATCH_SESSION_ID names no
+  // session, as an unset one does: pi-envoy leaves it "" while its session has no id.
   const actor = { kind: "session", id: process.env.DISPATCH_SESSION_ID || "unknown" };
   // A client's deadline runs from its construction, so each call gets a client of its own.
   const client = () => new DispatchClient(config.url, config.credential);
@@ -519,9 +519,14 @@ export function liveDispatch(config: DispatchConfig): DispatchWrites {
     ops: [{ op: "insert", markdown: sentence, after: "end" }],
   });
   return {
-    // Public: it is sent no token.
+    // Public: it is sent no token. The route is joined onto the Dispatch URL's path, its query
+    // kept (`joinUrl`): appended to the text of a URL with a query, it would sit inside the query.
     healthz: () =>
-      readJson(`${config.url}/healthz`, {}, (status) => status === 200 || status === 503),
+      readJson(
+        joinUrl(config.url, "healthz").href,
+        {},
+        (status) => status === 200 || status === 503
+      ),
     createIssue: (project) =>
       client().issue({
         actor,
