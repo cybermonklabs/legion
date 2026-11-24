@@ -84,6 +84,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "DeliveredRows", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Locator", Column: ColumnAgents, Keys: []string{"locator"},
 		Reason: "the process the claim runs, which says whether one runs at all and which incarnation a report is of"},
+	{Field: "WorkingRepository", Column: ColumnWithheld,
+		Reason: "the repository the claim's process was launched on, which the daemon writes into the working copy line of each phase task it sends that process; the issue's own `repo` is the repository a reader acts on"},
 	{Field: "Enrollment", Column: ColumnWithheld,
 		Reason: "the secrets broker's record of this claim's process: that broker's business and no reader's here"},
 	{Field: "State", Column: ColumnAgents, Keys: []string{"state"},

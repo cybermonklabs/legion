@@ -147,8 +147,10 @@ type Runtime interface {
 	// It states what the place holds and compares nothing: the record of the repository an issue
 	// works is the daemon's, so the daemon is what reads this answer against that record and
 	// decides that a pod built from the repository the issue has left must be replaced
-	// (internal/daemon's groupDrift). An error means the runtime itself could not be asked, and
-	// is never a statement that the place was built from another repository.
+	// (internal/daemon's groupDrift), and what records it as the repository a process launched
+	// into the place works (supervise's Claim.WorkingRepository). An error means the runtime
+	// itself could not be asked, and is never a statement that the place was built from another
+	// repository.
 	PodRepository(ctx context.Context, k Known) (string, error)
 	// ReplacePod ends the place k's process runs in, once its update round is over, and returns
 	// when the runtime no longer has it. It creates nothing in its stead: every process it ends is

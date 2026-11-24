@@ -69,19 +69,39 @@
 -- refuses the read of the claims and names the claim, as a stored locator that does not validate
 -- does.
 --
+-- claims.working_repository is the repository the claim's running process works, the one whose
+-- workspace that process was started in (supervise.Claim.WorkingRepository). The launch that
+-- records the process writes it in the same write: the repository the place the process runs in
+-- was built from, where the runtime's processes share one (a Sandbox pod's own workspace fetch),
+-- and otherwise the repository of the spec the process was started with. Every phase task the
+-- daemon sends that process names this repository's workspace in its working copy line (the
+-- daemon's workingCopy): a correction moves the record at once and the process only at its next
+-- launch, a tmux pane's or the relaunch into the pod its update round builds, so the record's
+-- repository would name a workspace the process does not work in, and under tmux one nothing has
+-- made yet. Null is none recorded, a claim that records no process and every row standing before
+-- this migration, and '' is a launch that named no repository.
+-- claims.working_repository_incarnation is the incarnation of the process the name was recorded
+-- for, and the claim store reads the name only while that incarnation is the stored locator's
+-- (store's workingRepositoryOf). A name it reads that is no repository refuses the read of the
+-- claims and names the claim, as the round's repository does.
+--
 -- An older daemon binary on this schema writes none of the columns this migration adds and reads
 -- none of them: its issue reads, its claim reads and writes and its bundle writes name the
 -- columns it knows, and the new ones take their defaults. A bundle it saves for an issue with no
 -- row in workspace_bundles therefore names no repository, which this release refuses at the
 -- restore and keeps, and one it saves over a row this release wrote keeps that row's repo. Its
--- write of a claim this release wrote leaves the two claims columns as they stood, through the end
--- of a round this release opened and the open of the claim's next round, which is why the name
--- carries the round it was written with: this release reads that next round as one that recorded
--- no repository. It never reads workspace_bundles_refused, so the refused work stays there for an
--- operator through a roll back, and no row of workspace_bundles is a refused one for its idle rule
--- to count. It still carries the write-once guard, so it refuses a corrected repository as it
--- always did, and a correction this release applied stands under it with repo_before and
--- repo_corrected_at untouched for the roll forward.
+-- write of a claim this release wrote leaves the round's two claims columns as they stood, through
+-- the end of a round this release opened and the open of the claim's next round, which is why the
+-- name carries the round it was written with: this release reads that next round as one that
+-- recorded no repository. It leaves the two working repository columns as they stood too, and its
+-- relaunch writes a locator of another incarnation beside them, which is why that name carries the
+-- incarnation it was recorded for: this release reads such a claim as one whose process no launch
+-- of its own recorded a repository for, and sends that process each task with the working copy
+-- line it was composed with. It never reads workspace_bundles_refused, so the refused work stays
+-- there for an operator through a roll back, and no row of workspace_bundles is a refused one for
+-- its idle rule to count. It still carries the write-once guard, so it refuses a corrected
+-- repository as it always did, and a correction this release applied stands under it with
+-- repo_before and repo_corrected_at untouched for the roll forward.
 --
 -- `refused_repository` is the third thing one restore attempt can do, beside the `sent` and the
 -- `refused_older` the attempt column was written with (20261103214558_workspace_bundle_pod_binding):
@@ -101,7 +121,9 @@ alter table issues add column repo_corrected_at timestamptz;
 alter table issues add column repo_change_pending text not null default '';
 alter table issues add column repo_change_reason text not null default '';
 alter table claims add column update_repository text not null default '',
-  add column update_repository_round text not null default '';
+  add column update_repository_round text not null default '',
+  add column working_repository text,
+  add column working_repository_incarnation text not null default '';
 alter table workspace_bundles add column repo text not null default '';
 update workspace_bundles b set repo = i.repo from issues i where i.key = b.issue;
 alter table workspace_bundles drop constraint workspace_bundles_attempt_outcome;

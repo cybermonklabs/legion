@@ -91,6 +91,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 	answeredAt := at.Add(-time.Minute)
 	token := claim.Token("legion-legion-legion-500-implementer")
 	podUID := "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11"
+	working := ghrepo.MustParse("acme/widgets")
 	current := supervise.Claim{
 		Token: token, Project: "OTHER", Tree: "LEGION-500", Issue: "LEGION-500", Role: claim.RoleImplementer,
 		Generation: 3, TreeEpoch: 2,
@@ -106,10 +107,11 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 				Container: runtime.IssuePodContainer, Generation: 5,
 			},
 		},
-		Enrollment: &supervise.Enrollment{ID: "enr_42", Incarnation: podUID + "/5"},
-		State:      supervise.StateFailed,
-		Budgets:    supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
-		Failure:    "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
+		WorkingRepository: &working,
+		Enrollment:        &supervise.Enrollment{ID: "enr_42", Incarnation: podUID + "/5"},
+		State:             supervise.StateFailed,
+		Budgets:           supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
+		Failure:           "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
 		PodEnd:         "Evicted: The node was low on resource: ephemeral-storage.",
 		PendingCause:   supervise.CauseDied,
 		LeakCheckCause: "the shared public leak check could not be installed: the tarball of example-org/deployment at leak-check-v3 holds no leak-check directory",

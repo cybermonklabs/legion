@@ -1072,9 +1072,10 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 // which every task the engine composes names (workflow.Config.WorkspaceDir) and every send of a
 // worker's task names again (workingCopy): each runtime's own function that places the workspace,
 // sandbox.WorkspaceDir under Kubernetes and tmux.WorkspaceDir under the state directory under
-// tmux, read for the repository the issue's record names, as the launch reads it
-// (issueRepository). An issue whose recorded repository does not parse, which no launch can work
-// either, names none, and its task names the branch alone.
+// tmux, read for the repository the issue value it is handed names (record.Issue.Repository): the
+// record's at the composing, as the launch reads it (issueRepository), and at a send the one the
+// claim's process works, which workingCopy hands it. An issue value whose repository does not
+// parse, or that names none, names no directory, and its task names the branch alone.
 func engineWorkspaceDir(cfg config.Config) func(record.Issue) string {
 	place := func(repo ghrepo.Repository, issue string) (string, error) {
 		return tmux.WorkspaceDir(cfg.StateDir, repo, issue)
@@ -1489,36 +1490,42 @@ func resumeJSON(waiting *record.Awaiting) ([]byte, error) {
 }
 
 // workingCopy answers supervise's Deps.WorkingCopy: a phase worker's held task with its working
-// copy line written again at the moment it is about to be sent, from the repository the claim's
-// launch works at that moment, which is the repository the issue's record names as the launch
-// reads it (repositoryOf). The engine composed the line from the record when the start was
-// written, and the task is kept as composed (record.PhaseRow.EntryTask, the claim's pending
-// delivery, an outbox row waiting for its lane) until a send, so a correction of the issue's
-// repository in between (record.Store.CorrectIssueRepository) would otherwise send the directory
-// of the repository the issue left, which a kept volume still holds and keptDiskMessage tells the
-// roles not to work in. The line is the engine's, written under the directory the runtime gives
-// the record's repository (workflow.Engine.WorkingCopyAtSend, engineWorkspaceDir), which is how
-// both runtimes' directories follow the record.
+// copy line written again at the moment it is about to be sent, from the repository the process
+// it goes to works (supervise.Claim.WorkingRepository), which the launch that started that process
+// recorded: the repository its pod was built from, or that of its spec where its place names none.
+// The engine composed the line from the issue's record when the start was written, and the task
+// is kept as composed (record.PhaseRow.EntryTask, the claim's pending delivery, an outbox row
+// waiting for its lane) until a send. A correction of the issue's repository
+// (record.Store.CorrectIssueRepository) moves that record at once, before or after the composing,
+// and the process only at its next launch: a tmux pane goes on in the workspace of the repository
+// the issue left until it is launched again, and nothing makes the new repository's workspace
+// before that launch; a pod goes on in its clone until its update round replaces it. So the line
+// names the workspace the agent that reads it is in, and a relaunch moves it, where the task's
+// correction note (addressingFragment) already tells that agent the work moved. The line is the
+// engine's, written under the directory the runtime gives that repository
+// (workflow.Engine.WorkingCopyAtSend, engineWorkspaceDir), with no repository for a launch that
+// named none, whose line names the branch alone.
 //
 // A task that carries news of the approved design (supervise.Delivery.News) holds the start's own
 // text twice: in its text and in the news, which every send renders the text from again
 // (designNews, record.DeliveryNews.Task). Both are written again, so the next render says what
-// this send does. Where the line is as the record gives it, the bytes the delivery carries are
-// answered unchanged.
+// this send does. Where the line already names that workspace, the bytes the delivery carries
+// are answered unchanged.
 //
-// An issue the workflow does not record keeps the task as it is: no start of the workflow wrote
-// it. A read that fails returns its error, as the read of a root architect's held task does
-// (rootTask): the machine sends nothing then, and the next trigger asks again, so no send carries
-// a line the record has moved from and none goes with no line.
-func (w *workflowRuntime) workingCopy(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
-	issue, err := w.recordedIssue(ctx, c.Issue)
-	if err != nil {
-		return "", nil, fmt.Errorf("read %s for the working copy its task names: %w", c.Issue, err)
-	}
-	if issue == nil {
+// A claim that records no working repository keeps the task as it is: one that records no
+// process, and one whose process an earlier release launched, which recorded none, so the line
+// stays as the task was composed until this release launches that claim. A held news the answer
+// cannot decode returns its error, as a failed read of a root architect's held task does
+// (rootTask): the machine sends nothing then, and the next trigger asks again.
+func (w *workflowRuntime) workingCopy(_ context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
+	if c.WorkingRepository == nil {
 		return d.Task, d.News, nil
 	}
-	task := w.engine.WorkingCopyAtSend(d.Task, *issue)
+	working := record.Issue{Key: c.Issue}
+	if !c.WorkingRepository.IsZero() {
+		working.Repo = c.WorkingRepository.String()
+	}
+	task := w.engine.WorkingCopyAtSend(d.Task, working)
 	if len(d.News) == 0 {
 		return task, d.News, nil
 	}
@@ -1526,7 +1533,7 @@ func (w *workflowRuntime) workingCopy(ctx context.Context, c supervise.Claim, d 
 	if err != nil {
 		return "", nil, err
 	}
-	own := w.engine.WorkingCopyAtSend(carried.Task, *issue)
+	own := w.engine.WorkingCopyAtSend(carried.Task, working)
 	if own == carried.Task {
 		return task, d.News, nil
 	}

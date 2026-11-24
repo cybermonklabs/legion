@@ -1099,7 +1099,9 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 		switch call.Method {
 		// PodRepository is a sweep read like PodDrift: groupDrift asks the pod which repository
 		// it was built from at every sweep, once per group, to read a corrected repository as
-		// drift (repositoryDrift). It decides nothing of this round, which no correction opened.
+		// drift (repositoryDrift). Each launch asks it too, of the process it started, to record
+		// the repository that process works (supervise's workingRepository). It decides nothing of
+		// this round, which no correction opened.
 		case "ReplacePod", "PodDrift", "PodRepository", "Probe", "Observe", "ReconcileOrphans":
 		default:
 			t.Errorf("the runtime was called %s for the round, want nothing but the sweep's reads and one ReplacePod: %v", call.Method, asked)

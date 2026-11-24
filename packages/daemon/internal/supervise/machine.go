@@ -269,6 +269,21 @@ type Claim struct {
 	// named (the outbox's settleKept).
 	DeliveredRows []int64
 	Locator       *runtime.Locator
+	// WorkingRepository is the repository the process Locator names works: the one whose
+	// workspace that process was started in, which the working copy line of every phase task sent
+	// to it names (Deps.WorkingCopy). The launch that records the process records this in the same
+	// write (launchTries, workingRepository): the repository the place the process runs in was
+	// built from, where the runtime's processes share one (runtime.Runtime.PodRepository), since a
+	// role launched into a live pod works that pod's clone whatever repository its spec names; and
+	// otherwise the repository of the spec the process was started with. A correction of the
+	// issue's repository moves the record and not this: the process goes on in the workspace it was
+	// started in until its next launch, a tmux pane until it is launched again and a pod's roles
+	// until their update round replaces the pod. It goes with the locator (letGo), so it always
+	// describes the process the locator names. nil is a claim no launch of this release recorded
+	// one for — a claim that records no process, or whose process an earlier release launched —
+	// and the zero Repository is a launch that named no repository. The store keeps it in
+	// claims.working_repository, read only for the incarnation it was recorded for.
+	WorkingRepository *ghrepo.Repository
 	// Enrollment is the secrets broker's record of the claim's running process, when the runtime
 	// enrolls pods: the enrollment id, and the incarnation it was made for. It is
 	// revoked and cleared wherever the process is let go (letGo), so a record for another
@@ -1081,12 +1096,15 @@ type Deps struct {
 	DesignNews func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
 	// WorkingCopy is what a phase worker's held task (a delivery that names a phase) says now of
 	// the working copy its role works: its text and the news it carries (Delivery.News), with the
-	// task's working copy line written again from the issue's record at the moment the task is
-	// about to be sent, in the text and in the start's own text the news follows. The task was
-	// composed when its start was written and is held until a send, and the issue's repository can
-	// move in between (a correction of it), which moves the directory the line names; a task with
-	// no such line is answered as it is. It is asked at every send of such a task (startSend), the
-	// one place a prompt goes out, and nil leaves every task as it was queued.
+	// task's working copy line written again, at the moment the task is about to be sent, from the
+	// repository the claim's process works (c.WorkingRepository), in the text and in the start's
+	// own text the news follows. The task was composed from the issue's record when its start was
+	// written and is held until a send, and neither that record nor the process need stand where
+	// they stood then: the record follows a correction of the issue's repository at once, while
+	// the process goes on in the workspace it was started in until its next launch, and that
+	// launch moves the line. A claim that records no working repository, and a task with no such
+	// line, are answered as they are. It is asked at every send of such a task (startSend), the one
+	// place a prompt goes out, and nil leaves every task as it was queued.
 	WorkingCopy func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
 	// TreeClosable answers whether the operator may close this claim's tree: false refuses the
 	// close, and an error is the read itself failing, which the caller sees as a failure rather
@@ -3120,7 +3138,7 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 				return nil
 			}
 		}
-		loc, way, err := m.start(starting, token)
+		loc, way, specRepository, err := m.start(starting, token)
 		// A start cut short by its own context was refused by nothing, so it records no cause. The
 		// cause is a launcher's sentence, which can come from the pod, so the claim keeps it as the
 		// daemon keeps a far side's text (storetext.FarSideText, the rule leakguard.Cause applies):
@@ -3136,9 +3154,11 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			// longer what anyone must be told of.
 			m.stopUnconfirmed = false
 			// The mark of a start that had Oh My Pi resume the session by its id, which start set
-			// (Claim.AgentResumeGeneration), reaches the store in this one write with the process
-			// it names, so a claim that records that process always records the mark with it.
+			// (Claim.AgentResumeGeneration), and the repository the process works reach the store in
+			// this one write with the process they name, so a claim that records that process always
+			// records them with it.
 			m.claim.Locator = &loc
+			m.claim.WorkingRepository = m.workingRepository(starting, loc, specRepository)
 			m.leftPodRoundAt(loc)
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
@@ -3467,7 +3487,9 @@ const (
 	wayNone resumeWay = "none"
 )
 
-// start launches the claim's process for this try, and answers how it began it (resumeWay):
+// start launches the claim's process for this try, and answers how it began it (resumeWay) and
+// the repository of the spec it started that process with, which the launch records as the one
+// the process works where the place it runs in names none (workingRepository):
 //
 //   - A claim that records a session file resumes that file.
 //   - A claim that records a session and no file resumes the session by its id alone
@@ -3502,27 +3524,27 @@ const (
 // another claim's session. A resume by the id runs under the id and under the id the file it finds
 // is named for (holdByID). One another claim holds is refused here, as a launch failure the caller
 // charges, and nothing starts under it.
-func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, resumeWay, error) {
+func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, resumeWay, ghrepo.Repository, error) {
 	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {
-		return runtime.Locator{}, wayNone, err
+		return runtime.Locator{}, wayNone, ghrepo.Repository{}, err
 	}
 	switch {
 	case m.claim.SessionFile == "" && m.claim.Session == "":
 		loc, err := m.spawn(ctx, spec)
-		return loc, wayNone, err
+		return loc, wayNone, spec.Repository, err
 	case m.claim.SessionFile == "" && runtime.Of(spec.Backend) == runtime.BackendClaude:
 		return m.startFresh(ctx, token, SessionLossClaudeNoFile, nil)
 	case m.claim.SessionFile == "":
 		return m.resumeByID(ctx, token, spec)
 	}
 	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
-		return runtime.Locator{}, wayFile, err
+		return runtime.Locator{}, wayFile, ghrepo.Repository{}, err
 	}
 	spec.ResumeSessionFile = m.claim.SessionFile
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
 	if !errors.Is(err, runtime.ErrSessionFileMissing) {
-		return loc, wayFile, err
+		return loc, wayFile, spec.Repository, err
 	}
 	return m.startFresh(ctx, token, SessionLossGone, err)
 }
@@ -3554,9 +3576,9 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, res
 // The mark is set only while it is 0, so it names one generation. A try through a pod since
 // replaced by one whose launcher can make the lookup resumes by the id through that launcher and
 // leaves the mark as it is, for that start's registration or a forget to clear.
-func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.SpawnSpec) (runtime.Locator, resumeWay, error) {
+func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.SpawnSpec) (runtime.Locator, resumeWay, ghrepo.Repository, error) {
 	if err := m.holdByID(ctx, m.claim.Session); err != nil {
-		return runtime.Locator{}, wayID, err
+		return runtime.Locator{}, wayID, ghrepo.Repository{}, err
 	}
 	spec.ResumeSession = m.claim.Session
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
@@ -3564,21 +3586,21 @@ func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.Spa
 	case errors.Is(err, runtime.ErrSessionFileMissing):
 		return m.startFresh(ctx, token, SessionLossGone, err)
 	case !errors.Is(err, runtime.ErrSessionLookupUnavailable):
-		return loc, wayID, err
+		return loc, wayID, spec.Repository, err
 	case m.claim.AgentResumeGeneration != 0:
 		return m.startFresh(ctx, token, SessionLossNotResumedByID, err)
 	}
 	spec, err = m.spawnSpec(ctx, token, true)
 	if err != nil {
-		return runtime.Locator{}, wayAgentLookup, err
+		return runtime.Locator{}, wayAgentLookup, ghrepo.Repository{}, err
 	}
 	spec.ResumeSession, spec.ResumeByAgent = m.claim.Session, true
 	loc, err = m.deps.Runtime.Resume(ctx, m.previous, spec)
 	if err != nil {
-		return loc, wayAgentLookup, err
+		return loc, wayAgentLookup, spec.Repository, err
 	}
 	m.claim.AgentResumeGeneration = m.claim.Generation
-	return loc, wayAgentLookup, nil
+	return loc, wayAgentLookup, spec.Repository, nil
 }
 
 // spawnSpec is the launch's spec: what the daemon builds for this claim, with what only the
@@ -3627,7 +3649,7 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 // for the launches that follow the forget, which Machine.lostCause names and says until when, so
 // each of them is built for a claim that knows its session was forgotten, and the agent that comes
 // up is told in its own prompt rather than left to infer it from an empty transcript.
-func (m *Machine) startFresh(ctx context.Context, token string, cause SessionLoss, answer error) (runtime.Locator, resumeWay, error) {
+func (m *Machine) startFresh(ctx context.Context, token string, cause SessionLoss, answer error) (runtime.Locator, resumeWay, ghrepo.Repository, error) {
 	line, kept := forgetLine(cause), ""
 	if answer != nil {
 		kept = m.logFarSideError(ctx, slog.LevelWarn, line, answer, "session", m.claim.Session, "sessionFile", m.claim.SessionFile)
@@ -3642,10 +3664,42 @@ func (m *Machine) startFresh(ctx context.Context, token string, cause SessionLos
 	}
 	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {
-		return runtime.Locator{}, wayNone, err
+		return runtime.Locator{}, wayNone, ghrepo.Repository{}, err
 	}
 	loc, err := m.spawn(ctx, spec)
-	return loc, wayNone, err
+	return loc, wayNone, spec.Repository, err
+}
+
+// workingRepository is the repository the process a launch started at loc works, which the
+// launch records with that process (Claim.WorkingRepository): the repository the place loc names
+// was built from, where the runtime's processes share one (runtime.Runtime.PodRepository), and
+// otherwise launched, the repository of the spec the process was started with (start). The place
+// comes first because a role launched into a live pod works that pod's clone whatever repository
+// its spec names, as a launch between a correction of the issue's repository and the update round
+// that replaces the pod does, and a pod's fetch never changes, so its answer stands for as long as
+// loc names that pod. A runtime whose processes share no place, tmux, answers "", and so does a pod
+// the runtime's store does not hold; the process then works the workspace its spec named. An
+// answer the runtime could not give, or one that is no repository, says nothing of the place, so
+// the launch records the spec's repository and says so at Warn, naming both.
+func (m *Machine) workingRepository(ctx context.Context, loc runtime.Locator, launched ghrepo.Repository) *ghrepo.Repository {
+	named, err := m.deps.Runtime.PodRepository(ctx, runtime.Known{Claim: m.claim.Token, Locator: &loc})
+	if err == nil && named == "" {
+		return &launched
+	}
+	var place ghrepo.Repository
+	if err == nil {
+		place, err = ghrepo.Parse("the repository the launched process's place names", named)
+	}
+	if err != nil {
+		specRepository := ""
+		if !launched.IsZero() {
+			specRepository = launched.String()
+		}
+		m.log.Warn("supervise: the runtime did not say which repository the place of the launched process was built from; the claim records the repository its launch named",
+			"incarnation", loc.Incarnation, "podRepository", named, "specRepository", specRepository, "error", err)
+		return &launched
+	}
+	return &place
 }
 
 // forgetLine is the warning line of a forget for cause (startFresh). For a session no store holds
@@ -4279,10 +4333,11 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // next process is sent the task anew. What the runtime last reported of that process goes with it
 // too, and what was charged for its death with that (processGone, Claim.DeathCharged): the claim
 // records no process for a report to be about, and the one the next launch starts has been
-// reported nothing and charged nothing. The clear of the charge reaches the store with the write
-// every caller of this makes of the claim it leaves — the launch that records the new process,
-// the suspension, the retirement, the failure — so no stored charge ever outlives the process it
-// was made for.
+// reported nothing and charged nothing. So does the repository that process works
+// (Claim.WorkingRepository), which describes no process once the claim records none. The clear
+// of the charge and of that repository reaches the store with the write every caller of this
+// makes of the claim it leaves — the launch that records the new process, the suspension, the
+// retirement, the failure — so neither outlives in the store the process it was made for.
 //
 // Before any of that, what the process ended is recorded for cause, the caller's reading of why
 // it lets the process go (recordEnd): the turn it was in, whether that turn was the pending
@@ -4320,6 +4375,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	if m.claim.Locator != nil {
 		m.previous, m.claim.Locator = m.claim.Locator, nil
 	}
+	m.claim.WorkingRepository = nil
 }
 
 // judge acts on what a probe or the sweep says about the claim's process. alive is what a live
@@ -4917,6 +4973,10 @@ func copyClaim(c Claim) Claim {
 	if c.Locator != nil {
 		loc := *c.Locator
 		c.Locator = &loc
+	}
+	if c.WorkingRepository != nil {
+		repo := *c.WorkingRepository
+		c.WorkingRepository = &repo
 	}
 	if c.Enrollment != nil {
 		e := *c.Enrollment

@@ -40,9 +40,11 @@ func (s Standing) String() string { return s.lines + s.owners }
 //
 // The line a task is composed with is the record's at the composing, and the task is kept as
 // composed (record.PhaseRow.EntryTask, the claim's pending delivery) and sent later. So every send
-// writes the line again from the record as it stands then (Engine.WorkingCopyAtSend), and the
-// two are the one writer's words: a correction of the issue's repository between the two
-// (record.Store.CorrectIssueRepository) moves the directory, and the role is told the new one.
+// writes the line again for the process the task goes to (Engine.WorkingCopyAtSend), from the
+// repository that process was launched on (supervise's Claim.WorkingRepository), and the two are
+// the one writer's words: a correction of the issue's repository
+// (record.Store.CorrectIssueRepository) moves the record at once and the process only at its next
+// launch, so the role is told the workspace it is in, and its next launch moves the directory.
 func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 	where := ""
 	if dir != nil {
@@ -65,13 +67,14 @@ func workingCopyOpening(key string) string {
 const workingCopyDirectory = ", directory "
 
 // WorkingCopyAtSend is task, a worker's task as this package composed it (task, resumeText) and
-// as it is kept until its send, with its working copy line written again from issue, the record
-// as the send reads it: WorkingCopy's line under the directory this engine names
-// (Config.WorkspaceDir), in the place of the line the task holds (workingCopyLine). It is the one
-// place a kept task's line is found and replaced, and the daemon asks it at every send of a
-// worker's task (supervise's Deps.WorkingCopy). A task that holds no working copy line of issue's
-// branch, as a task a release before that line composed holds none, is answered as it is, and so
-// is a task whose line is already the one the record gives.
+// as it is kept until its send, with its working copy line written again from issue, an issue
+// value whose repository is the one the process the task goes to works (the daemon's workingCopy):
+// WorkingCopy's line under the directory this engine names (Config.WorkspaceDir), in the place of
+// the line the task holds (workingCopyLine). It is the one place a kept task's line is found and
+// replaced, and the daemon asks it at every send of a worker's task (supervise's
+// Deps.WorkingCopy). A task that holds no working copy line of issue's branch, as a task a release
+// before that line composed holds none, is answered as it is, and so is a task whose line is
+// already the one issue gives.
 func (e *Engine) WorkingCopyAtSend(task string, issue record.Issue) string {
 	start, end, ok := workingCopyLine(task, issue.Key)
 	if !ok {

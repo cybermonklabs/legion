@@ -598,8 +598,8 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 //
 // The row's EntryTask is that work: the text the transition composed and wrote in the same
 // transaction as the number it raised (enter), so it is sent as it stands, but for its working
-// copy line, which every send of a worker's task writes again from the record as it stands then
-// (WorkingCopyAtSend).
+// copy line, which every send of a worker's task writes again for the repository the process it
+// goes to works (WorkingCopyAtSend).
 //
 // A row carrying no task is sent the phase's resume task instead (ResumeTask), which says to
 // carry the work on rather than beginning it. Two rows are in that state: one the upgrade to the

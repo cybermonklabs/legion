@@ -25,6 +25,8 @@ body: |-
   sequence) writes nothing either, and the daemon owes that issue the same read, so the record ends
   on what Dispatch resolves then. The one-time rename pass writes a configured pair's new name on a
   saved bundle too, so the bundle is still restored once the pair is removed. A worker's task names
-  in its `Working copy:` line the directory of the repository the record holds when the task is
-  sent, not when it was written, so a task held across a correction, and one sent again after it,
-  names the new repository's workspace.
+  in its `Working copy:` line the directory of the repository the process it is sent to was started
+  on, written at each send and recorded at each launch: after a correction a tmux pane goes on in
+  the old repository's workspace until it is launched again, and a pod's roles until the update
+  round's relaunch, so the line names the old workspace until that launch and the new one after
+  it, and a role launched into a live pod is told that pod's workspace.

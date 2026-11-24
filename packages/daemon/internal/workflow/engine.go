@@ -177,9 +177,9 @@ type Config struct {
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
 	// WorkspaceDir is the directory the runtime starts an issue's role processes in, the issue's
 	// working copy, which the task of each start and resume of a phase's worker names (the working
-	// copy line of task and of resumeText), and which every send of such a task names again from
-	// the record as the send reads it (Engine.WorkingCopyAtSend), so a task kept across a
-	// correction of the issue's repository names the directory of the repository it moved to. The
+	// copy line of task and of resumeText), and which every send of such a task names again for the
+	// repository the process it goes to works (Engine.WorkingCopyAtSend), so a task kept across a
+	// correction of the issue's repository names the workspace that process is in. The
 	// daemon reads it from the runtime it runs (engineWorkspaceDir in internal/daemon), the one
 	// place each runtime puts that directory. Nil, or "" for an issue, names no directory, and the
 	// task names the branch alone: an API-only daemon and every test that runs no runtime.

@@ -241,6 +241,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	failedAt := projectedAt.Add(-10 * time.Minute)
 	queuedAt := projectedAt.Add(-30 * time.Minute)
 	openedAt := projectedAt.Add(-20 * time.Minute)
+	working := ghrepo.MustParse("acme/widgets")
 	// The claim record with every field set, on the root rather than on the child, so the child's
 	// view carries no worker of its own and the two documents are read apart.
 	current := supervise.Claim{
@@ -251,11 +252,12 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Handshake:        supervise.EntryHandshake{Entry: 7, Generation: 3, QueuedAt: queuedAt, ConfirmedAt: openedAt},
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
-		Locator:    locator,
-		Enrollment: &supervise.Enrollment{ID: "enr_42", Incarnation: podUID + "/5"},
-		State:      supervise.StateFailed,
-		Budgets:    supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
-		Failure:    "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
+		Locator:           locator,
+		WorkingRepository: &working,
+		Enrollment:        &supervise.Enrollment{ID: "enr_42", Incarnation: podUID + "/5"},
+		State:             supervise.StateFailed,
+		Budgets:           supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
+		Failure:           "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
 		PendingCause:   supervise.CauseDied,
 		LeakCheckCause: "the shared public leak check could not be installed: the tarball of example-org/deployment at leak-check-v3 holds no leak-check directory",
 		Pending: &supervise.Delivery{
