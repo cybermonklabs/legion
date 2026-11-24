@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -276,7 +275,7 @@ func TestOwnPendingAppendsKeepTheRoomAtTheHead(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "The quick brown fox\n")
 	// The room is resident, so its cursor gates the transaction's appends.
-	if _, err := service.Text(context.Background(), artifactID); err != nil {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); err != nil {
 		t.Fatalf("load the room: %v", err)
 	}
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {

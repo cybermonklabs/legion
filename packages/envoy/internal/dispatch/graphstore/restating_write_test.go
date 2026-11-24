@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -34,7 +33,7 @@ func TestARestatingWriteKeepsTheValuesItDoesNotOwn(t *testing.T) {
 	at := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
 
-	restated, _ := CommentFacts(nil, "restated-comment", who, at, NoEvent, "", "")
+	restated, _ := CommentFacts(nil, "restated-comment", who, at, NoEvent, "", "", "", nil)
 	if !restated.Restates {
 		t.Fatal("CommentFacts writes a comment's node that does not restate it: a write of it again would move the state another write gave it")
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
@@ -218,7 +219,7 @@ func roleRouteDispatchMux(
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	broker := events.NewBroker()
 	caller := identity.HeaderIdentity{Header: rigUserHeader, People: people}
-	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: caller, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
+	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: caller, Origins: text.NewOrigins("https://dispatch.example"), Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut the document service down: %v", err)

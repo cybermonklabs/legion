@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -572,6 +571,7 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
 	var input inboxDismissRequest
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)

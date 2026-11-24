@@ -20,7 +20,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -797,7 +796,7 @@ func Outgoing(ctx context.Context, q Queryer, who model.Actor, artifactID string
 		where e.from_kind = 'artifact' and e.from_id = $1 and e.kind = 'mentions' and e.to_kind = any($2)
 		  and e.to_kind not in `+itemBlockKinds+`
 		  and (e.to_kind <> 'block' or d.node_id is not null)
-		  and `+VisibleKind("artifact", `(select s.ref_key from artifacts s where s.id = $1::text::uuid)`, "$3")+`
+		  and `+VisibleKind("artifact", artifactRefKeyOf(`$1::text::uuid`), "$3")+`
 		  and `+VisibleEnd("e.to_kind", "e.to_id", true, "$3")+`
 		  and (e.to_kind <> 'block' or `+VisibleKind("artifact", "a.ref_key", "$3")+`)
 		order by e.to_kind, e.to_id, v.number

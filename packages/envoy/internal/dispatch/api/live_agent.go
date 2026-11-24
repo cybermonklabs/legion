@@ -82,6 +82,7 @@ func (s *server) startAgentSubscription(ctx context.Context, stream liveStreamer
 // relayAgentConversation is one agent subscription's whole life: it returns once the subscription
 // has ended, on its own or because ctx did.
 func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer, sub, sessionID string) {
+	reader, err := s.readerFor(ctx, stream.Caller())
 	source := s.deps.AgentStream
 	queue := newAgentStreamQueue()
 	// queue.overflow closes once a frame would take the view past its budget; dropped once the
@@ -127,6 +128,17 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 			return true
 		}
 		return stream.SendWait(ctx, liveAgentFrame(sub, event, data)) == nil
+	}
+	// stillReads resolves what the caller sees again and asks the rule again
+	// (sessionContentHiddenFrom), and reports whether the view goes on: a session the caller may no
+	// longer read is told nothing more, and the view ends.
+	stillReads := func() bool {
+		resolved, err := s.readerFor(ctx, stream.Caller())
+		if err == nil {
+			reader = resolved
+			hidden, err = s.sessionContentHiddenFrom(ctx, reader, sessionID)
+		}
+		return s.agentViewGoesOn(ctx, stream, sub, hidden, err, stopRelay)
 	}
 	// answer says whether anyone is listening on the session's control subject, which says whether
 	// it can stream at all - every plugin release that can answers, and one that predates the live
@@ -207,6 +219,20 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		}
 		queue.release(size)
 	}
+}
+
+// agentViewReadsWhatever reports whether the content rule (access.SessionContentClause) answers
+// reader's view of session the same whatever the database holds, so the re-ask before a batch of
+// its frames reads nothing:
+//
+//   - the server's viewer (All), which the rule passes first;
+//   - the viewer's own session, which the rule passes next.
+//
+// An open viewer resolved while no project was private is not one of them: the rule passes it
+// only while that still holds, which the re-ask reads (anyProjectPrivateNow).
+func agentViewReadsWhatever(reader model.Actor, session string) bool {
+	viewer := reader.Viewer
+	return viewer != nil && (viewer.All || (viewer.Session != "" && viewer.Session == session))
 }
 
 // endAgentAfterFailure ends a view whose relay call failed with an ended frame (dropped), so its

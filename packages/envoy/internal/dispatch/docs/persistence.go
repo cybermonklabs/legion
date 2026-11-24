@@ -14,7 +14,6 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
-
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -194,14 +193,14 @@ func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Versio
 	return p.head(ctx, rooms, room)
 }
 
-// DocumentStamp is the room's DocumentStamp now, read through the pool that owns loads, as Head
-// reads the head.
-func (p *PgVersioned) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
+// DocumentStamp is the room's DocumentStamp now for the reader whose viewer viewer is, read
+// through the pool that owns loads, as Head reads the head (readDocumentStamp).
+func (p *PgVersioned) DocumentStamp(ctx context.Context, room string, viewer any) (DocumentStamp, error) {
 	rooms, err := p.store.Pool.Rooms()
 	if err != nil {
 		return DocumentStamp{}, err
 	}
-	return readDocumentStamp(ctx, rooms, room)
+	return readDocumentStamp(ctx, rooms, room, viewer)
 }
 
 // AppendUpdate validates and stores one incremental V1 update as content: a batch of one

@@ -29,6 +29,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
+// restrictedCaller reports whether the caller is a restricted member, read from the reader the
+// route's gate (withinProjectScope, withinReadScope) resolved for this request.
+func (s *server) restrictedCaller(w http.ResponseWriter, r *http.Request) (restricted, ok bool) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return false, false
+	}
+	return reader.Viewer != nil && reader.Viewer.Restricted, true
+}
+
 // noteActingAgent names the agent behind a decision on this request's access-log line: the
 // session the act names, and otherwise the personal token, by its owner, which is what the line
 // already says of a token that named no session (accesslog.KindToken). A browser's actor names

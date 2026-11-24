@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -121,12 +121,17 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		}
 		// The caller is resolved once a request: every layer below and the handler read this.
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
-		// Who asks: the acting person decides which items a prefix may name at all, since an
-		// item reserved for another author is no candidate (refs.ResolvePrefix), and whether
-		// a direct message's first line is listed among the candidates: a person reads any,
-		// and a bearer the conversations the session it names in ?session= is in, the claim
-		// the message routes already read.
-		who := actor.Recorded()
+		// Who asks: the reader decides which items a prefix may name at all, since an item
+		// reserved for another author, or of a project the reader does not see, is no candidate
+		// (refs.ResolvePrefix), and whether a direct message's first line is listed among the
+		// candidates: a person reads any, and a bearer the conversations the session it names in
+		// ?session= is in, the claim the message routes already read. The reader is resolved once
+		// a request, too: the handler's readerOf reads this one.
+		who, ok := s.readerOf(w, r)
+		if !ok {
+			return
+		}
+		r = r.WithContext(withReader(r.Context(), who))
 		viewer := refs.Viewer{Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session"))}
 		if id != "" {
 			scope := refs.Scope{}
@@ -142,7 +147,7 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 			// blocks of the document the {id} names, read under the id the step above left
 			// there. An {id} that is no document's names no blocks to match among, and the
 			// route answers for that {id} rather than for its block.
-			document, err := s.documentRefKey(r.Context(), r.PathValue("id"))
+			document, err := s.documentRefKey(r.Context(), who, r.PathValue("id"))
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
@@ -250,12 +255,13 @@ func itemNotFound(notFound, prefix string) string {
 // The id is the one this layer canonicalized a step earlier (canonicalizeUUIDPath), so it is
 // sent as it stands, and the parse here decides one thing only: whether the value is an id at
 // all, since a value that is none names no document.
-func (s *server) documentRefKey(ctx context.Context, id string) (string, error) {
+func (s *server) documentRefKey(ctx context.Context, who model.Actor, id string) (string, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return "", nil
 	}
 	var refKey string
-	if err := s.deps.Store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, id).Scan(&refKey); err != nil {
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid and `+access.DocumentClause("artifacts", "$2"),
+		id, refs.VisibilityArg(who)).Scan(&refKey); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil
 		}

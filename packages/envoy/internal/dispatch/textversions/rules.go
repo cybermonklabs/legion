@@ -108,6 +108,8 @@ var unchangingTypes = map[string]string{
 	"result.retracted":                          "a result is not an issue, comment, message or ask",
 	"project.created":                           "a project is not an issue, comment, message or ask",
 	"project.updated":                           "a project is not an issue, comment, message or ask",
+	"project.access_changed":                    "a project's access is not an issue, comment, message or ask",
+	"access_group.changed":                      "an access group is not an issue, comment, message or ask",
 	"settings.architecture_source.updated":      "a setting is not an issue, comment, message or ask",
 	"settings.project_default_assignee.updated": "a setting is not an issue, comment, message or ask",
 	"settings.repo_project.updated":             "a setting is not an issue, comment, message or ask",

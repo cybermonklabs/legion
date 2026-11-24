@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/reearth/ygo/crdt"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -49,7 +48,7 @@ func TestThreeBrowsersAndTheAPIEditOneRoomAtOnce(t *testing.T) {
 		}
 		return typed() > before
 	})
-	text, err := service.Text(context.Background(), artifactID)
+	text, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the document: %v", err)
 	}

@@ -13,7 +13,6 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -617,7 +616,7 @@ func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor
 
 func documentText(t *testing.T, service *Service, artifactID string) string {
 	t.Helper()
-	text, err := service.Text(context.Background(), artifactID)
+	text, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read the document: %v", err)
 	}

@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -221,7 +220,7 @@ func (s *server) resumeOwedDeliveries(ctx context.Context) error {
 // mention sender, whose lane for that session sends it once the outbox has sent that event.
 func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) error {
 	if owed.commentID != "" {
-		comment, err := s.loadComment(ctx, s.deps.Store.Pool, owed.commentID)
+		comment, err := s.loadComment(ctx, s.deps.Store.Pool, everyReader, owed.commentID)
 		if err != nil {
 			return err
 		}
@@ -229,6 +228,7 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 		if err != nil {
 			return err
 		}
+		ctx = withReader(ctx, author)
 		_, held, err := s.deliverResolvedCommentMention(ctx, comment, created,
 			ResolvedMention{Target: owed.target, Delivery: owed.delivery}, comment.Author,
 			attemptClaim{attempt: owed.attempt}, s.newTakeoverRetry())
@@ -237,7 +237,7 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 		}
 		return err
 	}
-	message, err := s.loadMessage(ctx, s.deps.Store.Pool, "", owed.messageID)
+	message, err := s.loadMessage(ctx, s.deps.Store.Pool, everyReader, "", owed.messageID)
 	if err != nil {
 		return err
 	}
@@ -421,7 +421,7 @@ func (s *server) settleSupersededMentions(ctx context.Context) error {
 // since, or that settled meanwhile, is left as it stands. The comment's author is the actor, as
 // it is for every other attempt this sweep settles (settleUndeliverableMention).
 func (s *server) settleSupersededMention(ctx context.Context, attempt model.CommentDelivery) (bool, error) {
-	comment, err := s.loadComment(ctx, s.deps.Store.Pool, attempt.CommentID)
+	comment, err := s.loadComment(ctx, s.deps.Store.Pool, everyReader, attempt.CommentID)
 	if err != nil {
 		return false, err
 	}
@@ -470,7 +470,7 @@ func (s *server) undeliverableDeliveries(ctx context.Context) ([]undeliverableAt
 // whether it did: one someone claimed or settled meanwhile, or whose cause no longer holds under
 // that lock - a comment that holds its mention again - is left as it is.
 func (s *server) settleUndeliverableMention(ctx context.Context, undeliverable undeliverableAttempt) (bool, error) {
-	comment, err := s.loadComment(ctx, s.deps.Store.Pool, undeliverable.commentID)
+	comment, err := s.loadComment(ctx, s.deps.Store.Pool, everyReader, undeliverable.commentID)
 	if err != nil {
 		return false, err
 	}

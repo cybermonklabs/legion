@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"math/rand/v2"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // randomSeed is the one seed every draw of this command comes from, and baseTime the one instant
@@ -20,9 +22,13 @@ const randomSeed = 20260325
 var baseTime = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 // serverURL is the one Dispatch server address the seeded text writes its mentions against.
-// text.ExtractAt reads a dashboard URL only against the server it is given, so every mention the
-// seed writes and every mention its indexing finds are read against this one address.
+// text.ExtractAt reads a dashboard URL only against the origins it is given, so every mention the
+// seed writes and every mention its indexing finds are read against this one address
+// (seedOrigins).
 const serverURL = "https://dispatch.seed.invalid"
+
+// seedOrigins is serverURL as the one origin the seed's text is read with.
+var seedOrigins = text.NewOrigins(serverURL)
 
 // newRandom is the one random source of a run. math/rand/v2's PCG is a specified algorithm with a
 // specified stream, so the same two words give the same sequence on every build and every host:

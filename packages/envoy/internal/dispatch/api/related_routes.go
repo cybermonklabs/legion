@@ -7,10 +7,11 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // relatedExcludeLimit is the most issues one no-write related read may leave out. A read that
@@ -104,13 +105,20 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", project))
 		return
 	}
-	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
+	// The reader the check reads as: a project it does not see answers as a key nobody holds, an
+	// exclusion names its issues as it may read them, and every search the check makes offers
+	// only what it may read (relatedInput.who).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, who, project); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	request.ExcludeIssue = strings.TrimSpace(request.ExcludeIssue)
 	if request.ExcludeIssue != "" {
-		if err := s.requireProjectIssue(r, project, request.ExcludeIssue); err != nil {
+		if err := s.requireProjectIssue(r, who, project, request.ExcludeIssue); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -121,7 +129,7 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 			excluded = append(excluded, key)
 		}
 	}
-	if err := s.requireProjectIssues(r, project, excluded); err != nil {
+	if err := s.requireProjectIssues(r, who, project, excluded); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -131,6 +139,7 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 	// before the response is written, which is where every tree field is filled.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(r.Context(), relatedInput{
+		who:           who,
 		project:       project,
 		text:          request.checkText(),
 		title:         request.Title,
@@ -145,13 +154,15 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 }
 
 // requireProjectIssue refuses an exclude_issue that is not an issue of project, as a create
-// refuses a parent it cannot find or that sits in another project.
-func (s *server) requireProjectIssue(r *http.Request, project, key string) error {
+// refuses a parent it cannot find or that sits in another project. An issue of a project who does
+// not see is one it cannot find (access.ProjectClause).
+func (s *server) requireProjectIssue(r *http.Request, who model.Actor, project, key string) error {
 	if !issueKeyPattern.MatchString(key) {
 		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT", "exclude_issue %q is not an issue key", key)
 	}
 	var issueProject string
-	err := s.deps.Store.Pool.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&issueProject)
+	err := s.deps.Store.Pool.QueryRow(r.Context(), `select project_key from issues where key = $1 and `+
+		access.ProjectClause("project_key", "$2"), key, refs.VisibilityArg(who)).Scan(&issueProject)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT", "exclude_issue issue %s not found", key)
 	}
@@ -168,7 +179,7 @@ func (s *server) requireProjectIssue(r *http.Request, project, key string) error
 // holding anything that is not an issue of project. Every key is read in one statement, so a
 // list of fifty costs one round trip, and the refusal names the first key the project does not
 // hold rather than the whole list, as the single exclude_issue's does.
-func (s *server) requireProjectIssues(r *http.Request, project string, keys []string) error {
+func (s *server) requireProjectIssues(r *http.Request, who model.Actor, project string, keys []string) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -185,8 +196,9 @@ func (s *server) requireProjectIssues(r *http.Request, project string, keys []st
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
 		select coalesce(array_agg(k.key order by k.ordinality), '{}')
 		  from unnest($1::text[]) with ordinality k(key, ordinality)
-		 where not exists (select 1 from issues i where i.key = k.key and i.project_key = $2)
-	`, keys, project).Scan(&missing); err != nil {
+		 where not exists (select 1 from issues i where i.key = k.key and i.project_key = $2
+		                   and `+access.ProjectClause("i.project_key", "$3")+`)
+	`, keys, project, refs.VisibilityArg(who)).Scan(&missing); err != nil {
 		return err
 	}
 	if len(missing) > 0 {
@@ -197,10 +209,11 @@ func (s *server) requireProjectIssues(r *http.Request, project string, keys []st
 }
 
 // relatedChecksReportQuery counts the related_checks rows the filters select ($1 project, $2
-// from, $3 to, $4 source kind; each null for no filter). The percentiles are percentile_disc,
-// which ignores nulls like every aggregate here, so each is a time some check took rather than
-// one interpolated between two checks.
-const relatedChecksReportQuery = `
+// from, $3 to, $4 source kind; each null for no filter), of the projects the reader whose
+// visibility argument is $5 sees. The percentiles are percentile_disc, which ignores nulls like
+// every aggregate here, so each is a time some check took rather than one interpolated between
+// two checks.
+var relatedChecksReportQuery = `
 with checks as (
   select source_kind, outcome, search, reason, keyword_ms, total_ms
     from related_checks
@@ -256,7 +269,8 @@ var relatedSourceKinds = map[string]bool{"issue": true, "ask": true, "decision_b
 // related_checks come in one statement and OtherProjectOffers, which write_suggestions holds, in
 // a second one over the same window and filters (relatedChecksOffersQuery).
 func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -283,6 +297,7 @@ func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 	report.From, report.To = from, to
 
 	keyword, total := &report.KeywordMS, &report.TotalMS
+	seen := refs.VisibilityArg(who)
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), relatedChecksReportQuery,
 		report.Project, report.From, report.To, report.SourceKind,
 	).Scan(

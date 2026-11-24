@@ -14,7 +14,7 @@ import (
 // edge kind, and when and in which version of its document the source block first held it. A link
 // counts only while both of its blocks are current blocks of their documents.
 func (s *server) getBlockLinks(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}

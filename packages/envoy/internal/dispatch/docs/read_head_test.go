@@ -202,7 +202,7 @@ func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoo
 	})
 
 	before := pair.loads.loads.Load()
-	text, token, err := pair.reader.TextWithToken(ctx, pair.artifactID)
+	text, token, err := pair.reader.TextWithToken(ctx, serverReader, pair.artifactID)
 	if err != nil || !strings.Contains(text, written) {
 		t.Fatalf("the reader's read right after the writer's edit = %q, %v; want the edit, which the store holds", text, err)
 	}
@@ -213,7 +213,7 @@ func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoo
 		t.Fatalf("docTree on the reader right after the writer's edit: %v; want the block holding the edit", err)
 	}
 	if err := pair.joinedRead(t, func(ctx context.Context) error {
-		joinedText, err := pair.reader.Text(ctx, pair.artifactID)
+		joinedText, err := pair.reader.Text(ctx, serverReader, pair.artifactID)
 		if err == nil && !strings.Contains(joinedText, written) {
 			t.Errorf("the reader's joined read right after the writer's edit = %q; want the edit", joinedText)
 		}
@@ -243,14 +243,14 @@ func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoo
 		return !roomBehind(t, pair.reader, pair.artifactID)
 	})
 	before = pair.loads.loads.Load()
-	if text, err := pair.reader.Text(ctx, pair.artifactID); err != nil || !strings.Contains(text, written) {
+	if text, err := pair.reader.Text(ctx, serverReader, pair.artifactID); err != nil || !strings.Contains(text, written) {
 		t.Fatalf("the reader's read once caught up = %q, %v; want the edit", text, err)
 	}
 	if _, err := pair.reader.BlockForQuote(ctx, pair.artifactID, written); err != nil {
 		t.Fatalf("docTree on the reader once caught up: %v", err)
 	}
 	if err := pair.joinedRead(t, func(ctx context.Context) error {
-		_, err := pair.reader.Text(ctx, pair.artifactID)
+		_, err := pair.reader.Text(ctx, serverReader, pair.artifactID)
 		return err
 	}); err != nil {
 		t.Fatalf("the reader's joined read once caught up: %v", err)
@@ -284,7 +284,7 @@ func TestAReadOfARoomBehindTheHeadHoldingItsOwnUpdateReadsTheStoreAndThatUpdate(
 	})
 	land := pair.typeIntoTheRoomBehindTheHead(t, typed)
 
-	text, err := pair.reader.Text(ctx, pair.artifactID)
+	text, err := pair.reader.Text(ctx, serverReader, pair.artifactID)
 	if err != nil {
 		t.Fatalf("the reader's read while its room holds an unstored keystroke: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestAReadOfARoomBehindTheHeadHoldingItsOwnUpdateReadsTheStoreAndThatUpdate(
 	// The append lands once the lock is let go, and the store, which then holds the keystroke and
 	// the writer's edit both, is the whole of what the next read of the room behind the head takes.
 	land()
-	text, err = pair.reader.Text(ctx, pair.artifactID)
+	text, err = pair.reader.Text(ctx, serverReader, pair.artifactID)
 	if err != nil {
 		t.Fatalf("the reader's read once its append landed: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestVerifyMarkOnARoomBehindTheHeadHoldingItsOwnUpdateFindsTheStoredMark(t *
 	if waited := time.Since(started); waited >= pair.reader.markWait {
 		t.Fatalf("VerifyMark took %v, its whole MarkWait: it waited rather than read the store", waited)
 	}
-	if text, err := pair.reader.Text(context.Background(), pair.artifactID); err != nil || !strings.Contains(text, typed) {
+	if text, err := pair.reader.Text(context.Background(), serverReader, pair.artifactID); err != nil || !strings.Contains(text, typed) {
 		t.Fatalf("the reader's read beside that VerifyMark = %q, %v; want the room's own unstored keystroke", text, err)
 	}
 	if !roomBehind(t, pair.reader, pair.artifactID) {
@@ -440,7 +440,7 @@ func TestTheTokenOfARoomBehindTheHeadHoldingItsOwnUpdateIsTheWholeDocuments(t *t
 	})
 	land := pair.typeIntoTheRoomBehindTheHead(t, typed)
 
-	_, token, err := pair.reader.TextWithToken(ctx, pair.artifactID)
+	_, token, err := pair.reader.TextWithToken(ctx, serverReader, pair.artifactID)
 	if err != nil {
 		t.Fatalf("the reader's read while its room is behind the head and holds an unstored keystroke: %v", err)
 	}

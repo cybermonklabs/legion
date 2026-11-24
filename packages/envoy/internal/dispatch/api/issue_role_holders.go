@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/legionagents"
@@ -125,9 +126,10 @@ const issueRoleHoldersStatement = `
 	order by array_position($2::text[], h.role)
 `
 
-// readIssueRoleHolders answers the stored set of issueKey, and false when no issue carries the key.
-func readIssueRoleHolders(ctx context.Context, q queryer, issueKey string) (issueRoleHolders, bool, error) {
-	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles)
+// readIssueRoleHolders answers the stored set of issueKey as who reads it, and false when no
+// issue carries the key or who may not see it.
+func readIssueRoleHolders(ctx context.Context, q queryer, who model.Actor, issueKey string) (issueRoleHolders, bool, error) {
+	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles, refs.VisibilityArg(who))
 	if err != nil {
 		return issueRoleHolders{}, false, err
 	}
@@ -230,6 +232,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		sessions[index] = holder.Session
 	}
 
+	who, ok := s.readerOf(w, r)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -276,7 +279,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	stored, _, err := readIssueRoleHolders(r.Context(), tx, issue)
+	stored, _, err := readIssueRoleHolders(r.Context(), tx, who, issue)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -291,11 +294,12 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 // getIssueRoleHolders answers the stored set of an issue: GET /api/v1/issues/{key}/role-holders. A
 // closed issue reads as an open one does.
 func (s *server) getIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	key := r.PathValue("key")
-	read, found, err := readIssueRoleHolders(r.Context(), s.deps.Store.Pool, key)
+	read, found, err := readIssueRoleHolders(r.Context(), s.deps.Store.Pool, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

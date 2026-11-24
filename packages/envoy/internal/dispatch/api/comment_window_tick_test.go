@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -77,7 +76,7 @@ func TestACommentLeavesItsWindowsToTheBlockIndexTick(t *testing.T) {
 	}
 
 	processAllPending(t, database, &fakeEmbedder{})
-	states, err := refs.BlockEmbeddingStates(ctx, database.Pool, refs.ItemComment.WindowKind(), ownerKey)
+	states, err := refs.BlockEmbeddingStates(ctx, database.Pool, everyReader, refs.ItemComment.WindowKind(), ownerKey)
 	if err != nil {
 		t.Fatalf("read where meaning search stands on the blocks of comment %s: %v", comment.ID, err)
 	}

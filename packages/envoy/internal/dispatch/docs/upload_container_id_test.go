@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -63,7 +62,7 @@ func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&highest); err != nil {
 		t.Fatalf("read the newest tuple: %v", err)
 	}
-	live, _, err := service.TextWithBlocks(ctx, list)
+	live, _, err := service.TextWithBlocks(ctx, serverReader, list)
 	if err != nil {
 		t.Fatalf("read the list's live text: %v", err)
 	}

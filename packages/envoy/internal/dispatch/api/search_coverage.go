@@ -23,7 +23,8 @@ import (
 // report that took too long, to be asked again later, from a failure, rather than giving up on a
 // statement still running; every other error answers as the handler's errors do.
 func (s *server) searchCoverage(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	identity := ""

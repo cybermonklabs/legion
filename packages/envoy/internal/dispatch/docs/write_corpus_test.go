@@ -286,7 +286,7 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 				t.Fatalf("%s %s: %v", mode, name, err)
 			}
 			timings = append(timings, fmt.Sprintf("%s %s", name, time.Since(began).Round(time.Millisecond)))
-			text, token, err := service.TextWithToken(ctx, artifactID)
+			text, token, err := service.TextWithToken(ctx, serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("%s %s: read the document: %v", mode, name, err)
 			}
@@ -398,7 +398,7 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 		}
 		firstBlock := func(t *testing.T) model.ArtifactBlock {
 			t.Helper()
-			_, blocks, err := service.TextWithBlocks(ctx, artifactID)
+			_, blocks, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 			if err != nil || len(blocks) == 0 {
 				t.Fatalf("%s: read the document's blocks: %v (%d blocks)", mode, err, len(blocks))
 			}
@@ -410,7 +410,7 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 			if err != nil {
 				t.Fatalf("%s: the block holding %q: %v", mode, quote, err)
 			}
-			_, blocks, err := service.TextWithBlocks(ctx, artifactID)
+			_, blocks, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("%s: read the document's blocks: %v", mode, err)
 			}
@@ -437,7 +437,7 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 		})
 		documentToken := ""
 		transaction("precondition-document", func(ctx context.Context, step *writeCorpusStep, op func(string)) error {
-			_, token, err := service.TextWithToken(ctx, artifactID)
+			_, token, err := service.TextWithToken(ctx, serverReader, artifactID)
 			if err != nil {
 				return fmt.Errorf("TextWithToken: %w", err)
 			}
@@ -470,7 +470,7 @@ func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, o
 			return apply([]model.EditOp{{Op: "delete", Find: qualified + " Twice."}}, nil, false)(ctx, step, op)
 		})
 
-		_, blocks, err := service.TextWithBlocks(ctx, artifactID)
+		_, blocks, err := service.TextWithBlocks(ctx, serverReader, artifactID)
 		if err != nil {
 			t.Fatalf("%s: read the document's blocks: %v", mode, err)
 		}

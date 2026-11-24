@@ -88,7 +88,7 @@ func TestADeferredVersionThePreviousReleaseIndexesAfterThisBuildsTickReadItReach
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 	var tick BlockIndexTick
-	if _, err := service.readEventsAfterCursor(ctx, &tick); err != nil {
+	if _, _, err := service.readEventsAfterCursor(ctx, &tick); err != nil {
 		t.Fatalf("read the events after this build's cursor: %v", err)
 	}
 	t.Logf("the read of the events after this build's cursor read %d event(s), marked %d document(s), another build %t",
@@ -196,7 +196,7 @@ func deferAsThePreviousRelease(t *testing.T, database *store.Store, service *Ser
 			slug, holder, middle)
 	}
 	var err error
-	if deferred.markdown, deferred.blocks, err = service.TextWithBlocks(ctx, document); err != nil {
+	if deferred.markdown, deferred.blocks, err = service.TextWithBlocks(ctx, serverReader, document); err != nil {
 		t.Fatalf("read the edited document %s: %v", slug, err)
 	}
 	tx, err := database.Pool.Begin(ctx)

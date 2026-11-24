@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -134,11 +133,11 @@ func (s *server) loadAnchorArtifact(ctx context.Context, tx pgx.Tx, owner owner,
 // Only a request that has gone away fails the read, and the request's own context says so: a
 // failed room's cause can carry another request's cancellation (a writer whose client went away
 // during its commit), which says nothing of this one.
-func (s *server) anchorBlock(ctx context.Context, anchor *model.Anchor) (model.AnchorPosition, error) {
+func (s *server) anchorBlock(ctx context.Context, who model.Actor, anchor *model.Anchor) (model.AnchorPosition, error) {
 	if anchor == nil || anchor.BlockID == nil || *anchor.BlockID == "" {
 		return model.AnchorPosition{}, nil
 	}
-	path, err := s.deps.Docs.BlockPath(docs.WithoutRecoveryWait(ctx), anchor.ArtifactID, *anchor.BlockID)
+	path, err := s.deps.Docs.BlockPath(docs.WithoutRecoveryWait(ctx), who, anchor.ArtifactID, *anchor.BlockID)
 	if err == nil {
 		return model.AnchorPosition{AnchorBlock: &path}, nil
 	}

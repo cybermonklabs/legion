@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -193,7 +194,8 @@ func (s *server) subscribeLive(socket *liveSocket, frame LiveSubscribe) {
 		if held != nil && held.streamed != nil {
 			s.endLive(socket, sub, held)
 		}
-		if s.deliveryHub.Subscribe(socket, deliverySubscription{Sub: sub, View: frame.View.DeliveryLiveView, Resume: deliveryResume}) {
+		resolve := func(ctx context.Context) (model.Actor, error) { return s.readerFor(ctx, socket.caller()) }
+		if s.deliveryHub.Subscribe(socket, deliverySubscription{Sub: sub, View: frame.View.DeliveryLiveView, Resume: deliveryResume, Resolve: resolve, Holds: socket.holds}) {
 			socket.subs[sub] = &liveSub{}
 		}
 		return

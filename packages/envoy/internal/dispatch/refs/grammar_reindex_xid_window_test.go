@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The grammar re-index takes its transaction id only at its write phase: everything it reads - the
@@ -84,7 +85,7 @@ func TestTheGrammarReindexTakesItsTransactionIdOnlyAtItsWritePhase(t *testing.T)
 	report := tracer.Measure(t, database.Pool, func() {
 		_, reindexed = ReindexOwed(storetest.MarkXid(ctx), database.Pool, Owed{
 			Queue: BlockGrammarOwed, Kind: "comment", ID: comment, EnqueuedAt: enqueuedAt,
-		}, itemBlockServer)
+		}, text.NewOrigins(itemBlockServer))
 	})
 	if reindexed != nil {
 		t.Fatalf("the re-index failed: %v", reindexed)

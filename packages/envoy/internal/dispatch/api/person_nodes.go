@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -177,6 +176,10 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The acting credential is marshalled once and bound by both reads: it is one value for the
+	// request, and the two statements name the same reader. Its author is the person the request
+	// acts for, as it always was, and its viewer is what the caller sees (readerAs).
+	caller, ok = s.readerAs(w, r, caller)
 	limit, offset, err := parseMyAnswersPage(r)
 	if err != nil {
 		s.writeHandlerError(w, err)

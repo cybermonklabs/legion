@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // anchoredWriteSections is how many numbered sections the benchmark document holds, each with one
@@ -148,7 +148,7 @@ type anchoredWriteFixture struct {
 func newAnchoredWriteFixture(b *testing.B, markdown string, anchors int) *anchoredWriteFixture {
 	b.Helper()
 	database := storetest.Open(b)
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: text.NewOrigins("https://dispatch.example"), Settle: time.Hour})
 	b.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			b.Errorf("shutdown anchored write benchmark service: %v", err)
@@ -209,7 +209,7 @@ func newAnchoredWriteFixture(b *testing.B, markdown string, anchors int) *anchor
 			return err
 		})
 	}
-	text, err := service.Text(context.Background(), fixture.artifactID)
+	text, err := service.Text(context.Background(), serverReader, fixture.artifactID)
 	if err != nil {
 		b.Fatal(err)
 	}

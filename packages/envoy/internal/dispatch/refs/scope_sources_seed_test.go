@@ -10,8 +10,6 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -295,7 +293,7 @@ func TestScopeSourcesSeedArmsAnswerTheOneSeed(t *testing.T) {
 			if source.Kind != "comment" {
 				continue
 			}
-			scope, err := ScopeOf(ctx, tx, model.Actor{}, source.Kind, source.ID)
+			scope, err := ScopeOf(ctx, tx, serverReader, source.Kind, source.ID)
 			if err != nil {
 				t.Fatalf("the scope of comment %s: %v", source.ID, err)
 			}
