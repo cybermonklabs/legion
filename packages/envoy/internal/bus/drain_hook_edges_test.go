@@ -38,11 +38,7 @@ func watchedBucket(t *testing.T, client *bus.Client, uri, bucket string) (*kvwat
 		t.Fatalf("wait for the watcher: %v", err)
 	}
 	admin := testnats.Connect(t, uri)
-	adminJS, err := admin.JetStream()
-	if err != nil {
-		t.Fatalf("admin JetStream: %v", err)
-	}
-	consumers := func() []string { return consumerNames(adminJS, "KV_"+bucket) }
+	consumers := func() []string { return consumerNames(t, admin, "KV_"+bucket) }
 	if got := consumers(); len(got) != 1 {
 		t.Fatalf("consumers before the drain = %v, want the watcher's one", got)
 	}

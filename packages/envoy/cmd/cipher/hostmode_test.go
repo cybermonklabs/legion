@@ -299,13 +299,12 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	if err != nil || ro != "eyJ.fake.request" {
 		t.Fatalf("sign-request: %q %v", ro, err)
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "sign-request" || !reflect.DeepEqual(req.Secrets, []string{"DEEL_API_KEY", "OTHER_KEY"}) || req.Reason != "why" || req.LifetimeSeconds == nil || *req.LifetimeSeconds != lifetime || req.Locations != nil {
-			t.Fatalf("request sent to the helper: %+v", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake never saw a request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the fake never saw a request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "sign-request" || !reflect.DeepEqual(req.Secrets, []string{"DEEL_API_KEY", "OTHER_KEY"}) || req.Reason != "why" || req.LifetimeSeconds == nil || *req.LifetimeSeconds != lifetime || req.Locations != nil {
+		t.Fatalf("request sent to the helper: %+v", req)
 	}
 
 	sock2, _ := fakeHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
@@ -343,13 +342,12 @@ func TestHelperSignerSignsTheTargetAndRefusesAHelperThatDropsIt(t *testing.T) {
 	if err != nil || ro != carried {
 		t.Fatalf("sign-request of a target the helper signed: %v; want the helper's object back", err)
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "sign-request" || !reflect.DeepEqual(req.Locations, locations) {
-			t.Fatalf("request sent to the helper: %+v; want sign-request with the locations %q", req, locations)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake never saw a request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the fake never saw a request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "sign-request" || !reflect.DeepEqual(req.Locations, locations) {
+		t.Fatalf("request sent to the helper: %+v; want sign-request with the locations %q", req, locations)
 	}
 
 	older, _ := fakeHelper(t, helper.Response{OK: true, RequestObject: signed(nil)})
@@ -369,13 +367,12 @@ func TestRegisterRefusesWithNoHelperSocket(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 	var stdout, stderr bytes.Buffer
+	meter := startStallMeter(t)
 	start := time.Now()
 	code := cmdRegister(nil, &stdout, &stderr)
+	requireOnTime(t, meter, "register with no helper socket, which should wait for nothing", start, 0)
 	if code != exitUsageError {
 		t.Fatalf("register with no helper socket: exit %d, want %d; stderr %q", code, exitUsageError, stderr.String())
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("register waited %s for a helper that is not there", elapsed)
 	}
 	sock := filepath.Join(runtimeDir, "agent-secrets", "helper.sock")
 	if msg := stderr.String(); !strings.Contains(msg, "AGENT_SECRETS_HELPER_SOCK is unset") || !strings.Contains(msg, sock) ||
@@ -584,9 +581,19 @@ func TestIdentity(t *testing.T) {
 				tc.setup(t, p)
 
 				var stdout, stderr bytes.Buffer
+				meter := startStallMeter(t)
 				start := time.Now()
 				code := cmdIdentity(nil, &stdout, &stderr)
-				elapsed := time.Since(start)
+				// A helper that never answers is given up on after about 2 s; nothing else may hold
+				// identity up. Each is timed against that, allowing for the time this process was
+				// held up (requireOnTime); a silent helper's 2 s is a floor no load can shorten.
+				if tc.slow {
+					if elapsed := requireOnTime(t, meter, "identity against a helper that never answers", start, 2*time.Second); elapsed < 1500*time.Millisecond {
+						t.Fatalf("a helper that never answers is given up on after about 2 s, took %s", elapsed)
+					}
+				} else {
+					requireOnTime(t, meter, "identity, which only a silent helper may hold up", start, 0)
+				}
 				if code != tc.exit {
 					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr.String())
 				}
@@ -602,12 +609,6 @@ func TestIdentity(t *testing.T) {
 				}
 				if want == "" && stderr.Len() != 0 {
 					t.Fatalf("stderr %q, want nothing", stderr.String())
-				}
-				if tc.slow && (elapsed < 1500*time.Millisecond || elapsed > 4*time.Second) {
-					t.Fatalf("a helper that never answers is given up on after about 2 s, took %s", elapsed)
-				}
-				if !tc.slow && elapsed > 5*time.Second {
-					t.Fatalf("identity took %s; only a silent helper may hold it up", elapsed)
 				}
 			})
 		}
