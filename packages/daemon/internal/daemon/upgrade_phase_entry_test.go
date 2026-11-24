@@ -43,6 +43,14 @@ const phaseEntryMigration = 20261111225552
 // migrated holds none of them.
 const preEntryNewestMigration = 20261112180548
 
+// appliedWithTheFixture are the migrations above preEntryNewestMigration that preEntryStore
+// applies with the fixture's own rather than withholding them for the upgrade under test: the tree
+// is recorded through this release's PutIssue, so each migration that adds a column PutIssue
+// writes must stand before the tree is seeded. Each adds a column of issues, which no statement of
+// the phase entry reads or writes, so it changes nothing the upgrade under test reads.
+// 20261124060500_issue_priority adds issues.priority.
+var appliedWithTheFixture = []int{20261124060500}
+
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -52,20 +60,21 @@ const (
 )
 
 // preEntryStore is a database carrying the schema of the release before the phase entry: every
-// embedded migration but phaseEntryMigration and those above preEntryNewestMigration, each applied
-// as Store.Migrate applies one — the migration's SQL, the widening of schema_version for a
-// timestamped version, and the version row — and the withheld ones left for the test's own
-// Store.Migrate to run, in version order, the phase entry first. It answers how many it withheld,
-// which is how many that Migrate applies. The migrations between the two are the fixture's too.
-// Two stand there. 20261112180548_claim_leak_check_cause is the contract 87 release's own, so a
-// database that release migrated holds its row and its claims.leak_check_cause before the phase
-// entry runs. 20261112070503_pull_request_state_read_at (dispatch://INFRA-3027) is applied first
-// as well, because it stands below preEntryNewestMigration; that is harmless here, since it adds
-// pull_requests.state_read_at and the phase entry touches no pull_requests column. Neither column
-// is one any statement of the phase entry reads or writes. The ones above preEntryNewestMigration
-// are not the fixture's: 20261113175649_task_numbers fills claims from served_entry, which the
-// phase entry adds, and drops the pending delivery's read marks, which the release before it still
-// writes.
+// embedded migration but phaseEntryMigration and those above preEntryNewestMigration that
+// appliedWithTheFixture does not name, each applied as Store.Migrate applies one — the migration's
+// SQL, the widening of schema_version for a timestamped version, and the version row — and the
+// withheld ones left for the test's own Store.Migrate to run, in version order, the phase entry
+// first. It answers how many it withheld, which is how many that Migrate applies. The migrations
+// between the two are the fixture's too. Two stand there. 20261112180548_claim_leak_check_cause
+// is the contract 87 release's own, so a database that release migrated holds its row and its
+// claims.leak_check_cause before the phase entry runs. 20261112070503_pull_request_state_read_at
+// (dispatch://INFRA-3027) is applied first as well, because it stands below
+// preEntryNewestMigration; that is harmless here, since it adds pull_requests.state_read_at and
+// the phase entry touches no pull_requests column. Neither column is one any statement of the
+// phase entry reads or writes. The ones above preEntryNewestMigration are not the fixture's, but
+// those appliedWithTheFixture names: 20261113175649_task_numbers fills claims from served_entry,
+// which the phase entry adds, and drops the pending delivery's read marks, which the release
+// before it still writes.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -86,7 +95,7 @@ func preEntryStore(t *testing.T) (*store.Store, int) {
 	}
 	widened, withheld := false, 0
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration || migration.Version > preEntryNewestMigration {
+		if migration.Version == phaseEntryMigration || migration.Version > preEntryNewestMigration && !slices.Contains(appliedWithTheFixture, migration.Version) {
 			withheld++
 			continue
 		}

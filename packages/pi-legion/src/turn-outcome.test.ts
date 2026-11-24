@@ -262,7 +262,11 @@ test("a refused turn's provider error carries the status the host recorded, and 
     messages: [{ role: "assistant", stopReason: "stop", errorStatus: 500 }],
   });
 
-  expect(posted.map((body) => [body.outcome, body.providerError?.status])).toEqual([
+  const statuses = posted.map((body) => [
+    body.outcome,
+    (body.providerError as { status?: number } | undefined)?.status,
+  ]);
+  expect(statuses).toEqual([
     ["refused", 529],
     ["refused", 400],
     ["refused", 0],

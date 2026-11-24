@@ -157,7 +157,12 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     // padding the section and the page keep for the floating selection bar, less where the
     // pager's last pixel is now. Measured against the pager's own place rather than the page's
     // height — which on a page shorter than the window is the window, leaving the box only
-    // able to shrink — so the box grows as well as shrinks, whatever stands above it.
+    // able to shrink — so the box grows as well as shrinks, whatever stands above it. The place
+    // is the pager's in the document, not on the screen: read on the screen, a measure made
+    // while the document is scrolled past the table - a window resize, the page growing - took
+    // the scroll for room, and the browser's scroll anchoring then kept the pager where it was,
+    // so each measure grew the box by the last one's growth, without end (the Priorities page's
+    // fault lists at 1600x1000, scrolled to its end before the resize).
     const pager = pagerRef.current;
     if (!pager) return;
     const padding = (element: Element | null) =>
@@ -166,7 +171,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
       window.innerHeight -
       padding(box.parentElement) -
       padding(box.closest("main")) -
-      pager.getBoundingClientRect().bottom;
+      (pager.getBoundingClientRect().bottom + window.scrollY);
     const available = bounds.height + slack;
     setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
   }, []);

@@ -2970,16 +2970,17 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
   // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
-  // Five bands stand above 199: the repositories block's at 202, contract 220's, which takes
-  // `plan` off each assignment, so the golden's rows are compared without it, the intake's
-  // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, the pod hold's at 246, which
-  // leaves `podHold` off every issue (`withoutPodHold`), and the unseen task values', at 274
-  // (contract 274, `withoutUnseenTaskValues`), which a caller below 274 is never served. So the
-  // narrowing changes this one block, takes `plan` off each assignment and `podHold` off each
-  // issue, drops `intakeGiveUps` and `unseenTaskValues`, and changes no other key. One value strip
-  // stands above 199 as well: `caches`, the source of the repository-cache-room row, arrived at
-  // contract 213, so that row is served here without its `source`, every other field of it and
-  // every other row as the state golden holds them.
+  // Seven bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // `plan` off each assignment; the intake's give-ups' at 228, so the narrowing leaves
+  // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
+  // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
+  // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
+  // claim view; and the unseen task values', at 274 (`withoutUnseenTaskValues`), which a caller
+  // below 274 is never served; so the golden's issues, rows and claim views are compared without
+  // them, and the narrowing drops `intakeGiveUps` and `unseenTaskValues`. One value strip stands
+  // above 199 as well: `caches`, the source of the repository-cache-room row, arrived at contract
+  // 213, so that row is served here without its `source`, every other field of it and every other
+  // row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -3005,20 +3006,41 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
+  const withoutCauseTimes = (view: unknown): unknown => {
+    if (!isJsonObject(view)) {
+      return view;
+    }
+    const { lastDeathAt: _deathAt, lastStartFailureAt: _startFailureAt, ...kept } = view;
+    return kept;
+  };
   const issues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
-      const { podHold: _podHold, ...kept } = issue;
-      return [
-        key,
-        kept.assignments === undefined
-          ? kept
-          : {
-              ...kept,
-              assignments: (kept.assignments as Record<string, unknown>[]).map(
-                ({ plan: _plan, ...row }) => row
-              ),
-            },
-      ];
+      const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      const narrowed: Record<string, unknown> = { ...kept };
+      const line = kept.waitingLine;
+      if (isJsonObject(line)) {
+        const { priority: _placed, ...placed } = line;
+        narrowed.waitingLine = placed;
+      }
+      if (kept.assignments !== undefined) {
+        narrowed.assignments = (kept.assignments as Record<string, unknown>[]).map(
+          ({ plan: _plan, ...row }) => row
+        );
+      }
+      if (kept.architect !== undefined) {
+        narrowed.architect = withoutCauseTimes(kept.architect);
+      }
+      if (isJsonObject(kept.workers)) {
+        narrowed.workers = Object.fromEntries(
+          Object.entries(kept.workers).map(([role, worker]) => [
+            role,
+            isJsonObject(worker) && worker.claim !== undefined
+              ? { ...worker, claim: withoutCauseTimes(worker.claim) }
+              : worker,
+          ])
+        );
+      }
+      return [key, narrowed];
     })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
