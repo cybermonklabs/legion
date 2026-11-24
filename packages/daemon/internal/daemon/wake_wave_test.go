@@ -202,20 +202,31 @@ func (r *waveRuntime) ReconcileOrphans(ctx context.Context, known []runtime.Know
 // whatever the test does, so a count of sweeps between two readings of the state counts the
 // machine's load as much as the passes.
 type sweepGate struct {
-	// waiting is a sweep that has reached the gate and waits there, one send for each.
-	waiting chan struct{}
-	// through lets the sweep waiting go on, one receive for each.
-	through chan struct{}
+	// waiting carries each sweep that reaches the gate, one send for each.
+	waiting chan *sweepHold
 	// opened, closed, lets every sweep through from then on.
 	opened chan struct{}
 	once   sync.Once
+	// held is the sweep awaitSweep read last, which letOne lets through; nil once it has. Only
+	// the test's own goroutine reads or writes it, as only that goroutine calls those two.
+	held *sweepHold
+}
+
+// sweepHold is one sweep's wait at the gate: the test closes through to let that sweep go on, and
+// the sweep closes gone if it leaves the gate without being let through — its daemon's context
+// ended, or the gate opened. Closing is what lets the test hand a sweep through: a send would
+// block for ever where the sweep has left, and the row would then hold to the test binary's
+// deadline rather than failing by name (letOne).
+type sweepHold struct {
+	through chan struct{}
+	gone    chan struct{}
 }
 
 // gateSweeps sets the sweep gate: from now on every sweep waits at its reconciliation until the
 // test lets it through (letOne) or opens the gate (open). A sweep already past its reconciliation
 // runs on; the next one waits.
 func (r *waveRuntime) gateSweeps() *sweepGate {
-	gate := &sweepGate{waiting: make(chan struct{}), through: make(chan struct{}), opened: make(chan struct{})}
+	gate := &sweepGate{waiting: make(chan *sweepHold), opened: make(chan struct{})}
 	r.mu.Lock()
 	r.sweeps = gate
 	r.mu.Unlock()
@@ -223,35 +234,55 @@ func (r *waveRuntime) gateSweeps() *sweepGate {
 }
 
 // hold is the sweep's wait at the gate: it says it waits, then waits to be let through. A nil gate,
-// an open one and an ended context hold nothing.
+// an open one and an ended context hold nothing; a sweep that leaves without being let through
+// says so, so the test fails by name rather than waiting on a sweep that is gone.
 func (g *sweepGate) hold(ctx context.Context) {
 	if g == nil {
 		return
 	}
+	held := &sweepHold{through: make(chan struct{}), gone: make(chan struct{})}
 	select {
-	case g.waiting <- struct{}{}:
+	case g.waiting <- held:
 	case <-g.opened:
 		return
 	case <-ctx.Done():
 		return
 	}
 	select {
-	case <-g.through:
+	case <-held.through:
 	case <-g.opened:
+		close(held.gone)
 	case <-ctx.Done():
+		close(held.gone)
 	}
 }
 
 // awaitSweep waits for the next sweep to reach the gate, which it reaches having read the claims
-// its refresh pass will walk.
+// its refresh pass will walk. The sweep it read is the one letOne lets through.
 func (g *sweepGate) awaitSweep(t *testing.T, what string) {
 	t.Helper()
-	testwait.Receive(t, what, g.waiting)
+	g.held = testwait.Receive(t, what, g.waiting)
 }
 
-// letOne lets through the sweep that awaitSweep saw waiting: it runs its reconciliation, its
-// refresh pass and the rest of its tick, and the sweep after it waits at the gate.
-func (g *sweepGate) letOne() { g.through <- struct{}{} }
+// letOne lets through the sweep that awaitSweep read: it runs its reconciliation, its refresh pass
+// and the rest of its tick, and the sweep after it waits at the gate. It waits on nothing — the
+// sweep is let through by a close — and fails the test by name where there is no sweep to let
+// through, or where the one read has left the gate since, which is a run that would otherwise
+// wait at the next awaitSweep for a pass that never ran.
+func (g *sweepGate) letOne(t *testing.T) {
+	t.Helper()
+	held := g.held
+	g.held = nil
+	if held == nil {
+		t.Fatal("no sweep waits at the gate: awaitSweep reads the sweep that letOne lets through")
+	}
+	close(held.through)
+	select {
+	case <-held.gone:
+		t.Fatal("the sweep that waited at the gate left it before the test let it through, so no refresh pass ran for it: its daemon's context ended, or the gate was opened")
+	default:
+	}
+}
 
 // open lets every sweep through from now on, the one waiting included.
 func (g *sweepGate) open() { g.once.Do(func() { close(g.opened) }) }

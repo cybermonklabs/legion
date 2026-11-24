@@ -655,7 +655,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 			testwait.Eventually(t, fmt.Sprintf("the refresh wake of %s to go with the process its suspension ended", drained), func() bool {
 				return !claimsOfWakes(refreshWakesWaiting(t, d))[drained]
 			})
-			sweeps.letOne()
+			sweeps.letOne(t)
 			sweeps.awaitSweep(t, "the sweep let through to end its pass and the next sweep to wait at the gate")
 			testwait.Eventually(t, fmt.Sprintf("the credit the suspension of %s took away to come back at the one sweep after it and admit another claim", drained), func() bool {
 				return len(refreshWakesWaiting(t, d)) == testWakeRate
