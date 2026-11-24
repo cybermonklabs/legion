@@ -1,0 +1,28 @@
+kind: Fixed
+body: |-
+    A root moved out of the workflow and straight back brings back the members its re-admission
+    left mid-phase, and the members reopened at done, the first time its tree runs, once in the
+    generation: at its promotion from the waiting line, as before, or at the admission pass that
+    finds its tree running first because its architect registered a design a person had already
+    approved while the root still waited in the line. Before, such a tree's members stayed
+    suspended until a daemon boot or an operator's resume. Until a re-admitted root's promotion
+    opens its tree, no member of that tree takes a place in the waiting line, including a member
+    that still owes a start from before the tree left the workflow. A re-admitted root whose tree's
+    lifecycle is not open (its cleanup reserved after the linger ended) stays in the line whatever
+    its design gate says until the promotion that opens its tree; meanwhile no member of the tree
+    starts, and each reads `tree_closed`. A root whose label is taken off while it waits brings
+    nothing back until the label returns. A root moved out of the workflow and back gives back
+    every admission slot its tree still held, and no issue of the tree stays `waiting_on_issue`
+    for a slot it gave back, as when the tree's linger releases them; before, a tree moved out and
+    back while its project was paused kept its old slots, which could fill the cap and leave its
+    root unpromoted after the resume. Store migration
+    `20261123224717_members_owed` adds `issues.members_owed` and marks every re-admitted root no
+    promotion has opened yet: a tree whose gate opened before its promotion on the release before
+    has its members brought back once, at the first admission pass of this release. A root that a
+    daemon of the release before promotes after the migration ran, as when the daemons that share
+    a database upgrade one after another, keeps its mark; this release clears that mark and brings
+    nothing back. A rollback past this release runs the way back in that migration's header first,
+    with every daemon of the database stopped.
+time: 2026-11-23T23:48:04Z
+custom:
+    Issue: INFRA-5471

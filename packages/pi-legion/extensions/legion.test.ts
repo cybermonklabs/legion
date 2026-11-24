@@ -230,7 +230,6 @@ const environmentKeys = [
   "LEGION_CONTROLLER_SECRET_FILE",
   "DISPATCH_TOKEN_FILE",
   "LEGION_WORKSPACE_RECREATED",
-  "LEGION_WORKSPACE_RESTORED",
   "DISPATCH_STATE_DIR",
   "ENVOY_CONFIG_FILE",
   "OMP_PROFILE",
@@ -7277,7 +7276,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
     expect(await beforeAgentStart({ prompt: "task" }, context)).toEqual({
       message: {
         customType: "legion-workspace-recreated",
-        content: expect.stringContaining("it holds what was pushed to legion/REPO-43"),
+        content: expect.stringContaining("from what was pushed to legion/REPO-43"),
         display: true,
         details: { id },
       },

@@ -107,6 +107,10 @@ type lexer struct {
 	// from (opRun).
 	op opRun
 
+	// hooks, where a test gives them, are told the work this reading does (lexHooks); nil in
+	// every reading but TestOperatorRunLexingIsLinear's.
+	hooks *lexHooks
+
 	// failAt is where scan.l first raised an error, or -1. Most error rules report
 	// lexer_errposition(), which is the yylloc SET_YYLLOC() last set, so failAt is the first byte
 	// of the token the error rule read rather than the byte inside it the rule stopped on. Two
@@ -238,8 +242,9 @@ var lexRules = [lexStates][]lexRule{
 
 // lexSQL reads text as scan.l reads it with standard_conforming_strings standardConformingStrings,
 // calling emit with every token in order, and returns where scan.l first raised an error, or -1.
-func lexSQL(text string, standardConformingStrings bool, emit func(sqlToken)) int {
-	l := &lexer{text: text, standardConformingStrings: standardConformingStrings, emit: emit, failAt: -1}
+// hooks, nil but in TestOperatorRunLexingIsLinear, are told the reading's work (lexHooks).
+func lexSQL(text string, standardConformingStrings bool, emit func(sqlToken), hooks *lexHooks) int {
+	l := &lexer{text: text, standardConformingStrings: standardConformingStrings, emit: emit, failAt: -1, hooks: hooks}
 	for l.pos < len(text) {
 		if l.state == lexXQS {
 			// <xqs>{quotecontinue} is the only rule of this state with an action of its own.
@@ -694,22 +699,33 @@ func matchSelf(l *lexer, i int) int {
 	return -1
 }
 
-// opCharRead, where a test has set it, is called once for every byte this reading asks isOpChar
-// about, and that is what it counts. What such a count reaches and what it misses is stated where
-// it is read, in TestOperatorRunLexingIsLinear's header, rather than here. In every process but a
-// test of this package the hook is nil, and the cost is the comparison below.
-var opCharRead func()
+// lexHooks are told the work one reading does, which TestOperatorRunLexingIsLinear counts.
+// opCharRead is called once for every byte the reading asks isOpChar about, and that is what it
+// counts. opRunScanned is told what each measureOpRun read of the text beyond its scan of
+// {op_chars}: the run it measured, and where each of its two searches stopped (-1 where the
+// search found nothing and so read to its end). The scan is counted by opCharRead rather than
+// reported from measureOpRun, because a count that function kept of its own extent loop would be
+// a claim about which of its branches ran; what the count does and does not reach is stated where
+// it is read, in TestOperatorRunLexingIsLinear's header. The test gives both and adds the two
+// together; either may be nil, and a nil one is not called. They belong to the one reading
+// (lexer.hooks), not to the package, so the count holds that reading's work alone and no other
+// test's reading beside it. Every other reading has none, and the cost is one comparison where
+// each would be called.
+type lexHooks struct {
+	opCharRead   func()
+	opRunScanned func(run opRun, slash, dash int)
+}
 
 // op_chars [\~\!\@\#\^\&\|\`\?\+\-\*\/\%\<\>\=]
-func isOpChar(c byte) bool {
-	if opCharRead != nil {
-		opCharRead()
+func (l *lexer) isOpChar(c byte) bool {
+	if l.hooks != nil && l.hooks.opCharRead != nil {
+		l.hooks.opCharRead()
 	}
 	return strings.IndexByte("~!@#^&|`?+-*/%<>=", c) >= 0
 }
 
 func matchOpChar(l *lexer, i int) int {
-	if isOpChar(l.text[i]) {
+	if l.isOpChar(l.text[i]) {
 		return 1
 	}
 	return -1
@@ -756,16 +772,6 @@ func (l *lexer) opRunAt(i int) opRun {
 	return l.op
 }
 
-// opRunScanned, where a test has set it, is told what each measureOpRun read of the text beyond
-// its scan of {op_chars}: the run it measured, and where each of its two searches stopped (-1
-// where the search found nothing and so read to its end). The scan is counted by opCharRead
-// above rather than reported from here, because a count this function kept of its own extent
-// loop would be a claim about which of its branches ran; what that count does and does not
-// reach is stated where it is read, in TestOperatorRunLexingIsLinear's header. The test sets
-// both hooks and adds the two together; in every process but a test of this package each is nil
-// and the call is one comparison.
-var opRunScanned func(run opRun, slash, dash int)
-
 // measureOpRun reads the run from i on. Each of its three searches stops at what it is looking
 // for, and the run's end is taken from the run last measured where that one holds i, so reading
 // a run again after a comment inside it costs the bytes up to the next comment rather than the
@@ -778,7 +784,7 @@ func (l *lexer) measureOpRun(i int) opRun {
 	if i >= l.op.from && i < l.op.to {
 		run.to = l.op.to
 	} else {
-		for run.to < len(l.text) && isOpChar(l.text[run.to]) {
+		for run.to < len(l.text) && l.isOpChar(l.text[run.to]) {
 			run.to++
 		}
 	}
@@ -801,8 +807,8 @@ func (l *lexer) measureOpRun(i int) opRun {
 			break
 		}
 	}
-	if opRunScanned != nil {
-		opRunScanned(run, slash, dash)
+	if l.hooks != nil && l.hooks.opRunScanned != nil {
+		l.hooks.opRunScanned(run, slash, dash)
 	}
 	return run
 }

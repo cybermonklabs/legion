@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  A broker credential no longer trades at every call when the broker gives its tokens five minutes
+  or less to live (`BROKER_ACCESS_TOKEN_SECONDS` of 300 or less). The client trades again five
+  minutes before a token lapses and never before half of what the token had when it landed, as the
+  Go client now does, so it trades again no sooner than half a token's life after it landed. A
+  token of ten minutes or more is traded again when it was before.
+
+  A device login's file keeps `access_life_seconds` beside its access token: the life in whole
+  seconds the broker gave that token. A read trade (`DISPATCH_TOKEN_BROKER_READ=1`) asks that token
+  for no more than half that life before it refreshes the login, so a token fresh from a refresh is
+  not refreshed again for the read trade's sake. A file without it, as an older build writes it, is
+  refreshed when its access token has under a minute left, until the next refresh keeps the life.
+time: 2026-11-22T01:29:14Z
+custom:
+  Issue: pr4557

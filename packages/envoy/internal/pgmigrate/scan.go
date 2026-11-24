@@ -82,7 +82,7 @@ func scanSQL(text string, visit func(sqlToken) error) error {
 		if failure == nil {
 			failure = visit(token)
 		}
-	})
+	}, nil)
 	return failure
 }
 
@@ -129,7 +129,7 @@ func blankComments(text string, out []byte, at int, body bool) {
 			}
 			blankComments(inner, out, at+token.start+len(tag), true)
 		}
-	})
+	}, nil)
 }
 
 // Statements is text split at each semicolon that stands outside a string, a quoted identifier, a
@@ -151,7 +151,7 @@ func Statements(text string) []string {
 			cut(token.start)
 			from = token.end
 		}
-	})
+	}, nil)
 	cut(len(text))
 	return statements
 }
@@ -179,15 +179,15 @@ func isIdentCont(c byte) bool { return isIdentStart(c) || isDigit(c) || c == '$'
 // scan.l raised its error on to the end of the text. Postgres read no further, so there are no
 // tokens of its there to call structure, and the text that follows is whatever the session was
 // about to have read - which is why it is covered rather than printed. onFailure is where the
-// default reading was refused, or -1.
-func hiddenSpans(text string, onFailure int) []sqlToken {
+// default reading was refused, or -1. hooks are told the reading's work (lexSQL).
+func hiddenSpans(text string, onFailure int, hooks *lexHooks) []sqlToken {
 	var spans []sqlToken
 	offFailure := lexSQL(text, false, func(token sqlToken) {
 		switch token.kind {
 		case sqlString, sqlDollarString, sqlUnicodeEscape, sqlComment:
 			spans = append(spans, token)
 		}
-	})
+	}, hooks)
 	for _, failure := range [2]int{onFailure, offFailure} {
 		if failure >= 0 {
 			spans = append(spans, sqlToken{kind: sqlString, start: failure, end: len(text)})
@@ -273,10 +273,14 @@ func hiddenSpans(text string, onFailure int) []sqlToken {
 // one can lose shape - a comma, a whole literal, or a comment's one space, swallowed into the
 // single ? that covers the other reading's longer literal or the comment that literal's end
 // opens - and loses no value.
-func redactedQuery(text string) string {
+func redactedQuery(text string) string { return redactedQueryWith(text, nil) }
+
+// redactedQueryWith is redactedQuery with hooks told the work of both its readings (lexHooks),
+// nil but in the lexing tests.
+func redactedQueryWith(text string, hooks *lexHooks) string {
 	var tokens []sqlToken
-	onFailure := lexSQL(text, true, func(token sqlToken) { tokens = append(tokens, token) })
-	spans := hiddenSpans(text, onFailure)
+	onFailure := lexSQL(text, true, func(token sqlToken) { tokens = append(tokens, token) }, hooks)
+	spans := hiddenSpans(text, onFailure, hooks)
 	var out strings.Builder
 	space := false
 	covered := 0 // the end of the text the ? last written stands for
