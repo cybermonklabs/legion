@@ -2682,6 +2682,72 @@
           "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
         ],
         "capture": "kubeerror.informer/list-trace"
+      },
+      {
+        "row": "sandbox-kube-supervise-last-start-failure",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/supervise/kube_refusal_record_test.go"],
+        "capture": "kubeerror.supervise/last-start-failure"
+      },
+      {
+        "row": "sandbox-kube-supervise-last-death-cause",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/supervise/kube_refusal_record_test.go"],
+        "capture": "kubeerror.supervise/last-death-cause"
+      },
+      {
+        "row": "sandbox-kube-daemon-outbox-retry",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/daemon/kube_refusal_outbox_test.go"],
+        "capture": "kubeerror.daemon/outbox-retry"
+      },
+      {
+        "row": "sandbox-kube-daemon-outbox-log",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/daemon/kube_refusal_outbox_test.go"],
+        "capture": "kubeerror.daemon/outbox-log"
+      },
+      {
+        "row": "sandbox-kube-legion-boot-refusal",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/cmd/legion/kube_refusal_boot_test.go"],
+        "capture": "kubeerror.legion/boot-refusal"
+      },
+      {
+        "row": "sandbox-kube-legion-boot-transient-stopped",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/cmd/legion/kube_refusal_boot_test.go"],
+        "capture": "kubeerror.legion/boot-transient-stopped"
+      },
+      {
+        "row": "sandbox-kube-api-operator-refusal",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/api/kube_refusal_answer_test.go"],
+        "capture": "kubeerror.api/operator-refusal"
+      },
+      {
+        "row": "sandbox-kube-api-claim-answer",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/api/kube_refusal_answer_test.go"],
+        "capture": "kubeerror.api/claim-answer"
+      },
+      {
+        "row": "sandbox-kube-api-state-answer",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/api/kube_refusal_answer_test.go"],
+        "capture": "kubeerror.api/state-answer"
+      },
+      {
+        "row": "sandbox-kube-daemon-kubeconfig-server",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/daemon/kubeconfig_url_test.go"],
+        "capture": "kubeerror.daemon/kubeconfig-server"
+      },
+      {
+        "row": "sandbox-kube-daemon-kubeconfig-proxy-url",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/daemon/kubeconfig_url_test.go"],
+        "capture": "kubeerror.daemon/kubeconfig-proxy-url"
       }
     ],
     "boundary_fields": {
@@ -9629,6 +9695,83 @@
         "preimage": "projectKubeError(\"client-go\", err)",
         "replacement": "err"
       }
+    },
+    {
+      "id": "sandbox-kube-supervise-last-start-failure",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/supervise",
+      "test": "TestAKubernetesRefusalTheSandboxRuntimeMetIsKeptOnTheClaimWithNoCredential/last-start-failure",
+      "production": "the real Sandbox runtime's Spawn (sandbox.New, relaunch, ensureSandbox, its Sandbox read through resend) refused by a 403 Status that echoes the bearer the request carried, handed to the machine as the runtime's answer to its spawn (Deps.Runtime): launchNow keeps the error's text as Claim.LastStartFailure (storetext.FarSideError), logs it through logFarSideError ('supervise: launch failed') and fails the claim with it (failLaunch, fail's 'supervise: claim failed'), the machine logging through the daemon's production logger (a JSON handler under redact.HandlerOptions); the row reads LastStartFailure and every line the machine logged"
+    },
+    {
+      "id": "sandbox-kube-supervise-last-death-cause",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/supervise",
+      "test": "TestAKubernetesRefusalTheSandboxRuntimeMetIsKeptOnTheClaimWithNoCredential/last-death-cause",
+      "production": "the real Sandbox runtime's Probe (evaluate, verdict, ended, roleLog, readLog, readLogOnce) of a claim whose pod ended and whose log read the API refuses with a 403 Status that echoes the bearer, its Gone observation handed to the working machine (RuntimeObservation) that holds the process it observed: died logs the detail ('supervise: process died'), keeps it as Claim.LastDeathCause (deathCause, storetext.FarSideText) and as the ended-work record's cause (endDied, recordGoneEnd, EndedWork.Cause, logged as 'supervise: the relaunch ended work the agent had running'), the machine logging through the daemon's production logger; the row reads LastDeathCause, EndedWork.Cause and every line the machine logged"
+    },
+    {
+      "id": "sandbox-kube-daemon-outbox-retry",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAKubernetesRefusalOfAnIssueSuspensionReachesTheOutboxWithNoCredential/outbox-retry",
+      "production": "daemon outbox issue_suspend row's stored last_error: outbox.RunOnce, runRow, execute, suspendIssue over the real Sandbox runtime (sandbox.New, Runtime.SuspendIssue, endIssuePod's read of the issue's Sandbox through patientObjects.Get and resend, refused 403 with a Status echoing the bearer), then settle, retry, retryAt and record.Store.RetryOutbox (storetext.FarSideError) into outbox.last_error"
+    },
+    {
+      "id": "sandbox-kube-daemon-outbox-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAKubernetesRefusalOfAnIssueSuspensionReachesTheOutboxWithNoCredential/outbox-log",
+      "production": "daemon outbox settle's log of the same refused issue_suspend row (\"outbox row failed\" with storetext.FarSideError of the error, and storetext.LogWhole), through a JSON handler under redact.HandlerOptions as cmd/legion's start builds it: outbox.RunOnce, runRow, execute, suspendIssue, sandbox Runtime.SuspendIssue's Sandbox read through resend"
+    },
+    {
+      "id": "sandbox-kube-legion-boot-refusal",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestProbeBootPrintsAKubernetesRefusalWithNoCredentialItsAnswerEchoed",
+      "production": "legion probe-boot's stderr: runProbeBoot's printRefusal of daemon.ProbeBoot's cluster check (sandboxBootOf's clusterCheck, sandbox.CheckInstalled, checkInstalled, refusal) over the client the kubeconfig gives (daemon's kubeClient): a 403 on the Sandbox CRD read whose Status echoes the bearer in its message, details and cause is kept as its projection (projectKubeError), so the refusal names the CRD and the 403 and none of the API server's words"
+    },
+    {
+      "id": "sandbox-kube-legion-boot-transient-stopped",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestProbeBootLogsATransientKubernetesFailureWithNoCredentialWhenStoppedWaiting",
+      "production": "legion probe-boot's stderr: the first attempt of Prober.ProbeImage's create meets an echoing 500 (createProbe, patientObjects.Create, resend's projectKubeError, apiOutcome), bootprobe.Run logs its retry line with Outcome.Detail through runProbeBoot's JSON handler under redact.HandlerOptions, and the command's context is cancelled while it waits, as main's signal.NotifyContext cancels it on a SIGINT, so printRefusal prints bootprobe's abandoned-probe refusal"
+    },
+    {
+      "id": "sandbox-kube-api-operator-refusal",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestAKubernetesRefusalOfALaunchReachesTheAPIsAnswersWithNoCredential/operator-refusal",
+      "production": "api spawn (POST /legion/v1/operator/claims) through operatorFailure: the root architect's launch, refused by the Sandbox runtime itself (sandbox.New, Spawn) when the Kubernetes API answers its read of the claim's Sandbox 403 with a Status echoing the bearer, reaches the machine through the fake runtime's Spawn answer and fails the claim; the route answers 500 through refuse (claim.Refusal, writeAnswer, writeAnswerFrom) and logs it under 'api: an operator request failed' (logFailure) through the daemon's production logger (slog JSON under redact.HandlerOptions); the body and the line hold the runtime's projection (resend's projectKubeError), none of the bearer"
+    },
+    {
+      "id": "sandbox-kube-api-claim-answer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestAKubernetesRefusalOfALaunchReachesTheAPIsAnswersWithNoCredential/claim-answer",
+      "production": "api list (GET /legion/v1/operator/claims) through operatorView, writeUnparsedAnswer and writeAnswerFrom: the claim as its machine holds it after the Sandbox runtime's refused Spawn, its lastStartFailure (supervise's storetext.FarSideError of the refusal) and its failure's detail, hold the runtime's projection of the Kubernetes refusal, none of the bearer"
+    },
+    {
+      "id": "sandbox-kube-api-state-answer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestAKubernetesRefusalOfALaunchReachesTheAPIsAnswersWithNoCredential/state-answer",
+      "production": "api stateRoute (GET /legion/v1/state) through projectState's repeatable-read snapshot of the store's pool, ClaimViewOf and writeAnswerFrom: the claim the store holds after the Sandbox runtime's refused Spawn, read in the route's own transaction (store.ClaimsTx, as internal/daemon's source reads it) and placed on its issue as internal/projection places it (the test's StateSource, since internal/projection imports api), its lastStartFailure and its failure's detail hold the runtime's projection of the Kubernetes refusal, none of the bearer"
+    },
+    {
+      "id": "sandbox-kube-daemon-kubeconfig-server",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAKubeconfigURLClientGoCannotParsePrintsNoneOfItsUserInformation/server",
+      "production": "daemon kubeClient and kubeconfigURLs (the boot's read of runtime.kubernetes.kubeconfig under its current context): a cluster server URL client-go cannot parse, carrying user information, is refused naming the file, the cluster and the field, before the boot's first client (sandbox.CheckInstalled, clientsOf, rest.DefaultServerURL) quotes url.Parse's text"
+    },
+    {
+      "id": "sandbox-kube-daemon-kubeconfig-proxy-url",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAKubeconfigURLClientGoCannotParsePrintsNoneOfItsUserInformation/proxy-url",
+      "production": "daemon kubeClient and kubeconfigURLs (under the configured context): a cluster proxy-url client-go cannot parse, carrying user information, is refused naming the file, the cluster and the field, before clientcmd's validation (ClientConfig) quotes it"
     }
   ],
   "bun": [
@@ -11978,9 +12121,19 @@
       "guard": "sandbox-kube-client-go-log"
     },
     {
-      "site": "daemon Kubernetes setup sites (clients.go:73,77, install.go:94, daemon kubernetes.go:334,343,351): a client's construction and its configuration's read, which send no request; they print as before (R4), no server text reaching them",
+      "site": "daemon Kubernetes setup sites (clients.go:73,77, install.go:94, daemon kubernetes.go:334): a client's construction and the in-cluster configuration's read, which send no request; they print as before (R4), no server text reaching them",
       "source": "the client-go census at df40decadf9, section 2's setup errors",
       "guard": "sandbox-kube-setup-token-file"
+    },
+    {
+      "site": "daemon kubernetes.go:343,351 (the kubeconfig's read): a cluster server or proxy-url client-go cannot parse was quoted as written, user information and all, by url.Parse's error at the boot's first client and by clientcmd's validation",
+      "source": "the t-7 report's third concern, the coordinator's second round",
+      "guard": "sandbox-kube-daemon-kubeconfig-server"
+    },
+    {
+      "site": "daemon kubernetes.go:351: a kubeconfig proxy-url client-go cannot parse, quoted by clientcmd's validation",
+      "source": "the t-7 report's third concern, the coordinator's second round",
+      "guard": "sandbox-kube-daemon-kubeconfig-proxy-url"
     }
   ]
 }

@@ -8,13 +8,16 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -329,6 +332,9 @@ func imageProbe(cfg config.Config, references promptrefs.Names) (sandbox.ImagePr
 // kubeClient is the client of runtime.kubernetes: the kubeconfig's context it names, or the
 // kubeconfig's current one, which must then exist (decision 4: the restricted role's kubeconfig
 // sets none, so the configuration names it); with no kubeconfig, the pod's in-cluster credentials.
+// A kubeconfig whose cluster names its server or its proxy-url by a URL client-go cannot parse is
+// refused naming the file, the cluster and the field (kubeconfigURLs), before client-go quotes the
+// URL as written, user information and all.
 func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 	if k.Kubeconfig == "" {
 		rc, err := rest.InClusterConfig()
@@ -339,20 +345,53 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 	}
 	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		&clientcmd.ClientConfigLoadingRules{ExplicitPath: k.Kubeconfig}, &clientcmd.ConfigOverrides{CurrentContext: k.Context})
-	if k.Context == "" {
-		raw, err := loader.RawConfig()
-		if err != nil {
-			return nil, fmt.Errorf("read runtime.kubernetes.kubeconfig %s: %w", k.Kubeconfig, err)
-		}
+	raw, err := loader.RawConfig()
+	if err != nil {
+		return nil, fmt.Errorf("read runtime.kubernetes.kubeconfig %s: %w", k.Kubeconfig, err)
+	}
+	selected := k.Context
+	if selected == "" {
 		if raw.CurrentContext == "" {
 			return nil, fmt.Errorf("runtime.kubernetes.context is required: the kubeconfig %s sets no current context", k.Kubeconfig)
 		}
+		selected = raw.CurrentContext
+	}
+	if err := kubeconfigURLs(raw, selected); err != nil {
+		return nil, fmt.Errorf("runtime.kubernetes.kubeconfig %s: %w", k.Kubeconfig, err)
 	}
 	rc, err := loader.ClientConfig()
 	if err != nil {
 		return nil, fmt.Errorf("runtime.kubernetes.kubeconfig %s: %w", k.Kubeconfig, err)
 	}
 	return rc, nil
+}
+
+// kubeconfigURLs refuses the server and the proxy-url of the cluster the context named selected
+// uses where client-go cannot parse them, naming the cluster and the field and never the URL:
+// client-go's own refusals quote such a URL as written, user information included (rest's
+// DefaultServerURL hands back url.Parse's error at the first client, and clientcmd's validation
+// quotes the proxy-url, whose scheme must be http, https or socks5). A context or cluster the
+// kubeconfig does not hold is left to ClientConfig, whose refusal names them.
+func kubeconfigURLs(raw clientcmdapi.Config, selected string) error {
+	use := raw.Contexts[selected]
+	if use == nil {
+		return nil
+	}
+	cluster := raw.Clusters[use.Cluster]
+	if cluster == nil {
+		return nil
+	}
+	if cluster.Server != "" {
+		if _, _, err := rest.DefaultServerURL(cluster.Server, "", schema.GroupVersion{}, true); err != nil {
+			return fmt.Errorf("the server of cluster %s is not a URL client-go can parse", use.Cluster)
+		}
+	}
+	if cluster.ProxyURL != "" {
+		if u, err := url.Parse(cluster.ProxyURL); err != nil || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "socks5") {
+			return fmt.Errorf("the proxy-url of cluster %s is not an http, https or socks5 URL client-go can parse", use.Cluster)
+		}
+	}
+	return nil
 }
 
 // sandboxOptions translates the configuration into the runtime's Options, all but the worker
