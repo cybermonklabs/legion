@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The live fallback proof measures both rate-limit paths at the pinned Oh My Pi. A 429 retried
+  inside the transport returns after the host's five-minute suppression, while a terminal 429
+  returns after its sixty-second retry-after. The terminal pane requests every ten seconds so
+  an early return is visible. Both paths are checked independently of the refusal cooldown.
+time: 2026-11-24T20:22:49Z
+custom:
+  Issue: refusal-fallback-proof
