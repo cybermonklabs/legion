@@ -84,7 +84,7 @@ func (d *processDatabase) create(prefix string) error {
 		return err
 	}
 	d.host = server.Host
-	if err := execOn(d.adminURL, d.host, "create database "+name+" strategy file_copy"); err != nil {
+	if err := execOn(d.adminURL, d.host, "create database "+name); err != nil {
 		return err
 	}
 	d.name, d.url = name, databaseURL(*server, name)

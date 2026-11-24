@@ -128,7 +128,7 @@ func Empty(t testing.TB) string {
 	t.Helper()
 	ready(t)
 	name := randomName(t, "dispatch_test_")
-	if _, err := shared.admin.Exec(context.Background(), "create database "+name+" strategy file_copy"); err != nil {
+	if _, err := shared.admin.Exec(context.Background(), "create database "+name); err != nil {
 		t.Fatalf("create empty database: %v", err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
@@ -178,7 +178,7 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 		name := "dispatch_template_" + suffix
 		ctx := context.Background()
 		// The template is a file copy of template1, for the reason each clone of it is one.
-		if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+		if _, err := shared.admin.Exec(ctx, "create database "+name); err != nil {
 			entry.err = fmt.Errorf("create template database: %w", err)
 			return
 		}
@@ -205,7 +205,7 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 // cloneStatement returns the create database that makes name a copy of template's files rather
 // than a copy through the write-ahead log (the package comment says why).
 func cloneStatement(name, template string) string {
-	return "create database " + name + " template " + template + " strategy file_copy"
+	return "create database " + name + " template " + template + ""
 }
 
 // Main runs the package's tests, waits for their databases to drop, then drops every template

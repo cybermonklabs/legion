@@ -233,7 +233,7 @@ func censusDatabase(t *testing.T) string {
 		t.Fatalf("connect to the test server: %v", err)
 	}
 	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+	if _, err := conn.Exec(ctx, "create database "+name); err != nil {
 		t.Fatalf("create the census database: %v", err)
 	}
 	t.Cleanup(func() { dropCensusDatabase(t, admin.String(), name) })

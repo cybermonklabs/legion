@@ -47,7 +47,7 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	}
 	// A copy of template1's files: created the default way, through the write-ahead log, an empty
 	// database costs 4.4 MB of log (docs/testing.md, "A database a Go test creates").
-	adminExec(t, adminURL, server.Host, "create database "+name+" strategy file_copy")
+	adminExec(t, adminURL, server.Host, "create database "+name)
 	// `with (force)` ends every backend attached to the database, which the drop needs because a
 	// database a connection still holds cannot be dropped. That covers a connection the test left
 	// open, so one leaked pool cannot keep a database on a shared server for the rest of the run.

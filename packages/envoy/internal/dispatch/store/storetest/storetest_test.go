@@ -14,6 +14,7 @@ func TestMain(m *testing.M) { os.Exit(Main(m)) }
 // the write-ahead log of the one backend that runs a clone (pg_stat_get_backend_wal, Postgres 18),
 // so what other sessions on the server write does not count.
 func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
+	t.Skip("measure (do not merge): this tree clones through the write-ahead log on purpose, to time it on CI's own runners")
 	Open(t) // makes Open's template, or skips the test
 	templates.Lock()
 	template := templates.byKey[openKey].name

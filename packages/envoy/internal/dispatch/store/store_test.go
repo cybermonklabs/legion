@@ -1127,9 +1127,9 @@ func migratedTemplate(t *testing.T, admin url.URL, version int) string {
 		}
 	}
 	name := "dispatch_template_" + randomDatabaseSuffix(t)
-	statement := "create database " + name + " strategy file_copy"
+	statement := "create database " + name + ""
 	if base != "" {
-		statement = "create database " + name + " template " + base + " strategy file_copy"
+		statement = "create database " + name + " template " + base + ""
 	}
 	adminExec(t, admin, statement)
 	migratedTemplates.made = append(migratedTemplates.made, name)
@@ -1154,7 +1154,7 @@ func migratedTemplate(t *testing.T, admin url.URL, version int) string {
 // testdb.DatabaseOn's empty databases are), drops it when the test ends, and returns a store on it.
 func openDatabaseCopy(t *testing.T, admin url.URL, name, template string) *Store {
 	t.Helper()
-	adminExec(t, admin, "create database "+name+" template "+template+" strategy file_copy")
+	adminExec(t, admin, "create database "+name+" template "+template)
 	// `with (force)` ends any backend still attached, as testdb.DatabaseOn's drop does.
 	t.Cleanup(func() { adminExec(t, admin, "drop database if exists "+name+" with (force)") })
 	store, err := Open(context.Background(), databaseOn(admin, name))

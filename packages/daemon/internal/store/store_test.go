@@ -79,7 +79,7 @@ func emptyStore(t *testing.T) *Store {
 
 	name := "legion_store_test_" + randomSuffix(t)
 	// A file copy of template1 (docs/testing.md, "A database a Go test creates").
-	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+	if _, err := admin.Exec(ctx, "create database "+name); err != nil {
 		t.Fatalf("create %s: %v", name, err)
 	}
 	t.Cleanup(func() {

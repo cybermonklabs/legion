@@ -117,7 +117,7 @@ func create(dsn, prefix string) (string, func() error, error) {
 	}
 	// A copy of template1's files. Created the default way, from PostgreSQL 15, every page of
 	// template1 goes into the write-ahead log: 4.4 MB of log for each empty database.
-	if _, err := conn.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+	if _, err := conn.Exec(ctx, "create database "+name); err != nil {
 		_ = conn.Close(ctx)
 		return "", nil, fmt.Errorf("create %s: %w", name, err)
 	}

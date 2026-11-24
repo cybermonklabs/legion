@@ -230,7 +230,7 @@ func CheckTestPostgres(dir string) error {
 	steps := [][]string{
 		{testPGProgram, "check"},
 		{testPGProgram, "ensure"},
-		{"psql", "-X", "-q", TestPGDSN, "-c", "create database legion_probe_testpg strategy file_copy"},
+		{"psql", "-X", "-q", TestPGDSN, "-c", "create database legion_probe_testpg"},
 		{"psql", "-X", "-q", TestPGDSN, "-c", "drop database legion_probe_testpg with (force)"},
 	}
 	for _, step := range steps {

@@ -397,7 +397,7 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 		t.Fatalf("random database name: %v", err)
 	}
 	name := "coverage_scale_" + strings.ReplaceAll(scale.text, ".", "_") + "_" + hex.EncodeToString(suffix[:])
-	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+	if _, err := admin.Exec(ctx, "create database "+name); err != nil {
 		t.Fatalf("create the database of scale %s: %v", scale.text, err)
 	}
 	t.Cleanup(func() { dropScaleDatabase(t, admin, name) })

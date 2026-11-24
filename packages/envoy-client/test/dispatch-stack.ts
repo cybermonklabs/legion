@@ -131,7 +131,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
   try {
     // A copy of template1's files, as the Go tests' own fixture makes a scratch database
     // (testdb.create): the server applies its migrations into it at boot.
-    await admin.unsafe(`create database ${database} strategy file_copy`);
+    await admin.unsafe(`create database ${database}`);
     const bin = path.join(work, "bin");
     await buildGoBinaries({
       bin,

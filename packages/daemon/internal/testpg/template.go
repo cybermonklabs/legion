@@ -118,7 +118,7 @@ func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 // cloneStatement returns the create database that makes name a copy of the template's files rather
 // than a copy through the write-ahead log (the file comment says why).
 func cloneStatement(name string) string {
-	return "create database " + name + " template " + shared.template + " strategy file_copy"
+	return "create database " + name + " template " + shared.template + ""
 }
 
 // Main runs a package's tests, waits for their clones to drop, drops the template Clone copied,
@@ -227,7 +227,7 @@ func prepare(dsn string) error {
 		return err
 	}
 	// A file copy of template1, for the reason each clone of it is one.
-	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+	if _, err := admin.Exec(ctx, "create database "+name); err != nil {
 		return fmt.Errorf("create the template database: %w", err)
 	}
 	shared.template = name
