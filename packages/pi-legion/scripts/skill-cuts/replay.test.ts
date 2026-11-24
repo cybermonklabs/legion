@@ -3,7 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { type Arm, type InstalledCopy, snapshotTag } from "./arms";
+import { type Arm, buildArm, type InstalledCopy, snapshotTag } from "./arms";
+import { type Case, pathHash } from "./cases";
 import type { CheckoutCopy } from "./checkout";
 import {
   bodyIdentity,
@@ -1815,4 +1816,198 @@ test("a written case's reply that still only reads after five answered rounds of
   );
   expect(failed.replayed.checkoutRounds).toBe(5);
   expect(failed.replayed.step.message.content).toEqual(Array(6).fill(read));
+});
+
+// A case whose session read alpha by skill:// only names no copy of it (cases.ts's `pathCopy`):
+// its arms take the directory its read's `[Skill file: …]` line shows alpha installed in for one
+// (arms.ts's buildArm), so a reply's read by path of a file under it is a read of a skill file.
+
+/** A case of alpha of `kind` whose history read skill://alpha alone, its result under INSTALLED's
+ *  `[Skill file: …]` line; a written one's checkout is acme/proj's at SESSION_ROOT. */
+function urlOnlyCase(kind: "session" | "written"): Case {
+  const result = `[Skill file: ${INSTALLED}/SKILL.md]\n${SKILL_MD.replace(/\n$/, "")}`;
+  return {
+    id: `c-url-only-${kind}`,
+    cut: "acme-skills-1",
+    skill: "alpha",
+    baseFile: "SKILL.md",
+    line: { text: "2. Write each step's result on one line.", lineNumber: 9, lineCount: 10 },
+    criterion: {
+      pass: "The reply writes each step's result on one line.",
+      fail: "The reply spreads a step's result over more than one line.",
+    },
+    model: "claude-sonnet-5-5",
+    thinking: "off",
+    context: "devbox",
+    profile: { skills: PROFILE_SKILLS, plugins: [], contextFiles: [] },
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Run the alpha checklist." }] },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call_alpha",
+            name: "read",
+            arguments: { path: "skill://alpha" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_alpha",
+        toolName: "read",
+        content: [{ type: "text", text: result }],
+        isError: false,
+      },
+    ],
+    skillReads: [2],
+    realStep: { role: "assistant", content: [{ type: "text", text: "Step 1: done." }] },
+    violatingStep: { role: "assistant", content: [{ type: "text", text: "Step 1:\ndone." }] },
+    source: { store: "store_a", pathHash: pathHash("/sessions/alpha.jsonl"), kind },
+    ...(kind === "written"
+      ? {
+          checkout: {
+            repo: "acme/proj",
+            commit: "0123456789abcdef0123456789abcdef01234567",
+            root: SESSION_ROOT,
+            cwd: SESSION_ROOT,
+          },
+        }
+      : {}),
+    sessionStart: "2026-11-20T01:59:41.780Z",
+    secretsRemoved: 0,
+    sessionDigest: null,
+  };
+}
+
+/** The arm `name` (old, holding alpha's SKILL.md and references/x.md, or none) of `c`. */
+function urlOnlyArm(c: Case, name: "old" | "none"): Arm {
+  const old = path.join(scratch, `url-only-${Math.random()}`);
+  writeTree(old, { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  return buildArm(c, name, { old }, path.join(scratch, `url-only-scratch-${Math.random()}`));
+}
+
+/** A read by path of alpha's references/x.md under the installed directory. */
+const INSTALLED_X = readCall("toolu_x", `${INSTALLED}/references/x.md`);
+
+/** The answer to INSTALLED_X from the arm's files (0098 is Oh My Pi's tag of X_MD), or, in none,
+ *  which installs no alpha, Oh My Pi's not-found result for the path read. */
+const INSTALLED_X_ANSWERS = {
+  old: toolResult(
+    "toolu_x",
+    `[${INSTALLED}/references/x.md#0098]\n1:# X\n2:\n3:Each alpha step's result is one short line.`,
+    false
+  ),
+  none: toolResult("toolu_x", `Path '${INSTALLED}/references/x.md' not found`, true),
+};
+
+// Catches: a session case that read its skill by skill:// only judged on a reply that reads
+// skill://alpha and a file under its installed directory by path together (the defect: 11 judged
+// replies of ce-simplify-code's cases), or that read answered with one text in every arm.
+test("in a session case that read its skill by skill:// only, a reply's read of skill://alpha and a read by path of a file under the installed directory its header shows are answered, from the arm's files in old and in none with Oh My Pi's not-found result for the path, and the run goes on to the act", async () => {
+  const c = urlOnlyCase("session");
+  const url = readCall("toolu_url", "skill://alpha");
+  const skillAnswers = {
+    old: toolResult(
+      "toolu_url",
+      `[Skill file: ${INSTALLED}/SKILL.md]\n${SKILL_MD.replace(/\n$/, "")}`,
+      false
+    ),
+    none: toolResult("toolu_url", "Unknown skill: alpha\nAvailable: beta", true),
+  };
+  for (const name of ["old", "none"] as const) {
+    const arm = urlOnlyArm(c, name);
+    const { gateway, bodies } = scripted([[url, INSTALLED_X], [ACT]]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [skillAnswers[name], INSTALLED_X_ANSWERS[name]],
+    });
+    const from = name === "old" ? "arm" : "absent";
+    expect(replayed.reads).toEqual([
+      [
+        { skill: "alpha", file: "SKILL.md", by: "skill", from, isError: name === "none" },
+        { skill: "alpha", file: "references/x.md", by: "path", from, isError: name === "none" },
+      ],
+    ]);
+    expect(replayed.rounds).toBe(1);
+    expect(replayed.step.message.content).toEqual([url, INSTALLED_X, ACT]);
+    expect(JSON.stringify(bodies)).not.toContain(arm.skillDir ?? "no directory");
+  }
+});
+
+// Catches: a written case that read its skill by skill:// only whose reply reads a file under the
+// installed directory by path beside a file of the checkout left with no verdict, as
+// unanswered-read (the defect: 94 runs of using-subagents' written cases), or that read answered
+// from the checkout.
+test("in a written case that read its skill by skill:// only, a reply's read by path of a file under the installed directory and its read of a checkout file are answered in one round, each from its own source, and the act after it is judged", async () => {
+  const c = urlOnlyCase("written");
+  const guide = INSPECTION[0] as ContentBlock;
+  const guideAnswer = toolResult(
+    "toolu_read",
+    `[docs/guide.md#${snapshotTag(GUIDE_MD)}]\n1:# Guide\n2:\n3:Run the app.`,
+    false
+  );
+  for (const name of ["old", "none"] as const) {
+    const arm = urlOnlyArm(c, name);
+    const copy = checkoutCopy();
+    const { gateway, bodies } = scripted([[INSTALLED_X, guide], [WRITE_ACT]]);
+    const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, {
+      checkout: copy,
+    });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [INSTALLED_X_ANSWERS[name], guideAnswer],
+    });
+    expect({ rounds: replayed.rounds, checkoutRounds: replayed.checkoutRounds }).toEqual({
+      rounds: 0,
+      checkoutRounds: 1,
+    });
+    expect(replayed.reads).toEqual([
+      [
+        {
+          skill: "alpha",
+          file: "references/x.md",
+          by: "path",
+          from: name === "old" ? "arm" : "absent",
+          isError: name === "none",
+        },
+        { from: "checkout", tool: "read", input: guide.input, isError: false },
+      ],
+    ]);
+    expect(replayed.step.message.content).toEqual([INSTALLED_X, guide, WRITE_ACT]);
+    expect(JSON.stringify(bodies)).not.toContain(copy.dir);
+  }
+});
+
+// Catches: a read of a directory under the installed directory answered as a file of the skill.
+test("in a case that read its skill by skill:// only, a read of a directory under the installed directory is no skill read: a session case's run is judged on it, and a written case's gets no verdict, as unanswered-read", async () => {
+  const listing = readCall("toolu_dir", `${INSTALLED}/references`);
+  const session = urlOnlyArm(urlOnlyCase("session"), "old");
+  const { gateway, bodies } = scripted([[listing], [ACT]]);
+  const judged = await replayOnce({ ...BODY, stream: false }, session, gateway);
+  expect(bodies).toHaveLength(1);
+  expect({ rounds: judged.rounds, step: judged.step.message.content }).toEqual({
+    rounds: 0,
+    step: [listing],
+  });
+
+  const written = urlOnlyArm(urlOnlyCase("written"), "old");
+  const failed = await replayOnce(
+    { ...BODY, stream: false },
+    written,
+    scripted([[listing, INSPECTION[0] as ContentBlock], [WRITE_ACT]]).gateway,
+    { checkout: checkoutCopy() }
+  ).then(
+    () => "judged",
+    (error: unknown) => error
+  );
+  if (!(failed instanceof UnansweredRead)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toBe(
+    `${UNANSWERED_READ}: read {"path":"${INSTALLED}/references"}: ${INSTALLED}/references is no file of the session's checkout ${SESSION_ROOT}`
+  );
+  expect(failed.replayed.checkoutRounds).toBe(0);
 });

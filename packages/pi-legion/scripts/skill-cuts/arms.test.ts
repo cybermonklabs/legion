@@ -1564,7 +1564,8 @@ test("a read by path with a selector other than one line range, one of another c
     expect(pathFile(each, `${COPY}/SKILL.md:raw`)).toBeUndefined();
     expect(pathFile(each, `${OTHER_COPY}/SKILL.md`)).toBeUndefined();
     const bare = pathArm(noCopy, name);
-    expect(bare.pathCopy).toBeUndefined();
+    // Its copy is the directory its skill:// reads show alpha installed in, which COPY is not under.
+    expect(bare.pathCopy).toEqual({ dir: INSTALLED, shownDir: INSTALLED, rows: "hashline" });
     for (const index of [7, 8, 9, 10, 11, 12, 13, 14]) {
       expect(bare.messages).toContainEqual(pathMessages[index]);
     }
@@ -1659,6 +1660,58 @@ test("a whole read of the copy relative to the session's working directory, or u
   const unresolved = pathArm({ ...resolved, pathCopy: noCwd, skillReads: [2, 4, 10] }, "new");
   expect(unresolved.messages[8]).toEqual(resolved.messages[8]);
   expect(pathFile(unresolved, relative)).toBeUndefined();
+});
+
+// Catches: a case whose session read its skill by skill:// only, whose arms leave a read by path of
+// a file under the installed directory its `[Skill file: …]` line shows to the step (the defect:
+// ce-simplify-code's session cases judged on such reads, using-subagents' written cases left with no
+// verdict), or answer it with one text in every arm.
+test("a case that read its skill by skill:// only answers a read by path of a file under the installed directory its header shows as a read of the cut's own copy, and none answers it as not found", () => {
+  const x = `${INSTALLED}/references/x.md`;
+  const copy = { dir: INSTALLED, shownDir: INSTALLED, rows: "hashline" as const };
+  // f1Case names no pathCopy, and its reads of alpha are skill:// reads under INSTALLED. Its
+  // history is as before: BF93 and B3C8 are Oh My Pi's tags of F1's SKILL.md and references/x.md.
+  const old = arm("old");
+  expect(old.pathCopy).toEqual(copy);
+  expect(JSON.stringify(old.messages)).toBe(JSON.stringify(f1Case.messages));
+  expect(pathFile(old, x)).toEqual({ text: `[${x}#B3C8]\n${numbered(f1File(4))}`, isError: false });
+  expect(pathFile(old, `${INSTALLED}/SKILL.md:1-5`)?.text).toStartWith(
+    `[${INSTALLED}/SKILL.md#BF93]\n1:---\n2:name: alpha\n`
+  );
+  // A directory under it is not answered: Oh My Pi lists it, which the arms do not rebuild.
+  expect(pathFile(old, `${INSTALLED}/references`)).toBeUndefined();
+  const fresh = arm("new");
+  expect(pathFile(fresh, `${INSTALLED}/SKILL.md`)).toEqual({
+    text: `[${INSTALLED}/SKILL.md#${snapshotTag(newSkill)}]\n${numbered(newSkill)}`,
+    isError: false,
+  });
+  expect(pathFile(fresh, x)).toEqual({ text: `Path '${x}' not found`, isError: true });
+  const none = arm("none");
+  expect(none.pathCopy).toEqual(copy);
+  expect(pathFile(none, x)).toEqual({ text: `Path '${x}' not found`, isError: true });
+  // The arm of ours answers it as a read of the cut's own copy: our file at that path.
+  const ours = withOurs(f1Case, "ours", RENAMED);
+  expect(ours.pathCopy).toEqual(copy);
+  expect(pathFile(ours, x)).toEqual(pathFile(old, x));
+  expect(pathFile(withOurs(f1Case, "ours", SHORT), x)).toEqual({
+    text: `Path '${x}' not found`,
+    isError: true,
+  });
+
+  // A case whose reads show no installed directory names none.
+  const bare = structuredClone(f1Case);
+  for (const index of bare.skillReads) {
+    const part = bare.messages[index]?.content?.[0];
+    if (part) part.text = stripSkillHeader(part.text ?? "");
+  }
+  const plain = buildArm(
+    bare,
+    "old",
+    { old: oldDir, new: newDir },
+    path.join(scratch, "bare-copy")
+  );
+  expect(plain.pathCopy).toBeUndefined();
+  expect(pathFile(plain, "/skills/alpha/references/x.md")).toBeUndefined();
 });
 
 // Catches: a long line of an arm's file shown whole where Oh My Pi cuts it, and a file Oh My Pi

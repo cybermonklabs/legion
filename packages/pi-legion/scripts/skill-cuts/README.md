@@ -385,10 +385,12 @@ calls as it reads a Messages reply's, so its request names no model, route or ar
 
 A reply whose every tool call reads a skill file is answered and sent again, in the body's API
 (`function_call_output` items on the Responses route), at most 3 rounds (`MAX_SKILL_ROUNDS`). A
-skill file is a `skill://` read of any skill, a whole read by path of the cut's own copy, or a
-whole read by path of another skill the profile lists (a path that ends `/<name>/SKILL.md` or holds
-`skills/<name>/references/`, as `count.sql` places a read); a `skill://` read, or a read by path of
-the cut's own copy, with one line range (`:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`; `arms.ts`'s
+skill file is a `skill://` read of any skill, a whole read by path of the cut's own copy (for a case
+that names no copy, of a file under the directory its `skill://` reads show the skill installed
+in: "A case that names no copy" below), or a whole read by path of another
+skill the profile lists (a path that ends `/<name>/SKILL.md` or holds `skills/<name>/references/`,
+as `count.sql` places a read); a `skill://` read, or a read by path of the cut's own copy or that
+directory, with one line range (`:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`; `arms.ts`'s
 `readRange`) is one too, in every run, session and written cases alike, answered with the lines of
 its range in Oh My Pi's range form: a `skill://` read under its `[Skill file: <path>]` line with
 no row numbers, as a whole one, a read by path as the checkout's ranged reads below, each with a
@@ -402,7 +404,8 @@ its capture installed (`<cache-dir>/skills/<key>`), the same text in every arm; 
 the arm of ours, a `skill://` read of the case's skill from the copy of another source that the
 arm lists under the skill's name (below), where it lists one, as another listed skill's; a skill
 the arm does not install (the case's skill in `none` and the arm of ours otherwise, or a skill
-the profile does not list) with Oh My Pi's `Unknown skill: <name>` text, and the run goes on.
+the profile does not list) with Oh My Pi's `Unknown skill: <name>` text (a read by path of the
+case's skill in `none` with `Path '<path>' not found`), and the run goes on.
 The judged step is each answered round's read calls, without
 their results, then the first reply that holds another call or none, so a case whose line governs
 a read of a file of the skill is judged on that read. A reply after round 3 that still only reads
@@ -738,7 +741,8 @@ and the stage records the read's path (`ours.removedReads`). A whole read of the
 path (a case's `pathCopy`) is treated the same way: our file at that path, in Oh My Pi's path-read
 form, or the call and its result removed (and the path recorded) where ours has no such file. So a
 renamed unchanged copy of their skill gives old's texts but for the name. In a reply, a read of
-`skill://<ours>/…` is answered from our directory, a read of the copy by its path from our file at
+`skill://<ours>/…` is answered from our directory, a read of the copy by its path (or, in a case
+that names no copy, of a file under their installed directory, below) from our file at
 that path (or as not found where ours has none), and a read of `skill://<theirs>/…` from the copy
 of another source the arm lists under their name (recorded as answered by that copy), or, where
 it lists none, with Oh My Pi's `Unknown skill: <theirs>` text (recorded as answered by no copy);
@@ -1872,6 +1876,16 @@ them. Oh My Pi shows some files in a form the arms do not rebuild (not Markdown 
 UTF-8, longer than 300 lines or 50 KB, or holding a line that opens a git conflict block): building
 an arm of such a case stops with an error naming the case, and a replay takes such a read for the
 judged step.
+
+A case that names no copy (its session read the skill by `skill://`, and any read of it by path
+stays as recorded) takes for one the directory its first `[Skill file: …]` line shows the skill
+installed in, less the file it read, in every arm (arms.ts's `pathCopyOf`; none where no such line
+shows one). A replay answers a reply's whole read by path of a file under that directory, or a
+read of one with one line range, as it answers a read of the copy: each arm's own file at the path
+read, its hashline line showing the file under the directory a recorded read of a file there
+shows, else the absolute one; `none` with `Path '<path>' not found`; the arm of ours with our file
+at that path. A read of a directory under it is no skill read. Such a copy names no working or home
+directory, so a read of it by a relative or `~` path is not answered either.
 
 A skill can reach a session other than by its listing line and a read, and each arm then gives the
 session its own text of it there too (`arms.ts`). The Envoy plugin puts dispatch-first into every

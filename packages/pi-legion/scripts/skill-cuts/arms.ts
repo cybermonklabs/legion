@@ -58,6 +58,16 @@
  * conflict block (a warning follows it). `pathFormFault` says which, so the case builder can leave
  * such a case out before it writes it.
  *
+ * A case that names no such copy (its session read the skill by `skill://`, and any read of it by
+ * path stays as recorded, build.ts's excluded reads) takes for its copy the directory its first
+ * `[Skill file: …]` line shows the skill installed in, less the file it read (`pathCopyOf`; none
+ * when no such line shows one), the same in every arm. A new whole read by path of a file under
+ * that directory, or one of one line range, is answered as a new read of the cut's own copy is
+ * (`pathFile`, below): from the arm's file, at the path read, its hashline line naming the file
+ * under the directory a recorded read of a file there shows, else the absolute one, and in `none`,
+ * which installs no copy of the skill, Oh My Pi's not-found result. Such a copy names no working
+ * or home directory, so a read of it by a relative or `~` path is not answered.
+ *
  * `ours` is a skill whose frontmatter name (and directory name) may differ from the case's skill
  * (`ArmDirs.ours` gives its directory and its name). Its profile is the case's less each copy of
  * their skill's source, as `none` leaves them out, with ours under our name in the place of the
@@ -78,12 +88,14 @@
  * (and a read by path's snapshot tag). A reply's `skill://` read of their skill reads the copy of
  * another source the arm lists under their name, where it lists one (`caseNameCopy`, below), and
  * else gets Oh My Pi's unknown-skill text (`unknownSkill`): the arm does not install theirs; a
- * reply's whole read by path of the cut's own copy is answered from our file at that path, or as
- * not found where ours lacks it.
+ * reply's whole read by path of the cut's own copy, or of the installed directory a case that names
+ * no copy takes for one, is answered from our file at that path, or as not found where ours lacks
+ * it.
  *
  * `skillFile(arm, file)` answers one new `skill://` read the same way, at the arm's
- * `installedDir`, and `pathFile(arm, target)` one new read by path, its hashline line naming the
- * file under `PathCopy.shownDir`; replay.ts answers a reply's reads with them. cases.ts's
+ * `installedDir`, and `pathFile(arm, target)` one new read by path of a file of the arm's copy
+ * (`Arm.pathCopy`: the cut's own, or the installed directory), its hashline line naming the file
+ * under `PathCopy.shownDir`; replay.ts answers a reply's reads with them. cases.ts's
  * `skillReadFile(arm.skill, target)` and `pathReadFile(arm, target)` say which file a read reads.
  *
  * `otherSkillRead(arm, copies, target)` answers one new read of a file of another skill, the
@@ -246,11 +258,13 @@ export interface DispatchAnswer {
  *  lines alone. */
 export type PathRows = "hashline" | "numbered" | "plain";
 
-/** The cut's own copy of a case's skill as the session read it by path (see the file's header):
- *  `dir`, its absolute directory, and `cwd` and `home`, what resolves a read's relative or `~`
- *  path to it (cases.ts's `pathCopy` and `resolvedReadPath`); `shownDir`, the directory a hashline
- *  line shows its files under (`""` when it shows them relative to the copy itself); `rows`, how
- *  a new read of it shows its rows. */
+/** The copy of a case's skill whose files a read by path reads (see the file's header): the cut's
+ *  own copy as the session read it by path (cases.ts's `pathCopy`), or, for a case that names none,
+ *  the directory its `skill://` reads show the skill installed in (`pathCopyOf`). `dir`, its
+ *  absolute directory, and `cwd` and `home`, what resolves a read's relative or `~` path to it
+ *  (cases.ts's `pathCopy` and `resolvedReadPath`; absent for an installed directory); `shownDir`,
+ *  the directory a hashline line shows its files under (`""` when it shows them relative to the
+ *  copy itself); `rows`, how a new read of it shows its rows. */
 export interface PathCopy {
   readonly dir: string;
   readonly cwd?: string;
@@ -300,8 +314,9 @@ export interface Arm {
     readonly replacedOwn: boolean;
     readonly removedReads: readonly string[];
   };
-  /** The cut's own copy of the skill the case's session read by path, the same in every arm.
-   *  Absent when the case names none. */
+  /** The copy of the skill a read by path reads, the same in every arm (`pathCopyOf`): the cut's
+   *  own copy the case's session read by path, else the installed directory its `skill://` reads
+   *  show. Absent when the case names no copy and its reads show no installed directory. */
   readonly pathCopy?: PathCopy;
   /** How a new read by path shows its rows in the case's session (`pathRowsOf`). Absent for an
    *  arm built from no case (a load test's), whose reads by path show hashline rows. */
@@ -839,8 +854,9 @@ function skillRangeText(
 }
 
 /** The answer to a new read of `target` from the arm's files, when it is a read of a file of the
- *  cut's own copy of the skill by path (cases.ts's `pathReadFile` of `arm.pathCopy`), whole or of
- *  one line range (`readRange`): Oh My Pi's result (a range as `pathRangeAnswer` gives it), its
+ *  arm's copy of the skill by path (cases.ts's `pathReadFile` of `arm.pathCopy`: the cut's own
+ *  copy, or the installed directory a case that names none takes for one), whole or of one line
+ *  range (`readRange`): Oh My Pi's result (a range as `pathRangeAnswer` gives it), its
  *  hashline line naming the file under the directory the case's reads of the copy show
  *  (`PathCopy.shownDir`) and its rows as they show them, or its not-found result for the path as
  *  read. Undefined for any other read (another selector among them), a read of a directory of
@@ -901,33 +917,39 @@ function pathRowsOf(c: Case, targets: ReadonlyMap<string, string>): PathRows {
   return rows ?? (edit ? "hashline" : "plain");
 }
 
-/** The cut's own copy of `c`'s skill as its session read it by path (PathCopy), or undefined when
- *  `c` names none: `shownDir` from the first hashline line of a read of a file of the copy that
- *  shows that file's path, else the copy's directory; `rows` as the session shows them
+/** The copy of `c`'s skill a read by path reads (PathCopy), or undefined when it has none: the
+ *  cut's own copy the case names (`c.pathCopy`), else the directory the case's `skill://` reads
+ *  `reads` show the skill installed in (`shownInstalledDir`), whose files a read by path opens as
+ *  Oh My Pi's read does; `shownDir` from the first hashline line of a read of a file of the copy
+ *  that shows that file's path, else the copy's directory; `rows` as the session shows them
  *  (`pathRowsOf`). */
 function pathCopyOf(
   c: Case,
   targets: ReadonlyMap<string, string>,
-  rows: PathRows
+  rows: PathRows,
+  reads: Iterable<{ readonly file: string; readonly header: string | undefined }>
 ): PathCopy | undefined {
-  if (c.pathCopy === undefined) return undefined;
+  const installed = shownInstalledDir(reads);
+  const place: Case["pathCopy"] =
+    c.pathCopy ?? (installed === undefined ? undefined : { dir: installed });
+  if (place === undefined) return undefined;
   let shownDir: string | undefined;
   for (const message of c.messages) {
     if (message.role !== "toolResult" || message.toolName !== "read") continue;
     const target = targets.get(message.toolCallId ?? "");
     if (target === undefined) continue;
     const shown = shownRows(message)?.shown;
-    const file = pathReadFile(c, target);
+    const file = pathReadFile({ pathCopy: place }, target);
     if (file === undefined || shown === undefined) continue;
     if (shown === file) shownDir = "";
     else if (shown.endsWith(`/${file}`)) shownDir = shown.slice(0, -(file.length + 1));
     if (shownDir !== undefined) break;
   }
   return {
-    dir: c.pathCopy.dir,
-    ...(c.pathCopy.cwd === undefined ? {} : { cwd: c.pathCopy.cwd }),
-    ...(c.pathCopy.home === undefined ? {} : { home: c.pathCopy.home }),
-    shownDir: shownDir ?? c.pathCopy.dir,
+    dir: place.dir,
+    ...(place.cwd === undefined ? {} : { cwd: place.cwd }),
+    ...(place.home === undefined ? {} : { home: place.home }),
+    shownDir: shownDir ?? place.dir,
     rows,
   };
 }
@@ -1317,8 +1339,9 @@ function withoutReads(
 
 /** The arm of ours of case `c` (the module's comment says what it holds), from `ours`, our
  *  directory and name; `history` holds the case's `skill://` reads of its skill's files and its
- *  whole reads by path of the cut's own copy, each by index, and that copy; `installedDir` is the
- *  reads' installed directory. */
+ *  whole reads by path of the cut's own copy, each by index, and the copy a read by path reads
+ *  (`pathCopyOf`: that copy, or the installed directory); `installedDir` is the reads' installed
+ *  directory. */
 function oursArm(
   c: Case,
   ours: { readonly dir: string; readonly name: string },
@@ -1773,17 +1796,25 @@ export function installedDirOf(header: string | undefined, file: string): string
   return header?.endsWith(`/${file}`) ? header.slice(0, -(file.length + 1)) : undefined;
 }
 
-/** The directory the arms show skill `skill` installed in, from its reads `reads` in order: the
- *  first whose result header shows one (`installedDirOf`), else `/skills/<skill>`. */
-export function installedDirIn(
-  skill: string,
+/** The directory skill reads `reads` show their skill installed in: the one the first of them, in
+ *  order, whose result header shows one shows (`installedDirOf`), or undefined when none does. */
+function shownInstalledDir(
   reads: Iterable<{ readonly file: string; readonly header: string | undefined }>
-): string {
+): string | undefined {
   for (const { file, header } of reads) {
     const dir = installedDirOf(header, file);
     if (dir !== undefined) return dir;
   }
-  return path.join("/skills", skill);
+  return undefined;
+}
+
+/** The directory the arms show skill `skill` installed in, from its reads `reads` in order: the
+ *  first whose result header shows one (`shownInstalledDir`), else `/skills/<skill>`. */
+export function installedDirIn(
+  skill: string,
+  reads: Iterable<{ readonly file: string; readonly header: string | undefined }>
+): string {
+  return shownInstalledDir(reads) ?? path.join("/skills", skill);
 }
 
 /** `skills`, the profile of `none` or `ours` once each copy of the case's skill's source is gone
@@ -1837,12 +1868,11 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
   if (fault !== undefined) throw new InjectionRefused(`case ${c.id}: ${fault}`);
   const targets = readTargets(c.messages);
   const pathRows = pathRowsOf(c, targets);
-  const pathCopy = pathCopyOf(c, targets, pathRows);
   // What every arm of the case shares to answer a new read of another skill (otherSkillRead).
   const shared = { pathRows, skillDirs: skillDirsOf(c, targets) };
   // The case's `skill://` reads, and its reads of the cut's own copy by path, by index.
   const reads = new Map<number, HistoryRead>();
-  const pathReads = new Map<number, PathRead>();
+  const copyReads = new Map<number, Omit<PathRead, "copy">>();
   for (const index of c.skillReads.toSorted((a, b) => a - b)) {
     const message = c.messages[index];
     const target = targets.get(message?.toolCallId ?? "") ?? "";
@@ -1852,14 +1882,21 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     if (file !== undefined) {
       const header = skillHeaderPath(message?.content?.[0]?.text ?? "");
       reads.set(index, { file, target, header, id: message?.toolCallId ?? "" });
-    } else if (byPath !== undefined && pathCopy !== undefined) {
-      pathReads.set(index, { file: byPath, target, id: message?.toolCallId ?? "", copy: pathCopy });
+    } else if (byPath !== undefined) {
+      copyReads.set(index, { file: byPath, target, id: message?.toolCallId ?? "" });
     } else {
       throw new Error(`case ${c.id}: skillReads index ${index} is not a read of a skill file`);
     }
   }
   // The installed directory: the first header's path less the file it read.
   const installedDir = installedDirIn(c.skill, reads.values());
+  // The copy a read by path reads: the cut's own copy the case names, which each of `copyReads`
+  // reads, else the installed directory the headers show.
+  const pathCopy = pathCopyOf(c, targets, pathRows, reads.values());
+  const pathReads = new Map<number, PathRead>();
+  for (const [index, read] of copyReads) {
+    if (pathCopy !== undefined) pathReads.set(index, { ...read, copy: pathCopy });
+  }
 
   if (name === "ours") {
     if (dirs.ours === undefined) throw new Error(`case ${c.id}: the ours arm needs --ours`);

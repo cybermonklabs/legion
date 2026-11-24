@@ -7,9 +7,11 @@
  * A reply whose every tool call reads a skill file is not the step: the agent is still loading
  * skills. A read of a skill file is a `read` of a file of the arm's skill (`skill://<skill>` or
  * `skill://<skill>/<path>`, as cases.ts's `skillReadFile` reads one, or a whole read by path of a
- * file of the cut's own copy of the skill, as `pathReadFile` reads one), or of a file of another
+ * file of the arm's copy of the skill, as `pathReadFile` reads one: the cut's own copy the case
+ * names, or, for a case that names none, the directory its `skill://` reads show the skill
+ * installed in, arms.ts's `Arm.pathCopy`), or of a file of another
  * skill (arms.ts's `otherSkillRead`: a `skill://` read of any other skill, or a whole read by path
- * of a skill the profile lists); a `skill://` read, and a read by path of the cut's own copy, with
+ * of a skill the profile lists); a `skill://` read, and a read by path of the arm's copy, with
  * one line range (arms.ts's `readRange`: `:N-M`, `:N+K`, `:N`) is one too, answered with the lines
  * of its range in Oh My Pi's range form (arms.ts's `skillFileRange` and `pathRangeAnswer`: a line
  * before, three after, and the count of the lines left), in every run, session and written cases
@@ -25,7 +27,7 @@
  * ours under its own name, a read of the case's skill is answered so from such a copy too, where
  * the arm lists one once their copies are gone, and else with Oh My Pi's unknown-skill text
  * (arms.ts's `unknownSkill`), since that arm does not install theirs; a read by path of the
- * cut's own copy is answered from our file at that path. Each read of another skill is answered
+ * arm's copy is answered from our file at that path. Each read of another skill is answered
  * from that skill's installed copy (`ReplayOptions.copies`, context.ts's `installedCopies` of the
  * arm's capture's record), the same text in every arm, and a read of a skill the arm does not
  * install gets Oh My Pi's unknown-skill result. The answers go in the form Oh My Pi sends a tool
@@ -357,9 +359,9 @@ export interface SkillRead extends AnsweredCall {
  *  directory of the arm's skill is none: Oh My Pi answers it with a listing, which the arm does
  *  not rebuild; nor is a read by path that `pathFile` does not answer, nor one `otherSkillRead`
  *  does not, nor a `skill://` range past the end of its file (a range past the end of a file of
- *  the cut's copy read by path gets the pin's notice, `pathFile`). In the arm of ours that lists
- *  no such copy, a read of the case's skill (`arm.ours.theirs`) gets Oh My Pi's unknown-skill
- *  text (`unknownSkill`): the arm does not install it. */
+ *  the arm's copy read by path, `arm.pathCopy`, gets the pin's notice, `pathFile`). In the arm of
+ *  ours that lists no such copy, a read of the case's skill (`arm.ours.theirs`) gets Oh My Pi's
+ *  unknown-skill text (`unknownSkill`): the arm does not install it. */
 function skillRead(
   id: string,
   target: string,
