@@ -217,8 +217,6 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 		t.Fatalf("request Machine's Assignees = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", m.Assignees)
 	}
 
-	// The read judgeDispatch builds asks the Dispatch at BROKER_JUDGE_DISPATCH_URL for an issue's
-	// assignee under the token BROKER_JUDGE_DISPATCH_TOKEN_FILE holds.
 	asked := make(chan string, 1)
 	stand := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {

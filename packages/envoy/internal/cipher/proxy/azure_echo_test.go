@@ -145,10 +145,7 @@ func tokenEndpointNamed(t *testing.T, r *rig, names ...string) {
 // TestAnExchangeWhoseEndpointsCertificateNamesTheTokenWritesNoneOfIt: the command's exchange goes
 // to a token endpoint whose certificate names other hosts than the bound one, the real federated
 // token among them. crypto/x509's error lists every name it holds, with no quotation mark for
-// logmask.HidePeerBytes to find, so the refusal of the exchange and its line write redact's fixed
-// words for the failure in its place (upstreamReason, redact.TLSWords), as an upstream failure's
-// line does, and hold none of the token. The answer holds the words whole; the line's reason,
-// which names the endpoint before them and is cut to 256 bytes, holds their start.
+// logmask.HidePeerBytes to find.
 func TestAnExchangeWhoseEndpointsCertificateNamesTheTokenWritesNoneOfIt(t *testing.T) {
 	r, _ := newAzureRig(t, Options{})
 	tokenEndpointNamed(t, r, azureRealFederated, "other.example.net")

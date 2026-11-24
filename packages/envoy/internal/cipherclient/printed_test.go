@@ -321,12 +321,8 @@ func TestDiscoveryGoesThroughTheClientEveryOtherCallDoes(t *testing.T) {
 	}
 }
 
-// TestARedirectedDiscoveryPrintsItsStatus: the client a discovery goes through follows no redirect
-// (clientOf), so a 302 is the issuer's answer and prints as its status, and the host its Location
-// names is asked nothing. A discovery the issuer answered 404 prints that status, and its error
-// still unwraps to go-oidc's own: the control. Each status is looked for as the error prints one
-// ("HTTP 302"), never as its digits alone, which the issuer's own address in the same error can
-// hold (port 33025 did).
+// Each status is looked for as the error prints one ("HTTP 302"), never as its digits alone, which
+// the issuer's own address in the same error can hold (port 33025 did).
 func TestARedirectedDiscoveryPrintsItsStatus(t *testing.T) {
 	target, asked := redirectstest.Target(t)
 	redirected := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {

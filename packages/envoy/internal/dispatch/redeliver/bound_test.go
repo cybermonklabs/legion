@@ -27,7 +27,7 @@ import (
 
 // The sweep writes GitHub's text into its lines and its errors: a delivery's GUID, its event and
 // its action, the keys of its bucket, every one of which holds a GUID, and GitHub's own answers to
-// its requests: an error's body and a next page link, which a transport error can name as its URL.
+// its requests: an error's body and a next page link.
 // GitHub bounds none of them, so each is shown as githubapp.ShownBody shows GitHub's text: whole
 // up to 512 runes, and past that its first 512 runes and `… (<n> bytes)`. Each place names the
 // size of the text it cut:
@@ -38,15 +38,6 @@ import (
 //   - The githubapp client cuts GitHub's answers once, where each enters the error it answers the
 //     sweep with. It cuts a refusal's body and a next page link alone, each with its own size
 //     (requireCut).
-//   - A transport error of the client names its URL as ShownBody shows it, then the URL it asked
-//     as redact.Unanswered names it, and its cause by redact.Unanswered: a line of the answer its
-//     cause quotes is the answering party's words, which can echo the App's JWT, so it prints as
-//     its class and none of the line (requireClassOnly).
-//
-// A value of a listing GitHub answers 200 that the client cannot decode prints none of itself: the
-// client decodes the answer through redact.Answer.Decode, whose error names the member that did not
-// decode and the types around it, quotes none of the value, whole or cut, and reaches none of the
-// decoder's own errors, whose text quotes it (requireMemberOnly).
 //
 // The tests here give each GUID, event and action boundRunes runes, past that bound, and keep the
 // GUID within nats' key alphabet so that it reaches every site. They give each of GitHub's answers
@@ -139,9 +130,7 @@ func lineAttr(line, name string) string {
 
 // sighting is one place that shows a reader a text of GitHub's: where it is, what it shows, and
 // the text. alone is a place that shows that text and nothing else, a line's attribute; any other
-// is a text that holds it among words of its own, an error. err is that error itself where the test
-// holds it (the error the sweep answered), and nil where the place is only its text (a line's
-// attribute).
+// is a text that holds it among words of its own, an error.
 type sighting struct {
 	where, shown, text string
 	alone              bool
@@ -169,9 +158,6 @@ func requireCut(t *testing.T, s sighting) {
 	}
 }
 
-// requireClassOnly fails the test unless s names its failure by its class alone and holds none of
-// its text: a transport error whose cause quotes a line of the answer, which the githubapp client
-// prints through redact.Unanswered, since whoever answers in GitHub's place writes that line.
 func requireClassOnly(t *testing.T, s sighting) {
 	t.Helper()
 	switch start := s.text[:min(len(s.text), 32)]; {
@@ -184,16 +170,8 @@ func requireClassOnly(t *testing.T, s sighting) {
 	}
 }
 
-// listingNotDecoded is the githubapp client's error for a page of the listing whose delivered_at
-// does not decode: its own words, and redact.Answer.Decode's fixed text, which names the member by
-// the path the page's type gives it, the type of the page and the type of the member, and no value.
 const listingNotDecoded = `decode webhook deliveries: the answer's "(item).delivered_at" does not decode where a list holds a time.Time`
 
-// requireMemberOnly fails the test unless s names the delivered_at that did not decode and holds
-// none of its value, s.text: the client decodes the page through redact.Answer.Decode, whose error
-// quotes no value, whole or cut, and reaches none of the decoder's own errors. So s is the sweep's
-// words, the time it listed since, and the client's fixed text (listingNotDecoded), and the error
-// itself, where the test holds it, reaches no *time.ParseError, whose text quotes the value.
 func requireMemberOnly(t *testing.T, s sighting) {
 	t.Helper()
 	const sweepWords = "list webhook deliveries since "
@@ -769,8 +747,7 @@ func answerMalformed(t *testing.T, w http.ResponseWriter) {
 
 // failedListing sweeps once and then runs one sweep of the running loop, each of which fails at
 // the listing (what names why), and answers the places that show text: the error the sweep
-// answered, whose sighting holds the error itself too (err), and the WARN line the running sweep
-// logs its error with (sweepAndReport).
+// answered, and the WARN line the running sweep logs its error with (sweepAndReport).
 func (h *harness) failedListing(t *testing.T, what, text string) []sighting {
 	t.Helper()
 	_, err := h.sweeper().Sweep(context.Background(), redeliver.Options{})
@@ -806,32 +783,9 @@ func (h *harness) refusedRedelivery(t *testing.T, guid, text string, answer func
 	return []sighting{{where: "the error of the request-refused line", shown: lineAttr(line, "error"), text: text}}
 }
 
-// GitHub's answers to the sweep's own requests are GitHub's text too, and each reaches the sweep
-// in a GitHub call's error: the body of an error status GitHub answers the deliveries listing or a
-// redelivery request with, which may be as long as a response may be (1 MiB); the listing's next
-// page link, which the githubapp client refuses past the longest it follows; a value of a listing
-// GitHub answers 200 that the client cannot decode, which the decoder's own error quotes; and a
-// header line of an answer net/http cannot read, which the transport error's cause quotes, whether
-// the answer is to the listing or to a redelivery request. The client cuts a body and a link once,
-// where each enters the error, alone, as githubapp.ShownBody shows GitHub's text, so each shows its
-// own size (requireCut). It decodes the listing through redact.Answer.Decode, whose error names
-// the member that did not decode and the types around it, quotes none of the value, whole or cut,
-// and reaches none of the decoder's own errors: a delivered_at that is no time, and a valid time
-// with text after it, each print as that fixed text (requireMemberOnly). A transport error names
-// its URL as ShownBody shows it, then the URL it asked as redact.Unanswered names it, and its
-// cause by its class: a line the cause quotes is the answering party's words, so none of it prints
-// (requireClassOnly). The sweep shows each such error as it is, so each is held to the bound and
-// never whole: in the error the sweep answers and in the WARN line the running sweep logs it with
-// for each failed listing, and in the request-refused line for each failed redelivery request
-// (refusedRedelivery). Each case is a real sweep through the real client against the fake, with a
-// server in front of the fake that gives the one answer the case is about (inFrontOfGitHub).
 func TestTheSweepShowsGitHubsErrorBodyAndNextLinkToABound(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		// require is the check of every place the case shows GitHub's text: requireCut where the
-		// client cuts GitHub's text alone, requireMemberOnly where the client's decode names the
-		// member and none of the value, and requireClassOnly where a transport error's cause
-		// prints as its class.
+		name    string
 		require func(t *testing.T, s sighting)
 		// run makes the case on h, and answers every place it shows GitHub's text and the text a
 		// search of the log must not find whole.

@@ -401,12 +401,6 @@ func TestReadEndpointEvent_SkipsOtherEvents(t *testing.T) {
 	}
 }
 
-// A relative endpoint resolves against the SSE URL as RFC 3986 section 5.2 reads a reference: a
-// path takes the SSE URL's origin and user information, and drops its query, and a reference that
-// names a host of its own takes the SSE URL's scheme alone. An endpoint on the SSE URL's origin
-// (its scheme, and its host and port, the host in any case) that names no user information takes
-// the SSE URL's, as a relative one does; one that names its own keeps it; one on another scheme,
-// host or port takes none.
 func TestReadEndpointEvent_ResolvesAgainstTheSSEURL(t *testing.T) {
 	const origin = "http://" + redacttest.User + ":" + redacttest.Password + "@mcp.example:3456"
 	const base = origin + "/bridge/sse?key=k"
@@ -435,8 +429,6 @@ func TestReadEndpointEvent_ResolvesAgainstTheSSEURL(t *testing.T) {
 	}
 }
 
-// An endpoint that resolves to no http or https URL with a host (another scheme, an opaque URL, a
-// URL with no host) is refused in the bridge's own words.
 func TestReadEndpointEvent_RefusesWhatIsNoHTTPURL(t *testing.T) {
 	for _, endpoint := range []string{"x:message?a=b", "http:/message?a=b", "http:message?a=b", "http:///message", "ftp://mcp.example/messages", "mailto:a@mcp.example"} {
 		scanner := bufio.NewScanner(strings.NewReader("event: endpoint\ndata: " + endpoint + "\n\n"))
@@ -447,7 +439,6 @@ func TestReadEndpointEvent_RefusesWhatIsNoHTTPURL(t *testing.T) {
 	}
 }
 
-// sseBase is raw, an SSE URL, parsed.
 func sseBase(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	base, err := url.Parse(raw)
