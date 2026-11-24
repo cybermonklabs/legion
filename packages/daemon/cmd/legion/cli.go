@@ -54,6 +54,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		),
 		newRestartCommand(own),
 		newClaimsCommand(stdout, own),
+		newIntakeCommand(stdout, own),
 		newProjectCommand(stdout, own),
 		group(&cobra.Command{Use: "sessions", Short: "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
 			newSessionsImportCommand(stdout, own),

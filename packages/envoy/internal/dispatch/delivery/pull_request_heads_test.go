@@ -314,6 +314,7 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 // The negative control is the owner pattern as it was written here, letters, digits and `-`,
 // which drops the two links whose owner holds an `_` and names `-linkcheck/tools#13`.
 func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 80)
 	// deliveryTestPool clears only the delivery tables, so the links an earlier run wrote go
@@ -366,6 +367,7 @@ func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
 // request is no head whatever its number, another issue's pull request answers for nothing, and
 // an issue holding no pull request has no head.
 func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 90)
 	other := seedHeadIssue(t, ctx, pool, 91)
@@ -1196,6 +1198,7 @@ func TestAttributionAndAHeadRefreshAnswerWithRepoProjectsDropped(t *testing.T) {
 // although the permanent yes is stored. A commit with no stored answer is unknown there, as it
 // must be: nothing can be asked.
 func TestABranchAnswerAlreadyStoredSurvivesAnUnreadableRepository(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	readable := true
 	fake := newFakeGitHub(t)
@@ -1278,6 +1281,7 @@ func branchCommitsOn(t *testing.T, ctx context.Context, pool *store.Pool, repo, 
 // has itself landed on the default branch and gone — no compare read can show the commit on
 // the base branch and the default branch holds only a squash of it.
 func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const base = "integration/138"
 	merged := PullRequestHead{
@@ -1323,6 +1327,7 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 // whose owner writes their name with capitals would stand at no basis for good once its base
 // branch was deleted, which is the case the seed exists for.
 func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const base = "integration/138"
 	merged := PullRequestHead{
@@ -1382,6 +1387,7 @@ func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) (
 // a log line nobody reads: the two go in one transaction, and the caller is handed the error to
 // make of what it will.
 func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	withoutBranchCommits(t, ctx, pool)
 	merged := PullRequestHead{
@@ -1528,6 +1534,7 @@ func TestEveryFailureOfTheReadsBeforeAHeadWriteIsMarked(t *testing.T) {
 // would spend one refused GitHub call on every read of the Verification tab, for as long as
 // the issue exists.
 func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const gone = "integration/138"
 	var compares atomic.Int64
@@ -1566,6 +1573,7 @@ func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
 // Nor is the failure an answer about the commit: it is BranchUnknown, which no later "not on
 // it" may turn into `other_commit` (api/results_comparison.go, of).
 func TestACompareReadGitHubFailedToAnswerHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
 	var compares atomic.Int64
@@ -1599,6 +1607,7 @@ func TestACompareReadGitHubFailedToAnswerHoldsNothing(t *testing.T) {
 // times out cancels every read still in flight; a hold taken from that would let one abandoned
 // tab turn the branch unknown for five minutes for every other reader.
 func TestACancelledCompareReadHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
 	var compares atomic.Int64
@@ -1640,6 +1649,7 @@ func TestACancelledCompareReadHoldsNothing(t *testing.T) {
 // reads only until that read is made again and answers nothing. One commit nobody pushed must
 // not hold the branch every `default_branch` result of the repository is measured against.
 func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	var compares atomic.Int64
 	fake := newFakeGitHub(t)
@@ -1681,6 +1691,7 @@ func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
 // ask, under the name again and with the default branch resolved by now, must take no hold at
 // all.
 func TestARefusalUnderTheDefaultBranchsOwnNameHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	var compares atomic.Int64
 	fake := newFakeGitHub(t)
@@ -1730,6 +1741,7 @@ func TestARefusalUnderTheDefaultBranchsOwnNameHoldsNothing(t *testing.T) {
 // BranchUnknown otherwise. What the walk spends is one refused read of the repository per
 // BranchCommitStaleAfter, whatever the number of result commits, and no compare read at all.
 func TestTheDefaultBranchSpelledOutIsGatedByTheRepositoryRead(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	readable := true
 	var compares, repoReads atomic.Int64
@@ -1791,6 +1803,7 @@ func TestTheDefaultBranchSpelledOutIsGatedByTheRepositoryRead(t *testing.T) {
 // turn every result measured against that branch unknown for five minutes although nothing
 // was wrong with it any more.
 func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
 	var compares atomic.Int64
@@ -1840,6 +1853,7 @@ func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
 // answer of a minute ago is kept, since a read in flight may yet have to lose to it
 // (markUnseen), and the entry goes on the first read past its own span.
 func TestAHoldNothingStandsForIsDroppedAsItIsRead(t *testing.T) {
+	t.Parallel()
 	branches := &Branches{}
 	pair := repoBranch{repo: "acme/widgets", branch: "integration/138"}
 	asked := time.Now()

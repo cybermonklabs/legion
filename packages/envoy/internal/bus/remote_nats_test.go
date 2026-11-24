@@ -18,6 +18,7 @@ import (
 
 // A deployment of the stream still creates it and reconciles what it finds on the NATS it names.
 func TestConnectOwningStreamStillReconcilesTheDeployedStream(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	js := deployStream(t, uri)
 
@@ -178,6 +179,7 @@ func TestAHandedEnvironmentReplacesTheProcessEnvironment(t *testing.T) {
 // another machine's, naming both variables, and nothing dials while they refuse. Said, the same
 // connect goes through the proxy.
 func TestASetProxyIsRemoteReach(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	if !bus.LocalNATSURL(uri) {
 		t.Fatalf("the test server's URL %s is not a loopback URL", uri)

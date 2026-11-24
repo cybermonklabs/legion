@@ -198,7 +198,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims`, `legion project`, `legion intake` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
@@ -805,7 +805,7 @@ var nestedKeys = []memberGroup{
 			Description: "The absolute path the daemon's own projected ServiceAccount token for the broker's audience is mounted at; the daemon logs in with it at every start and keeps logging in, and the broker's `BROKER_SERVICE_LOGINS` names that account."},
 		{Name: "operator", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon logs in with its own ServiceAccount token, which no person approves, so the block names no approver; the loader refuses a file that still sets it."},
-		{Name: "audience", Default: "`agent-secrets`", RequiredBy: "no",
+		{Name: "audience", Default: "`" + DefaultAgentSecretsAudience + "`", RequiredBy: "no",
 			Description: "The audience of the projected token the daemon presents to the broker."},
 		{Name: "token_expiry_seconds", Default: "`3600`", RequiredBy: "no",
 			Description: "How long a worker's broker token lives, between 600 and 3600 seconds, the API server issuing none under 600."},

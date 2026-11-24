@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
@@ -330,6 +331,13 @@ type DispatchArgs struct {
 	AppId                   string `pulumi:"appId,optional"`
 	AppPrivateKeySecretName string `pulumi:"appPrivateKeySecretName,optional"`
 	AppPrivateKeySecretKey  string `pulumi:"appPrivateKeySecretKey,optional"`
+	// VerdictAppId is the id of the GitHub App that writes `legion-verdict`, which Dispatch reads
+	// as DISPATCH_VERDICT_APP_ID: its CI reconcile pass leaves that App's check suites out of the
+	// CI record, as the listener does under ENVOY_VERDICT_APP_ID (aws:WebhookListener's
+	// verdictAppId), so give both the same id. It is optional, rendered only when given, and only
+	// with the App above, whose key alone runs that pass; refused blank, and refused when it is
+	// not a GitHub App id (contracts.IsGithubAppID).
+	VerdictAppId *string `pulumi:"verdictAppId,optional"`
 
 	DatabaseVersion    *string `pulumi:"databaseVersion,optional"`
 	DatabaseTier       *string `pulumi:"databaseTier,optional"`
@@ -622,6 +630,9 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 			return fmt.Sprintf("signInWorkspaceDomains[%d]", i), true
 		}
 	}
+	if args.VerdictAppId != nil && bus.HoldsSeed(*args.VerdictAppId) {
+		return "verdictAppId", true
+	}
 	if args.DatabaseVersion != nil && bus.HoldsSeed(*args.DatabaseVersion) {
 		return "databaseVersion", true
 	}
@@ -757,7 +768,7 @@ type dispatchSettings struct {
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
-	appClientID, appID                          string
+	appClientID, appID, verdictAppID            string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
 	replicas                                    int
@@ -1108,6 +1119,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey != ""},
+		{"verdictAppId", args.VerdictAppId != nil},
 	}, dispatchDatabaseInputs(args), []dispatchInput{
 		{"namespace", args.Namespace != nil},
 		{"existingNamespace", args.ExistingNamespace != nil},
@@ -1815,6 +1827,19 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretKey", "appPrivateKeySecretKey %q must match %s", args.AppPrivateKeySecretKey, secretKeyRule)
 		}
 	}
+	// The verdict App's id is read by Dispatch's CI reconcile pass alone, which the App's key
+	// runs, so without the App it would do nothing and is refused rather than dropped; given, it
+	// is held to the rule the listener holds ENVOY_VERDICT_APP_ID to, so the two can match.
+	if args.VerdictAppId != nil {
+		switch {
+		case len(appSet) == 0:
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId is given without the GitHub App (appClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey), whose key alone runs the CI reconcile pass that reads it: set the App, or leave verdictAppId out")
+		case strings.TrimSpace(*args.VerdictAppId) == "":
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId is blank: give the verdict App's id, or leave it out")
+		case !contracts.IsGithubAppID(*args.VerdictAppId):
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId %q is not a GitHub App id: a whole number above 0, with no leading zero", *args.VerdictAppId)
+		}
+	}
 	azure, err := newDispatchAzure(args)
 	if err != nil {
 		return dispatchSettings{}, err
@@ -1867,6 +1892,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
 	s.appKeySecretKey = args.AppPrivateKeySecretKey
+	if args.VerdictAppId != nil {
+		s.verdictAppID = *args.VerdictAppId
+	}
 	s.azure = azure
 	s.answerer = answerer
 	if args.DatabaseVersion != nil {

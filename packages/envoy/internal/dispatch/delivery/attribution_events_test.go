@@ -210,6 +210,7 @@ func owedReadsOf(t *testing.T, ctx context.Context, pool *store.Pool, repo strin
 // AppendAttributionEvents appends no event, appends on one side only, or names the wrong sides, and
 // where a write of facts appends an event.
 func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	broker := events.NewBroker()
 	left := seedHeadIssue(t, ctx, pool, 70)
@@ -296,6 +297,7 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 // where AppendAttributionEvents appends an event for a move whose two keys are the same, or where a
 // sync moves a stay.
 func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	broker := events.NewBroker()
 	issue := seedHeadIssue(t, ctx, pool, 72)
@@ -758,6 +760,7 @@ func TestAPassOwesNoReadAndKeepsTheMark(t *testing.T) {
 // it, would hold that lock while it waited for the one the test holds, and Postgres would break
 // the cycle as a deadlock.
 func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	first, second := seedHeadIssue(t, ctx, pool, 72), seedHeadIssue(t, ctx, pool, 73)
 	var firstSortsFirst bool

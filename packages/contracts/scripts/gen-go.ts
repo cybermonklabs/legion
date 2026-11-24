@@ -4,6 +4,7 @@ import { dirname, relative, resolve } from "node:path";
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
+  DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_EVENT_TYPES,
   DISPATCH_LOGIN_CHANGED,
@@ -38,6 +39,7 @@ import {
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
+  POST_HISTORY_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   REFERENCE_TARGETS_MAX,
@@ -82,6 +84,7 @@ import {
   GOING_ANSWER_WORD_MAX,
   GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
   GOING_ERROR_ANSWER_FAILED,
+  GOING_ERROR_ANSWER_WITHDRAWN,
   GOING_ERROR_NO_MODEL_CONFIGURED,
   GOING_EVENT_CHANGED,
   GOING_EVENT_CUT,
@@ -358,6 +361,11 @@ const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 
+// DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
+// Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
+// and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
+const DeletedPostDeliveryError = ${JSON.stringify(DELETED_POST_DELIVERY_ERROR)}
+
 // StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
 // 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated
 // from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
@@ -438,13 +446,15 @@ const GoingEventEnd = ${JSON.stringify(GOING_EVENT_END)}
 const GoingEventError = ${JSON.stringify(GOING_EVENT_ERROR)}
 
 // The codes an error frame carries: the run reached its window without an answer, the deployment
-// has no text model configured, and the model service refused or failed. Generated from
-// GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED and
-// GOING_ERROR_ANSWER_FAILED in packages/contracts so the code the server writes and the wording
-// the page keys on it cannot drift apart.
+// has no text model configured, the model service refused or failed, and a post the run was
+// given was deleted after it. Generated from GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+// GOING_ERROR_NO_MODEL_CONFIGURED, GOING_ERROR_ANSWER_FAILED and GOING_ERROR_ANSWER_WITHDRAWN in
+// packages/contracts so the code the server writes and the wording the page keys on it cannot
+// drift apart.
 const GoingErrorAnswerDidNotArrive = ${JSON.stringify(GOING_ERROR_ANSWER_DID_NOT_ARRIVE)}
 const GoingErrorNoModelConfigured = ${JSON.stringify(GOING_ERROR_NO_MODEL_CONFIGURED)}
 const GoingErrorAnswerFailed = ${JSON.stringify(GOING_ERROR_ANSWER_FAILED)}
+const GoingErrorAnswerWithdrawn = ${JSON.stringify(GOING_ERROR_ANSWER_WITHDRAWN)}
 
 // GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
 // Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the
@@ -500,6 +510,12 @@ const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
 // and the \`dispatch issues\` command's cannot drift apart.
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
+
+// PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
+// GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
+// in packages/contracts so the page the server reads and the full page on which the
+// \`dispatch read --history\` command names the read of older rows cannot drift apart.
+const PostHistoryPageLimit = ${POST_HISTORY_PAGE_LIMIT}
 
 // IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
@@ -652,8 +668,8 @@ const IdempotencyKeyPattern = ${JSON.stringify(IDEMPOTENCY_KEY_PATTERN.source)}
 
 // The codes of a keyed write's refusals and of a replay whose first answer was not kept: a key
 // used for another request (422), a key whose first request still runs (409), a key whose write
-// landed and whose answer was lost (409), a header that is not a key (400), and a first answer too
-// large to keep. Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
+// landed and whose answer was lost (409), a header that is not a key (400), and a first answer
+// Dispatch gives no copy of (IDEMPOTENCY_ANSWER_NOT_KEPT names when). Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
 // IDEMPOTENCY_KEY_COMMITTED, IDEMPOTENCY_KEY_INVALID and IDEMPOTENCY_ANSWER_NOT_KEPT in
 // packages/contracts so the server's codes and the clients' reading of them cannot drift apart.
 const IdempotencyKeyReused = ${JSON.stringify(IDEMPOTENCY_KEY_REUSED)}

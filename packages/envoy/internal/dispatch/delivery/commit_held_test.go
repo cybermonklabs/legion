@@ -18,6 +18,7 @@ import (
 // request GitHub answers 404 for is the error, never a no: Dispatch cannot tell it from a pull
 // request the App cannot reach.
 func TestPullRequestOpenOrMergedReadsTheStateGitHubAnswers(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	answers := map[string]string{
 		"1": `{"number":1,"state":"open","merged":false,"merged_at":null}`,
@@ -67,6 +68,7 @@ func TestPullRequestOpenOrMergedReadsTheStateGitHubAnswers(t *testing.T) {
 // for here, the repository having moved. The GitHub stand-in counts every request it receives,
 // answers that 404 for the old names, and fails the test on any other request.
 func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
+	t.Parallel()
 	const sha = "6767676767676767676767676767676767676767"
 	pool, ctx := deliveryTestPool(t)
 	var requests atomic.Int32

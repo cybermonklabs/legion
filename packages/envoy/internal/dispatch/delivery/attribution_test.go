@@ -95,6 +95,7 @@ func resolvedKey(t *testing.T, ctx context.Context, pool *store.Pool, facts rule
 // TestAttributionTakesAnExternalLinkNamingThePullRequest: source 1, an issue whose external
 // link is the pull request's own URL.
 func TestAttributionTakesAnExternalLinkNamingThePullRequest(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-101"}, map[string][]string{
 		"ATTR-101": {"https://github.com/acme/widgets/pull/101"},
@@ -110,6 +111,7 @@ func TestAttributionTakesAnExternalLinkNamingThePullRequest(t *testing.T) {
 // TestAttributionIgnoresAnExternalLinkNamingAnotherPullRequest: a link to pull/103 credits
 // nothing to pull/102, though the URLs share a prefix.
 func TestAttributionIgnoresAnExternalLinkNamingAnotherPullRequest(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-103"}, map[string][]string{
 		"ATTR-103": {"https://github.com/acme/widgets/pull/1030"},
@@ -127,6 +129,7 @@ func TestAttributionIgnoresAnExternalLinkNamingAnotherPullRequest(t *testing.T) 
 // full URL or a bare #N in the pull request's own repository, that an issue's external link
 // names.
 func TestAttributionTakesACitedGitHubIssue(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-111", "ATTR-112", "ATTR-113"}, map[string][]string{
 		"ATTR-111": {"https://github.com/acme/widgets/issues/77"},
@@ -182,6 +185,7 @@ func TestAttributionTakesACitedGitHubIssue(t *testing.T) {
 // TestAttributionTakesTheHeadBranch: source 3, a key in the branch name, matched whatever its
 // case.
 func TestAttributionTakesTheHeadBranch(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-121"}, nil)
 	key, source := resolvedKey(t, ctx, pool, ruleFacts{
@@ -195,6 +199,7 @@ func TestAttributionTakesTheHeadBranch(t *testing.T) {
 // TestAttributionFallsBackToCommitMessages: source 5, the first known key across the commit
 // messages in commit order, which is read only where the four sources above name nobody.
 func TestAttributionFallsBackToCommitMessages(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-131", "ATTR-132"}, nil)
 	key, source := resolvedKey(t, ctx, pool, ruleFacts{
@@ -210,6 +215,7 @@ func TestAttributionFallsBackToCommitMessages(t *testing.T) {
 // cites, then the head branch, then the title and the body, then the commit messages; each
 // source is tried only when every earlier one found nothing.
 func TestAttributionTakesTheSourcesInOrder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	prURL := "https://github.com/acme/widgets/pull/140"
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-141", "ATTR-142", "ATTR-143", "ATTR-144", "ATTR-145"}, map[string][]string{
@@ -248,6 +254,7 @@ func TestAttributionTakesTheSourcesInOrder(t *testing.T) {
 // carries as readily as one that does it. Rule 1 credited this pull request to the issue its
 // title names.
 func TestAttributionTakesTheHeadBranchOverTheTitle(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-231", "ATTR-232"}, nil)
 	key, source := resolvedKey(t, ctx, pool, ruleFacts{
@@ -263,6 +270,7 @@ func TestAttributionTakesTheHeadBranchOverTheTitle(t *testing.T) {
 // Someone linking an issue to the pull request, or the pull request citing a GitHub issue an
 // issue holds, names the issue as deliberately as a branch does.
 func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	prURL := "https://github.com/acme/widgets/pull/240"
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-241", "ATTR-242", "ATTR-243"}, map[string][]string{
@@ -303,6 +311,7 @@ func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
 // TestAttributionRefusesAKeyDispatchDoesNotHave: a key-shaped string in every source that names
 // no stored issue credits nothing.
 func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	key, source := resolvedKey(t, ctx, pool, ruleFacts{
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/150",
@@ -319,6 +328,7 @@ func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {
 // so the statement does not know its issue yet. The next pass completes the row once the commits
 // answer, and the statement takes the issue from its commit message.
 func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-181"}, nil)
@@ -401,6 +411,7 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 // issue gets the issue whose external link names it. The timeline gives that issue after the link
 // and one pass, and no pass reads GitHub for the pull request.
 func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-171"}, nil)

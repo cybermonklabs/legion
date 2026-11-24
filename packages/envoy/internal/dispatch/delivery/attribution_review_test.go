@@ -30,6 +30,7 @@ func wantAnswers(t *testing.T, a *Attributor, q Querier, want map[PullRequestKey
 // external link naming the pull request (source 1) and one naming a GitHub issue its body cites
 // (source 2) credit a pull request stored under that spelling.
 func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	// URLs no other row of this test links: a link's URL is unique across every issue.
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-201", "ATTR-202"}, map[string][]string{
@@ -50,6 +51,7 @@ func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
 // row; a statement that handed any two sources over in another order would credit some row from
 // the wrong source.
 func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	// The GitHub issue the bodies cite is #219, a number no pull request of this test has: a pull
 	// request and an issue of one repository share one sequence of numbers, and GitHub serves pull
@@ -89,6 +91,7 @@ func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 // rule answers both — every candidate the five sources name (attributedTerms), the first of
 // them held to the pull request's own repository (attributionHeld).
 func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 9)
 	own := seedGadgetsIssue(t, ctx, pool, 9)
@@ -104,6 +107,7 @@ func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsIts
 // renameTerms): the pull request answers its issue under both names, and a read by the issue
 // lists it. The pair is seeded by SQL and the Renames read after it, as a boot reads it.
 func TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
 	own := seedGadgetsIssue(t, ctx, pool, 11)
@@ -126,6 +130,7 @@ func TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue(t 
 // (attributionHeld). The title names the issue under the lesser new name first, so a rule that
 // kept the other pair credits that issue.
 func TestAttributingAStoredPullRequestUnderAnOldNameOfTwoRenamePairsTakesTheGreaterNewName(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
 	lesser := seedGadgetsIssue(t, ctx, pool, 12)
@@ -163,6 +168,7 @@ func TestAttributingAStoredPullRequestUnderAnOldNameOfTwoRenamePairsTakesTheGrea
 // read by the issue lists both, as the read by key answers them: its arm of a cited URL compares
 // every spelling of each link of the issue (citedSpellings). The titles name nothing.
 func TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
 	own := seedGadgetsIssue(t, ctx, pool, 13)
@@ -198,6 +204,7 @@ func TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName
 // the same order, read in one statement, are the case that tells them apart: each must take the
 // issue of its own repository, the widgets one the first key and the gadgets one the second.
 func TestAttributingABatchPicksEachRowsOwnRepositorysIssue(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	widgets := seedHeadIssue(t, ctx, pool, 10)
 	gadgets := seedGadgetsIssue(t, ctx, pool, 10)
@@ -217,6 +224,7 @@ func TestAttributingABatchPicksEachRowsOwnRepositorysIssue(t *testing.T) {
 // order and the first one named wins. The rule reaches past a candidate of another
 // repository, never past one of this repository's own.
 func TestAStoredPullRequestTitledAfterTwoOfItsOwnIssuesTakesTheFirst(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-221", "ATTR-222"}, nil)
 	storeStatementRow(t, ctx, pool, statementRow{repo: "acme/widgets", number: 221, branch: "main",

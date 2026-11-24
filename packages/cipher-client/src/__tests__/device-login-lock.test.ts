@@ -16,7 +16,11 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { writeDeviceLoginFile } from "../../test/device-logins";
 import { withDeviceLoginLock } from "../device-login";
 import { readDeviceLogin } from "../device-login-file";
-import { DEVICE_LOGIN_STALE_LOCK_MS, LOCK_HEARTBEAT_MS } from "../device-login-lock";
+import {
+  DEVICE_LOGIN_STALE_LOCK_MS,
+  LOCK_HEARTBEAT_MS,
+  loginLockHeldBy,
+} from "../device-login-lock";
 import { TRADE_ATTEMPT_MS } from "../token-client";
 import { LockHeldError } from "../token-errors";
 
@@ -375,6 +379,27 @@ test("a named pipe at the lock's path is taken over as a dead lock, and read wit
     "device-login.json.lock",
   ]);
 }, 10_000);
+
+test("whether a process holds the lock is read as every caller reads it: no lock, its own, another's, a named pipe, a link", async () => {
+  // claude-envoy's open-asks hook asks this as it exits, to leave a process that holds the lock to
+  // finish its trade. A plain read of a named pipe at `<file>.lock` would wait for a writer and
+  // hold the hook open; this read answers at once, and follows no link.
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  expect(loginLockHeldBy(path, process.pid)).toBe(false);
+  await writeFile(lock, `${process.pid} ${crypto.randomUUID()}\n`);
+  expect(loginLockHeldBy(path, process.pid)).toBe(true);
+  expect(loginLockHeldBy(path, process.pid + 1)).toBe(false);
+  await Bun.file(lock).delete();
+  expect(Bun.spawnSync(["mkfifo", lock]).exitCode).toBe(0);
+  expect(loginLockHeldBy(path, process.pid)).toBe(false);
+  await Bun.file(lock).delete();
+  const elsewhere = join(dirname(path), "elsewhere.lock");
+  await writeFile(elsewhere, `${process.pid} ${crypto.randomUUID()}\n`);
+  await fs.symlink(elsewhere, lock);
+  expect(loginLockHeldBy(path, process.pid)).toBe(false);
+});
 
 test("a take-over that finds the holder back just before it moves the lock puts the lock back", async () => {
   const path = loginPath();

@@ -38,6 +38,7 @@ import (
 // the consumer's delivery count rather than by its pending count, because a message is pending
 // while its handler runs, and what is under test is what happens after the handler returns.
 func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
@@ -375,6 +376,7 @@ func holdLapseRow(t *testing.T, headStored bool) {
 // sequence cannot separate, since an intake stops delivering within intakeHoldMargin of
 // reporting its hold lost.
 func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	hold, err := duty.TryHold(ctx, deliveryTestLeases(t, pool), "delivery-test-lapsing-hold", uuid.New(),
 		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin})
