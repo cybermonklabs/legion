@@ -243,7 +243,7 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 					built[filepath.Join(p.Dir, name)] = true
 				}
 				if len(p.CgoFiles) > 0 {
-					c.Unknown = append(c.Unknown, fmt.Sprintf("%s: cgo files (%s), which the census does not read", p.ImportPath, strings.Join(p.CgoFiles, ", ")))
+					c.Unknown = append(c.Unknown, p.ImportPath+": "+cgoUnread(p.CgoFiles))
 				}
 				key := p.ImportPath + "\x00" + strings.Join(p.GoFiles, "\x00")
 				if len(p.GoFiles) == 0 || checked[key] {
@@ -261,16 +261,14 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 				c.Unknown = append(c.Unknown, fmt.Sprintf("Go: go list -export in %s for %s, tags %q: %v", mod, target, tags, err))
 				continue
 			}
-			exports := map[string]string{}
+			build := newGoBuild(deps)
 			for _, p := range deps {
-				exports[p.ImportPath] = p.Export
 				g.recordImports(p.ImportPath, p.Deps)
-				g.recordSource(p, exports)
 			}
 			wanted := set(need)
 			for _, p := range deps {
 				if wanted[p.ImportPath] && !p.DepOnly {
-					g.goPackage(c, dir, p.ImportPath, p.Dir, p.GoFiles, p.Error != nil, exports, files, rule, printers)
+					g.goPackage(c, dir, p.ImportPath, build, p.Error != nil, files, rule, printers)
 				}
 			}
 		}
@@ -335,20 +333,71 @@ func (g *gate) untargeted(c *census, dir, file string) {
 	c.Untargeted = append(c.Untargeted, rel)
 }
 
-// goPackage type-checks one package from source, lists its rule references on changed lines
-// (the call census), and runs the box, holder, reflection and answer censuses over every file of
-// it.
-func (g *gate) goPackage(c *census, dir, path, pkgDir string, goFiles []string, broken bool, exports map[string]string, files map[string]map[int]bool, rule, printers map[string]bool) {
-	fset := token.NewFileSet()
+// goSource is a listed package's directory, and its files and cgo files as one build compiles it,
+// with the export data of every package that build compiles (go list -export -deps): what
+// type-checks it from source.
+type goSource struct {
+	dir     string
+	files   []string
+	cgo     []string
+	exports map[string]string
+}
+
+// goBuild is one build's listing: each package's source, by import path (newGoBuild).
+type goBuild map[string]goSource
+
+// newGoBuild is the build deps, one go list -export -deps, lists: each package it names, with the
+// export data of them all.
+func newGoBuild(deps []goListed) goBuild {
+	exports := map[string]string{}
+	build := goBuild{}
+	for _, p := range deps {
+		exports[p.ImportPath] = p.Export
+		build[p.ImportPath] = goSource{dir: p.Dir, files: p.GoFiles, cgo: p.CgoFiles, exports: exports}
+	}
+	return build
+}
+
+// parse parses the package's files into fset, or answers the file that cannot be parsed and why.
+func (s goSource) parse(fset *token.FileSet) ([]*ast.File, string, error) {
 	var parsed []*ast.File
-	for _, name := range goFiles {
-		f, err := parser.ParseFile(fset, filepath.Join(pkgDir, name), nil, parser.SkipObjectResolution)
+	for _, name := range s.files {
+		file := filepath.Join(s.dir, name)
+		f, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 		if err != nil {
-			rel, _ := filepath.Rel(dir, filepath.Join(pkgDir, name))
-			c.Unknown = append(c.Unknown, fmt.Sprintf("%s: cannot be parsed: %v", filepath.ToSlash(rel), err))
-			return
+			return nil, file, err
 		}
 		parsed = append(parsed, f)
+	}
+	return parsed, "", nil
+}
+
+// importer reads each package the package imports from its build's export data.
+func (s goSource) importer(fset *token.FileSet) types.Importer {
+	return importer.ForCompiler(fset, "gc", func(p string) (io.ReadCloser, error) {
+		if e := s.exports[p]; e != "" {
+			return os.Open(e)
+		}
+		return nil, fmt.Errorf("no export data for %s", p)
+	})
+}
+
+// cgoUnread says that the census does not read files, a package's cgo files.
+func cgoUnread(files []string) string {
+	return "cgo files (" + strings.Join(files, ", ") + "), which the census does not read"
+}
+
+// goPackage type-checks one package from source, as build lists it, lists its rule references on
+// changed lines (the call census), and runs the box, holder, reflection and answer censuses over
+// every file of it.
+func (g *gate) goPackage(c *census, dir, path string, build goBuild, broken bool, files map[string]map[int]bool, rule, printers map[string]bool) {
+	src := build[path]
+	fset := token.NewFileSet()
+	parsed, failed, err := src.parse(fset)
+	if err != nil {
+		rel, _ := filepath.Rel(dir, failed)
+		c.Unknown = append(c.Unknown, fmt.Sprintf("%s: cannot be parsed: %v", filepath.ToSlash(rel), err))
+		return
 	}
 	if broken || len(parsed) == 0 {
 		if broken {
@@ -363,18 +412,13 @@ func (g *gate) goPackage(c *census, dir, path, pkgDir string, goFiles []string, 
 		Types:      map[ast.Expr]types.TypeAndValue{},
 		Instances:  map[*ast.Ident]types.Instance{},
 	}
-	conf := types.Config{Importer: importer.ForCompiler(fset, "gc", func(p string) (io.ReadCloser, error) {
-		if e := exports[p]; e != "" {
-			return os.Open(e)
-		}
-		return nil, fmt.Errorf("no export data for %s", p)
-	})}
+	conf := types.Config{Importer: src.importer(fset)}
 	checked, err := conf.Check(path, fset, parsed, info)
 	if err != nil {
 		c.Unknown = append(c.Unknown, fmt.Sprintf("%s: cannot be resolved: %v", path, err))
 		return
 	}
-	g.structural(c, dir, path, fset, parsed, info)
+	g.structural(c, dir, path, build, fset, parsed, info)
 	// Export data loads a package only as far as it names it, so net/http can be in the imports
 	// without its Response, which the answer census compares a type's struct with: load it whole
 	// there.

@@ -133,17 +133,9 @@ type holderRow struct {
 // alone, each reflect.Value.Field it calls under a t.Field(i).IsExported() guard on its own index,
 // which the census checks in place of the types it reaches: the box keeps its text in unexported
 // fields. GuardedPackage names a reflection of a value whose type no static type names (a
-// library's unexported type behind an interface): a reflect.Value.FieldByName with a constant name,
-// which runs only where a guard holds that type to the one package GuardedPackage names, and whose
-// result is only the receiver of methods that answer nothing or closed values (booleans, numbers
-// other than uintptr, strings, and slices and arrays of them): no Elem, Interface, Call, CallSlice,
-// Method, MethodByName, Type, Index, Addr or other method that answers a value past the field's
-// own. In place of the types it reaches, the census checks the guard (an unexported guard variable,
-// stored once), that neither the box's package nor an external error type's is in that package's
-// import closure, that the package declares no generic type, and that every field of that name
-// FieldByName can reach in a struct type the package declares, promoted through embedded structs
-// of any package at any depth included, is typed with no interface and no type parameter at any
-// depth (structural.go, reflection).
+// library's unexported type behind an interface), allowed for the one read guardedPackageRead
+// (guarded.go) states, which the census checks, with the package GuardedPackage names, in place
+// of the types it reaches.
 type reflectionExempt struct {
 	File               string   `json:"file"`
 	Function           string   `json:"function"`
@@ -292,7 +284,6 @@ type gate struct {
 	longestRow                string
 	valueOf                   map[string][]valueOfSite   // reflect.ValueOf sites by package
 	imports                   map[string]map[string]bool // each listed package's import closure, itself included (recordImports)
-	sources                   map[string]goSource        // each listed package's source and its build's export data (recordSource)
 	declared                  map[string]*checkedSource  // guarded packages type-checked from source, by package and build (sourceChecked)
 	failures                  int
 	unknowns                  int // runs past their bound or that skipped a test (stages 4 and 5): neither a pass nor a failure
