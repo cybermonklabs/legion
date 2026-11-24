@@ -402,7 +402,7 @@ func echoToken(r *http.Request) string { return strings.TrimPrefix(r.Header.Get(
 // refusal of a listed size past its bound, and in the error of a blob read GitHub failed. Captures
 // githubapp.tree-path-echo/<row>.
 func TestATreePathPrintsNoTokenItsReadCarried(t *testing.T) {
-	const token = "ghs_" + "treeEchoInstallationToken0123456789"
+	const token = redacttest.Token
 	for _, row := range []struct {
 		name string
 		size int64
@@ -445,7 +445,7 @@ func TestATreePathPrintsNoTokenItsReadCarried(t *testing.T) {
 // or with a status that does not decode. Neither the error CommitOnBranch answers nor the note send
 // makes on the attempt holds a piece of the token. Captures githubapp.default-branch-echo/<row>.
 func TestADefaultBranchPrintsNoTokenItsReadCarried(t *testing.T) {
-	const token = "ghs_" + "branchEchoInstallationToken0123456789"
+	const token = redacttest.Token
 	for _, row := range []struct {
 		name    string
 		compare http.HandlerFunc
