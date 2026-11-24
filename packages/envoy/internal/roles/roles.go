@@ -202,6 +202,34 @@ func ResolutionTooOld(resolvedAt, now time.Time) bool {
 	return !resolvedAt.IsZero() && now.Sub(resolvedAt) >= ForwardFenceAge
 }
 
+// ErrForwardStoredTooLate is the failure of a forward the stream acknowledged after its
+// resolution's fence and acknowledgement window (ForwardStoredTooLate): the holder it was resolved
+// for may have lost the role, and the takeover record that would copy the message to the next
+// holder may have ended (cmd/listener takeoverRecordLife). The forward is no delivery: each path
+// reports it failed and leaves the message to be sent again on a fresh resolution.
+var ErrForwardStoredTooLate = errors.New("the forward was stored after its resolution's fence and acknowledgement window")
+
+// ForwardStoredTooLate reports whether a forward whose holder was resolved at resolvedAt, and
+// whose store the stream acknowledged at storedAt on the forwarding process's clock, came later
+// than ForwardFenceAge and ackWindow after that resolution. A path checks the fence before it
+// publishes (ResolutionTooOld), which bounds when the publish starts and not when the stream
+// stores it: a process held between the two - a stall, a long flush, a reconnect - can have its
+// copy stored after the takeover record that would copy it to the next holder has ended. So each
+// path asks this of the acknowledgement as well, and reports a forward that is too late as failed
+// (ErrForwardStoredTooLate) rather than delivered.
+//
+// A zero resolvedAt is never too late, as it is never too old: the caller read the claim itself
+// just before, such as the kept lane's walk, which reads the claim before each copy.
+//
+// ackWindow is the path's own bound on that wait (cmd/listener roleForwardTimeout, the outbox's
+// send budget). The sum of ForwardFenceAge, ackWindow and the claim route's budget must stay
+// below a takeover record's life (cmd/listener takeoverRecordLife), so that a forward this reports
+// in time is one the record's passes read; a path that adopts this rule checks that sum against
+// its own constants where it can read them.
+func ForwardStoredTooLate(resolvedAt, storedAt time.Time, ackWindow time.Duration) bool {
+	return !resolvedAt.IsZero() && storedAt.Sub(resolvedAt) >= ForwardFenceAge+ackWindow
+}
+
 // ValidClaimKey reports whether key is the key a claim can be keyed by (store.RoleClaimKeyOf):
 // a role token a claim can name (Valid), alone or, for a free-form role under a project, after
 // that project's key and a dot (contracts.RoleClaimKey, read back by contracts.ParseRoleClaimKey).
