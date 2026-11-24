@@ -34,6 +34,7 @@ import {
 import {
   activePreset,
   expectActivePreset,
+  focusedNodeId,
   onScreen,
   openEveryDeeperBranch,
   pickPreset,
@@ -49,6 +50,7 @@ import {
   convertedGate,
   type Gate,
   heldAnswer,
+  OWED_BY,
   owedUnless,
   type TreeAnswerWatch,
   type TreeView,
@@ -101,6 +103,7 @@ import {
   settlesSent,
   treeIdReads,
   treeItemsDrawn,
+  UNDRAWN_KINDS,
 } from "./issue-page-x";
 import { type Browser, expect, type Locator, type Page, type Route, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
@@ -130,11 +133,13 @@ import { asUser } from "./users";
  *
  * What a row reads of code that is not under this head it reads behind a gate, and notes as owed
  * where the gate is not met (`noteOwed`): Details' facts of the focused row
- * (`FOCUSED_FACTS_GATE`), each Graph reading (`graphGate`), and each reading of a node as the page
- * opens it with every node drawn open (`drawnOpenGate`), which row 3 is owed whole. A gate never
- * reads what this part draws: the nodes at or under an overtaken one are left out of the page's
- * opening, so a build that draws an overtaken node folded fails the reading of that node and does
- * not turn it owed.
+ * (`FOCUSED_FACTS_GATE`), each Graph reading (`graphGate`), each reading of the criterion the seed
+ * wrote under the overtaken question (`criterionGate`: part Y draws criteria, and until it does
+ * the page draws and counts the statement under the question alone), and each reading of a node
+ * as the page opens it with every node drawn open (`drawnOpenGate`), which row 3 is owed whole.
+ * A gate never reads what this part draws: the nodes at or under an overtaken one are left out
+ * of the page's opening, so a build that draws an overtaken node folded fails the reading of that
+ * node and does not turn it owed.
  */
 
 /** The mark of a proposed node, an overtaken one and one reserved for its reader, each as the
@@ -329,7 +334,7 @@ async function expectDrawnOpen(
 
 /** What a row reads its page with: the issue, its tree read, the id the page draws each node of
  *  that read under, and the page's one watcher of its requests, made before its first load. */
-interface SeededPage {
+interface LoadedPage {
   readonly answer: IssueTreeRead;
   readonly key: string;
   readonly plain: string;
@@ -338,9 +343,15 @@ interface SeededPage {
   readonly treeId: (readId: string) => string;
 }
 
+/** A loaded page and the one reading it holds back until part Y draws criteria: a criterion row
+ *  (`criteria`). */
+interface SeededPage extends LoadedPage {
+  readonly criteria: Gate;
+}
+
 /** Opens the seeded issue on `page` with the watcher made before its first load, and answers
  *  what a row reads it with once its tree read has answered what the seed wrote. */
-async function seededPage(page: Page, seeded: NodeStateSeed): Promise<SeededPage> {
+async function loadedPage(page: Page, seeded: NodeStateSeed): Promise<LoadedPage> {
   const key = seeded.whole.key;
   const plain = presetPath(key, "conversation");
   const tree = treeAnswerOf(page);
@@ -355,17 +366,48 @@ async function seededPage(page: Page, seeded: NodeStateSeed): Promise<SeededPage
 }
 
 /**
+ * Whether the page draws a criterion as a row, read on the criterion the seed wrote under the
+ * overtaken question: no step of `tree-read/tree-nodes.ts`'s `treeDraftSteps` drafts one at this
+ * head, so the page draws and counts the statement under the question alone, and part Y
+ * (INFRA-4066) draws criteria. The statement under the same question, which this part draws at
+ * every head, is opened first (`drawnRowId`), so a criterion row the page draws is drawn by the
+ * time it is looked for, and a page that draws neither fails that reading as itself and does not
+ * turn the criterion owed. It opens every branch, so each reading that follows loads the page
+ * again.
+ */
+async function criterionGate(page: Page, { seeded }: LoadedPage): Promise<Gate> {
+  await drawnRowId(
+    page,
+    seeded.ids.questionStatement,
+    "the statement under the overtaken question"
+  );
+  return {
+    met: (await drawnIdOf(page, seeded.ids.questionCriterion)) !== null,
+    owed:
+      "owed until part Y (INFRA-4066) draws criteria: the page draws no criterion row here, so " +
+      `the criterion under the overtaken question is neither read nor counted; ${OWED_BY}`,
+  };
+}
+
+/** `loadedPage` with its criterion gate. */
+async function seededPage(page: Page, seeded: NodeStateSeed): Promise<SeededPage> {
+  const loaded = await loadedPage(page, seeded);
+  return { ...loaded, criteria: await criterionGate(page, loaded) };
+}
+
+/**
  * What the header's count of what waits, the Decisions view's to-review flag and the header's
  * presses read of the overtaken question and the overtaken decision: neither is counted, and no
  * press reaches either. The count is the open questions whose turn is alice's, the overtaken one
  * left out, and the decisions that wait for review, the overtaken one left out. Each press of the
  * count puts the focus on the next thing that waits, round to the first, so one more press than
- * there are things reaches each once.
+ * there are things reaches each once. The Decisions view's rows carry the tree's id and no read
+ * id (`DecisionsRow.tsx`), so a row is told by `data-node-id`.
  */
-async function expectWaitsLeaveOut(page: Page, read: SeededPage): Promise<void> {
+async function expectWaitsLeaveOut(page: Page, read: LoadedPage): Promise<void> {
   const { key, seeded, treeId } = read;
   const { ids } = seeded;
-  const overtaken = [ids.overtakenQuestion, ids.waitingDecision];
+  const overtaken = [ids.overtakenQuestion, ids.waitingDecision].map(treeId);
   await gotoIssue(page, presetPath(key, "decisions"));
   const asking = ((await getIssue(key)).open_asks ?? []).filter(
     (ask) =>
@@ -404,7 +446,7 @@ async function expectWaitsLeaveOut(page: Page, read: SeededPage): Promise<void> 
     await expect
       .poll(
         async () => {
-          const now = await focusedRowReadId(page);
+          const now = await focusedNodeId(page);
           return now !== null && now !== before;
         },
         {
@@ -414,7 +456,7 @@ async function expectWaitsLeaveOut(page: Page, read: SeededPage): Promise<void> 
         }
       )
       .toBe(true);
-    last = await focusedRowReadId(page);
+    last = await focusedNodeId(page);
     reached.push(last ?? "");
   }
   expect(
@@ -431,10 +473,10 @@ async function expectWaitsLeaveOut(page: Page, read: SeededPage): Promise<void> 
 // Row 1: a proposed node is marked and settled, and an overtaken one is drawn open and marked.
 // ---------------------------------------------------------------------------------------------
 
-/** What row 1 reads its page with, and the two readings it holds back until the code they need is
+/** What row 1 reads its page with, and the readings it holds back until the code they need is
  *  under the head: a Graph control (`graph`) and a page that opens with every node drawn open
  *  (`opens`), the second read on the first load, before any press. */
-interface ProposedPage extends SeededPage {
+interface ProposedPage extends LoadedPage {
   readonly graph: Gate;
   readonly opens: Gate;
 }
@@ -574,23 +616,29 @@ async function expectDetails(page: Page, { seeded }: ProposedPage): Promise<void
   }
 }
 
-/** Every folded row's count is what the tree read holds under it, an overtaken node and what
- *  stands under it counted as every node is. A question indexed from a block stands for the ask
- *  it was indexed into as well. */
+/** Every folded row's count is what the tree read holds under it that the page draws, an
+ *  overtaken node and what stands under it counted as every node is. A question indexed from a
+ *  block stands for the ask it was indexed into as well, and a criterion is counted only where
+ *  the page draws one (`criteria`). */
 async function expectFoldedCounts(
   page: Page,
-  { answer, key, seeded }: ProposedPage
+  { answer, key, seeded }: ProposedPage,
+  criteria: Gate
 ): Promise<void> {
   const asks = new Map([
     [seeded.ids.openQuestion, [seeded.whole.openQuestion.askId]],
     [seeded.ids.overtakenQuestion, [seeded.questionAskId]],
   ]);
+  const undrawn = noteOwed(criteria) ? undefined : UNDRAWN_KINDS;
   await expect
     .poll(
       async () =>
         (await foldedCounts(page)).flatMap((row) => {
           if (row.readId === null) return [];
-          const held = heldUnder(answer, key, row.readId, asks.get(row.readId));
+          const held = heldUnder(answer, key, row.readId, {
+            alike: asks.get(row.readId),
+            undrawn,
+          });
           return row.count === held ? [] : [`${row.id} draws ${row.count}, its read holds ${held}`];
         }),
       {
@@ -745,7 +793,12 @@ async function expectOvertakenRows(page: Page, read: ProposedPage): Promise<void
   // outline holds no rows; opened before the load settles, a row takes back the focus the opener
   // leaves for the page.
   await gotoSettled(page, traffic, plain);
-  await expectFoldedCounts(page, read);
+  // The criterion gate opens every branch, and the counts are read on the page as it loads: after
+  // it the page is loaded again. It stands here and not with the gates of the first load, so a
+  // page that draws an overtaken node folded fails the first reading of step (2) as itself.
+  const criteria = await criterionGate(page, read);
+  await gotoSettled(page, traffic, plain);
+  await expectFoldedCounts(page, read, criteria);
   if (noteOwed(read.opens)) {
     await expectDrawnOpen(
       page,
@@ -834,7 +887,7 @@ async function expectOvertakenDecisionAddress(page: Page, read: ProposedPage): P
   await expect
     .poll(
       async () => ({
-        focused: await focusedRowReadId(page),
+        focused: await focusedNodeId(page),
         onScreen: await onScreen(decision),
         path: new URL(page.url()).pathname,
         query: new URL(page.url()).searchParams.get("q"),
@@ -847,7 +900,7 @@ async function expectOvertakenDecisionAddress(page: Page, read: ProposedPage): P
       }
     )
     .toEqual({
-      focused: ids.waitingDecision,
+      focused: treeId(ids.waitingDecision),
       onScreen: true,
       path: decisions,
       query: null,
@@ -1130,17 +1183,16 @@ test("a proposed node is marked and settled on the page, and an overtaken one is
     const whole = await seedWholeIssue();
     const seeded = await seedNodeStates(whole);
     await page.setViewportSize(size);
-    const loaded = await seededPage(page, seeded);
+    const loaded = await loadedPage(page, seeded);
     // (5) The load sends no request of the node state routes: a node's life is the tree read's.
     expect(
       nodeStateRequests(loaded.traffic.requests),
       "the load sends a request of the node state routes"
     ).toEqual([]);
-    const read: ProposedPage = {
-      ...loaded,
-      graph: await graphGate(page),
-      opens: await drawnOpenGate(page, loaded.answer),
-    };
+    // The gates that read the page as it opened.
+    const graph = await graphGate(page);
+    const opens = await drawnOpenGate(page, loaded.answer);
+    const read: ProposedPage = { ...loaded, graph, opens };
     await expectOvertakenOpen(page, read);
     await expectProposedMarks(page, read);
     await expectDetails(page, read);
@@ -1245,12 +1297,31 @@ test("a refused settle says why and leaves the row as it was", async ({ browser 
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The overtaken question carries "Overtaken" in the outline, drawn open with its criterion and
- * its statement under it, and the statement draws no gap.
+ * The nodes the page draws under the overtaken question, and how a reading names them: its
+ * statement, and its criterion where the page draws one (`criteria`), which is noted as owed
+ * where it draws none.
+ */
+function drawnUnderQuestion({ criteria, seeded }: SeededPage): {
+  readonly named: string;
+  readonly under: readonly string[];
+} {
+  const { ids } = seeded;
+  return noteOwed(criteria)
+    ? {
+        named: "its criterion and its statement",
+        under: [ids.questionCriterion, ids.questionStatement],
+      }
+    : { named: "its statement", under: [ids.questionStatement] };
+}
+
+/**
+ * The overtaken question carries "Overtaken" in the outline, drawn open with its statement under
+ * it, and its criterion where the page draws one, and the statement draws no gap.
  */
 async function expectOvertakenQuestionRows(page: Page, read: SeededPage): Promise<void> {
   const { plain, seeded, traffic, treeId } = read;
   const { ids } = seeded;
+  const { named, under } = drawnUnderQuestion(read);
   await gotoSettled(page, traffic, plain);
   const question = await drawnRow(page, ids.overtakenQuestion, "the overtaken question");
   await expect
@@ -1259,8 +1330,8 @@ async function expectOvertakenQuestionRows(page: Page, read: SeededPage): Promis
   await expectDrawnOpen(
     page,
     ids.overtakenQuestion,
-    [ids.questionCriterion, ids.questionStatement],
-    "the overtaken question is drawn open with its criterion and its statement"
+    under,
+    `the overtaken question is drawn open with ${named}`
   );
   const statement = nodeRow(page, treeId(ids.questionStatement)).first();
   await expect(statement, "the statement under the overtaken question is no row").toHaveCount(1);
@@ -1340,11 +1411,12 @@ async function expectOpensOnLiveQuestion(page: Page, read: SeededPage): Promise<
     .toBe(ids.openQuestion);
 }
 
-/** The overtaken question in Graph, with its criterion and its statement open under it and no
- *  gap on the statement. */
+/** The overtaken question in Graph, with its statement open under it, and its criterion where the
+ *  page draws one, and no gap on the statement. */
 async function expectQuestionInGraph(page: Page, read: SeededPage): Promise<void> {
   if (!noteOwed(await graphGate(page))) return;
   const { ids } = read.seeded;
+  const { named, under } = drawnUnderQuestion(read);
   const name = graphName();
   await pickPreset(page, name);
   await expectActivePreset(page, name);
@@ -1357,8 +1429,8 @@ async function expectQuestionInGraph(page: Page, read: SeededPage): Promise<void
   await expectDrawnOpen(
     page,
     ids.overtakenQuestion,
-    [ids.questionCriterion, ids.questionStatement],
-    "the overtaken question is drawn open with its criterion and its statement in Graph"
+    under,
+    `the overtaken question is drawn open with ${named} in Graph`
   );
   const statement = await drawnRow(page, ids.questionStatement, "the statement under the question");
   await expect(
@@ -1427,10 +1499,15 @@ async function expectFocusedOnScreen(
     .toBe(true);
 }
 
-/** A press on the chip naming statement 8, on the decision that shapes it, focuses statement 8's
- *  row, on screen. */
+/**
+ * A press on the chip naming statement 8, on the decision that shapes it, follows the chip to
+ * the statement's own address, the Spec view at its block (`/spec#b-…`), and the page puts the
+ * focus on the statement's row there, on screen, as it does for a live statement a chip names
+ * (`e2e/issue-page-j.e2e.ts` reads that). The Spec view's rows carry the tree's id and no read
+ * id (`SpecFilterBody.tsx`), so the row is told by `data-node-id`.
+ */
 async function expectChipReaches(page: Page, read: SeededPage): Promise<void> {
-  const { answer, plain, seeded, traffic } = read;
+  const { answer, key, plain, seeded, traffic, treeId } = read;
   const { ids } = seeded;
   await gotoSettled(page, traffic, plain);
   const shaping = await drawnRow(
@@ -1441,7 +1518,24 @@ async function expectChipReaches(page: Page, read: SeededPage): Promise<void> {
   const chip = chipNaming(page, shaping, wordsOf(answer, ids.statement8));
   await expect(chip, "the decision that shapes statement 8 draws no chip naming it").toHaveCount(1);
   await chip.locator("[data-chip-name]").click();
-  await expectFocusedOnScreen(page, read, ids.statement8, "a press on the chip naming statement 8");
+  await expect(
+    page,
+    "a press on the chip naming statement 8 does not open the Spec view at its block"
+  ).toHaveURL(new RegExp(`${presetPath(key, "spec")}(#|$)`));
+  await expectActivePreset(page, PRESET_NAMES.spec);
+  const statement8 = treeId(ids.statement8);
+  await expect
+    .poll(() => focusedNodeId(page), {
+      message: "a press on the chip naming statement 8 does not focus its row",
+      timeout: DRAWN_MS,
+    })
+    .toBe(statement8);
+  await expect
+    .poll(() => onScreen(nodeRow(page, statement8).first()), {
+      message: "a press on the chip naming statement 8 does not bring its row on screen",
+      timeout: DRAWN_MS,
+    })
+    .toBe(true);
 }
 
 /** A press on the overtaken question's Contents entry, and its `/asks/<id>` address, each focus the

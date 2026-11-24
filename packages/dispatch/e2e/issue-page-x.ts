@@ -230,15 +230,33 @@ const ITEM_BLOCKS: Readonly<Record<string, true>> = {
   message_block: true,
 };
 
-/** Every node of issue `key` in `answer` under the node `readId`, and under each of `alike`, the
- *  nodes the page draws in the same row, at any depth, by the read's `parent`, that the page draws
- *  as a row: the tree each count walks. The walk passes through a block of an item, which is no
- *  row, to the replies under it. */
+/** The kinds of node `seedNodeStates` writes that no step of `tree-read/tree-nodes.ts`'s
+ *  `treeDraftSteps` drafts at this head, so the page draws no row for one and counts none in a
+ *  branch: a criterion, which part Y (INFRA-4066) draws. A reading of a count leaves them out
+ *  (`HeldRow.undrawn`) until a gate finds the page drawing the kind. */
+export const UNDRAWN_KINDS: Readonly<Record<string, true>> = { criterion: true };
+
+/** What a count of the nodes under a row reads besides the row's own node. */
+export interface HeldRow {
+  /** The ids of the other nodes of the read the page draws in this row's place. A question the
+   *  server indexed from a block of a document is two nodes of the read, the block and its ask,
+   *  which the page draws as one row. */
+  readonly alike?: readonly string[];
+  /** The kinds the page draws no row for: a node of one is no row and counts none, and the
+   *  nodes under it stand under the row above it, as the page places them. */
+  readonly undrawn?: Readonly<Record<string, true>>;
+}
+
+/** Every node of issue `key` in `answer` under the node `readId`, and under each of `alike`, at
+ *  any depth, by the read's `parent`, that the page draws as a row: the tree each count walks.
+ *  The walk passes through a node the page draws no row for - a block of an ask, a comment or a
+ *  message, which the page draws inside its item's row, or a node of an `undrawn` kind - to what
+ *  stands under it. */
 function underIn(
   answer: IssueTreeRead,
   key: string,
   readId: string,
-  alike: readonly string[] = []
+  { alike = [], undrawn }: HeldRow = {}
 ): IssueTreeNode[] {
   const children = childrenIn(answer);
   const found: IssueTreeNode[] = [];
@@ -247,7 +265,9 @@ function underIn(
     for (const child of children.get(id) ?? []) {
       if (!ownOf(child, key) || seen.has(child.id)) continue;
       seen.add(child.id);
-      if (ITEM_BLOCKS[child.supertag] !== true) found.push(child);
+      if (ITEM_BLOCKS[child.supertag] !== true && undrawn?.[child.supertag] !== true) {
+        found.push(child);
+      }
       walk(child.id);
     }
   };
@@ -255,17 +275,14 @@ function underIn(
   return found;
 }
 
-/** How many nodes the branch of `readId` holds in `answer`: what its row's folded count counts.
- *  A question the server indexed from a block of a document is two nodes of the read, the block
- *  and its ask, which the page draws as one row, so `alike` names the ask's id for the block's
- *  row. */
+/** How many nodes the branch of `readId` holds in `answer`: what its row's folded count counts. */
 export function heldUnder(
   answer: IssueTreeRead,
   key: string,
   readId: string,
-  alike: readonly string[] = []
+  row: HeldRow = {}
 ): number {
-  return underIn(answer, key, readId, alike).length;
+  return underIn(answer, key, readId, row).length;
 }
 
 /** How many of the nodes `reserved` names stand in the branch of `readId` in `answer`. */
