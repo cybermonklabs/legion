@@ -1519,3 +1519,83 @@ sleep() { command sleep 0.05; }`;
     );
   });
 });
+
+// The tester-proof world's gh routes (worker_routes), answered by the run's gh stand-in. A tester
+// finds its pull request with the worker prompt's lookup, `gh pr list --repo <the issue's
+// repository> --head legion/<issue> --state open --json number --jq '.[0].number'`
+// (packages/daemon/internal/prompts/go/worker-common.md).
+describe("worker_routes", () => {
+  const pr = {
+    number: 1001,
+    url: "https://github.com/example/widgets/pull/1001",
+    headRefName: "legion/LWEVAL-1",
+    headRefOid: "099b05dc19f7f7e5058e791d16ae05f0b123a2cc",
+    body: "Dispatch: LWEVAL-1",
+  };
+  /** `gh <args>` answered by the gh stand-in from worker_routes' fixtures.json for `pr`. */
+  function gh(...args: string[]) {
+    const run = freshDir("worker-routes");
+    const routes = bash(`${fn("worker_routes")}\nworker_routes "$1" >"$2/fixtures.json"`, [
+      JSON.stringify(pr),
+      run,
+    ]);
+    expect(routes).toEqual({ code: 0, stdout: "", stderr: "" });
+    const result = Bun.spawnSync(
+      [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+      { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+    );
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  }
+
+  // Catches: a world whose stand-in answers the prompt's lookup of the pull request with a 404,
+  // after which a tester took the pull request to be unreachable and left its body unedited.
+  test("a list of the PR's branch lists the PR, picked to the fields asked", () => {
+    expect(
+      gh(
+        "pr",
+        "list",
+        "--repo",
+        "example/widgets",
+        "--head",
+        "legion/LWEVAL-1",
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--jq",
+        ".[0].number"
+      )
+    ).toEqual({ code: 0, stdout: "1001\n", stderr: "" });
+    for (const head of [
+      ["--head", "legion/LWEVAL-1"],
+      ["--head=legion/LWEVAL-1"],
+      ["-H", "legion/LWEVAL-1"],
+    ]) {
+      expect(gh("pr", "list", ...head, "--state", "open", "--json", "number,headRefOid")).toEqual({
+        code: 0,
+        stdout: `[{"number":1001,"headRefOid":"${pr.headRefOid}"}]\n`,
+        stderr: "",
+      });
+    }
+  });
+
+  // Catches: a list of another branch, or of no branch, that names the fixture's PR, or that fails
+  // where GitHub answers an empty list.
+  test("a list of any other head, or of no head, is empty", () => {
+    for (const filter of [
+      ["--head", "legion/LWEVAL-10"],
+      ["--head", "legion/LWEVAL-2"],
+      ["--state", "open"],
+    ]) {
+      expect(gh("pr", "list", ...filter, "--json", "number")).toEqual({
+        code: 0,
+        stdout: "[]\n",
+        stderr: "",
+      });
+    }
+  });
+});

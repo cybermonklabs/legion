@@ -9,7 +9,10 @@ body: |-
     `SKILL_SCENARIOS_NATS_URL` uses those two servers and starts no container. The given Postgres
     must be on this machine: the batch refuses a URL whose host is not `127.0.0.1`, `localhost` or
     `::1`. When `LEGION_E2E_MODEL_PROVIDER` names a built-in provider such as `anthropic`, the
-    provider route's profile no longer disables that provider.
+    provider route's profile no longer disables that provider. The scenario's world names one
+    repository, `example/widgets`, with the default branch `trunk`, in the pane's addressing, in
+    the record the daemon stand-in serves and in the pull request fixture, and the `gh` stand-in
+    answers `gh pr list` for the fixture's branch.
 time: 2026-11-23T21:30:48Z
 custom:
     Issue: INFRA-4942

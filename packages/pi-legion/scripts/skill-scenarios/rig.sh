@@ -260,10 +260,14 @@ root=$(cd "$here/../../../.." && pwd -P)
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
-# The tester-proof world (worker_fixture below): its repository, and the run's own issue, which
-# run_tester_proof sets once seed.ts has filed it.
+# The tester-proof world (worker_fixture below): its repository and that repository's default
+# branch, and the run's own issue, which run_tester_proof sets once seed.ts has filed it. The
+# daemon's side of the world names the repository and the branch again: daemon-pane.go's
+# rigRepository and rigDefaultBranch, which the pane's addressing names, and daemon-standin.ts's
+# REPOSITORY and DEFAULT_BRANCH, which its state names. Each must equal the value here.
 worker_key=''
 worker_repo=example/widgets
+worker_default_branch=trunk
 
 note() { printf 'skill-scenarios: %s\n' "$*"; }
 fail() {
@@ -1520,14 +1524,38 @@ cmd_judge() {
   SKILL_SCENARIOS_WORK=$work exec bun "$here/judge.ts" run "$@"
 }
 
+# worker_routes PR prints the routes the gh stand-in answers the tester's world from
+# (fixtures.json), for PR, the fixture's pull request as `gh pr view --json` prints it whole.
+# `gh pr list` lists PR when its `--head` (`--head=`, `-H`) names PR's branch, as the worker
+# prompt's lookup of the PR by `--head legion/<issue>` does, and lists nothing for any other head,
+# as GitHub's answer for a branch with no pull request is. The branch is legion/<key>, and a
+# Dispatch key holds letters, digits and a hyphen, so it goes into the route's regex as it is.
+worker_routes() {
+  jq -n --argjson pr "$1" '
+    ($pr.number|tostring) as $number
+    | {routes:[
+      {match:("^gh pr list( .*)? (--head[ =]|-H ?)" + $pr.headRefName + "( |$)"), stdout:[$pr]},
+      {match:"^gh pr list", stdout:[]},
+      {match:"^gh pr view", stdout:$pr},
+      {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
+      {match:"^gh pr (edit|comment|review|ready)", stdout:($pr.url+"#issuecomment-1")},
+      {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
+      {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($pr.url+"#issuecomment-6001")}},
+      {match:("^gh api .*pulls/" + $number + "/(reviews|comments)"), stdout:[]},
+      {match:"^gh api .*(check-runs|status)", stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
+      {match:("^gh api .*pulls/" + $number), stdout:$pr},
+      {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
+    ]}'
+}
+
 # The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
 # run_tester_proof files first): a bare remote whose post-receive hook logs every push, the issue
-# workspace cloned from it, the implementer's commit on legion/<key>, the PR the gh stand-in serves,
-# and the implementer's handoff body at $R/implement.json, which run_tester_proof records on the
-# issue. The fixture's content is the same in every run; the PR number is 1000 plus <index>, the
-# run's index in its batch, and the commits are dated <index> seconds after <start>, the batch's
-# start, so no two runs of a batch share a PR number or a head (two runs can meet in a scratch file
-# in the shared /tmp), and each batch's heads carry its own start time.
+# workspace cloned from it, the implementer's commit on legion/<key>, the PR the gh stand-in serves
+# (worker_routes), and the implementer's handoff body at $R/implement.json, which run_tester_proof
+# records on the issue. The fixture's content is the same in every run; the PR number is 1000 plus
+# <index>, the run's index in its batch, and the commits are dated <index> seconds after <start>,
+# the batch's start, so no two runs of a batch share a PR number or a head (two runs can meet in a
+# scratch file in the shared /tmp), and each batch's heads carry its own start time.
 # The CLI must meet every requirement the seeded spec marks, and the issue's Verification document
 # holds the check that the implementer's seeded result and the tester's own run are against.
 # testerProof fails a run that
@@ -1535,25 +1563,25 @@ cmd_judge() {
 # test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
 # fixture turns correct testing into a fail.
 worker_fixture() {
-  local index=$1 start=$2 src C1 body when worker_pr worker_pr_url jj_setup_config
+  local index=$1 start=$2 src C1 body when worker_pr worker_pr_url jj_setup_config pr
   worker_pr=$((1000 + index))
   worker_pr_url=https://github.com/$worker_repo/pull/$worker_pr
   when="@$((start + index)) +0000"
-  git init -q --bare -b main "$R/remote.git"
+  git init -q --bare -b "$worker_default_branch" "$R/remote.git"
   cat >"$R/remote.git/hooks/post-receive" <<EOF
 #!/bin/sh
 while read old new ref; do echo "\$(date -u +%FT%T.%3NZ) \$ref \$old \$new" >>$(printf %q "$R/pushes.log"); done
 EOF
   chmod +x "$R/remote.git/hooks/post-receive"
   src=$R/src
-  git init -q -b main "$src"
+  git init -q -b "$worker_default_branch" "$src"
   g() {
     GIT_AUTHOR_DATE=$when GIT_COMMITTER_DATE=$when \
       git -C "$src" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"
   }
   printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
   g add -A && g commit -qm "init"
-  g push -q "$R/remote.git" main
+  g push -q "$R/remote.git" "$worker_default_branch"
   g checkout -qb "legion/$worker_key"
   cat >"$src/greet.ts" <<'EOF'
 export function greet(name: string): string {
@@ -1613,24 +1641,14 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 **Fast-follow:** none.
 
 **Chain:** not stacked."
-  jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
-    --arg key "$worker_key" --argjson number "$worker_pr" '
+  pr=$(jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
+    --arg key "$worker_key" --arg base "$worker_default_branch" --argjson number "$worker_pr" '
     {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
-     headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
-     reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:"main"},
+     headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
+     reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:$base},
      statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
-                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]} as $pr
-    | {routes:[
-      {match:"^gh pr view", stdout:$pr},
-      {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
-      {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
-      {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
-      {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
-      {match:"^gh api .*(check-runs|status)", stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
-      {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
-      {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
-    ]}' >"$R/fixtures.json"
+                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]}')
+  worker_routes "$pr" >"$R/fixtures.json"
   # The world the scorer reads: head is the PR's head, the implementer's code commit.
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"

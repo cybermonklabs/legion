@@ -72,6 +72,12 @@ const ROLE_TOKEN = roleToken(project, issue, role);
 const SESSION_SECRET = fixtureSecret("reg");
 
 const startedAt = new Date().toISOString();
+/** The rig's one repository and its default branch, the tester-proof world's: REPOSITORY must
+ * equal rig.sh's `worker_repo` and daemon-pane.go's rigRepository, and DEFAULT_BRANCH rig.sh's
+ * `worker_default_branch` and daemon-pane.go's rigDefaultBranch, which the pane's addressing
+ * names. */
+const REPOSITORY = "example/widgets";
+const DEFAULT_BRANCH = "trunk";
 /** The phase the role works and the word of the handoff record it ends with, empty when none. */
 const [PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", role]).split("\n");
 /** `GET /legion/v1/state`: the one issue the worker holds, admitted in the phase its role works
@@ -95,8 +101,8 @@ const STATE = LegionStateResponse.parse({
       phase: PHASE,
       status: "in_progress",
       tree: issue,
-      repo: "sjawhar/legion-smoke",
-      defaultBranch: "main",
+      repo: REPOSITORY,
+      defaultBranch: DEFAULT_BRANCH,
       workers: {},
     },
   },
@@ -106,7 +112,7 @@ const STATE = LegionStateResponse.parse({
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    live: [{ repo: "sjawhar/legion-smoke", apps: { implement: true, review: true } }],
+    live: [{ repo: REPOSITORY, apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },
