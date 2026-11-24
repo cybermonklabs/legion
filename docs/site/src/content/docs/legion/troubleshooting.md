@@ -585,7 +585,7 @@ fallback chain, so the next prompt goes to another model
 ([Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged));
 a 429, a 408, a 401, a 403, a 5xx and an error the provider answered no status for are sent again
 too: a credential error is the fleet's rather than this claim's work, so it climbs the ladder like
-any other and the `provider-errors` notice at six, to the issue's architect and the controller, is what tells a person. A newer
+any other and the `provider-errors` notice at six, to the project's controller and to the issue's architect where one stands above the claim's agent, is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
 waits for the compaction's end instead, as everything the claim is owed does. An update round
