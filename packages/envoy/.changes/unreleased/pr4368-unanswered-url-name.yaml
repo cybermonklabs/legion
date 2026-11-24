@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `redact.Unanswered` and `oauth2call.Unanswered`, given no name of the caller's for a request
+  that got no answer, name the URL it asked by its scheme, host and path, with its user
+  information, its whole query (a key alone as much as a value) and its fragment removed, and as
+  `(not printed: ...)` where what remains holds an escape or a character the URL rule does not
+  allow. The GitHub App client's error for a request that got no answer names its target as before
+  and then that URL, where it named the target a second time, its query included.
+time: 2026-11-24T15:01:34Z
+custom:
+    Issue: pr4368

@@ -38,10 +38,10 @@ import (
 //   - The githubapp client cuts GitHub's answers once, where each enters the error it answers the
 //     sweep with. It cuts a refusal's body and a next page link alone, each with its own size
 //     (requireCut).
-//   - A transport error of the client names its URL as ShownBody shows it, and its cause by
-//     redact.Unanswered: a line of the answer its cause quotes is the answering party's words,
-//     which can echo the App's JWT, so it prints as its class and none of the line
-//     (requireClassOnly).
+//   - A transport error of the client names its URL as ShownBody shows it, then the URL it asked
+//     as redact.Unanswered names it, and its cause by redact.Unanswered: a line of the answer its
+//     cause quotes is the answering party's words, which can echo the App's JWT, so it prints as
+//     its class and none of the line (requireClassOnly).
 //
 // A value of a listing GitHub answers 200 that the client cannot decode prints none of itself: the
 // client decodes the answer through redact.Answer.Decode, whose error names the member that did not
@@ -818,13 +818,13 @@ func (h *harness) refusedRedelivery(t *testing.T, guid, text string, answer func
 // the member that did not decode and the types around it, quotes none of the value, whole or cut,
 // and reaches none of the decoder's own errors: a delivered_at that is no time, and a valid time
 // with text after it, each print as that fixed text (requireMemberOnly). A transport error names
-// its URL as ShownBody shows it and its cause by its class: a line the cause quotes is the
-// answering party's words, so none of it prints (requireClassOnly). The sweep shows each such
-// error as it is, so each is held to the bound and never whole: in the error the sweep answers and
-// in the WARN line the running sweep logs it with for each failed listing, and in the
-// request-refused line for each failed redelivery request (refusedRedelivery). Each case is a real
-// sweep through the real client against the fake, with a server in front of the fake that gives
-// the one answer the case is about (inFrontOfGitHub).
+// its URL as ShownBody shows it, then the URL it asked as redact.Unanswered names it, and its
+// cause by its class: a line the cause quotes is the answering party's words, so none of it prints
+// (requireClassOnly). The sweep shows each such error as it is, so each is held to the bound and
+// never whole: in the error the sweep answers and in the WARN line the running sweep logs it with
+// for each failed listing, and in the request-refused line for each failed redelivery request
+// (refusedRedelivery). Each case is a real sweep through the real client against the fake, with a
+// server in front of the fake that gives the one answer the case is about (inFrontOfGitHub).
 func TestTheSweepShowsGitHubsErrorBodyAndNextLinkToABound(t *testing.T) {
 	for _, tc := range []struct {
 		name string

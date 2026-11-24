@@ -54,7 +54,8 @@
 //     around it, quotes none of the value, whole or cut, and reaches none of the decoder's own
 //     errors.
 //   - A transport error names its target as githubapp.ShownBody shows it, with the target's size,
-//     and its failure by redact.Unanswered: a transport failure's own words or a fixed class.
+//     and then the URL it asked and its failure by redact.Unanswered: a transport failure's own
+//     words or a fixed class.
 //   - githubapp.ShownErr answers no error longer than 4,414 bytes. An error whose text is still
 //     longer after the cuts above is cut whole, with the size of that text.
 //

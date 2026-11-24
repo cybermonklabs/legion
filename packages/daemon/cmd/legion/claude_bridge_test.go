@@ -167,9 +167,10 @@ func goneShim(t *testing.T) *os.File {
 }
 
 // The bridge's own lines pass the URL rule. A turn's outcome that cannot be reported is logged
-// with the error of the post, which quotes the daemon's URL as the pane names it
-// (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
-// neither the user name nor the query reaches the pane.
+// with the failure of the post, whose net/http error quotes the URL the report asked, the daemon's
+// URL as the pane names it (LEGION_DAEMON_URL) with the route joined onto its path, user name and
+// query included: the line keeps that URL's host and path, and neither the user name nor the query
+// reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
@@ -193,7 +194,7 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	})
 	p.hangUp()
 	logged := p.logged()
-	if want := `Post "http://` + daemon + `/daemon"`; !strings.Contains(logged, want) {
+	if want := `Post "http://` + daemon + `/daemon/legion/v1/claims/turn-outcome"`; !strings.Contains(logged, want) {
 		t.Errorf("the bridge logged:\n%s\nwant the report's failure naming %s", logged, want)
 	}
 	for _, credential := range []string{"legion-reader", "planted-query-token-3"} {

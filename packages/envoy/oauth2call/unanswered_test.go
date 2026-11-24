@@ -63,9 +63,7 @@ func TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords(t *test
 	}{
 		{"location-unparsed", echo(redirectstest.Unparsed), "/pulls/7", redact.ClassLocationUnparsed, refusing, true},
 		{"status-line-unparsed", malformed(), "", redact.ClassRequestFailed, refusing, true},
-		{"followed-elsewhere", echo(func(credential string) string {
-			return redirectstest.To(dead, strings.TrimPrefix(credential, "Bearer "))
-		}), "", redact.ClassRedirected, following, true},
+		{"followed-elsewhere", redirectstest.EchoBearer(t, func(bearer string) string { return redirectstest.To(dead, bearer) }), "", redact.ClassRedirected, following, true},
 		{"refused-connection", "http://" + dead, "", "connect: connection refused", refusing, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {

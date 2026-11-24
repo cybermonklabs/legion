@@ -18,9 +18,10 @@ import (
 // what the pane is told, and it can carry user information, a query or a fragment. A report the
 // daemon never answers (its address is one nothing listens at) is logged with the failure named
 // through oauth2call.Unanswered, by the URL the report asked: its scheme, host and path alone,
-// none of the credential. The route is appended to the URL as it is written, so a query or a
-// fragment takes the route into it. Each twin shows net/http's own error of the same post holds
-// the credential. Captures claudebridge.unanswered-name/<case>.
+// none of the credential. The route is joined onto the URL's path, its query kept and its fragment
+// dropped, so the path named is the daemon's with the route after it. Each twin shows net/http's
+// own error of a post to LEGION_DAEMON_URL as the pane names it holds the credential. Captures
+// claudebridge.unanswered-name/<case>.
 func TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath(t *testing.T) {
 	const (
 		user  = "not-a-secret-user"
@@ -36,8 +37,8 @@ func TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath(t *t
 	}{
 		{"clean", "http://" + dead, "", "http://" + dead + "/legion/v1/claims/turn-outcome"},
 		{"user", "http://" + user + "@" + dead, user, "http://" + dead + "/legion/v1/claims/turn-outcome"},
-		{"query", "http://" + dead + "/daemon?sig=" + token, token, "http://" + dead + "/daemon"},
-		{"fragment", "http://" + dead + "#" + token, token, "http://" + dead},
+		{"query", "http://" + dead + "/daemon?sig=" + token, token, "http://" + dead + "/daemon/legion/v1/claims/turn-outcome"},
+		{"fragment", "http://" + dead + "#" + token, token, "http://" + dead + "/legion/v1/claims/turn-outcome"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var logged bytes.Buffer
@@ -46,7 +47,7 @@ func TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath(t *t
 				t.Fatalf("the bridge started no reporter: %q", logged.String())
 			}
 			if c.secret != "" {
-				response, err := http.Post(reports.url, "application/json", strings.NewReader("{}"))
+				response, err := http.Post(c.daemon, "application/json", strings.NewReader("{}"))
 				if err == nil {
 					_ = response.Body.Close()
 					t.Fatalf("%s answered %d: the row needs a daemon that never answers", c.daemon, response.StatusCode)

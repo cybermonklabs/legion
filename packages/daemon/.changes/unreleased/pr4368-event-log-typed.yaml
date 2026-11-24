@@ -7,7 +7,11 @@ body: |-
   record and read as an RFC 3339 time, and its payload kept as data. A `created_at` that is not a
   time refuses the read, naming the event's place and the member; an answer that echoed the
   request's bearer there was printed whole by the boot catch-up's line and returned by the
-  set-back's check and the label setter's read. The stream's decoder reads the same typed event.
+  set-back's check and the label setter's read. When the daemon reconciles a Dispatch listing, at
+  boot or for a repository recovery, such an event, or one that does not decode, leaves an
+  unrecorded labelled triage root out of admission's decision with an ERROR line naming the
+  event's place in the log, and the reconcile goes on instead of failing the boot. The stream's
+  decoder reads the same typed event.
   `LabelSetter`, `StatusChangeOf` and `DecodeDispatchEvent` name a payload that does not decode
   in fixed text (`oauth2call.DecodeError`), and the live decoder names an unread ask kind, turn,
   ask state or claim by its member alone.

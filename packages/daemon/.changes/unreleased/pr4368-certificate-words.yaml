@@ -8,10 +8,10 @@ body: |-
   `tls: failed to verify certificate: x509: certificate is not valid for the host asked (...)`,
   and still reads as a refusal of the transport no wait fixes. Every request that got no answer
   now prints through envoy's `oauth2call.Unanswered`, and the daemon's own copy of that printer
-  is gone. Two other words change with it: the request's URL prints only where it is a plain
-  http(s) URL with no query, user information or escape, and as `(not printed: ...)` otherwise,
-  where the daemon printed it with its query and user information removed; and a failure of no
-  other class prints as `the request failed`.
+  is gone. Two other words change with it: the request's URL prints by its scheme, host and path,
+  with its user information, its whole query and its fragment removed, and as `(not printed: ...)`
+  where what remains holds an escape or a character the URL rule does not allow; and a failure of
+  no other class prints as `the request failed`.
 time: 2026-11-24T05:47:51Z
 custom:
     Issue: pr4368
