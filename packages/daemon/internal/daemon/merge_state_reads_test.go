@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"runtime"
 	"slices"
@@ -1772,22 +1773,69 @@ func TestARepeatedLimitDoublesTheInstallationsHoldUpToItsCap(t *testing.T) {
 	held("a limit longer after the hold than the hold lasted", limit(time.Minute), time.Minute)
 }
 
+// A query that reached no answer of GitHub's - a connection that failed, its own deadline - says
+// nothing of whether GitHub still limits the installation, so it leaves the backoff as it stands:
+// a limit, then such a failure, then a limit within one hold-length of the hold's end doubles the
+// hold. An answer of GitHub's own that is no limit - a 502, GraphQL errors - ends the backoff as an
+// answer with the data does.
+func TestATransportFailureKeepsTheBackoff(t *testing.T) {
+	t.Parallel()
+	limit := &githubrest.Answer{Method: http.MethodPost, Path: "/graphql", Status: http.StatusForbidden, RateLimited: true, RetryAfter: time.Minute, Budget: githubrest.BudgetSecondary}
+	start := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	for _, outcome := range []struct {
+		name    string
+		err     error
+		answers bool
+	}{
+		{"a connection that failed", &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: errors.New("connection reset by peer")}, false},
+		{"the query's own deadline", &url.Error{Op: "Post", URL: "https://api.github.com/graphql", Err: context.DeadlineExceeded}, false},
+		{"a 502 of GitHub's", &githubrest.Answer{Method: http.MethodPost, Path: "/graphql", Status: http.StatusBadGateway, Body: `{"message":"Server Error"}`}, true},
+		{"GraphQL errors", githubrest.GraphQLErrors{{Type: "NOT_FOUND", Message: "Could not resolve to a PullRequest with the number of 87."}}, true},
+	} {
+		gate := newQueryGate(config.DefaultGitHubGraphQLShare)
+		now := start
+		gate.settle(limit, 0, now)
+		now = gate.hold.Add(10 * time.Second)
+		gate.settle(outcome.err, 0, now)
+		want, again := time.Minute, 2*time.Minute
+		if outcome.answers {
+			want, again = 0, time.Minute
+		}
+		if gate.held != want {
+			t.Fatalf("after a limit and then %s the backoff is %s, want %s", outcome.name, gate.held, want)
+		}
+		now = now.Add(time.Second)
+		gate.settle(limit, 0, now)
+		if got := gate.hold.Sub(now); got != again {
+			t.Fatalf("a limit 11 s after the hold ended, with %s between, holds %s, want %s", outcome.name, got, again)
+		}
+	}
+}
+
 // The pause after each query is (1 - share) / share of the time it took: the same again at the
 // default share of one half, three times it at the share of a quarter a deployment of four daemons
-// sets, and nothing at 1. A runtime takes the share the configuration names and the default when it
-// names none.
+// sets, nothing at 1, and at most queryHoldMost. At the floor share, 0.01, a long query is capped;
+// at a share far below it, which the loader refuses, whose pause a time.Duration could not hold,
+// the pause is still the cap, never a wrapped value below nothing. A runtime takes the share the
+// configuration names and the default when it names none.
 func TestAShareOfAQuarterWaitsThreeTimesTheQuerysTime(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		share float64
-		want  time.Duration
+		share      float64
+		took, want time.Duration
 	}{
-		{0.5, 40 * time.Millisecond},
-		{0.25, 120 * time.Millisecond},
-		{1, 0},
+		{0.5, 40 * time.Millisecond, 40 * time.Millisecond},
+		{0.25, 40 * time.Millisecond, 120 * time.Millisecond},
+		{1, 40 * time.Millisecond, 0},
+		{config.MinGitHubGraphQLShare, 5 * time.Second, 495 * time.Second},
+		{config.MinGitHubGraphQLShare, 10 * time.Second, queryHoldMost},
+		{config.MinGitHubGraphQLShare, time.Hour, queryHoldMost},
+		{1e-12, 40 * time.Millisecond, queryHoldMost},
+		{1e-300, time.Hour, queryHoldMost},
 	} {
-		if got := newQueryGate(tc.share).pause(40 * time.Millisecond); got != tc.want {
-			t.Errorf("the pause after a query of 40ms at a share of %v = %s, want %s", tc.share, got, tc.want)
+		got := newQueryGate(tc.share).pause(tc.took)
+		if got < 0 || got > queryHoldMost || (got-tc.want).Abs() > time.Millisecond {
+			t.Errorf("the pause after a query of %s at a share of %v = %s, want %s", tc.took, tc.share, got, tc.want)
 		}
 	}
 

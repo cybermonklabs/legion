@@ -12,6 +12,7 @@ func TestGitHubGraphQLShareTakesAShareOfAWhole(t *testing.T) {
 		value string
 		want  float64
 	}{
+		{"0.01", 0.01},
 		{"0.25", 0.25},
 		{"0.5", 0.5},
 		{"1", 1},
@@ -36,18 +37,29 @@ func TestGitHubGraphQLShareTakesAShareOfAWhole(t *testing.T) {
 	}
 }
 
-// A share at or below 0, which would pause forever after the first query, above 1, which would
-// ask for a pause below nothing, and anything that is not a number are refused.
+// A share below the floor (MinGitHubGraphQLShare, one daemon in a hundred) - 0, which would pause
+// forever after the first query, and a share as small as 1e-12, whose pause a time.Duration cannot
+// hold - a share above 1, which would ask for a pause below nothing, NaN and the infinities, and
+// anything that is not a number are refused.
 func TestGitHubGraphQLShareRefuses(t *testing.T) {
+	const outside = "github_graphql_share must be at least 0.01 and at most 1"
 	for _, tc := range []struct {
 		value string
 		want  string
 	}{
-		{"0", "github_graphql_share must be above 0 and at most 1"},
-		{"-0.5", "github_graphql_share must be above 0 and at most 1"},
-		{"1.5", "github_graphql_share must be above 0 and at most 1"},
-		{".nan", "github_graphql_share must be above 0 and at most 1"},
-		{".inf", "github_graphql_share must be above 0 and at most 1"},
+		{"0", outside},
+		{"-0.5", outside},
+		{"0.001", outside},
+		{"0.0099", outside},
+		{"0.000000000001", outside},
+		{"1.5", outside},
+		{".nan", outside},
+		{".NaN", outside},
+		{".inf", outside},
+		{"+.inf", outside},
+		{"-.inf", outside},
+		{"NaN", "github_graphql_share must be a number"},
+		{"Infinity", "github_graphql_share must be a number"},
 		{"1/4", "github_graphql_share must be a number"},
 		{"\"0.5\"", "github_graphql_share must be a number"},
 	} {

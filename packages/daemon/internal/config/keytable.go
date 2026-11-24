@@ -359,7 +359,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "github_graphql_share", Default: "`0.5`: each query is followed by a pause as long as it took", RequiredBy: "no",
-			Description: "The share of the time this daemon's merge-state queries of one GitHub App installation may keep GitHub's GraphQL API at work: after each query the next waits (1 - share) / share of the time it took. GitHub allows an installation 60 seconds of query processing time in 60 seconds, and every daemon that reads with the same installation spends that one allowance, so a deployment sets it near 1 divided by the number of daemons sharing the installation; a value at or below 0, or above 1, is refused.",
+			Description: "The share of the time this daemon's merge-state queries of one GitHub App installation may keep GitHub's GraphQL API at work: after each query the next waits (1 - share) / share of the time it took, at most 15 minutes. GitHub allows an installation 60 seconds of query processing time in 60 seconds, and every daemon that reads with the same installation spends that one allowance, so a deployment sets it near 1 divided by the number of daemons sharing the installation; a value below `0.01` (one daemon in a hundred) or above 1 is refused, and so is a value that is not a finite number.",
 			Read:        reads(readShare, func(f *fileConfig, v *float64) { f.GitHubGraphQLShare = v }),
 		},
 		{

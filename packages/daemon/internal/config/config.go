@@ -148,7 +148,7 @@ type Config struct {
 	// it took (internal/daemon's queryGate). GitHub allows an installation 60 seconds of query
 	// processing time in 60 seconds, and every daemon that reads with the same installation
 	// spends that one allowance, so a deployment sets it near 1 divided by the number of daemons
-	// sharing the installation. It is above 0 and at most 1 (readShare).
+	// sharing the installation. It is at least MinGitHubGraphQLShare and at most 1 (readShare).
 	GitHubGraphQLShare float64
 
 	// OperatorTokenFile is the bearer the operator routes compare against, as a path; "" when
@@ -305,6 +305,9 @@ const (
 	// DefaultGitHubGraphQLShare is `github_graphql_share`'s default: half, so each query of an
 	// installation is followed by a pause as long as it took.
 	DefaultGitHubGraphQLShare = 0.5
+	// MinGitHubGraphQLShare is the smallest `github_graphql_share` the loader takes: one daemon in
+	// a hundred sharing an installation, a pause 99 times as long as each query.
+	MinGitHubGraphQLShare = 0.01
 
 	// maxTimerSeconds is the shipped bound on every duration key (config.ts MAX_TIMER_SECONDS):
 	// the largest whole number of seconds whose milliseconds fit a signed 32-bit timer. Go's
@@ -951,11 +954,13 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 	return &duration, nil
 }
 
-// readShare is a key written as a share of a whole (`github_graphql_share`): a number above 0 and
-// at most 1, a decimal among them, and nil for a key the file writes with no value at all. With a
-// share of 0 the daemon would wait forever after its first query, and a share above 1 would ask
-// for a wait below nothing, so both are refused, as is anything that is not a number (`1/4` among
-// them, which YAML reads as a string).
+// readShare is a key written as a share of a whole (`github_graphql_share`): a finite number at
+// least MinGitHubGraphQLShare and at most 1, a decimal among them, and nil for a key the file
+// writes with no value at all. A share below the floor asks for a pause no deployment needs -
+// one of 0 would wait forever after the first query, and a share of 1e-12 a pause past what a
+// time.Duration holds - and one above 1 a pause below nothing, so both are refused, as are NaN,
+// the infinities and anything that is not a number (`1/4` among them, which YAML reads as a
+// string).
 func readShare(value *yaml.Node, key string) (*float64, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -964,8 +969,8 @@ func readShare(value *yaml.Node, key string) (*float64, error) {
 	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&read) != nil {
 		return nil, fmt.Errorf("%s must be a number", key)
 	}
-	if !(read > 0 && read <= 1) {
-		return nil, fmt.Errorf("%s must be above 0 and at most 1", key)
+	if math.IsNaN(read) || math.IsInf(read, 0) || read < MinGitHubGraphQLShare || read > 1 {
+		return nil, fmt.Errorf("%s must be at least %v and at most 1", key, MinGitHubGraphQLShare)
 	}
 	return &read, nil
 }

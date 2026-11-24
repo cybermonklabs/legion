@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -574,10 +575,10 @@ func (w *workflowRuntime) updateOwed(key, issue string, asked uint64, change fun
 // share is the share of the time this process's queries may keep GitHub at work (the daemon's
 // `github_graphql_share`, config.Config.GitHubGraphQLShare); hold is the moment GitHub's rate
 // limit asked the installation's queries to wait until, held the length of that hold, which a
-// limit met again soon after it doubles and a query GitHub did not refuse sets back to zero; and
-// next the moment the last query's pace lets the next one go (settle). It coordinates the batches
-// of this process alone: another daemon process reading the same installation keeps a gate of its
-// own, which is what share is for.
+// limit met again soon after it doubles and a query GitHub answers without a limit sets back to
+// zero; and next the moment the last query's pace lets the next one go (settle). It coordinates
+// the batches of this process alone: another daemon process reading the same installation keeps
+// a gate of its own, which is what share is for.
 type queryGate struct {
 	turn  chan struct{}
 	share float64
@@ -608,17 +609,19 @@ func (w *workflowRuntime) queryGate(scope string) *queryGate {
 }
 
 // queryShare is the share of the time this daemon's queries of one installation may keep GitHub
-// at work, as the configuration set it (workflowRuntime.graphQLShare, which the loader holds above
-// 0 and at most 1), and its default for a runtime built with none, as a test's is.
+// at work, as the configuration set it (workflowRuntime.graphQLShare, which the loader holds at
+// least config.MinGitHubGraphQLShare and at most 1), and its default for a runtime built with none,
+// as a test's is.
 func (w *workflowRuntime) queryShare() float64 {
-	if w.graphQLShare > 0 && w.graphQLShare <= 1 {
+	if w.graphQLShare >= config.MinGitHubGraphQLShare && w.graphQLShare <= 1 {
 		return w.graphQLShare
 	}
 	return config.DefaultGitHubGraphQLShare
 }
 
 // queryHoldMost is the longest a limit met again soon after the last one holds the installation's
-// queries once the gate has doubled its hold (settle), unless GitHub itself asks for longer.
+// queries once the gate has doubled its hold (settle), unless GitHub itself asks for longer, and
+// the longest pause after one query (pause).
 const queryHoldMost = 15 * time.Minute
 
 // run makes query once its turn comes and the gate's hold and pace have passed, and answers how
@@ -668,12 +671,17 @@ func (g *queryGate) run(ctx context.Context, query func() error) (time.Duration,
 // asks; one met again less than the last hold's length after that hold ended - the limit came back
 // as soon as the queries did - holds twice the longer of GitHub's wait and the last hold, up to
 // queryHoldMost, as GitHub asks of a client its secondary limit keeps meeting, and never less than
-// GitHub asks. A query GitHub answered with no limit, whatever else it answered, ends the backoff.
+// GitHub asks. A query GitHub answered without a limit - its data, or any other answer of its own
+// (answeredByGitHub) - ends the backoff; one that got no answer from GitHub at all, a transport
+// failure or its own deadline, leaves the backoff as it stands, since it says nothing of whether
+// GitHub still limits the installation.
 func (g *queryGate) settle(err error, took time.Duration, now time.Time) {
 	g.next = now.Add(g.pause(took))
 	after, _ := githubrest.RetryAfter(err)
 	if after <= 0 {
-		g.held = 0
+		if answeredByGitHub(err) {
+			g.held = 0
+		}
 		return
 	}
 	hold := after
@@ -686,11 +694,32 @@ func (g *queryGate) settle(err error, took time.Duration, now time.Time) {
 	}
 }
 
+// answeredByGitHub says whether err, a query's outcome, is an answer GitHub gave: nil, the data
+// it answered; an answer other than 2xx (*githubrest.Answer); or a 200 whose errors name what
+// GitHub could not answer (githubrest.GraphQLErrors). Anything else - a connection that failed,
+// a deadline that ended the query - reached no answer of GitHub's.
+func answeredByGitHub(err error) bool {
+	var answer *githubrest.Answer
+	var graphQLErrors githubrest.GraphQLErrors
+	return err == nil || errors.As(err, &answer) || errors.As(err, &graphQLErrors)
+}
+
 // pause is how long the gate lets no query go after one that took took: (1 - share) / share of
-// it, the same again at the default share of one half, three times it at a quarter, and nothing at
-// a share of 1.
+// it, the same again at the default share of one half, three times it at a quarter, nothing at a
+// share of 1, and at most queryHoldMost. The product is checked before it becomes a
+// time.Duration: one at or past queryHoldMost, an infinity among them, is that cap, so a share
+// small enough to ask for more than a time.Duration holds never wraps round to a pause below
+// nothing, and one that is not a positive number (NaN, of a share of 0 after a query of no time)
+// is no pause.
 func (g *queryGate) pause(took time.Duration) time.Duration {
-	return time.Duration(float64(took) * (1 - g.share) / g.share)
+	wait := float64(took) * (1 - g.share) / g.share
+	switch {
+	case math.IsNaN(wait) || wait <= 0:
+		return 0
+	case wait >= float64(queryHoldMost):
+		return queryHoldMost
+	}
+	return time.Duration(wait)
 }
 
 // queryTimeoutNear is how long a GraphQL query that failed has run when it ran into the time
