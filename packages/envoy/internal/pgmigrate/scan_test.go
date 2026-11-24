@@ -34,6 +34,10 @@ func TestWithoutCommentsReadsACommentWherePostgresReadsOne(t *testing.T) {
 		// A dollar quote's body is read as SQL: its comments are blanked, its strings stay.
 		{"do $$ begin -- delete from graph_nodes\n execute '-- kept'; end $$", []string{"-- delete from graph_nodes"}},
 		{"select $x$ -- $x$; update projects", []string{"-- "}},
+		// A dollar quote inside a body is a string to PL/pgSQL, kept whole: the -- in it is string
+		// text, though the body's own comment around it is one.
+		{"do $$ begin -- why\n execute $b$ -- inner $b$; end $$", []string{"-- why"}},
+		{"do $$ begin execute $b$select 1 -- note$b$; end $$", nil},
 	} {
 		want, rest := "", tc.text
 		for _, comment := range tc.comments {

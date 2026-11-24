@@ -94,17 +94,19 @@ func scanSQL(text string, visit func(sqlToken) error) error {
 // a /* */ comment nests, and none starts inside a string, a quoted identifier or a dollar quote,
 // whose tag takes bytes 0x80-0xff as scan.l's ident_start does. A dollar quote's body is read the
 // same way, since a function's or a DO block's body is SQL or PL/pgSQL, whose comments these are;
-// its own strings and dollar quotes stay. Every other byte is kept. A reader that matches words in
-// a statement reads it through this, so a comment hides no word and a comment's text is none.
+// its own strings and dollar quotes stay whole, as PL/pgSQL reads them: a dollar quote inside a
+// body is a string, even one the body EXECUTEs as SQL, so a -- in it is string text and a word in
+// it stays visible. Every other byte is kept. A reader that matches words in a statement reads it
+// through this, so a comment hides no word and a comment's text is none.
 func WithoutComments(text string) string {
 	out := []byte(text)
-	blankComments(text, out, 0)
+	blankComments(text, out, 0, false)
 	return string(out)
 }
 
-// blankComments blanks, in out at offset at, each comment of text and of the body of each dollar
-// quote in it, as WithoutComments says.
-func blankComments(text string, out []byte, at int) {
+// blankComments blanks, in out at offset at, each comment of text, and when text is not a body
+// itself, each comment of the body of each dollar quote in it, as WithoutComments says.
+func blankComments(text string, out []byte, at int, body bool) {
 	lexSQL(text, true, func(token sqlToken) {
 		switch token.kind {
 		case sqlComment:
@@ -114,14 +116,18 @@ func blankComments(text string, out []byte, at int) {
 				}
 			}
 		case sqlDollarString:
+			if body {
+				// A dollar quote inside a body is a string to PL/pgSQL, kept whole.
+				return
+			}
 			quoted := text[token.start:token.end]
 			tag := quoted[:strings.IndexByte(quoted[1:], '$')+2]
-			body := quoted[len(tag):]
+			inner := quoted[len(tag):]
 			// An unterminated quote runs to the end of text, with no closing tag to leave out.
-			if len(body) >= len(tag) && strings.HasSuffix(body, tag) {
-				body = body[:len(body)-len(tag)]
+			if len(inner) >= len(tag) && strings.HasSuffix(inner, tag) {
+				inner = inner[:len(inner)-len(tag)]
 			}
-			blankComments(body, out, at+token.start+len(tag))
+			blankComments(inner, out, at+token.start+len(tag), true)
 		}
 	})
 }
