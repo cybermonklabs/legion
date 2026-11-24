@@ -180,6 +180,9 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	// request, and the two statements name the same reader. Its author is the person the request
 	// acts for, as it always was, and its viewer is what the caller sees (readerAs).
 	caller, ok = s.readerAs(w, r, caller)
+	if !ok {
+		return
+	}
 	limit, offset, err := parseMyAnswersPage(r)
 	if err != nil {
 		s.writeHandlerError(w, err)

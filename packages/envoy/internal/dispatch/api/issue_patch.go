@@ -274,7 +274,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Status != nil || parentProvided {
 		lock = lockPatchOwnersAndParent
 	}
-	if err := lock(r.Context(), tx, key, named...); err != nil {
+	if err := lock(r.Context(), tx, who, key, named...); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

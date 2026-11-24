@@ -54,6 +54,9 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	repo, provided, err := parseIssueRepo(input.Repo, "INVALID_PROJECT")
 	if err != nil {
 		s.writeHandlerError(w, err)

@@ -170,7 +170,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.respondWithExistingExternalIssue(w, r, who, existingKey, input.Project, actor)
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -503,7 +503,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.respondWithExistingExternalIssue(w, r, who, existingKey, input.Project, actor)
 			return
 		}
 	}
@@ -714,6 +714,7 @@ func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
 func (s *server) respondWithExistingExternalIssue(
 	w http.ResponseWriter,
 	r *http.Request,
+	who model.Actor,
 	existingKey string,
 	project string,
 	actor model.Actor,

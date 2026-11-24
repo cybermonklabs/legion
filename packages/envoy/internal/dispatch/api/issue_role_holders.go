@@ -233,6 +233,9 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

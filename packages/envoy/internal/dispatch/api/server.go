@@ -135,6 +135,12 @@ type Deps struct {
 	// verifier stays non-nil while its issuer is undiscovered, so such a bearer
 	// is answered 503 then, never taken for a personal token.
 	OIDC ServiceTokenVerifier
+	// AccessAccounts are the service-account subjects that may read the routes of the read class
+	// accessAccount (cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS, whose README paragraph lists them). A
+	// caller with no credential, or one whose credential does not verify, is refused there as
+	// every route refuses it (401 NO_IDENTITY for none), and every other caller is 403
+	// ACCESS_ACCOUNT_REQUIRED.
+	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
@@ -240,7 +246,10 @@ type DepsInput struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	EnvoyURL        string
+	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
+	// none), which Deps.Origins reads dashboard URLs of beside ServerURL's.
+	OutsideOrigin string
+	EnvoyURL      string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -386,7 +395,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentTokens:            input.AgentTokens,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
-		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
+		Origins:                origins,
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
@@ -527,10 +536,6 @@ type server struct {
 	// on every server register mounts: it starts its listening connection on the first of them to
 	// subscribe and stops it with the last.
 	eventRelay *eventStreamRelay
-	// sessionTies is each (session, person) pair a broker-issued token proved that this process
-	// has recorded in session_owners (tieBrokerSession), so a session's every request does not
-	// write it again.
-	sessionTies tiedSessions
 	// testHooks carries every test hook to every process serving the database
 	// (test_hooks_fanout.go); nil without Deps.TestHooksEnabled, and on a server with no Store,
 	// which shares nothing with another process and runs a hook on itself.

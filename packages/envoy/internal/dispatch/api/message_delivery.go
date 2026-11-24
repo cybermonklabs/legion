@@ -1009,6 +1009,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// repeat reads back is loaded as the writer may read it (loadMessage), and the role read below
 	// reads the message as the writer does.
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// The message's target and the session its attempt names are read before the transaction,
 	// so a reply from a session the attempt does not name, to a message sent for a route to a
 	// role, asks the listener whether that session holds the role now with nothing held

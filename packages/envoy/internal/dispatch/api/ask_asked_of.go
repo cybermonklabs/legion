@@ -64,6 +64,9 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// What the writer sees, resolved before the transaction for the same reason: the ask is
 	// loaded as the writer may read it (loadAsk).
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {

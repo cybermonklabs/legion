@@ -318,7 +318,7 @@ func refuseParentOutsideCallerProject(caller, parent, parentProject string) erro
 // refuses it. The parent is read in the statement after the locks, never in the same one, so it
 // is the parent the lock's previous holder committed (store.LockOwnersAndRead): every writer of
 // parent_key holds the issue's lock.
-func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...string) (*string, error) {
+func lockIssueOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string, others ...string) (*string, error) {
 	owners := make([]store.Owner, 0, len(others)+1)
 	owners = append(owners, store.IssueOwner(key))
 	for _, other := range others {
@@ -329,7 +329,7 @@ func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...strin
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
-	return locked, nil
+	return parent, nil
 }
 
 // parentContended is the code of a PATCH whose issue's parent a concurrent reparent moved at
@@ -345,39 +345,43 @@ const parentLockAttempts = 2
 // lockPatchOwners takes the owner locks of the issue and of the issues in named (a proposed parent,
 // rank neighbours) in one lock order, for a PATCH that appends no event to the issue's current
 // parent.
-func lockPatchOwners(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
-	_, err := lockIssueOwners(ctx, tx, key, named...)
+func lockPatchOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string, named ...string) error {
+	_, err := lockIssueOwners(ctx, tx, who, key, named...)
 	return err
 }
 
 // lockPatchOwnersAndParent is lockPatchOwners for a PATCH that appends an event to the issue's
 // current parent (a status change, a reparent), which it locks in the same lock order. The parent
 // can only be read before the lock, and a concurrent reparent of the issue, which holds the
-// issue's lock, can change it in between, so the lock reads it again (lockSeenIssues). A parent
-// that moved releases every lock the attempt took (a savepoint, whose rollback gives back the
-// advisory locks taken under it) and the attempt starts over with the parent that stands, so no
-// lock is ever taken out of order. A parent that moves at every attempt is 409 PARENT_CONTENDED,
-// with nothing applied.
-//
-// The issue is read as who reads it, first: an issue of a project who does not see is the key no
-// issue holds, which is answered as missing before any lock is taken, and so can never wait
-// behind that project's writers or answer PARENT_CONTENDED.
+// issue's lock, can change it in between, so the lock reads it again. A parent that moved releases
+// every lock the attempt took (a savepoint, whose rollback gives back the advisory locks taken
+// under it) and the attempt starts over with the parent that stands, so no lock is ever taken out
+// of order. A parent that moves at every attempt is 409 PARENT_CONTENDED, with nothing applied.
 //
 // It does not use resolveThenLock, whose resolve half runs with nothing held and whose write half
 // owns its own transaction: both halves here run inside the PATCH's transaction, after its
 // advisory locks, so the locks they take commit with the PATCH's writes.
 func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, who model.Actor, key string, named ...string) error {
+	rows := make([]string, 0, len(named)+1)
 	for range parentLockAttempts {
+		var parent *string
+		if err := tx.QueryRow(ctx, `select parent_key from issues where key = $1`, key).Scan(&parent); err != nil {
+			return err
+		}
+		rows = append(rows[:0], named...)
+		if parent != nil {
+			rows = append(rows, *parent)
+		}
 		attempt, err := tx.Begin(ctx)
 		if err != nil {
 			return err
 		}
-		locked, err := lockIssueOwners(ctx, attempt, key, rows...)
+		locked, err := lockIssueOwners(ctx, attempt, who, key, rows...)
 		if err != nil {
 			_ = attempt.Rollback(ctx)
 			return err
 		}
-		if stringPointersEqual(locked.parentBefore, locked.parent) {
+		if stringPointersEqual(parent, locked) {
 			return attempt.Commit(ctx)
 		}
 		if err := attempt.Rollback(ctx); err != nil {

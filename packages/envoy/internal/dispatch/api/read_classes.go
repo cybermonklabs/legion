@@ -125,7 +125,6 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/projects/{key}/architecture-source":      reads("one project's first architecture source", byProject, readclass.Project),
 	"GET /api/v1/projects/{key}/architecture":             reads("one project's components and the issues attached to them", byProject, readclass.Project),
 	"GET /api/v1/projects/{key}/plans":                    reads("one project's finished issues with their plans and ratings, rows of that project", byProject, readclass.Project),
-	"GET /api/v1/projects/{key}/access":                   reads("one project's access list, which names people", byProject, readclass.Project, readclass.People),
 	"GET /api/v1/projects/{key}/legion/daemon":            reads("which Legion daemon the deployment reads one project's state from: the deployment's setting, as its writes are, under a project the caller must see", byProject, readclass.Deployment, readclass.Project),
 	"GET /api/v1/projects/{key}/legion/board":             reads("one project's Legion board: its issues, as its daemon reports them, and the issues a blocker link holds each on", byProject, readclass.Project),
 	"GET /api/v1/near-copy-checks":                        reads("one project's near-copy gate answers, each naming issues of that project", nil, readclass.Project),
@@ -223,15 +222,6 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/settings/new-issue":      reads("the deployment's new-issue label and session", nil, readclass.Deployment),
 	"GET /api/v1/credential-requests":     reads("the deployment's pending credential requests a signed-in person decides", nil, readclass.Deployment),
 	"GET /api/v1/machine-logins":          reads("the deployment's machine logins, a service's among them", nil, readclass.Deployment),
-	"GET /api/v1/access-groups":           reads("the deployment's access groups, which no project owns", nil, readclass.Deployment),
-	"GET /metrics":                        reads("the process's counters of the whole deployment's work, which name no project, issue, person or session (readclass's TestMetricsNameNoProject)", nil, readclass.Deployment),
-
-	// The membership answer the secrets broker reads, and the repository answer it relays to the
-	// edge listener.
-	"GET /api/v1/access/projects/{key}":              reads("the membership answer for one project and person, read by the broker's service account alone", byProject, readclass.AccessAccount),
-	"GET /api/v1/access/person":                      reads("one person's member kind and whether Dispatch holds them, read by the broker's service account alone", nil, readclass.AccessAccount),
-	"GET /api/v1/access/private-projects":            reads("every private project's Slack channels and when each list changed, read by the broker's service account alone", nil, readclass.AccessAccount),
-	"GET /api/v1/access/projects/{key}/repositories": reads("the repositories one project's issues resolve to, read by the broker's service account alone", byProject, readclass.AccessAccount),
 
 	// The test hooks, mounted only where a deployment turns them on.
 	"GET /api/v1/artifacts/_test/rooms":              reads("the document rooms this process holds", nil, readclass.TestHook),

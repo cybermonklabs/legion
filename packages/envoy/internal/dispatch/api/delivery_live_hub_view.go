@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -22,7 +23,7 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 	if view.Project != nil && classes.reads != viewReadsLegion {
 		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion view names a project")
 	}
-	spec := deliveryLiveSpec{kind: view.Kind}
+	spec := deliveryLiveSpec{kind: view.Kind, reader: everyReader}
 	if refusal := classes.parse(&spec, view); refusal != nil {
 		return deliveryLiveSpec{}, refusal
 	}

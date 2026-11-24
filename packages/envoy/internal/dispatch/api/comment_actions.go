@@ -74,6 +74,9 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// The writer's reader, resolved before the transaction holds a connection (lockedComment).
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -198,6 +201,9 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		carried = &refs.CarriedEdit{BaseRevision: *input.BaseRevision, Blocks: input.Blocks}
 	}
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -309,6 +315,9 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		return
 	}
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

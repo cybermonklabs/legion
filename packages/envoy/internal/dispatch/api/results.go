@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -123,10 +124,10 @@ type checkResultDryRun struct {
 }
 
 // resultRequest is a result's body as the record and its dry run have judged it before anything
-// is written (readResultRequest): the input and its actor, the issue it is recorded on, the check
-// it names, the one repository the check's issue resolves to, the linked repository the commit is
-// taken to be of (refuseUnknownCommit, nil where it is taken to be repo's), and the rule the
-// pull-request body line keeps words by.
+// is written (readResultRequest): the input and its actor, the reader the writer is as a read binds
+// it (readerOf), the issue it is recorded on, the check it names, the one repository the check's
+// issue resolves to, the linked repository the commit is taken to be of (refuseUnknownCommit, nil
+// where it is taken to be repo's), and the rule the pull-request body line keeps words by.
 type resultRequest struct {
 	issueKey         string
 	input            checkResultInput
@@ -162,7 +163,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// holds for it have not moved since, which the locked half re-reads and judges; the one
 	// re-read a moved pair needs runs there too, with every lock given back.
 	written, err := s.recordResultWithFreshWords(
-		r.Context(), request.issueKey, request.check, request.input, request.linkedCommitRepo, request.actor)
+		r.Context(), request.who, request.issueKey, request.check, request.input, request.linkedCommitRepo, request.actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -326,7 +327,7 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 		return refused(err)
 	}
 	return resultRequest{
-		issueKey: issueKey, input: input, actor: actor, check: check,
+		issueKey: issueKey, input: input, actor: actor, who: who, check: check,
 		repo: checkRepo, linkedCommitRepo: linkedCommitRepo, words: words,
 	}, true
 }
@@ -377,13 +378,15 @@ type recordedCheckResult struct {
 // Exactly one read of the live document is paid on the common path: resolveCheck already made it
 // before the transaction opened, and that reading is what the first attempt is handed. Only a
 // redo reads the document again, and it reads the attributes alone, with nothing held, against
-// the version and digest the refused attempt's locks found.
+// the version and digest the refused attempt's locks found. who is the writer as a read binds it
+// (readerOf), and the locked half reads each issue, the check's index row and the screenshots as
+// who reads them.
 //
 // linkedCommitRepo is what the row keeps as commit_repo (recordCheckResult): the linked
 // repository refuseUnknownCommit answered, or nil. A redo writes the same one, since it is the
 // commit's answer and no rewording of the check moves it.
 func (s *server) recordResultWithFreshWords(
-	ctx context.Context, issueKey string, check resolvedCheck, input checkResultInput,
+	ctx context.Context, who model.Actor, issueKey string, check resolvedCheck, input checkResultInput,
 	linkedCommitRepo *string, actor model.Actor,
 ) (recordedCheckResult, error) {
 	refusal := errorf(http.StatusConflict, checkContended,
@@ -410,7 +413,7 @@ func (s *server) recordResultWithFreshWords(
 		},
 		func(ctx context.Context, resolution checkResolution) (recordedCheckResult, error) {
 			written, found, err := s.recordResultUnderOwnerLocks(
-				ctx, issueKey, check.checkBlockRef, resolution, input, linkedCommitRepo, actor)
+				ctx, who, issueKey, check.checkBlockRef, resolution, input, linkedCommitRepo, actor)
 			locked = found
 			return written, err
 		},
@@ -424,9 +427,11 @@ func (s *server) recordResultWithFreshWords(
 //
 // A resolution the locks contradict is errStaleResolution, with the transaction's deferred
 // rollback run before the error reaches resolveThenLock and nothing written; the version and
-// digest the locks found come back beside it, for the redo to read the words of.
+// digest the locks found come back beside it, for the redo to read the words of. Every read under
+// the locks reads as who reads it, so an issue, a check or a screenshot of a project who does not
+// see is one nobody holds.
 func (s *server) recordResultUnderOwnerLocks(
-	ctx context.Context, issueKey string, check checkBlockRef, resolved checkResolution,
+	ctx context.Context, who model.Actor, issueKey string, check checkBlockRef, resolved checkResolution,
 	input checkResultInput, linkedCommitRepo *string, actor model.Actor,
 ) (recordedCheckResult, indexedCheck, error) {
 	tx, err := s.begin(ctx)
@@ -911,12 +916,12 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 		check.BlockID, check.Attributes.CICheck)
 }
 
-// typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
-// in document order, with its block id. The markdown is read live and parsed; nothing is
-// written. A rendering can repeat an id; the block index keys one row per id, and so does this,
-// so only the first holder of an id is visited. Both readers of a live document's typed blocks
-// come through here: the checks of a Verification document (checkBlocksIn) and the requirements
-// of a spec (requirementBlocksIn).
+// typedBlocksIn walks the live markdown of one document, as who reads it, and hands visit each
+// block of blockType in document order, with its block id. The markdown is read live and parsed;
+// nothing is written. A rendering can repeat an id; the block index keys one row per id, and so
+// does this, so only the first holder of an id is visited. Both readers of a live document's
+// typed blocks come through here: the checks of a Verification document (checkBlocksIn) and the
+// requirements of a spec (requirementBlocksIn).
 //
 // When trees is true, visit is handed as content the markdown the block's text_tree is read
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
@@ -1183,8 +1188,19 @@ var (
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
 )
 
-// readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
-func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error) {
+// readLineWords is lineWords for the projects q reads and for this Dispatch's own URL, held to what
+// who sees. A reader that sees every object (seesEveryObject) - the server, and every open viewer
+// of a deployment that holds no private project - gets the words of every project, as before
+// projects could be private (R9). Any other reader gets lineWordsForAnyKey: a word dropped because
+// it holds the key of a project the reader cannot see would tell the reader, whose line answers
+// which words it kept, that the project exists; so the line drops every word of a key's shape,
+// whichever projects exist. The choice reads nothing but the reader: one that turned on whether
+// some project is hidden from the reader would tell an open viewer, by the rule its line keeps,
+// whether a private project it cannot see exists.
+func (s *server) readLineWords(ctx context.Context, q queryer, who model.Actor) (lineWords, error) {
+	if !seesEveryObject(who) {
+		return lineWordsForAnyKey(s.deps.Origins), nil
+	}
 	rows, err := q.Query(ctx, `select key from projects`)
 	if err != nil {
 		return lineWords{}, err
@@ -1196,7 +1212,22 @@ func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error
 	return lineWordsFor(keys, s.deps.Origins), nil
 }
 
-// lineWordsFor is lineWords for the projects keys names and the Dispatch at serverURL. A word
+// lineWordsForAnyKey is lineWordsFor with every word dropped that holds an issue key's shape: a
+// project key as contracts.ProjectKeyPattern spells one, in any case, where lineWordsFor reads one
+// of the keys it is given, followed by `-` and a number that ends there by lineWordsFor's rule. So
+// it drops UTF-8, SHA-256 and x86-64 too: what the reader's line leaves out depends on no project
+// that exists.
+func lineWordsForAnyKey(origins text.Origins) lineWords {
+	words := lineWordsFor(nil, origins)
+	words.issueKey = anyIssueKey
+	return words
+}
+
+// anyIssueKey is issueKeyWord over every project key contracts.ProjectKeyPattern allows, compiled
+// once for every reader that sees less than every project.
+var anyIssueKey = issueKeyWord(strings.TrimSuffix(strings.TrimPrefix(contracts.ProjectKeyPattern, "^"), "$"))
+
+// lineWordsFor is lineWords for the projects keys names and the Dispatch at origins. A word
 // holds an issue key where one of those keys stands in it, in any case, at the word's start or
 // after a character that is neither a letter nor a digit, followed by `-` and a number that ends
 // there: at the word's end, or before a character that is neither a letter, a digit, nor a `.`
@@ -1216,9 +1247,14 @@ func lineWordsFor(keys []string, origins text.Origins) lineWords {
 	for index, key := range keys {
 		quoted[index] = regexp.QuoteMeta(key)
 	}
-	words.issueKey = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:` + strings.Join(quoted, "|") +
-		`)-[0-9]+(?:$|[^\p{L}\p{N}.]|\.(?:$|[^0-9]))`)
+	words.issueKey = issueKeyWord(strings.Join(quoted, "|"))
 	return words
+}
+
+// issueKeyWord matches a word holding an issue key of a project key the expression key matches, by
+// lineWordsFor's rule.
+func issueKeyWord(key string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:` + key + `)-[0-9]+(?:$|[^\p{L}\p{N}.]|\.(?:$|[^0-9]))`)
 }
 
 // drops reports whether the line leaves word out: when it is not a plain word (plainWord), or
@@ -1228,12 +1264,20 @@ func (w lineWords) drops(word string) bool {
 	return !plainWord(word, w.punctuation) || w.holds(word) || w.holds(norm.NFKC.String(word))
 }
 
-// holds reports whether word holds `://`, a private host, this Dispatch's own host or an issue
-// key of a project this Dispatch holds.
+// holds reports whether word holds `://`, a private host, one of this Dispatch's own hosts or an
+// issue key by the rule readLineWords read for the line's reader.
 func (w lineWords) holds(word string) bool {
-	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
-		(w.host != "" && strings.Contains(strings.ToLower(word), w.host)) ||
-		(w.issueKey != nil && w.issueKey.MatchString(word))
+	if holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
+		(w.issueKey != nil && w.issueKey.MatchString(word)) {
+		return true
+	}
+	lower := strings.ToLower(word)
+	for _, host := range w.hosts {
+		if host != "" && strings.Contains(lower, host) {
+			return true
+		}
+	}
+	return false
 }
 
 // keep is text's words joined by single blanks, less every word the line drops.

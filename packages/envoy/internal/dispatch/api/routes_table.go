@@ -117,19 +117,10 @@ var writeClasses = map[string]writeScope{
 	// recorded on, one hop through check_results (readRetractedResult).
 	"POST /api/v1/results/{id}/retract": scopeProject,
 
-	"POST /api/v1/projects/{key}/artifacts":                 scopeProject,
-	"POST /api/v1/projects/{key}/artifacts/{slug}/versions": scopeProject,
-	"POST /api/v1/projects/{key}/artifacts/{slug}/edits":    scopeProject,
-	"PUT /api/v1/projects/{key}/default-assignee":           scopeProject,
-	// A project's access list, owner and visibility belong to that project; only its owner writes
-	// them (project_access.go).
-	"PATCH /api/v1/projects/{key}/access":                                  scopeProject,
-	"PUT /api/v1/projects/{key}/access/people/{email}":                     scopeProject,
-	"DELETE /api/v1/projects/{key}/access/people/{email}":                  scopeProject,
-	"POST /api/v1/projects/{key}/access/people/{email}/invitations":        scopeProject,
-	"POST /api/v1/projects/{key}/access/people/{email}/reset":              scopeProject,
-	"PUT /api/v1/projects/{key}/access/groups/{name}":                      scopeProject,
-	"DELETE /api/v1/projects/{key}/access/groups/{name}":                   scopeProject,
+	"POST /api/v1/projects/{key}/artifacts":                                scopeProject,
+	"POST /api/v1/projects/{key}/artifacts/{slug}/versions":                scopeProject,
+	"POST /api/v1/projects/{key}/artifacts/{slug}/edits":                   scopeProject,
+	"PUT /api/v1/projects/{key}/default-assignee":                          scopeProject,
 	"PUT /api/v1/projects/{key}/gated-steps":                               scopeProject,
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}":       scopeProject,
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}":    scopeProject,
@@ -208,13 +199,11 @@ var writeClasses = map[string]writeScope{
 	// create another project, write a priority the whole deployment is steered by, change a
 	// deployment-wide setting, broadcast, decide or dismiss a credential request, or reach into
 	// this process.
-	"POST /api/v1/projects":               scopeDeployment,
-	"PUT /api/v1/access-groups/{name}":    scopeDeployment,
-	"DELETE /api/v1/access-groups/{name}": scopeDeployment,
-	"POST /api/v1/priorities":             scopeDeployment,
-	"PATCH /api/v1/priorities/{id}":       scopeDeployment,
-	"DELETE /api/v1/priorities/{id}":      scopeDeployment,
-	"PUT /api/v1/settings/delivery":       scopeDeployment,
+	"POST /api/v1/projects":          scopeDeployment,
+	"POST /api/v1/priorities":        scopeDeployment,
+	"PATCH /api/v1/priorities/{id}":  scopeDeployment,
+	"DELETE /api/v1/priorities/{id}": scopeDeployment,
+	"PUT /api/v1/settings/delivery":  scopeDeployment,
 	// Which daemon a project's Legion state is read from, and which repository its issues
 	// resolve to when they name none: addressed under the project they serve, and not belonging
 	// to it. Pointing Dispatch at a host is the deployment's write, and so is choosing the
@@ -509,8 +498,6 @@ var routeScopes = map[string]routeScopeSet{
 	// and default assignees an assignee picker reads.
 	"GET /api/v1/settings/project-default-assignees":         {model.ScopePerson},
 	"PUT /api/v1/projects/{key}/default-assignee":            {model.ScopePerson},
-	"GET /api/v1/projects/{key}/access":                      {model.ScopePerson},
-	"GET /api/v1/access-groups":                              {model.ScopePerson},
 	"GET /api/v1/users":                                      {model.ScopePerson},
 	"GET /api/v1/people/{login}/nodes":                       {model.ScopePerson},
 	"GET /api/v1/inbox":                                      {model.ScopePerson},
@@ -553,9 +540,6 @@ var routeScopes = map[string]routeScopeSet{
 	"GET /api/v1/signins":                                    {model.ScopePerson},
 	"GET /api/v1/credentials/capabilities":                   {model.ScopePerson},
 	"POST /api/v1/agents/{session_id}/stream/_test/publish":  {model.ScopePerson},
-	// The owner's link for a person from outside, and the owner's Reset of one.
-	"POST /api/v1/projects/{key}/access/people/{email}/invitations": {model.ScopePerson},
-	"POST /api/v1/projects/{key}/access/people/{email}/reset":       {model.ScopePerson},
 	// Dismissing an expired credential request settles nothing: nobody decided it before its
 	// deadline and nobody can now, so taking it off the Inbox needs the person alone, as the
 	// Inbox's own Dismiss above does, and not approve.
@@ -576,20 +560,6 @@ var routeScopes = map[string]routeScopeSet{
 	// The review that names the version its caller read settles what the review above settles,
 	// with that version as a guard.
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
-	// A project's access list, its visibility and its owner decide who may see the project, and its
-	// Slack channels decide where its credentials may post; a group a private project's list names
-	// decides who may see it too: its members are who it admits, its owner who changes that, and
-	// deleting it takes it off every list. A change to any of them settles what an owner settles,
-	// so a credential holding person alone - a personal token its owner minted or narrowed to person
-	// (POST /api/v1/me/agent-tokens, PATCH /api/v1/me/agent-tokens/{id}) among them - reads the
-	// lists and groups and changes none of them.
-	"PATCH /api/v1/projects/{key}/access":                 {model.ScopePerson, model.ScopeApprove},
-	"PUT /api/v1/projects/{key}/access/people/{email}":    {model.ScopePerson, model.ScopeApprove},
-	"DELETE /api/v1/projects/{key}/access/people/{email}": {model.ScopePerson, model.ScopeApprove},
-	"PUT /api/v1/projects/{key}/access/groups/{name}":     {model.ScopePerson, model.ScopeApprove},
-	"DELETE /api/v1/projects/{key}/access/groups/{name}":  {model.ScopePerson, model.ScopeApprove},
-	"PUT /api/v1/access-groups/{name}":                    {model.ScopePerson, model.ScopeApprove},
-	"DELETE /api/v1/access-groups/{name}":                 {model.ScopePerson, model.ScopeApprove},
 	// Keeping a decision records the person's agreement with it ("Kept by" in the web app), which
 	// takes it out of what waits on their review, so it settles what a person settles too.
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {model.ScopePerson, model.ScopeApprove},
@@ -730,7 +700,6 @@ func (s *server) routes() []apiRoute {
 	rows := []routeRow{
 		{http.MethodGet, "/api/v1", authAny, "This index: every route with its method, auth, and purpose.", s.getRouteIndex},
 		{http.MethodGet, "/api/v1/schema/blocks", authAny, "The typed document block schema as JSON.", s.getBlockSchema},
-		{http.MethodGet, "/metrics", authAny, "The process's Prometheus metrics, for an open viewer; a restricted member's credential, or one acting for one, is 403 DEPLOYMENT_READ_REFUSED.", s.getMetrics},
 		{http.MethodGet, "/api/v1/limits", authAny, "The bounds a write is held to: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long its question and options are together, how long a body an event carries whole may be, and the bytes a request, a document and a handoff body may hold.", s.getLimits},
 		{http.MethodPost, "/api/v1/markdown/round-trip", authAny, "The markdown Dispatch would store for the text a body gives it {markdown}: the parse and the render every write of a whole document makes. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text the parse or the render refuses comes back as it was given, so the write that follows refuses it with its own error.", s.postMarkdownRoundTrip},
 		{http.MethodGet, "/api/v1/projects", authAny, "List the projects the caller sees; a private project carries visibility private, and a public one no visibility. A project with a default repository carries it as default_repo, and a project with none carries no default_repo. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope.", s.listProjects},
@@ -754,13 +723,6 @@ func (s *server) routes() []apiRoute {
 		{http.MethodGet, "/api/v1/settings/project-default-assignees", authAny, "List every project with the person it defaults to, by project key: every project names one, and that person is the last step of the chain that decides who a question reaches. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none.", s.listProjectDefaultAssignees},
 		{http.MethodGet, "/api/v1/settings/new-issue", authAny, "What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes.", s.getNewIssueSettings},
 		{http.MethodPut, "/api/v1/projects/{key}/default-assignee", authAny, "Move a project's default assignee to another person {assignee} (the email of a person who has signed in): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. A project always names a person, so an assignee that is absent, null or blank is 400 INVALID_PROJECT and the default cannot be cleared. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none.", s.putProjectDefaultAssignee},
-		{http.MethodPut, "/api/v1/projects/{key}/access/groups/{name}", authAny, "Name a group on a project's access list; a group admits only its members who are full members. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a group no row holds is 404 GROUP_NOT_FOUND; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person and approve scopes.", s.putProjectAccessGroup},
-		{http.MethodDelete, "/api/v1/projects/{key}/access/groups/{name}", authAny, "Take a group off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person and approve scopes.", s.deleteProjectAccessGroup},
-		{http.MethodGet, "/api/v1/access-groups", authAny, "Every group an access list can name, by name: {name, owner, members, not_signed_in}, its owner the full member who made it, its members' emails sorted, and the members nobody has signed in as yet, whom the group admits only once they sign in as full members; [] for none. The owner may hand the group to another full member. Needs the person scope. It pages, at most limit groups (1-100, default 100) after the name after, and next names where the next page starts.", s.listAccessGroups},
-		{http.MethodPut, "/api/v1/access-groups/{name}", authAny, "Make a group or write it again {members, owner?}: name is lowercase letters, digits, dots, underscores and dashes, at most 63, and members the emails of the people it holds, exactly (at most 1000). The first write makes the group and its writer becomes its owner; after that only the owner writes it (403 GROUP_OWNER_REQUIRED), and owner gives it to another full member. A restricted member cannot make a group (403 RESTRICTED_MEMBER), a member who is a restricted member is 400 GROUP_MEMBER_RESTRICTED, and a bad name or email is 400 PROJECT_ACCESS_INPUT. Appends access_group.changed and answers the group. Needs the person and approve scopes. An owner holds at most 100 groups; one more is 400 CAP_EXCEEDED.", s.putAccessGroup},
-		{http.MethodDelete, "/api/v1/access-groups/{name}", authAny, "Delete a group, which takes it off every access list that named it; only its owner calls it (403 GROUP_OWNER_REQUIRED), and a group no row holds is 404 GROUP_NOT_FOUND. Appends project.access_changed for each such list and access_group.changed, and answers 204. Needs the person and approve scopes.", s.deleteAccessGroup},
-		{http.MethodGet, "/api/v1/access/projects/{key}", authAny, "The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, slack_channels, slack_channels_changed_at} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible says whether the project is public): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and slack_channels, the owner's list, [] for none. slack_channels_changed_at is when the list last changed, null until a write changes the list. It names no repositories. With &account_issuer=&account_subject=, the Google account the credential being checked records, the answer also carries holder: false when Dispatch records another account for the person (an account of another issuer included), and then visible is false; true when it records that one or none. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND; half an account, or an account with no person, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.", s.getAccessProject},
-		{http.MethodGet, "/api/v1/access/projects/{key}/repositories", authAny, "The repositories the secrets broker relays to an edge listener for the GitHub events of a project: {project, repositories}, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), lower-cased, each once and sorted byte-wise, and [] when no issue resolves to one. It is read by the one rule of which repositories a project owns, which the GitHub proxy reads too: a repository the project maps and no issue of it resolves to is not in it, and no rename is read. An unknown key is 404 PROJECT_NOT_FOUND; an issue whose parent chain is deeper than 32 links, or loops, is 503 REPOSITORIES_UNRESOLVED naming it, never a shorter list. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.", s.getAccessProjectRepositories},
 		{http.MethodPut, "/api/v1/projects/{key}/gated-steps", authAny, "Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of decisions, criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH.", s.putProjectGatedSteps},
 		{http.MethodPut, "/api/v1/projects/{key}/default-repository", authAny, `Set or clear a project's default repository {repo}: "owner/name" sets it and null clears it. An issue of the project resolves to it when neither the issue nor an issue above it names a repository. A write of the value the project holds already changes nothing and appends no event; a change appends project.updated with the project row. A body without repo, or a repo that is not a repository GitHub could hold, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. The default belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. It declares no personal scope: the credential the deployment configured writes it, and so does a person.`, s.putProjectDefaultRepository},
 		{http.MethodGet, "/api/v1/settings/delivery", authAny, "The delivery timeline's one configuration record (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set.", s.getDeliverySettings},

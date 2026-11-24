@@ -103,7 +103,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	actor := caller.Recorded()
+	actor := reader.Recorded()
 	// A credential that names nobody asks nothing: see codeGoingAskerNamesNobody. The rule is
 	// graphstore.ProvesAuthor, which lives beside the store that records an author, and which
 	// every author-private read of the graph asks too, in Go and in SQL
@@ -230,7 +230,7 @@ func (s *server) goingSearch(project string, reader model.Actor) func(context.Co
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
 		// reading each hit for display would be work no reader of this answer ever sees, which is
 		// what these parameters leaving trees unset says.
-		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: author}
+		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: reader}
 		found, err := s.runSearch(ctx, parameters)
 		if err != nil {
 			return nil, err
@@ -278,6 +278,9 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	// Decided before the read, not after: readGoingRequest casts $1::uuid, so an id that is not
 	// a uuid comes back as a Postgres error rather than pgx.ErrNoRows, and this route answers an

@@ -74,24 +74,20 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, who mo
 	return artifact, documentOwner(artifact.ID), nil
 }
 
-// loadProject reads the project row as who reads it, every column model.Project carries but the
-// open-ask count, which only the project list reads: a project who does not see is a row the read
-// does not find (access.ProjectClause), and answers 404 PROJECT_NOT_FOUND as a key nobody holds. A
-// project.updated event carries what this answers, so its payload is the whole row a reader of the
-// project list sees, its visibility included, read as that list reads it.
+// loadProject reads the project row, every column model.Project carries but the open-ask count,
+// which only the project list reads. A project.updated event carries what this answers, so its
+// payload is the whole row a reader of the project list sees. An unknown key is 404
+// PROJECT_NOT_FOUND.
 func (s *server) loadProject(ctx context.Context, q queryer, who model.Actor, key string) (model.Project, error) {
 	var project model.Project
 	if err := q.QueryRow(ctx, `
-		select key, name, gated_steps, default_repo, created_at,
-		       case when visibility = '`+model.ProjectPrivate+`' then visibility else '' end
-		from projects where key = $1 and `+access.ProjectClause("key", "$2"),
-		key, refs.VisibilityArg(who)).Scan(
+		select key, name, gated_steps, default_repo, created_at from projects where key = $1
+	`, key).Scan(
 		&project.Key,
 		&project.Name,
 		&project.GatedSteps,
 		&project.DefaultRepo,
 		&project.CreatedAt,
-		&project.Visibility,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Project{}, errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")

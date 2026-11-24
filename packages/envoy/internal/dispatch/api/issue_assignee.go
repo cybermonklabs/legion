@@ -191,14 +191,6 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, whoamiUser{Kind: "user", Login: actor.ID, Scopes: scopes})
 		return
 	}
-	if actor.Credential != nil && len(actor.Credential.Projects) > 0 && s.deps.Store != nil && s.deps.Store.Pool != nil {
-		reader, err := s.readerFor(r.Context(), actor)
-		if err != nil {
-			s.writeHandlerError(w, fmt.Errorf("read which of the credential's projects are private: %w", err))
-			return
-		}
-		viewer = reader.Viewer
-	}
 	var owner *string
 	if actor.Owner != nil {
 		owner = new(model.CanonicalLogin(*actor.Owner))
@@ -207,10 +199,14 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	if actor.Kind == "session" && actor.ID != "" {
 		session = &actor.ID
 	}
+	var project *string
+	if actor.Credential != nil && actor.Credential.NamedProject != "" {
+		project = &actor.Credential.NamedProject
+	}
 	WriteJSON(w, http.StatusOK, whoamiAgent{
 		Kind:    "agent",
 		Owner:   owner,
-		Project: actor.Project,
+		Project: project,
 		Scopes:  scopes,
 		Service: actor.Service,
 		Session: session,
