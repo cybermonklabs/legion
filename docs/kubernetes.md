@@ -5087,13 +5087,13 @@ For a process of a role, the watch also gives a report to that role's part of th
 A process of no role has its `ended` line and no report, whether the classifier protects it or not.
 The daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the topic of the claim whose process it was, with the sizes in binary units.
 
-For `cause: kernel` the note is `kernelKillNote`'s, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
+For `cause: kernel` the note is `kernelKillNote`'s command form, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause` and `stopped=command`:
 
 ```text
 The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
 ```
 
-For `cause: kernel-protected` the note is `kernelProtectedKillNote`'s, and the daemon logs `workflow: the role whose session's own process the pod's kernel stopped is told why` with the report's `cause`:
+For `cause: kernel-protected` the note is `kernelKillNote`'s session form, and the daemon logs `workflow: the role whose session's own process the pod's kernel stopped is told why` with the report's `cause` and `stopped=session`:
 
 ```text
 The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every other process of yours. The daemon then starts the same session again and sends again any task that the turn was running. It counts each such exit of an agent's process as a failed launch, and at the limit of failed launches it fails your claim instead. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
@@ -8447,7 +8447,7 @@ While the project runs after a pause has ended, the state carries `lastPause` in
 `legion state` prints one line for each: `paused: pause <id> since <time> by <who>: <reason>; waits on <n> claims — <ISSUE> <role>, …`, which ends `waits on no claim` where the pause waits on none, and `last pause: pause <id> since <time> by <who>: <reason>; ended <time> by <who>`.
 A claim of an agent not named for its role, such as a second agent of one role, `implementer-2`, is named there with its token beside its issue and role: `<ISSUE> <role> (claim <token>)`.
 `<who>` is `the controller (session <id>)` or `the operator`.
-The summary of the controller's `read_state` prints each line in the same words, and adds how many rows the pause holds, but names a claim with its token where its issue and role do not reach it, as its issue lines do: the issue and the role reach the claim the issue's `workers` shows for the role, which `fresh_session` and `compact` act on when they name the two. So while `implementer-2` works the step, `read_state` names it `<ISSUE> implementer` and the role's own claim `<ISSUE> implementer (claim <token>)`.
+The summary of the controller's `read_state` prints each line in the same words, and adds how many rows the pause holds, but names a claim with its token where its issue and role do not reach it, as its issue lines do. The state's `workers` and `architect` show the claim `record.WorkerClaim` gives: the current row's claim while it runs a step, otherwise the role's own token. That is the claim `fresh_session` and `compact` act on when they name the issue and role alone. So while `implementer-2` works the step, `read_state` names it `<ISSUE> implementer` and the role's own claim `<ISSUE> implementer (claim <token>)`; after a new generation clears the step, their names are reversed. A reached claim not held yet has no worker entry, and any other held claim of the role is under `otherClaims` and named with its token.
 Its times are the daemon's own strings, where `legion state` prints each time at whole seconds.
 A caller from a pod whose plugin speaks a contract below the one that added the two keys is served the state with neither (`withoutPause`, `internal/api/shaping.go`).
 

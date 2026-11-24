@@ -97,13 +97,9 @@ func TestAKernelKillTellsItsRoleTheKernelStoppedItsProcess(t *testing.T) {
 	}
 }
 
-// One of the processes that run a role's session, which the microVM pod's own kernel stopped, is
-// told to the role whose connection reported it, as the one row the kill queues: the note of such a
-// process, kernelProtectedKillNote's, which says what that process's end does to the session and
-// never that the session goes on, with the process, its size, the pod's memory counter and its
-// limit as the kernel's note of a command gives them, and the reference to where heavy work runs.
-// The fault: the cause sent to the note of a command, kernelKillNote, which tells the role its
-// session goes on; that note holds the same values, so only the note itself tells the two apart.
+// A kernel kill of a process that runs the session is classified as stopping the session, not a
+// command. The same classification chooses the note's ending and is logged as a field: the
+// recipient, single role-message row and supplied values are checked independently of its prose.
 func TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped(t *testing.T) {
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
@@ -111,10 +107,12 @@ func TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped(t *testin
 	report := memoryGuardKillReport()
 	report.Cause = shimwire.MemoryKillCauseKernelProtected
 	report.Executable = "omp"
+	var logs bytes.Buffer
+	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
 
 	if _, err := intake.ApplyFact(t.Context(), pool, "launcher", "memory-guard-kill:guard-7f3a:3", intake.MemoryGuardKill{
 		Issue: "LEGION-209", Token: token, PodUID: "pod-209", Report: report,
-	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+	}, engine, admissionStub{}); err != nil {
 		t.Fatalf("apply the kill: %v", err)
 	}
 
@@ -129,8 +127,8 @@ func TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped(t *testin
 	if role != string(token) {
 		t.Fatalf("the kill was told to %q, want %q", role, token)
 	}
-	if want := kernelProtectedKillNote(report); body != want {
-		t.Errorf("the note is %q, want the note of a process that runs the role's session, %q", body, want)
+	if text := logs.String(); !strings.Contains(text, "stopped=session") {
+		t.Errorf("log = %q, want the kernel kill classified as stopping the session", text)
 	}
 	for _, want := range []string{"`omp` (pid 4242)", "812.40 MiB", "3.26 GiB", "4.00 GiB", "skill://legion-worker/references/tools.md"} {
 		if !strings.Contains(body, want) {

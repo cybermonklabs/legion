@@ -2110,8 +2110,8 @@ package api
 // for a command of a role that a microVM pod's own kernel stopped; and `kernel-protected` for one
 // of the processes that run a role's session (its agent, shim, role-init or a helper) that the
 // kernel stopped all the same. The launcher's guest watch names both (memoryguard.Guest), and the
-// daemon tells that role with a note of its own for each (workflow's kernelKillNote and
-// kernelProtectedKillNote) under the same event id `memory-guard-kill:<id>:<sequence>`. The
+// daemon tells that role with a kernelKillNote classified as stopping a command or a session
+// process, under the same event id `memory-guard-kill:<id>:<sequence>`. The
 // state's settings block carries the new `runtime.kubernetes.sandbox` key as
 // `settings.runtime.kubernetes.sandbox`, which the plugin parses loosely (35 above), so that key
 // alone would bump nothing.
@@ -3457,13 +3457,7 @@ package api
 // sentence, and its key is unchanged, so every contract is served it. From this entry the last
 // number of answers.go's SupportedContracts is `api.startWaitTokenContract`, and
 // `strandedTokenContract` stays 222.
-// (This entry took 245, above the base's 222 (the entry above), at a reading of `const
-// DaemonAPIVersion` at refs/pull/<n>/head for each of the 514 open pull requests, made between
-// 2026-11-24T07:08:28Z and 07:09:16Z, which read all 514 and found 242 the highest number
-// declared, by #4596 and #4948, then 241 by #4771 and #5307 and 240 by #3831 and #5271; #5164 was
-// to take 243 and #5156 a number above it, neither declared at its head at that reading. A later
-// reading, of 492 open pull requests between 2026-11-24T11:07:24Z and 11:08:45Z, all read, found
-// #4960 at 245 too, so 245 is not this entry's alone: the merge of the base reads the base's own
-// number and every open pull request again and gives this entry the number it takes. Read them
-// again at that merge rather than from this line.)
+// The state's `workers` and `architect` name only the claim record.WorkerClaim gives for the
+// issue and role, and every other claim is under `otherClaims`; the keys and shapes are
+// unchanged, so every contract is served this correction.
 const DaemonAPIVersion = 245

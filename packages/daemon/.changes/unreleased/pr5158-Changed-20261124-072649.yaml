@@ -9,3 +9,6 @@ body: |-
   earlier contract is served the roles as before. The `claim_stopped` answer of an issue names its
   stranded worker as `legion state` names a claim: `its implementer is stranded at failed` for the
   role's own claim, and the token beside the role for any other claim of the role.
+  The state's worker and architect entries always name the claim that issue and role reach,
+  including after a generation clears the previous step; all other claims remain under
+  `otherClaims` with their tokens.

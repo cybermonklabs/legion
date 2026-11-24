@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr5158
+body: Daemon API contract 245 represents a start waiting for its pod as its role and claim token, distinguishing starts of multiple agents that hold one role.

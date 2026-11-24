@@ -4,6 +4,7 @@ import {
   isStepRole,
   LEGION_ROLES,
   type LegionStepRole,
+  parseRoleToken,
 } from "@legion/contracts";
 import {
   LEGION_PHASES,
@@ -145,15 +146,19 @@ const pauseActorWords = (session: string | undefined): string =>
 const pauseWords = (id: number, since: string, by: string, reason: string): string =>
   `pause ${id} since ${since} by ${by}: ${reason}`;
 
+/** The agent named by a valid issue claim token, never a controller or an unreadable token. */
+function agentOfToken(token: string): string | undefined {
+  const parsed = parseRoleToken(token.split("-")[1] ?? "", token);
+  return parsed !== undefined && "role" in parsed ? parsed.role : undefined;
+}
+
 /** The pause line's name of a claim of `issue` on `role` whose token is `token`, by the rule the
  * issue lines name a claim by (`stateSummary`): its issue and role, and its token beside them where
  * the issue and the role do not reach it, so a tool reaches it by its token alone. The issue and the
  * role reach the claim `fresh_session` and `compact` act on when they name the two: the claim the
- * issue's `architect` or `workers` shows for the role, and, where the state shows none or shows it
- * without its token, the role's own claim, whose token ends in the issue and the role. So a second
- * agent of one role such as `implementer-2` beside the claim that works the role's step is named
- * with its token, and so is the role's own claim while a second agent works it; a claim served
- * without its token is named by its issue and role. */
+ * issue's `architect` or `workers` shows for the role (record.WorkerClaim on the daemon). No
+ * shown claim means no held claim is known to be reached, not that the role's own claim is
+ * reached. A stop served without a token is named by issue and role. */
 function pausedClaimName(
   state: LegionState,
   issue: string,
@@ -162,16 +167,16 @@ function pausedClaimName(
 ): string {
   const served = state.issues[issue];
   const shown = (role === "architect" ? served?.architect : served?.workers?.[role]?.claim)?.token;
-  const reached =
-    shown === undefined ? token?.endsWith(`-${issue.toLowerCase()}-${role}`) : token === shown;
-  return token === undefined || reached ? `${issue} ${role}` : `${issue} ${role} (claim ${token})`;
+  return token === undefined || agentOfToken(token) === undefined || token === shown
+    ? `${issue} ${role}`
+    : `${issue} ${role} (claim ${token})`;
 }
 
 /**
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
  * (`pausedSummary` and `lastPauseSummary` in `packages/daemon/cmd/legion/project.go`), so the
  * controller and an operator read the same words, but for the token beside a claim, which this line
- * gives by the summary's rule (`unreachedToken`). The times are not the same text: `legion
+ * gives by the summary's rule (`pausedClaimName`). The times are not the same text: `legion
  * state` prints each at whole seconds, and this line prints the daemon's own string. While the
  * project is paused: the pause, since when, by whom and why, the claims whose stop it still waits
  * on, each by its issue and role and, where they do not reach it, its token, and how many rows it

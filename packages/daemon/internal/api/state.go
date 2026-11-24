@@ -748,10 +748,10 @@ type Issue struct {
 	// reading on this wire.
 	Ancestry  []string   `json:"ancestry,omitempty"`
 	Architect *ClaimView `json:"architect,omitempty"`
-	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
-	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
-	// without importing this package. A role's entry is the claim of the worker on its step where
-	// a phases row names one, and otherwise a claim of that role.
+	// Workers is keyed by the role of the claim (internal/claim). Each entry is the claim that
+	// issue and role reach (record.WorkerClaim): the current row's claim while it runs a step,
+	// otherwise the role's own token. A claim not held yet has no entry; another claim of that
+	// role is never substituted. Architect follows the same rule for the architect's role.
 	Workers map[claim.Role]PhaseView `json:"workers"`
 	// OtherClaims is every claim of the issue that neither `architect` nor `workers` shows, each
 	// with the role it holds, in token order, and absent where there is none (contract 222). Two

@@ -16,9 +16,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// prepareClaimForStep makes machine's claim, token, ready for the step that the start of a phase
-// entry (payload, phaseEntry) is for, before the start brings the claim back. The steps of one key
-// are one claim, and its next step may be of another role than the claim holds, or of another
+// prepareClaimForStep makes machine's claim, held as the start read it for startAgent, ready for
+// the step that the start of a phase entry (payload, phaseEntry) is for, before it brings the
+// claim back. The steps of one key are one claim, and its next step may be of another role than it holds, or of another
 // agent than the one whose session it holds (agent, the start's agent, startAgent, and
 // supervise.Claim.SessionAgent). Either
 // way the process the claim may still run was started for the step before it, so the start asks
@@ -45,11 +45,11 @@ import (
 // the judgment it passed when it was asked, and the row waits; its next run carries a standing of
 // its own, judged again by the re-role. So a move back in between costs the claim that one
 // suspension, and the move back's own start resumes it on its session in the role it holds.
-func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Machine, row record.OutboxRow, issue record.Issue, token claim.Token, payload record.SuperviseRequest, agent stepplan.AgentID) error {
+func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Machine, row record.OutboxRow, issue record.Issue, held supervise.Claim, payload record.SuperviseRequest, agent stepplan.AgentID) error {
 	if !phaseEntry(payload) {
 		return nil
 	}
-	held := machine.Claim()
+	token := held.Token
 	rerole := held.Role != payload.Role
 	if !rerole && !held.SessionOfAnotherAgent(agent) {
 		return nil

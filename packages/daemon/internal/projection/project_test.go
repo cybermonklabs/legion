@@ -238,8 +238,8 @@ func TestProjectShowsWhatAnAwaitingRootWaitsOn(t *testing.T) {
 
 func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 	const issue = "S2-1"
-	architect := claim.Token("legion-s2-1-architect")
-	implementer := claim.Token("legion-s2-1-implementer")
+	architect := realToken(issue, claim.RoleArchitect)
+	implementer := realToken(issue, claim.RoleImplementer)
 	got, err := Project(context.Background(), Inputs{Store: projectionStore{}, Project: "LEGION", Claims: []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1"},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2"},
@@ -276,8 +276,8 @@ func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 // A claim's recorded plugin contract passes through to its view, 0 when nothing was recorded.
 func TestProjectShowsEachClaimsPluginContract(t *testing.T) {
 	const issue = "S2-2"
-	architect := claim.Token("legion-s2-2-architect")
-	implementer := claim.Token("legion-s2-2-implementer")
+	architect := realToken(issue, claim.RoleArchitect)
+	implementer := realToken(issue, claim.RoleImplementer)
 	got, err := Project(context.Background(), Inputs{Store: projectionStore{}, Project: "LEGION", Claims: []supervise.Claim{
 		{Token: architect, Issue: issue, Role: claim.RoleArchitect, State: supervise.StateReady, Session: "session-1", PluginContract: 24},
 		{Token: implementer, Issue: issue, Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "session-2"},
@@ -304,9 +304,9 @@ func TestProjectShowsEachClaimsPluginContract(t *testing.T) {
 // asked with the wake that will start its process.
 func TestProjectNamesEachClaimsOwnWakeAndRoundState(t *testing.T) {
 	const issue = "S2-3"
-	architect := claim.Token("legion-s2-3-architect")
-	planner := claim.Token("legion-s2-3-planner")
-	implementer := claim.Token("legion-s2-3-implementer")
+	architect := realToken(issue, claim.RoleArchitect)
+	planner := realToken(issue, claim.RolePlanner)
+	implementer := realToken(issue, claim.RoleImplementer)
 	round := supervise.PodRound("8c1f2e5a-7b93-4d06-9e4a-1c2b3d4e5f60")
 	asked, answered := projectedAt.Add(-2*time.Minute), projectedAt.Add(-time.Minute)
 	wakes := []api.WakeWaiting{
@@ -356,7 +356,7 @@ func TestProjectNamesEachClaimsOwnWakeAndRoundState(t *testing.T) {
 }
 
 func TestProjectShowsLaunchUncertainClaimsWithoutALocator(t *testing.T) {
-	token := claim.Token("legion-208-architect")
+	token := realToken("LEGION-208", claim.RoleArchitect)
 	store := projectionStore{
 		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Status: "todo", Rank: "00042U"}},
 		phases: map[string][]record.PhaseRow{
@@ -383,7 +383,7 @@ func TestProjectShowsLaunchUncertainClaimsWithoutALocator(t *testing.T) {
 // completion reported; a worker whose phase has not completed shows neither.
 func TestProjectShowsTheHandoffRecordAWorkerNamed(t *testing.T) {
 	const record1 = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
-	tester, implementer, reviewer := claim.Token("legion-208-tester"), claim.Token("legion-208-implementer"), claim.Token("legion-208-reviewer")
+	tester, implementer, reviewer := realToken("LEGION-208", claim.RoleTester), realToken("LEGION-208", claim.RoleImplementer), realToken("LEGION-208", claim.RoleReviewer)
 	store := projectionStore{
 		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Status: "needs_review", Phase: phase.Reviewing}},
 		phases: map[string][]record.PhaseRow{"LEGION-208": {
@@ -935,7 +935,7 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 // build the view themselves, so a build that counted every move back and served none - the join
 // below left out - passes every one of them and serves a fleet with no counts in it at all.
 func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
-	implementer, tester := claim.Token("legion-208-implementer"), claim.Token("legion-208-tester")
+	implementer, tester := realToken("LEGION-208", claim.RoleImplementer), realToken("LEGION-208", claim.RoleTester)
 	counts := map[string]int{"testing-implementing": 4, "reviewing-implementing": 2}
 	store := projectionStore{
 		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main",
@@ -970,7 +970,7 @@ func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
 // (record.Store.PlanTasksOf); its implementer's phases row counts nothing. An issue with no plan
 // rows shows the counts its implementer's phases row holds, as before plans.
 func TestProjectShowsATasksCountsAndAnIssueWithNoPlanRowsItsImplementersRow(t *testing.T) {
-	planned, unplanned := claim.Token("legion-208-implementer"), claim.Token("legion-209-implementer")
+	planned, unplanned := realToken("LEGION-208", claim.RoleImplementer), realToken("LEGION-209", claim.RoleImplementer)
 	taskMoves := map[string]int{"reviewing-implementing": 3, "testing-implementing": 2}
 	rowMoves := map[string]int{"testing-implementing": 1}
 	issue := func(key string) record.Issue {
@@ -1086,8 +1086,8 @@ func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
 // views themselves, so a build that recorded every cause and served none passes every one of
 // them.
 func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
-	running, lingering := claim.Token("legion-220-implementer"), claim.Token("legion-221-implementer")
-	unfailed := claim.Token("legion-220-tester")
+	running, lingering := realToken("LEGION-220", claim.RoleImplementer), realToken("LEGION-221", claim.RoleImplementer)
+	unfailed := realToken("LEGION-220", claim.RoleTester)
 	lingerUntil := projectedAt.Add(time.Hour)
 	failedAt := projectedAt.Add(-10 * time.Minute)
 	held := func(key string, from phase.Phase) record.Issue {
