@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -69,8 +68,6 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // are filled in place, so each registered pointer is into the answer itself.
 func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
-	viewer := refs.VisibilityArg(who)
-	seen := access.ProjectClause("a.project_key", "$2")
 	err := q.QueryRow(ctx, `
 		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
 		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)

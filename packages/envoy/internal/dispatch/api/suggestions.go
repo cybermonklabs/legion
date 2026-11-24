@@ -185,7 +185,7 @@ func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Sugges
 // running.Wait answers: the checks run side by side, and one reader is registered with and
 // resolved on one goroutine alone (text_trees.go).
 func (s *server) decisionBlockChecks(
-	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor model.Actor, trees bool,
+	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor, who model.Actor, trees bool,
 ) []decisionBlockCheck {
 	if len(blocks) == 0 {
 		return nil

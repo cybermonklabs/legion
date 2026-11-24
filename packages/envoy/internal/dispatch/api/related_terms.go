@@ -685,8 +685,7 @@ func (s *server) pickRelatedTerms(
 	if exclude.artifactID != "" {
 		artifactID = &exclude.artifactID
 	}
-	viewer := relatedViewer(who)
-	rows, err := q.Query(ctx, relatedTermsSQL, project, text, exclude.issueKey, artifactID, title, viewer)
+	rows, err := q.Query(ctx, relatedTermsSQL, project, text, exclude.issueKey, artifactID, title)
 	if err != nil {
 		return relatedTerms{}, err
 	}

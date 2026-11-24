@@ -250,6 +250,9 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	// The reader the owner's project is read as (loadProject), resolved before the upload's
 	// transaction opens, as every resolution of a viewer is (access.Resolve takes a connection).
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	if input.name == "" {
 		writeError(w, "INVALID_ARTIFACT", http.StatusBadRequest, "artifact name is required")
 		return
@@ -305,7 +308,7 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		}
 	}
 	input.contentType = storedType
-	s.storeArtifact(w, r, input, actor, kind, target)
+	s.storeArtifact(w, r, who, input, actor, kind, target)
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
@@ -641,6 +644,7 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
+	who model.Actor,
 	input artifactUploadInput,
 	actor model.Actor,
 	kind string,
@@ -1771,7 +1775,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// code and containers, which a caller's own reading of that markdown would only approximate.
 	blocks := &editBlocks{
 		DecisionBlocksAdded: len(edit.AddedAskBlocks),
-		DecisionBlockChecks: s.decisionBlockChecks(r.Context(), artifact, edit.AddedAskBlocks, actor, wantsDisplayTrees(r)),
+		DecisionBlockChecks: s.decisionBlockChecks(r.Context(), artifact, edit.AddedAskBlocks, actor, who, wantsDisplayTrees(r)),
 	}
 	if artifact.IssueKey == nil || advice == nil {
 		WriteJSON(w, http.StatusOK, withRawAdvice(responsePayload, documentWriteAdvice{
@@ -1824,7 +1828,7 @@ const issueArtifactsStatement = `
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, who model.Actor, issueKey string) ([]model.Artifact, error) {
-	rows, err := q.Query(ctx, issueArtifactsStatement, issueKey, refs.VisibilityArg(who))
+	rows, err := q.Query(ctx, issueArtifactsStatement, issueKey)
 	if err != nil {
 		return nil, err
 	}
@@ -1883,7 +1887,7 @@ func artifactIDs(artifacts []*model.Artifact) []string {
 func queueArtifactDetails(b *pgx.Batch, who model.Actor, artifacts []*model.Artifact) func() {
 	versions := map[string][]model.Version{}
 	if ids := artifactIDs(artifacts); len(ids) > 0 {
-		b.Queue(artifactVersionsStatement, ids, refs.VisibilityArg(who)).Query(func(rows pgx.Rows) error {
+		b.Queue(artifactVersionsStatement, ids).Query(func(rows pgx.Rows) error {
 			return scanVersionsByArtifact(rows, versions)
 		})
 	}
@@ -1984,6 +1988,7 @@ func resolveDocumentReference[T any](
 	ctx context.Context,
 	s *server,
 	q queryer,
+	who model.Actor,
 	target artifactTarget,
 	reference string,
 	byRefKey func(refKey string) (T, error),

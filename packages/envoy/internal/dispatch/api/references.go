@@ -79,7 +79,7 @@ const referencesSinceWait = time.Second
 // prefix names a row only within some set, and the set the reference itself names is the one
 // its writer meant and the only one that can be answered without guessing.
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
-	actor, human, err := s.optionalActor(r)
+	_, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
@@ -248,7 +248,7 @@ var questionSourceKinds = []string{"artifact", "ask", "comment", "message"}
 // (refs.ScopeOf, canonicalUUID), which is the one place it is canonicalized, so this route
 // hands on what it was given and `urn:uuid:<uuid>` answers as the canonical id answers.
 func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
-	actor, human, err := s.optionalActor(r)
+	_, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
@@ -492,7 +492,7 @@ func pinsAMessageBlock(raw string, origins text.Origins) bool {
 	if unpinned == raw {
 		return false
 	}
-	ref, ok := text.ParseRef(unpinned, serverURL)
+	ref, ok := text.ParseRef(unpinned, origins)
 	return ok && ref.Kind == "block" && ref.Item == "message"
 }
 
@@ -506,7 +506,7 @@ func parseRequestRef(raw string, origins text.Origins) (text.Ref, error) {
 	if ok {
 		return ref, nil
 	}
-	if pinsAMessageBlock(raw, serverURL) {
+	if pinsAMessageBlock(raw, origins) {
 		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
 	}
 	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
@@ -528,7 +528,7 @@ func parseReferencesQuery(r *http.Request, origins text.Origins) (refs.Query, te
 	if from != "" {
 		raw, direction = from, "out"
 	}
-	ref, err := parseRequestRef(raw, serverURL)
+	ref, err := parseRequestRef(raw, origins)
 	if err != nil {
 		return refs.Query{}, text.Ref{}, nil, err
 	}

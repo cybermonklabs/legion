@@ -209,11 +209,10 @@ func (s *server) requireProjectIssues(r *http.Request, who model.Actor, project 
 }
 
 // relatedChecksReportQuery counts the related_checks rows the filters select ($1 project, $2
-// from, $3 to, $4 source kind; each null for no filter), of the projects the reader whose
-// visibility argument is $5 sees. The percentiles are percentile_disc, which ignores nulls like
-// every aggregate here, so each is a time some check took rather than one interpolated between
-// two checks.
-var relatedChecksReportQuery = `
+// from, $3 to, $4 source kind; each null for no filter). The percentiles are percentile_disc,
+// which ignores nulls like every aggregate here, so each is a time some check took rather than
+// one interpolated between two checks.
+const relatedChecksReportQuery = `
 with checks as (
   select source_kind, outcome, search, reason, keyword_ms, total_ms
     from related_checks
@@ -269,8 +268,7 @@ var relatedSourceKinds = map[string]bool{"issue": true, "ask": true, "decision_b
 // related_checks come in one statement and OtherProjectOffers, which write_suggestions holds, in
 // a second one over the same window and filters (relatedChecksOffersQuery).
 func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	query := r.URL.Query()
@@ -297,7 +295,6 @@ func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 	report.From, report.To = from, to
 
 	keyword, total := &report.KeywordMS, &report.TotalMS
-	seen := refs.VisibilityArg(who)
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), relatedChecksReportQuery,
 		report.Project, report.From, report.To, report.SourceKind,
 	).Scan(

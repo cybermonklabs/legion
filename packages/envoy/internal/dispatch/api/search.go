@@ -900,7 +900,7 @@ meaning_message as (
     from meaning_message_candidates where r >= $10
    order by meaning_message_candidates.id, r desc, window_id
 ),
-` + searchKindsCTE(keywordLegs+`
+` + searchKindsCTE(keywordLegs(seen)+`
   union all select * from meaning_issue
   union all select * from meaning_document
   union all select * from meaning_comment
