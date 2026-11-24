@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -148,7 +147,7 @@ func TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses(t *testing.T) {
 			}
 			body, err := io.ReadAll(response.Body)
 			_ = response.Body.Close()
-			if err != nil || !holdsRun(string(body), c.secret) {
+			if err != nil || oauth2calltest.Piece(string(body), c.secret) == "" {
 				t.Errorf("the stand-in's %s answer holds no run of %q (%v), so the row cannot see a leak", c.name, c.secret, err)
 			}
 		}
@@ -176,15 +175,4 @@ func TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses(t *testing.T) {
 			t.Fatalf("register_plan of a block of id a = %d %s, want 200 %s", taken.Code, taken.Body, want)
 		}
 	})
-}
-
-// holdsRun says whether text holds a run of secret's characters as long as the piece the rule
-// redacts (oauth2call.TokenPiece), read byte by byte: secret is ASCII here.
-func holdsRun(text, secret string) bool {
-	for at := 0; at+oauth2call.TokenPiece <= len(secret); at++ {
-		if strings.Contains(text, secret[at:at+oauth2call.TokenPiece]) {
-			return true
-		}
-	}
-	return false
 }
