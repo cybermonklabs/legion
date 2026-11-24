@@ -9,7 +9,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // StallRelay relays each TCP connection a client makes to a NATS server, and reads what the client
@@ -115,18 +114,22 @@ func (r *StallRelay) stall(dropServer bool) {
 }
 
 // AwaitParked waits until the reader of every stalled connection has stopped at its stall, failing
-// the test after 30 s. A reader waiting inside a read as the stall began reads what its client sends
-// next, at most stallReadBuffer bytes, and stops after it; a client that sends nothing keeps it there.
+// the test when one has not by the test's deadline (testDeadline). A reader waiting inside a read as
+// the stall began reads what its client sends next, at most stallReadBuffer bytes, and stops after
+// it; a client that sends nothing keeps it there.
 func (r *StallRelay) AwaitParked(t testing.TB) {
 	t.Helper()
+	bound := boundOf(t)
+	deadline, cancel := bound.stepContext(noDeadline)
+	defer cancel()
 	for _, c := range r.stalledConns() {
 		r.mu.Lock()
 		parked := c.parked
 		r.mu.Unlock()
 		select {
 		case <-parked:
-		case <-time.After(30 * time.Second):
-			t.Fatal("a stalled connection's reader did not stop at its stall within 30 s: its client sent nothing")
+		case <-deadline.Done():
+			t.Fatalf("a stalled connection's reader did not stop at its stall by %s, short of the test's deadline: its client sent nothing", bound)
 		}
 	}
 }
@@ -180,18 +183,21 @@ func (r *StallRelay) Move() {
 // AwaitEnded waits until every stalled connection has ended at both ends: its client's side has
 // ended -- a normal close once the relay has read everything it sent, or a reset -- and the server has
 // closed its side after reading everything the relay forwarded, which it handles before it closes. It
-// fails the test after 60 s.
+// fails the test when one has not by the test's deadline (testDeadline).
 func (r *StallRelay) AwaitEnded(t testing.TB) {
 	t.Helper()
 	conns := r.stalledConns()
 	if len(conns) == 0 {
 		t.Fatal("control: the stall relay stalled no connection")
 	}
+	bound := boundOf(t)
+	deadline, cancel := bound.stepContext(noDeadline)
+	defer cancel()
 	for _, c := range conns {
 		select {
 		case <-c.ended:
-		case <-time.After(60 * time.Second):
-			t.Fatal("a stalled connection had not ended at both ends 60 s after the relay moved")
+		case <-deadline.Done():
+			t.Fatalf("a stalled connection had not ended at both ends by %s, short of the test's deadline, after the relay moved", bound)
 		}
 	}
 }

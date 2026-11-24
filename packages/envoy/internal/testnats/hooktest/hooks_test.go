@@ -16,6 +16,7 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Each test below holds the hooked server at one hold point and shows the hold is real: the
@@ -195,16 +196,12 @@ func answer(request func() error) <-chan error {
 	return done
 }
 
-// answered fails t unless done answers nil within reachWithin.
+// answered fails t unless done answers nil. It waits for the answer until the test binary's
+// deadline (testwait.Receive).
 func answered(t *testing.T, done <-chan error, what string) {
 	t.Helper()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
-	case <-time.After(reachWithin):
-		t.Fatalf("%s: no answer within %s", what, reachWithin)
+	if err := testwait.Receive(t, what, done); err != nil {
+		t.Fatalf("%s: %v", what, err)
 	}
 }
 
@@ -663,7 +660,16 @@ func TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt(t *testing.T
 	for _, hold := range holds {
 		t.Logf("held %s", hold.Reached(t))
 	}
-	unanswered(t, done, "the create of N")
+	// No member can answer the create while each is parked before it applies the assignment, which
+	// the three holds reached above say with no span: the answer needs a member to apply it and the
+	// consumer's group to elect a leader. So the row reads the answer channel once, now. The 500 ms
+	// window of unanswered (before) could not see a member that answered without the hold, since
+	// that answer comes only after the election, which a loaded machine can put past 500 ms.
+	select {
+	case err := <-done:
+		t.Fatalf("the create of N was answered (%v) while every member was held before applying it", err)
+	default:
+	}
 	for _, hold := range holds {
 		hold.Release()
 	}

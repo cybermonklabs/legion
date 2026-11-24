@@ -176,14 +176,15 @@ func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, read
 		js := cluster.MemberJetStream(t, kept)
 		var lost error
 		var answer *natsgo.StreamInfo
-		for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); {
+		bound := boundOf(t)
+		for {
 			answer, lost = js.StreamInfo(stream, natsgo.MaxWait(readWait))
-			if lost == nil {
+			if lost == nil || bound.over() {
 				break
 			}
 		}
 		if answer == nil {
-			t.Fatalf("no read of %s on member %d was answered within a minute; the last drew %v", stream, kept, lost)
+			t.Fatalf("no read of %s on member %d was answered by %s, short of the test's deadline; the last drew %v", stream, kept, bound, lost)
 		}
 		if answer.Cluster == nil {
 			t.Fatalf("the read of %s on member %d names no cluster: %+v", stream, kept, answer)
@@ -470,9 +471,9 @@ func settled(cluster *natsgo.ClusterInfo, n int) bool {
 		!slices.ContainsFunc(cluster.Replicas, func(peer *natsgo.PeerInfo) bool { return !peer.Current || peer.Offline })
 }
 
-// AwaitSettledStream waits, within connectTimeout, until stream holds as many settled copies as
-// its configuration asks (settled), and returns its info. A test that asserts the copies a write
-// left reads them from the info it returns.
+// AwaitSettledStream waits, until the test's deadline (awaitInfo), until stream holds as many
+// settled copies as its configuration asks (settled), and returns its info. A test that asserts the
+// copies a write left reads them from the info it returns.
 func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s did not settle", stream),
@@ -481,17 +482,17 @@ func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string)
 		describeStream)
 }
 
-// AwaitStreamCopies waits, within connectTimeout, until stream is configured with n copies and
-// holds n settled ones (settled), and returns its info.
+// AwaitStreamCopies waits, until the test's deadline (awaitInfo), until stream is configured with n
+// copies and holds n settled ones (settled), and returns its info.
 func AwaitStreamCopies(t testing.TB, js natsgo.JetStreamContext, stream string, n int) *natsgo.StreamInfo {
 	t.Helper()
 	return AwaitStreamCopiesWithin(t, js, stream, n, connectTimeout)
 }
 
-// AwaitStreamCopiesWithin is AwaitStreamCopies bounded by within rather than by connectTimeout,
-// for a caller whose own bound for the work it is waiting on is the longer one: a member that was
-// killed or lame-ducked mid-write rejoins and catches its streams up, which takes longer than the
-// connect this package's other waits bound.
+// AwaitStreamCopiesWithin is AwaitStreamCopies. within no longer ends the wait, which ends on the
+// copies, bounded only by the test's deadline (awaitInfo): it was for a caller whose own bound for
+// the work it waits on is longer than connectTimeout, as a member that was killed or lame-ducked
+// mid-write rejoins and catches its streams up.
 func AwaitStreamCopiesWithin(t testing.TB, js natsgo.JetStreamContext, stream string, n int, within time.Duration) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, within, fmt.Sprintf("stream %s did not hold %d settled copies", stream, n),
@@ -500,9 +501,9 @@ func AwaitStreamCopiesWithin(t testing.TB, js natsgo.JetStreamContext, stream st
 		describeStream)
 }
 
-// AwaitConsumerCopies waits, within connectTimeout, until stream's consumer holds n settled copies
-// (settled), as a durable that sets no replica count of its own does once it has followed its
-// stream to n, and returns its info.
+// AwaitConsumerCopies waits, until the test's deadline (awaitInfo), until stream's consumer holds n
+// settled copies (settled), as a durable that sets no replica count of its own does once it has
+// followed its stream to n, and returns its info.
 func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consumer string, n int) *natsgo.ConsumerInfo {
 	t.Helper()
 	return awaitInfo(t, connectTimeout, fmt.Sprintf("consumer %s of %s did not hold %d settled copies", consumer, stream, n),
@@ -511,8 +512,8 @@ func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consu
 		describeConsumer)
 }
 
-// AwaitStreamLeader waits, within connectTimeout, until stream has a leader other than not, the
-// server_name of a member the test stopped or "" for any, and returns its info.
+// AwaitStreamLeader waits, until the test's deadline (awaitInfo), until stream has a leader other
+// than not, the server_name of a member the test stopped or "" for any, and returns its info.
 func AwaitStreamLeader(t testing.TB, js natsgo.JetStreamContext, stream, not string) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s had no leader other than %q", stream, not),
@@ -571,20 +572,23 @@ func describeCluster(cluster *natsgo.ClusterInfo) string {
 }
 
 // awaitInfo reads an info every retryInterval until a read succeeds and done holds for it, and
-// returns that info; after within it fails the test with failure, what describe says of the info
-// it read last, and the last error.
-func awaitInfo[T any](t testing.TB, within time.Duration, failure string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
+// returns that info; when none has by the test's deadline (testDeadline), it fails the test with
+// failure, what describe says of the info it read last, and the last error. The wait ends on done,
+// bounded only by that deadline: every caller waits for a cluster to settle, which a loaded machine
+// delays without anything being wrong, so the span each caller passes, the second argument, no
+// longer ends it.
+func awaitInfo[T any](t testing.TB, _ time.Duration, failure string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	bound := boundOf(t)
 	for {
 		info, err := read()
 		if err == nil && done(info) {
 			return info
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s within %s: %s (%v)", failure, within, describe(info), err)
+		if bound.over() {
+			t.Fatalf("%s (gave up at %s, short of the test's deadline): %s (%v)", failure, bound, describe(info), err)
 		}
-		time.Sleep(retryInterval)
+		bound.pause()
 	}
 }
 

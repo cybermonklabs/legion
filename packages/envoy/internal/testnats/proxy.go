@@ -33,6 +33,9 @@ type Proxy struct {
 	conns map[net.Conn]struct{}
 	// cut is set from Cut until Restore: every connection is closed as it is accepted.
 	cut bool
+	// refusedWhileCut counts the connections closed as they were accepted because the proxy was
+	// cut: each is one dial the network refused.
+	refusedWhileCut int
 	// gate is nil while the proxy moves bytes, and open from Freeze until Restore: every read
 	// and every write of a relayed connection waits for it to close.
 	gate chan struct{}
@@ -189,6 +192,7 @@ func (p *Proxy) track(conn net.Conn) bool {
 	default:
 	}
 	if p.cut {
+		p.refusedWhileCut++
 		_ = conn.Close()
 		return false
 	}
@@ -203,6 +207,13 @@ func (p *Proxy) untrack(conns ...net.Conn) {
 		_ = conn.Close()
 		delete(p.conns, conn)
 	}
+}
+
+// refusedDials is how many dials the proxy has refused while cut.
+func (p *Proxy) refusedDials() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.refusedWhileCut
 }
 
 // proxyReadBuffer is the most one read of a relayed connection takes. With ProxyRate the reader
