@@ -3,10 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -23,25 +20,17 @@ import (
 func TestTheDashboardProbeAsksTheSSEFeedJoinedOntoTheDispatchURL(t *testing.T) {
 	for _, c := range joinURLCases {
 		t.Run(c.name, func(t *testing.T) {
-			var mu sync.Mutex
-			var asked []url.URL
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				mu.Lock()
-				asked = append(asked, *r.URL)
-				mu.Unlock()
+			base, asked := joinAskedStand(t, func(w http.ResponseWriter, r *http.Request) {
 				if !strings.HasSuffix(r.URL.Path, ssePath) {
 					http.NotFound(w, r)
 					return
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
-			}))
-			t.Cleanup(srv.Close)
-			kind, sseURL, err := probeDashboard(context.Background(), srv.URL+c.suffix)
-			mu.Lock()
-			defer mu.Unlock()
+			})
+			kind, sseURL, err := probeDashboard(context.Background(), base+c.suffix)
 			feed := 0
-			for _, u := range asked {
+			for _, u := range asked() {
 				if strings.HasSuffix(u.Path, ssePath) {
 					feed++
 					if want := "/prefix" + ssePath; u.Path != want || u.RawQuery != c.query {
@@ -50,9 +39,9 @@ func TestTheDashboardProbeAsksTheSSEFeedJoinedOntoTheDispatchURL(t *testing.T) {
 				}
 			}
 			if feed != 1 {
-				t.Errorf("a Dispatch URL ending %q asked the stand-in %v; want the SSE feed asked once", c.suffix, asked)
+				t.Errorf("a Dispatch URL ending %q asked the stand-in %v; want the SSE feed asked once", c.suffix, asked())
 			}
-			want := srv.URL + "/prefix" + ssePath
+			want := base + "/prefix" + ssePath
 			if c.query != "" {
 				want += "?" + c.query
 			}
@@ -67,29 +56,12 @@ func TestTheDashboardProbeAsksTheSSEFeedJoinedOntoTheDispatchURL(t *testing.T) {
 // escape in its path), with redacttest's credentials in its user information and its query, fails
 // the dashboard probe in fixed words, with none of the URL (unparsed); http.NewRequest's error,
 // which the probe answered before, quotes it whole (twin). A Dispatch URL that parses, whose
-// joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone holding a byte that is
-// not ASCII, which String escapes as %FD), is refused the same way (reparsed); its twin shows
-// http.NewRequest's error for the joined URL holds the credentials. Captures
-// loadtest.dashboard-url/<case>.
+// joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape), is refused the
+// same way (reparsed); its twin shows http.NewRequest's error for the joined URL holds the
+// credentials. Captures loadtest.dashboard-url/<case>.
 func TestADashboardURLThatDoesNotJoinPrintsNoneOfIt(t *testing.T) {
-	param := "access" + "_token"
-	userinfo := redacttest.User + ":" + redacttest.Password + "@"
-	unparsed := "http://" + userinfo + "127.0.0.1:1/dispatch%zz?" + param + "=" + redacttest.Token
-	reparsed := "http://" + userinfo + "[::%25\xfd]/dispatch?" + param + "=" + redacttest.Token
-	t.Run("twin", func(t *testing.T) {
-		if _, err := http.NewRequest(http.MethodGet, unparsed+ssePath, nil); err == nil || len(redacttest.Held(err.Error())) != len(redacttest.Secrets) {
-			t.Errorf("http.NewRequest = %v; want an error that quotes the credentials, so the row can see them", err)
-		}
-	})
-	t.Run("reparsed-twin", func(t *testing.T) {
-		parsed, err := url.Parse(reparsed)
-		if err != nil {
-			t.Fatalf("url.Parse refused the Dispatch URL (%v); the row needs one it takes", err)
-		}
-		if _, err := http.NewRequest(http.MethodGet, parsed.JoinPath(ssePath).String(), nil); err == nil || len(redacttest.Held(err.Error())) != len(redacttest.Secrets) {
-			t.Errorf("http.NewRequest of the joined URL = %v; want an error that quotes the credentials, so the row can see them", err)
-		}
-	})
+	unparsed, reparsed := joinRefusedURLs("/dispatch")
+	joinRequireTwins(t, unparsed, reparsed, ssePath)
 	for _, c := range []struct{ name, url, want string }{
 		{"unparsed", unparsed, "the Dispatch URL is not an absolute URL with a host (it is not printed)"},
 		{"reparsed", reparsed, "the Dispatch URL joined with the SSE feed's path does not parse (it is not printed)"},
