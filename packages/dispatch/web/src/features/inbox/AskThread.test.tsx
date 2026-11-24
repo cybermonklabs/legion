@@ -1,18 +1,22 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { correction, correctionFeed, DELETION, EDITED_AT } from "../../__tests__/correction-feed";
-import { api } from "../../api/client";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import { askThreadQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, AskRead, Comment, CreateCommentInput, IssueAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { AskReplyComposer, AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -65,6 +69,123 @@ const answeredAsk: Ask = {
   state: "answered",
   urgency: "med",
 };
+
+test.each([
+  "button",
+  "field",
+  "remount",
+] as const)("%s lets go at the reply write deadline without posting twice", async (from) => {
+  const create = spyOn(api, "createComment").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const composer = (key: string) => (
+    <QueryClientProvider client={client}>
+      <AskReplyComposer ask={answeredAsk} createReply={create} key={key} />
+    </QueryClientProvider>
+  );
+  const view = render(composer("one"));
+  try {
+    const prepare = userEvent.setup();
+    const box = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+    await prepare.click(box);
+    await prepare.paste("The rollout is on Friday.");
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Reply" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([create]);
+    const press = from === "field" ? "{Control>}{Enter}{/Control}" : "{Enter}";
+    if (from === "remount") {
+      await user.click(button);
+      await tick(0);
+      view.rerender(composer("two"));
+      await tick(SEND_DEADLINE_MS - 1_000);
+      expect(screen.getByRole("textbox", { name: "Reply" })).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      await tick(1_000);
+      view.rerender(composer("three"));
+      expect(screen.getByRole("textbox", { name: "Reply" })).not.toHaveAttribute("aria-disabled");
+      screen.getByRole("button", { name: /Reply/ }).focus();
+    } else {
+      await heldUntilLate(user, from === "field" ? box : button, {
+        label: "Reply on “Should this ship?”",
+        name: "Reply",
+        press,
+        queryClient: client,
+        sent,
+      });
+    }
+    await user.keyboard(press);
+    await tick(1_000);
+    const stillSending = /Reply sent nothing:.*reply is still being sent/;
+    expect(screen.getByText(stillSending)).toBeInTheDocument();
+    expect(sent()).toBe(1);
+    create.mockRejectedValue(new ApiError(403, { error: "Cannot reply" }));
+    await tick(30_000);
+    expect(screen.queryByText(stillSending)).toBeNull();
+    await user.keyboard(press);
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    client.clear();
+    create.mockRestore();
+  }
+});
+
+test("Retry lets go at the reply write deadline but cannot send while another composer is sending", async () => {
+  const refused = new ApiError(403, { error: "Cannot reply" });
+  const dropped = new NetworkError(
+    "/api/v1/issues/CORE-1/comments",
+    new TypeError("Failed to fetch")
+  );
+  const create = spyOn(api, "createComment").mockRejectedValue(refused);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <section aria-label="First composer">
+        <AskReplyComposer ask={answeredAsk} createReply={create} />
+      </section>
+      <section aria-label="Second composer">
+        <AskReplyComposer ask={answeredAsk} createReply={create} />
+      </section>
+    </QueryClientProvider>
+  );
+  try {
+    const first = within(screen.getByRole("region", { name: "First composer" }));
+    const second = within(screen.getByRole("region", { name: "Second composer" }));
+    const prepare = userEvent.setup();
+    const box = first.getByRole("textbox", { name: "Reply" });
+    await prepare.click(box);
+    await prepare.paste("The rollout is on Friday.");
+    await prepare.click(first.getByRole("button", { name: "Reply" }));
+    const retry = await first.findByRole("button", { name: "Retry" });
+    create.mockRejectedValue(dropped);
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(second.getByRole("button", { name: "Reply" }));
+    await tick(0);
+    await tick(SEND_DEADLINE_MS);
+    expect(retry).not.toHaveAttribute("aria-disabled");
+    await user.click(retry);
+    await tick(1_000);
+    expect(pressesOf([create]), "Retry must not post while the other reply is out").toBe(2);
+    expect(first.getByRole("status")).toHaveTextContent("your reply is still being sent");
+    create.mockRejectedValue(refused);
+    await tick(30_000);
+    await user.click(retry);
+    await tick(1_000);
+    expect(pressesOf([create])).toBe(3);
+  } finally {
+    realClock();
+    view.unmount();
+    client.clear();
+    create.mockRestore();
+  }
+});
 
 const reply: Comment = {
   anchor: null,

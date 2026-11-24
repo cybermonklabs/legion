@@ -2,11 +2,13 @@ import {
   type DefaultError,
   type MutateOptions,
   type MutationFunctionContext,
+  type MutationKey,
   type UseMutateAsyncFunction,
   type UseMutateFunction,
   type UseMutationOptions,
   type UseMutationResult,
   useMutation,
+  useMutationState,
 } from "@tanstack/react-query";
 import {
   useCallback,
@@ -199,6 +201,29 @@ function lateIn(rows: readonly Write[], key: string): boolean {
       (row) => row.target === own.target && row.joined < own.joined && row.status === "late"
     )
   );
+}
+
+/** The pending press of a keyed write shared by exact mutation key. A surface that mounts
+ *  while the press is out can release its hold at that same press's deadline. */
+export function usePendingKeyedPress(mutationKey: MutationKey) {
+  const writes = useWrites();
+  const press = useMutationState({
+    filters: { exact: true, mutationKey, status: "pending" },
+    select: ({ state }) => ({
+      key: (state.variables as Press<unknown> | undefined)?.key,
+      submittedAt: state.submittedAt,
+    }),
+  }).at(-1);
+  const key = press?.key;
+  const subscribe = useCallback(
+    (listener: () => void) => (key === undefined ? () => undefined : writes.subscribe(listener)),
+    [key, writes]
+  );
+  const late = useSyncExternalStore(
+    subscribe,
+    () => key !== undefined && lateIn(writes.rows(), key)
+  );
+  return { isPending: press !== undefined, late, submittedAt: press?.submittedAt ?? 0 };
 }
 
 /** The sentence a surface shows for its write where the reader stopped it, under the plain Retry

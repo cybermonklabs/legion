@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -11,10 +11,13 @@ import {
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -187,6 +190,34 @@ function renderPane(
     view,
   };
 }
+
+test("Refresh lets go at the architecture write deadline and sends again", async () => {
+  const pane = renderPane(fixture());
+  pane.syncArchitectureSource.mockRejectedValue(
+    new NetworkError("/api/v1/projects/CORE", new TypeError("Failed to fetch"))
+  );
+  try {
+    const button = await screen.findByRole<HTMLButtonElement>("button", {
+      name: "Refresh legion/legion",
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([pane.syncArchitectureSource]);
+    await heldUntilLate(user, button, {
+      label: "Refresh of CORE's architecture source legion/legion",
+      name: "Refresh",
+      queryClient: pane.queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    pane.restore();
+    pane.queryClient.clear();
+  }
+});
 
 const rowFor = (title: string) => screen.getByRole("article", { name: new RegExp(`^${title},`) });
 

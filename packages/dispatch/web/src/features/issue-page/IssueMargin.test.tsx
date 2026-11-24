@@ -24,6 +24,7 @@ import { holdNotifications } from "../../__tests__/commits";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { panelOf, pickNamed } from "../../__tests__/list-picks";
@@ -550,6 +551,64 @@ test("a blocked-by save the reader stopped says it may have been saved, and Save
   } finally {
     realClock();
     unmount();
+    restore();
+  }
+});
+
+test.each([
+  "Save",
+  "Cancel",
+  "Escape",
+] as const)("%s lets go at the blocked-by write deadline", async (action) => {
+  const prepare = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount } = renderDetails();
+  try {
+    await prepare.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    const field = screen.getByLabelText("Issues CORE-1 waits on");
+    await prepare.click(field);
+    await prepare.paste("CORE-9");
+    const save = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.save_blocked_by,
+    });
+    const cancel = screen.getByRole<HTMLButtonElement>("button", { name: CONTROL_LABELS.cancel });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([patchIssue]);
+    await heldUntilLate(user, action === "Save" ? save : cancel, {
+      label: "CORE-1 waits on CORE-9",
+      name: action,
+      queryClient,
+      sent,
+      start: save,
+    });
+    if (action === "Save") {
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      // The second press queues behind the late PATCH and sends when the first stops.
+      expect(sent()).toBe(1);
+      expect(
+        writesOf(queryClient)
+          .rows()
+          .map((row) => row.status)
+      ).toEqual(["late", "queued"]);
+      await stopTheLateWrite(queryClient);
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } else {
+      await user.keyboard(action === "Cancel" ? "{Enter}" : "{Escape}");
+      expect(field).not.toBeInTheDocument();
+      expect(sent()).toBe(1);
+    }
+  } finally {
+    realClock();
+    unmount();
+    queryClient.clear();
     restore();
   }
 });

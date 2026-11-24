@@ -49,6 +49,8 @@ export interface OutstandingAnswerWrite<TVariables> {
   readonly error: Error | null;
   readonly isError: boolean;
   readonly isPending: boolean;
+  /** Whether the surface's own write is still out past its deadline. */
+  readonly late?: boolean;
   readonly isSuccess: boolean;
   /** The method of the newest press's request where the reader stopped it, else undefined. */
   readonly method: WriteMethod | undefined;
@@ -261,7 +263,10 @@ export const AskReplyWritesContext = createContext<OutstandingAnswerWrites | und
 export function useOwnAnswerWrite<TData, TVariables extends AskPress>(
   options: OutstandingAnswerWriteOptions<TData, TVariables>
 ): OutstandingAnswerWrite<TVariables> {
-  return useKeyedWrite(outstandingAnswerWrite(useQueryClient(), () => options));
+  return useKeyedWrite({
+    ...outstandingAnswerWrite(useQueryClient(), () => options),
+    readsLate: true,
+  });
 }
 
 /**

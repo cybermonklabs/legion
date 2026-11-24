@@ -24,6 +24,8 @@ export interface NameVersionDialogProps {
   onClose: () => void;
   onSave: (summary: string) => void;
   open: boolean;
+  /** Why Save sent nothing while the version is still being named. */
+  outstandingNote?: string;
   saving: boolean;
 }
 
@@ -39,6 +41,7 @@ export function NameVersionDialog({
   onClose,
   onSave,
   open,
+  outstandingNote,
   saving,
 }: NameVersionDialogProps): ReactNode {
   const [summary, setSummary] = useState("");
@@ -122,6 +125,11 @@ export function NameVersionDialog({
               {saving ? "Saving…" : "Save"}
             </button>
           </div>
+          {outstandingNote === undefined ? null : (
+            <p className={`text-sm ${textSecondaryOnSurface}`} role="status">
+              {outstandingNote}
+            </p>
+          )}
         </div>
       </div>
     </>

@@ -4,7 +4,8 @@ import userEvent from "@testing-library/user-event";
 
 import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -422,6 +423,41 @@ test("a rebuild the reader stopped says it may have been made, not a message's w
     queryClient.clear();
     confirm.mockRestore();
     rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+  }
+});
+
+test("Rebuild lets go at the document write deadline and sends again", async () => {
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuild = spyOn(api, "rebuildArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/rebuild", new TypeError("Failed to fetch"))
+  );
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = createQueryClient();
+  const { view } = renderProofDocument({ queryClient });
+  try {
+    const name = "Rebuild from the latest version";
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([rebuild]);
+    await heldUntilLate(user, button, {
+      label: `Rebuild of ${artifact.name}`,
+      name,
+      queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    confirm.mockRestore();
+    rebuild.mockRestore();
     getArtifactText.mockRestore();
   }
 });

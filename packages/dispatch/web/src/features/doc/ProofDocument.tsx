@@ -66,6 +66,7 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
@@ -450,6 +451,7 @@ export function ProofDocument({
     // `write` comes first: `onSuccess` reads its answer.
     write: (summary: string, bounds) => api.createArtifactVersion(artifact.id, { summary }, bounds),
     method: "POST",
+    readsLate: true,
     inline: true,
     label: () => `New version of ${artifact.name}`,
     onSuccess: (created) => {
@@ -472,6 +474,8 @@ export function ProofDocument({
       onVersionChange(created.number);
     },
   });
+  const namingVersion = nameVersion.isPending && !nameVersion.late;
+  const oneVersion = useOneCreateOut(nameVersion);
   const rebuild = useKeyedWrite({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
@@ -485,6 +489,7 @@ export function ProofDocument({
       return reread;
     },
     method: "POST",
+    readsLate: true,
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
   const liveMarkdown = liveTextQuery.data?.markdown ?? "";
@@ -706,7 +711,7 @@ export function ProofDocument({
       connection,
       pending,
       copyBlockLink,
-      isNamingVersion: nameVersion.isPending,
+      isNamingVersion: namingVersion,
       requestNamedVersion,
       versions,
     });
@@ -714,7 +719,7 @@ export function ProofDocument({
     connection,
     pending,
     copyBlockLink,
-    nameVersion.isPending,
+    namingVersion,
     onToolbarChange,
     page,
     requestNamedVersion,
@@ -1162,12 +1167,19 @@ export function ProofDocument({
       <NameVersionDialog
         error={nameVersion.error}
         onClose={() => {
-          nameVersion.reset();
+          if (!nameVersion.isPending) nameVersion.reset();
           setIsNameDialogOpen(false);
         }}
-        onSave={(summary) => nameVersion.mutate(summary)}
+        onSave={(summary) => {
+          if (!oneVersion.refuse()) nameVersion.mutate(summary);
+        }}
         open={isNameDialogOpen}
-        saving={nameVersion.isPending}
+        outstandingNote={
+          oneVersion.refused
+            ? `Save sent nothing: the version “${nameVersion.variables}” is still being sent. It opens once Dispatch names it. If it fails, you can press Save again.`
+            : undefined
+        }
+        saving={namingVersion}
       />
       {nameVersion.unanswered === undefined ? null : (
         <LandedWithoutAnswer what={`The version “${nameVersion.unanswered.variables}”`} />
@@ -1201,7 +1213,7 @@ export function ProofDocument({
             // held then (`heldPress`), `aria-disabled` in place of `disabled`, and a press does
             // nothing.
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
-            {...heldPress(rebuild.isPending, () => {
+            {...heldPress(rebuild.isPending && !rebuild.late, () => {
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."

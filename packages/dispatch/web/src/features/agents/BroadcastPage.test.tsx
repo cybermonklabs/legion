@@ -6,11 +6,13 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   Agent,
   BroadcastExclusion,
@@ -307,6 +309,46 @@ test("a stranded recipient's Retry keeps the keyboard focus while its retry is o
     await waitFor(() => expect(retry).not.toHaveAttribute("aria-disabled"));
   } finally {
     page.view.unmount();
+    page.restore();
+  }
+});
+
+test.each([
+  { name: "Retry", mode: "Send", stranded: true },
+  { name: "Retry", mode: "Aside", stranded: false },
+  { name: "Use BTW instead", mode: "BTW", stranded: false },
+  { name: "Use Send instead", mode: "Send", stranded: false },
+] as const)("$name ($mode) lets go at the broadcast retry deadline and sends again", async ({
+  name,
+  mode,
+  stranded,
+}) => {
+  const delivery = stranded
+    ? attempt({ created_at: new Date(Date.now() - 5 * 60_000).toISOString() })
+    : attempt({ delivery: "aside", error: "no live session planner-session", state: "failed" });
+  const page = renderBroadcast(broadcast([delivery]));
+  page.createMessageDelivery.mockRejectedValue(
+    new NetworkError("/api/v1/messages", new TypeError("Failed to fetch"))
+  );
+  try {
+    const row = await screen.findByRole("article", { name: "Planner" });
+    const button = within(row).getByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([page.createMessageDelivery]);
+    await heldUntilLate(user, button, {
+      label: `Delivery to Planner again, as ${mode}`,
+      name,
+      queryClient: page.queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    page.view.unmount();
+    page.queryClient.clear();
     page.restore();
   }
 });

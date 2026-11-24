@@ -303,6 +303,7 @@ export function AskRecipients({
   const [unsettled, holdThrough] = useReadBound();
   const unfollow = useKeyedWrite({
     method: "DELETE",
+    readsLate: true,
     write: (press: { askId: string; sessionId: string }, bounds) =>
       removedEvenIfGone(removeFollower(press.askId, press.sessionId, bounds), isFollowerNotFound),
     label: (press) => `${text.sessionText(press.sessionId, undefined)} taken off this ask`,
@@ -311,6 +312,7 @@ export function AskRecipients({
   });
   const unsubscribe = useKeyedWrite({
     method: "DELETE",
+    readsLate: true,
     write: async (
       press: { sessionId: string; subscription: OwnerSubscription | undefined },
       bounds
@@ -328,8 +330,8 @@ export function AskRecipients({
     onSuccess: (_result, press) =>
       holdThrough(invalidateWaitingForPaused(queryClient, ["subscribers", press.subscription?.id])),
   });
-  const unfollowHeld = useHeldThroughAnswer(unfollow.isPending);
-  const unsubscribeHeld = useHeldThroughAnswer(unsubscribe.isPending);
+  const unfollowHeld = useHeldThroughAnswer(unfollow.isPending && !unfollow.late);
+  const unsubscribeHeld = useHeldThroughAnswer(unsubscribe.isPending && !unsubscribe.late);
 
   if (
     followers.length === 0 &&

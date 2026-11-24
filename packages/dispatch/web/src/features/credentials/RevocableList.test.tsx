@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -148,6 +149,36 @@ async function renderSection(section: Section): Promise<HTMLElement> {
 }
 
 for (const section of sections) {
+  test(`${section.heading}: Revoke lets go at the write deadline and sends again`, async () => {
+    const stubs = section.stub(async () => {
+      throw new NetworkError("/api/v1/revoke", new TypeError("Failed to fetch"));
+    });
+    const confirm = spyOn(window, "confirm").mockReturnValue(true);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
+      const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Revoke" });
+      jest.useFakeTimers();
+      const user = userOnFakeClock();
+      const sent = () => pressesOf([{ mock: { calls: stubs.revokeCalls() } }]);
+      await heldUntilLate(user, button, {
+        label: `${section.heading}: revoke ${section.rowId}`,
+        name: "Revoke",
+        queryClient,
+        sent,
+      });
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(sent()).toBe(2);
+    } finally {
+      realClock();
+      cleanup();
+      queryClient.clear();
+      confirm.mockRestore();
+      stubs.restore();
+    }
+  });
+
   // While the revoke is out Revoke is held (`heldPress`), never `disabled`: a `disabled` button
   // drops the focus the reader's press left on it to the page's body. The pressed Revoke keeps the
   // focus, a second press of it sends no second revoke, and it is free once the revoke settles.

@@ -16,6 +16,7 @@ import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draf
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import {
   dwellOn,
   type IntersectionControl,
@@ -30,7 +31,7 @@ import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
-import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type {
@@ -2433,6 +2434,81 @@ test("a mention's held Retry keeps the focus while its retry is out, and a secon
     );
     view.unmount();
     createCommentDelivery.mockRestore();
+    stub.restore();
+  }
+});
+
+test.each([
+  { turn: "comment", name: "Retry", mode: "Send" },
+  { turn: "message", name: "Retry", mode: "Aside" },
+  { turn: "message", name: "Use BTW instead", mode: "BTW" },
+  { turn: "message", name: "Use Send instead", mode: "Send" },
+  { turn: "reply", name: "Retry", mode: "Aside" },
+  { turn: "reply", name: "Use BTW instead", mode: "BTW" },
+  { turn: "reply", name: "Use Send instead", mode: "Send" },
+] as const)("$turn: $name lets go at the delivery write deadline and sends again", async ({
+  turn,
+  name,
+  mode,
+}) => {
+  const target = "session:worker-session";
+  const failed = attempt({
+    delivery: "aside",
+    error: "no live session",
+    session_id: "worker-session",
+    state: "failed",
+  });
+  const lists =
+    turn === "comment"
+      ? {
+          comments: [
+            comment("comment-1", { deliveries: [mentionAttempt({ error: "no live session" })] }),
+          ],
+        }
+      : {
+          messages: [
+            turn === "message"
+              ? thread(message("message-1", { deliveries: [failed], target }))
+              : thread(message("message-1", { target }), [
+                  message("message-2", {
+                    author: { id: "worker-session", kind: "session" },
+                    in_reply_to: "message-1",
+                  }),
+                  message("message-3", {
+                    deliveries: [{ ...failed, message_id: "message-3" }],
+                    in_reply_to: "message-1",
+                  }),
+                ]),
+          ],
+        };
+  const stub = stubLists({
+    ...lists,
+    agents: [agent("worker-session", "Worker", ["aside", "btw", "steer"])],
+  });
+  const dropped = new NetworkError("/api/v1/deliveries", new TypeError("Failed to fetch"));
+  const retryComment = spyOn(api, "createCommentDelivery").mockRejectedValue(dropped);
+  const retryMessage = spyOn(api, "createMessageDelivery").mockRejectedValue(dropped);
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  try {
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([retryComment, retryMessage]);
+    await heldUntilLate(user, button, {
+      label: `Delivery ${turn === "comment" ? "of the comment " : ""}to Worker again, as ${mode}`,
+      name,
+      queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    retryComment.mockRestore();
+    retryMessage.mockRestore();
     stub.restore();
   }
 });

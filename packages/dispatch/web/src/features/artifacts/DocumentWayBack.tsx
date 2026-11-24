@@ -1,5 +1,5 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 
 import {
   type ArtifactOwner,
@@ -107,6 +107,7 @@ export function CorrectTitle({
     label: ({ artifact: corrected, name }: { artifact: Artifact; name: string }) =>
       `Rename ${corrected.name} to ${name}`,
     method: "PATCH",
+    readsLate: true,
     write: ({ artifact: corrected, name }, bounds) =>
       api.renameArtifact(corrected.id, { name }, bounds),
     onSettled: () => submitGuard.release(),
@@ -122,8 +123,13 @@ export function CorrectTitle({
       if (error instanceof SendStoppedError) void refreshArtifact(queryClient, corrected);
     },
   });
+  const held = rename.isPending && !rename.late;
+  useEffect(() => {
+    if (rename.late) submitGuard.release();
+  }, [rename.late, submitGuard]);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (held) return;
     const name = title.trim();
     if (name === "" || name === artifact.name || refusal !== null) {
       setCorrecting(false);
@@ -163,7 +169,7 @@ export function CorrectTitle({
       onSubmit={submit}
       onTitleChange={setTitle}
       open={correcting}
-      pending={rename.isPending}
+      pending={held}
       problem={problem}
       refusal={refusal}
       submitLabel="Save"
@@ -237,6 +243,7 @@ export function RemoveDocument({
     // which is the removal done (`removedEvenIfGone`): it lands as a `204` does (`onSuccess`), and
     // no refusal is shown.
     method: "DELETE",
+    readsLate: true,
     write: ({ id }, bounds) =>
       removedEvenIfGone(api.deleteArtifact(id, bounds), isArtifactNotFound),
     onSettled: () => submitGuard.release(),
@@ -252,6 +259,9 @@ export function RemoveDocument({
       return holdThrough(list);
     },
   });
+  useEffect(() => {
+    if (remove.late) submitGuard.release();
+  }, [remove.late, submitGuard]);
   // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`). A list
   // read that has not settled is said in the words the Artifacts tab says for one that failed.
   const problem = remove.isError
@@ -269,7 +279,7 @@ export function RemoveDocument({
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <RefusableButton
-        busy={remove.isPending ? "Removing…" : undefined}
+        busy={remove.isPending && !remove.late ? "Removing…" : undefined}
         look="secondary-compact"
         // A press of Remove while its refusal is on screen is the Retry of the press that refusal
         // is about (`retry`). Where the reader stopped that removal and it had landed, the Retry

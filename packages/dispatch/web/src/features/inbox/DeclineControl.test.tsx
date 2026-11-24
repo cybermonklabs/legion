@@ -6,9 +6,10 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock, settle } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, type DeclineAskInput, NetworkError } from "../../api/client";
@@ -157,6 +158,51 @@ function renderCard(
   );
   return { queryClient, view };
 }
+
+test("Decline to answer lets go at the decline write deadline and sends again", async () => {
+  const ask = openAsk();
+  const decline = spyOn(api, "declineAsk").mockRejectedValue(
+    new NetworkError("/api/v1/asks/ask-1/decline", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
+  const card = within(view.container);
+  try {
+    const prepare = userEvent.setup();
+    const opener = await card.findByRole("button", { name: "Decline to answer" });
+    await prepare.click(opener);
+    const dialog = within(card.getByRole("dialog", { name: "Decline to answer" }));
+    const button = dialog.getByRole<HTMLButtonElement>("button", { name: "Decline to answer" });
+    const note = dialog.getByLabelText<HTMLTextAreaElement>("Note (optional)");
+    const cancel = dialog.getByRole("button", { name: "Cancel" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([decline]);
+    await heldUntilLate(user, button, {
+      label: "Decline of “Which release path?”",
+      name: "Decline to answer",
+      queryClient,
+      sent: () => {
+        if (sent() === 1) {
+          expect(note.readOnly).toBe(true);
+          expect(opener).toHaveAttribute("aria-disabled", "true");
+          expect(cancel).toHaveAttribute("aria-disabled", "true");
+        }
+        return sent();
+      },
+    });
+    expect(note.readOnly).toBe(false);
+    expect(opener).not.toHaveAttribute("aria-disabled");
+    expect(cancel).not.toHaveAttribute("aria-disabled");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    decline.mockRestore();
+  }
+});
 
 /** The sheet under the dialog, which a click anywhere on closes it. It is the dialog's own, not
  *  a card's: nothing else is drawn across the whole viewport. */

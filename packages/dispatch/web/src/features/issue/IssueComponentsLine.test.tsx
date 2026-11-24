@@ -3,7 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -11,6 +12,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArchitectureSource, ArchitectureTree, IssueComponents } from "../../api/types";
 import { stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 
 const tree: ArchitectureTree = {
@@ -269,6 +271,53 @@ test("an explicit set naming components of two sources shows each as a bare id c
     );
   } finally {
     view.unmountAll();
+  }
+});
+
+test("Edit components lets go at the components write deadline and queues another set", async () => {
+  const view = renderLine(
+    { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+    tree
+  );
+  view.patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-7", new TypeError("Failed to fetch"))
+  );
+  try {
+    const prepare = userEvent.setup();
+    const name = "Edit components of CORE-7";
+    const button = await view.q.findByRole<HTMLButtonElement>("button", { name });
+    await prepare.click(button);
+    await prepare.click(
+      await screen.findByRole("option", { name: "dispatch-server · Dispatch server" })
+    );
+    const search = screen.getByRole("combobox", { name: "Search components" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([view.patchIssue]);
+    await heldUntilLate(user, button, {
+      label: "Components of CORE-7",
+      name,
+      press: "{Escape}",
+      queryClient: view.queryClient,
+      sent,
+      start: search,
+    });
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("option", { name: "infra-cluster · Cluster" }));
+    await user.keyboard("{Escape}");
+    await tick(1_000);
+    expect(
+      writesOf(view.queryClient)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["late", "queued"]);
+    await stopTheLateWrite(view.queryClient);
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmountAll();
+    view.queryClient.clear();
   }
 });
 

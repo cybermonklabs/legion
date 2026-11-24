@@ -316,6 +316,7 @@ export function AskCard({
     cancelChanging,
     changing,
     clarification,
+    clarificationStillOut,
     completed,
     displayedAsk,
     dropReasonPick,
@@ -1117,6 +1118,13 @@ export function AskCard({
             {answerActions}
           </>
         )}
+        {clarificationStillOut ? (
+          <p className={`text-sm ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`} role="status">
+            {choiceShown ? "Ask back instead" : "Ask back"} sent nothing: your question back is
+            still being sent. It shows in the thread once Dispatch posts it. If it fails, you can
+            ask back again.
+          </p>
+        ) : null}
         {answerFailure === null ? null : (
           <QueryError
             message={answerFailure.message}

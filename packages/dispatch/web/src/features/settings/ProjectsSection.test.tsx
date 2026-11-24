@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pick, rows, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -172,6 +173,7 @@ function renderSection({
   );
   return {
     ...stubs,
+    queryClient,
     done: () => {
       cleanup();
       queryClient.clear();
@@ -179,6 +181,61 @@ function renderSection({
     },
   };
 }
+
+test.each([
+  "New project",
+  "Key",
+  "Name",
+] as const)("%s lets go at the project write deadline without making a second project", async (name) => {
+  const page = renderSection();
+  page.createProject.mockRejectedValue(
+    new NetworkError("/api/v1/projects", new TypeError("Failed to fetch"))
+  );
+  try {
+    const prepare = userEvent.setup();
+    await screen.findByRole("cell", { name: "CORE" });
+    const assignee = screen.getByLabelText("Default assignee");
+    await waitFor(() => expect(assignee).toHaveTextContent("alice"));
+    const key = screen.getByRole<HTMLInputElement>("textbox", { name: "Key" });
+    const projectName = screen.getByRole<HTMLInputElement>("textbox", { name: "Name" });
+    await prepare.type(key, "NEXT");
+    await prepare.type(projectName, "Next");
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "New project" });
+    const control = name === "Key" ? key : name === "Name" ? projectName : button;
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([page.createProject]);
+    await heldUntilLate(user, control, {
+      label: "New project NEXT",
+      name,
+      queryClient: page.queryClient,
+      sent: () => {
+        if (sent() === 1) expect(assignee).toHaveAttribute("aria-disabled", "true");
+        return sent();
+      },
+    });
+    expect(assignee).not.toHaveAttribute("aria-disabled");
+    expect(key.readOnly).toBe(false);
+    expect(projectName.readOnly).toBe(false);
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(1);
+    const stillSending = /New project sent nothing:.*still being sent/;
+    expect(screen.getByText(stillSending)).toBeInTheDocument();
+    page.createProject.mockRejectedValue(
+      new ApiError(403, { error: "Cannot add another project" })
+    );
+    await tick(30_000);
+    expect(screen.queryByText(stillSending)).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("Cannot add another project");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    page.done();
+  }
+});
 
 // INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
 // options." The New project form's Default assignee offers everyone who has signed in, who grow

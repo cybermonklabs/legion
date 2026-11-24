@@ -112,13 +112,12 @@ export function IssueHeader({
     saving: writes.fieldHeld,
   });
 
-  // The pin, Close and Reopen are held, never disabled, while their own write is out: each keeps
-  // the focus the press gave it (`heldPress`, `IssueActionsMenu`). Close and Reopen are held only
-  // until that write's deadline (`fieldHeld`), and say they are saving until then: a press past
+  // Pin, Close and Reopen are held, never disabled, until their own write's deadline.
+  // Close and Reopen say they are saving until then: a press past
   // it is a status write of its own, which waits behind the late one in the issue's line.
   const actions: IssueAction[] = [
     {
-      held: writes.pin.isPending,
+      held: writes.pin.isPending && !writes.pin.late,
       id: "pin",
       pressed: state.pinned,
       run: () =>
@@ -226,6 +225,7 @@ export function IssueHeader({
             holds now (`drafts.retry`). Any other refusal keeps its plain line. */}
         <RefusalLine
           failed={writes.pin.isError}
+          held={writes.pin.isPending && !writes.pin.late}
           message={
             stoppedNote(writes.pin, "the pin status", "saved") ?? "Could not save pin status."
           }
@@ -276,11 +276,13 @@ export function IssueHeader({
  */
 function RefusalLine({
   failed,
+  held = false,
   message,
   onRetry,
   pending,
 }: {
   failed: boolean;
+  held?: boolean;
   message: string;
   onRetry: () => void;
   pending: boolean;
@@ -291,6 +293,10 @@ function RefusalLine({
   const draw = failed || (drawn && pending);
   if (draw !== drawn) setDrawn(draw);
   return draw ? (
-    <QueryError message={failed ? message : ANSWER_LINES.saving_field} onRetry={onRetry} />
+    <QueryError
+      message={failed ? message : ANSWER_LINES.saving_field}
+      onRetry={onRetry}
+      retrying={held}
+    />
   ) : null;
 }

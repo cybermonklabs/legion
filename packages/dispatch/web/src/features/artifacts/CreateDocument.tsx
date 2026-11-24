@@ -6,10 +6,12 @@ import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { textSecondaryOnCanvas } from "../../theme/classes";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { refreshOwnerArtifacts } from "./ArtifactUpload";
 import { TitleForm } from "./TitleForm";
 
@@ -53,10 +55,10 @@ function documentHolding(documents: readonly Artifact[], title: string): Artifac
 
 /**
  * The one control that makes a document, on an issue's Documents tab and on a project's document
- * list: a `New document` button, then a title and a submit. It writes under an idempotency key, so
- * two presses make one document, and it sends the title alone - no content - so the document holds
- * nothing and the person writes the first word in it. When it is made the person is taken to it,
- * which on an issue is the artifacts panel of the page they are already on.
+ * list: a `New document` button, then a title and a submit. It writes under an idempotency key
+ * and takes no second create while that write is out. It sends the title alone - no content -
+ * so the person writes the first word in it. When it is made the person is taken to it, which on
+ * an issue is the artifacts panel of the page they are already on.
  *
  * A title the owner already holds is refused here, before the write, in the words of the list the
  * control was given; every other refusal is the server's own sentence, shown as it came. With a
@@ -85,6 +87,7 @@ export function CreateDocument({
     inline: true,
     label: (name: string) => `New document ${name}`,
     method: "POST",
+    readsLate: true,
     write: (name: string, bounds) => api.uploadArtifact(owner, { name }, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: (made) => {
@@ -97,10 +100,12 @@ export function CreateDocument({
       navigate(documentPath(owner, made.artifact.slug));
     },
   });
+  const creatingHeld = create.isPending && !create.late;
+  const oneCreate = useOneCreateOut(create);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const name = title.trim();
-    if (name === "" || refusal !== null) {
+    if (name === "" || refusal !== null || creatingHeld || oneCreate.refuse()) {
       return;
     }
     const held = documentHolding(documents, name);
@@ -159,13 +164,19 @@ export function CreateDocument({
         setTakenBy(undefined);
       }}
       open={creating}
-      pending={create.isPending}
+      pending={creatingHeld}
       problem={problem}
       refusal={refusal}
       refusalShownBy={refusalShownBy}
       submitLabel="Create"
       title={title}
     >
+      {creating && oneCreate.refused ? (
+        <p className={`w-full text-sm ${textSecondaryOnCanvas}`} role="status">
+          Create sent nothing: “{create.variables}” is still being sent. The document opens once
+          Dispatch makes it. If it fails, you can press Create again.
+        </p>
+      ) : null}
       {create.unanswered === undefined ? null : (
         <div className="w-full">
           <LandedWithoutAnswer what={`Document ${create.unanswered.variables}`} />

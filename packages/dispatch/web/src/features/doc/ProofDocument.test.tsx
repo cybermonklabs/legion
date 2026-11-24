@@ -1,11 +1,12 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { settle } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -14,7 +15,8 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
-import { ApiError, api } from "../../api/client";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
@@ -146,6 +148,58 @@ test("a version named with its answer lost closes the dialog and says it was mad
   } finally {
     createArtifactVersion.mockRestore();
     view.unmount();
+  }
+});
+
+test.each([
+  "Save",
+  "What changed?",
+] as const)("%s lets go at the version write deadline without naming a second version", async (name) => {
+  const create = spyOn(api, "createArtifactVersion").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/versions", new TypeError("Failed to fetch"))
+  );
+  const queryClient = createQueryClient();
+  const { toolbar, view } = renderProofDocument({ queryClient });
+  try {
+    act(() => toolbar.current?.requestNamedVersion());
+    const dialog = within(await screen.findByRole("dialog", { name: "Name this version" }));
+    const field = dialog.getByRole<HTMLInputElement>("textbox", { name: "What changed?" });
+    const prepare = userEvent.setup();
+    await prepare.click(field);
+    await prepare.paste("Settled the rollout");
+    const control =
+      name === "Save" ? dialog.getByRole<HTMLButtonElement>("button", { name }) : field;
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([create]);
+    await heldUntilLate(user, control, {
+      label: `New version of ${artifact.name}`,
+      name,
+      queryClient,
+      sent: () => {
+        if (sent() === 1) expect(toolbar.current?.isNamingVersion).toBe(true);
+        return sent();
+      },
+    });
+    expect(toolbar.current?.isNamingVersion).toBe(false);
+    expect(field.readOnly).toBe(false);
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(1);
+    const stillSending = /Save sent nothing:.*still being sent/;
+    expect(dialog.getByText(stillSending)).toBeInTheDocument();
+    create.mockRejectedValue(new ApiError(403, { error: "Cannot name another version" }));
+    await tick(30_000);
+    expect(dialog.queryByText(stillSending)).toBeNull();
+    expect(dialog.getByRole("alert")).toHaveTextContent("Could not name this version");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    create.mockRestore();
   }
 });
 

@@ -90,8 +90,10 @@ function BroadcastRecipientRow({
     label: (mode: MessageDeliveryMode) => `Delivery to ${label} again, as ${MODE_LABELS[mode]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["broadcast"] }),
     method: "POST",
+    readsLate: true,
     write: (mode, bounds) => api.createMessageDelivery(recipient.message.id, mode, bounds),
   });
+  const retryHeld = retry.isPending && !retry.late;
   // The row shows the recipient's whole thread, so its replies are read. Only these: the
   // session's replies anywhere else, older or newer, stay unread until a view shows them.
   const replies = recipient.replies ?? [];
@@ -140,19 +142,19 @@ function BroadcastRecipientRow({
           canSteer={capabilities?.includes("steer") !== false}
           latest={latest}
           onRetry={retry.mutate}
-          retrying={retry.isPending}
+          retrying={retryHeld}
           targetName={recipientAgent}
         />
       ) : latest === undefined || stranded ? (
         // Outstanding, and nobody is carrying it. Only the attempt's own mode is offered: the
         // frame may already have reached the agent, and a repeat of the same mode is recognised
         // by its dedupe key while a different mode is a new key - that would be a second delivery.
-        // While the retry is out, Retry is held (`heldPress`), not disabled: it keeps the focus
-        // and its Tab stop, and a press of it sends nothing.
+        // Until the retry's deadline, Retry is held (`heldPress`), keeping focus and its Tab stop
+        // without taking another press.
         <div className="mt-3">
           <button
             className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            {...heldPress(retry.isPending, () => retry.mutate(latest?.delivery ?? delivery))}
+            {...heldPress(retryHeld, () => retry.mutate(latest?.delivery ?? delivery))}
             type="button"
           >
             Retry

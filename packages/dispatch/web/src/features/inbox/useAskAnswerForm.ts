@@ -30,6 +30,7 @@ import type {
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
 import { stoppedNote } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { answerAskInput } from "./answer-ask";
 import { setAnswerDraft, useAnswerDraft } from "./answer-drafts";
 import {
@@ -364,6 +365,10 @@ export function useAskAnswerForm({
       invalidateOwnerReads(queryClient, press.ask);
     },
   });
+  const oneQuestion = useOneCreateOut(clarification);
+  useEffect(() => {
+    if (mutation.late || clarification.late) submitGuard.release();
+  }, [clarification.late, mutation.late, submitGuard]);
 
   // The thread read is the truth once the question changed under the draft, and once the ask
   // was answered or resolved elsewhere while this card still holds its open row (an Inbox row
@@ -398,7 +403,7 @@ export function useAskAnswerForm({
   // draft that stood before the change, which is empty on a card the reader only read.
   const cancelChanging = () => {
     replacing.current = undefined;
-    mutation.reset();
+    if (!mutation.isPending) mutation.reset();
     setChanging(false);
   };
   // No dependency list on purpose: it runs after every render until the viewer and the recorded
@@ -412,7 +417,8 @@ export function useAskAnswerForm({
   });
   const hasOptions = (displayedAsk.options ?? []).length > 0;
   const isApproval = displayedAsk.kind === "approval";
-  const isSubmitting = mutation.isPending || clarification.isPending;
+  const isSubmitting =
+    (mutation.isPending && !mutation.late) || (clarification.isPending && !clarification.late);
   const trimmedAnswer = answerText.trim();
   // The server rejects Request changes without text; the form says so instead of leaving the
   // submit button silently dead.
@@ -446,6 +452,7 @@ export function useAskAnswerForm({
         ? "Add a note (optional)"
         : "Answer in your own words, or ask a question back";
   const sendAnswer = (text: string) => {
+    if (isSubmitting) return;
     submitGuard.guard(() => {
       const answerSelection = isApproval || hasOptions ? selected : [];
       mutation.mutate({
@@ -506,7 +513,7 @@ export function useAskAnswerForm({
   };
   const sendClarification = () => {
     const text = answerText.trim();
-    if (text === "") return;
+    if (text === "" || isSubmitting || oneQuestion.refuse()) return;
     submitGuard.guard(() => clarification.mutate({ ask, text }));
   };
   const completed = changing ? null : recordedAsk;
@@ -526,6 +533,7 @@ export function useAskAnswerForm({
     answers,
     answerText,
     askChanged,
+    clarificationStillOut: oneQuestion.refused,
     canAnswer,
     canChangeAnswer,
     cancelChanging,

@@ -14,6 +14,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { pickIn } from "../../__tests__/issue-picks";
 import { listOf, panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -2666,6 +2667,71 @@ test("Clear conversation, held while its write is out, keeps the focus, and a se
       await answer.promise;
     });
     page.view.unmount();
+    page.restore();
+  }
+});
+
+test.each([
+  { turn: "message", name: "Retry", mode: "Aside" },
+  { turn: "message", name: "Use BTW instead", mode: "BTW" },
+  { turn: "message", name: "Use Send instead", mode: "Send" },
+  { turn: "reply", name: "Retry", mode: "Aside" },
+  { turn: "reply", name: "Use BTW instead", mode: "BTW" },
+  { turn: "reply", name: "Use Send instead", mode: "Send" },
+  { turn: "clear", name: "Clear conversation", mode: "" },
+] as const)("$turn: $name lets go at the write deadline and sends again", async ({
+  turn,
+  name,
+  mode,
+}) => {
+  const page = renderAgents({
+    listedAgents: steerCapableAgents(),
+    messages:
+      turn === "reply"
+        ? [
+            {
+              message: message("Can this ship?"),
+              replies: [
+                message("Looking into it.", {
+                  author: { id: "planner-session", kind: "session" },
+                  id: "message-2",
+                  in_reply_to: "message-1",
+                }),
+                message("Any update?", {
+                  deliveries: [failedAttempt("message-3", "aside")],
+                  id: "message-3",
+                  in_reply_to: "message-1",
+                }),
+              ],
+            },
+          ]
+        : [{ message: failedAside.message, replies: [] }],
+  });
+  const write = turn === "clear" ? page.putAgentState : page.createMessageDelivery;
+  write.mockRejectedValue(new NetworkError("/api/v1/agents", new TypeError("Failed to fetch")));
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(userEvent.setup(), planner, "Planner");
+    const button = await within(planner).findByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([write]);
+    await heldUntilLate(user, button, {
+      label:
+        turn === "clear"
+          ? "Conversation with Planner cleared"
+          : `Delivery to Planner again, as ${mode}`,
+      name,
+      queryClient: page.queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    page.view.unmount();
+    page.queryClient.clear();
     page.restore();
   }
 });

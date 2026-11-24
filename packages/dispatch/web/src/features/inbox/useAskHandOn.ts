@@ -120,12 +120,12 @@ function handOnWrite(
  * (`useAskHandOnWrites`).
  */
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
-  const mutation = useKeyedWrite(handOnWrite(useQueryClient()));
+  const mutation = useKeyedWrite({ ...handOnWrite(useQueryClient()), readsLate: true });
   return {
     // A hand-on the reader stopped may have been made, and Retry makes it again (`retry`).
     error: stoppedNote(mutation, STOPPED_HAND_ON, "made") ?? mutation.error?.message,
     failed: mutation.isError,
-    pending: mutation.isPending,
+    pending: mutation.isPending && !mutation.late,
     retry: mutation.retry,
     submit: (askedOf) => mutation.mutate({ ask, askedOf }),
   };

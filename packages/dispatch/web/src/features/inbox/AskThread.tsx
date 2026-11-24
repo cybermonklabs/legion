@@ -8,7 +8,6 @@ import { heldField, useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
-import { useSending } from "../../hooks/useSending";
 import {
   borderDefault,
   borderStrong,
@@ -37,7 +36,8 @@ import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import type { AskPress } from "./ask-writes";
 import { inboxActionMark } from "./inbox-action-mark";
 import {
@@ -215,16 +215,14 @@ export function replyRefusal(reply: {
  * answer (`AskReplyWritesContext`), since the reading column's card goes whenever the reader
  * moves the selection. The send and its refusal outlive the form: the form drawn for the ask
  * again shows them, with Retry, and the row of the ask's thread says what the send is doing
- * (`ThreadShortRow`). Outside an Inbox the form makes its own send, named by its ask, which every
- * composer for the ask on the page reads (`useSending`).
+ * (`ThreadShortRow`). Outside an Inbox, the write is named by its ask. Each composer for that ask
+ * reads the same press, even if it mounts after the press (`usePendingKeyedPress`).
  *
- * Reply and the box are held while the send is out and through the commit after its answer
- * (`useHeldThroughAnswer`): by `aria-disabled`, never `disabled`, so the one the reader pressed or
- * typed Ctrl+Enter in keeps their focus through the hold. The box is read-only then: Ctrl+Enter in
- * it submits nothing, and a paste or a drop into it uploads nothing. Reply is held the same way
- * while it has nothing to send - nothing typed, which is what a landing that clears the draft
- * leaves - and while an upload is still out, so a Reply the reader pressed keeps the focus as the
- * draft empties. A press of a held Reply still submits the form, and the form's submit sends
+ * Reply and the box are held until the send's deadline and through the commit after its answer
+ * if it lands within that deadline (`useHeldThroughAnswer`). They keep the focus. While held,
+ * Ctrl+Enter in the read-only box submits nothing, and a paste or a drop uploads nothing.
+ * An Inbox's shared write has its own hold. Reply is also held while the draft is empty or an
+ * upload is still out. A press of a held Reply still submits the form, and the form's submit sends
  * nothing while Reply is held, whatever holds it.
  */
 export function AskReplyComposer({
@@ -246,7 +244,8 @@ export function AskReplyComposer({
   // Keyed by the ask, so the form's own send outlives the composer that started it and any
   // composer for the ask sees it in flight.
   const mutationKey = ["ask-reply", ask.id];
-  const ownSending = useSending(mutationKey).sending;
+  const pendingPress = usePendingKeyedPress(mutationKey);
+  const oneReply = useOneCreateOut(pendingPress);
   // A file's text joins the draft of the ask it was pasted or dropped under, which its press
   // carries (`useDraftUpload`): a host may draw this composer for another ask before it lands.
   const upload = useDraftUpload((text: string, askId: string) =>
@@ -282,21 +281,28 @@ export function AskReplyComposer({
     method: options.method,
     mutationKey,
     write: options.write,
+    readsLate: true,
     onSuccess: options.onSuccess,
   });
   const inbox = useInboxAnswerWrite(useContext(AskReplyWritesContext), ask.id, options);
   const submit: OutstandingAnswerWrite<ReplyPress> = inbox ?? own;
-  const sending = inbox === undefined ? ownSending : inbox.isPending;
-  const held = useHeldThroughAnswer(sending);
+  const sending = inbox === undefined ? pendingPress.isPending : inbox.isPending;
+  const held = useHeldThroughAnswer(
+    sending && !(inbox === undefined && (own.late || pendingPress.late))
+  );
   // Reply is held while the send is out, while nothing is typed, and while a picture is still
   // uploading: a reply sent then would go without it.
   const replyHeld = held || body.trim() === "" || uploading;
+  const refuseReply = () =>
+    inbox === undefined &&
+    (oneReply.refuse() || queryClient.isMutating({ exact: true, mutationKey }) > 0);
 
   const submitReply = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     // A held Reply is only `aria-disabled`, so its press still submits the form: that submit
     // sends nothing.
     if (replyHeld) return;
+    if (refuseReply()) return;
     submit.mutate({ ask, text: body.trim() });
   };
 
@@ -337,11 +343,19 @@ export function AskReplyComposer({
       >
         {sending ? "Replying…" : "Reply"}
       </button>
+      {inbox === undefined && oneReply.refused ? (
+        <p className={`text-sm ${textSecondaryOnCanvas}`} role="status">
+          Reply sent nothing: your reply is still being sent. It shows in the thread once Dispatch
+          posts it. If it fails, you can press Reply again.
+        </p>
+      ) : null}
       {submit.error === null ? null : (
         <QueryError
           message={replyRefusal(submit)}
-          onRetry={submit.retry}
-          retrying={submit.isPending}
+          onRetry={() => {
+            if (!held && !refuseReply()) submit.retry();
+          }}
+          retrying={held}
         />
       )}
     </form>

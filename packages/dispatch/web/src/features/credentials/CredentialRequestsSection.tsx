@@ -1,6 +1,6 @@
 import { awaitsDecision } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
@@ -126,8 +126,12 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
     onSuccess: () =>
       holdThrough(invalidateWaitingForPaused(queryClient, credentialPendingQuery().queryKey)),
     method: "POST",
+    readsLate: true,
     write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
   });
+  useEffect(() => {
+    if (dismiss.late) submitGuard.release();
+  }, [dismiss.late, submitGuard]);
 
   return (
     <>
@@ -137,7 +141,7 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
         <button
           aria-label={label}
           className={secondaryButtonCompact}
-          {...heldPress(dismiss.isPending, () =>
+          {...heldPress(dismiss.isPending && !dismiss.late, () =>
             submitGuard.guard(() => dismiss.mutate({ label, recordId: row.record_id }))
           )}
           type="button"

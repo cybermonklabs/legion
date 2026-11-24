@@ -1,6 +1,6 @@
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useContext, useId, useRef, useState } from "react";
+import { type ReactNode, useContext, useEffect, useId, useRef, useState } from "react";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
@@ -264,12 +264,16 @@ function DeclineButton({
   submitGuard,
   write,
 }: DeclineDrawn & { write: OutstandingAnswerWrite<DeclinePress> }): ReactNode {
+  const held = write.isPending && !write.late;
+  useEffect(() => {
+    if (write.late) submitGuard.release();
+  }, [submitGuard, write.late]);
   return (
     <div className="mt-3">
       <button
         className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
         {...inboxActionMark("inbox.decline")}
-        {...heldPress(write.isPending, () => setOpen(true))}
+        {...heldPress(held, () => setOpen(true))}
         type="button"
       >
         {write.isPending ? "Declining…" : "Decline to answer"}
@@ -284,10 +288,10 @@ function DeclineButton({
       {open ? (
         <DeclineDialog
           error={write.isError ? write.error : null}
-          held={write.isPending}
+          held={held}
           initialNote={write.error === null ? "" : (write.variables?.input.note ?? "")}
           onClose={() => {
-            write.reset();
+            if (!write.isPending) write.reset();
             setOpen(false);
           }}
           onSubmit={(note) =>

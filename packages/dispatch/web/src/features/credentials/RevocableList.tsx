@@ -1,5 +1,5 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 import type { WriteBounds } from "../../api/client";
 import { useReadBound } from "../../api/read-bound";
@@ -113,8 +113,12 @@ export function RevocableList<Row>({
     // Pending, and every Revoke held, through the read that takes the revoked row away.
     onSuccess: () => holdThrough(onRevoked()),
     method: "POST",
+    readsLate: true,
     write: revoke,
   });
+  useEffect(() => {
+    if (mutation.late) submitGuard.release();
+  }, [mutation.late, submitGuard]);
   const refused = useRefusalOfSubject(
     mutation,
     (row) => query.data?.some((listed) => rowKey(listed) === rowKey(row)) === true
@@ -191,7 +195,7 @@ export function RevocableList<Row>({
                     ) : (
                       <button
                         className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap refused:cursor-not-allowed refused:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
-                        {...heldPress(mutation.isPending, () => press(row))}
+                        {...heldPress(mutation.isPending && !mutation.late, () => press(row))}
                         type="button"
                       >
                         Revoke

@@ -128,6 +128,7 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
   const refresh = useKeyedWrite({
     label: (repo: string) => `Refresh of ${project}'s architecture source ${repo}`,
     method: "POST",
+    readsLate: true,
     write: (repo, bounds) => api.syncArchitectureSource(project, repo, bounds),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["architecture", project] });
@@ -157,6 +158,7 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
         refresh.isPending
           ? {
               error: null,
+              held: !refresh.late,
               pending: true,
               repo: refresh.variables,
             }
@@ -174,6 +176,7 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
  *  request itself if it failed. */
 interface RefreshState {
   readonly error: string | null;
+  readonly held: boolean;
   readonly pending: boolean;
   readonly repo: string;
 }
@@ -524,7 +527,7 @@ function SourceLine({
         <button
           aria-label={refreshing ? `Refreshing ${source.repo}…` : `Refresh ${source.repo}`}
           className={`min-h-11 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-0 ${linkText} ${linkHoverText}`}
-          {...heldPress(refresh?.pending === true, onRefresh)}
+          {...heldPress(refresh?.held === true, onRefresh)}
           type="button"
         >
           {refreshing ? "Refreshing…" : "Refresh"}

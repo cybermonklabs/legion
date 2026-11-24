@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -196,6 +197,30 @@ test("an expired row with no deadline says only that its deadline passed", () =>
   const line = screen.getByText(/^Its deadline passed/);
   expect(line.textContent).toBe("Its deadline passed");
   expect(line.querySelector("time")).toBeNull();
+});
+
+test("Dismiss lets go at the credential write deadline and sends again", async () => {
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockRejectedValue(
+    new NetworkError("/api/v1/credentials", new TypeError("Failed to fetch"))
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
+  try {
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: /^Dismiss expired/ });
+    const label = button.getAttribute("aria-label") ?? "";
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([dismiss]);
+    await heldUntilLate(user, button, { label, name: "Dismiss", queryClient: client, sent });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    cleanup();
+    client.clear();
+    dismiss.mockRestore();
+  }
 });
 
 test("Dismiss on an expired row sends that record's dismissal and reads the list again", async () => {

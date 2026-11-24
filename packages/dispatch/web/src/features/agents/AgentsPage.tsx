@@ -270,6 +270,7 @@ function AgentExchangeReply({
     // them go then, and the conversation says why it is not read yet (`useReadBound`).
     onSuccess: holdThroughRead,
     method: "POST",
+    readsLate: true,
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -298,7 +299,7 @@ function AgentExchangeReply({
                 canBtw: capabilities?.includes("btw") !== false,
                 canSteer: capabilities?.includes("steer") !== false,
                 onRetry: retry.mutate,
-                retrying: retry.isPending,
+                retrying: retry.isPending && !retry.late,
               },
               targetName: rowTarget(agent),
             }
@@ -353,6 +354,7 @@ function AgentTargetedMessage({
     // the same way.
     onSuccess: holdThroughRead,
     method: "POST",
+    readsLate: true,
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -387,7 +389,7 @@ function AgentTargetedMessage({
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
       onRetry={retry.mutate}
       replyHeld={replyHeld}
-      retrying={retry.isPending}
+      retrying={retry.isPending && !retry.late}
       targetName={rowTarget(agent)}
       thread={
         replies.length === 0 ? null : (
@@ -486,6 +488,7 @@ function AgentMessageList({
   // make Clear a silent no-op. This hides exactly what the viewer saw.
   const clear = useKeyedWrite({
     method: "PUT",
+    readsLate: true,
     write: (cutoff: string, bounds) =>
       api.putAgentState(agent.session_id, { cleared_before: cutoff }, bounds),
     label: () => `Conversation with ${label} cleared`,
@@ -553,12 +556,11 @@ function AgentMessageList({
             </button>
           </p>
         )}
-        {/* Held while its write is out (`heldPress`), not disabled: the button keeps the focus
-            the reader's press left on it, and a press of it then sends nothing. */}
+        {/* Held until the write's deadline, without taking the focus off the button. */}
         {visible.length === 0 ? null : (
           <button
             className={`ml-auto inline-flex min-h-11 items-center text-sm refused:cursor-not-allowed refused:opacity-50 md:min-h-8 ${textMutedHoverToSecondary}`}
-            {...heldPress(clear.isPending, () =>
+            {...heldPress(clear.isPending && !clear.late, () =>
               clear.mutate(
                 visible
                   .map(exchangeActivityAt)

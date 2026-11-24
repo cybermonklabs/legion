@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
-import { pressesOf } from "../../__tests__/held-until-late";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOpen, optionsOffered, pickFromList, pickNamed } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
@@ -702,6 +702,101 @@ test("a pin the reader stopped says it may have been saved, not that it failed",
     realClock();
     view.unmount();
     putIssueState.mockRestore();
+    state.mockRestore();
+    restore();
+  }
+});
+
+test("Pin issue lets go at the header write deadline and sends the new choice", async () => {
+  const restore = stubHeader(issue);
+  const state = spyOn(api, "getMyState").mockResolvedValue({});
+  const put = spyOn(api, "putIssueState").mockRejectedValue(
+    new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError("Failed to fetch"))
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+  try {
+    await within(view.container).findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
+    const pin = within(view.container).getByRole<HTMLButtonElement>("button", {
+      name: "Pin issue",
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    act(() => pin.focus());
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([put])).toBe(1);
+    const trigger = within(view.container).getByRole("button", {
+      name: CONTROL_LABELS.issue_actions,
+    });
+    expect(trigger).toHaveFocus();
+    expect(pin).toHaveAttribute("aria-disabled", "true");
+    const row = () =>
+      writesOf(queryClient)
+        .rows()
+        .find(({ label }) => label === "CORE-1 pinned");
+    await tick(SEND_DEADLINE_MS - 2_000);
+    expect(row()?.status).toBe("sending");
+    expect(pin).toHaveAttribute("aria-disabled", "true");
+    await tick(1_000);
+    expect(row()?.status).toBe("late");
+    expect(pin).not.toHaveAttribute("aria-disabled");
+    expect(trigger).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.click(pin);
+    await tick(1_000);
+    expect(pressesOf([put])).toBe(2);
+    expect(put.mock.calls.at(-1)?.[1]).toEqual({ pinned: false });
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    put.mockRestore();
+    state.mockRestore();
+    restore();
+  }
+});
+
+test("Pin Retry lets go at the header write deadline and retries again", async () => {
+  const restore = stubHeader(issue);
+  const state = spyOn(api, "getMyState").mockResolvedValue({});
+  const put = spyOn(api, "putIssueState").mockRejectedValueOnce(
+    new ApiError(403, { error: "Cannot pin yet" })
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+  const card = within(view.container);
+  try {
+    await card.findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
+    await userEvent.setup().click(card.getByRole("button", { name: "Pin issue" }));
+    const retry = await card.findByRole<HTMLButtonElement>("button", { name: "Retry" });
+    // Start counting at Retry; leave the form's refusal in place but drop its old store row.
+    const store = writesOf(queryClient);
+    act(() => {
+      store.supersede(store.rows()[0]?.id ?? 0);
+    });
+    put.mockClear();
+    put.mockRejectedValue(
+      new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError("Failed to fetch"))
+    );
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(user, retry, {
+      label: "CORE-1 pinned",
+      name: "Retry",
+      queryClient,
+      sent: () => pressesOf([put]),
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([put])).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    put.mockRestore();
     state.mockRestore();
     restore();
   }

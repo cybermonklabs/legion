@@ -4,13 +4,15 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { openList } from "../../__tests__/list-picks";
 import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, NetworkError, type WriteBounds } from "../../api/client";
+import { ApiError, api, NetworkError, type WriteBounds } from "../../api/client";
 import type { AnswerAskInput, Ask, AskRead, Comment } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { AskCard } from "./AskCard";
 import { answerDraft, setAnswerDraft } from "./answer-drafts";
 import {
@@ -75,6 +77,105 @@ test("a hand-on the reader stopped says what Retry does, not a message's words",
 /** A fetch that failed, which the write is tried again after: it goes late, for the reader to
  *  stop. */
 const dropped = (path: string) => new NetworkError(path, new TypeError("Failed to fetch"));
+
+test.each([
+  "Answer",
+  "Ask back",
+  "Ask back instead",
+  "Answer with it anyway",
+] as const)("%s lets go at the question write deadline", async (name) => {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const answer = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) =>
+    Promise.reject<Ask>(dropped("/api/v1/asks/ask-1/answer"))
+  );
+  const comment = spyOn(api, "createComment").mockRejectedValue(
+    dropped("/api/v1/issues/CORE-1/comments")
+  );
+  const { queryClient, view } = renderCard(
+    <AskCard answerAsk={answer} ask={open} initialThread={thread(open, [])} />
+  );
+  try {
+    const card = within(view.container);
+    const prepare = userEvent.setup();
+    if (name === "Answer") {
+      await prepare.click(await card.findByRole("radio", { name: "Ship" }));
+    } else {
+      const field = card.getByLabelText("Your answer");
+      await prepare.click(field);
+      await prepare.paste("Ship what, exactly?");
+      if (name !== "Ask back") await prepare.click(card.getByRole("button", { name: "Answer" }));
+    }
+    const button = card.getByRole<HTMLButtonElement>("button", { name });
+    const field = card.getByLabelText<HTMLTextAreaElement>("Your answer");
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([answer, comment]);
+    const clarification = name.startsWith("Ask back");
+    await heldUntilLate(user, button, {
+      label: `${clarification ? "Question back on" : "Answer to"} “Which release path?”`,
+      name,
+      queryClient,
+      sent: () => {
+        if (sent() === 1) expect(field.readOnly).toBe(true);
+        return sent();
+      },
+    });
+    expect(field.readOnly).toBe(false);
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    if (clarification) {
+      expect(sent()).toBe(1);
+      const stillSending = /sent nothing:.*question back is still being sent/;
+      expect(card.getByText(stillSending)).toBeInTheDocument();
+      comment.mockRejectedValue(new ApiError(403, { error: "Cannot post the question" }));
+      await tick(30_000);
+      expect(card.queryByText(stillSending)).toBeNull();
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+    }
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    comment.mockRestore();
+  }
+});
+
+test("Hand on lets go at the question write deadline and sends another pick", async () => {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const hand = spyOn(api, "handAskTo").mockRejectedValue(dropped("/api/v1/asks/ask-1/asked-of"));
+  const users = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }, { login: "bob" }]);
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  try {
+    const list = await openList(userEvent.setup(), "Hand this question to");
+    const option = await within(list).findByRole("option", { name: "bob" });
+    const trigger = screen.getByRole("button", { name: /Hand this question to/ });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(option);
+    await tick(0);
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+    expect(trigger).toHaveFocus();
+    await tick(1_000);
+    expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
+    expect(trigger).not.toHaveAttribute("aria-disabled");
+    expect(trigger).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("option", { name: "bob" }));
+    await tick(1_000);
+    expect(pressesOf([hand])).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    hand.mockRestore();
+    users.mockRestore();
+    getAsk.mockRestore();
+  }
+});
 
 /** An open question on its card over the held clock, its answer write `answerAsk`: the reader
  *  picks Ship and presses Answer. */

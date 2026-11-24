@@ -4,9 +4,10 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { jump, realClock } from "../../__tests__/fake-clock";
+import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -666,6 +667,63 @@ test("Create group keeps the focus while its write is out and once it has emptie
     stopFocusFixup();
     cleanup();
     create.mockRestore();
+  }
+});
+
+test.each([
+  { name: "Rename", label: "the rename of the group Release crew" },
+  { name: "Remove Planner two", label: "the removal of Planner two from Release crew" },
+  { name: "Add selected", label: "the sessions added to Release crew" },
+  { name: "Delete group", label: "the deletion of the group Release crew" },
+  { name: "Create group", label: "the new group Night crew" },
+] as const)("$name lets go at the session-group write deadline", async ({ name, label }) => {
+  const dropped = new NetworkError("/api/v1/settings/delivery", new TypeError("Failed to fetch"));
+  const create = spyOn(api, "createDeliverySessionGroup").mockRejectedValue(dropped);
+  const update = spyOn(api, "updateDeliverySessionGroup").mockRejectedValue(dropped);
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockRejectedValue(dropped);
+  const { queryClient } = renderEditor([crew]);
+  try {
+    const prepare = userEvent.setup();
+    await prepare.click(screen.getByRole("checkbox", { name: "Planner one" }));
+    if (name === "Rename") {
+      await prepare.clear(screen.getByLabelText("Name"));
+      await prepare.paste("New crew");
+    }
+    if (name === "Create group") {
+      await prepare.click(screen.getByLabelText("New group name"));
+      await prepare.paste("Night crew");
+    }
+    const button = screen.getByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([create, update, remove]);
+    await heldUntilLate(user, button, {
+      label: `Session groups: ${label}`,
+      name,
+      queryClient,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    if (name === "Create group") {
+      expect(sent()).toBe(1);
+      const stillSending = /Create group sent nothing:.*still being sent/;
+      expect(screen.getByText(stillSending)).toBeInTheDocument();
+      create.mockRejectedValue(new ApiError(403, { error: "Cannot add another group" }));
+      await tick(30_000);
+      expect(screen.queryByText(stillSending)).toBeNull();
+      expect(screen.getByRole("alert")).toHaveTextContent("Cannot add another group");
+      await user.keyboard("{Enter}");
+      await tick(1_000);
+    }
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    create.mockRestore();
+    update.mockRestore();
+    remove.mockRestore();
   }
 });
 

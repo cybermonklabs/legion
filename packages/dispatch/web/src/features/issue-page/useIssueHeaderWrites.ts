@@ -1,4 +1,5 @@
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { api, apiErrorCodeIn, apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
@@ -271,6 +272,7 @@ export function useIssueHeaderWrites(
     holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: ({ issueKey, pinned }: IssuePinSave) => `${issueKey} ${pinned ? "pinned" : "unpinned"}`,
     method: "PUT",
+    readsLate: true,
     write: ({ issueKey, pinned }, bounds) => api.putIssueState(issueKey, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();
@@ -306,6 +308,9 @@ export function useIssueHeaderWrites(
       }));
     },
   });
+  useEffect(() => {
+    if (pin.late) pinGuard.release();
+  }, [pin.late, pinGuard]);
 
   // Every pending write of this issue's fields on the page - `updateIssue`'s and `statusWrite`'s,
   // which carry one mutation key, of every caller of this hook - in the order they were made, so

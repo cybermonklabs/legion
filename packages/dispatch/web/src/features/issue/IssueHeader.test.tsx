@@ -773,6 +773,32 @@ test("a read of the state asked while the header's pin is out does not put back 
   }
 });
 
+test("Pin issue lets go at the legacy header write deadline and sends again", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = renderHeader(client, <Header state={unpinnedState} />);
+  view.putIssueState.mockRejectedValue(
+    new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError("Failed to fetch"))
+  );
+  try {
+    const button = await view.q.findByRole<HTMLButtonElement>("button", { name: "Pin issue" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([view.putIssueState]);
+    await heldUntilLate(user, button, {
+      label: "CORE-1 pinned",
+      name: "Pin issue",
+      queryClient: client,
+      sent,
+    });
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    client.clear();
+  }
+});
 // A refresh of the viewer's state asked while the header's pin was out could reach Dispatch
 // before the pin did, and its answer turned the pin back off under the reader's press. The read
 // waits for the pin's answer and is asked once it is in, so the header shows what Dispatch holds

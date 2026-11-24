@@ -46,6 +46,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import {
   NOT_OWNER_NAME,
   ownerRepoPattern,
@@ -81,6 +82,7 @@ export function ProjectsSection(): ReactNode {
     inline: true,
     label: (input: CreateProjectInput) => `New project ${input.key}`,
     method: "POST",
+    readsLate: true,
     write: (input, bounds) => api.createProject(input, bounds),
     onSettled: () => projectSubmitGuard.release(),
     // Made either way, so the form empties; with no answer to give, it says what was made
@@ -106,15 +108,17 @@ export function ProjectsSection(): ReactNode {
   // the form starts on; the reader may pick anyone else who has signed in.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const newProjectAssignee = projectAssignee ?? viewer ?? "";
-  // The form is held, not disabled, while a create is out: each control keeps the focus the
-  // press gave it (`heldPress`), and `projectSubmitGuard` sends no second create.
-  const createHeld = createProject.isPending;
+  // The form holds its controls until the deadline. After that, a second create is still refused
+  // while the first is out, but the form explains why.
+  const createHeld = createProject.isPending && !createProject.late;
+  const oneProject = useOneCreateOut(createProject);
   const submitProject = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     // An emptied form - a create that landed - sends nothing, whatever submits it, and so does
     // one whose default assignee is nobody, which is a page whose viewer has not resolved: the
     // people list is a button, which no `required` holds.
     if (projectKey === "" || projectName.trim() === "" || newProjectAssignee === "") return;
+    if (createHeld || oneProject.refuse()) return;
     projectSubmitGuard.guard(() =>
       createProject.mutate({
         default_assignee: newProjectAssignee,
@@ -208,10 +212,8 @@ export function ProjectsSection(): ReactNode {
             </div>
           ) : null}
 
-          {/* While the create is out, Key and Name are held, `aria-disabled` and read-only, and
-              New project and the default assignee's list by `aria-disabled`, never disabled: the
-              control the reader submitted from keeps the focus, the guard refuses a submit then
-              (`projectSubmitGuard`), and a pick made in the list then is dropped. */}
+          {/* While the create is within its deadline, the controls keep their focus but refuse
+              changes or another submit. */}
           <form
             className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_1fr_auto] sm:items-end ${borderDefault}`}
             onSubmit={submitProject}
@@ -274,6 +276,13 @@ export function ProjectsSection(): ReactNode {
               New project
             </button>
           </form>
+          {oneProject.refused ? (
+            <p className={`mt-4 text-sm ${textSecondaryOnCanvas}`} role="status">
+              New project sent nothing: {createProject.variables?.key} is still being sent. The
+              project will show in the list once it is made. If it fails, you can press New project
+              again.
+            </p>
+          ) : null}
           {createProject.unanswered === undefined ? null : (
             <div className="mt-4">
               <LandedWithoutAnswer what={`Project ${createProject.unanswered.variables.key}`} />

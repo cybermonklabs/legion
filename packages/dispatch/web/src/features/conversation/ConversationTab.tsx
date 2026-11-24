@@ -245,6 +245,7 @@ function ConversationReply({
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
     method: "POST",
+    readsLate: true,
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(root.root.target, agents);
@@ -283,7 +284,7 @@ function ConversationReply({
                 canBtw: capabilities?.includes("btw") !== false,
                 canSteer: capabilities?.includes("steer") !== false,
                 onRetry: retry.mutate,
-                retrying: retry.isPending,
+                retrying: retry.isPending && !retry.late,
               },
               targetName,
             }
@@ -795,9 +796,13 @@ function CommentTurn({
     onSettled: () => retryGuard.release(),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
     method: "POST",
+    readsLate: true,
     write: (delivery, bounds) =>
       api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
   });
+  useEffect(() => {
+    if (retry.late) retryGuard.release();
+  }, [retry.late, retryGuard]);
   const thread: CommentThread = {
     anchor: item.root.anchor,
     key: item.root.id,
@@ -873,7 +878,7 @@ function CommentTurn({
             deleted={postDeletion(comment)}
             deliveries={deliveriesFor(comment.id)}
             onRetry={(delivery) => retryGuard.guard(() => retry.mutate(delivery))}
-            retrying={retry.isPending}
+            retrying={retry.isPending && !retry.late}
           />
         )}
         thread={thread}
@@ -942,6 +947,7 @@ function TargetedMessageTurn({
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
     method: "POST",
+    readsLate: true,
     write: (delivery, bounds) => api.createMessageDelivery(item.root.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(item.root.target, agents);
@@ -983,7 +989,7 @@ function TargetedMessageTurn({
       register={register}
       reference={reference}
       replyHeld={replyHeld}
-      retrying={retry.isPending}
+      retrying={retry.isPending && !retry.late}
       targetName={targetName}
       thread={
         <Thread

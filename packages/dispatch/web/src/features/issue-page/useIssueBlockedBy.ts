@@ -1,5 +1,6 @@
 import { MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { landIssueWrite } from "../../api/issue-cache";
@@ -90,6 +91,7 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
     inline: true,
     label: (keys: readonly string[]) =>
       keys.length === 0 ? `${issueKey} waits on nothing` : `${issueKey} waits on ${keys.join(" ")}`,
+    readsLate: true,
     target: () => `issue:${issueKey}`,
     request: (keys: readonly string[]) => issuePatchRequest(issueKey, { blocked_by: [...keys] }),
     onSettled: () => guard.release(),
@@ -99,6 +101,10 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
       onSaved();
     },
   });
+  const pending = write.isPending && !write.late;
+  useEffect(() => {
+    if (write.late) guard.release();
+  }, [guard, write.late]);
   const stopped = write.error instanceof SendStoppedError;
   // What ended the last save, unless the reader stopped it, which says its own sentence. Only an
   // `ApiError` carries Dispatch's answer; any other error is the page's own and has no words a
@@ -112,8 +118,9 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
     forgetRefusal: () => {
       if (write.isError) write.reset();
     },
-    pending: write.isPending,
+    pending,
     save: (keys) => {
+      if (pending) return;
       guard.guard(() => write.mutate(keys));
     },
     unansweredLine: stopped

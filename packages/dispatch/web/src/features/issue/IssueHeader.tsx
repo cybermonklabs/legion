@@ -397,6 +397,7 @@ export function IssueHeader({
     holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
     method: "PUT",
+    readsLate: true,
     write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();
@@ -429,6 +430,9 @@ export function IssueHeader({
       }));
     },
   });
+  useEffect(() => {
+    if (updateState.late) pinGuard.release();
+  }, [pinGuard, updateState.late]);
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.currentTarget.blur();
@@ -597,7 +601,7 @@ export function IssueHeader({
               </div>
             )}
             <PinButton
-              held={updateState.isPending}
+              held={updateState.isPending && !updateState.late}
               label={state.pinned ? "Unpin issue" : "Pin issue"}
               onClick={() => pinGuard.guard(() => updateState.mutate(!state.pinned))}
               pinned={state.pinned}

@@ -7,9 +7,10 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Artifact,
@@ -113,6 +114,55 @@ function renderTab(
   );
   return { getIssueReferences, listArtifacts, view };
 }
+
+test("Create and Cancel let go at the document write deadline without making a second document", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, {
+    queryClient,
+  });
+  const upload = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts", new TypeError("Failed to fetch"))
+  );
+  try {
+    const prepare = userEvent.setup();
+    await prepare.click(await screen.findByRole("button", { name: "New document" }));
+    await prepare.paste("Rollout");
+    const button = screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
+    const cancel = screen.getByRole<HTMLButtonElement>("button", { name: "Cancel" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const sent = () => pressesOf([upload]);
+    await heldUntilLate(user, button, {
+      label: "New document Rollout",
+      name: "Create",
+      queryClient,
+      sent: () => {
+        if (sent() === 1) expect(cancel).toHaveAttribute("aria-disabled", "true");
+        return sent();
+      },
+    });
+    expect(cancel).not.toHaveAttribute("aria-disabled");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(1);
+    const stillSending = /Create sent nothing:.*still being sent/;
+    expect(screen.getByText(stillSending)).toBeInTheDocument();
+    upload.mockRejectedValue(new ApiError(403, { error: "Document limits reached" }));
+    await tick(30_000);
+    expect(screen.queryByText(stillSending)).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("Document limits reached");
+    await user.keyboard("{Enter}");
+    await tick(1_000);
+    expect(sent()).toBe(2);
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
+    upload.mockRestore();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
 
 test("renders one row per artifact with no compare controls", async () => {
   const notes: Artifact = {

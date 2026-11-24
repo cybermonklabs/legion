@@ -6,6 +6,7 @@ import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
+import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
   borderStrong,
@@ -22,6 +23,7 @@ import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { storedSessionTitle } from "./lib/sessionTitles";
 import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
@@ -42,8 +44,8 @@ const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasse
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
  *  sessions to add, drawn as an item of the editor's list of groups, keyed by the group's id.
- *  While any group write is pending, every mutating button is held so a second click cannot race
- *  the one request that decides the membership. A write of this card's own that lands keeps them
+ *  Until a group write's deadline, every mutating button is held so a second click cannot race
+ *  it. A write of this card's own that lands keeps them
  *  held until the live update carrying it brings the group's new `updated_at`, or takes the group
  *  away (`useHoldUntilDrawn`); a refusal lets them go at once. That update fills the name again
  *  from the stored group in place, so the card and its buttons stay the same elements. Rename
@@ -198,8 +200,8 @@ export function SessionGroupsEditor({
   const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open: true });
   const [selected, setSelected] = useState<string[]>([]);
   const [name, setName] = useState("");
-  // The editor shows a refusal itself, as the server wrote it.
-  const save = useKeyedWrite({
+  const createGuard = useSubmitGuard();
+  const changeOptions = {
     inline: true,
     label: (change: GroupChange) => `Session groups: ${change.what}`,
     onSuccess: () => {
@@ -209,9 +211,22 @@ export function SessionGroupsEditor({
         predicate: (query) => !isLiveQuery(query),
       });
     },
-    method: (change) => change.method,
-    write: (change, bounds) => change.run(bounds),
+    method: (change: GroupChange) => change.method,
+    readsLate: true,
+    write: (change: GroupChange, bounds: WriteBounds) => change.run(bounds),
+  } as const;
+  const save = useKeyedWrite(changeOptions);
+  // An edit pressed after a late create must not replace the create we are still waiting for.
+  const newGroup = useKeyedWrite({
+    ...changeOptions,
+    onSettled: createGuard.release,
+    onSuccess: () => {
+      changeOptions.onSuccess();
+      setName("");
+    },
   });
+  const held = (save.isPending && !save.late) || (newGroup.isPending && !newGroup.late);
+  const oneGroup = useOneCreateOut(newGroup);
   // One refusal speaks for every group, so it names the change it refused, the group's name with
   // it, and goes once that group is renamed or removed - from another tab, or by another person -
   // rather than stand beside groups it was never about. A create's has no group to lose.
@@ -239,20 +254,19 @@ export function SessionGroupsEditor({
     setSelected((current) =>
       current.includes(session) ? current.filter((s) => s !== session) : [...current, session]
     );
-  const create = () =>
-    save.mutate(
-      {
+  const create = () => {
+    if (oneGroup.refuse()) return;
+    createGuard.guard(() =>
+      newGroup.mutate({
         made: `The group “${name.trim()}”`,
         method: "POST",
         run: (bounds) =>
           api.createDeliverySessionGroup({ name: name.trim(), sessions: selected }, bounds),
         what: `the new group ${name.trim()}`,
-      },
-      // Made either way - with no answer to give too - so the name goes and a second press
-      // makes nothing.
-      { onSuccess: () => setName("") }
+      })
     );
-  const madeUnanswered = save.unanswered?.variables.made;
+  };
+  const madeUnanswered = newGroup.unanswered?.variables.made;
 
   return (
     <aside
@@ -324,7 +338,7 @@ export function SessionGroupsEditor({
             className={fieldClass}
             id={`${id}-new-name`}
             onChange={(event) => {
-              save.forgetUnanswered();
+              newGroup.forgetUnanswered();
               setName(event.target.value);
             }}
             placeholder="Group name"
@@ -336,27 +350,39 @@ export function SessionGroupsEditor({
               (`heldPress`). */}
           <button
             className={secondaryButtonCompact}
-            {...heldPress(name.trim() === "" || selected.length === 0 || save.isPending, create)}
+            {...heldPress(name.trim() === "" || selected.length === 0 || held, create)}
             type="button"
           >
             Create group
           </button>
         </div>
+        {oneGroup.refused ? (
+          <p className={`text-sm ${textMutedOnSurface}`} role="status">
+            Create group sent nothing: {newGroup.variables?.made} is still being sent. It shows in
+            the list once Dispatch makes it. If it fails, you can press Create group again.
+          </p>
+        ) : null}
         {madeUnanswered === undefined ? null : <LandedWithoutAnswer what={madeUnanswered} />}
       </section>
 
       {/* A change the reader stopped may have been saved, and every button here is a press of
           its own, under a key of its own: none makes the stopped change again. */}
-      {refused === undefined ? null : (
-        <QueryError
-          message={
-            save.error instanceof SendStoppedError
-              ? stoppedWriteNote(refused.what, "saved", {
-                  anew: "Making it again sends it as a new write.",
-                })
-              : refusedNote(`save ${refused.what}`, save.error)
-          }
-        />
+      {[
+        { change: refused, error: save.error },
+        { change: newGroup.isError ? newGroup.variables : undefined, error: newGroup.error },
+      ].map(({ change, error }) =>
+        change === undefined ? null : (
+          <QueryError
+            key={change.method}
+            message={
+              error instanceof SendStoppedError
+                ? stoppedWriteNote(change.what, "saved", {
+                    anew: "Making it again sends it as a new write.",
+                  })
+                : refusedNote(`save ${change.what}`, error)
+            }
+          />
+        )
       )}
 
       {groups.length === 0 ? null : (
@@ -369,7 +395,7 @@ export function SessionGroupsEditor({
               <li key={group.id}>
                 <GroupCard
                   group={group}
-                  pending={save.isPending}
+                  pending={held}
                   selected={selected}
                   storedTitle={storedTitle}
                   write={(change, landed) => save.mutate(change, { onSuccess: landed })}
