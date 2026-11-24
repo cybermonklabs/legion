@@ -57,6 +57,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // checkSettingsKMSKeyName refuses, before any GCP call, settings whose secrets_prefix is not a
@@ -162,21 +163,29 @@ var gcpMetadataPrincipal = func(ctx context.Context) string {
 // googleUserinfoURL is Google's userinfo endpoint, which gcpUserinfo reads.
 const googleUserinfoURL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
-// gcpUserinfo reads the email of the account behind creds from Google's userinfo endpoint, which
-// answers only a token that carries an email scope. Only --owner me asks for it
+// gcpUserinfo is the userinfo read --owner me makes (userinfoEmail). Tests replace it so no form
+// makes a network call for it.
+var gcpUserinfo = userinfoEmail
+
+// userinfoEmail reads the email of the account behind creds from Google's userinfo endpoint,
+// which answers only a token that carries an email scope. Only --owner me asks for it
 // (gcpBackend.personEmail). A failure names the endpoint and its status and registered code
 // (redact.Answered), or the failure's class (redact.Class), and never Google's body or x/oauth2's
 // words: a Google error body has carried a token, and x/oauth2 keeps the token endpoint's body in
-// the error a refused refresh answers. Tests replace it so no form makes a network call for it.
+// the error a refused refresh answers.
+//
+// The read follows no redirect (redirects.Refused), so a 3xx is refused by its status:
+// oauth2.Transport sets the bearer on every request it carries, a redirect's among them, whatever
+// host the Location names, and the endpoint answers no redirect the read must follow.
 //
 // The email is Google's text, or the text of whatever answers in Google's place, which can echo
 // the bearer the read carried: it is held as redact.RemoteText with the read's record (the answer
 // googleUserinfo) and answered only as RemoteText.SendBack answers it, since the form prints it and
 // writes it as the secret's owner. An email the rule does not print as it came is
 // errUserinfoEmailWithheld, which names none of it.
-var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, error) {
+func userinfoEmail(ctx context.Context, creds *google.Credentials) (string, error) {
 	s := redact.Scope[*http.Response](ctx)
-	httpClient := oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource))
+	httpClient := redirects.Refused(oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource)))
 	// The client's transport asks creds.TokenSource for a token, and an OAuth error answer it
 	// gets comes back inside this call's *url.Error, so the call crosses the same boundary.
 	resp, err := redact.OAuth2(s.Read(httpClient.Get(googleUserinfoURL)))
