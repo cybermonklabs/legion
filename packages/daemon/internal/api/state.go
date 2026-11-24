@@ -1524,13 +1524,13 @@ const MergeWaitField = "mergeWait"
 
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
 // and the length of that list at this read, beside the waiting line's own fields for a program
-// that acts on the line rather than reading the sentence Reason renders: which part the issue
-// waits in and why it waits there (record.LinePart and record.LineKind, whose String methods
-// are the words carried here), its place within its own part and that part's length, whether it
-// already holds one of the cap's slots, and what placed it — the moment its work came back for
-// a member of the returned part, the Dispatch ranks and the tree root's key for a member of the
-// starting part. It says where the issue stands, not what holds it: `admission.blocked` names
-// what holds it.
+// that acts on the line rather than reading the sentence Reason renders: the priority that placed
+// it, which part the issue waits in within that priority's band and why it waits there
+// (record.LinePart and record.LineKind, whose String methods are the words carried here), its
+// place within its band's part and that part's length, whether it already holds one of the cap's
+// slots, and what placed it there — the moment its work came back for a member of the returned
+// part, the Dispatch ranks and the tree root's key for a member of the starting part. It says
+// where the issue stands, not what holds it: `admission.blocked` names what holds it.
 //
 // Every field beside Place and Length is omitempty, for two readers at once: a member carries
 // the fields of its own part alone, so a returned member's body names no rank and a starting

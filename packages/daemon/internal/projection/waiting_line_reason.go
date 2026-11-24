@@ -14,13 +14,14 @@ import (
 )
 
 // waitingLineReason is the sentence a person reads for one member of the waiting line
-// (api.WaitingLineView.Reason): what put it there and when, where it stands in its own part of
-// the line, and what that place means for the slot it waits for. It reads the entry the line
-// holds for that member (record.LineEntry), partLength, the length of the part the member
-// stands in, and otherPart, the length of the part it does not, and nothing else — no record of
-// its own, no second count — so the sentence has one source and every number in it is the
-// member's own. The two lengths are the caller's because the entry carries neither: a part's
-// length is a fact about the line rather than about the member.
+// (api.WaitingLineView.Reason): what put it there and when, the priority it waits at and whose
+// that is, where it stands in its band's part of the line, and what that place means for the slot
+// it waits for. It reads the entry the line holds for that member (record.LineEntry), partLength,
+// the length of the part of its priority's band the member stands in, and otherPart, the length of
+// that band's other part, and nothing else — no record of its own, no second count — so the
+// sentence has one source and every number in it is the member's own. The two lengths are the
+// caller's because the entry carries neither: a part's length is a fact about the line rather
+// than about the member.
 //
 // The last clause is the holder's wherever the member already holds one of the cap's slots
 // (record.LineEntry.Holds), in every kind of both parts and never read off the kind: a member
