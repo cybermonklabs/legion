@@ -476,9 +476,10 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
-`daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
-detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
+`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
+under the race detector, once per run, in the `daemon-go-race` job's step "Test the concurrent
+packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`), beside the
+`daemon-go` job; `daemon-go`'s plain step ("Test the Go daemon") leaves it out,
 and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of

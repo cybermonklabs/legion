@@ -3,13 +3,14 @@ namespace, under the ServiceAccount `--service-account` names, labelled so a Net
 select it, and run on the image the driver's own pod runs.
 
 `job_spec` builds the Job from the driver's own pod: its security contexts, resources,
-tolerations, node selector and runtime class, and its gateway key's one Secret item, beside one
-`emptyDir` and point 2's `models.yml` and overlay from the ConfigMap `ROUTE_CONFIG_MAP`. No service
-account token is mounted, no variable comes from a Secret, and no service link is set. The program
-(`s10_sandbox.py`), the bundles and the calls travel in environment variables, so the program is no
-file of the sandbox; the result comes back on the pod's log (`result_of`), and `KubeRunner` deletes
-the Job once it has read it. Before a run's first request, `KubeRunner.preflight` runs the same
-Job with no bundle: every check of the sandbox, and no judge.
+tolerations, node selector, runtime class and priority class, and its gateway key's one Secret
+item, beside one `emptyDir` and point 2's `models.yml` and overlay from the ConfigMap
+`ROUTE_CONFIG_MAP`. No service account token is mounted, no variable comes from a Secret, and no
+service link is set. The program (`s10_sandbox.py`), the bundles and the calls travel in
+environment variables, so the program is no file of the sandbox; the result comes back on the
+pod's log (`result_of`), and `KubeRunner` deletes the Job once it has read it. Before a run's first
+request, `KubeRunner.preflight` runs the same Job with no bundle: every check of the sandbox, and
+no judge.
 
 A failed call of the Kubernetes API is tried again (`RETRY_PAUSES`); one that still fails is no
 fault of the request's, and stops the run (`KubeUnavailable`), which writes nothing more for it.
@@ -148,7 +149,11 @@ def job_spec(name, pod, image, account, variables, environ, deadline=SANDBOX.OMP
             {"name": "work", "emptyDir": {}},
         ],
     }
-    for copied in ("tolerations", "nodeSelector", "runtimeClassName"):
+    # The priority class too: where the cluster has no default class, a pod that names none runs at
+    # priority 0, so a pod above it whose class may preempt can take its node mid-run, and that
+    # request becomes a deviation counted against the claim. A session pod names
+    # `agent-session-priority`, whose `preemptionPolicy: Never` lets the judge evict no pod.
+    for copied in ("tolerations", "nodeSelector", "runtimeClassName", "priorityClassName"):
         if spec.get(copied):
             pod_spec[copied] = spec[copied]
     return {

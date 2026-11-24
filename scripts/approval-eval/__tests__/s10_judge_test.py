@@ -1968,6 +1968,18 @@ class JobSpecTest(unittest.TestCase):
             self.assertEqual(volumes["route"]["configMap"]["name"], "s10-judge-route")
             self.assertNotIn("route-map", json.dumps(spec))
 
+    def test_a_judge_runs_at_its_drivers_priority_class(self):
+        # A pod that names no class can run at priority 0, where a pod above it may preempt a judge
+        # mid-run: the Job names the driver's own class, whichever it is, and none where the driver
+        # names none.
+        for name in ("agent-session-priority", "another-priority"):
+            pod = own_pod()
+            pod["spec"]["priorityClassName"] = name
+            spec = JOB.job_spec("s10-judge-1", pod, IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+            self.assertEqual(spec["spec"]["template"]["spec"]["priorityClassName"], name)
+        spec = JOB.job_spec("s10-judge-1", own_pod(), IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+        self.assertNotIn("priorityClassName", spec["spec"]["template"]["spec"])
+
     def test_a_pod_whose_gateway_key_is_not_one_item_is_refused(self):
         pod = own_pod()
         pod["spec"]["volumes"][3]["secret"]["items"].append({"key": "OTHER", "path": "other"})

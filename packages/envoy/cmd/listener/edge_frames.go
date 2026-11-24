@@ -113,12 +113,12 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		// on the session's own subject, and a kept or a taken copy of the session's own project's
 		// role keeps the previous holder's subject as its topic; both reach the session on its own
 		// agent subject. The role is read as the session relay, a takeover pass and the kept
-		// lane's walk read it (readRoleFrame): by the exact keys the plugins' transport reads,
-		// past a byte order mark and at any depth, so a frame the session's plugin reads as a
-		// role's message is judged by that role here, whatever encoding/json makes of its other
-		// fields or its case-folded keys. It holds a role lane to the project edgeTopicRule does
-		// (contracts.RoleClaimOf). A message whose role that read cannot tell is no role message,
-		// as the relay sends it, and is judged by its topic below.
+		// lane's walk read it (readRoleFrame): its topic, as the plugins' transport reads it, and
+		// its role mark, each by its exact key, past a byte order mark and at any depth, so a frame
+		// the relay tells a role message is judged by that role here, whatever encoding/json makes
+		// of its other fields or its case-folded keys. It holds a role lane to the project
+		// edgeTopicRule does (contracts.RoleClaimOf). A message whose role that read cannot tell
+		// is no role message, as the relay sends it, and is judged by its topic below.
 		if frame, err := readRoleFrame(data); err == nil && frame.role != "" {
 			if roleOfProjects(frame.role, projects) {
 				return framePasses()

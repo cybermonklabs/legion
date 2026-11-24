@@ -619,10 +619,13 @@ const (
 // peerPlan is what the stand-ins read: the generation's URL file as the role sees it, and the
 // roles directory as the launcher sees it, under which the agent looks for the writer token. The
 // plan names the directory and not the token's path, so the environment it travels in holds
-// that path only where the launcher puts it.
+// that path only where the launcher puts it. End is when the stand-ins must end (reentryEnd):
+// the shim's argv is the one the shim rule knows (roleShim), which carries no -test.timeout, so
+// the shim hands its agent the deadline the test put here.
 type peerPlan struct {
 	DSNFile  string
 	RolesDir string
+	End      time.Time
 }
 
 // The files the stand-ins write in the role's own /tmp: what the child saw, what the agent saw,
@@ -636,15 +639,21 @@ const (
 
 // sessionPeerShim is the shim stand-in: the test binary run as `<binary> worker-shim`, the
 // argv the shim rule knows a shim by (roleShim), so TestMain runs it before the test framework
-// reads any argument. It starts the agent stand-in as its one direct child, and exits with that
-// child's status, as the shim ends with its agent.
+// reads any argument. It starts the agent stand-in as its one direct child, with the plan's end
+// as its deadline, and exits with that child's status, as the shim ends with its agent.
 func sessionPeerShim() int {
+	var plan peerPlan
+	if err := json.Unmarshal([]byte(os.Getenv(peerPlanEnv)), &plan); err != nil {
+		fmt.Fprintln(os.Stderr, "shim stand-in:", err)
+		return 1
+	}
 	self, err := os.Executable()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shim stand-in:", err)
 		return 1
 	}
-	agent := exec.Command(self, "-test.run=^TestSessionPeerStandInHelper$")
+	args := reentryUntil(plan.End, "TestSessionPeerStandInHelper")
+	agent := exec.Command(self, args...)
 	agent.Env = append(os.Environ(), peerStandInEnv+"=agent")
 	agent.Stdout, agent.Stderr = os.Stdout, os.Stderr
 	if err := agent.Run(); err != nil {
@@ -677,13 +686,17 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err != nil {
 		fail(err)
 	}
+	// Each wait of a stand-in is under the hang guard of its own test binary (beforeDeadline),
+	// whose deadline its starter set (reentry): how soon the proxy answers is not what the case
+	// reads.
+	guard := beforeDeadline(t)
 	if which == "child" {
-		if err := sayInTmp(peerChildSaw, "connect="+peerConnect(socket)); err != nil {
+		if err := sayInTmp(peerChildSaw, "connect="+peerConnect(socket, guard)); err != nil {
 			fail(err)
 		}
 		for {
 			if _, err := os.Stat(filepath.Join("/tmp", peerRelease)); err == nil {
-				os.Exit(0)
+				exitHelper(t)
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -692,19 +705,17 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err != nil {
 		fail(err)
 	}
-	child := exec.Command(self, "-test.run=^TestSessionPeerStandInHelper$")
+	child := exec.Command(self, reentry(t, "TestSessionPeerStandInHelper")...)
 	child.Env = append(os.Environ(), peerStandInEnv+"=child")
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	if err := child.Start(); err != nil {
 		fail(err)
 	}
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if _, err := os.Stat(filepath.Join("/tmp", peerChildSaw)); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			fail(errors.New("the child never reported its connection"))
-		}
+	if !testwait.Holds(guard, 20*time.Millisecond, func() bool {
+		_, err := os.Stat(filepath.Join("/tmp", peerChildSaw))
+		return err == nil
+	}) {
+		fail(errors.New("the child never reported its connection"))
 	}
 	token := "read"
 	if _, err := os.ReadFile(filepath.Join(plan.RolesDir, SessionWriterDirName, SessionWriterTokenFile)); err != nil {
@@ -713,11 +724,11 @@ func TestSessionPeerStandInHelper(t *testing.T) {
 	if err := sayInTmp(peerAgentEnviron, strings.Join(os.Environ(), "\x00")); err != nil {
 		fail(err)
 	}
-	if err := sayInTmp(peerAgentSaw, "token="+token+" connect="+peerConnect(socket)); err != nil {
+	if err := sayInTmp(peerAgentSaw, "token="+token+" connect="+peerConnect(socket, guard)); err != nil {
 		fail(err)
 	}
 	_ = child.Wait()
-	os.Exit(0)
+	exitHelper(t)
 }
 
 // peerSocket is the socket the URL file at path names, as Oh My Pi's client reads it: the
@@ -739,14 +750,15 @@ func peerSocket(path string) (string, error) {
 }
 
 // peerConnect connects to socket and answers "admitted" when the proxy carries a round trip to
-// the upstream, which echoes it, and otherwise what ended the connection.
-func peerConnect(socket string) string {
-	conn, err := net.DialTimeout("unix", socket, 10*time.Second)
+// the upstream, which echoes it, and otherwise what ended the connection. guard bounds the dial
+// and the round trip, and is the caller's hang guard.
+func peerConnect(socket string, guard time.Duration) string {
+	conn, err := net.DialTimeout("unix", socket, guard)
 	if err != nil {
 		return "unreachable: " + err.Error()
 	}
 	defer func() { _ = conn.Close() }()
-	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(guard)); err != nil {
 		return "unreachable: " + err.Error()
 	}
 	if _, err := conn.Write([]byte("ping")); err != nil {
@@ -802,6 +814,7 @@ func startPeerGeneration(t *testing.T) *peerGeneration {
 	plan, err := json.Marshal(peerPlan{
 		DSNFile:  filepath.Join(generationDir(filepath.Join(fixed, RolePrivateDir), 1), ompsessions.DSNFileName),
 		RolesDir: g.rolesDir,
+		End:      reentryEnd(t),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -825,7 +838,7 @@ func (g *peerGeneration) roleTmp(name string) string {
 func (g *peerGeneration) said(name string) string {
 	g.t.Helper()
 	var said string
-	if !testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(g.t), testwait.Poll, func() bool {
 		body, err := os.ReadFile(g.roleTmp(name))
 		said = string(body)
 		return err == nil
@@ -883,7 +896,7 @@ func TestARealRolesAgentIsAdmittedAndItsChildIsRefused(t *testing.T) {
 	child := table.Children(agent.PID)[0]
 	want := fmt.Sprintf("sessionproxy: refused a connection to %s from pid %d (%q): pid %d is not the agent of generation 1, which is pid %d",
 		testInstance, child.PID, child.Name, child.PID, agent.PID)
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool { return strings.Contains(g.log.String(), want) }) {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool { return strings.Contains(g.log.String(), want) }) {
 		t.Fatalf("the launcher's log holds no line %q: %s", want, g.log.String())
 	}
 	if refusals := strings.Count(g.log.String(), "refused a connection"); refusals != 1 {
