@@ -4,6 +4,7 @@ import type {
   DispatchRefusal,
   DocumentWriteAdvice,
   IssueDetails,
+  ParentStatusConflictIssue,
   WriteAdvice,
 } from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
@@ -38,11 +39,14 @@ interface CreateArtifactOptions {
   /** The token of the version this upload is replacing, which `dispatch doc-read` prints. An
    *  upload over a document the owner already holds names it, and Dispatch checks it under the
    *  write's own lock. One that names none is taken for now without a check, since older
-   *  `dispatch` commands cannot name one; a later release refuses it `400 PRECONDITION_REQUIRED`
-   *  (INFRA-4980). A token behind the live document is refused
+   *  `dispatch` commands cannot name one; a later release refuses it `400 PRECONDITION_REQUIRED`.
+   *  A token behind the live document is refused
    *  `409 PRECONDITION_FAILED`, whose `current` carries the live token and `current.version` the
-   *  live version number. A first upload under a name replaces no version, and a file is no
-   *  document, so neither names one. An upload that names a token where the document has none
+   *  live version number. An upload over a file or a picture names its standing version's token
+   *  the same way, which `dispatch doc-read` prints in the same line and the artifact's
+   *  `versions[].token` states, and is refused the same way for a token of a version since
+   *  replaced; one naming none is taken unchecked. A first upload under a name replaces no
+   *  version, so it names none. An upload that names a token where the document has none
    *  for it to name — a first upload under a name its owner holds nothing under, and the repair
    *  of a document whose live tree is outside the Proof schema — is refused
    *  `409 PRECONDITION_FAILED` carrying `code` and `error` alone: there is no live token to put
@@ -107,6 +111,23 @@ type FieldOfAny<T, K extends PropertyKey> = T extends unknown
 export type DispatchServiceErrorShape = {
   readonly [K in KeyOfAny<DispatchRefusal>]?: FieldOfAny<DispatchRefusal, K>;
 };
+
+/**
+ * The issues a `409 PARENT_STATUS_CONFLICT` names, read off a refusal's body and its `code`:
+ * each one the write would leave out of line with its parent's or its children's, with its status
+ * and whether it is the parent or a child. `DispatchServiceErrorShape["issues"]` holds the issues
+ * of every refusal that lists any, and `FOREIGN_CHILD_OPEN` lists them as `{key, project,
+ * status}`, so the ones this refusal names are the ones that carry a `relation`. Undefined for
+ * every other `code`, and for a body with no `issues`.
+ */
+export function parentStatusConflictIssues(
+  code: string | undefined,
+  issues: DispatchServiceErrorShape["issues"]
+): ParentStatusConflictIssue[] | undefined {
+  return code === "PARENT_STATUS_CONFLICT"
+    ? issues?.filter((issue) => "relation" in issue)
+    : undefined;
+}
 
 /** How the message of a Dispatch process's `404 NOT_FOUND` starts when the process has no route for
  *  the request ("no route for GET /api/v1/…"). While a release rolls out, two builds of Dispatch

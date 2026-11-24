@@ -222,6 +222,10 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
+	// a parent's status out of line with its children's (R24) is refused 409
+	// PARENT_STATUS_CONFLICT. The zero value is off.
+	ParentStatusRule ParentStatusRule
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -324,6 +328,8 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE; see Deps.ParentStatusRule.
+	ParentStatusRule ParentStatusRule
 }
 
 // NewDeps parses boot configuration once and returns API dependencies. It refuses an input with
@@ -409,6 +415,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		ParentStatusRule:       input.ParentStatusRule,
 	}, nil
 }
 
@@ -435,9 +442,11 @@ type server struct {
 	// write, held to the table this server mounts (going_catalogue.go).
 	going GoingCatalogue
 	// unguardedReplacements counts the document replacements stored naming no token
-	// (noteUnguardedReplacement); nil, which counts nothing, where Deps.Metrics is nil.
-	unguardedReplacements *metrics.Counter
-	adviceQueryHook       func(context.Context, pgx.Tx, string) error
+	// (noteUnguardedReplacement), and unguardedFileReplacements the file and picture ones
+	// (noteUnguardedFileReplacement); nil, which counts nothing, where Deps.Metrics is nil.
+	unguardedReplacements     *metrics.Counter
+	unguardedFileReplacements *metrics.Counter
+	adviceQueryHook           func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
@@ -579,6 +588,11 @@ type server struct {
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
+	// statusChangeAfterStep is called after each step of a status change commits, with the
+	// step's index in the call's plan (status_change.go); nil, which every server the deployment
+	// builds leaves it, calls nothing. Only a test sets it, to make another writer's write between
+	// two steps of one call.
+	statusChangeAfterStep func(ctx context.Context, step int)
 	// afterMentionCopyRule is called inside a comment mention's send once its copy rule answered
 	// that the send waits for no earlier event, before the re-check of its claim
 	// (deliverResolvedCommentMention); nil, which every server the deployment builds leaves it,
@@ -818,6 +832,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.mentions = s.startMentionSender()
 	s.registerHeldGauges(deps.Metrics)
 	s.unguardedReplacements = registerUnguardedReplacements(deps.Metrics)
+	s.unguardedFileReplacements = registerUnguardedFileReplacements(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -865,9 +880,9 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
 	s.routeIndex = routeIndexEntries(routes)
-	replays := s.keyedReplays()
+	keyed := s.keyedReplays()
 	for _, route := range routes {
-		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, replays[route.Method+" "+route.Pattern]))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, keyed[route.Method+" "+route.Pattern]))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -885,12 +900,12 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // routeHandler is the chain register mounts one row of the table behind: the row's own handler
 // inside every layer the row runs, in the one order every row runs them. It is the one place that
 // order is written, so register and a test that walks the table with each row's handler replaced
-// (read_only_token_test.go) build the same chain. replay is the row's keyed replay
-// (keyedReplays), nil for a row that has none.
-func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
+// (read_only_token_test.go) build the same chain. keyed is the row's entry of keyedReplays, the
+// zero value for a row that has none.
+func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc {
 	handler := route.Handler
 	if keyedMethod(route.Method) {
-		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
+		handler = s.keyedWrites(route.Method, route.Pattern, handler, keyed)
 	}
 	if route.Method+" "+route.Pattern == issueUploadRoute {
 		handler = s.refuseUploadToAClosedIssue(handler)
@@ -959,6 +974,16 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
 	}
+	handler = s.decideBrokerToken(trackTransactions(handler))
+	if route.Method+" "+route.Pattern == statusChangeRoute {
+		// Outside every layer above and outside decideBrokerToken, so it sees each answer the
+		// route gives, and inside compression, so it reads the JSON a layer wrote rather than
+		// gzip. The route's declared refusals carry changed: the handler and the keyed layer
+		// write it, and every layer outside the keyed layer refuses before any step runs with
+		// the {code, error} it answers every route, to which this adds changed []
+		// (addChangedToRefusals).
+		handler = addChangedToRefusals(handler)
+	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
 	// them resolved. Compression sits just inside it, with nothing between them but the answers
@@ -966,7 +991,7 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// gzip and the line counts the bytes that went on the wire. The two websockets register
 	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
 	// frames after it are the socket's (compressAnswers).
-	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
+	served := compressAnswers(handler)
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
 		// pauses on is the time the line records for it, every layer of the chain included.
@@ -1099,8 +1124,9 @@ type apiError struct {
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
 	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, both deletes' 409
-	// DELETE_CONTENDED, and linkedReadRefusal's 502 for a linked repository's read GitHub
-	// rate-limited with a wait. writeHandlerError writes the header.
+	// DELETE_CONTENDED, linkedReadRefusal's 502 for a linked repository's read GitHub
+	// rate-limited with a wait, and the keyed layer's 409 KEY_IN_FLIGHT (writeKeyInFlight,
+	// writeKeyFreed). writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1303,12 +1329,20 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 	if err != nil {
 		return model.Actor{}, err
 	}
+	return recordedActor(r, actor, present, supplied)
+}
+
+// recordedActor is actorFrom for a caller that optionalActor already resolved: the caller, when
+// present says the caller is a person at a browser, else the session that bearerSessionActor
+// resolves, with no credential.
+func recordedActor(r *http.Request, caller model.Actor, present bool, supplied *model.Actor) (model.Actor, error) {
 	if !present {
-		if actor, err = bearerSessionActor(r, actor, supplied); err != nil {
+		var err error
+		if caller, err = bearerSessionActor(r, caller, supplied); err != nil {
 			return model.Actor{}, err
 		}
 	}
-	return actor.Recorded(), nil
+	return caller.Recorded(), nil
 }
 
 // credentialProvesSession is whether the request's credential proved a session of its own - a

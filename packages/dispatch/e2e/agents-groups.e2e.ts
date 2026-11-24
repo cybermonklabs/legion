@@ -17,8 +17,11 @@ import {
   createIssue,
   createProject,
   getIssueEvents,
+  patchIssue,
   replyToMessageDelivery,
 } from "./api";
+import { expectFootClear } from "./foot-probe";
+import { pendingWrites } from "./keyed-writes";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
 import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
@@ -591,6 +594,79 @@ test("an agent row stands at the height recorded for its width @phone", async ({
       );
     } else {
       expect(directory.top, "the directory is on the name's line").toBeLessThan(name.bottom);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// The broadcast composer and Pending changes, two layers of the foot of the screen
+// (`web/src/hooks/useFootInset.ts`), "so no float lies over a foot element". Scrolled to its
+// end, the page leaves the composer resting above the section of ended sessions, in the upper
+// half of a short window, with room under it. At each of four such windows the foot is read
+// through the shared probe (`expectFootClear`, e2e/foot-probe.ts) at the real end of every
+// scroller, and there the panel's box and the composer's must not meet: the panel's corner then
+// lay over the composer's message box, its mode and Send, or its recipients.
+test("scrolled to its end in a short window, the Agents page's broadcast composer and Pending changes do not meet @foot", async ({
+  browser,
+}) => {
+  // The reader, the sessions and the project are the row's own (`rowPerson`, `rowSessionId` and
+  // `rowKey`, e2e/test.ts): the ended session's reply is unread for the person who asked, and
+  // what the Agents page lists is read off what Dispatch keeps under each id.
+  const me = rowPerson("alice");
+  const core = rowKey("CORE");
+  const endedId = rowSessionId("ended");
+  const titles = Array.from(
+    { length: 14 },
+    (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
+  );
+  await setLiveSessions([
+    ...titles.map((title, index) => session(rowSessionId(`agent${index}`), title)),
+    session(endedId, "Ended"),
+  ]);
+  await seedUnreadReply(endedId, me);
+  await setSessionLive(endedId, false);
+  await createProject({ key: core, name: "Core" });
+  const epic = await createIssue({ project: core, title: "Parser rollout" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  const refused = await createIssue({ project: core, parent: epic.key, title: "Refused move" });
+  const context = await asUser(browser, me);
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
+      if (route.request().method() === "PATCH")
+        await route.fulfill({ status: 403, json: { error: "Move refused" } });
+      else await route.continue();
+    });
+    await page.goto(`/projects/${core}/issues`);
+    await page.getByRole("checkbox", { name: `Select ${refused.key}`, exact: true }).check();
+    await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();
+    const pending = pendingWrites(page);
+    await expect(pending).toContainText(refused.key);
+    await page.goto("/agents");
+    await expect(pending).toContainText(refused.key);
+    for (const title of titles.slice(0, 3)) {
+      await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
+    }
+    const ended = page.getByRole("region", { name: "Replied, no longer connected" });
+    const broadcast = page.getByRole("region", { name: "Broadcast" });
+    for (const size of [
+      { width: 800, height: 600 },
+      { width: 1024, height: 500 },
+      { width: 640, height: 480 },
+      { width: 360, height: 640 },
+    ]) {
+      await page.setViewportSize(size);
+      // The list sets its height from the rows it measures, a frame or more after a resize, and
+      // the page's end can grow once a float's band counts: the probe reads the page at the end
+      // of its scroll as it then stands, until the reading holds, and the ended sessions show
+      // there.
+      await expectFootClear(page, `agents ${size.width}x${size.height} pending`);
+      await expect(ended).toBeInViewport();
+      // Both boxes the row reads apart are there: the probe leaves out an element with no box.
+      await expect(broadcast).toBeVisible();
+      await expect(pending).toBeVisible();
     }
   } finally {
     await context.close();
