@@ -365,7 +365,7 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 			return true, err
 		}
 	}
-	gates, err := e.store.GatesOf(ctx, tx, root.Key)
+	lifecycle, gate, err := record.RootFacts(ctx, e.store, tx, *root, e.cfg.Steps)
 	if err != nil {
 		return false, err
 	}
@@ -374,7 +374,7 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 		return false, err
 	}
 	holds := slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == root.Key })
-	return !record.AwaitsPromotion(*root, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
+	return !record.AwaitsPromotion(*root, lifecycle, gate, holds), nil
 }
 
 // mergeCanLand says whether member's merge, which awaits its landing in the tree root lingers, can

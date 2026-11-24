@@ -19,8 +19,10 @@ type HeldReason string
 // The words of C1. The order they are read in is the order of the ladder's own body and
 // is written there alone; this block is the vocabulary, one constant per word.
 const (
-	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close:
-	// the daemon starts no issue of such a tree.
+	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close, or a
+	// member of a tree whose re-admitted root waits in the line, its design gate open, for the
+	// promotion that opens its tree again (reopensAtPromotion): the daemon starts no issue of such a
+	// tree, and in that last case the root's promotion is what ends the hold.
 	HeldTreeClosed HeldReason = "tree_closed"
 	// HeldTreeParked is an issue of a tree that was parked, its root in backlog or icebox: the
 	// two statuses of OutOfWorkflowStatuses that stop work without finishing it.
@@ -188,6 +190,19 @@ func liveAncestry(issue Issue, live map[string]struct{}) []string {
 	return under
 }
 
+// reopensAtPromotion says whether root waits in the line for the promotion that opens its tree
+// while its design gate stands open: a re-admitted root whose tree's lifecycle is not open under
+// the workflow, which the gate leaves queued (ran, dispatch://INFRA-5471), or a root another tree
+// handed over carrying an open gate. Such a tree is closed until that promotion opens it, and its
+// members wait for it: Waiting offers none of them a phase. Without this the ladder's gate word
+// would pass over them, the gate being open, and leave each at at_work or unclassified, which say
+// that its workers run or that no rule names its wait. A queued root whose gate is shut answers
+// false, and its members read design_gate as they always have.
+func reopensAtPromotion(root Issue, facts LineFacts) bool {
+	gate := facts.Gates[root.Key]
+	return gate.Open() && QueuedRoot(root, facts.Lifecycles[root.Key], gate)
+}
+
 // openChildren is the keys of the open Dispatch children of one children-first wait, in the order
 // that judgement lists them (ChildWait.Open, Dispatch key order).
 func openChildren(wait ChildWait) []string {
@@ -243,7 +258,8 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// chain walk and the two map reads cost nothing for an issue an earlier word answers for,
 	// which on a project of hundreds of records is most of them.
 	switch {
-	case recorded && (root.Status == DoneStatus || Lingering(root, facts.Facts.Now)):
+	case recorded && (root.Status == DoneStatus || Lingering(root, facts.Facts.Now) ||
+		(!claim.IsTreeRoot(issue.Key, issue.Tree) && reopensAtPromotion(root, facts.Facts))):
 		return HeldTreeClosed, []string{issue.Tree}
 	case recorded && (root.Status == "backlog" || root.Status == "icebox"):
 		return HeldTreeParked, []string{issue.Tree}

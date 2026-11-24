@@ -274,7 +274,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 				"so no slot has been offered to it. No rule of the held list says what it waits for."},
 		"LEGION-711": {State: api.WhyUnlisted,
 			Reason: "Its tree is closed: LEGION-710 has finished, or lingers after leaving the workflow, " +
-				"and the daemon starts no issue of that tree."},
+				"or waits in the line for the promotion that opens its tree again, and the daemon starts no issue of that tree; " +
+				"in the last case that root's promotion ends this hold."},
 	}
 	for key, view := range got.Issues {
 		answer, answered := answers[key]

@@ -56,11 +56,11 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 	if root.Lingers() || !claim.IsTreeRoot(root.Key, root.Tree) {
 		return false, nil
 	}
-	rows, err := store.GatesOf(ctx, tx, root.Key)
+	lifecycle, gate, err := RootFacts(ctx, store, tx, root, steps)
 	if err != nil {
 		return false, err
 	}
-	if !QueuedRoot(root, TreeGate{Steps: steps, Rows: rows}) {
+	if !QueuedRoot(root, lifecycle, gate) {
 		return false, nil
 	}
 	slots, err := store.Slots(ctx, tx)

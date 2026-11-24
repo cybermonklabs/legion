@@ -1466,6 +1466,14 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	if err := a.store.MarkIssueMoved(ctx, tx, stored.Key, a.now()); err != nil {
 		return err
 	}
+	// The members this generation leaves mid-phase, and those reopened at done, come back the
+	// first time its tree runs: at the promotion that opens it, or at the pass that finds it
+	// running first, its design gate opened before the root's promotion from the waiting line
+	// (returnMembersOfRunningTrees). The mark is what makes either of them bring the members back
+	// once in the generation (record.Issue.MembersOwed, dispatch://INFRA-5471).
+	if err := a.store.OweMembers(ctx, tx, stored.Key); err != nil {
+		return fmt.Errorf("record re-admission %s: %w", stored.Key, err)
+	}
 	// A generation that ended takes what its architect handed back with it: the re-admission is a
 	// handout, so an ask.opened or a hand-back of the old run, delivered late, at or below what the
 	// record holds now, declares nothing in this one. Its catch-up cursor starts again too, so the
@@ -1883,6 +1891,24 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, released, err
 		}
 	}
+	// A re-admitted tree that runs before its root's promotion from the waiting line — its architect
+	// registered a design a person had already approved, so the gate opened and the root stopped
+	// being a queued root — will see no promotion, and so no return of its members from one. They
+	// come back here instead, after the releases, so that a root the releases took out of the
+	// workflow is not read as running, and before the line is promoted, so that a member's owed
+	// start stands in this pass's own line (returnMembersOfRunningTrees, dispatch://INFRA-5471).
+	returned, err := a.returnMembersOfRunningTrees(ctx, tx, issues, facts)
+	if err != nil {
+		return 0, released, err
+	}
+	if returned {
+		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
+			return 0, released, err
+		}
+		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+			return 0, released, err
+		}
+	}
 	if err := a.tellChildrenFirst(ctx, tx, issues, facts); err != nil {
 		return 0, released, err
 	}
@@ -2165,6 +2191,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				if err := a.reenterStrandedChildren(ctx, tx, issue, issues); err != nil {
 					return admitted, released, err
+				}
+				// The promotion is the first moment this generation's tree runs, so the return it
+				// has just made is the one a re-admission owed: once in the generation, and no pass
+				// after it brings the members back again (record.MembersReturnOwed). Only a root that
+				// carries the mark is written, so a fresh root's promotion costs no statement.
+				if issue.MembersOwed {
+					if err := a.store.ClearMembersOwed(ctx, tx, issue.Key); err != nil {
+						return admitted, released, err
+					}
 				}
 				opened = opened || facts.Gates[issue.Tree].Open()
 			case record.LineFirstPhase:
@@ -2678,10 +2713,47 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 	return own
 }
 
+// returnMembersOfRunningTrees brings back the members of each re-admitted tree that runs with no
+// promotion to come (record.MembersReturnOwed): its root's design gate opened while the root still
+// waited in the line, so the root stopped being a queued root and its promotion,
+// which brings a re-admitted tree's members back, will not run. The members come back here as
+// that promotion brings them (startMidPhaseMembers, reenterStrandedChildren), in the same pass as
+// the gate's opening and whatever path opened it, and the mark is cleared in the same transaction,
+// so this happens once in the generation (dispatch://INFRA-5471). It answers whether it brought
+// any tree's members back, so the caller reads the records again.
+//
+// The pass reads the state rather than the gate's event: the gate opens through register_gate, a
+// person's approval or a carried copy, and every fact runs this pass, so no path is missed. A
+// per-pass resume of every suspended mid-phase member was weighed and not chosen: the same state
+// matches claims suspended on purpose (an idle release, a tester between production-check looks,
+// an operator's suspension), and the mark is what tells a member the re-admission left from those.
+func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) (bool, error) {
+	returned := false
+	for _, root := range issues {
+		if !record.MembersReturnOwed(root, facts.Lifecycles[root.Key], facts.Gates[root.Key]) {
+			continue
+		}
+		if err := a.startMidPhaseMembers(ctx, tx, root, issues, a.now()); err != nil {
+			return returned, err
+		}
+		if err := a.reenterStrandedChildren(ctx, tx, root, issues); err != nil {
+			return returned, err
+		}
+		if err := a.store.ClearMembersOwed(ctx, tx, root.Key); err != nil {
+			return returned, err
+		}
+		a.logOnCommit(ctx, "admission brings back the members of a re-admitted tree that runs before its promotion",
+			"issue", root.Key, "generation", root.Generation)
+		returned = true
+	}
+	return returned, nil
+}
+
 // startMidPhaseMembers brings back the roles that have run of every member of the tree promotion
-// has just opened, and gives the one role whose phase the member stands in the task that carries
-// that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
-// role needs the same resume start ordinary mid-phase children receive
+// has just opened, or of a re-admitted tree that runs before any promotion
+// (returnMembersOfRunningTrees), and gives the one role whose phase the member stands in the task
+// that carries that phase on. A hand-over turns a child into that root while preserving its
+// phase, so its phase role needs the same resume start ordinary mid-phase children receive
 // (workflow's Engine.ResumeTask, which says to carry the phase's work on and names no head, since a
 // merger reads the head it merges on GitHub). A root promoted held, which only a hand-over leaves
 // (every other re-admission starts its root at admitted), starts no worker. The hold's first
@@ -2726,9 +2798,11 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // work already under way, and a member standing at admitted is passed over, since nothing of it
 // has run in this generation and its first phase is the waiting line's to start.
 //
-// root is the promoted root as the promotion has just written it, and issues the pass's own
-// records, which still carry that root as the pass read it. The caller passes both and appends
-// nothing: the root is read from the parameter and its copy among the records is passed over.
+// root is the tree's root as the caller has it: the promoted root as the promotion has just
+// written it, or the running root as the pass read it (returnMembersOfRunningTrees), and issues
+// the pass's own records, which carry that root as the pass read it. The caller passes both and
+// appends nothing: the root is read from the parameter and its copy among the records is passed
+// over.
 func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root record.Issue, issues []record.Issue, now time.Time) error {
 	project, err := claim.ProjectToken(a.project)
 	if err != nil {
@@ -3621,14 +3695,16 @@ func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	return true
 }
 
-// reenterStrandedChildren re-enters, at candidate's promotion, every tree member admission left
-// recorded todo with its previous run's phase at done: a reopen admission declined to re-enter for
-// want of the label while the tree was not live, which recordObservation otherwise records with the
-// phase untouched. Candidate's own promotion is what makes the tree live for these, since nothing
-// else reaches them afterward — Engine.ReenterChild only re-enters a live tree's reopened child on
-// its own live event, and a later todo observation of one already todo changes nothing. The
-// synthetic fact carries the child's own already-recorded fields: no live event reopened it, so
-// there is nothing newer to apply, only its own next generation to start.
+// reenterStrandedChildren re-enters, at the first run of candidate's tree, every tree member
+// admission left recorded todo with its previous run's phase at done: a reopen admission declined
+// to re-enter for want of the label while the tree was not live, which recordObservation otherwise
+// records with the phase untouched. That first run — candidate's promotion, or the pass that finds
+// a re-admitted tree running before any promotion (returnMembersOfRunningTrees) — is what makes the
+// tree live for these, since nothing else reaches them afterward: Engine.ReenterChild only
+// re-enters a live tree's reopened child on its own live event, and a later todo observation of
+// one already todo changes nothing. The synthetic fact carries the child's own already-recorded
+// fields: no live event reopened it, so there is nothing newer to apply, only its own next
+// generation to start.
 //
 // What a child waits on is deliberately not read here either: this re-enters a child whose
 // previous run finished (phase.Done), and Engine.ReenterChild's own entry withholds the start of

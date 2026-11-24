@@ -154,10 +154,10 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 	fixtures := map[heldEntry]heldFixture{
 		{record.HeldTreeClosed, api.WhyBlocked}: {linked(closedTree),
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot},
-			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and the daemon starts no issue of that tree."},
+			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, or waits in the line for the promotion that opens its tree again, and the daemon starts no issue of that tree; in the last case that root's promotion ends this hold."},
 		{record.HeldTreeClosed, api.WhyUnlisted}: {closedTree,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot},
-			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and the daemon starts no issue of that tree."},
+			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, or waits in the line for the promotion that opens its tree again, and the daemon starts no issue of that tree; in the last case that root's promotion ends this hold."},
 		{record.HeldTreeParked, api.WhyBlocked}: {linked(parkedTree),
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
 			"Its tree is parked: LEGION-100 stands in backlog or icebox, and the daemon starts no issue of that tree until that root is put back at todo."},

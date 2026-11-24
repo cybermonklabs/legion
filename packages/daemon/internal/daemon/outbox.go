@@ -3258,11 +3258,11 @@ func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) 
 		}
 		waits := root.Lingers()
 		if !waits {
-			rows, err := r.records.GatesOf(ctx, tx, root.Key)
+			lifecycle, gate, err := record.RootFacts(ctx, r.records, tx, *root, r.gatedSteps)
 			if err != nil {
 				return err
 			}
-			waits = record.QueuedRoot(*root, record.TreeGate{Steps: r.gatedSteps, Rows: rows})
+			waits = record.QueuedRoot(*root, lifecycle, gate)
 		}
 		if waits {
 			waitsFor = fmt.Sprintf("the tree of %s to run again", root.Key)

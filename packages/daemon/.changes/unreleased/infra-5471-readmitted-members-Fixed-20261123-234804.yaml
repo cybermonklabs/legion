@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+    A root moved out of the workflow and straight back brings back the members its re-admission
+    left mid-phase, and the members reopened at done, the first time its tree runs, once in the
+    generation: at its promotion from the waiting line, as before, or at the admission pass that
+    finds its tree running first because its architect registered a design a person had already
+    approved while the root still waited in the line. Before, such a tree's members stayed
+    suspended until a daemon boot or an operator's resume. A re-admitted root whose tree's
+    lifecycle is not open (its cleanup reserved after the linger ended) stays in the line whatever
+    its design gate says until the promotion that opens its tree; meanwhile no member of the tree
+    starts, and each reads `tree_closed`. Store migration `20261123224717_members_owed` adds
+    `issues.members_owed` and marks only the roots whose re-admission has still to bring their
+    members back: a tree whose gate opened before its promotion on the release before counts as
+    brought back, and its stranded members are still the operator's to resume. A rollback past this
+    release runs the way back in that migration's header first, with every daemon of the database
+    stopped.
+time: 2026-11-23T23:48:04Z
+custom:
+    Issue: INFRA-5471
