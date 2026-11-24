@@ -306,7 +306,7 @@ func knownSessionMoveHook(known *session.KnownSessions, logger *logging.Logger) 
 // copied bucket found missing is neither (bucketsMissingError): no rebuild opens
 // it and no restart creates it, since no listener creates a bucket it copies, so
 // the listener serves on with the bucket's writes answering 503 until the
-// operator's `envoy-infra buckets` recreates it; a cache that reads such a bucket
+// operator's `envoy-infra buckets` creates it; a cache that reads such a bucket
 // is left out of the checks below for the same reason. A missing stream other than
 // a copied bucket's, the notification stream's, is terminal: the bus ensures that
 // stream again. A cache whose copy needs a read (kvCache.NeedsRead) is rebuilt as

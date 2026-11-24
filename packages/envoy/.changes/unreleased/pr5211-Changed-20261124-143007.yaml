@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  `envoy-infra buckets recreate` refuses until INFRA-4219's writer hold ships it (cybermonklabs/legion#4698). Whatever its arguments, it exits 1 with a refusal naming that hold and that pull request before it reads any of them: it connects to nothing, runs no kubectl, ssh or sh, sends no HTTP request and deletes nothing. No reading of pods, processes or connections proves that no writer runs: a writer can connect, write and leave between two reads; the hub's `auth.conf` shows neither the grants each server has loaded nor the auth service's per-connection decisions; and a server-side writer (a stream source, a republish, a push consumer) needs no connection. `check` keeps its best-effort proof, whose warning now names the three ways a writer gets past it, and `create` is unchanged. The buckets user's grant (`buckets.Grant`) no longer holds any copied bucket's `$JS.API.STREAM.UPDATE` or `$JS.API.STREAM.DELETE`, which no command sends.
+  The restore step of `packages/envoy/infra/docs/nats-hub.md` says that `check` cannot hold on a GKE Autopilot cluster, which refuses the `nodes/proxy` read every `--kube-context` makes, so that move cannot be made safe there until the writer hold ships.
+time: 2026-11-24T14:30:07Z
+custom:
+    Issue: pr5211

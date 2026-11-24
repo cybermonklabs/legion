@@ -57,11 +57,12 @@ serves without (the last bullet):
 A deployment's buckets therefore come from the operator. `envoy-infra buckets create` makes each
 bucket that is absent and takes no writer proof, so it needs nothing stopped: an absent bucket holds
 no write to lose. It can run again: a bucket there at the copies asked for with its own
-configuration is left as it is. **The proof `recreate` and `check` take is best effort** until the
-coming server-side hold lands: it checks only the Kubernetes contexts, hosts and machine
-(`--this-machine`) it is given, by process name, and holds nothing once it has checked. Before
-each of those, stop every listener of the deployment (and every envoy-dispatch, for
-`envoy_ci_state`) and confirm on each host that it has ended ([`envoy-infra buckets`](#envoy-infra-buckets)).
+configuration is left as it is. **The proof `check` takes is best effort**: it checks only the
+Kubernetes contexts, hosts and machine (`--this-machine`) it is given, by process name, and holds
+nothing once it has checked. Before a check, stop every listener of the deployment (and every
+envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it has ended
+([`envoy-infra buckets`](#envoy-infra-buckets)). `envoy-infra buckets recreate` refuses until
+INFRA-4219's writer hold ships it (cybermonklabs/legion#4698).
 
 - **A first deployment:** once the NATS server is up, run `envoy-infra buckets create` at the
   deployment's copies (`--replicas`, or `ENVOY_NATS_REPLICAS`). It needs no listener or
@@ -69,10 +70,10 @@ each of those, stop every listener of the deployment (and every envoy-dispatch, 
   buckets and serves once they exist.
 - **Deleting a bucket under running listeners does not empty it for them:** each serves its last
   copy for reads within its stale bound, answers every write that needs the bucket 503, and never
-  brings the bucket back. To empty a bucket, or to replace one, stop every listener of the
-  deployment first (and every envoy-dispatch, for `envoy_ci_state`, which it writes too), then run
-  `envoy-infra buckets recreate --bucket <name>` with the inventory, then start them again. Never
-  delete one with `nats kv rm` or `nats stream rm`.
+  brings the bucket back. No command empties or replaces a bucket yet: `envoy-infra buckets
+  recreate` refuses, reading and deleting nothing, until INFRA-4219's writer hold ships it as a
+  held command (cybermonklabs/legion#4698), since no reading of pods, processes or connections
+  proves that no writer runs. Never delete one with `nats kv rm` or `nats stream rm`.
 - **A hub whose storage is replaced** (`gcp:NatsHub` on a new disk, a new `hostname` or `zone`,
   [docs/nats-hub.md](docs/nats-hub.md#updating-a-hub)) comes up with no bucket: run
   `envoy-infra buckets create` against it. Its listeners wait for the buckets and serve once they
@@ -115,9 +116,10 @@ or recreate a copied bucket refuse a server without that mark.
 
 The command, `envoy-infra`, writes a NATS user's nkey seed into a secret store and checks the seed
 stored there ([NATS seeds](#nats-seeds)), prints what the AWS components register for a program
-that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)), creates and recreates
-the buckets a listener copies ([`envoy-infra buckets`](#envoy-infra-buckets)), and checks a
-clustered hub's routes after its route authorization's rollout (`envoy-infra routes`,
+that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)), creates the buckets a
+listener copies and checks that no writer of them runs
+([`envoy-infra buckets`](#envoy-infra-buckets)), and checks a clustered hub's routes after its
+route authorization's rollout (`envoy-infra routes`,
 [docs/nats-hub.md](docs/nats-hub.md#route-authorization)).
 
 ## Install
@@ -3392,28 +3394,34 @@ the one output format. The listener's first filter, for a listener named `exampl
 
 ## `envoy-infra buckets`
 
-`envoy-infra buckets` creates the key-value buckets a listener copies, and recreates one once it
-has checked that no writer of it runs: every envoy-listener of the deployment, and every
-envoy-dispatch when `envoy_ci_state` is among the buckets. `create` takes no such check: it makes
-only a bucket that is absent, which holds no write to lose.
+`envoy-infra buckets` creates the key-value buckets a listener copies, and checks that no writer of
+them runs: every envoy-listener of the deployment, and every envoy-dispatch when `envoy_ci_state`
+is among the buckets. `create` takes no such check: it makes only a bucket that is absent, which
+holds no write to lose.
 
-**The check is best effort.** Every `recreate` and `check` prints so first, on standard error. A
-writer gets past it four ways: a host or dev box you do not name, a binary renamed to a name the
-check does not know, a writer that starts between the final scan and the create, and a restore
-after `check` that nothing holds. So before every `recreate` or `check`, stop every listener of
-the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it
+`recreate` refuses until INFRA-4219's writer hold ships it (cybermonklabs/legion#4698). Before it
+reads any argument, it exits 1 with a refusal naming that hold and that pull request: it connects to
+nothing, runs no kubectl, ssh or sh, and deletes nothing. No reading of pods, processes or
+connections proves that no writer runs: a writer can connect, write and leave between two reads;
+the hub's `auth.conf` shows neither the grants each server has loaded nor the auth service's
+per-connection decisions; and a server-side writer (a stream source, a republish, a push consumer)
+needs no connection. #4698 replaces the refusal with a `recreate` that runs only inside an
+established and verified writer hold, from before its first delete through its last create.
+
+**The check is best effort.** Every `check` prints so first, on standard error. A writer gets past
+it three ways: a host or dev box you do not name, a binary renamed to a name the check does not
+know, and a restore after `check` that nothing holds. So before every `check`, stop every listener
+of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it
 has ended; the check confirms what you did, and does not replace it. `create` needs no listener
 stopped and prints no warning.
 The coming server-side hold will exclude writers at the server instead: while it holds,
 the auth callout refuses every connection but the operator's, every other connection is kicked,
-every server's connz shows the operator alone, and a server it cannot reach stops the hold. Four
+every server's connz shows the operator alone, and a server it cannot reach stops the hold. Three
 tests (`TestBestEffort...`) assert today's outcome of each way, and must be inverted when the
 hold leaves no writer a connection.
 
 ```sh
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets create --nats nats://<hub>:4222 --replicas 3
-NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets recreate --bucket envoy_sessions \
-  --nats nats://<hub>:4222 --kube-context <cluster> --host <machine>
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets check --nats nats://<hub>:4222 --host <machine>
 ```
 
@@ -3423,13 +3431,15 @@ connection, as `--nats` names the hub. It takes its replies under `--inbox-prefi
 reply prefix, so it runs the command with `--inbox-prefix _INBOX.`, as a Job running as the
 clustered hub's `gke` user does, or with `create --break-glass`
 ([Until the cutover](#until-the-cutover-create---break-glass)). The buckets user is granted exactly
-what the command sends (`buckets.Grant`):
+what the command and the restore after `check` send, and nothing more (`buckets.Grant`):
 
-- publish `$JS.API.INFO`, `$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS` (for `--first-deployment`),
-  and for each copied bucket `<B>`: `$JS.API.STREAM.INFO.KV_<B>`, `$JS.API.STREAM.CREATE.KV_<B>`,
-  `$JS.API.STREAM.UPDATE.KV_<B>` and `$JS.API.STREAM.DELETE.KV_<B>`, and for the restore after
-  `check`, run as the same user (`nats stream restore --inbox-prefix=_INBOX_envoy_buckets`),
-  `$JS.API.STREAM.RESTORE.KV_<B>` and `$JS.SNAPSHOT.RESTORE.KV_<B>.*`;
+- publish `$JS.API.INFO` (`create` reads the account's JetStream info before each create),
+  `$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS` (every connection reads it, and `--first-deployment`
+  again), and for each copied bucket `<B>`: `$JS.API.STREAM.INFO.KV_<B>` and
+  `$JS.API.STREAM.CREATE.KV_<B>`, and for the restore after `check`, run as the same user
+  (`nats stream restore --inbox-prefix=_INBOX_envoy_buckets`), `$JS.API.STREAM.RESTORE.KV_<B>`
+  and `$JS.SNAPSHOT.RESTORE.KV_<B>.*`. No stream update and no stream delete: `create` raises and
+  changes no bucket, and `recreate` refuses before it connects;
 - subscribe `_INBOX_envoy_buckets.>` alone, the prefix its replies take: a user that subscribes
   `_INBOX.>` receives every other client's replies, sessions' push deliveries among them.
 
@@ -3477,13 +3487,8 @@ An interrupt or SIGTERM stops `create` where it is, its wait included: it exits 
 `envoy-infra buckets create: stopped: <the signal>; nothing more is created` and sends no create
 after it. A bucket a `created` line above names stays.
 
-`recreate` deletes each `--bucket`, checks again that no writer runs, since one started between
-the check and the delete may have written to the deleted bucket, and only then creates it.
 `check` takes the check and changes nothing, for a step another tool makes, such as a `nats stream
-restore`.
-
-`recreate` and `check` need an inventory of every place a writer runs, and refuse with exit 2
-without one:
+restore`. It needs an inventory of every place a writer runs, and refuses with exit 2 without one:
 
 - `--kube-context <ctx>`, once for each cluster (an empty value is kubectl's current context): no
   pod the API lists, in any namespace, runs a container named `listener` or `envoy-listener` (or
@@ -3512,10 +3517,8 @@ without one:
 
 Each kubectl and ssh call has a one-minute bound (kubectl's own `--request-timeout=45s` within
 it), and a call that does not finish blocks. Each blocker is printed with what it found and the
-command exits 1. A refusal before any change changes nothing; a refusal of `recreate`'s second
-check comes after its delete, and leaves each `--bucket` deleted and not created: stop the writer it
-names, then run `create`. A check that holds prints what it read: the nodes and machines it checked
-and how many processes it read.
+command exits 1. A refusal changes nothing. A check that holds prints what it read: the nodes and
+machines it checked and how many processes it read.
 
 A usage error exits 2 and echoes no word the command could not read, since an nkey seed may have
 been pasted there: a stray argument is named by its position (`word 6 after "buckets"`), a value
@@ -3545,8 +3548,8 @@ it is there with another, and nothing is updated or deleted. Besides:
 - it takes its replies on the default `_INBOX.` prefix, which a listener's user may receive on;
 - it logs one line to standard error before each create, naming the operator (`--operator`,
   required), the hub, the bucket and `break-glass`;
-- it is refused with `recreate` or `check`, beside `--inbox-prefix` (it takes `_INBOX.` already),
-  and without a `--bucket`.
+- it is refused with `check`, beside `--inbox-prefix` (it takes `_INBOX.` already), and without a
+  `--bucket`.
 
 The pull request that removes the create grant from the listener users at the cutover deletes the
 flag and this section.

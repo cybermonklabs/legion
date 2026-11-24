@@ -38,9 +38,9 @@ var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets 
 var ErrBucketExists = errors.New("bucket exists; a create-only open creates only a missing bucket, and leaves one that is there as it is")
 
 // CreateCopiedBucket creates bucket, one a listener copies, with its configuration at replicas
-// copies (CopiedBucketConfig), or opens it as it is when it exists: `envoy-infra buckets
-// recreate`'s create after its delete, and a test fixture's (internal/bus/bustest), on a server of
-// its own. Its waits end with ctx, the caller's, or at the start's hang guard (EnsureKeyValue).
+// copies (CopiedBucketConfig), or opens it as it is when it exists: a test fixture's
+// (internal/bus/bustest), on a server of its own. Its waits end with ctx, the caller's, or at the
+// start's hang guard (EnsureKeyValue).
 func CreateCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
 	return openCopiedBucket(ctx, conn, js, bucket, replicas, openOrCreate)
 }

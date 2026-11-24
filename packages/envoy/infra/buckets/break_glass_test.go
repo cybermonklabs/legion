@@ -106,8 +106,8 @@ func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 // holding a key, a create at one copy says it is present and exits 0; a create at three copies,
 // with a missing bucket named beside it, is refused naming the copies and creates neither. Each
 // sends the buckets' streams one read each and nothing else, and leaves the stream as it was: the
-// same stream, configuration, messages and key. --break-glass with recreate is refused as a usage
-// error before it connects, and sends the stream nothing. At b20f45e30a (#4296's head) the present
+// same stream, configuration, messages and key. recreate, --break-glass or not, refuses before it
+// connects (recreateRefusal), and sends the stream nothing. At b20f45e30a (#4296's head) the present
 // bucket refused the run, exit 1 ("refused: KV_envoy_sessions exists").
 func TestBreakGlassLeavesABucketThatIsThereAsItIs(t *testing.T) {
 	t.Setenv(bus.ReplicasEnvVar, "")
@@ -141,7 +141,7 @@ func TestBreakGlassLeavesABucketThatIsThereAsItIs(t *testing.T) {
 		{"create at other copies, a missing bucket beside it", []string{"create", "--break-glass", "--operator", "op", "--replicas", "3", "--bucket", bus.RoleClaimBucket, "--bucket", bus.SessionBucket},
 			1, "differs: " + stream + ": replicas 1, want 3", []string{"INFO." + missing, "INFO." + stream}},
 		{"recreate", []string{"recreate", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
-			2, "--break-glass is create's alone", nil},
+			1, "INFRA-4219's writer hold", nil},
 		{"--break-glass before recreate", []string{"--break-glass", "recreate", "--operator", "op", "--bucket", bus.SessionBucket},
 			2, "usage: envoy-infra buckets", nil},
 	} {
@@ -171,7 +171,7 @@ func TestBreakGlassLeavesABucketThatIsThereAsItIs(t *testing.T) {
 }
 
 // --break-glass is refused as a usage error, before anything connects, where it is misused: on
-// recreate or check, beside a proof flag it would leave unchecked, without --operator or with one
+// check, beside a proof flag it would leave unchecked, without --operator or with one
 // that spans lines, and without a --bucket; and --operator is refused without it. The URL names no
 // server, so a run that went on would fail to connect, with 1.
 func TestBreakGlassIsRefusedWhereItIsMisused(t *testing.T) {
@@ -180,7 +180,6 @@ func TestBreakGlassIsRefusedWhereItIsMisused(t *testing.T) {
 		args []string
 		says string
 	}{
-		{[]string{"recreate", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket}, "--break-glass is create's alone"},
 		{[]string{"check", "--break-glass", "--operator", "op"}, "--break-glass is create's alone"},
 		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--host", "box-1"}, "so --host would check nothing"},
 		{[]string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket, "--this-machine"}, "so --this-machine would check nothing"},

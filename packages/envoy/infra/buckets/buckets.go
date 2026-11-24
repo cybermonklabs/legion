@@ -1,12 +1,11 @@
 // Package buckets is `envoy-infra buckets`: the one command that creates the buckets a listener
-// copies (bus.CopiedBuckets), and recreates one once it has checked that no writer of it runs.
+// copies (bus.CopiedBuckets), and checks that no writer of them runs.
 //
 // A write such a bucket acknowledged is lost when the bucket is deleted and created again, and the
 // listener that made it told its caller it landed: the ack names the stream and its sequence, never
-// the bucket's incarnation. So no listener creates one, and recreate, which deletes one, refuses
-// while a listener of the deployment it can see runs, and, for the CI state bucket, an
-// envoy-dispatch, which writes it too. A listener that finds a bucket missing serves its writes 503
-// and names the bucket on /healthz until this command creates it.
+// the bucket's incarnation. So no listener creates one, and recreate, which would delete one,
+// refuses outside INFRA-4219's writer hold (recreateRefusal). A listener that finds a bucket
+// missing serves its writes 503 and names the bucket on /healthz until this command creates it.
 //
 // create takes no writer proof (createBuckets). A bucket that is absent holds no write to lose: the
 // writes its deleted stream acknowledged were lost with it, and every listener has answered the
@@ -20,11 +19,18 @@
 // which `docker compose up` runs again while the listener it provisioned still serves, and a Job
 // run on every apply.
 //
-// recreate's and check's proof is best effort, observation of the places the operator names, and
-// each of their runs says so (bestEffortWarning). The coming server-side hold will replace it with
-// exclusion at the server: while it holds, the auth callout refuses every connection but the
-// operator's, every other connection is kicked, and every server's connz shows the operator alone.
-// Until then it reads:
+// recreate refuses before it reads or calls anything, whatever its arguments: it opens no NATS
+// connection, runs no kubectl, ssh or sh, sends no HTTP request and deletes nothing. No observation
+// stands in for the hold, because no observation excludes a writer: a writer can connect, write
+// and leave between two reads; the canonical auth.conf shows neither the grants each server has
+// loaded nor the auth service's per-connection decisions; and a server-side writer (a stream
+// source, a republish, a push consumer) needs no open connection. The held recreate, which runs
+// only inside an established and verified writer hold from before its first delete through its
+// last create, is INFRA-4219's: cybermonklabs/legion#4698 replaces the refusal with it.
+//
+// check's proof is best effort, observation of the places the operator names, and each of its runs
+// says so (bestEffortWarning). It changes nothing and holds nothing once it returns, for a step
+// another tool makes, such as a `nats stream restore`. It reads:
 //
 //   - Kubernetes, for each --kube-context: no pod the API lists runs a writer container that has
 //     not terminated, and no node's kubelet runtime list (/api/v1/nodes/<node>/proxy/runningpods/)
@@ -124,19 +130,24 @@ func operatorEnvironment(name string) (string, bool) {
 // deliveries among them.
 const InboxPrefix = "_INBOX_envoy_buckets"
 
-// Grant is the NATS grant the command's user needs, and nothing more: the subjects it publishes to
-// - the account's JetStream info, then, for each bucket a listener copies, its stream's info,
-// create, update (raising its copies) and delete, and the notification stream's info, which
-// --first-deployment reads - and the one it subscribes to, its own reply inboxes (InboxPrefix).
-// The same user runs the restore after `check` (`nats stream restore` with
-// --inbox-prefix=_INBOX_envoy_buckets), so the grant also holds each copied bucket's restore
-// request and the subject its chunks go to (nats-server 2.15.1, jetstream_api.go:91-94 and
-// 170-172). The deployment's buckets user is granted exactly this until the auth service's
-// auth callout replaces the static user at the cutover.
+// Grant is the NATS grant the command's user needs, and nothing more. It publishes to the
+// notification stream's info, which every connection reads and --first-deployment reads again, and
+// for each bucket a listener copies, its stream's info, which create and --first-deployment read,
+// and its create; create reads the account's JetStream info before each create, as nats.go's own
+// create does. It subscribes to its own reply inboxes alone (InboxPrefix). No command sends a
+// stream update (create raises and changes no bucket) or a stream delete (recreate refuses before
+// it connects), so the grant holds neither. The same user runs the restore after check (`nats
+// stream restore` with --inbox-prefix=_INBOX_envoy_buckets), which no command of this package
+// sends, so the grant also holds each copied bucket's restore request and the subject its chunks
+// go to (nats-server 2.15.1, jetstream_api.go:91-94 and 170-172).
+// TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep runs every step and that restore under it,
+// and fails on a subject it holds that none of them sends. The deployment's buckets user is
+// granted exactly this until the auth service's auth callout replaces the static user at the
+// cutover.
 func Grant() (publish, subscribe []string) {
 	publish = []string{"$JS.API.INFO", "$JS.API.STREAM.INFO." + bus.Stream}
 	for _, bucket := range bus.CopiedBuckets() {
-		for _, verb := range []string{"INFO", "CREATE", "UPDATE", "DELETE", "RESTORE"} {
+		for _, verb := range []string{"INFO", "CREATE", "RESTORE"} {
 			publish = append(publish, "$JS.API.STREAM."+verb+".KV_"+bucket)
 		}
 		publish = append(publish, "$JS.SNAPSHOT.RESTORE.KV_"+bucket+".*")
@@ -144,22 +155,29 @@ func Grant() (publish, subscribe []string) {
 	return publish, []string{InboxPrefix + ".>"}
 }
 
-// bestEffortWarning is printed on every recreate and check run, and with the usage, to standard
-// error, before anything else: the proof is observation, not exclusion, until the coming
-// server-side hold excludes every writer at the server - the auth callout refusing every
-// connection but the operator's and every other connection kicked - from the check through the
-// change. Each way it names is a test that asserts today's outcome and must flip then
-// (buckets_test.go, TestBestEffort...). create takes no proof, and its run needs no writer stopped
-// (createBuckets), so the warning and its instruction are not its to print.
-const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it four ways:
+// recreateRefusal is all recreate does until INFRA-4219's writer hold ships it as a held command
+// (cybermonklabs/legion#4698). command writes it before it reads any argument, so no run of
+// recreate connects, runs kubectl, ssh or sh, sends an HTTP request or deletes anything, whatever
+// its arguments. No observation stands in for the hold: the package comment says why.
+const recreateRefusal = `envoy-infra buckets recreate: refused: recreate deletes no bucket outside INFRA-4219's writer hold,
+which cybermonklabs/legion#4698 adds. No reading of pods, processes or connections proves that no
+writer runs, and a bucket deleted under a writer loses every write it acknowledged. Nothing was
+read or changed. To make a bucket that is absent, run envoy-infra buckets create.
+`
+
+// bestEffortWarning is printed on every check run, and with the usage, to standard error, before
+// anything else: the proof is observation, not exclusion. Each way it names is a test that asserts
+// today's outcome (buckets_test.go, TestBestEffort...). create takes no proof, and its run needs no
+// writer stopped (createBuckets), so the warning and its instruction are not its to print; recreate
+// refuses before it prints anything else (recreateRefusal).
+const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it three ways:
   - an omitted host or dev box: only the --kube-context, --host and --this-machine you name are checked;
   - a renamed binary: a host is checked by process name (envoy-listener, listener, dispatch, ...);
-  - a writer that starts between the final scan and the create: nothing holds writers out;
   - an unheld restore: check holds nothing through a later nats stream restore.
-Before a recreate or a check, stop every envoy-listener of the deployment (and every
-envoy-dispatch, for envoy_ci_state) and confirm on each host that it has ended. A create takes
-no proof: it makes only a bucket that is absent. A server-side hold, which leaves no writer a
-connection, replaces this.
+Before a check, stop every envoy-listener of the deployment (and every envoy-dispatch, for
+envoy_ci_state) and confirm on each host that it has ended. A create takes no proof: it makes
+only a bucket that is absent. A server-side hold, which leaves no writer a connection, replaces
+this.
 `
 
 const usage = `usage: envoy-infra buckets create|recreate|check --nats URL [options]
@@ -170,12 +188,13 @@ const usage = `usage: envoy-infra buckets create|recreate|check --nats URL [opti
              write to lose. A bucket there at those copies with that configuration is present
              and left as it is (exit 0); one there with other copies or another configuration
              refuses the run, naming each difference, and nothing is created (exit 1)
-  recreate   delete each --bucket and create it again, once no writer runs
+  recreate   refused until INFRA-4219's writer hold ships it (cybermonklabs/legion#4698): it
+             reads, connects to and deletes nothing, whatever its flags (exit 1)
   check      prove no writer runs, and change nothing
 
 The writers are every envoy-listener of the deployment, and every envoy-dispatch when the CI state
-bucket is among the buckets. recreate and check require the proof before anything changes, and
-create refuses its flags, which would check nothing:
+bucket is among the buckets. check requires the proof, and create refuses its flags, which would
+check nothing:
   --kube-context CTX   a Kubernetes context to check, repeatable ("" is kubectl's current one)
   --host TARGET        a machine to query through ssh, repeatable
   --ssh PROGRAM        the program run as ssh (default ssh), such as a wrapper over SSM
@@ -185,7 +204,7 @@ create refuses its flags, which would check nothing:
   --connz URL          a hub server's monitoring URL whose connections to read, repeatable
   --first-deployment   also require that the server holds no notification stream and no bucket
 
-  --nats URL           the NATS server, as a user that may create and delete the buckets'
+  --nats URL           the NATS server, as a user that may read and create the buckets'
                        streams (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED in the environment)
   --inbox-prefix P     the prefix of the run's reply inboxes, which its user must subscribe
                        (default _INBOX_envoy_buckets, the buckets user's; _INBOX. for a
@@ -211,7 +230,11 @@ func (l *stringList) String() string     { return strings.Join(*l, ",") }
 func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 
 func command(ctx context.Context, args []string, stdout, stderr io.Writer, run Runner, client *http.Client) int {
-	if len(args) == 0 || (args[0] != "create" && args[0] != "recreate" && args[0] != "check") {
+	if len(args) > 0 && args[0] == "recreate" {
+		fmt.Fprint(stderr, recreateRefusal)
+		return 1
+	}
+	if len(args) == 0 || (args[0] != "create" && args[0] != "check") {
 		fmt.Fprint(stderr, bestEffortWarning)
 		help := len(args) > 0 && (args[0] == "-h" || args[0] == "-help" || args[0] == "--help")
 		fmt.Fprint(stderr, usage)
@@ -244,7 +267,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	flags.BoolVar(&breakGlass, "break-glass", false, "run create as a listener's NATS user")
 	flags.StringVar(&operator, "operator", "", "who runs a --break-glass create")
 	err := flags.Parse(args[1:])
-	if action != "create" {
+	if action == "check" {
 		fmt.Fprint(stderr, bestEffortWarning)
 	}
 	// No word the command was given is echoed where the parse could not read it as one of its own:
@@ -298,7 +321,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 			return 2
 		}
 	}
-	// A bucket named twice is one bucket: it is read, logged and created or recreated once.
+	// A bucket named twice is one bucket: it is read, logged and created or checked once.
 	named := map[string]bool{}
 	buckets = slices.DeleteFunc(buckets, func(bucket string) bool {
 		again := named[bucket]
@@ -315,10 +338,6 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	inbox, ok := inboxOption(inboxPrefix)
 	if !ok {
 		fmt.Fprintf(stderr, "envoy-infra buckets: --inbox-prefix is no inbox prefix: want one or more subject tokens joined by dots, such as %s or %s, with no wildcard and no white space\n%s", InboxPrefix, nats.InboxPrefix, usage)
-		return 2
-	}
-	if action == "recreate" && len(buckets) == 0 {
-		fmt.Fprintln(stderr, "envoy-infra buckets: recreate needs each --bucket it deletes")
 		return 2
 	}
 	if len(buckets) == 0 {
@@ -357,60 +376,19 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	js := nc.JS()
 
 	if blockers := f.prove(ctx, stdout, js); len(blockers) > 0 {
-		refuse(stderr, action, blockers, "")
+		refuse(stderr, action, blockers)
 		return 1
 	}
-	if action == "check" {
-		fmt.Fprintln(stdout, "proven: no writer of the buckets runs")
-		return 0
-	}
-	for _, bucket := range buckets {
-		if err := js.DeleteKeyValue(bucket); err != nil && !errors.Is(err, nats.ErrBucketNotFound) && !errors.Is(err, nats.ErrStreamNotFound) {
-			fmt.Fprintf(stderr, "envoy-infra buckets: delete %s: %v\n", bucket, err)
-			return 1
-		}
-		fmt.Fprintf(stdout, "deleted %s\n", bucket)
-	}
-	// A writer that started between the proof and the delete may have written to the deleted
-	// bucket, so the proof is taken again before anything is created.
-	if blockers := f.prove(ctx, stdout, js); len(blockers) > 0 {
-		refuse(stderr, "create", blockers, "the buckets are deleted and not created: stop each writer above, then run `envoy-infra buckets create`")
-		return 1
-	}
-	return createDeleted(stdout, stderr, nc.Conn, js, buckets, replicas)
+	fmt.Fprintln(stdout, "proven: no writer of the buckets runs")
+	return 0
 }
 
 // refuse writes the refusal and each blocker.
-func refuse(stderr io.Writer, action string, blockers []string, after string) {
+func refuse(stderr io.Writer, action string, blockers []string) {
 	fmt.Fprintf(stderr, "envoy-infra buckets %s: refused: a writer of the buckets may still run, and a bucket created under it loses every write the deleted one acknowledged\n", action)
 	for _, blocker := range blockers {
 		fmt.Fprintf(stderr, "  blocked: %s\n", blocker)
 	}
-	if after != "" {
-		fmt.Fprintf(stderr, "  %s\n", after)
-	}
-}
-
-// createDeleted creates each of buckets, the ones recreate deleted, with its copied-bucket
-// configuration, and leaves one another client made after the delete as it is.
-func createDeleted(stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext, buckets []string, replicas int) int {
-	for _, bucket := range buckets {
-		if _, err := js.KeyValue(bucket); err == nil {
-			fmt.Fprintf(stdout, "%s exists; left as it is\n", bucket)
-			continue
-		} else if !errors.Is(err, nats.ErrBucketNotFound) {
-			fmt.Fprintf(stderr, "envoy-infra buckets: read %s: %v\n", bucket, err)
-			return 1
-		}
-		// An operator's command, run by hand until it ends: the create's waits end at the start's
-		// hang guard (bus.EnsureKeyValue), under no context of its own.
-		if _, err := bus.CreateCopiedBucket(context.Background(), conn, js, bucket, replicas); err != nil {
-			fmt.Fprintf(stderr, "envoy-infra buckets: create %s: %v\n", bucket, err)
-			return 1
-		}
-		fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)
-	}
-	return 0
 }
 
 // createUsage is why the flags of a run misuse create's flags, or "" when they do not: create
@@ -424,7 +402,7 @@ func createUsage(flags *flag.FlagSet, action string, breakGlass bool, operator s
 		return "--operator names who runs a --break-glass create; leave it off without --break-glass"
 	}
 	if breakGlass && action != "create" {
-		return "--break-glass is create's alone: it creates an absent bucket and does nothing else, so it neither deletes one (recreate) nor proves that no writer runs (check)"
+		return "--break-glass is create's alone: it creates an absent bucket and does nothing else, so it does not prove that no writer runs (check)"
 	}
 	if action != "create" {
 		return ""
@@ -440,7 +418,7 @@ func createUsage(flags *flag.FlagSet, action string, breakGlass bool, operator s
 		}
 	})
 	if len(proof) > 0 {
-		return "create takes no writer proof, so " + strings.Join(proof, " and ") + " would check nothing: leave them off (recreate and check take them)"
+		return "create takes no writer proof, so " + strings.Join(proof, " and ") + " would check nothing: leave them off (check takes them)"
 	}
 	if !breakGlass {
 		return ""

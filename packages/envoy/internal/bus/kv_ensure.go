@@ -123,8 +123,8 @@ func namedRequest(request string, err error) error {
 // its stream (`KV_envoy_sessions STREAM.INFO: bucket is missing; ...`). A bucket deleted while one
 // of its writers runs must not come back while that writer runs, since a write the deleted bucket
 // acknowledged is in no bucket after it, and its writer was told it landed. The operator creates
-// such a bucket with `envoy-infra buckets` (CreateCopiedBucket). Every other bucket is created
-// when missing.
+// such a bucket with `envoy-infra buckets create` (CreateMissingCopiedBucket). Every other bucket
+// is created when missing.
 func EnsureKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	return ensureKeyValue(ctx, startHangGuard, conn, js, config)
 }

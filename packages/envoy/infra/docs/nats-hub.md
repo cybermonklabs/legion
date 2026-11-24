@@ -1060,7 +1060,12 @@ must have ended first: a write the old hub acknowledged after the snapshot is in
 
 1. Stop every listener and envoy-dispatch that reaches either hub, the clustered hub's own listener
    included (scale it to 0), and confirm on each host that it has ended.
-2. Run `envoy-infra buckets check` with the inventory of every writer; it must hold.
+2. Run `envoy-infra buckets check` with the inventory of every writer; it must hold. On a GKE
+   Autopilot cluster it never holds: for each `--kube-context`, `check` reads every node's runtime
+   list (`kubectl get --raw /api/v1/nodes/<node>/proxy/runningpods/`), which Autopilot refuses
+   (`nodes/proxy`), and a node whose list does not answer blocks. So this step cannot be followed
+   for a hub whose writers run on an Autopilot cluster, and no command makes this move safe there
+   until INFRA-4219's writer hold ships.
 3. Restore.
 4. While every writer is still at zero, run `envoy-infra buckets create`: it creates any copied
    bucket the restore did not bring, and leaves the others. A restored bucket at other copies than
@@ -1812,7 +1817,7 @@ which the pod-down alert covers.
 
 A key-value bucket a listener copies that is missing has no series either, while the pods serve:
 no listener creates one, so every write that needs it answers 503 until
-the operator recreates it ([`envoy-infra buckets`](../README.md#envoy-infra-buckets), with
+the operator creates it ([`envoy-infra buckets`](../README.md#envoy-infra-buckets), with
 `--break-glass` until the auth service's cutover, as [Updating a hub](#updating-a-hub) says).
 Alert on each bucket's absence, with a `for` of a few scrapes and the pod-down alert's silence
 while a pod is down:
