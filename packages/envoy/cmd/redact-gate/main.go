@@ -92,15 +92,29 @@ type recallEntry struct {
 	Note   string `json:"note"`
 }
 
-// leak is a leak row and where its leak is: control (19) applies the row's test, with the head's
-// Files copied in, to Base, and requires it to fail at REDACT-ASSERT Capture with a marker in the
-// output captured there. Base is a commit's full 40-character name, which a clone of origin can
-// fetch where it lacks the commit (earlierTree), so origin must hold a ref that reaches it.
+// leak is a leak row and where its leak is: control (19) applies the row's test to Base, with the
+// head's Files copied in whole and the head's text of each of Declarations put in place of the
+// base's, and requires it to fail at REDACT-ASSERT Capture with a marker in the output captured
+// there. Files are the row's own test file and files that hold no test (helpers, a production
+// file the base lacks); a helper or constant of a test file other tests share goes in
+// Declarations, so a test of that file the base cannot compile, which a whole copy would carry,
+// stays out of the base's run. Base is a commit's full 40-character name, which a clone of origin
+// can fetch where it lacks the commit (earlierTree), so origin must hold a ref that reaches it.
 type leak struct {
-	Row     string   `json:"row"`
-	Base    string   `json:"base"`
-	Files   []string `json:"files"`
-	Capture string   `json:"capture"`
+	Row          string        `json:"row"`
+	Base         string        `json:"base"`
+	Files        []string      `json:"files"`
+	Declarations []declaration `json:"declarations"`
+	Capture      string        `json:"capture"`
+}
+
+// declaration names top-level declarations of a Go file both the base and the head hold, each by
+// types.Func.FullName's form for a function or method ("pkg.F", "(*pkg.T).M") and pkg.Name for a
+// type, a constant or a variable: headDeclarations puts the head's text of each in place of the
+// base's, or adds it after the base's last declaration where the base has none.
+type declaration struct {
+	File  string   `json:"file"`
+	Names []string `json:"names"`
 }
 
 // boxConfig names the box and what may read its storage: the rule's functions its text may be the
@@ -518,6 +532,11 @@ func (g *gate) load(needSites bool) error {
 		}
 		if len(l.Base) != 40 || strings.Trim(l.Base, "0123456789abcdef") != "" {
 			return fmt.Errorf("leak %s: its base %q is not a commit's full 40-character name, which a clone that lacks it cannot fetch", l.Row, l.Base)
+		}
+		for _, d := range l.Declarations {
+			if !strings.HasSuffix(d.File, ".go") || len(d.Names) == 0 {
+				return fmt.Errorf("leak %s: a declarations entry names no Go file or no declaration", l.Row)
+			}
 		}
 	}
 	if len(g.inv.Recall) == 0 {
