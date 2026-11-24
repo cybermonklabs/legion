@@ -83,7 +83,9 @@ export const REACH_HOSTS = [
 /** A tool argument of the run's agent, or of one of its subagents, that names a host of
  * `REACH_HOSTS`: the session, the message's index in that session, the tool and the host. A host
  * named in an assistant's text or in a tool's result is no reach. A reach changes no verdict and
- * leaves no run out. */
+ * leaves no run out. The record is a measurement, not a guard: it lists a host only where a tool's
+ * arguments name it in plain text, so a host reached through a variable, an encoding or a file is
+ * not listed. */
 export const Reach = z.strictObject({
   session: nonEmpty,
   message: count,

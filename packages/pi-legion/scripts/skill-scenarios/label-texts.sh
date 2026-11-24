@@ -112,13 +112,23 @@ run_test() {
   grep -E "^--- PASS: $name \(" <<<"$output"
 }
 
+# compile <dir> compiles the three test binaries into <dir>, in the label's daemon module. The go
+# command stands alone on its line: CI's filter check holds a script's go command exact only then
+# (the label-texts.sh row of .github/ci-gates/pi-legion.py), and reads any other as reading every
+# Go file of the repository.
+compile() {
+  local bin=$1
+  cd "$daemon" || return 1
+  go test -c -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api
+}
+
 build() {
   mkdir -p "$label/.rig-texts"
   out="$label/.rig-texts/$(tree_key)"
   if [ ! -f "$out/built" ]; then
     local bin
     bin=$(mktemp -d "$label/.rig-texts/build.XXXXXX")
-    if ! (cd "$daemon" && go test -c -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api); then
+    if ! (compile "$bin"); then
       rm -rf -- "$bin"
       echo "label-texts: go test -c of the three packages failed in $daemon" >&2
       exit 1

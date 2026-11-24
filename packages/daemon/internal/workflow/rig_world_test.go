@@ -86,7 +86,7 @@ func TestRigWorld(t *testing.T) {
 	// queues, and the catch-up its launch queues, which names the root and its backlog child.
 	t.Run("the owner", func(t *testing.T) {
 		world := rigOwnWorld()
-		backlog := "RIG-2"
+		backlog := "LEGION-2"
 		world.Issues = append(world.Issues, rigWorldIssue{Key: backlog, Title: "The rig's child", Parent: &world.Subject, Tree: world.Subject, Status: "backlog"})
 		world.PullRequest = nil
 		world.Moment, world.Role = "owner", string(claim.RoleArchitect)
@@ -169,12 +169,14 @@ func TestRigWorld(t *testing.T) {
 // rigWorldHead is the head of the own cases' pull request, which a review App's footer names.
 const rigWorldHead = "5d1e5d1e5d1e5d1e5d1e5d1e5d1e5d1e5d1e5d1e"
 
-// rigOwnWorld is the world each own case starts from: the root RIG-1 at admitted, its design gate
-// open at version 1 of a planted spec document, and its open pull request #7.
+// rigOwnWorld is the world each own case starts from: the root LEGION-1 at admitted, its design
+// gate open at version 1 of a planted spec document, and its open pull request #7. Its project is
+// LEGION, the one this package's fixtures spell their claims in (treeRoleToken), so a fixture's
+// record of this world reads as this world's own.
 func rigOwnWorld() rigWorldRequest {
-	root, admitted := "RIG-1", string(phase.Admitted)
+	root, admitted := "LEGION-1", string(phase.Admitted)
 	return rigWorldRequest{
-		Project: "RIG", Repository: "rig-owner/rig-repo", DefaultBranch: "trunk", Workspace: "/rig/workspaces/rig-owner/rig-repo/RIG-1",
+		Project: "LEGION", Repository: "rig-owner/rig-repo", DefaultBranch: "trunk", Workspace: "/rig/workspaces/rig-owner/rig-repo/LEGION-1",
 		Issues:      []rigWorldIssue{{Key: root, Title: "The rig's root", Tree: root, Status: "in_progress", Phase: &admitted}},
 		Gate:        &rigWorldGate{Issue: root, Step: string(record.DesignStepSpec), Version: 1, Approved: true, ArtifactID: "rig-spec-document-5d1e"},
 		Subject:     root,
