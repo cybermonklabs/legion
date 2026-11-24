@@ -198,6 +198,19 @@ itself, whose tests import its sources by relative path.
   GitHub Actions on Linux it never skips: a runner there can read the mask, so one that cannot is
   broken, and the rows run and fail rather than pass in silence.
 
+- A Go test of `packages/daemon` that reads a process's `SigIgn` or `SigCgt` mask from
+  `/proc/<pid>/status` calls `testkernel.RequireSignalMasks(t, "SigIgn")` (or with `"SigCgt"`)
+  first (`packages/daemon/internal/testkernel`). The probe reads the status of a shell that ignores
+  SIGUSR1 and catches SIGUSR2, so it finds a line that is there but does not follow the process as
+  well as one that is missing: the build cluster's gVisor has no mask line at all. It prints one
+  `kernel probe:` line either way, as `requireKernel` in `packages/envoy/cmd/cipher` does, then
+  skips the row where the kernel lacks the masks, and fails it under `GITHUB_ACTIONS`. A row whose
+  claim a shell can show by behaviour makes that read in the test itself and the mask read in a
+  subtest, so the test still proves its claim on gVisor: a non-interactive shell can set no trap
+  for a signal it was started ignoring (`startsIgnoring` in
+  `packages/daemon/internal/daemon/foreground_test.go`), and a shell started ignoring SIGHUP
+  survives the hangup it sends itself (`ghHangupProbe` in `packages/daemon/cmd/legion/gh_test.go`).
+
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
