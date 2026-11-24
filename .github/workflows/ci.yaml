@@ -160,6 +160,7 @@ jobs:
       ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_reconcile_test }}
       find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
+      cancel_acts_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.cancel_acts_test }}
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
       edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
@@ -405,6 +406,7 @@ jobs:
       ci_ok_reconcile_test: ${{ needs.changes.outputs.ci_ok_reconcile_test }}
       find_pr_payload_test: ${{ needs.changes.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
+      cancel_acts_test: ${{ needs.changes.outputs.cancel_acts_test }}
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
       edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}

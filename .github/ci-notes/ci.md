@@ -2503,6 +2503,20 @@ A force-cancel that fails leaves a warning rather than a red job: the run it nam
 completed between the list and the call, and an act that reclaims nothing is no failure of
 the run it runs in.
 
+A read GitHub refuses is no failure of the run either, and for the same reason: the act
+reclaims runner time and decides nothing, so a merge-group run whose list of runs it cannot
+read tests its own group all the same, and the groups it would have cancelled run to their
+own end. Each read of both acts goes through .github/scripts/gh-read.sh — the run lists
+through its gh_read ladder, the dequeued act's timeline read through the seven attempts of
+its own — and a refusal still standing at the end of them warns and leaves the job green
+where gh_read_transient reads it as GitHub's own: a 5xx, a 429, or a rate limit the helper
+could not wait out within the job's limit. Every other refusal is still red: a 4xx that is
+not 429 names a token or a route the job has wrong, which no later run mends by itself, and
+a run of .github/workflows/dequeued.yaml that read no timeline at all would otherwise say it
+had looked and found nothing. Before that rule, merge-group run 45467602844 (pull request
+#5331's second group) went red whole because one `gh run list` answered HTTP 500, in job
+138706588845.
+
 ## The verdict, and one of the two checks main's ruleset requires of
 
 The verdict, and one of the two checks main's ruleset requires of this router. It needs every

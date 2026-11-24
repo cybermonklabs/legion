@@ -82,6 +82,20 @@
 # dispatch-browser-run-reads.sh, which bounds each attempt with `timeout 30`. GitHub
 # refuses a call now and then (a 502), and ci-ok, the check main's ruleset requires, is posted
 # from what one call answered.
+#
+# gh_read_transient <status> <stderr file>: true when the refusal a failed call of either helper
+# ended on was GitHub's own and passes of itself — a 5xx, a 429, or a rate limit this file named
+# itself, which is the 75 it returns — and false for every other failure, which another call
+# would meet again: a 4xx that is not 429 (a token whose scopes the job no longer holds, a route
+# that is not there), a command gh refused to run at all, or an answer the caller could not read.
+# The status is read out of the words gh printed for the attempt the call ended on, which
+# `--stderr <file>` leaves in that file: gh prints `(HTTP 404)` for `gh api` and `HTTP 500
+# (<url>)` for `gh run list`. A refusal naming no status is therefore no 5xx here, which is the
+# point of reading the words rather than the status alone — a misspelt flag and a jq program that
+# did not parse fail with words of gh's own and no HTTP status, and reading those as something
+# that passes would hide a broken call behind a warning. For the caller whose read is an
+# optimization: both cancel acts (cancel-started-act.sh, cancel-dequeued-act.sh) warn and exit 0
+# on a refusal that passes of itself, and fail on one that does not.
 
 # Seconds the deadline must leave after the reset: the repeated call and what the step does after
 # it run in that time. A gh call takes about a second and a paginated read a few.
@@ -190,6 +204,11 @@ gh_read() {
   done
   [ "$status" -ne 75 ] || return 75
   return 1
+}
+
+gh_read_transient() { # gh_read_transient <status> <stderr file>
+  [ "$1" -ne 75 ] || return 0
+  grep -qE 'HTTP (429|5[0-9][0-9])' "$2"
 }
 
 # _gh_read_run <dir> <command>...: one run, its stdout kept in <dir>/out and its stderr in
