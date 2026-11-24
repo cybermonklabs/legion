@@ -369,6 +369,38 @@ test("the gateway route posts to <gateway>/v1/messages with the key the key comm
   }
 });
 
+// The messages endpoint is joined onto the gateway's path, the gateway URL's query kept as a
+// query. Appended to the URL's text, `/v1/messages` sat inside the query
+// (`/anthropic/?team=t1/v1/messages`) and the gateway was asked `/anthropic/`.
+test("the gateway route keeps the gateway URL's query, after <gateway>/v1/messages", async () => {
+  const command = path.join(dir("gateway-query"), "key-command");
+  writeFileSync(command, "#!/bin/sh\necho gateway-key\n");
+  chmodSync(command, 0o700);
+  const { fetch, sent } = world();
+  const run = io(fetch);
+  const code = await main(
+    [
+      "--since",
+      SINCE,
+      "--until",
+      UNTIL,
+      "--out",
+      path.join(dir("gateway-query-run"), "labels"),
+      "--gateway",
+      "http://gateway.test/anthropic/?team=t1",
+      "--key-command",
+      command,
+    ],
+    run.io
+  );
+  expect(run.stderr).toEqual([]);
+  expect(code).toBe(0);
+  const calls = sent.filter(({ url }) => url.host !== "dispatch.test");
+  expect(calls.map(({ url }) => url.toString())).toEqual(
+    Array(4).fill("http://gateway.test/anthropic/v1/messages?team=t1")
+  );
+});
+
 test("a 429, a 5xx or a reply that skips a question is asked again", async () => {
   const out = path.join(dir("retried"), "labels");
   const { fetch } = world((comment, attempt) => {
