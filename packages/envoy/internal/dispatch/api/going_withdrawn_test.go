@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -376,11 +377,7 @@ func (rig goingRoutesRig) storedFrames(t *testing.T, id string) []model.GraphFra
 func (rig goingRoutesRig) graphFrames(t *testing.T, id string) []model.GraphFrame {
 	t.Helper()
 	address := "dispatch://" + graphstore.KindInteraction + "/" + id
-	response := referencesAt(t, rig.handler, "from", address, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("alice's ?from=%s: status=%d body=%s", address, response.Code, response.Body.String())
-	}
-	read := decodeBody[model.GraphReferences](t, response)
+	read := graphEdges(t, rig.handler, url.Values{"from": {address}})
 	if read.Node.Ref != address {
 		t.Fatalf("alice's ?from=%s answers the node %+v, want her run", address, read.Node)
 	}
