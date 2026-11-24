@@ -6,16 +6,18 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
 
 // TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder: every entry of the table
 // of names whose values are public names the contract that declares it, and each route the entry
-// is public on in its source's words, and none is a name a credential travels under
+// is public on in its source's words, or for every path of a method a protocol its source cites
+// (protocolMethods), and none is a name a credential travels under
 // (testdata/credential-names.json, which the TypeScript guard reads too). An entry with no source,
-// a route that is no "<METHOD> /<path>" or that its source does not name, or a credential's name,
-// fails here.
+// a route routeProblem refuses, a credential's name, or a protocol no entry cites or whose route is
+// no method's every path, fails here.
 func TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder(t *testing.T) {
 	data, err := os.ReadFile("testdata/credential-names.json")
 	if err != nil {
@@ -28,8 +30,8 @@ func TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder(t *tes
 	if err := json.Unmarshal(data, &forbidden); err != nil {
 		t.Fatal(err)
 	}
-	if len(forbidden.Names) == 0 || len(forbidden.HeaderPatterns) == 0 || len(publicRequestNames) == 0 {
-		t.Fatal("the credential names, their patterns or the public-name table hold nothing, so nothing was checked")
+	if len(forbidden.Names) == 0 || len(forbidden.HeaderPatterns) == 0 || len(publicRequestNames) == 0 || len(protocolMethods) == 0 {
+		t.Fatal("the credential names, their patterns, the public-name table or its protocols hold nothing, so nothing was checked")
 	}
 	var patterns []*regexp.Regexp
 	for _, p := range forbidden.HeaderPatterns {
@@ -43,8 +45,8 @@ func TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder(t *tes
 			t.Errorf("the public name %q is carried at %q, neither header nor field", entry.Name, entry.Place)
 		}
 		for _, route := range entry.Routes {
-			if !routeShape.MatchString(route) || !strings.Contains(entry.Source, route) {
-				t.Errorf("the public name %q is public on %q, which is no \"<METHOD> /<path>\" its source %q names", entry.Name, route, entry.Source)
+			if problem := routeProblem(entry, route); problem != "" {
+				t.Errorf("the public name %q is public on %q, which %s; its source is %q", entry.Name, route, problem, entry.Source)
 			}
 		}
 		for _, name := range forbidden.Names {
@@ -58,10 +60,72 @@ func TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder(t *tes
 			}
 		}
 	}
+	for _, protocol := range protocolMethods {
+		if !everyPath.MatchString(protocol.Route) || strings.TrimSpace(protocol.Source) == "" || strings.TrimSpace(protocol.Words) == "" {
+			t.Errorf("the protocol %+v names no method's every path, no section or none of its words", protocol)
+		}
+		cited := false
+		for _, entry := range publicRequestNames {
+			cited = cited || (slices.Contains(entry.Routes, protocol.Route) && strings.Contains(entry.Source, protocol.Source))
+		}
+		if !cited {
+			t.Errorf("no entry public on %q cites the protocol %q, so nothing needs it", protocol.Route, protocol.Source)
+		}
+	}
 }
 
-// routeShape is an entry's route: an upper-case method, one space and a path from its root.
-var routeShape = regexp.MustCompile(`^[A-Z]+ /[^ ]*$`)
+// routeShape is an entry's route: an upper-case method, one space and a path from its root; and
+// everyPath one on every path of its method.
+var (
+	routeShape = regexp.MustCompile(`^[A-Z]+ /[^ ]*$`)
+	everyPath  = regexp.MustCompile(`^[A-Z]+ /\*$`)
+)
+
+// routeProblem is why route, one of entry's, is no route its source names, or "" where it is one:
+// a route on every path of its method is one a protocol of protocolMethods fixes, whose section the
+// source cites, since no contract writes "/*" and a source that repeats the route names nothing;
+// any other route is one the source names in its own words.
+func routeProblem(entry publicRequestName, route string) string {
+	switch {
+	case !routeShape.MatchString(route):
+		return `is no "<METHOD> /<path>"`
+	case everyPath.MatchString(route):
+		for _, protocol := range protocolMethods {
+			if protocol.Route == route && strings.Contains(entry.Source, protocol.Source) {
+				return ""
+			}
+		}
+		return "is every path of its method, which no protocol its source cites fixes (protocolMethods)"
+	case !strings.Contains(entry.Source, route):
+		return "is a route its source does not name"
+	}
+	return ""
+}
+
+// TestARouteOnEveryPathIsOneAProtocolItsSourceCitesFixes: routeProblem passes a route on every path
+// of its method only from a source that cites a protocol fixing that method, never from one that
+// only repeats the route, and any other route only from a source that names it.
+func TestARouteOnEveryPathIsOneAProtocolItsSourceCitesFixes(t *testing.T) {
+	for _, row := range []struct {
+		name, source, route string
+		refused             bool
+	}{
+		{"repeats-every-path", "POST /* (the token request, a POST to the path its issuer sets)", "POST /*", true},
+		{"cites-another-method", "RFC 6749 §3.2: the token request", "GET /*", true},
+		{"cites-nothing", "the token request", "POST /*", true},
+		{"cites-the-protocol", "RFC 6749 §4.1.3; the token request is a POST by RFC 6749 §3.2", "POST /*", false},
+		{"names-the-route", "POST /v1/oauth/token (the broker's token exchange)", "POST /v1/oauth/token", false},
+		{"names-another-route", "POST /v1/oauth/revoke (the broker's revocation)", "POST /v1/oauth/token", true},
+		{"no-route-shape", "GET v1/sessions", "GET v1/sessions", true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			problem := routeProblem(publicRequestName{Place: "field", Name: "planted", Source: row.source, Routes: []string{row.route}}, row.route)
+			if refused := problem != ""; refused != row.refused {
+				t.Errorf("routeProblem(%q, %q) = %q; want it refused: %v", row.source, row.route, problem, row.refused)
+			}
+		})
+	}
+}
 
 // TestARequestsValueIsACredentialUnlessItsNameIsPublic: a value under a name no contract declares
 // public, a new one included, is among the request's credentials, and a value under a listed name
