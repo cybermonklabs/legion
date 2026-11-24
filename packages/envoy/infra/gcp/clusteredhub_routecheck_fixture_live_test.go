@@ -9,6 +9,7 @@ package gcp_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -30,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/infra/routes"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stagedServer is one server of a stagedHub: a nats-server named as a hub pod, on ports of its
@@ -201,14 +204,14 @@ func (h *stagedHub) reload(t *testing.T, stage string) {
 	h.awaitMesh(t)
 }
 
-// beforeAuthorization waits until every server started more than 11 s ago, so the reload onto
-// authorization comes more than the route check's startDelay (10 s) after each container's start.
+// beforeAuthorization waits until every server started more than 31 s ago, so the reload onto
+// authorization comes more than the route check's startDelay (30 s) after each container's start.
 // A row's peers and reloads before authorization stay out of the check's window, which opens at
 // the hangup that begins that reload (routes/log.go, authorizationWindow).
 func (h *stagedHub) beforeAuthorization() {
 	until := time.Now()
 	for _, s := range h.servers {
-		if at := s.startedAt.Add(11 * time.Second); at.After(until) {
+		if at := s.startedAt.Add(31 * time.Second); at.After(until) {
 			until = at
 		}
 	}
@@ -231,7 +234,7 @@ func (h *stagedHub) reloadEach(t *testing.T, stage, want, unwanted string) {
 		out := s.proc.Output.String()
 		wantBefore, unwantedBefore := strings.Count(out, want), strings.Count(out, unwanted)
 		require.NoError(t, s.proc.Cmd.Process.Signal(syscall.SIGHUP))
-		within(t, 15*time.Second, s.name+" reloading onto "+stage, func() error {
+		within(t, s.name+" reloading onto "+stage, func() error {
 			out := s.proc.Output.String()
 			if strings.Count(out, unwanted) > unwantedBefore {
 				t.Fatalf("%s logged %q on the %s nats.conf:\n%s", s.name, unwanted, stage, out)
@@ -264,7 +267,7 @@ func (h *stagedHub) serverIDs(t *testing.T) map[string]string {
 		var varz struct {
 			ID string `json:"server_id"`
 		}
-		within(t, 15*time.Second, s.name+"'s /varz", func() error {
+		within(t, s.name+"'s /varz", func() error {
 			return getJSON("http://"+net.JoinHostPort(s.host, strconv.Itoa(s.monitor))+"/varz", &varz)
 		})
 		ids[s.name] = varz.ID
@@ -276,7 +279,7 @@ func (h *stagedHub) serverIDs(t *testing.T) map[string]string {
 func (h *stagedHub) awaitMesh(t *testing.T) {
 	t.Helper()
 	ids := h.serverIDs(t)
-	within(t, 30*time.Second, "the three servers' mesh", func() error {
+	within(t, "the three servers' mesh", func() error {
 		for _, s := range h.servers {
 			routez, err := routezOf(s.host, s.monitor)
 			if err != nil {
@@ -433,13 +436,69 @@ func startPeer(t *testing.T, natsServer, name, routeHost string, routeTo []int) 
 	return p, net.JoinHostPort(host, strconv.Itoa(drawn[1]))
 }
 
+// poolPeer is a peer startPoolPeer started: its process, its monitoring endpoint (host:port), its
+// route port, and reload, which reloads it onto a route pool of the size given.
+type poolPeer struct {
+	proc    *cmdtest.Process
+	monitor string
+	route   int
+	reload  func(t *testing.T, poolSize int)
+}
+
+// startPoolPeer starts a peer as startPeer does, but from a config file, whose reload onto a route
+// pool of another size waits until the peer applied the change (its own "Reloaded: cluster" line,
+// reload.go:470, and its "Reloaded server configuration"). A reload that changes a server's pool
+// size closes every pooled route it holds (nats-server 2.15.1 server/reload.go:2711-2715,
+// :2733-2735), those the hub's servers dialed to it among them, and a server whose implicit route
+// it dialed closes dials that route again (client.go:6474, :6529; route.go:2894-2910): so the hub
+// dials the peer anew at a moment the test chooses. Servers of different pool sizes route to each
+// other (route.go:2170-2173).
+func startPoolPeer(t *testing.T, natsServer, name, routeHost string, routeTo []int) poolPeer {
+	t.Helper()
+	host := testport.LoopbackIP().String()
+	drawn := reservePortsOn(t, host, 2)
+	route := reservePorts(t, 1)[0]
+	var urls []string
+	for _, port := range routeTo {
+		urls = append(urls, strconv.Quote(fmt.Sprintf("nats://127.0.0.1:%d", port)))
+	}
+	listen := net.JoinHostPort(routeHost, strconv.Itoa(route))
+	conf := filepath.Join(t.TempDir(), name+".conf")
+	// Every option is in the file: nats-server takes a reload's file over its flags but refuses one
+	// that would change the server's name, which a name given only as a flag does, the file
+	// naming none ("config reload not supported for ServerName").
+	write := func(t *testing.T, poolSize int) {
+		t.Helper()
+		body := fmt.Sprintf("server_name: %q\nlisten: %q\nhttp: %q\ncluster {\n  name: envoy-nats\n  listen: %q\n  advertise: %q\n  routes: [%s]\n  pool_size: %d\n}\n",
+			name, net.JoinHostPort(host, strconv.Itoa(drawn[0])), net.JoinHostPort(host, strconv.Itoa(drawn[1])),
+			listen, listen, strings.Join(urls, ", "), poolSize)
+		require.NoError(t, os.WriteFile(conf, []byte(body), 0o600))
+	}
+	write(t, 3)
+	p := startReady(t, name, exec.Command(natsServer, "-c", conf), listeningForRoutesOn(routeHost, route))
+	reload := func(t *testing.T, poolSize int) {
+		t.Helper()
+		seen := p.Output.Len()
+		write(t, poolSize)
+		require.NoError(t, p.Cmd.Process.Signal(syscall.SIGHUP))
+		testwait.Until(t, name+" applying the route pool size "+strconv.Itoa(poolSize), func() (string, bool) {
+			since := p.Output.String()[seen:]
+			if strings.Contains(since, "Failed to reload server configuration") {
+				t.Fatalf("%s refused its reload onto the route pool size %d:\n%s", name, poolSize, since)
+			}
+			return since, strings.Contains(since, "Reloaded: cluster") && strings.Contains(since, "Reloaded server configuration")
+		})
+	}
+	return poolPeer{proc: p, monitor: net.JoinHostPort(host, strconv.Itoa(drawn[1])), route: route, reload: reload}
+}
+
 // peerID is the server id of the peer whose monitoring endpoint is monitor, a host:port.
 func peerID(t *testing.T, monitor string) string {
 	t.Helper()
 	var varz struct {
 		ID string `json:"server_id"`
 	}
-	within(t, 15*time.Second, "the peer's /varz", func() error { return getJSON("http://"+monitor+"/varz", &varz) })
+	within(t, "the peer's /varz", func() error { return getJSON("http://"+monitor+"/varz", &varz) })
 	return varz.ID
 }
 
@@ -501,14 +560,24 @@ func removedRouteLine(password string) string {
 }
 
 // dialFrom opens a TCP connection to port on 127.0.0.1 from local, any 127/8 address, closed when
-// the test ends.
+// the test ends. The dial ends when every wait of this binary does (testwait.Context).
 func dialFrom(t *testing.T, local string, port int) net.Conn {
 	t.Helper()
-	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(local)}, Timeout: 5 * time.Second}
-	conn, err := dialer.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(local)}}
+	conn, err := dialer.DialContext(testwait.Context(t), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
+}
+
+// awaitAnswers sets conn's deadline to the moment every wait of this binary gives up
+// (testwait.Context), so a read of a server's answer ends on the answer however late it comes,
+// and fails only when the server never sends it. Under -timeout 0 conn keeps no deadline.
+func awaitAnswers(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		require.NoError(t, conn.SetDeadline(deadline))
+	}
 }
 
 // fakeRoute is a route connection the test speaks itself, as a route peer could: it logs in, and
@@ -522,12 +591,20 @@ type fakeRoute struct {
 }
 
 // dialFakeRoute opens a fakeRoute to port from local, logging in with user and pass, and naming
-// the server name.
+// the server name. Its CONNECT is ready before the dial and goes out at once, ahead of the read of
+// the server's INFO, so the wait for that INFO no longer spends the cluster's auth timeout
+// (route.go:2070-2073, 2 s): the INFO it sends is built from the server's, which it reads after.
 func dialFakeRoute(t *testing.T, local string, port int, user, pass, name string) *fakeRoute {
 	t.Helper()
+	id := "NFAKE" + strings.ToUpper(strconv.FormatInt(time.Now().UnixNano(), 36))
+	connect, err := json.Marshal(map[string]any{"echo": true, "verbose": false, "pedantic": false, "user": user, "pass": pass,
+		"tls_required": false, "headers": true, "name": id, "cluster": "envoy-nats", "dynamic": false, "lnoc": true})
+	require.NoError(t, err)
 	conn := dialFrom(t, local, port)
+	_, err = conn.Write([]byte("CONNECT " + string(connect) + "\r\n"))
+	require.NoError(t, err)
 	reader := bufio.NewReader(conn)
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	awaitAnswers(t, conn)
 	first, err := reader.ReadString('\n')
 	require.NoError(t, err)
 	var info map[string]any
@@ -535,16 +612,12 @@ func dialFakeRoute(t *testing.T, local string, port int, user, pass, name string
 	for _, key := range []string{"nonce", "compression", "route_pool_size", "route_pool_idx", "connect_urls", "auth_required"} {
 		delete(info, key)
 	}
-	id := "NFAKE" + strings.ToUpper(strconv.FormatInt(time.Now().UnixNano(), 36))
 	info["server_id"], info["server_name"], info["gossip_mode"] = id, name, 1
 	info["ip"] = "nats-route://" + net.JoinHostPort(local, "1") + "/"
-	connect, err := json.Marshal(map[string]any{"echo": true, "verbose": false, "pedantic": false, "user": user, "pass": pass,
-		"tls_required": false, "headers": true, "name": id, "cluster": "envoy-nats", "dynamic": false, "lnoc": true})
-	require.NoError(t, err)
 	infoOut, err := json.Marshal(info)
 	require.NoError(t, err)
-	require.NoError(t, conn.SetReadDeadline(time.Time{}))
-	_, err = conn.Write([]byte("CONNECT " + string(connect) + "\r\nINFO " + string(infoOut) + "\r\nPING\r\n"))
+	require.NoError(t, conn.SetDeadline(time.Time{}))
+	_, err = conn.Write([]byte("INFO " + string(infoOut) + "\r\nPING\r\n"))
 	require.NoError(t, err)
 	f := &fakeRoute{conn: conn, pong: make(chan struct{}), done: make(chan struct{})}
 	go func() {
@@ -570,15 +643,21 @@ func dialFakeRoute(t *testing.T, local string, port int, user, pass, name string
 }
 
 // awaitPong waits for the server's answer to the route's first PING, which it sends once it has
-// taken the route's CONNECT and INFO.
+// taken the route's CONNECT and INFO, failing the test when the server closes the route before
+// that answer or every wait of this binary gives up. The reader closes pong before done, so a route
+// that answered and then closed is read as having answered, whichever this wait sees first.
 func (f *fakeRoute) awaitPong(t *testing.T) {
 	t.Helper()
 	select {
 	case <-f.pong:
 	case <-f.done:
-		t.Fatal("the server closed the fake route before it answered its PING")
-	case <-time.After(10 * time.Second):
-		t.Fatal("the server did not answer the fake route's PING within 10 s")
+		select {
+		case <-f.pong:
+		default:
+			t.Fatal("the server closed the fake route before it answered its PING")
+		}
+	case <-testwait.Context(t).Done():
+		t.Fatal("the server did not answer the fake route's PING before this binary's waits gave up")
 	}
 }
 
@@ -591,33 +670,37 @@ func (f *fakeRoute) close() {
 // localPort is the port the fake route connects from.
 func (f *fakeRoute) localPort() string { return strconv.Itoa(f.conn.LocalAddr().(*net.TCPAddr).Port) }
 
-// refusedRouteLogin opens one route connection to port from local (any 127/8 address), reads the
-// INFO, sends a route CONNECT with no credential, and returns the server's answer: the login the
-// route credential exists to refuse.
+// refusedRouteLogin opens one route connection to port from local (any 127/8 address), sends a
+// route CONNECT with no credential at once, reads the INFO, and returns the server's answer: the
+// login the route credential exists to refuse. The CONNECT goes out before the INFO is read, so
+// the wait for the INFO no longer spends the cluster's auth timeout (2 s).
 func refusedRouteLogin(t *testing.T, local string, port int) string {
 	t.Helper()
-	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(local)}, Timeout: 5 * time.Second}
-	conn, err := dialer.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(local)}}
+	conn, err := dialer.DialContext(testwait.Context(t), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	require.NoError(t, err)
 	defer conn.Close()
-	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	_, err = conn.Write([]byte(`CONNECT {"verbose":false,"pedantic":false,"tls_required":false,"name":"stranger","cluster":"envoy-nats"}` + "\r\nPING\r\n"))
+	require.NoError(t, err)
+	awaitAnswers(t, conn)
 	reader := bufio.NewReader(conn)
 	info, err := reader.ReadString('\n')
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(info, "INFO "), info)
-	_, err = conn.Write([]byte(`CONNECT {"verbose":false,"pedantic":false,"tls_required":false,"name":"stranger","cluster":"envoy-nats"}` + "\r\nPING\r\n"))
-	require.NoError(t, err)
 	answer, _ := reader.ReadString('\n')
 	return strings.TrimSpace(answer)
 }
 
 // requireNoStrayReaches fails t, naming the server, when a client dialing 127.0.0.1 at port
 // reaches the nats-server named name that listens at host:port: a client another test left
-// dialing 127.0.0.1, at a port the kernel has since given this server, must not reach it. A
-// listener that answers at 127.0.0.1:port is another program's unless the INFO it sends names
-// this server. The control is the same read at host:port, whose INFO must name it, so a read that
-// could not see a server's name fails here rather than pass. Off Linux every server listens on
-// 127.0.0.1, so there is no other address to dial.
+// dialing 127.0.0.1, at a port the kernel has since given this server, must not reach it. A dial
+// the kernel refuses reaches nothing; a listener that answers at 127.0.0.1:port is another
+// program's when the whole first line it sends does not name this server. Anything else, a dial
+// that is neither taken nor refused or a listener that sends no whole line before this binary's
+// waits give up, says nothing of which program listens there, and fails rather than pass. The
+// control is the same read at host:port, whose INFO must name it, so a read that could not see a
+// server's name fails here rather than pass. Off Linux every server listens on 127.0.0.1, so there
+// is no other address to dial.
 func requireNoStrayReaches(t *testing.T, name, host string, port int) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
@@ -627,14 +710,16 @@ func requireNoStrayReaches(t *testing.T, name, host string, port int) {
 	own := net.JoinHostPort(host, strconv.Itoa(port))
 	require.Contains(t, firstLine(t, own), named, "control: the INFO %s sends at %s names it", name, own)
 	stray := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	conn, err := net.DialTimeout("tcp", stray, 2*time.Second)
+	conn, err := (&net.Dialer{}).DialContext(testwait.Context(t), "tcp", stray)
 	if err != nil {
+		require.ErrorIs(t, err, syscall.ECONNREFUSED, "a dial of %s was neither taken nor refused, so whether it reaches %s is unknown", stray, name)
 		t.Logf("a client at %s reaches nothing (%v); %s listens at %s", stray, err, name, own)
 		return
 	}
 	defer conn.Close()
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
-	info, _ := bufio.NewReader(conn).ReadString('\n')
+	awaitAnswers(t, conn)
+	info, err := bufio.NewReader(conn).ReadString('\n')
+	require.NoError(t, err, "the listener at %s sent no whole line, so whether it is %s is unknown", stray, name)
 	require.NotContains(t, info, named, "a client at %s reached %s, which listens at %s", stray, name, own)
 	t.Logf("a client at %s reaches another listener, not %s, which listens at %s", stray, name, own)
 }
@@ -642,45 +727,47 @@ func requireNoStrayReaches(t *testing.T, name, host string, port int) {
 // firstLine is the first line a listener at address sends, its INFO for a nats-server.
 func firstLine(t *testing.T, address string) string {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	conn, err := (&net.Dialer{}).DialContext(testwait.Context(t), "tcp", address)
 	require.NoError(t, err)
 	defer conn.Close()
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	awaitAnswers(t, conn)
 	line, err := bufio.NewReader(conn).ReadString('\n')
 	require.NoError(t, err)
 	return line
 }
 
 // strayRouteLogin dials s's route port at 127.0.0.1, its pod IP, as a stray client can, and logs
-// in as the route user with a wrong password, which s refuses and logs as an authentication error
-// from 127.0.0.1.
+// in at once, before it reads the INFO, as the route user with a wrong password, which s refuses
+// and logs as an authentication error from 127.0.0.1.
 func strayRouteLogin(t *testing.T, s *stagedServer) {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(s.route)), 5*time.Second)
+	conn, err := (&net.Dialer{}).DialContext(testwait.Context(t), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(s.route)))
 	require.NoError(t, err)
 	defer conn.Close()
-	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	_, err = conn.Write([]byte(`CONNECT {"user":"route","pass":"` + strings.Repeat("s", 32) + `","verbose":false,"pedantic":false,"name":"stray"}` + "\r\nPING\r\n"))
+	require.NoError(t, err)
+	awaitAnswers(t, conn)
 	reader := bufio.NewReader(conn)
 	_, err = reader.ReadString('\n')
-	require.NoError(t, err)
-	_, err = conn.Write([]byte(`CONNECT {"user":"route","pass":"` + strings.Repeat("s", 32) + `","verbose":false,"pedantic":false,"name":"stray"}` + "\r\nPING\r\n"))
 	require.NoError(t, err)
 	_, _ = reader.ReadString('\n')
 }
 
 // clientLine connects to s's client port as a client with no credential, which the hub's
-// no_auth_user takes, and sends one -ERR, whose text the server logs whole at the end of a
-// "Client Error" line (client.go:2268); it returns the server's answer to the CONNECT's PING.
+// no_auth_user takes, logging in at once, before it reads the INFO, so the wait for the INFO no
+// longer spends the server's auth timeout, and sends one -ERR, whose text the server logs whole at
+// the end of a "Client Error" line (client.go:2268); it returns the server's answer to the
+// CONNECT's PING.
 func clientLine(t *testing.T, s *stagedServer, text string) string {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(s.host, strconv.Itoa(s.client)), 5*time.Second)
+	conn, err := (&net.Dialer{}).DialContext(testwait.Context(t), "tcp", net.JoinHostPort(s.host, strconv.Itoa(s.client)))
 	require.NoError(t, err)
 	defer conn.Close()
-	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	_, err = conn.Write([]byte(`CONNECT {"verbose":false,"pedantic":false,"protocol":1}` + "\r\nPING\r\n"))
+	require.NoError(t, err)
+	awaitAnswers(t, conn)
 	reader := bufio.NewReader(conn)
 	_, err = reader.ReadString('\n')
-	require.NoError(t, err)
-	_, err = conn.Write([]byte(`CONNECT {"verbose":false,"pedantic":false,"protocol":1}` + "\r\nPING\r\n"))
 	require.NoError(t, err)
 	pong, _ := reader.ReadString('\n')
 	_, err = conn.Write([]byte("-ERR " + text + "\r\n"))
@@ -728,8 +815,11 @@ func (r *restartOnLog) Log(ctx context.Context, pod string) ([]byte, error) {
 
 // bareOnLog is the hub with a bare connection, which sends nothing, opened from from to one
 // server's route port when the check reads that server's log, and held open while it does: what
-// any process that reaches the route port can do. It waits for the server to log the connection
-// before the log is read, and keeps the log it read.
+// any process that reaches the route port can do. It waits for the server to log the connection's
+// creation, and gives the check that server's log as a read at that moment would have: through
+// that line, written before the cluster's auth timeout (route.go:2070-2073, 2 s) closed the
+// connection when the server logged in order, however long this test took to see the line. It
+// keeps the log it gave.
 type bareOnLog struct {
 	*stagedHub
 	t    *testing.T
@@ -743,13 +833,25 @@ func (b *bareOnLog) Log(ctx context.Context, pod string) ([]byte, error) {
 	if pod == b.pod && b.conn == nil {
 		s := b.server(pod)
 		b.conn = dialFrom(b.t, b.from, s.route)
-		port := strconv.Itoa(b.conn.LocalAddr().(*net.TCPAddr).Port)
-		within(b.t, 10*time.Second, "the bare connection in the log", func() error {
-			if !strings.Contains(s.proc.Output.String(), "] "+b.from+":"+port+" - rid:") {
-				return fmt.Errorf("%s has not logged the bare connection yet", s.name)
+		prefix := []byte("] " + b.from + ":" + strconv.Itoa(b.conn.LocalAddr().(*net.TCPAddr).Port) + " - rid:")
+		// The wait reads the log the check is given, whose lines the stamper has read whole, and
+		// cuts it after the first whole line that logs the connection's creation.
+		b.read = testwait.Until(b.t, "the bare connection's creation in the log", func() ([]byte, bool) {
+			current, err := b.stagedHub.Log(ctx, pod)
+			require.NoError(b.t, err)
+			for at := 0; at < len(current); {
+				end := bytes.IndexByte(current[at:], '\n')
+				if end < 0 {
+					break
+				}
+				if line := current[at : at+end]; bytes.Contains(line, prefix) && bytes.HasSuffix(line, []byte(" - Route connection created")) {
+					return current[:at+end+1], true
+				}
+				at += end + 1
 			}
-			return nil
+			return nil, false
 		})
+		return b.read, nil
 	}
 	log, err := b.stagedHub.Log(ctx, pod)
 	if pod == b.pod {

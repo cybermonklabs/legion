@@ -18,7 +18,6 @@ import (
 
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/routes"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestRouteCheckRefusesARouteThatIsNotTheHubs runs `envoy-infra routes record` and `routes check`'s
@@ -78,7 +77,7 @@ import (
 //     log's start line, which is the new container's, Unknown, not PasswordRead.
 //
 // Every row's reload onto authorization waits as a rollout's applies do (beforeAuthorization), more
-// than 10 s after each server's start; the check's window opens at that reload's hangup.
+// than 30 s after each server's start; the check's window opens at that reload's hangup.
 func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	keys := newLiveHubKeys(t)
 	renders := map[string]*clusteredHubRender{}
@@ -133,7 +132,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		for _, s := range h.servers {
 			before := strings.Count(s.proc.Output.String(), `authentication error - User "route"`)
 			strayRouteLogin(t, s)
-			within(t, testwait.Bounded(t, 24*time.Hour, 30*time.Second), s.name+" logging the stray's refused route login", func() error {
+			within(t, s.name+" logging the stray's refused route login", func() error {
 				if strings.Count(s.proc.Output.String(), `authentication error - User "route"`) == before {
 					return fmt.Errorf("%s has logged no refused route login since a stray dialed its route port at 127.0.0.1:%d", s.name, s.route)
 				}
@@ -167,7 +166,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		rec := record(t, h)
 		_, monitor := startPeer(t, natsServer, h.release+"-1", "127.0.0.2", h.routePorts[:1])
 		impostor := peerID(t, monitor)
-		within(t, 30*time.Second, "the impostor in the hub's routes", func() error {
+		within(t, "the impostor in the hub's routes", func() error {
 			if ok, err := routedBy(h.servers[2], "127.0.0.2", ""); err != nil || !ok {
 				return fmt.Errorf("%s has not dialed the impostor yet (%v)", h.servers[2].name, err)
 			}
@@ -200,9 +199,14 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	t.Run("a peer that left before the check", func(t *testing.T) {
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
-		peer, monitor := startPeer(t, natsServer, h.release+"-2", "127.0.0.3", h.routePorts[:1])
-		id := peerID(t, monitor)
-		within(t, 30*time.Second, "the peer in the hub's routes", func() error {
+		// The peer is named as a pod of the hub's that does not run (a fourth replica), not as one
+		// that does: a peer named as a running server is refused by that server as a duplicate
+		// name and dialed again and again (nats-server 2.15.1 server/route.go:746-750,
+		// client.go:6474-6529), for as long as nats-server happens to go on, and those dials are
+		// connections in the check's window that no step of the test made.
+		peer := startPoolPeer(t, natsServer, h.release+"-3", "127.0.0.3", h.routePorts[:1])
+		id := peerID(t, peer.monitor)
+		within(t, "the peer in the hub's routes", func() error {
 			if ok, err := routedBy(h.servers[1], "127.0.0.3", ""); err != nil || !ok {
 				return fmt.Errorf("%s has not dialed the peer yet (%v)", h.servers[1].name, err)
 			}
@@ -213,9 +217,36 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		if ok, err := routedTo(h, "127.0.0.3", id); err != nil || !ok {
 			t.Fatalf("the peer left the hub's routes at authorization (%v), so it did not stay to read the password", err)
 		}
-		require.NoError(t, peer.Cmd.Process.Signal(syscall.SIGKILL))
-		peer.WaitExit(t, "SIGKILL")
-		within(t, 30*time.Second, "the peer gone from every /routez", func() error {
+		// The check names a route connection the window holds, which opens at the authorization
+		// reload's hangup; the routes the hub dialed to the peer before it stay through that reload.
+		// The peer's reload onto another pool size closes them, and the hub dials the peer again: a
+		// connection after the hangup by construction. No other step of the test makes one.
+		seen := make([]int, len(h.servers))
+		for i, s := range h.servers {
+			seen[i] = s.proc.Output.Len()
+		}
+		peer.reload(t, 4)
+		dialed := "] 127.0.0.3:" + strconv.Itoa(peer.route) + " - rid:"
+		within(t, "a hub server's route to the peer, dialed after the peer's reload", func() error {
+			for i, s := range h.servers {
+				if !slices.ContainsFunc(strings.Split(s.proc.Output.String()[seen[i]:], "\n"), func(line string) bool {
+					return strings.Contains(line, dialed) && strings.HasSuffix(line, " - Route connection created")
+				}) {
+					continue
+				}
+				routez, err := routezOf(s.host, s.monitor)
+				if err != nil {
+					return err
+				}
+				if slices.ContainsFunc(routez.Routes, func(r routes.Route) bool { return r.IP == "127.0.0.3" && r.Port == peer.route }) {
+					return nil
+				}
+			}
+			return fmt.Errorf("no hub server has a route it dialed to the peer since the peer's reload")
+		})
+		require.NoError(t, peer.proc.Cmd.Process.Signal(syscall.SIGKILL))
+		peer.proc.WaitExit(t, "SIGKILL")
+		within(t, "the peer gone from every /routez", func() error {
 			if ok, err := routedTo(h, "127.0.0.3", id); err != nil || ok {
 				return fmt.Errorf("a hub server still routes to the peer (%v)", err)
 			}
@@ -235,7 +266,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		rec := record(t, h)
 		peer, monitor := startPeer(t, natsServer, h.release+"-2", "127.0.0.3", h.routePorts[:1])
 		id := peerID(t, monitor)
-		within(t, 30*time.Second, "the peer in the hub's routes", func() error {
+		within(t, "the peer in the hub's routes", func() error {
 			if ok, err := routedBy(h.servers[1], "127.0.0.3", ""); err != nil || !ok {
 				return fmt.Errorf("%s has not dialed the peer yet (%v)", h.servers[1].name, err)
 			}
@@ -243,7 +274,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		})
 		require.NoError(t, peer.Cmd.Process.Signal(syscall.SIGKILL))
 		peer.WaitExit(t, "SIGKILL")
-		within(t, 30*time.Second, "the peer gone from every /routez", func() error {
+		within(t, "the peer gone from every /routez", func() error {
 			if ok, err := routedTo(h, "127.0.0.3", id); err != nil || ok {
 				return fmt.Errorf("a hub server still routes to the peer (%v)", err)
 			}
@@ -306,7 +337,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		rec := record(t, h)
 		_, monitor := startPeer(t, natsServer, h.release+"-1", "127.0.0.1", h.routePorts[:1])
 		impostor := peerID(t, monitor)
-		within(t, 30*time.Second, "the impostor in the hub's routes", func() error {
+		within(t, "the impostor in the hub's routes", func() error {
 			if ok, err := routedBy(h.servers[2], "", impostor); err != nil || !ok {
 				return fmt.Errorf("%s has not dialed the impostor yet (%v)", h.servers[2].name, err)
 			}
@@ -356,7 +387,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Clean, report.Verdict(), "control: before the login; findings: %v", report.Findings)
 		require.Equal(t, "-ERR 'Authorization Violation'", refusedRouteLogin(t, "127.0.0.5", h.servers[0].route), "the credential refuses the login")
-		within(t, 10*time.Second, "the refusal in the log", func() error {
+		within(t, "the refusal in the log", func() error {
 			if !strings.Contains(h.servers[0].proc.Output.String(), "] 127.0.0.5:") {
 				return fmt.Errorf("%s has not logged the login yet", h.servers[0].name)
 			}
@@ -386,7 +417,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		require.True(t, findingNames(report, routes.Unknown, s.name,
 			`1 route connection(s) with "127.0.0.9" since it loaded authorization that were still open when the log was read`), "findings: %v", report.Findings)
 
-		within(t, 15*time.Second, "the auth timeout closing the bare connection", func() error {
+		within(t, "the auth timeout closing the bare connection", func() error {
 			if !strings.Contains(s.proc.Output.String(), " - rid:"+rid+" - Router connection closed: Authentication Timeout") {
 				return fmt.Errorf("%s has not closed the bare connection yet", s.name)
 			}
@@ -406,7 +437,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		for _, text := range texts {
 			require.Equal(t, "PONG", clientLine(t, s, text), "a client with no credential is the hub's session user")
 		}
-		within(t, 10*time.Second, "the client's lines in the log", func() error {
+		within(t, "the client's lines in the log", func() error {
 			for _, text := range texts {
 				if !slices.ContainsFunc(strings.Split(s.proc.Output.String(), "\n"), func(l string) bool {
 					return strings.Contains(l, "[ERR] ") && strings.HasSuffix(l, " - Client Error "+text)
@@ -470,7 +501,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 			"--cluster_name", "envoy-nats", "--cluster", "nats://"+net.JoinHostPort("127.0.0.7", strconv.Itoa(drawn[2])),
 			"--cluster_advertise", net.JoinHostPort("127.0.0.7", strconv.Itoa(drawn[2])),
 			"--routes", fmt.Sprintf("nats://%s:@127.0.0.1:%d", "route", h.servers[0].route)), listeningForRoutesOn("127.0.0.7", drawn[2]))
-		within(t, 30*time.Second, "the stranger in the hub's routes", func() error {
+		within(t, "the stranger in the hub's routes", func() error {
 			if ok, err := routedTo(h, "127.0.0.7", ""); err != nil || !ok {
 				return fmt.Errorf("no hub server holds the stranger yet (%v)", err)
 			}
@@ -490,19 +521,14 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		require.Equal(t, int32(1), last.restarts, "control: the server restarted between the check's read of the pods and of its log")
 	})
 
-	// pastStartWindow waits until every server of h started more than the start line's window ago,
-	// as a reader must have: the record is taken at env, and two applies follow it.
-	pastStartWindow := func(h *stagedHub) {
-		for _, s := range h.servers {
-			if wait := time.Until(s.startedAt.Add(11 * time.Second)); wait > 0 {
-				time.Sleep(wait)
-			}
-		}
-	}
+	// pastStartWindow waits until every server of h started more than the start line's window
+	// (routes/log.go's startDelay, 30 s) ago, as a reader must have: the record is taken at env, and
+	// two applies follow it. It is the wait the authorization reload makes (beforeAuthorization).
+	pastStartWindow := func(h *stagedHub) { h.beforeAuthorization() }
 	// awaitLine waits until s's output holds line as a line of its own.
 	awaitLine := func(t *testing.T, s *stagedServer, line string) {
 		t.Helper()
-		within(t, 10*time.Second, s.name+" logging a forged line", func() error {
+		within(t, s.name+" logging a forged line", func() error {
 			if !strings.Contains(s.proc.Output.String(), "\n"+line+"\n") {
 				return fmt.Errorf("%s has not logged %.60q yet", s.name, line)
 			}
@@ -515,18 +541,23 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		rec := record(t, h)
 		s := h.servers[0]
 		now := time.Now().UTC()
+		// One line carries another process id; one this server's id and a time an hour before it is
+		// written, the back-dated line the late side of the rule refuses; and one this server's id
+		// and a time an hour after, logged after the runtime reads it. None is the server's.
 		otherPID := serverLine("4141", now, "INF", removedRouteLine("notThePassword"))
 		stale := serverLine(strconv.Itoa(s.proc.Cmd.Process.Pid), now.Add(-time.Hour), "INF", removedRouteLine("notThePassword"))
-		f := dialFakeRoute(t, "127.0.0.5", s.route, "", "", "x\n"+otherPID+"\n"+stale)
+		ahead := serverLine(strconv.Itoa(s.proc.Cmd.Process.Pid), now.Add(time.Hour), "INF", removedRouteLine("notThePassword"))
+		f := dialFakeRoute(t, "127.0.0.5", s.route, "", "", "x\n"+otherPID+"\n"+stale+"\n"+ahead)
 		f.awaitPong(t)
 		f.close()
 		awaitLine(t, s, otherPID)
 		awaitLine(t, s, stale)
+		awaitLine(t, s, ahead)
 		h.reload(t, "routes")
 		h.reload(t, "authorization")
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "control: each forged line is in the log in the logger's form; findings: %v", report.Findings)
-		require.True(t, findingNames(report, routes.Unknown, s.name, "2 line(s) in nats-server's form that its server did not write when they say"),
+		require.True(t, findingNames(report, routes.Unknown, s.name, "3 line(s) in nats-server's form that its server did not write when they say"),
 			"findings: %v", report.Findings)
 	})
 
@@ -569,7 +600,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		_, err := dialFrom(t, "127.0.0.8", h.servers[0].route).Write([]byte(`CONNECT {"user":"route"`))
 		require.NoError(t, err)
 		closes := map[*stagedServer]string{h.servers[1]: "127.0.0.6", h.servers[2]: "127.0.0.7", h.servers[0]: "127.0.0.8"}
-		within(t, 15*time.Second, "each connection's close", func() error {
+		within(t, "each connection's close", func() error {
 			for s, host := range closes {
 				closed := slices.ContainsFunc(strings.Split(s.proc.Output.String(), "\n"), func(l string) bool {
 					return strings.Contains(l, "] "+host+":") && strings.Contains(l, "Router connection closed: ")
@@ -600,14 +631,14 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		s := h.servers[0]
 		f := dialFakeRoute(t, "127.0.0.5", s.route, "route", password, "")
 		f.awaitPong(t)
-		within(t, 10*time.Second, "the route in the server's /routez", func() error {
+		within(t, "the route in the server's /routez", func() error {
 			if ok, err := routedBy(s, "127.0.0.5", ""); err != nil || !ok {
 				return fmt.Errorf("%s does not hold the route yet (%v)", s.name, err)
 			}
 			return nil
 		})
 		f.close()
-		within(t, 10*time.Second, "the route's close", func() error {
+		within(t, "the route's close", func() error {
 			if !slices.ContainsFunc(strings.Split(s.proc.Output.String(), "\n"), func(l string) bool {
 				return strings.Contains(l, "] 127.0.0.5:"+f.localPort()+" - rid:") && strings.Contains(l, "Router connection closed: ")
 			}) {
@@ -636,7 +667,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		f.awaitPong(t)
 		defer f.close()
 		var rid string
-		within(t, 10*time.Second, "the route connection in the log", func() error {
+		within(t, "the route connection in the log", func() error {
 			for _, l := range strings.Split(s.proc.Output.String(), "\n") {
 				if _, after, ok := strings.Cut(l, "] 127.0.0.5:"+f.localPort()+" - rid:"); ok && strings.HasSuffix(after, " - Route connection created") {
 					rid = strings.TrimSuffix(after, " - Route connection created")
@@ -647,7 +678,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		})
 		forged := "127.0.0.5:" + f.localPort() + " - rid:" + rid + " - authentication error"
 		require.Equal(t, "PONG", clientLine(t, s, forged), "a client with no credential is the hub's session user")
-		within(t, 10*time.Second, "the client's line in the log", func() error {
+		within(t, "the client's line in the log", func() error {
 			if !strings.Contains(s.proc.Output.String(), " - Client Error "+forged+"\n") {
 				return fmt.Errorf("%s has not logged the client's line yet", s.name)
 			}
@@ -673,7 +704,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		defer f.close()
 		h.reload(t, "routes")
 		h.reload(t, "authorization")
-		within(t, 10*time.Second, "the authorization reload closing the fake route", func() error {
+		within(t, "the authorization reload closing the fake route", func() error {
 			if !strings.Contains(s.proc.Output.String(), " - Remote: "+name+"\n") {
 				return fmt.Errorf("%s has not closed the fake route yet", s.name)
 			}

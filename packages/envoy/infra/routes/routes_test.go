@@ -456,9 +456,12 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 		{"no routes reload before the authorization reload", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] = strings.Replace(h.logs["envoy-nats-0"], routesReload[1]+"\n", "", 1)
 		}, routes.Unknown, "envoy-nats-0", `holds no "[INF] Trapped \"hangup\" signal" after the routes stage's "[INF] Reloaded: cluster routes"`},
-		{"authorization loaded within 10 s of the container's start", func(h *fakeHub) {
+		{"authorization loaded within 30 s of the container's start", func(h *fakeHub) {
 			h.editAuthorizationReload("envoy-nats-0", strings.Join(authorizationReloadAt(started.Add(5*time.Second)), "\n")+"\n")
-		}, routes.Unknown, "envoy-nats-0", "within 10s of its container's start at 2026-11-17T12:00:00Z"},
+		}, routes.Unknown, "envoy-nats-0", "within 30s of its container's start at 2026-11-17T12:00:00Z"},
+		{"authorization loaded 20 s after the container's start", func(h *fakeHub) {
+			h.editAuthorizationReload("envoy-nats-0", strings.Join(authorizationReloadAt(started.Add(20*time.Second)), "\n")+"\n")
+		}, routes.Unknown, "envoy-nats-0", "apply authorization more than 30s after a pod starts"},
 		{"an env roll's old pod IP before authorization", func(h *fakeHub) {
 			h.beforeAuthorization("envoy-nats-2", created("10.0.0.99:6222"))
 			h.beforeAuthorization("envoy-nats-1", created("10.0.0.98:41234"))
@@ -490,12 +493,26 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 			rest := strings.SplitN(h.logs["envoy-nats-2"], "\n", 2)[1]
 			h.logs["envoy-nats-2"] = stampedAt(started.Add(time.Hour), "[7] 2026/11/17 12:00:00.400000 [INF] Starting nats-server") + "\n" + rest
 		}, routes.PasswordRead, "envoy-nats-2", "does not begin with the server's start line"},
+		{"a start line read 30 s and 1 ms after its container's start, past the start window", func(h *fakeHub) {
+			first, rest, _ := strings.Cut(h.logs["envoy-nats-2"], "\n")
+			h.logs["envoy-nats-2"] = stampedAt(started.Add(30*time.Second+time.Millisecond), first) + "\n" + rest
+		}, routes.PasswordRead, "envoy-nats-2", "was read by the container runtime at 2026-11-17T12:00:30.001Z, and its container started at 2026-11-17T12:00:00Z"},
 		{"a line in the server's form from another process id", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += logLineOf("4141", "INF", "10.66.6.6:6222 - rid:30 - Route connection created") + "\n"
+		}, routes.Unknown, "envoy-nats-1", "1 line(s) in nats-server's form that its server did not write when they say"},
+		{"a line in the server's form logged 2 s after the runtime read it", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += stampedAt(envAt.Add(-2*time.Second), removedRoute("x")) + "\n"
+		}, routes.Unknown, "envoy-nats-1", "1 line(s) in nats-server's form that its server did not write when they say"},
+		{"a line in the server's form logged 1.5 s after the runtime read it, past the 1 s slack", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += stampedAt(envAt.Add(-1500*time.Millisecond), removedRoute("x")) + "\n"
 		}, routes.Unknown, "envoy-nats-1", "1 line(s) in nats-server's form that its server did not write when they say"},
 		{"a line in the server's form read an hour after its logger time", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += stampedAt(started.Add(time.Hour), removedRoute("x")) + "\n"
 		}, routes.Unknown, "envoy-nats-1", "1 line(s) in nats-server's form that its server did not write when they say"},
+		{"a line in the server's form read 30 s and 1 ms after its logger time, past the read lag", func(h *fakeHub) {
+			line := authorizationLines[0]
+			h.logs["envoy-nats-2"] = strings.Replace(h.logs["envoy-nats-2"], line+"\n", stampedAt(authorizationAt.Add(30*time.Second+time.Millisecond), line)+"\n", 1)
+		}, routes.Unknown, "envoy-nats-2", "1 line(s) in nats-server's form that its server did not write when they say"},
 		{"a log without the runtime's times", func(h *fakeHub) { h.unstamped["envoy-nats-0"] = true },
 			routes.Unknown, "envoy-nats-0", "line(s) carry no time of the container runtime's"},
 		{"a refused route login from another address since authorization", func(h *fakeHub) {
@@ -760,10 +777,10 @@ func TestCheckJudgesNoEnvRollLineAsAfterAuthorization(t *testing.T) {
 			h.withoutAuthorizationReload("envoy-nats-2")
 			h.refused["envoy-nats-2 info"] = errors.New("port-forward to 6222 failed")
 		}},
-		{"the reload's line read 3 s after its logger time", func(h *fakeHub) {
+		{"the reload's line logged 2 s after the runtime read it", func(h *fakeHub) {
 			line := authorizationLines[0]
 			require.Equal(t, 1, strings.Count(h.logs["envoy-nats-2"], line+"\n"), "the Reloaded: cluster line is in the log once")
-			h.logs["envoy-nats-2"] = strings.Replace(h.logs["envoy-nats-2"], line+"\n", stampedAt(authorizationAt.Add(3*time.Second), line)+"\n", 1)
+			h.logs["envoy-nats-2"] = strings.Replace(h.logs["envoy-nats-2"], line+"\n", stampedAt(authorizationAt.Add(-2*time.Second), line)+"\n", 1)
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -773,6 +790,63 @@ func TestCheckJudgesNoEnvRollLineAsAfterAuthorization(t *testing.T) {
 			require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
 			require.NotContains(t, fmt.Sprint(report.Findings), oldIP, "the env roll's old pod IP is judged by no rule")
 			require.Contains(t, fmt.Sprint(report.Findings), `envoy-nats-2: unknown: its log, in the lines its server wrote, holds no "[INF] Reloaded: cluster"`)
+		})
+	}
+}
+
+// A loaded node's container runtime reads the server's lines late. A line read up to 30 s after its
+// logger time is the server's, as is one logged up to 1 s after it was read, and a start line read
+// up to 30 s after its container's start is its start line, so each of these logs, the clean hub's
+// lines read late or at those edges, is Clean. Control: the same hub read on time is Clean too. The
+// main table holds each edge's other side (1.5 s ahead, 30 s and 1 ms late, and the start window's
+// 30 s and 1 ms).
+func TestCheckTakesTheServersLinesTheRuntimeReadLate(t *testing.T) {
+	readLate := func(log string, late time.Duration) string {
+		var out []string
+		for line := range strings.SplitSeq(strings.TrimSuffix(log, "\n"), "\n") {
+			match := loggerTime.FindStringSubmatch(line)
+			require.NotNil(t, match, "a line of the clean hub not in the logger's form: %q", line)
+			at, err := time.ParseInLocation("2006/01/02 15:04:05.000000", match[1], time.UTC)
+			require.NoError(t, err)
+			out = append(out, stampedAt(at.Add(late), line))
+		}
+		return strings.Join(out, "\n") + "\n"
+	}
+	for _, row := range []struct {
+		name   string
+		change func(h *fakeHub)
+	}{
+		{"control: every line read on time", func(*fakeHub) {}},
+		{"the start line read 20 s after its container's start", func(h *fakeHub) {
+			first, rest, _ := strings.Cut(h.logs["envoy-nats-0"], "\n")
+			h.logs["envoy-nats-0"] = stampedAt(started.Add(20*time.Second), first) + "\n" + rest
+		}},
+		{"the start line read exactly 30 s after its container's start, the start window's edge", func(h *fakeHub) {
+			first, rest, _ := strings.Cut(h.logs["envoy-nats-0"], "\n")
+			h.logs["envoy-nats-0"] = stampedAt(started.Add(30*time.Second), first) + "\n" + rest
+		}},
+		{"the reload's line logged exactly 1 s after the runtime read it, the slack's edge", func(h *fakeHub) {
+			line := authorizationLines[0]
+			h.logs["envoy-nats-2"] = strings.Replace(h.logs["envoy-nats-2"], line+"\n", stampedAt(authorizationAt.Add(-time.Second), line)+"\n", 1)
+		}},
+		{"the reload that loaded authorization read 3 s after its logger time", func(h *fakeHub) {
+			line := authorizationLines[0]
+			h.logs["envoy-nats-2"] = strings.Replace(h.logs["envoy-nats-2"], line+"\n", stampedAt(authorizationAt.Add(3*time.Second), line)+"\n", 1)
+		}},
+		{"the reload that loaded authorization read exactly 30 s after its logger time, the read lag's edge", func(h *fakeHub) {
+			line := authorizationLines[0]
+			h.logs["envoy-nats-2"] = strings.Replace(h.logs["envoy-nats-2"], line+"\n", stampedAt(authorizationAt.Add(30*time.Second), line)+"\n", 1)
+		}},
+		{"every line read 25 s after its logger time", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] = readLate(h.logs["envoy-nats-1"], 25*time.Second)
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := cleanHub()
+			rec := recordOf(t, h)
+			row.change(h)
+			report := routes.Check(context.Background(), h, rec)
+			require.Equal(t, routes.Clean, report.Verdict(), "findings: %v", report.Findings)
 		})
 	}
 }

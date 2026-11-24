@@ -95,7 +95,7 @@ func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject 
 	a := r.newHubServer(t, r.release+"-0", binary, natsConf, host, reservePortsOn(t, host, 3))
 	a.routeURLs = []string{proxy.URL()}
 	a.start(t)
-	within(t, 30*time.Second, "A routes to B", func() error {
+	within(t, "A routes to B", func() error {
 		remotes, err := a.routeRemotes()
 		if err != nil {
 			return err
@@ -119,7 +119,7 @@ func drainARoute(t *testing.T, r *clusteredHubRender, binary, natsConf, subject 
 	pub, err := testnats.ConnectSeed(t, a.url(), r.keys.operatorSeed)
 	require.NoError(t, err)
 	t.Cleanup(pub.Close)
-	within(t, 30*time.Second, "B's subscription reaches A", func() error {
+	within(t, "B's subscription reaches A", func() error {
 		require.NoError(t, pub.Publish("load.probe", nil))
 		require.NoError(t, pub.Flush())
 		if !probed.Load() {
