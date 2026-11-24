@@ -8,10 +8,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The state the fixture builds (populatedState) holds two issues in the workflow that stand in
-// neither `admission.active` nor `admission.waiting`, one of them held by issues it names and
-// one held by none, so one state proves the key comes off the wire with both shapes of the row
-// on it.
+// The state the fixture composes (populatedState) holds three issues in the workflow that stand in
+// neither `admission.active` nor `admission.waiting`, two of them held by issues they name and one
+// held by none, so one state proves the key comes off the wire with both shapes of the row on it.
 
 // heldServed is the `admission.held` of a state body — the issues it names, in the order the
 // body lists them, and whether the key is on the wire at all, which an empty array is not. The

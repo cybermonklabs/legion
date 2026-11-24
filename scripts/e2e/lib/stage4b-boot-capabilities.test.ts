@@ -9,12 +9,16 @@ import { scriptFunctions } from "./script-functions";
 // LEGION-663's rendering a live row (subagents, web-search, mcp, repository-extensions,
 // dispatch-envoy-tools, github) is `unchecked` until a session reports, which at boot none has, so
 // the wait is for the seven image rows alone: a wait for no row unchecked would never return. The
-// state is the daemon API fixture (packages/contracts/fixtures/daemon-api/state.json), the wire
+// state is the daemon API fixture of a deployment whose image passed its probe and to which no
+// session has reported (packages/contracts/fixtures/daemon-api/state-last-pause.json), the wire
 // shape the daemon renders: every image row present, every live row unchecked.
 const root = join(import.meta.dir, "..", "..", "..");
 const fn = scriptFunctions(join(root, "scripts", "e2e", "stage4b-sandbox-tree.sh"));
 const fixture = JSON.parse(
-  readFileSync(join(root, "packages", "contracts", "fixtures", "daemon-api", "state.json"), "utf8")
+  readFileSync(
+    join(root, "packages", "contracts", "fixtures", "daemon-api", "state-last-pause.json"),
+    "utf8"
+  )
 ) as { capabilities: { name: string; status: string; detail: string }[] };
 // The home the bash below runs under, so it reads nothing of the caller's.
 const home = temporaryDirectory("stage4b-boot-capabilities-home");

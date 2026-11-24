@@ -479,8 +479,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if want := map[string]string{"tester": "omp"}; !maps.Equal(settings.WorkerBackends, want) {
 		t.Errorf("worker_backends = %q, want %q", settings.WorkerBackends, want)
 	}
-	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}}; !slices.Equal(settings.RepositoryRenames, want) {
-		t.Errorf("repository_renames = %+v, want the file's pair %+v", settings.RepositoryRenames, want)
+	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}, {From: "sjawhar/legion", To: "cybermonklabs/legion"}}; !slices.Equal(settings.RepositoryRenames, want) {
+		t.Errorf("repository_renames = %+v, want the file's pairs %+v", settings.RepositoryRenames, want)
 	}
 	if want := []string{"/bin/sh", "-c", "echo fixture-setup"}; !slices.Equal(settings.Runtime.Kubernetes.Setup, want) {
 		t.Errorf("runtime.kubernetes.setup = %q, want %q", settings.Runtime.Kubernetes.Setup, want)

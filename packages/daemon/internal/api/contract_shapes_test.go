@@ -504,20 +504,22 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		WakesWaiting: wakes,
 		Repositories: RepositoriesView{Live: live},
 		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
-		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
+		// Built as the state's read builds it (PauseStateTx), holding no row: the paused state's
 		// pause carries the held rows.
 		Paused: pausedViewOf(goldenPause(false), stops, nil),
 	}
 }
 
 // stateFixtures are the state bodies the records of the state and of the issue record are taken
-// from: the populated state every other golden of this package is written from, a second one of
-// this case's own carrying what the first cannot (stateCarryingTheRestOfTheShape), and a third
-// carrying every value the enumerated fields declare above the floor and the settings' sandbox
-// block (stateCarryingEveryDeclaredValue).
+// from: the populated state every other golden of this package is written from, the same record
+// paused (pausedState), which alone carries `paused` with its held rows, the operator's spawn
+// (operatorClaimState), whose architect alone stands in a tmux pane, a state of this case's own
+// carrying what those cannot (stateCarryingTheRestOfTheShape), and one carrying every value the
+// enumerated fields declare above the floor and the settings' sandbox block
+// (stateCarryingEveryDeclaredValue).
 func stateFixtures(t *testing.T) []State {
 	t.Helper()
-	return []State{populatedState(t), stateCarryingTheRestOfTheShape(t), stateCarryingEveryDeclaredValue(t)}
+	return []State{populatedState(t), pausedState(t), operatorClaimState(t), stateCarryingTheRestOfTheShape(t), stateCarryingEveryDeclaredValue(t)}
 }
 
 // answerFixtures is one fixture per answer of the table. Every answer needs one: a row with no

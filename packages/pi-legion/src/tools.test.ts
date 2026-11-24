@@ -2288,7 +2288,7 @@ test("read_state's summary names the live trees and each held issue with its rea
 
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   expect(admissionLines(golden)).toEqual([
-    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219",
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-220",
     "waiting LEGION-212 LEGION-211 LEGION-216",
     "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-216 LEGION-218 LEGION-219",
     "blocked LEGION-209 on LEGION-210 LEGION-213",
@@ -2318,23 +2318,29 @@ test("read_state's summary names the live trees and each held issue with its rea
 // R6): one line while the project is paused, naming the pause, since when, by whom and why, the
 // roles whose stop it still waits on and how many rows it holds; one line while the project
 // runs after a pause, naming that pause and when and by whom it was ended; and neither before
-// the project's first pause. The two states are the daemon's goldens, read through the client.
+// the project's first pause. The three states are the daemon's goldens, read through the client.
 test("read_state's summary prints the pause's line while the project is paused and the last pause's line while it runs", async () => {
   const pauseLines = (lines: readonly string[]) =>
     lines.filter((line) => line.startsWith("paused: ") || line.startsWith("last pause: "));
 
-  const paused = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  const paused = await summaryLinesOf(
+    goldenDaemon({ "/legion/v1/state": "state-paused.json" }).daemon
+  );
   const pausedLine =
-    "paused: pause 7 since 2026-09-22T09:09:00Z by the controller (session ses_controller): " +
-    "the model provider is refusing every turn; waits on 1 role — LEGION-208 implementer; " +
-    "holds 2 rows";
+    "paused: pause 1 since 2126-09-22T09:18:00Z by the controller (session ses_controller): " +
+    "the model provider is refusing every turn; waits on 8 roles — LEGION-207 implementer, " +
+    "LEGION-208 architect, LEGION-208 implementer, LEGION-218 implementer, LEGION-218 reviewer, " +
+    "LEGION-219 implementer, LEGION-219 reviewer, LEGION-220 implementer; holds 2 rows";
   expect(pauseLines(paused)).toEqual([pausedLine]);
+  expect(
+    pauseLines(await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon))
+  ).toEqual([]);
 
   const running = await summaryLinesOf(
     goldenDaemon({ "/legion/v1/state": "state-last-pause.json" }).daemon
   );
   expect(pauseLines(running)).toEqual([
-    "last pause: pause 7 since 2026-11-15T09:00:00Z by the operator: " +
+    "last pause: pause 1 since 2026-11-15T09:00:00Z by the operator: " +
       "the model provider is refusing every turn; " +
       "ended 2026-11-15T09:41:30Z by the controller (session ses_controller)",
   ]);
@@ -2441,7 +2447,7 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
 
   // The daemon's own golden, read through the client: three wakes, the first of them the earliest.
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
-  expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
+  expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2126-09-22T09:17:56Z"]);
 });
 
 test("read_state's filters answer full records, and name what they cannot select", async () => {

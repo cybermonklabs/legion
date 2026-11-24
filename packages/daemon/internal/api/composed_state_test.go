@@ -84,10 +84,13 @@ type composition struct {
 	wakes   []supervise.WaitingWake
 	reports map[claim.Token]capabilities.Report
 	// What this boot learned (supervision.deploymentWith): the broker login's state, whether the
-	// image passed its probe and the model-fallback mark it read.
-	secretsLogin  string
-	probed        bool
-	modelFallback string
+	// image passed its probe, the model-fallback mark it read, and how many of the probe's
+	// attempts waited on the pool's capacity, with the scheduler's reason.
+	secretsLogin        string
+	probed              bool
+	modelFallback       string
+	probeCapacityWaits  int
+	probeCapacityReason string
 	// caches are the runtime's repository caches as their last health read found them
 	// (supervision.cacheStatuses), each as both the capability report and the repositories block
 	// read it (internal/daemon's supervision.caches and cacheView, which stay in internal/daemon
@@ -247,6 +250,7 @@ func (c composition) deployment(claims []supervise.Claim) capabilities.Deploymen
 	d := c.cfg.Deployment()
 	d.SecretsLogin = c.secretsLogin
 	d.Probed, d.ModelFallback = c.probed, c.modelFallback
+	d.ProbeCapacityWaits, d.ProbeCapacityReason = c.probeCapacityWaits, c.probeCapacityReason
 	d.Caches = make([]capabilities.Cache, 0, len(c.caches))
 	for _, cache := range c.caches {
 		d.Caches = append(d.Caches, cache.capability)
@@ -440,6 +444,7 @@ var populatedPods = map[string]string{
 	"LEGION-208": "7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 	"LEGION-218": "c4e2a9d1-5b7f-4c38-8e6a-0d2f1b3a5c79",
 	"LEGION-219": "9a1c3e5b-7d2f-4b46-a8c0-e2d4f6a8b0c1",
+	"LEGION-220": "5d7f9b1c-3e5a-4c72-9b1d-4f6a8c0e2b93",
 }
 
 const podUpdateReasons = "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved"
@@ -463,7 +468,10 @@ func podLocator(token claim.Token, issue string, generation uint64) *runtime.Loc
 //     between its architect, planner and implementer, a plan task's counts, a pull request with
 //     changes requested, an approved design gate, the memory draw and the handshake of its
 //     architect's entry; LEGION-209 is a child of its tree the workflow holds at admitted behind
-//     two Dispatch blockers, LEGION-210 and LEGION-213, a key the daemon has no record of.
+//     two Dispatch blockers, LEGION-210 and LEGION-213, a key the daemon has no record of, and
+//     LEGION-220 a child of it at work in implementing in a slot of its own, whose own architect
+//     failed: its notices go to LEGION-208's architect until it runs again (workflow's
+//     claimFailed).
 //   - LEGION-210, held from implementing on its architect's escalation, with a failed implementer
 //     nothing will wake, no architect claim, and a spec whose architect registered a version after
 //     its approval.
@@ -557,6 +565,11 @@ func populatedRecord(s *seeding) {
 	waiting := issue("LEGION-218", "LEGION-218", phase.Reviewing, "needs_review", "acme/widgets", 1, 10)
 	stuck := issue("LEGION-219", "LEGION-219", phase.Reviewing, "needs_review", "zeta/tools", 3, 11)
 
+	// LEGION-220: a child of LEGION-208's tree its architect released, started in implementing in a
+	// slot of its own (record.KeepsSlot).
+	childAtWork := issue("LEGION-220", "LEGION-208", phase.Implementing, "in_progress", "acme/widgets", 1, 15)
+	childAtWork.Parent = new("LEGION-208")
+
 	s.putRecorded(
 		recorded{merged, mirror("LEGION-207", "done", 3, ""), at(22, 8, 40, 12)},
 		recorded{root, mirror("LEGION-208", "in_progress", 4, ""), at(22, 8, 58, 14)},
@@ -569,6 +582,7 @@ func populatedRecord(s *seeding) {
 		recorded{queued, ranked(mirror("LEGION-216", "todo", 13, "", "LEGION-210"), "00016"), at(22, 8, 30, 0)},
 		recorded{waiting, mirror("LEGION-218", "needs_review", 10, ""), at(22, 9, 7, 21)},
 		recorded{stuck, mirror("LEGION-219", "needs_review", 11, ""), at(20, 16, 42, 58)},
+		recorded{childAtWork, mirror("LEGION-220", "in_progress", 15, "LEGION-208"), at(22, 9, 4, 40)},
 	)
 	// LEGION-217: what Dispatch says of a child of LEGION-208 its architect has not released, which
 	// the daemon keeps no record of (blockers.Mirror writes every issue fact it applies).
@@ -588,6 +602,7 @@ func populatedRecord(s *seeding) {
 		{Issue: "LEGION-212", Index: 2, AdmittedAt: at(22, 8, 1, 30)},
 		{Issue: "LEGION-218", Index: 3, AdmittedAt: at(22, 8, 14, 52)},
 		{Issue: "LEGION-219", Index: 4, AdmittedAt: at(19, 10, 27, 44)},
+		{Issue: "LEGION-220", Index: 5, AdmittedAt: at(22, 7, 52, 18)},
 	} {
 		s.in("the slot of "+slot.Issue, func(ctx context.Context, tx pgx.Tx) error { return s.records.PutSlot(ctx, tx, slot) })
 	}
@@ -619,6 +634,10 @@ func populatedRecord(s *seeding) {
 		"LEGION-209": {
 			{Experiment: "plan-length", Unit: string(config.ExperimentIssue), Variant: "long", Mode: string(config.ExperimentRandom), DrawnAt: &populatedPlanDrawnAt},
 			{Experiment: "planning", Unit: string(config.ExperimentIssue), Variant: "b", Mode: string(config.ExperimentRandom), DrawnAt: &populatedPlanDrawnAt, Plan: string(config.PlanGroupDefault)},
+		},
+		"LEGION-220": {
+			{Experiment: "plan-length", Unit: string(config.ExperimentIssue), Variant: "short", Mode: string(config.ExperimentRandom), DrawnAt: &populatedPlanDrawnAt},
+			{Experiment: "planning", Unit: string(config.ExperimentIssue), Variant: "a", Mode: string(config.ExperimentRandom), DrawnAt: &populatedPlanDrawnAt},
 		},
 	} {
 		s.in("the draws of "+key, func(ctx context.Context, tx pgx.Tx) error {
@@ -735,6 +754,10 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 		// The transition that sent LEGION-211's work back raised its implementer's row to entry 2;
 		// its claim was given entry 1.
 		{Issue: "LEGION-211", Role: claim.RoleImplementer, Claim: token("LEGION-211", claim.RoleImplementer), Rounds: 1, Entry: 2},
+		// LEGION-220's own architect was started on its entry when the child's first phase began,
+		// and its implementer holds the work of implementing's entry.
+		{Issue: "LEGION-220", Role: claim.RoleArchitect, Claim: token("LEGION-220", claim.RoleArchitect), Entry: 1, EntryRaisedAt: at(22, 7, 52, 18)},
+		{Issue: "LEGION-220", Role: claim.RoleImplementer, Claim: token("LEGION-220", claim.RoleImplementer), Entry: 1, EntryRaisedAt: at(22, 8, 20, 5)},
 		{Issue: "LEGION-218", Role: claim.RoleImplementer, Claim: token("LEGION-218", claim.RoleImplementer),
 			HandoffCommit: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063", Pass: 1},
 		{Issue: "LEGION-218", Role: claim.RoleReviewer, Claim: token("LEGION-218", claim.RoleReviewer), Pass: 1, Entry: 1,
@@ -809,6 +832,16 @@ func populatedClaims(s *seeding, rows populatedRows) map[claim.Token]capabilitie
 			Generation: 2, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses_implementer_211", GivenEntry: 1,
 			Pending: &supervise.Delivery{ID: "outbox:" + strconv.FormatInt(rows.started211, 10), Task: "Implement the plan's default task.", Phase: phase.Implementing, QueuedAt: at(22, 8, 54, 20),
 				Generation: 2, Entry: 1, SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused"}},
+		// LEGION-220's own architect failed and nothing has launched it since; the daemon starts it
+		// again at the child's next phase start, so the rule names it nowhere (workflow.Stranded's
+		// default case). Its implementer works on in the child's own pod.
+		{Token: token("LEGION-220", claim.RoleArchitect), Project: "legion", Tree: "LEGION-208", Issue: "LEGION-220", Role: claim.RoleArchitect,
+			Generation: 1, State: supervise.StateFailed, Session: "ses_architect_220",
+			FailureCause: supervise.CauseDied, Failure: "launch failures ran out", FailedAt: at(22, 8, 41, 17),
+			Budgets: supervise.Budgets{LaunchFailures: 4, Deaths: 1}},
+		{Token: token("LEGION-220", claim.RoleImplementer), Project: "legion", Tree: "LEGION-208", Issue: "LEGION-220", Role: claim.RoleImplementer,
+			Generation: 1, State: supervise.StateWorking, Session: "ses_implementer_220", GivenEntry: 1,
+			Locator: podLocator(token("LEGION-220", claim.RoleImplementer), "LEGION-220", 1), PluginContract: api.ServingFloor},
 		// A tester of its tree retired while the issue stood in its phase; its root waits on a
 		// person, whose answer resumes the tree, so the rule names it nowhere.
 		{Token: token("LEGION-212", claim.RoleTester), Project: "legion", Tree: "LEGION-212", Issue: "LEGION-212", Role: claim.RoleTester,
@@ -921,7 +954,10 @@ func populatedDeployment(s *seeding, reports map[claim.Token]capabilities.Report
 			{Claim: s.token("LEGION", "LEGION-207", claim.RoleImplementer), Issue: "LEGION-207", Role: claim.RoleImplementer, Kind: supervise.WakePluginRefresh, At: at(22, 9, 17, 56)},
 			{Claim: s.token("LEGION", "LEGION-208", claim.RolePlanner), Issue: "LEGION-208", Role: claim.RolePlanner, Kind: supervise.WakeLaunch, At: at(22, 9, 18, 11)},
 		},
+		// The image passed its probe after two attempts the pool had no room for, a gap the
+		// deployment's file decides (capabilities.decided.pool-capacity).
 		secretsLogin: "issued", probed: true, modelFallback: "on",
+		probeCapacityWaits: 2, probeCapacityReason: "0/3 nodes are available: 3 Insufficient cpu.",
 		// acme/widgets' cache is Ready and read, and last answered its health with a repack that
 		// failed for lack of space; zeta/tools' is failing; acme/legacy's, which no live record
 		// names any more, keeps its cache until its retention ends.
@@ -1083,7 +1119,9 @@ func seedOperatorClaim(s *seeding) composition {
 // seedLastPause is a project that runs after a pause has ended: the operator paused it for a
 // provider's outage, and the controller resumed it from its session (internal/pause's Service.Pause
 // and Service.Resume), the pause the pause routes' goldens answer, on the deployment those routes
-// serve. No record moves, so its moments are the wall clock's month.
+// serve. Its daemon booted and its image passed the probe, and no session has reported to it, so
+// every image row of its capability report is present and every live row unchecked: the state a
+// boot reads. No record moves, so its moments are the wall clock's month.
 func seedLastPause(s *seeding) composition {
 	cfg := api.LoadSettingsFile(s.t, api.SettingsFixtureFile)
 	paused, ended := api.GoldenPause(false), api.GoldenPause(true)
@@ -1096,5 +1134,13 @@ func seedLastPause(s *seeding) composition {
 	s.must("the pause", err)
 	_, _, err = pauseService(s, cfg, ended.EndedAt).Resume(s.ctx, ended.EndedBy)
 	s.must("the resume", err)
-	return composition{cfg: cfg, now: ended.EndedAt.Add(20 * time.Minute), startedAt: startedAt}
+	// A daemon that holds a pause runs a workflow, whose three durable consumers are caught up.
+	caughtUp := ended.EndedAt.Add(19 * time.Minute)
+	return composition{cfg: cfg, now: ended.EndedAt.Add(20 * time.Minute), startedAt: startedAt,
+		secretsLogin: "issued", probed: true, modelFallback: "on",
+		consumers: []intake.ConsumerLag{
+			{Name: "legion-go-LEGION-dispatch", LastHandledAt: caughtUp},
+			{Name: "legion-go-LEGION-github", LastHandledAt: caughtUp},
+			{Name: "legion-go-LEGION-wake", LastHandledAt: caughtUp},
+		}}
 }

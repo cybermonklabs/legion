@@ -57,7 +57,7 @@ bind: 0.0.0.0
 advertise_host: legion-daemon.internal.example
 postgres_dsn: postgres://legion:fixture-dsn-password@postgres.internal.example:5432/legion
 state_dir: /var/lib/legion
-admission_cap: 5
+admission_cap: 6
 daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
 provider_keys: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_FIXTURE, GEMINI_API_KEY: GEMINI_API_KEY_FIXTURE}
@@ -237,18 +237,39 @@ const composedStateRewrite = "go test ./internal/api/ -run '^TestTheStateFixture
 // written, so no field of it is lost or changed on the way into this package's tests.
 func populatedState(t *testing.T) State {
 	t.Helper()
-	written, err := os.ReadFile(composedStatePath)
+	return composedFixture(t, composedStatePath)
+}
+
+// pausedState is the composed state of the populated record ten seconds into a pause, read back
+// from its fixture byte for byte, which the tests of the pause's keys read.
+func pausedState(t *testing.T) State {
+	t.Helper()
+	return composedFixture(t, goldenPath("state-paused.json"))
+}
+
+// operatorClaimState is the composed state of an operator's spawn on an issue the workflow keeps
+// no record of, read back from its fixture: its architect is the one claim of the fixtures in a
+// tmux pane.
+func operatorClaimState(t *testing.T) State {
+	t.Helper()
+	return composedFixture(t, goldenPath("state-operator-claim.json"))
+}
+
+// composedFixture is the composed state written at path, held to read back byte for byte.
+func composedFixture(t *testing.T, path string) State {
+	t.Helper()
+	written, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read the composed populated state (run %s): %v", composedStateRewrite, err)
+		t.Fatalf("read %s (run %s): %v", path, composedStateRewrite, err)
 	}
 	var state State
 	if err := json.Unmarshal(written, &state); err != nil {
-		t.Fatalf("decode %s (run %s): %v", composedStatePath, composedStateRewrite, err)
+		t.Fatalf("decode %s (run %s): %v", path, composedStateRewrite, err)
 	}
-	if again := testgolden.Encode(t, composedStatePath, state); !bytes.Equal(again, written) {
+	if again := testgolden.Encode(t, path, state); !bytes.Equal(again, written) {
 		line, held, read := testgolden.FirstDifference(written, again)
 		t.Fatalf("%s does not read back as it was written (run %s): line %d holds %q, and the state read from it writes %q",
-			composedStatePath, composedStateRewrite, line, held, read)
+			path, composedStateRewrite, line, held, read)
 	}
 	return state
 }

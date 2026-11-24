@@ -8,11 +8,12 @@ import (
 )
 
 // goldenStatePath is the state document the Legion daemon's own code writes:
-// `packages/daemon/internal/api/state_golden_test.go` builds the daemon's populated state and
-// writes it here (`golden(t, "state.json", populatedState(t))`), so these bytes are the daemon's
-// wire shape rather than a reading of it. dispatch://INFRA-1077's acceptance A4 asks for a test
-// on this side that reads such a document, because a Dispatch-side decoder held only to
-// hand-written literals cannot tell when the daemon's own shape moves.
+// `packages/daemon/internal/api/composed_state_test.go` composes the daemon's populated state over
+// a seeded database by the calls the daemon's state route makes, and `state_golden_test.go` writes
+// it here (`stateGolden(t, "state.json", populatedState(t))`), so these bytes are the daemon's wire
+// shape rather than a reading of it. dispatch://INFRA-1077's acceptance A4 asks for a test on this
+// side that reads such a document, because a Dispatch-side decoder held only to hand-written
+// literals cannot tell when the daemon's own shape moves.
 func goldenStatePath() string {
 	return filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "daemon-api", "state.json")
 }

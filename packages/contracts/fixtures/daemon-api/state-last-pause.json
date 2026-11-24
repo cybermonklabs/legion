@@ -7,7 +7,7 @@
     "startedAt": "2026-11-15T08:30:00Z"
   },
   "admission": {
-    "cap": 5,
+    "cap": 6,
     "active": [],
     "waiting": [],
     "trees": [],
@@ -33,6 +33,9 @@
       "session": "ses_controller"
     }
   },
+  "agentSecretsLogin": {
+    "state": "issued"
+  },
   "capabilities": [
     {
       "name": "subagents",
@@ -41,28 +44,28 @@
     },
     {
       "name": "eval-js",
-      "status": "unchecked",
-      "detail": "no probe has reported yet"
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
     },
     {
       "name": "eval-python",
-      "status": "unchecked",
-      "detail": "no probe has reported yet"
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
     },
     {
       "name": "browser",
-      "status": "unchecked",
-      "detail": "no probe has reported yet"
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
     },
     {
       "name": "lsp",
-      "status": "unchecked",
-      "detail": "no probe has reported yet"
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
     },
     {
       "name": "codegraph",
-      "status": "unchecked",
-      "detail": "no probe has reported yet"
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
     },
     {
       "name": "web-search",
@@ -71,8 +74,8 @@
     },
     {
       "name": "skills",
-      "status": "unchecked",
-      "detail": "no probe has reported yet"
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
     },
     {
       "name": "mcp",
@@ -96,27 +99,25 @@
     },
     {
       "name": "secrets",
-      "status": "open",
-      "detail": "the agent-secrets login is , not issued",
-      "configLine": "capabilities.decided.secrets: \"\u003creason\u003e\"",
+      "status": "present",
+      "detail": "every pod is enrolled with the agent-secrets broker runtime.kubernetes.agent_secrets names, and the daemon's login is issued",
       "source": "boot"
     },
     {
       "name": "model-fallback",
-      "status": "open",
-      "detail": "not read: no probe has reported retry.modelFallback",
-      "configLine": "capabilities.decided.model-fallback: \"\u003creason\u003e\"",
+      "status": "present",
+      "detail": "retry.modelFallback is true under the pod's Oh My Pi settings (read by the probe)",
       "source": "boot"
     },
     {
       "name": "toolchain",
-      "status": "unchecked",
-      "detail": "no probe has reported yet"
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
     },
     {
       "name": "claude-code",
-      "status": "unchecked",
-      "detail": "no probe has reported yet"
+      "status": "present",
+      "detail": "checked by the daemon's probe of the worker image, which passed"
     },
     {
       "name": "resource-limits",
@@ -270,7 +271,7 @@
         }
       }
     },
-    "admission_cap": 5,
+    "admission_cap": 6,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
     "omp_launch_prefix": [],
@@ -397,5 +398,30 @@
       }
     ]
   },
-  "consumers": []
+  "consumers": [
+    {
+      "name": "legion-go-LEGION-dispatch",
+      "waiting": 0,
+      "oldestAt": null,
+      "oldestAgeSeconds": null,
+      "lastHandledAt": "2026-11-15T10:00:30Z",
+      "stalled": false
+    },
+    {
+      "name": "legion-go-LEGION-github",
+      "waiting": 0,
+      "oldestAt": null,
+      "oldestAgeSeconds": null,
+      "lastHandledAt": "2026-11-15T10:00:30Z",
+      "stalled": false
+    },
+    {
+      "name": "legion-go-LEGION-wake",
+      "waiting": 0,
+      "oldestAt": null,
+      "oldestAgeSeconds": null,
+      "lastHandledAt": "2026-11-15T10:00:30Z",
+      "stalled": false
+    }
+  ]
 }

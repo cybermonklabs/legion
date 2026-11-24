@@ -7,13 +7,14 @@
     "startedAt": "2126-09-22T09:15:02Z"
   },
   "admission": {
-    "cap": 5,
+    "cap": 6,
     "active": [
       "LEGION-208",
       "LEGION-210",
       "LEGION-212",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-220"
     ],
     "waiting": [
       "LEGION-212",
@@ -853,6 +854,87 @@
       "givenEntry": 2,
       "treeMovedAt": "2126-09-20T16:42:58Z",
       "quietHours": 40.586666666666666
+    },
+    "LEGION-220": {
+      "key": "LEGION-220",
+      "generation": 1,
+      "phase": "implementing",
+      "status": "in_progress",
+      "tree": "LEGION-208",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "architect": {
+        "session": "ses_architect_220",
+        "state": "failed",
+        "pluginContract": 0,
+        "updateState": "none",
+        "failure": {
+          "cause": "died",
+          "detail": "launch failures ran out",
+          "at": "2126-09-22T08:41:17Z",
+          "attempts": {
+            "launchFailures": 4,
+            "deaths": 1,
+            "promptFailures": 0,
+            "promptRetires": 0
+          }
+        }
+      },
+      "workers": {
+        "implementer": {
+          "claim": {
+            "session": "ses_implementer_220",
+            "state": "working",
+            "locator": {
+              "runtime": "sandbox",
+              "claim": "legion-legion-legion-220-implementer",
+              "incarnation": "5d7f9b1c-3e5a-4c72-9b1d-4f6a8c0e2b93/1",
+              "sandbox": {
+                "namespace": "legion",
+                "name": "legion-legion-legion-220",
+                "podUid": "5d7f9b1c-3e5a-4c72-9b1d-4f6a8c0e2b93",
+                "container": "roles",
+                "generation": 1
+              }
+            },
+            "pluginContract": 46,
+            "updateState": "none"
+          },
+          "pass": 0,
+          "rounds": 0
+        }
+      },
+      "slot": {
+        "index": 5,
+        "admittedAt": "2126-09-22T07:52:18Z"
+      },
+      "memoryGroup": "memory",
+      "memoryDrawMode": "random",
+      "memoryDrawnAt": "2126-09-20T11:04:05Z",
+      "phaseEntry": 1,
+      "givenEntry": 1,
+      "treeMovedAt": "2126-09-22T09:17:12Z",
+      "quietHours": 0.01611111111111111,
+      "assignments": [
+        {
+          "experiment": "memory",
+          "variant": "memory",
+          "mode": "random",
+          "drawnAt": "2126-09-20T11:04:05Z"
+        },
+        {
+          "experiment": "plan-length",
+          "variant": "short",
+          "mode": "random",
+          "drawnAt": "2126-09-21T18:42:11Z"
+        },
+        {
+          "experiment": "planning",
+          "variant": "a",
+          "mode": "random",
+          "drawnAt": "2126-09-21T18:42:11Z"
+        }
+      ]
     }
   },
   "pendingStatusWrites": [],
@@ -890,7 +972,7 @@
       "dueAt": "2126-09-22T09:18:11Z"
     }
   ],
-  "claimsToRefresh": 5,
+  "claimsToRefresh": 6,
   "paused": {
     "id": 1,
     "since": "2126-09-22T09:18:00Z",
@@ -940,6 +1022,12 @@
         "claim": "legion-legion-legion-219-reviewer",
         "issue": "LEGION-219",
         "role": "reviewer",
+        "askedAt": "2126-09-22T09:18:00Z"
+      },
+      {
+        "claim": "legion-legion-legion-220-implementer",
+        "issue": "LEGION-220",
+        "role": "implementer",
         "askedAt": "2126-09-22T09:18:00Z"
       }
     ],
@@ -1060,8 +1148,9 @@
     },
     {
       "name": "pool-capacity",
-      "status": "present",
-      "detail": "the image probe pod scheduled at its first attempt",
+      "status": "decided",
+      "detail": "the image probe pod was Unschedulable 2 time(s) at boot before it scheduled: 0/3 nodes are available: 3 Insufficient cpu.; the pool had no room for its 500m / 1Gi reservation",
+      "decision": "the pool is sized by hand for the admission cap",
       "source": "boot"
     },
     {
@@ -1269,7 +1358,7 @@
         }
       }
     },
-    "admission_cap": 5,
+    "admission_cap": 6,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
     "omp_launch_prefix": [],
