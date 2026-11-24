@@ -170,14 +170,21 @@ func (h *HandshakeHold) HoldWriteLock(t *testing.T, conn *natsgo.Conn) (release 
 // conn until a write to the socket blocks under the lock, as a write to a socket whose peer has
 // stopped reading blocks. HoldWriteLock takes the lock itself, so only its release lets the lock go;
 // here the lock is the write's, so a reset or a close of the write's socket (bus.Client.Sever) fails
-// the write and lets the lock go, as it does in production. It returns once the publishing goroutine
-// is parked on its socket waiting for the socket to take a publish's write (writeParked), with the
-// lock taken: a publish that holds the lock for any other reason, however long, is not taken for a
-// stalled write. The func it returns thaws the proxy (Restore) and stops the
-// publishes; the test's end calls it too. Its one bound is the test binary's deadline less
-// stalledWriteSpare (testwait.Left), a guard against a write the socket always takes; then, or with
-// that much or less left to begin with, it fails the test by name without ending its goroutine,
-// which may be a hook's rather than the test's, and returns that func.
+// the write and lets the lock go, as it does in production.
+//
+// It returns once that write can no longer complete before the release, which is what a row that
+// then waits behind the lock needs (stalledForGood). A write parked on its socket is not enough: a
+// parked write resumes whenever more of the socket's bytes move to the proxy's end, and after the
+// proxy is frozen they can go on moving for a while, through a relay read already under way or as
+// the proxy's receive window grows. The publish then returns and lets the lock go, and a publish
+// waiting for the lock takes it, as the hand-back in
+// TestALostHoldSeversAPendingHandBackBehindAConnectedRead did. The func it returns thaws the proxy
+// (Restore) and stops the publishes; the test's end calls it too. Its one bound is the test binary's
+// deadline less stalledWriteSpare (testwait.Left), a guard against a write the socket always takes;
+// then, with that much or less left to begin with, or when the kernel does not report the socket's
+// state, it fails the test by name without ending its goroutine, which may be a hook's rather than
+// the test's, and returns that func. A row calls RequireSocketQueues first, on its own goroutine, so
+// that a kernel that reports no socket queues skips it outside CI rather than failing it here.
 func (h *HandshakeHold) HoldStalledWrite(t *testing.T, conn *natsgo.Conn) (release func()) {
 	t.Helper()
 	h.Freeze()
@@ -197,26 +204,83 @@ func (h *HandshakeHold) HoldStalledWrite(t *testing.T, conn *natsgo.Conn) (relea
 		return release
 	}
 	publisher := make(chan uint64, 1)
-	go publishUntil(conn, stop, publisher)
+	var returned atomic.Int64
+	go publishUntil(conn, stop, publisher, &returned)
 	id := <-publisher
 	for deadline := time.Now().Add(bound); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if writeParked(id) && lockTaken(lock) {
+		stalled, err := h.stalledForGood(id, &returned)
+		if err != nil {
+			t.Error(err)
+			return release
+		}
+		if stalled && lockTaken(lock) {
 			return release
 		}
 	}
-	t.Errorf("no write of nats.go's was parked on the socket, holding its connection lock, %s before the test binary's deadline: the frozen proxy's socket kept taking the publishes", stalledWriteSpare)
+	t.Errorf("no write of nats.go's was stalled for good on a socket to the hold's proxy, holding its connection lock, %s before the test binary's deadline: the frozen proxy's socket kept taking the publishes", stalledWriteSpare)
 	return release
+}
+
+// stalledForGood reports whether publishUntil's goroutine, numbered id, is parked in a write that
+// cannot complete until the proxy is restored. That needs three facts, read in this order:
+//   - the relay readers waiting at the freeze's gate (gatedReaders): such a reader reads no more of
+//     its client;
+//   - every established socket to the proxy that holds bytes to send has its zero-window probe
+//     timer armed (clientSockets), and its connection's reader is among those at the gate: the
+//     proxy's end has closed its receive window, the socket has nothing in flight, and the kernel
+//     moves none of its bytes until the proxy reads, which the first fact rules out;
+//   - the goroutine was parked in the same write (writeParked, with no publish returned) from
+//     before the kernel's account was read until after it.
+//
+// Such a write waits for room in a send queue that nothing empties. It reads the state of the
+// goroutine, the proxy and the kernel, and no time. It answers an error when the write stayed parked
+// across the kernel's account and no socket to the proxy showed a send queue: the kernel reports no
+// queues there, which a row rules out first with RequireSocketQueues, or conn does not go through the
+// hold.
+func (h *HandshakeHold) stalledForGood(id uint64, returned *atomic.Int64) (bool, error) {
+	before := returned.Load()
+	if !writeParked(id) {
+		return false, nil
+	}
+	gated := h.gatedReaders()
+	// The client dials the proxy's listener; h.listener is the hold's own relay, behind the proxy.
+	server, ok := h.Proxy.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return false, fmt.Errorf("the hold's proxy listens on %s, not a TCP address", h.Proxy.listener.Addr())
+	}
+	sockets, err := clientSockets(server)
+	if err != nil {
+		return false, fmt.Errorf("read the sockets to the hold's proxy at %s: %w", server, err)
+	}
+	if !writeParked(id) || returned.Load() != before {
+		return false, nil
+	}
+	loaded := 0
+	for _, socket := range sockets {
+		if socket.sendQueue == 0 {
+			continue
+		}
+		loaded++
+		if !socket.zeroWindowProbe || !gated[socket.local] {
+			return false, nil
+		}
+	}
+	if loaded == 0 {
+		return false, fmt.Errorf("a write of nats.go's stayed parked on its socket while /proc/net/tcp showed no bytes to send on any of the %d established socket(s) to the hold's proxy at %s: the connection does not go through the hold, or this kernel reports no socket queues there and the row did not call RequireSocketQueues first, so HoldStalledWrite cannot read that the write is stalled for good", len(sockets), server)
+	}
+	return true, nil
 }
 
 // stalledWriteSpare is what HoldStalledWrite leaves of the test binary's deadline for the failed
 // test's cleanups.
 const stalledWriteSpare = 30 * time.Second
 
-// publishUntil sends its own goroutine's id on id, then publishes 64 KiB at a time to conn until stop
-// closes or a publish fails. Each publish of that size flushes in place, under nats.go's connection
-// lock (natsWriter.appendBufs, nats.go v1.55.0:2364), so once the socket stops taking bytes the
-// publish parks in the socket's write holding the lock.
-func publishUntil(conn *natsgo.Conn, stop <-chan struct{}, id chan<- uint64) {
+// publishUntil sends its own goroutine's id on id, then publishes 64 KiB at a time to conn, counting
+// each publish that returns in returned, until stop closes or a publish fails. Each publish of that
+// size flushes in place, under nats.go's connection lock (natsWriter.appendBufs, nats.go
+// v1.55.0:2364), so once the socket stops taking bytes the publish parks in the socket's write
+// holding the lock.
+func publishUntil(conn *natsgo.Conn, stop <-chan struct{}, id chan<- uint64, returned *atomic.Int64) {
 	id <- goroutineID()
 	payload := make([]byte, 64<<10)
 	for {
@@ -225,7 +289,9 @@ func publishUntil(conn *natsgo.Conn, stop <-chan struct{}, id chan<- uint64) {
 			return
 		default:
 		}
-		if err := conn.Publish("testnats.stalled-write", payload); err != nil {
+		err := conn.Publish("testnats.stalled-write", payload)
+		returned.Add(1)
+		if err != nil {
 			return
 		}
 	}

@@ -67,6 +67,7 @@ func TestHoldWriteLockReturnsHoldingTheConnectionLock(t *testing.T) {
 // is HoldWriteLock on the same rig: its lock is the row's own, so the read still waits after the
 // close, which shows that the rig tells the two apart.
 func TestHoldStalledWriteHoldsTheLockWithAWriteTheSocketsCloseEnds(t *testing.T) {
+	RequireSocketQueues(t)
 	for _, stalled := range []bool{true, false} {
 		name := "HoldStalledWrite"
 		if !stalled {
