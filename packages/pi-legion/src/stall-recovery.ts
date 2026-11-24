@@ -123,7 +123,7 @@ export function stallCallProcesses(input: StallCallProcessesInput): StallCallPro
       named === undefined &&
       agentCmdline !== undefined &&
       agentCmdline !== "" &&
-      process.cmdline === agentCmdline
+      process.command === byPid.get(agentPid)?.command // plant: the digest, not the bytes
     ) {
       return "it is a copy of the agent that has not yet exec'd its program";
     }
