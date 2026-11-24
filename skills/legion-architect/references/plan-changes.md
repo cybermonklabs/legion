@@ -21,8 +21,10 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   On an issue whose experiment's group runs the project's default steps, Legion takes no later version (`PLAN_NOT_TAKEN`).
   To run such a child under your own issue again, restart it (`backlog`, then `rerun_child`): it starts the default steps at their first step.
 
-- **`retro-held`:** a parent's task passed its last step, which is not your `acceptance:owner` step, while issues beneath it are still in the workflow.
-  Legion holds it before its retro, so that it merges after them, and starts the retro when the last one leaves.
+- **`retro-held`:** a parent's task passed its last step, which is not your `acceptance:owner` step, or a merger moved the parent back out of `merging`; the notice opens with "<KEY> passed its last step" or "<KEY> moved back from merging" to say which.
+  Legion holds it before its retro while issues beneath it are still in the workflow, while a root that rests on its approval is in the workflow, and while a Dispatch child of it is open, in that order, so that it merges after them, and the notice names what holds it.
+  You get one notice for each of the three holds as it first comes to hold the parent, naming each issue that holds it then, and one again for each later run of that retro; no settle or admission pass that finds the same hold sends another.
+  The retro starts by itself once none holds it.
   Run each issue it names to done, or end it by your own status write in Dispatch, by the same rules.
   `retry_or_escalate` refuses that hold, a retry and an escalation alike: while issues beneath it are in the workflow, `409 HELD_FOR_CHILDREN` names each of them; with none left, the answer says that its tree lingers or that its root waits in the admission line.
   A `todo` on the root leaves it held.

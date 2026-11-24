@@ -6,18 +6,18 @@ Read it when you find a problem your issue does not cover (a defect in another c
 
 A finding outside your issue never becomes a `dispatch issue` you file. Take the first step that fits:
 
-1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request; say so in your handoff and the PR body.
-2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It gives the work to the tree that owns the code, or files a Legion root when none does.
+1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request; say so in your handoff and the PR body. On an issue with children, which carries no code of its own, it goes into an open child's pull request, or a new child the architect files.
+2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It gives the work to the tree that owns the code, or, when none does, files it under its approved root with no label where it has one, else as a Legion root.
 3. **Ask.** A finding that needs a person's authority, taste or risk appetite (whether it is wanted, which design, who owns it, a change of scope, cost or risk) is a `dispatch ask` with one recommendation (*What the ask says*).
 
 A fix you are not sure of is not step 1. A problem inside your issue is fixed in your change. A phase worker's problem inside its tree but outside its issue goes to the architect its `Legion addressing` line names.
 
-Search first (`skill://dispatch-first`). An open issue that tracks the problem gets your evidence as a comment. An open ask on the report issue about it (`dispatch open-asks --project <PROJECT>`) gets your evidence as a reply (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`); open no second one.
+Search first (`skill://dispatch-first`). An open issue that tracks the problem gets your evidence as a comment. An open ask on the report issue about it (`dispatch open-asks --project <PROJECT>`) gets your evidence as a reply (`dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`); open no second one. One finding an open issue already tracks still goes to the controller as a clear defect: a missing `child_of` link from an issue in an approved root's class or unfinished work to that root.
 
 ## Send a finding to the controller
 
 1. Post the evidence as a `dispatch comment` on the report issue (*Where it goes*), its first line exactly `Clear defect from <your role token>`. It prints `Posted comment <id>`.
-2. `envoy_publish` one message to the controller topic your `Legion addressing` line names, with `expects_reply: false`: your role token; the defect (what went wrong, where, to whom, the numbers, `dispatch://<KEY>`); the repository and component where the fix belongs; the fix; and `dispatch://<REPORT KEY>/comment/<id>`.
+2. `envoy_publish` one message to the controller topic your `Legion addressing` line names, with `expects_reply: false`: your role token; the defect (what went wrong, where, to whom, the numbers, `dispatch://<KEY>`); the repository and component where the fix belongs; by its key, the approved root the fix belongs to when you know one; the fix; and `dispatch://<REPORT KEY>/comment/<id>`. A mention of a class in prose is no link: only a Dispatch `child_of` link (`--parent`) is one, and a root counts only once a person approved its spec. A `done` issue is no such root: a fix of what it delivered is new work, filed with no parent, and it asks for its own approval.
 3. File nothing and wait for nothing. The controller replies under your evidence comment with where the work went. When the report issue is missing or closed, put the evidence in the message itself.
 
 ### When no controller takes it

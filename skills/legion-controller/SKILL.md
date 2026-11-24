@@ -78,11 +78,12 @@ Every move to `todo` you make is one of these:
 - an issue a person asks you to start, a parked one included;
 - a root in the workflow whose architect failed, once you found no cause or checked that its cause is gone; one that is held, once you checked that its cause is gone; one whose architect retired, once a person's decision gives its work a next step and you found no cause or checked that its cause is gone;
 - a tree you parked with the mark `Parked by Legion while it waits on:`, once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
+- a root you moved to `backlog` while it waited on its children, as step 6 of `skill://legion-controller/references/parked-decisions.md#the-walk` says;
 - stopped-session work a person's directive in the weekly plan moves to Legion.
 
 ## Findings, and the issues you file
 
-File an issue only when a person asks you to, for a clear defect no running tree owns, and the report issue. Any other problem is a finding: open a `dispatch ask` on the report issue as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
+File an issue only when a person asks you to, for a clear defect no running tree owns, and the report issue. Each issue you file (a clear defect no tree owns, or on a finding ask's answer) goes under its approved root with `--parent` and no label where it has one, and carries a `Filed for` line (`skill://legion-controller/references/filing.md`). Any other problem is a finding: open a `dispatch ask` on the report issue as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers.
 
 ## Daily report
 

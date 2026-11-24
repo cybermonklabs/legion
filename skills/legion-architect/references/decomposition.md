@@ -1,6 +1,7 @@
 # Decomposing a tree
 
-Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on outside work, or attach architecture components.
+Read this before you read a child's handoff, create or adopt children, review a child's spec, split work across repositories, record a wait on outside work, set a parent link, or attach architecture components.
+An issue with children, a root with no code of its own, class roots and parent links: `skill://legion-architect/references/parent.md`.
 
 ## Reading the tree
 
@@ -31,7 +32,7 @@ A release refused with a code below writes nothing: release the rest again witho
 2. Red-team the list with a fresh `task(agent="oracle")`, and `wait` for its verdict.
    Give it your issue's spec, the tree's open children with their repositories and pull requests, and each proposed child's title and whole spec, with this mandate: "You did not write this list.
    Argue that each child should not exist.
-   Name every child that is a to-do, a fix found in review, a proof of the acceptance of the issue it is filed under, or a part of the architect's own work, and say where it folds.
+   Name every child that is a to-do, a review fix of the issue's own code, a proof of the acceptance of the issue it is filed under, or a part of the architect's own work, and say where it folds: an open child's pull request, or the issue's own where it has no child.
    Weigh each separate pull request against combining its work:
    each round tests a large pull request whole again, and each small one costs a workspace, an admission wait, review, CI, a queue wait and a deploy."
    A repeated change is one child, and deleting what this tree replaced is this tree's work.
@@ -57,7 +58,7 @@ A release refused with a code below writes nothing: release the rest again witho
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
 - As a child's own architect, in the turn you file its children, send one `envoy_publish` to the agent that holds its plan: its planner where its task names one, else its implementer, at `notifications.role.<token>` (the token is below).
-  The message names each child you filed, with its key and repository, and says that the plan now covers only this issue's own part and the join with those children's work.
+  The message names each child you filed, with its key and repository, and says that this issue now carries no code of its own.
   Send it even when you also stop the task or give a later plan: that agent keeps its session and what it read of the whole issue.
 
 - Every child names the running system its criteria are proven on (the command, service or page its implementer proves them on and a tester step drives) and the repository skill that drives it;
@@ -104,11 +105,6 @@ Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 When an issue must wait on a sibling or on an issue outside this tree, set its `blocked_by` list as `skill://dispatch`, "Choosing what to work on", says.
 A blocker's close is its Dispatch issue reaching `done`, not a merge or a deploy: pick a blocker whose close is the fact the issue needs.
 Legion starts the issue once its blockers close.
-
-## A root with no code of its own
-
-When every change lands through children, the root's implementer opens its pull request on an empty commit.
-Plan no code for the root, and create no child only to give it a commit.
 
 ## Architecture components
 

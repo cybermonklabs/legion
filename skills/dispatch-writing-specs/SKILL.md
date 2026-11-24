@@ -28,7 +28,7 @@ Part | Content
 `Design` | How it meets them; a value and its reason for each limit, size and time
 `Decisions` | The choices the spec rests on (Decisions below)
 
-`serves` and `needs` name a block of this issue or an ancestor. Another agent can build and check the work from these alone. A small change gets a few sentences per part, no matrix; split a large design into children.
+`serves` and `needs` name a block of this issue or an ancestor. A view follows `skill://legion-architect/references/view.md`. Another agent can build and check the work from these alone. A small change gets a few sentences per part, no matrix; split a large design into children.
 
 ## Rules for the text
 
@@ -47,7 +47,7 @@ For each spec, ask, comment and message:
 
 - Name the concrete case and its numbers, then the choice in those terms, never "Which option?".
 - A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours.
-- Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, short and self-contained: a person answers it with no other reading.
+- Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, short and answerable with no other reading.
 - For each technical term you coined in this session, count by exact match the files holding it, in the repositories the work touches and in Dispatch. Expand or drop a term with a single-digit count. Read the draft for a coinage of common words too.
 - Measure each claim the ask rests on, its premise and each option's precondition. Where you cannot, mark the claim unverified and name the missing measurement; call an option unavailable only where a precondition demonstrably fails. No unmeasured number goes in a premise.
 - Before you pass a question on as one only an attended or privileged act answers, try the source that answers it, then the other records holding it. Keep a privileged read for what only the live system knows.

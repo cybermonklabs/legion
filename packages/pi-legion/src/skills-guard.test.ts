@@ -438,7 +438,7 @@ test("the pair is recorded as a row per half, and the reviewer approves only pas
     "- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand"
   );
   expect(prBody).toContain(
-    "each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them"
+    "each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the round the pair ran in most recently stay beside them"
   );
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
   expect(mergeGate).toContain(
@@ -727,14 +727,14 @@ test("the architect skill names the versions that keep the design gate open", ()
   ).toEqual([]);
 });
 
-// With no tester step only the implementer runs the checks, except the owner's subagent in the
-// last round of a parent whose pull request already merged (`references/acceptance.md`, "The last
-// round"). Each sentence a reader of the acceptance showed false is gone. This shows the text
+// With no tester step only the implementer runs the checks, except the owner's subagent for a
+// parent whose pull request merged before its children's (`references/parent.md`, "A parent's
+// head"). Each sentence a reader of the acceptance showed false is gone. This shows the text
 // ships, never that a role follows it.
 test("the architect's references say who runs the checks again", () => {
   expect([
     ...lacks("legion-architect/references/plan.md", [
-      /no other step runs them again, except where a parent's pull request merged before its last round[^.;]*your subagent then runs and records them/,
+      /no other step runs them again, except where a parent's pull request merged before its children's[^.;]*your subagent then runs and records them/,
       /^(?![\s\S]*nobody runs them again)/,
     ]),
   ]).toEqual([]);

@@ -32,7 +32,7 @@ Edit the live body: read it (`gh api repos/{owner}/{repo}/pulls/{number} --jq .b
 **Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
 - `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand
 - `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand
-Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them.
+Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the round the pair ran in most recently stay beside them.
 With no reviewer step, the implementer writes the pair as the one line `thermonuclear pair: not run (no reviewer step in this task)` instead of the two rows, whatever the diff touches; do not record a second pair.
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's

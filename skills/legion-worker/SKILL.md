@@ -46,7 +46,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
   - a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase;
 
-  - a reviewer on a half of the round that has no review, on a required check with no run at the head, or on the architect's rewrite of a check whose `run` is a whole test suite (`skill://legion-worker/references/merge-gate.md`);
+  - a reviewer, on each wait `skill://legion-worker/references/merge-gate.md` names;
 
   - retro on the architect's answer to a defect it reported;
 
@@ -120,7 +120,7 @@ and the production check after the close (`skill://legion-worker/references/merg
 
 - Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
 
-- A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit:
+- A conflict, the daemon's merge-forward message, a need for the base, a retarget, a tester's merge of a parent's head with its base, a wait in `awaiting_children`, a wrong pushed commit:
   `skill://legion-worker/references/conflicts-and-rewrites.md`.
 
 - A plan you write or review: `skill://legion-worker/references/plan-tests.md`.

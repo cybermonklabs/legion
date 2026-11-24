@@ -3,6 +3,10 @@
 Read this before you write a root spec, before any edit to an approved one, and on
 `design-approved` or `design-changes-requested`. A child's own architect runs no gate.
 
+A root under an approved ancestor can be written as a view on it, which opens its gated steps on
+the ancestor's approval: `skill://legion-architect/references/view.md`. A surface a person opens
+is shown to them before you request approval: `skill://legion-architect/references/surface.md`.
+
 ## Writing the root spec
 
 - Write it as `skill://dispatch-writing-specs` says, extending the issue's primary document in
@@ -32,36 +36,6 @@ request already makes a check's proof, write that check as `ci_check` rather tha
    a check names it (`full-ci` on cybermonklabs/legion); without it the job reads `skipped`.
 3. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
-
-## Show the surface before you ask
-
-Where this tree builds or changes a surface a person opens (a page, a screen, a dashboard), that
-person sees it and answers before you request approval: a spec for a surface they have not seen is
-refused. A new surface or a large visual change needs this round, and a flow needs a page they can
-click; a small change inside a standing shape does not, unless you are unsure what they want. A
-surface that is only text (an alert, a report, printed output) carries that literal text in the
-spec instead.
-
-1. Build the surface as a page from real readings of the real system. Draw the empty state and the
-   worst realistic data, or say which states you left out. Mark every invented figure in the
-   picture, and draw an existing surface as it is now beside the new one.
-2. Take the picture with the pod's Chromium and put it on the issue, with a clickable page as a
-   `file` artifact for a flow:
-
-   ```bash
-   chromium --headless --disable-gpu --no-sandbox --window-size=1440,900 \
-     --screenshot=<file.png> file://<page.html>
-   dispatch artifact --issue <KEY> --name <name>.png --path <file.png>
-   ```
-
-3. Ask one question with two to four answers, one of them that this is the wrong surface. Write no
-   code for the round, and end your turn.
-4. Put the agreed pictures in the spec, each with a line on what it shows and which readings are
-   real, and one line on the states they do not show. The spec's words still govern the build.
-
-You end the round, not the person. The round writes no spec version of its own, and a tree whose
-gate is open starts none. Under `Design gate steps: none`, put the picture in the spec and ask
-nobody. The surfaces children build are the root architect's.
 
 ## Which steps are gated
 

@@ -1,22 +1,15 @@
 # Finding asks
 
-Read this when a clear defect or a finding ask's reference reaches you, when an ask you follow is answered, when you file an issue a person asked for, and at every start. What a finding ask is: `skill://legion-worker/references/findings.md`.
-
-## The `Filed for` line
-
-Every issue you file carries one line in its spec, which triage reads to tell your filing from another's label:
-
-- for a person: `Filed for <person> at their request: <request>`. The request is `dispatch://<REPORT KEY>/ask/<id>` for who answered it; `Slack <channel_id> message <ts>` for the mention's `<@user_id>` (`…, adopting message <earlier ts>` when the mention asks for an earlier message's request); or `direct message <id>`, the id its frame's `reply_with` names after `--in-reply-to` (for a message that came as your own user turn, `direct message to session <your session id>`).
-- for a clear defect no running tree owns: `Filed for Legion from <role> on <issue>: <evidence reference>`.
+Read this when a clear defect or a finding ask's reference reaches you, when an ask you follow is answered, when you file or link an issue, and at every start. What a finding ask is: `skill://legion-worker/references/findings.md`. The `Filed for` line and an issue's approved root: `skill://legion-controller/references/filing.md`.
 
 ## Hand over a clear defect
 
 A role sends a clear defect with its role token, the defect, its issue, where the fix belongs, the fix, and its evidence comment on the report issue, whose first line is `Clear defect from <role>`. When the message carries the evidence itself, create or reopen the report issue (`skill://legion-controller/references/daily-report.md`) and post it there with that first line. One you find yourself gets the same comment, with `controller` as the role. A clear-defect ask needs no answer: take it as below, and resolve it (`dispatch resolve-ask --kind resolved`) only once it carries your reply.
 
 1. Check it is clear: the fix needs no choice a person must make, in a repository of an owner your addressing line names. Otherwise open a decision ask as `findings.md` says, and reply `Moved dispatch://<REPORT KEY>/ask/<new id>`.
-2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence there and reply `Filed dispatch://<that KEY>`.
-3. When a root in `admission.trees` matches its repository and component, `envoy_publish` the defect, its evidence reference and the fix to `notifications.role.<issues.<KEY>.architect.locator.claim>`. Reply `Handed dispatch://<that KEY>` only when a live holder took the publish; when Envoy kept it, or the root has no locator, reply nothing and publish again at your next wake. File nothing while a tree owns the code.
-4. When no running tree owns it, file it where the fix belongs:
+2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence there and reply `Filed dispatch://<that KEY>`. When that issue belongs to an approved root and has no `child_of` link to it, link it ([An issue's approved root](skill://legion-controller/references/filing.md#an-issues-approved-root)).
+3. When a root in `admission.trees` matches its repository and component, or its approved class or unfinished work holds the fix, `envoy_publish` the defect, its evidence reference and the fix to `notifications.role.<issues.<KEY>.architect.locator.claim>`. Reply `Handed dispatch://<that KEY>` only when a live holder took the publish; when Envoy kept it, or the root has no locator, reply nothing and publish again at your next wake. File nothing while a tree owns the code.
+4. When no running tree owns it, file it where the fix belongs, under its approved root with `--parent <ROOT>` and no label where [An issue's approved root](skill://legion-controller/references/filing.md#an-issues-approved-root) puts it there, else:
    `dispatch issue --project <KEY> --repo <owner/name> --title '<the defect>' --label legion --spec-file -`
    The spec states the defect, where the fix belongs and the fix, and ends with the `Filed for Legion from` line.
 5. Reply under the evidence comment (`--reply-to '<comment id>'`) or the ask (`--reply-to-ask '<ask id>'`), its first line exactly `Filed dispatch://<NEW KEY>` or `Handed dispatch://<KEY>`.
@@ -27,12 +20,12 @@ A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Fo
 
 ## Act on its answer
 
-A park ask's answer goes to `skill://legion-controller/references/park-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4. For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these four than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
+A park ask's answer goes to `skill://legion-controller/references/park-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4, and a run ask's to [A member under a root on the backlog](skill://legion-controller/references/filing.md#a-member-under-a-root-on-the-backlog). For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these four than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
 
 - `Hand it to the owning tree`: [Hand over a clear defect](#hand-over-a-clear-defect) from step 3.
 - `Do not file`: file nothing.
 - `File an issue`: `dispatch issue --project <PROJECT> --title '<the problem>' --spec-file -` in the project where the fix belongs (this one when the answer names none). The spec states the problem and where the fix belongs, cites the ask and its evidence, and carries `Filed for <the answer's By:> at their request: dispatch://<REPORT KEY>/ask/<id>`.
-- `File it for Legion`: the same, with `--label legion`; its triage wake brings it back.
+- `File it for Legion`: the same, with `--label legion` (under its approved root, `--parent <ROOT>` and no label); its triage wake brings it back.
 
 An ask that re-files an escalated child also takes the steps of `skill://legion-controller/references/escalation.md#a-child-that-looks-independent`.
 
@@ -48,7 +41,7 @@ An answer that arrives while no controller runs never wakes you, a reference pub
 
    ```text
    asks=$(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fail-with-body -H @- "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
-   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
+   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run" or .label == "Run it now" or .label == "Leave it on the backlog")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://|Started dispatch://|Left on the backlog dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
    Exit 0 with `[]` is nothing waiting; anything else is a failed read. Act on each as above, a triage ask as `skill://legion-controller/references/triage.md` says.

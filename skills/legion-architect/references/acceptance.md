@@ -14,7 +14,7 @@ answer it on its role topic from the deployment instructions, or open a `dispatc
 Only a task whose steps name `acceptance:owner` enters `accepting`.
 Read, against the goal, every check and every requirement:
 
-1. where a tester step comes before your acceptance, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
+1. where a tester step comes before your acceptance, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`; with no tester step before your acceptance, the implementer's evidence;
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed;
 
@@ -22,11 +22,24 @@ Read, against the goal, every check and every requirement:
 
 4. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed is accepted as any other (*A conflicting head*, below).
 
+Accept an issue only when each requirement block has a serving check, in its own Verification document or one of an issue under it on the `child_of` chain (another tree's root included), whose latest result passed and is current.
+Read coverage with `dispatch read --issue <KEY>` (read again on `Coverage: unavailable`), list the issues under it level by level with `dispatch issues --project <PROJECT> --parent <KEY> --all`, and read `dispatch results` for each.
+Count a check of an issue under it only once that issue is `done`, with the result at its final head (after the merge for `after_merge`); while such an issue is not done, hold the acceptance.
+Name in the acceptance comment each requirement with the issue and the check that proved it.
+Accept a view as `skill://legion-architect/references/view.md` says, answer `SIGNOFF_RESTING_ROOT_IN_WORKFLOW` as `skill://legion-architect/references/route.md` says, and accept a parent as "A parent's head" in `skill://legion-architect/references/parent.md` says.
+
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 
 - A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the `phase-finished` may never have reached you.
 
-- `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, and sign off again.
+- `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, and sign off again yourself only where the issue's pull request has merged.
+
+- `SIGNOFF_CHILD_OPEN`: run each open child to done, or close or icebox it under the rule, and wait for it as for an issue beneath.
+  Before `close_root`, also close or icebox each child that was never released.
+
+- Until the person answers about an unreleased child you moved to no parent, sign off neither its parent nor any issue above it.
+
+- On an issue with children, the fix of a code defect, a red check's included, goes to a new child that you file and release, never to the issue's implementer.
 
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `.
   Follow it (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
@@ -34,34 +47,6 @@ Read, against the goal, every check and every requirement:
   a closed issue hides its open questions from the controller.
 
 - No `after_merge` result is asked here; the production check records it after the close.
-
-## The last round
-
-A parent has a last round only where its task names `acceptance:owner`.
-Sign it off only on a head that carries the merges of every child its checks need.
-Each check needs a pass at that head; one in another repository needs a pass standing since the close of each child it needs, at a commit on the branch that issue's pull request merged into or on its default branch;
-a `default_branch` check needs the default branch.
-A criterion proven on a deployed system is proven after that child's deploy, as the repository's deploy skill says.
-A child's result proves no check of the parent: a child carrying part of a parent's requirement proves it with a check of its own whose `serves` names it.
-Nothing builds on the parent's merge, which comes last.
-Until those children close, leave the issue in `accepting`.
-Then, in one turn:
-
-1. Where a tester step comes before your acceptance, `envoy_publish` to its tester's role topic:
-   "The next round of <KEY> is its last round: a full test round of every check of the issue with no `ci_check`."
-   With no tester step before your acceptance, the implementer's evidence for those checks at the merge head is the full round.
-
-2. `request_backward_move` to `implementing`, with the reason "Last round:
-   merge the default branch your addressing line names into the branch, push, end your forward-merge comment with `parent's last round: full test round`, and complete."
-   Never hard-code `main`.
-
-A child's merge while the parent waits needs no move of its own:
-the last round's forward merge takes them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
-If the pull request merged before its last round, move nothing back. Once the children close:
-
-1. Have a fresh `task` subagent run each check with no `ci_check` on the default branch and record each result, and `wait` for its report.
-2. Read each `ci_check` result in `dispatch results`.
-3. Post the results in the acceptance comment, then `sign_off`.
 
 ## After your sign-off
 
