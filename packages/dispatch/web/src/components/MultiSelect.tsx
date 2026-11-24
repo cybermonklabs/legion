@@ -47,9 +47,9 @@ function fold(value: string | undefined): string {
 
 /** What an open keeps shown whole (`MultiSelect`'s `opening`): a single pick's option it starts
  *  on, under the search it starts with, from the open until the reader moves on in the list or it
- *  closes; the rows it last looked for that option among (`among`), null before the commit that
- *  draws that search; and what watches the list's box for a change of its size (`resized`), null
- *  until the open's effects have run. */
+ *  closes; the rows it last looked for that option among, each by its value and the text it draws
+ *  (`among`), null before the commit that draws that search; and what watches the list's box for a
+ *  change of its size (`resized`), null until the open's effects have run. */
 interface Opening {
   among: readonly string[] | null;
   readonly query: string;
@@ -484,19 +484,28 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // took it unseen. A layout effect, in the commit that draws the rows of the open's own search:
   // the open's own commit where the list last closed on that search, else the one its setting of
   // the search makes right after it, before anything paints. So the first frame that paints those
-  // rows already shows the option whole. Every later commit that changes the rows shows it whole
-  // again, until the reader moves on in the list: the issue's Assignee list reads its people only
-  // once it is opened, so it opens on Unassigned and the assignee, and when the people came the
-  // assignee moved to its place among everyone, still the active option, below the rows its box
-  // shows. A change of the list box's own size shows it whole again too (below). An arrow
-  // (`markActive`), a word typed in the text box and a scroll of the reader's own (below) each end
-  // that, and so does the close.
+  // rows already shows the option whole. Every later commit that changes the rows, or the text one
+  // of them draws, shows it whole again, until the reader moves on in the list: the issue's
+  // Assignee list reads its people only once it is opened, so it opens on Unassigned and the
+  // assignee, and when the people came the assignee moved to its place among everyone, still the
+  // active option, below the rows its box shows. A host's label or detail of a row can answer
+  // otherwise once a read has come, with the same rows: a longer label wraps and makes its row
+  // taller while the box keeps its size. A change of the list box's own size shows it whole again
+  // too (below). An arrow (`markActive`), a word typed in the text box and a scroll of the
+  // reader's own (below) each end that, and so does the close.
   useLayoutEffect(() => {
     const opened = opening.current;
     if (opened === null || opened.query !== query) return;
+    // Each row by its value and the text it draws, the Create row's label or an option's label and
+    // detail, written as JSON so that two different rows never read the same.
+    const drawn = rows.map((row) =>
+      JSON.stringify(
+        row === createValue ? [row, createLabel(row)] : [row, labelOf(row), optionDetail?.(row)]
+      )
+    );
     const { among } = opened;
-    if (among?.length === rows.length && among.every((row, at) => row === rows[at])) return;
-    opened.among = rows;
+    if (among?.length === drawn.length && among.every((row, at) => row === drawn[at])) return;
+    opened.among = drawn;
     if (rows.includes(opened.value)) showOption(opened.value);
   });
   // While the open keeps the option shown (`opening`), a change of the list box's own size shows

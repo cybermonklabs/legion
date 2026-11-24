@@ -8,6 +8,7 @@ import { useState } from "react";
 
 import { panelOf, pickNamed } from "../__tests__/list-picks";
 import { installResizeObserver } from "../__tests__/scroll-box";
+import { NoTooltips } from "../features/issue-page/NoTooltips";
 import { type ListMarks, MultiSelect } from "./MultiSelect";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
@@ -42,6 +43,7 @@ function SingleHost({
   onCreate,
   onQueryChange,
   onTriggerFocus,
+  optionLabel,
   options,
 }: {
   ariaDisabled?: boolean;
@@ -52,6 +54,7 @@ function SingleHost({
   onCreate?: (value: string) => boolean;
   onQueryChange?: (query: string) => void;
   onTriggerFocus?: (from: Element | null) => void;
+  optionLabel?: (value: string) => string | undefined;
   options: string[];
 }) {
   const [open, setOpen] = useState(false);
@@ -81,6 +84,7 @@ function SingleHost({
         onQueryChange={onQueryChange}
         onTriggerFocus={onTriggerFocus}
         open={open}
+        optionLabel={optionLabel}
         options={options}
         searchLabel="Search epics"
         value={value}
@@ -185,18 +189,24 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
  * Lays the open list out as a browser would, which happy-dom does not: its panel, the box that
  * scrolls, is 288 px tall at 100 px down the window inside a 1 px border, so it shows 286 px of
  * what it holds. The text box stands stuck to its top, 61 px tall, and so does the Clear foot to
- * its bottom while it is drawn; each option is 44 px tall, under the text box at its place among
- * the options the list draws when it is measured, moved up by the panel's `scrollTop`, which stops
- * at both ends of the scroll, as a browser's does. `trigger` stands above the panel, so the panel
- * does not close as one hanging off nothing (`AnchoredPanel`). Answers the panel.
+ * its bottom while it is drawn; each option is 44 px tall, or as tall as `height` makes it as it
+ * is measured, under the text box at its place among the options the list draws when it is
+ * measured, moved up by the panel's `scrollTop`, which stops at both ends of the scroll, as a
+ * browser's does. `trigger` stands above the panel, so the panel does not close as one hanging off
+ * nothing (`AnchoredPanel`). Answers the panel.
  */
-function layOutList(trigger: HTMLElement): HTMLElement {
+function layOutList(
+  trigger: HTMLElement,
+  height: (option: Element) => number = () => 44
+): HTMLElement {
   const listbox = screen.getByRole("listbox");
   const box = listbox.parentElement;
   const head = screen.getByRole("combobox").parentElement;
   if (box === null || head === null) throw new Error("the list is drawn outside its panel");
   const foot = screen.queryByRole("button", { name: /^Clear / })?.parentElement ?? null;
   const drawn = () => [...listbox.querySelectorAll('[role="option"]')];
+  const tall = (options: readonly Element[]) =>
+    options.reduce((sum, option) => sum + height(option), 0);
   const shown = 286;
   let scrolled = 0;
   Object.defineProperties(box, {
@@ -206,7 +216,7 @@ function layOutList(trigger: HTMLElement): HTMLElement {
       configurable: true,
       get: () => scrolled,
       set: (value: number) => {
-        const end = 61 + drawn().length * 44 + (foot === null ? 0 : 61) - shown;
+        const end = 61 + tall(drawn()) + (foot === null ? 0 : 61) - shown;
         scrolled = Math.min(Math.max(value, 0), Math.max(end, 0));
       },
     },
@@ -216,8 +226,11 @@ function layOutList(trigger: HTMLElement): HTMLElement {
   head.getBoundingClientRect = () => new DOMRect(1, 101, 254, 61);
   if (foot !== null) foot.getBoundingClientRect = () => new DOMRect(1, 101 + shown - 61, 254, 61);
   for (const option of drawn()) {
-    option.getBoundingClientRect = () =>
-      new DOMRect(1, 162 + 44 * drawn().indexOf(option) - scrolled, 254, 44);
+    option.getBoundingClientRect = () => {
+      const options = drawn();
+      const above = tall(options.slice(0, options.indexOf(option)));
+      return new DOMRect(1, 162 + above - scrolled, 254, height(option));
+    };
   }
   return box;
 }
@@ -318,11 +331,15 @@ test("the arrows scroll a multi-select's list the least that shows the option th
 });
 
 /**
- * Lays each list an open draws out as `layOutList` does, the moment anything first measures it:
- * the open measures its list in the commit that draws it, before a case could lay it out after the
- * open. Answers the box the last list scrolls in, and what puts the measurements back.
+ * Lays each list an open draws out as `layOutList` does, its options as tall as `height` makes
+ * them, the moment anything first measures it: the open measures its list in the commit that
+ * draws it, before a case could lay it out after the open. Answers the box the last list scrolls
+ * in, and what puts the measurements back.
  */
-function layOutListsAsOpened(trigger: HTMLElement): {
+function layOutListsAsOpened(
+  trigger: HTMLElement,
+  height?: (option: Element) => number
+): {
   box: () => HTMLElement | null;
   restore: () => void;
 } {
@@ -335,7 +352,7 @@ function layOutListsAsOpened(trigger: HTMLElement): {
     const drawn = document.querySelector('[role="listbox"]');
     if (drawn !== null && drawn !== listbox) {
       listbox = drawn;
-      box = layOutList(trigger);
+      box = layOutList(trigger, height);
       // The element measured may be one the layout has just given a box of its own.
       if (Object.hasOwn(this, "getBoundingClientRect")) return this.getBoundingClientRect();
     }
@@ -504,6 +521,44 @@ test("a single pick keeps the option it opened on shown whole as its options and
     lists.restore();
     view.unmount();
     sizes.restore();
+  }
+});
+
+// The rows can stay the same values while the text one draws changes: a host's label for a value
+// can answer otherwise once a read has come, as a name read after the list opened on a login.
+// Inside `NoTooltips` a label wraps rather than ending in an ellipsis, so a longer one makes its
+// row taller while the list's box keeps its size, and the option the list opened on can end below
+// what the box shows. That change shows it whole again, the list's own box alone scrolled.
+test("a single pick keeps the option it opened on shown whole as its label changes over the same options and makes its row taller", async () => {
+  const user = userEvent.setup();
+  const host = (labels: Readonly<Record<string, string>>) => (
+    <NoTooltips>
+      <SingleHost initial="Testing" optionLabel={(value) => labels[value]} options={STATUSES} />
+    </NoTooltips>
+  );
+  const view = render(host({}));
+  const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+  // A row whose text runs past 26 characters wraps onto a second line of 20 px: 8 px above and
+  // below its two lines make it 56 px tall, where one line keeps it at its 44 px least.
+  const lists = layOutListsAsOpened(trigger, (option) =>
+    (option.textContent ?? "").length > 26 ? 56 : 44
+  );
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    // The box shows 61-286 px of its content: at 39, the sixth option, Testing, stands whole at
+    // 281-325; its longer label makes it 281-337, which ends below what the box shows.
+    await user.click(trigger);
+    const opened = lists.box()?.scrollTop;
+    view.rerender(host({ Testing: "Testing on staging, waiting on its release" }));
+    expect(activeName(screen.getByRole("combobox", { name: "Search epics" }))).toBe(
+      "Testing on staging, waiting on its release"
+    );
+    expect([opened, lists.box()?.scrollTop]).toEqual([39, 51]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
   }
 });
 
