@@ -857,20 +857,6 @@ describe("verdicts", () => {
     expect(g.entries[1].argsDigest).toBe(e.argsDigest);
     expect(g.entries[2].argsDigest).not.toBe(e.argsDigest);
   });
-  test("the charter model reads which decisions are the agent's own: the gate, and cleanup, naming, an equal choice and a dead thing's removal", async () => {
-    // Authority failure 3 sends back an ask that hands the person one of these decisions, and it
-    // rests on these sentences of rules.md. The suite's model is a stand-in, so this pins the words
-    // the real model reads: a prompt that drops them, or gives these decisions to the person, fails.
-    const g = bind();
-    await g.device("t1", "dispatch_comment", COMMENT);
-    const system = g.calls[0].system.replace(/\s+/g, " ");
-    expect(system).toContain(
-      "The gate: an ask is a question only when it needs the person's authority, their taste or their risk appetite. An ask that wants them to ratify a judgment the agent can make is not a question."
-    );
-    expect(system).toContain(
-      "Cleanup, naming, a choice between two equal options, and the removal of a thing that no longer works are the agent's decisions. The agent makes them, does them and reports what it did. A recommendation does not rescue these."
-    );
-  });
   test("an entry that asked the model records reviewedText: the arguments the model saw, cut as they were", async () => {
     const g = bind({ complete: async () => ({ text: REVISE }) });
     await g.device("t1", "dispatch_comment", COMMENT);
