@@ -135,8 +135,10 @@ func TestAnApprovedLeafWithNoCheckReadsNotBuilt(t *testing.T) {
 // not hold"). A node that the approved spec removed is one that it holds, so a relation to it is
 // taken, and the derivation reads the current tree, which leaves the removed node out: in
 // wait-cycle with envoy-delivers-messages removed, the two statements under it read at the top of
-// the tree, and the check that serves it is taken and reads nowhere. The wait of u-c on it is
-// dropped, since a unit waits on a current statement.
+// the tree, and the check that serves it is taken and judged. --json reports it among the checks,
+// and the text prints it after the statements, as a check that serves no current statement, so the
+// text names each check that --json reports. The wait of u-c on it is dropped, since a unit waits
+// on a current statement.
 // The relations that name no node, or a node of another kind, are rows of TestScenarioRefusals.
 func TestARelationToANodeThatTheApprovedSpecRemovedIsTaken(t *testing.T) {
 	t.Parallel()
@@ -147,15 +149,31 @@ func TestARelationToANodeThatTheApprovedSpecRemovedIsTaken(t *testing.T) {
 		return nodes
 	})
 	replaceIn(t, filepath.Join(dir, "units.json"), `"waits_on": ["envoy-delivers-messages"]`, `"waits_on": []`)
-	expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{stdout: `spec-check: subject m1, the head of main
+	text := runBinary(t, binary, "", "state", "--scenario", dir)
+	expect(t, text, result{stdout: `spec-check: subject m1, the head of main
 statement a-message-reaches-a-late-session: met
   check a-late-session-gets-the-message: true (passed, counted from m1)
 statement a-message-survives-a-restart: not met (check a-restart-keeps-the-message is false)
   check a-restart-keeps-the-message: false (failed, counted from m1)
+check a-sent-message-reaches-a-listener (serves no current statement): true (passed, counted from m1)
 wait of u-a on a-message-reaches-a-late-session: ends
 wait of u-b on a-message-survives-a-restart: holds (not met)
 spec-check: cycle of waits: u-a -> a-message-reaches-a-late-session -> u-b -> a-message-survives-a-restart -> u-a
 `})
+	var out struct {
+		States []specgraph.State `json:"states"`
+		Cycle  []string          `json:"cycle"`
+	}
+	decodeStrict(t, runBinary(t, binary, "", "state", "--scenario", dir, "--json"), &out)
+	served := specgraph.CheckState{ID: "a-sent-message-reaches-a-listener", State: "true", Reason: "passed", From: "m1"}
+	if len(out.States) != 1 || !slices.Contains(out.States[0].Checks, served) {
+		t.Fatalf("--json: states %+v; want one state, whose checks hold %+v", out.States, served)
+	}
+	for _, c := range out.States[0].Checks {
+		if !strings.Contains(text.stdout, "check "+c.ID+":") && !strings.Contains(text.stdout, "check "+c.ID+" (serves no current statement):") {
+			t.Errorf("--json reports the check %s, and the text names it on no line", c.ID)
+		}
+	}
 }
 
 // R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a change

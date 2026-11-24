@@ -80,10 +80,12 @@ func runState(args []string, stdout, stderr io.Writer) int {
 }
 
 // printStates writes the states as text: for each subject, its line, then each statement in the
-// order of Derive with each of its own checks that CheckStates judged after it, then, at the head of
-// main, each wait of each unit; and, with units, the cycle of waits. A statement, check or wait line
-// starts with fixed text and passes through runnerlog.Printable, so no text of the scenario starts
-// a line of the runner's log or names a workflow command.
+// order of Derive with each of its own checks that CheckStates judged after it, then each check
+// that Derive judged whose serves names a statement that the approved spec removed, which is no
+// current statement, in the order of Derive, so the text names each check that --json reports,
+// then, at the head of main, each wait of each unit; and, with units, the cycle of waits. A
+// statement, check or wait line starts with fixed text and passes through runnerlog.Printable, so
+// no text of the scenario starts a line of the runner's log or names a workflow command.
 func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgraph.State, cycle []string) {
 	current, _ := scenario.Approved.Current() // ReadApproved refused every block that would be a problem here
 	serves := make(map[string]string, len(current.Checks))
@@ -115,6 +117,11 @@ func printStates(stdout io.Writer, scenario specgraph.Scenario, states []specgra
 			printLine(stdout, "statement %s: %s", s.ID, statementText(s, checks, scenario.Approved))
 			for _, c := range checksOf[s.ID] {
 				printLine(stdout, "  check %s: %s", c.ID, checkText(c))
+			}
+		}
+		for _, c := range state.Checks {
+			if _, statement := own[serves[c.ID]]; !statement {
+				printLine(stdout, "check %s (serves no current statement): %s", c.ID, checkText(c))
 			}
 		}
 		if scenario.Units == nil || subject.Branch != "main" {
