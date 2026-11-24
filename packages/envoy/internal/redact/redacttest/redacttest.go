@@ -12,6 +12,7 @@ package redacttest
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -79,11 +80,19 @@ func RequireNone(t testing.TB, capture, text string) {
 	}
 }
 
-// Piece is the first run of 8 characters (redact.TokenPiece, the shortest run the rule redacts
-// wherever it stands) of credential that text holds, and "" for none.
+// Piece is the first run of credential that text shows, and "" for none: 8 characters of it as
+// written (redact.TokenPiece, the shortest run the rule redacts wherever it stands), else the 16
+// hex digits of 8 of its bytes, in either case, as fmt's %x and %X write them. It is the one
+// reading of a shown run that RequireNoPiece and KeptPrintTest fail on.
 func Piece(text, credential string) string {
 	for at := 0; at+8 <= len(credential); at++ {
 		if piece := credential[at : at+8]; strings.Contains(text, piece) {
+			return piece
+		}
+	}
+	hexed, lower := hex.EncodeToString([]byte(credential)), strings.ToLower(text)
+	for at := 0; at+16 <= len(hexed); at += 2 {
+		if piece := hexed[at : at+16]; strings.Contains(lower, piece) {
 			return piece
 		}
 	}
@@ -92,7 +101,7 @@ func Piece(text, credential string) string {
 
 // RequireNoPiece is RequireNone of text under capture that also fails t, naming capture, for each
 // of credentials - the values the request carried, which whatever answers in a server's place can
-// echo - that text holds a Piece of.
+// echo - that text shows a Piece of.
 func RequireNoPiece(t testing.TB, capture, text string, credentials ...string) {
 	t.Helper()
 	RequireNone(t, capture, text)

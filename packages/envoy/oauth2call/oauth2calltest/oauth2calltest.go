@@ -10,7 +10,8 @@
 //   - The status-line probe: a server whose reason phrase quotes a URL carrying made-up
 //     credentials, and the check's designated assertion, RequireNone, which a print-site row of
 //     that module calls as a row of this module calls redacttest.RequireNone; RequireNoPiece is
-//     the same assertion for a row whose stand-in echoes the credential the request carried too.
+//     the same assertion for a row whose stand-in echoes the credential the request carried too,
+//     and Piece the one reading of a shown run it fails on.
 //   - The certificate stand-in: a TLS server whose certificate holds a name with a made-up
 //     credential in it, which crypto/x509 quotes in its error (CertificateServer).
 //
@@ -51,7 +52,8 @@ const Token = redacttest.Token
 // KeptPrintTest is redacttest.KeptPrintTest: v, which keeps one of the made-up credentials, or one
 // of credentials the request carried, where no printer may reach it (an answer's record of its
 // request), printed under every fmt verb and a bad verb, at every holding, beside twin, a plain
-// string that holds one.
+// string that holds one. It establishes no more than redacttest.KeptPrintTest does: it reads no
+// form of a credential but as written and hex-encoded, and calls no printer but fmt.
 func KeptPrintTest(t *testing.T, name string, v any, twin string, credentials ...string) {
 	t.Helper()
 	redacttest.KeptPrintTest(t, name, v, twin, credentials...)
@@ -104,12 +106,17 @@ func RequireNone(t testing.TB, capture, text string) {
 }
 
 // RequireNoPiece is redacttest.RequireNoPiece: RequireNone of text under capture that also fails
-// t, naming capture, for each of credentials, the values the request carried, that text holds a
-// run of 8 characters of.
+// t, naming capture, for each of credentials, the values the request carried, that text shows a
+// run of (redacttest.Piece): 8 characters as written, or the 16 hex digits of 8 bytes.
 func RequireNoPiece(t testing.TB, capture, text string, credentials ...string) {
 	t.Helper()
 	redacttest.RequireNoPiece(t, capture, text, credentials...)
 }
+
+// Piece is redacttest.Piece: the first run of credential that text shows, 8 characters as written
+// or the 16 hex digits of 8 bytes, and "" for none. It is the reading RequireNoPiece fails on, for
+// a twin that must show what the row's assertion would see.
+func Piece(text, credential string) string { return redacttest.Piece(text, credential) }
 
 // Said is s held as another party's words, for a test that builds the value a client would have
 // decoded from an answer: it prints only as the rule reads it and compares as it came.

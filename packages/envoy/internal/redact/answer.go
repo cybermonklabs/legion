@@ -16,13 +16,16 @@ import (
 // Answer is the body of an HTTP answer as every client of this repository reads it (ReadAnswer):
 // another party's bytes, which whatever answered in the server's place can have written to echo
 // the request back, credentials and all. It is opaque: its one field is unexported and points at
-// the bytes through pointers of their own (answer), so fmt, encoding/json and slog print the
-// status, addresses or nothing, and its four methods and Holds are the only ways out of it.
+// the bytes and the request's credentials through pointers and a func of their own (answer), so
+// fmt, encoding/json and slog print the status, addresses or nothing, and its five methods and
+// Holds are the only ways out of it.
 //
 //   - Decode fills a typed value from the body, holding every RemoteText it decodes with the
 //     request's record (Carried) so the value's words print with the request's credentials
 //     redacted; its error names the member that did not decode and quotes no value.
 //   - Words is the body as another party's words, a RemoteText that already holds that record.
+//   - Said is a key or a value a caller read out of the bytes by its own grammar, as another
+//     party's words that hold that record too.
 //   - Status is the answer's HTTP status code.
 //   - StreamTo hands the bytes to a writer, for a body that is data and never prints: a file the
 //     answer downloads, an answer a proxy forwards.
@@ -35,16 +38,15 @@ type Answer struct {
 	a *answer
 }
 
-// answer is what an Answer holds: the status, the bytes read, and the record of the requests
-// that led to the answer, whose credentials are read once, when Decode or Words needs them. The
-// bytes and the credentials sit behind pointers of their own: a verb fmt cannot apply to an
-// Answer's pointer (%s, %q) prints the answer it points at, and a pointer inside it as an address.
+// answer is what an Answer holds: the status, the bytes read, and the credentials the requests
+// that led to the answer carried, read from their record once, when Decode, Words or Said needs
+// them. The bytes sit behind a pointer of their own and the credentials behind a func, as a
+// RemoteText keeps the ones it redacts: a verb fmt cannot apply to an Answer's pointer (%s, %q)
+// prints the answer it points at, and a pointer or a func inside it as an address.
 type answer struct {
-	status int
-	data   *[]byte
-	rec    *record
-	once   sync.Once
-	tokens *[]string
+	status  int
+	data    *[]byte
+	carried func() []string
 }
 
 // ErrAnswerTooLarge is the error ReadAnswer wraps when a body holds more than its limit. The
@@ -61,7 +63,7 @@ var ErrAnswerTooLarge = errors.New("redact: the answer's body is longer than its
 // unwrapping to it, since net/http's text of a body it could not read can quote a line the answer
 // wrote.
 func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
-	a := &answer{status: resp.StatusCode, rec: answerRecord(resp)}
+	a := &answer{status: resp.StatusCode, carried: sync.OnceValue(answerRecord(resp).tokens)}
 	if resp.Body == nil || resp.Body == http.NoBody {
 		return Answer{a}, nil
 	}
@@ -120,16 +122,12 @@ func (s *answerStream) Close() error {
 	return s.body.Close()
 }
 
-// carried is the credentials the answer's requests carried, read once.
-func (a *answer) carried() []string {
-	a.once.Do(func() {
-		var tokens []string
-		if a.rec != nil {
-			tokens = a.rec.tokens()
-		}
-		a.tokens = &tokens
-	})
-	return *a.tokens
+// carried is the credentials the answer's requests carried, and none for the zero Answer.
+func (a Answer) carried() []string {
+	if a.a == nil {
+		return nil
+	}
+	return a.a.carried()
 }
 
 // bytes is the answer's body, empty for the zero Answer.
@@ -152,10 +150,7 @@ func (a Answer) Status() int {
 // that prints only as the rule reads it, with every credential the answer's requests carried
 // redacted first, and compares as it came.
 func (a Answer) Words() RemoteText {
-	if a.a == nil {
-		return NewRemoteText("")
-	}
-	return NewRemoteText(strings.TrimSpace(string(a.bytes()))).WithoutTokens(a.a.carried()...)
+	return NewRemoteText(strings.TrimSpace(string(a.bytes()))).WithoutTokens(a.carried()...)
 }
 
 // Said is text a caller read from this answer's bytes (StreamTo) - a key or a value of a body it
@@ -164,10 +159,7 @@ func (a Answer) Words() RemoteText {
 // redacted first, and compares as it came. Text the answer does not hold is no answer's words, and
 // a caller hands Said none.
 func (a Answer) Said(text string) RemoteText {
-	if a.a == nil {
-		return NewRemoteText(text)
-	}
-	return NewRemoteText(text).WithoutTokens(a.a.carried()...)
+	return NewRemoteText(text).WithoutTokens(a.carried()...)
 }
 
 // StreamTo writes the body to w, for a body that is data and never prints: a file the answer
@@ -211,8 +203,9 @@ func ContainsFold(body []byte, phrase string) bool {
 // Decode fills v, which must point at a typed value, from the body as JSON, and holds every
 // RemoteText it decodes, at any depth of v, with the record of the answer's requests (Carried):
 // a field another party wrote prints with the request's credentials redacted, as Words prints the
-// body, and compares as it came. A destination that would take the body whole - a string, a byte
-// slice, a json.RawMessage or an interface value, behind however many pointers (whole) - is
+// body, and compares as it came. A destination that would take the body whole - a string, or a
+// value encoding/json fills with the answer's text as it came (plainText: a byte slice, a
+// json.RawMessage, a byte array or an interface value), behind however many pointers (whole) - is
 // refused, since its text would leave the answer as plain text. So is one that holds anything
 // Decode's one walk of it refuses (refusal): a member encoding/json would fill with the answer's
 // text as it came, a box no record of the answer reaches, or an embedded pointer encoding/json
@@ -235,8 +228,8 @@ func (a Answer) Decode(v any) error {
 	}
 	data := a.bytes()
 	err := json.Unmarshal(data, v)
-	if a.a != nil && holdsBox(rv.Type(), map[reflect.Type]bool{}) {
-		recordBoxes(rv, a.a.carried())
+	if holdsBox(rv.Type(), map[reflect.Type]bool{}) {
+		recordBoxes(rv, a.carried())
 	}
 	if err != nil {
 		return errors.New(decodeText(err, data, rv.Type().Elem()))
@@ -244,20 +237,14 @@ func (a Answer) Decode(v any) error {
 	return nil
 }
 
-// whole reports whether a value of t takes a JSON body whole as text: a string, a byte slice
-// (json.RawMessage among them) or an interface value, or a pointer to one, which encoding/json
-// allocates and fills.
+// whole reports whether a value of t takes a JSON body whole as text: a string, or a value
+// encoding/json fills with the answer's text as it came (plainText), or a pointer to one, which
+// encoding/json allocates and fills.
 func whole(t reflect.Type) bool {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	switch t.Kind() {
-	case reflect.String, reflect.Interface:
-		return true
-	case reflect.Slice:
-		return t.Elem().Kind() == reflect.Uint8
-	}
-	return false
+	return t.Kind() == reflect.String || plainText(t) != ""
 }
 
 // walked is a value refusal has read: the target of a pointer it followed, at the pointer's
@@ -360,10 +347,11 @@ func refusal(v reflect.Value, json, made bool, seen map[walked]bool) string {
 	return ""
 }
 
-// plainText is how Decode's refusal names a value of t that encoding/json fills with the answer's
-// text as it came, or "": a byte slice, json.RawMessage among them; a byte array, which it fills
-// from a JSON array of numbers that can spell the same text, and which fmt prints as text; or an
-// interface value.
+// plainText is how Decode names a value of t that encoding/json fills with the answer's text as it
+// came, or "": a byte slice, json.RawMessage among them; a byte array, which it fills from a JSON
+// array of numbers that can spell the same text, and which fmt prints as text; or an interface
+// value. It is one rule for the destination itself (whole) and for each member Decode's walk
+// reads (refusal).
 func plainText(t reflect.Type) string {
 	switch {
 	case t.Kind() == reflect.Interface:
