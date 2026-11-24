@@ -16,13 +16,16 @@ import (
 // Answer is the body of an HTTP answer as every client of this repository reads it (ReadAnswer):
 // another party's bytes, which whatever answered in the server's place can have written to echo
 // the request back, credentials and all. It is opaque: its one field is unexported and points at
-// the bytes through pointers of their own (answer), so fmt, encoding/json and slog print the
-// status, addresses or nothing, and its four methods and Holds are the only ways out of it.
+// the bytes and the request's credentials through pointers and a func of their own (answer), so
+// fmt, encoding/json and slog print the status, addresses or nothing, and its five methods and
+// Holds are the only ways out of it.
 //
 //   - Decode fills a typed value from the body, holding every RemoteText it decodes with the
 //     request's record (Carried) so the value's words print with the request's credentials
 //     redacted; its error names the member that did not decode and quotes no value.
 //   - Words is the body as another party's words, a RemoteText that already holds that record.
+//   - Said is a key or a value a caller read out of the bytes by its own grammar, as another
+//     party's words that hold that record too.
 //   - Status is the answer's HTTP status code.
 //   - StreamTo hands the bytes to a writer, for a body that is data and never prints: a file the
 //     answer downloads, an answer a proxy forwards.
