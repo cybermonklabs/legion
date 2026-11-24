@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // probeTimeout bounds one role lookup, so a hung listener answers Unknown rather than holding the
@@ -92,11 +91,11 @@ func NewProber(opts ProberOptions) *Prober {
 // Probe says whether session — the one registered with the current controller capability — is
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
 // both sessions or the holder's state. A lookup that could not be made or got no answer logs its
-// failure through redact.Unanswered, which prints none of net/http's own words for it.
+// failure through oauth2call.Unanswered, which prints none of net/http's own words for it.
 func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.lookup, nil)
 	if err != nil {
-		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", redact.Unanswered(err, nil, ""))
+		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", oauth2call.Unanswered(err, nil, ""))
 		return Unknown
 	}
 	if p.token != "" {
@@ -104,7 +103,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", redact.Unanswered(err, request, ""))
+		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", oauth2call.Unanswered(err, request, ""))
 		return Unknown
 	}
 	defer response.Body.Close()

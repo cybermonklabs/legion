@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // RepositoryAPI is repository's REST base under endpoint, GitHub's API root; empty is
@@ -183,8 +182,8 @@ var client = redirects.SameOrigin(http.DefaultClient)
 //
 // A failure names the call shown, its caller's name for it (Client), wherever it would name
 // target: GitHub's answer's path (refusal) and the error of a request that got no answer
-// (redact.Unanswered, which prints none of net/http's own words for it). With shown "" each names
-// target as it is, the latter through the URL rule.
+// (oauth2call.Unanswered, which prints none of net/http's own words for it, nor x509's). With
+// shown "" each names target: the former as it is, the latter as envoy's redact.URL prints it.
 func (c Client) call(ctx context.Context, method, target, shown string, body []byte, into any) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
@@ -192,7 +191,7 @@ func (c Client) call(ctx context.Context, method, target, shown string, body []b
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return "", nil, redact.Unanswered(err, nil, shown)
+		return "", nil, oauth2call.Unanswered(err, nil, shown)
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Accept", "application/vnd.github+json")
@@ -201,7 +200,7 @@ func (c Client) call(ctx context.Context, method, target, shown string, body []b
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return "", nil, redact.Unanswered(err, request, shown)
+		return "", nil, oauth2call.Unanswered(err, request, shown)
 	}
 	defer response.Body.Close()
 	read, err := oauth2call.ReadAnswer(response, 64<<20)

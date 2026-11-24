@@ -1724,8 +1724,8 @@ func findLegion(team string) (registry.Entry, bool, error) {
 // whether the daemon is slow, the body is large or the command gave up early. The caller's own
 // cancellation is not that case and keeps the error it has. The read follows no redirect
 // (daemonClient), so a 3xx is the daemon's answer, refused by its status; a read that got no
-// answer names its failure through redact.Unanswered; and every error names url through the URL
-// rule.
+// answer names its failure through oauth2call.Unanswered, which names url again only where it is
+// a plain URL (envoy's redact.URL); and every error names url through the URL rule.
 func get(ctx context.Context, url string) (oauth2call.Answer, error) {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -1740,11 +1740,11 @@ func get(ctx context.Context, url string) (oauth2call.Answer, error) {
 	}
 	request, err := http.NewRequestWithContext(timed, http.MethodGet, url, nil)
 	if err != nil {
-		return oauth2call.Answer{}, refuse(redact.Unanswered(err, nil, ""))
+		return oauth2call.Answer{}, refuse(oauth2call.Unanswered(err, nil, ""))
 	}
 	response, err := daemonClient.Do(request)
 	if err != nil {
-		return oauth2call.Answer{}, refuse(redact.Unanswered(err, request, ""))
+		return oauth2call.Answer{}, refuse(oauth2call.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)

@@ -23,8 +23,8 @@ import (
 // reads, refused by its status (Status), its Location neither asked nor printed. A Location that
 // does not parse is still net/http's error, since Go parses it before it asks CheckRedirect
 // (net/http/client.go of go1.27.3, lines 655-665 before 711-717): every error of a request that
-// got no answer prints through the module's helper that never prints net/http's own words (the
-// daemon's redact.Unanswered; envoy's redact.Cause and redact.Class).
+// got no answer prints through a helper that never prints net/http's own words (redact.Cause,
+// redact.Class and redact.Unanswered in envoy, oauth2call.Unanswered outside it).
 //
 // It is a copy and never the caller's own client: a client a caller passes in belongs to that
 // caller (a test passes httptest's), and a CheckRedirect written onto it would change how its

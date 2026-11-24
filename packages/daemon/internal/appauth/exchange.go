@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // accessTokensBody is GitHub's POST /app/installations/{id}/access_tokens body: the permissions
@@ -136,7 +136,7 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 	request.Header.Set("Content-Type", "application/json")
 	response, err := m.client.Do(request)
 	if err != nil {
-		return Lease{}, &TransientError{Err: fmt.Errorf("GitHub App token exchange: %w", redact.Unanswered(err, request, ""))}
+		return Lease{}, &TransientError{Err: fmt.Errorf("GitHub App token exchange: %w", oauth2call.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		body := refusalBody(response)

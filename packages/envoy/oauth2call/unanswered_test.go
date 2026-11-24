@@ -1,4 +1,4 @@
-package redact
+package oauth2call
 
 import (
 	"bufio"
@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
@@ -18,14 +19,15 @@ import (
 // unansweredToken is the bearer the requests below carry, which each stand-in echoes.
 const unansweredToken = "hj4tn-not-a-secret-RDX-31d9"
 
-// TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords: each row makes a request
-// that gets no answer, through a client that follows no redirect (refusing) or one that follows
-// them (following), and reads Unanswered of net/http's error. A failure whose text net/http writes
-// from the answer - a Location that does not parse, a status line that does not parse, the address
-// a followed redirect named - prints as its class and holds no run of the token net/http's own
-// text quotes (each row's twin: that text holds it); a transport failure on the request's own host
-// prints net/http's text of it, as it did; the call is named shown, or the URL it asked through the
-// URL rule; and errors.Is and errors.As find what they found before.
+// TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords is the daemon's row of the
+// printer it calls for a request that got no answer: each row makes a request that gets no answer,
+// through a client that follows no redirect (refusing) or one that follows them (following), and
+// reads Unanswered of net/http's error. A failure whose text net/http writes from the answer - a
+// Location that does not parse, a status line that does not parse, the address a followed
+// redirect named - prints as its class and holds no run of the token net/http's own text quotes
+// (each row's twin: that text holds it); a transport failure on the request's own host prints
+// net/http's text of it, as it did; the call is named shown, or the URL it asked as redact.URL
+// prints it; and errors.Is and errors.As find what they found before.
 func TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords(t *testing.T) {
 	refusing := redirects.Refused(&http.Client{})
 	following := &http.Client{}
@@ -59,11 +61,11 @@ func TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords(t *test
 		client                  *http.Client
 		twinLeaks               bool
 	}{
-		{"location-unparsed", echo(redirectstest.Unparsed), "/pulls/7", classLocationUnparsed, refusing, true},
-		{"status-line-unparsed", malformed(), "", classRequestFailed, refusing, true},
+		{"location-unparsed", echo(redirectstest.Unparsed), "/pulls/7", redact.ClassLocationUnparsed, refusing, true},
+		{"status-line-unparsed", malformed(), "", redact.ClassRequestFailed, refusing, true},
 		{"followed-elsewhere", echo(func(credential string) string {
 			return redirectstest.To(dead, strings.TrimPrefix(credential, "Bearer "))
-		}), "", classRedirected, following, true},
+		}), "", redact.ClassRedirected, following, true},
 		{"refused-connection", "http://" + dead, "", "connect: connection refused", refusing, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -86,7 +88,7 @@ func TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords(t *test
 			}
 			name := c.shown
 			if name == "" {
-				name = URLCredentials(request.URL.String())
+				name = redact.URL(request.URL.String())
 			}
 			if wantLine := `Get "` + name + `": `; !strings.HasPrefix(printed.Error(), wantLine) || !strings.Contains(printed.Error(), c.want) {
 				t.Errorf("Unanswered = %q, want it to begin %q and hold %q", printed, wantLine, c.want)
@@ -105,7 +107,7 @@ func TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords(t *test
 		if err == nil {
 			t.Fatal("the request was made")
 		}
-		if printed := Unanswered(err, nil, "the cache's health"); printed.Error() != `parse "the cache's health": `+classNotAURL || strings.Contains(printed.Error(), "%zz") {
+		if printed := Unanswered(err, nil, "the cache's health"); printed.Error() != `parse "the cache's health": `+redact.ClassNotAURL || strings.Contains(printed.Error(), "%zz") {
 			t.Errorf("Unanswered = %q, want the call named and its class", printed)
 		}
 	})

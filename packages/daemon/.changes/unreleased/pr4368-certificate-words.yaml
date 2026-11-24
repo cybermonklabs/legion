@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A request the daemon or the `legion` CLI sent that failed on the server's TLS certificate no
+  longer prints x509's text of the failure, which names what the certificate holds: every name it
+  is valid for, or the name of a candidate authority sent with it. Whoever answers in the server's
+  place chooses those names, and could put the request's credential there, whether the daemon
+  trusted the certificate or not. Such a failure now prints as fixed words for its type, such as
+  `tls: failed to verify certificate: x509: certificate is not valid for the host asked (...)`,
+  and still reads as a refusal of the transport no wait fixes. Every request that got no answer
+  now prints through envoy's `oauth2call.Unanswered`, and the daemon's own copy of that printer
+  is gone. Two other words change with it: the request's URL prints only where it is a plain
+  http(s) URL with no query, user information or escape, and as `(not printed: ...)` otherwise,
+  where the daemon printed it with its query and user information removed; and a failure of no
+  other class prints as `the request failed`.
+time: 2026-11-24T05:47:51Z
+custom:
+    Issue: pr4368

@@ -16,8 +16,8 @@ import (
 // failure's fixed words, or its class (unansweredFailure). It is for a request whose URL Call does
 // not print, such as a GitHub API path: Cause prints a transport failure's own text only beside a
 // configured URL and a request URL under /v1/ of it, Class never prints it, and neither keeps a
-// timeout's or a refused connection's own words for any other request. It is the contract of the
-// daemon's redact.Unanswered, in this module.
+// timeout's or a refused connection's own words for any other request. A module outside this one,
+// the daemon among them, prints such a request through it as oauth2call.Unanswered.
 //
 // It never prints net/http's own text of any other failure, which can quote the answering
 // party's words: Go parses a redirect's Location before a client's CheckRedirect is asked
@@ -69,7 +69,7 @@ func (u *unanswered) Error() string { return u.text }
 func (u *unanswered) Unwrap() error { return u.err }
 
 // The words Unanswered names a failure by where it prints none of net/http's, beside the classes
-// class names (ClassNotAURL, ClassRequestFailed). They are the daemon's redact.Unanswered's words.
+// class names (ClassNotAURL, ClassRequestFailed).
 const (
 	ClassRedirected       = "the request was redirected to another host, which did not answer (the redirect's target is not printed: it is the answering party's own words)"
 	ClassLocationUnparsed = "the answer was a redirect whose Location does not parse (the Location is not printed: it is the answering party's own words)"

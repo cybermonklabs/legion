@@ -691,7 +691,9 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 	}
 	response, err := cacheClient.Do(ask)
 	if err != nil {
-		return nil, redact.Unanswered(err, ask, "")
+		// The ask is named by the URL rule, as every line of workspace-init names --cache-url: its
+		// host and path, none of the user information or query it can carry.
+		return nil, oauth2call.Unanswered(err, ask, redact.URLCredentials(ask.URL.String()))
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
 		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))

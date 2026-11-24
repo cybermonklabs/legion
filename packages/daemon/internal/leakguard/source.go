@@ -57,8 +57,8 @@ type Source struct {
 	// (redirects.Refused), it follows redirects, Go's own policy: GitHub answers the tarball
 	// route with a redirect to its download host, whose URL carries the download's own token, and
 	// Go drops the Authorization header on the way to that other host. A read that got no answer
-	// names its failure through redact.Unanswered, which prints none of net/http's own words for
-	// it, nor any part of a redirect's target on another host.
+	// names its failure through oauth2call.Unanswered, which prints none of net/http's own words
+	// for it, nor any part of a redirect's target on another host.
 	Client *http.Client
 	// ReadBound is how long one read has; zero is leakCheckReadBound.
 	ReadBound time.Duration
@@ -161,7 +161,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	target := githubrest.RepositoryAPI(s.API, s.Repository) + "/tarball/" + tag
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), redact.Unanswered(err, nil, "")))
+		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), oauth2call.Unanswered(err, nil, "")))
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/vnd.github+json")
@@ -172,7 +172,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return Served{}, s.readFailure(ctx, tag, bound, redact.Unanswered(err, request, ""))
+		return Served{}, s.readFailure(ctx, tag, bound, oauth2call.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
