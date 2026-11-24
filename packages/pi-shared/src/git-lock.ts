@@ -2,13 +2,29 @@ import { lstat } from "node:fs/promises";
 
 /** The ways a git or jj failure names the lock file it could not take: jj's git backend
  * (gitoxide), and git's own lockfile API, which every git jj runs reports through. Both print the
- * path between single quotes without escaping it, so a path may hold a quote of its own: each
- * pattern takes the path up to the first quote that the message's fixed text follows, never up to
- * the first quote alone, and `.` stops at the end of the line, as the daemon's gitLockReports do. */
-const GIT_LOCK_REPORTS = [
-  /The lockfile at '(.+?)' might need manual deletion/g,
-  /Unable to create '(.+?)': File exists/g,
+ * path between single quotes without escaping it, so a path may hold a quote of its own. Each
+ * report is the fixed text before the path and the fixed text after it: the path runs from the one
+ * up to the first of the other on that line, at least one character long, as the daemon's
+ * gitLockReports (`'(.+?)'`) read it. They are read with indexOf, not a pattern: a lazy pattern
+ * here costs time quadratic in a line that holds many openings and no fixed tail. */
+const GIT_LOCK_REPORTS: readonly (readonly [opening: string, closing: string])[] = [
+  ["The lockfile at '", "' might need manual deletion"],
+  ["Unable to create '", "': File exists"],
 ];
+
+/** Each path `report` names on `line`, in order. A line with no closing after its first opening
+ * has none after any later opening either, so the read ends there. */
+function lockPaths(line: string, [opening, closing]: readonly [string, string]): string[] {
+  const paths: string[] = [];
+  for (let from = 0; ; ) {
+    const start = line.indexOf(opening, from);
+    if (start < 0) return paths;
+    const end = line.indexOf(closing, start + opening.length + 1);
+    if (end < 0) return paths;
+    paths.push(line.slice(start + opening.length, end));
+    from = end + closing.length;
+  }
+}
 
 /** `ms` as Go prints a time.Duration rounded to the second: `31m4s`, `2h0m5s`, `45s`. */
 function age(ms: number): string {
@@ -38,8 +54,9 @@ function age(ms: number): string {
  */
 export async function staleGitLockNote(output: string, now = Date.now()): Promise<string> {
   const locks = new Set<string>();
+  const lines = output.split("\n");
   for (const report of GIT_LOCK_REPORTS) {
-    for (const match of output.matchAll(report)) locks.add(match[1] as string);
+    for (const line of lines) for (const lock of lockPaths(line, report)) locks.add(lock);
   }
   const notes: string[] = [];
   for (const lock of locks) {
