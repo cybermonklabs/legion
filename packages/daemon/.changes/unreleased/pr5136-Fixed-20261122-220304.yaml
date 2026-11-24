@@ -1,0 +1,27 @@
+kind: Fixed
+body: |-
+    The leak guard reads only the commits a push to a URL adds. For `git push <url>` git hands the
+    pre-push hook the URL where a remote's name goes, and the guard held the remote-tracking refs of
+    a remote of that name, which has none, so it read all the history the destination already held:
+    one such push to GitHub ran 83.7 minutes in the guard and was refused over a commit already on
+    main, where the same push to `origin` took 18 s. The guard now holds the tracking refs of each
+    remote whose every fetch and push URL names the repository the push's URL names, with a token
+    in the userinfo, ssh's scp syntax and letter case ignored. A URL that no remote names still has
+    every commit read. The same check now applies to a push to a remote by name: a remote that
+    fetches from one repository and pushes to another (`remote.<name>.pushurl`) has none of its
+    tracking refs held. Neither has a remote under whose `refs/remotes/<name>/` another remote's
+    configured fetch refspec can file a ref: one in `remote.<x>.fetch`, as a remote named
+    `origin/private` has by default under `refs/remotes/origin/`, or a `Pull:` line of a legacy
+    `.git/remotes/<x>` file. A ref filed there by a fetch given a refspec on its command line, or
+    written with `git update-ref`, is still held as the remote's, as it was before. The guard reads
+    a URL's host from its authority alone, which ends at the first `/`, `?` or `#` as it does for
+    git, and only for git's network schemes, so a URL whose path, query or fragment holds
+    `@github.com` names no GitHub repository, and a push to it is scanned. A push from a shallow
+    repository whose commits run down to a shallow commit is refused at once, naming the commit and
+    the fetch that brings in its parents from the push's destination:
+    `git fetch --unshallow <remote>` for a push to a remote, and the push's URL, without its
+    userinfo, for a push to a URL. The guard read the destination's commits beneath the shallow
+    boundary as the push's own.
+time: 2026-11-22T22:03:04Z
+custom:
+    Issue: pr5136

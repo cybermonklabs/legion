@@ -159,6 +159,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {memory: {unit: issue, variants: [{name: memory}, {name: none}]}}\n"}.refuse(t)
 	},
+	"projects.<KEY>.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {memory: {mode: random, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}\n"}.refuse(t)
+	},
 	"projects.<KEY>.experiments must be a mapping of an experiment's name to its block": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: [plan-length]\n"}.refuse(t)
 	},
@@ -202,6 +205,23 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		}
 		return refusalFile{project: "    experiments: {plan-length: {mode: random, variants: [{name: long, config_files: [" +
 			overlay + "], instructions: " + missing + "}, {name: control}]}}\n"}.refuse(t)
+	},
+	// An experiment that sets how each issue is done: each arm's `plan`.
+	`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner or default (got "…")`: func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: alone}, {name: b, plan: default}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: owner-alone}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME>.variants.<ARM> names no plan: each variant of an experiment that sets plan names how its issues are done": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME> sets plan and is unit <unit>: an experiment that sets how an issue is done draws for each issue, so write unit: issue": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: tree, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.<NAME> and projects.<KEY>.experiments.<NAME> both set plan: one experiment sets how an issue is done": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}," +
+			" steps: {mode: random, unit: issue, variants: [{name: c, plan: owner}, {name: d, plan: default}]}}\n"}.refuse(t)
 	},
 	`projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    commit_issue_trailer_repos: [acme]\n"}.refuse(t)

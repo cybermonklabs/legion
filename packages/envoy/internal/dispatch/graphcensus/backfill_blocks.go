@@ -106,9 +106,23 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // that decide what this build marks, and it is named so the test that holds the marking rule to
 // them reads it (refs.BlockIndexMarkingRule).
 //
+// Each batch reads document_blocks_naming_no_node (migration 20261119020900) from the address $1
+// on: that index holds the rows this walk reads, keyed in its order, and its predicate is the
+// walk's own two clauses. node_id's own index is a hash, which keeps no order, so with no other
+// index each batch read every row still naming no node and sorted them, and a run took time
+// growing with the square of the rows (TestTheBackfillsWalksReadOnlyTheirBatch).
+//
 // The event is resolved once per (document, changed version) of the batch and joined back to
-// the rows, not once per row: every block of one version of one document shares that pair and
-// would otherwise run the same unindexed lookup over events up to backfillBatch times.
+// the rows, not once per row: every block of one version of one document shares that pair. The
+// pairs' lookups are a materialized CTE, so the plan runs them once per batch: inlined, the
+// generic plan a prepared statement settles on reran them for each row of the batch, 7,200
+// lookups for a batch of 120 rows and 60 pairs. The word `materialized` changes the plan and not
+// the rows (TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot), so the marking
+// rule stays, with its digest recorded anew (docs' markingStatementDigests). Each lookup probes
+// events_artifact_version_number (migration 20261119020700) by the document and the version, whose
+// expressions it compares as that index writes them, and whose predicate its own type clause
+// proves: with no index to serve it, each one read the whole of events, so a run took time growing
+// with the square of the data (TestTheBackfillsEventReadsProbeTheirIndexes).
 var BlockRowsStatement = `
 		with batch as (
 			select d.artifact_id, d.block_id, d.node_id, d.created_at, d.changed_version,
@@ -120,7 +134,7 @@ var BlockRowsStatement = `
 			order by d.node_id
 			limit $2
 		),
-		caused as (
+		caused as materialized (
 			select version.artifact_id, version.changed_version, found.id
 			from (
 				select distinct artifact_id, issue_key, project_key, changed_version

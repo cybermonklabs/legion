@@ -195,17 +195,20 @@ type workflowRuntime struct {
 	// record (tellReleaseWaits), and which leave with the repository's own marker where a pass
 	// stops reading GitHub for it (settleRecovery, tellLetGoWaits); recoveryHeldSince is when a
 	// recovery's listing was first found held with waits to tell (zero for none), so a hold past
-	// recoveryHoldBound tells them.
+	// recoveryHoldBound tells them, and recoveryBoundChecked whether a run of the recovery has begun
+	// with that bound passed (recoverRepositories), after which the refresher no longer cuts its wait
+	// to it.
 	// recheckAfter is the refresher's wait before it runs a job of its own (refreshRepositories),
 	// time.After when nil; a test sees each wait through it.
-	repositories      *repositories
-	installs          appauth.Installations
-	recoveringMu      sync.Mutex
-	recovering        map[string]bool
-	silenced          map[string]map[string]bool
-	releaseWaits      map[string]map[string]releaseWait
-	recoveryHeldSince time.Time
-	recheckAfter      func(time.Duration) <-chan time.Time
+	repositories         *repositories
+	installs             appauth.Installations
+	recoveringMu         sync.Mutex
+	recovering           map[string]bool
+	silenced             map[string]map[string]bool
+	releaseWaits         map[string]map[string]releaseWait
+	recoveryHeldSince    time.Time
+	recoveryBoundChecked bool
+	recheckAfter         func(time.Duration) <-chan time.Time
 	// rereadWake, recoverWake, heardWake, heldWake and liveWake are the refresher's wakes, one
 	// request held at most each (wake): a bad answer kept outside the refresher (its second job's
 	// clock), a repository left unread or answered again (its third, recoverRepositories), a
@@ -628,7 +631,11 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
 // runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
 // clock.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time) (opened *workflowRuntime, _ error) {
+//
+// source is the random source every `random` experiment is drawn with (overrides.experimentSource):
+// the engine holds it, and the admission draws with the engine's (workflow.Engine's
+// ExperimentSource). nil is the engine's own, experiment.CryptoSource.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error)) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -711,6 +718,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
+	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
 	// The project's declared experiments decide what each unit admission records is drawn for.
@@ -1475,7 +1483,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	if err != nil {
 		return nil, fmt.Errorf("read notification stream target: %w", err)
 	}
-	position, err := w.consumers.DispatchPosition(ctx)
+	position, err := w.consumers.ReconcilePosition(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read Dispatch consumer position: %w", err)
 	}

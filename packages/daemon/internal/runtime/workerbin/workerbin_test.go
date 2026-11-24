@@ -1,5 +1,7 @@
 package workerbin
 
+//ci:reads packages/daemon/docker/gh TestTheImagesGhIsTheWrapperInstallWrites
+
 import (
 	"errors"
 	"io/fs"

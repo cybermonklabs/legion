@@ -232,6 +232,28 @@ type StalePlugin struct {
 	Credit *RefreshCredit
 }
 
+// RecordedDeath is a restored claim whose stored record says the process it records died: the
+// daemon before this one judged that process gone and charged its death (Claim.DeathCharged),
+// and the relaunch that death raised lived in that daemon's memory alone, a wake the pacing
+// parked, so a restart lost it. The boot raises it once for every such claim, beside the
+// unfinished launches it relaunches (internal/daemon's launchUnfinished), so that relaunch enters
+// the restart's own wave rather than waiting for the runtime to report the death again
+// (dispatch://INFRA-5472). That report needs the pod's launcher to reconnect when the pod lives
+// on — a roles container that restarted — which is a probe interval after boot, by which time the
+// boot's wave holds the pacing and a relaunch raised then goes in behind all of it. Generation is
+// the claim's generation as the boot read it, so a claim a launch has moved on since is decided
+// nothing (relaunchRecordedDeath).
+//
+// Turn is the moment the boot reserved for that relaunch in the wake pacing, as RequestSpawn.Turn
+// is for an unfinished launch: the boot reserves the turns of both in one pass, in the order their
+// claims' work was owed, so a recorded death waits behind a launch whose work has waited longer.
+// The zero time is a replay the gate reserves a turn for itself.
+type RecordedDeath struct {
+	Claim      claim.Token
+	Generation uint64
+	Turn       time.Time
+}
+
 // StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
 // a turn whose recorded last step (StepRecord) is older than its role's backstop bound, and the
 // daemon ends that turn itself (internal/daemon's backstopStalledTurns, INFRA-1274's R5). The
@@ -421,6 +443,15 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
+	// Turn is a moment the caller has already reserved for this launch in the wake pacing, which
+	// the gate takes in place of reserving one of its own (revive, launchAfter, reserveWake), and
+	// the zero time for every caller but one: the boot's relaunch of the launches the previous
+	// daemon left waiting (internal/daemon's launchUnfinished), which reserves their turns one by
+	// one in the order their claims' work was owed before it posts them all at once, so the queue
+	// a restart rebuilds keeps the order the previous daemon was draining (dispatch://INFRA-5482).
+	// A launch the gate does not reach — refused, or held by a project pause — leaves that moment
+	// spent, as a dropped wake leaves its token spent (wakepace.Limiter.Reserve).
+	Turn time.Time
 }
 
 // RequestRegister is the agent's registration, already authenticated by its boot token: the
@@ -714,6 +745,7 @@ func (PromptAcked) isEvent()          {}
 func (PromptRefused) isEvent()        {}
 func (Timer) isEvent()                {}
 func (StalePlugin) isEvent()          {}
+func (RecordedDeath) isEvent()        {}
 func (StallBackstop) isEvent()        {}
 func (PodUpdateOpen) isEvent()        {}
 func (PodUpdateEnded) isEvent()       {}
@@ -790,6 +822,7 @@ const (
 	onCompactEnded eventKind = "compact_ended"
 
 	onStalePlugin   eventKind = "stale_plugin"
+	onRecordedDeath eventKind = "recorded_death"
 	onStallBackstop eventKind = "stall_backstop"
 
 	onPodUpdateOpen      eventKind = "pod_update_open"
@@ -831,6 +864,8 @@ func kindOf(ev Event) eventKind {
 		return timerPrefix + eventKind(ev.Kind)
 	case StalePlugin:
 		return onStalePlugin
+	case RecordedDeath:
+		return onRecordedDeath
 	case StallBackstop:
 		return onStallBackstop
 	case PodUpdateOpen:
@@ -969,6 +1004,9 @@ func GoneStates() []ClaimState {
 
 // IsGone is whether state is one of GoneStates: a claim in it has had its process let go.
 func IsGone(state ClaimState) bool { return slices.Contains(gone, state) }
+
+// FailedOrRetired is whether state is failed or retired: gone, and started again by a retry alone.
+func FailedOrRetired(state ClaimState) bool { return state == StateFailed || state == StateRetired }
 
 // TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
 // the table's own onCompact rows rather than from a second list of them: the api's refusals
@@ -1150,6 +1188,12 @@ func fillTable(t *builder) {
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
 	t.ignore(onStalePlugin, "a claim still launching is left to its registration, which decides it the moment it arrives",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
+
+	// A restored claim whose stored record says its process died, at boot (RecordedDeath): the
+	// relaunch that death raised is raised again now, through the pacing.
+	t.row(onRecordedDeath, "the record says the process died: raise again the relaunch the death raised", relaunchRecordedDeath,
+		[]ClaimState{StateLaunching, StateFailed}, live...)
+	t.ignore(onRecordedDeath, "no process is recorded, so no death of one is", processless...)
 
 	// The daemon's stall backstop over a claim whose agent stopped stepping mid-turn. It is a
 	// row of the one state a turn runs in; the machine re-reads the claim's record before it
@@ -2536,7 +2580,7 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		// log as that, attempt by attempt.
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation,
 			"launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
-		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd)
+		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd, time.Time{})
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
@@ -2551,8 +2595,10 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.Timeouts.RPC), taskRead)
 }
 
+// spawn launches a queued claim, at the turn its caller reserved when it carries one
+// (RequestSpawn.Turn), and otherwise at the turn the gate reserves.
 func spawn(m *Machine, ctx context.Context, ev Event) error {
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), ev.(RequestSpawn).Turn, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -2628,17 +2674,19 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
-// since it is what dates the two causes beside it — a death and a failed start are both older
-// than the agent that is running now (machine.go's Claim).
+// since it is what dates the death's cause beside it — a death older than this ready is one the
+// agent running now has survived (machine.go's Claim).
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	// The cause of a forget is kept for the launches of the fresh agent until it comes up
 	// (Machine.lostCause): the first launch after this ready continues a session of its own.
 	m.lostCause = ""
 	m.claim.LastReady = m.deps.Clock.Now()
-	// The pending cause goes with the launch failures it names: the episode they measure ended
-	// when this agent came up (Claim.PendingCause).
-	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
+	// The pending cause and the last start failure go with the launch failures they name: the
+	// episode they measure ended when this agent came up (Claim.PendingCause,
+	// Claim.LastStartFailure). A start failure kept past it would read, on a claim launching
+	// again later, as the reason it is not running now (dispatch://INFRA-5463).
+	m.claim.Budgets.LaunchFailures, m.claim.PendingCause, m.claim.LastStartFailure = 0, "", ""
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)
@@ -2683,7 +2731,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), time.Time{}, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -2737,7 +2785,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), time.Time{}, nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -2786,7 +2834,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// (resumeRefusal), before the budgets start over.
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), func() {
+	return m.revive(ctx, exemptWake(ev), time.Time{}, func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		m.claim.LeakCheckCause = ""
@@ -3012,7 +3060,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", nil)
+	return m.revive(ctx, d.ID == "", time.Time{}, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
