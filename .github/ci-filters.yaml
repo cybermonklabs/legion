@@ -1882,6 +1882,7 @@ envoy_infra_go:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 envoy_infra_build:
