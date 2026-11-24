@@ -1,5 +1,7 @@
 package textcheck
 
+//ci:reads packages/daemon/internal/textcheck/visible_markdown_test.go readGoTokens os.ReadFile (readGoTokens, called with daemonVisibleMarkdown, ../../../daemon/internal/textcheck/visible_markdown_test.go, in TestVisibleMarkdownIsTheDaemonsReader)
+
 import (
 	"fmt"
 	"go/scanner"

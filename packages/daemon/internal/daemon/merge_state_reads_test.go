@@ -567,18 +567,19 @@ func (a *armedFailure) fire() bool {
 	return false
 }
 
-// failingPullRecords is a runtime's records whose next read of a pull request fails once armed, as
-// a transient error of the database fails it, and which read as records do after that.
+// failingPullRecords is a runtime's records whose next read of a pull request's row (PullRequestRow,
+// the read issueRecord makes) fails once armed, as a transient error of the database fails it, and
+// which read as records do after that.
 type failingPullRecords struct {
 	record.Store
 	armed *armedFailure
 }
 
-func (s failingPullRecords) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*record.PullRequest, error) {
+func (s failingPullRecords) PullRequestRow(ctx context.Context, tx pgx.Tx, issue string) (*record.PullRequest, error) {
 	if s.armed.fire() {
 		return nil, errors.New("the database closed the connection")
 	}
-	return s.Store.PullRequest(ctx, tx, issue)
+	return s.Store.PullRequestRow(ctx, tx, issue)
 }
 
 // failingPullWrites is an engine's records whose next write of a pull request fails once armed, as

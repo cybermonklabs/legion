@@ -122,8 +122,9 @@ projects:
   #                                    # /etc/legion-memory
   #     instructions: /etc/legion-daemon/memory-instructions.md # optional: a markdown file on the
   #                                    # daemon's own disk, not a pod mount: the daemon reads it at
-  #                                    # boot and appends its text to every memory-group role's
-  #                                    # system prompt, after the deployment's own instructions.
+  #                                    # boot, and again before each launch, and appends its text
+  #                                    # to every memory-group role's system prompt, after the
+  #                                    # deployment's own instructions.
   #                                    # mode: on with no instructions appends nothing
   #   experiments:                     # optional: what this project draws its trees and its issues
   #                                    # into, by the name each draw records. The memory block above
@@ -154,6 +155,18 @@ projects:
   #                                    # does not mount
   #         - name: control            # the arm that names no file at all is the control the others
   #                                    # are measured against
+  #     planning: {mode: random, unit: issue, variants: [{name: owner, plan: owner}, {name: default, plan: default}]}
+  #                                    # an experiment that sets how each issue is done: an arm's
+  #                                    # plan is owner, whose issues take the plan their owner
+  #                                    # gives with register_plan, or default, whose issues run
+  #                                    # this project's default_steps and take no plan from their
+  #                                    # owner: once the daemon records such an issue, its owner's
+  #                                    # register_plan and stop_task are answered 409
+  #                                    # PLAN_NOT_TAKEN. Every arm of it names plan, it is unit:
+  #                                    # issue, and no other experiment of the project sets plan;
+  #                                    # owner-alone is refused, since this release does not carry
+  #                                    # it out. Each issue keeps the plan of its draw for its
+  #                                    # whole life, whatever this file says later
 # leak_check:                          # optional: the deployment's shared public leak check, which
 #   repository: example-org/deployment # the daemon reads at the worker image's pin
 #   manifest_sha256: <64 hex digits>   # (LEGION_LEAK_CHECK_TAG) and pushes to every pod: the
