@@ -316,6 +316,154 @@ passed=false
 [[ "$status" -eq 0 && "$(awk '{print $2, $3}' "$az_dir/calls" 2>/dev/null)" == $'cloud register\ncloud set\ngroup list' ]] && passed=true
 check "$passed"
 
+# --- fetch_old_cli, read out of airlock-check.sh with every *_old_cli function it calls and run on
+# its own, with a stand-in gh first on PATH. Whatever answers gh's calls in GitHub's place holds
+# gh's token and writes all that gh hands on: the tarball's member names, gh's error message, the
+# compare's answer. Each case puts the marker not-a-secret-token in one of those places, and no run
+# of eight of its characters (redacttest.Piece's run) may be in what fetch_old_cli prints or leaves
+# in OLD_CLI_WHY and OLD_CLI_VERSION, which k2 and k7 print. A tarball holds the release's layout,
+# with a binary whose --version names the tag, and the members its case adds after those three.
+# The twins show that tar's own words name the member that holds the marker; the good tarball is
+# the control that the stand-in gh is the one called and a release's tarball still unpacks and runs.
+old_dir="$work/old-cli"
+old_marker=not-a-secret-token
+mkdir -p "$old_dir/bin"
+eval "$(grep -E '^(OLD_CLI_DEFAULT_TAG|AIRLOCK_MERGE_COMMIT)=' "$script_dir/airlock-check.sh")"
+[[ -n "${OLD_CLI_DEFAULT_TAG:-}" && -n "${AIRLOCK_MERGE_COMMIT:-}" ]] ||
+  { printf 'FAIL: airlock-check.sh sets no OLD_CLI_DEFAULT_TAG or AIRLOCK_MERGE_COMMIT\n'; exit 1; }
+definition="$(sed -n '/^[a-z_]*_old_cli() {/,/^}/p' "$script_dir/airlock-check.sh")"
+[[ "$definition" == *'fetch_old_cli() {'* ]] || { printf 'FAIL: airlock-check.sh defines no fetch_old_cli()\n'; exit 1; }
+eval "$definition"
+python3 - "$old_dir" "$OLD_CLI_DEFAULT_TAG" "$old_marker" <<'PY'
+import io, sys, tarfile
+
+out, tag, marker = sys.argv[1:]
+held = "agent-secrets/" + marker
+
+
+def add(archive, name, kind=tarfile.REGTYPE, data=b"", mode=0o644, linkname="", mtime=0):
+    header = tarfile.TarInfo(name)
+    header.type, header.mode, header.linkname, header.mtime, header.size = kind, mode, linkname, mtime, len(data)
+    archive.addfile(header, io.BytesIO(data))
+
+
+def tarball(case, *extra):
+    with tarfile.open(f"{out}/{case}.tar.gz", "w:gz") as archive:
+        add(archive, "agent-secrets", tarfile.DIRTYPE, mode=0o755)
+        add(archive, "agent-secrets/bin", tarfile.DIRTYPE, mode=0o755)
+        add(archive, "agent-secrets/bin/agent-secrets", data=f"#!/bin/sh\necho 'agent-secrets {tag}'\n".encode(), mode=0o755)
+        for member in extra:
+            add(archive, **member)
+
+
+tarball("good")
+# member 5 is below member 4, a regular file
+tarball("below", dict(name=held), dict(name=held + "/bin"))
+tarball("escape", dict(name="../" + marker))
+tarball("hard-link", dict(name=held, kind=tarfile.LNKTYPE, linkname="agent-secrets/missing"))
+# GNU tar unpacks a symbolic link without a word; the unpack refuses it all the same
+tarball("symlink", dict(name=held, kind=tarfile.SYMTYPE, linkname="bin/agent-secrets"))
+# a time GNU tar warns of, naming the member, and unpacks all the same
+tarball("future", dict(name=held, mtime=2**33 - 1))
+PY
+# The stand-in gh: `gh release download` serves OLD_CLI_TARBALL into its --dir, the compare answers
+# OLD_CLI_STATUS, and the call OLD_CLI_GH_FAILS names fails, saying OLD_CLI_GH_SAYS on stderr.
+cat >"$old_dir/bin/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1 $2" in
+'release download')
+  [[ "${OLD_CLI_GH_FAILS:-}" != download ]] || { printf '%s\n' "$OLD_CLI_GH_SAYS" >&2; exit 1; }
+  while [[ $# -gt 0 && "$1" != --dir ]]; do shift; done
+  cp "$OLD_CLI_TARBALL" "$2/agent-secrets-amd64.tar.gz"
+  ;;
+'api '*)
+  [[ "${OLD_CLI_GH_FAILS:-}" != api ]] || { printf '%s\n' "$OLD_CLI_GH_SAYS" >&2; exit 1; }
+  printf '%s\n' "$OLD_CLI_STATUS"
+  ;;
+*) echo "stand-in gh: unexpected call: $*" >&2; exit 3 ;;
+esac
+GH
+chmod +x "$old_dir/bin/gh"
+# old_cli_case <tarball> [NAME=value ...]: runs fetch_old_cli in a work directory of its own, as k2
+# runs it, with the stand-in gh's settings; output is all it printed and the two values it set, and
+# status its answer.
+old_cli_case() {
+  local tarball="$1"
+  shift
+  rm -rf "$old_dir/work" "$old_dir/answer"
+  mkdir -p "$old_dir/work"
+  output="$(
+    unset AIRLOCK_OLD_CLI_TAG
+    export PATH="$old_dir/bin:$PATH" OLD_CLI_TARBALL="$old_dir/$tarball.tar.gz" OLD_CLI_STATUS=ahead
+    for setting in "$@"; do export "${setting?}"; done
+    WORK_DIR="$old_dir/work"
+    answer=0
+    fetch_old_cli 2>&1 || answer=$?
+    printf '%s' "$answer" >"$old_dir/answer"
+    printf 'OLD_CLI_WHY=%s\nOLD_CLI_VERSION=%s\n' "$OLD_CLI_WHY" "$OLD_CLI_VERSION"
+  )"
+  status="$(cat "$old_dir/answer" 2>/dev/null || echo none)"
+}
+# holds_marker <text>: whether text holds a run of eight characters of the marker.
+holds_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#old_marker}; at++)); do
+    [[ "$1" == *"${old_marker:at:8}"* ]] && return 0
+  done
+  return 1
+}
+prints_no_marker() { ! holds_marker "$1"; }
+old_work="$old_dir/work/old-cli"
+
+old_cli_case good
+label="fetch_old_cli unpacks a release's tarball, runs its binary and answers 0"; check test "$status" = 0
+label="that run's OLD_CLI_VERSION names the tag and OLD_CLI_WHY is empty"
+check test "$output" = "OLD_CLI_WHY="$'\n'"OLD_CLI_VERSION=agent-secrets $OLD_CLI_DEFAULT_TAG"
+
+# tar_case <case> <want>: the twin, then fetch_old_cli on the case's tarball, which must print no run
+# of the marker and must print want, its OLD_CLI_WHY line or the start of it.
+tar_case() {
+  status=0
+  rm -rf "$old_dir/twin"
+  mkdir -p "$old_dir/twin"
+  output="$(tar -xzf "$old_dir/$1.tar.gz" -C "$old_dir/twin" 2>&1 >/dev/null)" || status=$?
+  label="twin: tar's own words on the $1 tarball name the member that holds the marker"; check holds_marker "$output"
+  old_cli_case "$1"
+  label="fetch_old_cli prints no run of the marker a member's name of the $1 tarball holds"; check prints_no_marker "$output"
+  label="fetch_old_cli names a member of the $1 tarball by its place and kind alone, or unpacks it"
+  check test "${output#*"$2"}" != "$output"
+}
+unpack_why="OLD_CLI_WHY=the release's agent-secrets-amd64.tar.gz did not unpack: "
+tar_case below "${unpack_why}member 5, a regular file, could not be written: mkdir: "
+label="that refusal names the file that holds the unpack's own words"
+check test "${output#*"; the unpack's own words are in $old_work/unpack.log"}" != "$output"
+label="the unpack's own words in that file do name the marker"; check grep -qF "$old_marker" "$old_work/unpack.log"
+tar_case escape "${unpack_why}member 4, a regular file, is no path inside $old_work"$'\n'
+tar_case hard-link "${unpack_why}member 4, a hard link, is neither a directory nor a regular file"$'\n'
+old_cli_case symlink
+label="fetch_old_cli refuses a symbolic link, which GNU tar unpacks, by its place and kind"
+check test "${output#*"${unpack_why}member 4, a symbolic link, is neither a directory nor a regular file"$'\n'}" != "$output"
+tar_case future $'OLD_CLI_WHY=\nOLD_CLI_VERSION=agent-secrets '"$OLD_CLI_DEFAULT_TAG"
+label="fetch_old_cli unpacks the future tarball, which GNU tar unpacks too, and answers 0"; check test "$status" = 0
+
+old_cli_case good OLD_CLI_GH_FAILS=download "OLD_CLI_GH_SAYS=HTTP 502: $old_marker (https://api.github.com/repos/cybermonklabs/legion/releases)"
+label="fetch_old_cli prints no run of the marker gh's failed download said"; check prints_no_marker "$output"
+label="that refusal names the file that holds gh's own words"
+check test "${output#*"OLD_CLI_WHY=the release's agent-secrets-amd64.tar.gz did not download; gh's own words are in $old_work/download.log"}" != "$output"
+label="gh's own words in that file do name the marker"; check grep -qF "$old_marker" "$old_work/download.log"
+old_cli_case good OLD_CLI_GH_FAILS=api "OLD_CLI_GH_SAYS=HTTP 502: $old_marker (https://api.github.com/repos/cybermonklabs/legion/compare)"
+label="fetch_old_cli prints no run of the marker gh's failed compare said"; check prints_no_marker "$output"
+old_cli_case good "OLD_CLI_STATUS=$old_marker"
+label="fetch_old_cli prints no run of the marker the compare answered as its status"; check prints_no_marker "$output"
+label="that refusal names the file that holds the compare's answer"
+check test "${output#*"; gh's own words and its answer are in $old_work/compare.log"}" != "$output"
+label="the compare's answer in that file does name the marker"; check grep -qF "$old_marker" "$old_work/compare.log"
+# Control: a status of GitHub's own other than ahead is still printed, as the refusal's reason.
+old_cli_case good OLD_CLI_STATUS=diverged
+label="fetch_old_cli refuses a release GitHub compares as diverged, and says so"
+check test "${output#*"as 'diverged', not 'ahead'"}" != "$output"
+
 if [[ "$failed" -ne 0 ]]; then
   printf 'airlock-check inputs: failed (%s checks)\n' "$failed"
   exit 1

@@ -683,8 +683,12 @@ OLD_CLI_DEFAULT_TAG="legion-envoy-v29.39.0"
 # airlock merge. It answers non-zero when either fails, and OLD_CLI_WHY says which, so a step
 # that cannot run its old CLI fails rather than passing on a command that never ran.
 # AIRLOCK_OLD_CLI_TAG names another release instead, and is checked the same way.
+# Whatever answers gh's calls in GitHub's place holds gh's token and writes all gh hands on: gh's
+# own error message, the tarball's member names, the compare's answer. So no line of those is
+# printed: each is kept in a file of the work directory, and OLD_CLI_WHY, which the check prints,
+# names that file in this script's own words.
 fetch_old_cli() {
-	local tag asset status
+	local tag asset unpacked status
 	tag="${AIRLOCK_OLD_CLI_TAG:-$OLD_CLI_DEFAULT_TAG}"
 	OLD_CLI_TAG="$tag"
 	OLD_CLI_VERSION=""
@@ -692,11 +696,16 @@ fetch_old_cli() {
 	mkdir -p "$WORK_DIR/old-cli"
 	if ! gh release download "$tag" --repo cybermonklabs/legion --pattern 'agent-secrets-amd64.tar.gz' \
 		--dir "$WORK_DIR/old-cli" --clobber >"$WORK_DIR/old-cli/download.log" 2>&1; then
-		OLD_CLI_WHY="the release's agent-secrets-amd64.tar.gz did not download: $(tail -n 1 "$WORK_DIR/old-cli/download.log")"
+		OLD_CLI_WHY="the release's agent-secrets-amd64.tar.gz did not download; gh's own words are in $WORK_DIR/old-cli/download.log (--keep-stack keeps it)"
 		return 1
 	fi
 	asset="$WORK_DIR/old-cli/agent-secrets-amd64.tar.gz"
-	tar -xzf "$asset" -C "$WORK_DIR/old-cli"
+	if ! unpacked="$(unpack_old_cli "$asset" "$WORK_DIR/old-cli" 2>"$WORK_DIR/old-cli/unpack.log")"; then
+		OLD_CLI_WHY="the release's agent-secrets-amd64.tar.gz did not unpack: ${unpacked:-the unpack said nothing}"
+		[ ! -s "$WORK_DIR/old-cli/unpack.log" ] ||
+			OLD_CLI_WHY+="; the unpack's own words are in $WORK_DIR/old-cli/unpack.log (--keep-stack keeps it)"
+		return 1
+	fi
 	# The release's tarball holds agent-secrets/bin/agent-secrets beside its helper and its
 	# notices, so the binary is under that directory and is not the archive's own name.
 	OLD_CLI="$WORK_DIR/old-cli/agent-secrets/bin/agent-secrets"
@@ -708,11 +717,87 @@ fetch_old_cli() {
 	}
 	# GitHub's compare of the tag with the airlock merge: `ahead` means the merge is ahead of
 	# the tag, so the tag's commit is an ancestor of it and that release has no airlock in it.
-	status="$(gh api "repos/cybermonklabs/legion/compare/$tag...$AIRLOCK_MERGE_COMMIT" --jq .status 2>&1 | tr -d '\n')"
-	[ "$status" = ahead ] || {
+	# behind, diverged and identical are GitHub's other statuses; any other answer is not printed.
+	gh api "repos/cybermonklabs/legion/compare/$tag...$AIRLOCK_MERGE_COMMIT" --jq .status >"$WORK_DIR/old-cli/compare.log" 2>&1
+	status="$(tr -d '\n' <"$WORK_DIR/old-cli/compare.log")"
+	case "$status" in
+	ahead) ;;
+	behind | diverged | identical)
 		OLD_CLI_WHY="GitHub compares $tag with the airlock merge ${AIRLOCK_MERGE_COMMIT:0:12} as '$status', not 'ahead', so that release is not one from before the airlock"
 		return 1
-	}
+		;;
+	*)
+		OLD_CLI_WHY="GitHub's compare of $tag with the airlock merge ${AIRLOCK_MERGE_COMMIT:0:12} answered none of its statuses (ahead, behind, diverged, identical); gh's own words and its answer are in $WORK_DIR/old-cli/compare.log (--keep-stack keeps it)"
+		return 1
+		;;
+	esac
+}
+
+# unpack_old_cli unpacks <tarball> into <dir>, member by member, and answers non-zero when it could
+# not, saying why on stdout. A member's name is the answer's words, GitHub's or those of whatever
+# answered gh's download in GitHub's place, and tar's own messages name a member by its name. So a
+# member is named here by its place in the tarball and its kind alone, as leakguard's unpack of a
+# served tarball names one, and a failed call's own error, which holds the member's path, goes to
+# stderr. A member whose path leaves <dir>, one that is neither a directory nor a regular file, and
+# one written over another file (O_EXCL) fail the unpack rather than being skipped: the release's
+# tarball holds directories and regular files alone.
+unpack_old_cli() {
+	python3 - "$1" "$2" <<-'PY'
+		import os
+		import sys
+		import tarfile
+
+		tarball, into = sys.argv[1], sys.argv[2]
+		kinds = {
+		    tarfile.REGTYPE: "a regular file",
+		    tarfile.AREGTYPE: "a regular file",
+		    tarfile.DIRTYPE: "a directory",
+		    tarfile.SYMTYPE: "a symbolic link",
+		    tarfile.LNKTYPE: "a hard link",
+		    tarfile.CHRTYPE: "a character device",
+		    tarfile.BLKTYPE: "a block device",
+		    tarfile.FIFOTYPE: "a fifo",
+		}
+		place = 1
+
+
+		def stop(why, error=None):
+		    print(why)
+		    if error is not None:
+		        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+		    sys.exit(1)
+
+
+		def written(kind, op, call, *args):
+		    try:
+		        return call(*args)
+		    except OSError as error:
+		        stop(f"member {place}, {kind}, could not be written: {op}: {os.strerror(error.errno)}", error)
+
+
+		try:
+		    with tarfile.open(tarball, "r:gz") as archive:
+		        while (member := archive.next()) is not None:
+		            kind = kinds.get(member.type, "a member of another kind")
+		            if not member.name or member.name.startswith("/") or ".." in member.name.split("/"):
+		                stop(f"member {place}, {kind}, is no path inside {into}")
+		            path = os.path.join(into, member.name)
+		            if member.type == tarfile.DIRTYPE:
+		                written(kind, "mkdir", os.makedirs, path, 0o755, True)
+		            elif member.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
+		                written(kind, "mkdir", os.makedirs, os.path.dirname(path), 0o755, True)
+		                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+		                out = os.fdopen(written(kind, "open", os.open, path, flags, member.mode & 0o777), "wb")
+		                content = archive.extractfile(member)
+		                while chunk := content.read(1 << 20):
+		                    written(kind, "write", out.write, chunk)
+		                written(kind, "close", out.close)
+		            else:
+		                stop(f"member {place}, {kind}, is neither a directory nor a regular file")
+		            place += 1
+		except Exception as error:  # a read of the tarball: gzip's stream, a header or a member's bytes
+		    stop(f"member {place} could not be read", error)
+	PY
 }
 
 check_k2() {
