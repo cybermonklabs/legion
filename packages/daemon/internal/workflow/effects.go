@@ -607,9 +607,14 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // It is exported for admission, which repairs a slot whose worker has no task with it
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
 // back into a phase is a transition with a task of its own. Its start carries no mark, which is
-// what a sweep's and a ready's start carry; a door that marks its start calls sendOwedEntry.
+// what a sweep's and a ready's start carry; a door that marks its start calls sendOwedEntry. The
+// worker another role's open merge holds is held with the work (holdSentWorker), as a worker a
+// move starts is; the ready of a launch holds it itself and sends through sendOwedEntry.
 func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow) error {
-	return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{})
+	if err := e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{}); err != nil {
+		return err
+	}
+	return e.holdSentWorker(ctx, tx, issue, role)
 }
 
 // sendOwedEntry is the body SendOwedEntry, the builder of the boot's resume by rule and of the

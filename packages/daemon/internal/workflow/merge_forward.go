@@ -333,16 +333,19 @@ func (e *Engine) askAgainAtLaunch(ctx context.Context, tx pgx.Tx, issue record.I
 	return nil
 }
 
-// holdAtLaunch holds the worker of the phase issue stands at again at the ready of each launch of
-// its claim, where the merge of the head is owed to another role (heldWorker), by the rule that
-// holds a worker a move or a retry starts (holdStartedWorker). The daemon launches a worker again
-// on its own - a process that died and is relaunched within its budgets, a released pod a message
-// wakes, a session the runtime cannot resume and replaces with a fresh one in the same launch
-// (supervise's startFresh) - and a fresh session holds none of its predecessor's messages, the
-// hold among them, so every launch is held at its ready: a launch that resumes the session the
-// hold already reached reads it twice, which changes nothing it does. The asked role is never
-// held (heldWorker), and a pull request that is not open holds nobody.
-func (e *Engine) holdAtLaunch(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.ClaimReady) error {
+// holdSentWorker holds role, where it is the worker of the phase issue stands at that the merge of
+// the head owed to another role keeps waiting (heldWorker), by the rule that holds a worker a move
+// or a retry starts (holdStartedWorker). Its callers are every other way the daemon brings a worker
+// back to its phase's work: the ready of each launch of the worker's claim (claimReady), which the
+// daemon makes on its own - a process that died and is relaunched within its budgets, a released
+// pod a message wakes, a session the runtime cannot resume and replaces with a fresh one in the
+// same launch (supervise's startFresh) - and whose fresh session holds none of its predecessor's
+// messages, the hold among them; the silence repair's send of the work to a worker up between
+// turns with no task (repairSilence), which a held worker that stopped as its hold says is; and
+// admission's send of the entry a worker is behind (SendOwedEntry). A worker that already holds
+// the hold reads it twice, which changes nothing it does. The asked role is never held
+// (heldWorker), and a pull request that is not open holds nobody.
+func (e *Engine) holdSentWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	if !record.InWorkflow(issue) {
 		return nil
 	}
@@ -350,7 +353,7 @@ func (e *Engine) holdAtLaunch(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
 		return err
 	}
-	if worker, held := heldWorker(issue, *pr); !held || worker != fact.Role {
+	if worker, held := heldWorker(issue, *pr); !held || worker != role {
 		return nil
 	}
 	_, err = e.holdStartedWorker(ctx, tx, issue, pr)
@@ -495,7 +498,7 @@ func mergeForwardMessageOf(issue record.Issue, pr record.PullRequest, role claim
 // the merge of the head pr stands at is owed to another role (heldWorker), and answers whether it
 // did. It is the one rule of every start of a phase's worker: a move's (mergeForwardOnEntry), the
 // architect's retry of a held phase and the operator's restart of a phase's worker (retryPhase),
-// and the ready of each launch the daemon makes of that worker on its own (holdAtLaunch), whose
+// and every other way the daemon brings that worker back to its phase's work (holdSentWorker), whose
 // worker the first hold may never have reached, since a hold to a claim that failed ends
 // undelivered, or reached in a session the new launch does not keep. The hold
 // (record.MergeForwardHold) names the phase the issue stands at and has the worker stop writing

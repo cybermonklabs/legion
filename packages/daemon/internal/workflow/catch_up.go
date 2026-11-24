@@ -44,7 +44,7 @@ import (
 // or of a child that has left the workflow or is done. A phase worker's ready is answered
 // differently: a merge forward still owed to its role is asked again at a launch later than the one
 // the ask was last sent at (askAgainAtLaunch), the worker another role's open merge holds is held
-// again (holdAtLaunch), and it is given its phase's task again when it holds that phase with
+// again (holdSentWorker), and it is given its phase's task again when it holds that phase with
 // nothing pending (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
@@ -70,7 +70,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 		if err := e.askAgainAtLaunch(ctx, tx, *issue, fact); err != nil {
 			return intake.Result{}, err
 		}
-		if err := e.holdAtLaunch(ctx, tx, *issue, fact); err != nil {
+		if err := e.holdSentWorker(ctx, tx, *issue, fact.Role); err != nil {
 			return intake.Result{}, err
 		}
 		return intake.Result{}, e.readyWorkerTask(ctx, tx, *issue, fact)
@@ -288,7 +288,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	if OwedEntry(run, *root, row.Entry) {
-		if err := e.SendOwedEntry(ctx, tx, issue, role, row); err != nil {
+		if err := e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{}); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
