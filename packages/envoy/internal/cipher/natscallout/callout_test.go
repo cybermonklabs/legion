@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -24,10 +25,24 @@ import (
 )
 
 // startService runs the auth service against the server at url with keys' seeds, deps and decide,
-// stopped when the test ends, and returns once its subscription has reached the server.
+// admitting exampleServices, stopped when the test ends, and returns once its subscription has
+// reached the server.
 func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps, decide decideFunc) *Service {
 	t.Helper()
-	return startServiceWith(t, serviceSettings(t, url, keys), deps, decide)
+	return startServiceAdmitting(t, url, keys, exampleServices, deps, decide)
+}
+
+// startServiceOf is startService admitting services, deciding as Decide does.
+func startServiceOf(t *testing.T, url string, keys testnats.CalloutKeys, services []config.NATSService, deps Deps) *Service {
+	t.Helper()
+	return startServiceAdmitting(t, url, keys, services, deps, Decide)
+}
+
+func startServiceAdmitting(t *testing.T, url string, keys testnats.CalloutKeys, services []config.NATSService, deps Deps, decide decideFunc) *Service {
+	t.Helper()
+	settings := serviceSettings(t, url, keys)
+	settings.Services = services
+	return startServiceWith(t, settings, deps, decide)
 }
 
 // startServiceWith is startService with settings of the test's own.

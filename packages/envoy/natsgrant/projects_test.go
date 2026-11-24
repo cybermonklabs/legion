@@ -20,29 +20,42 @@ import (
 // pubScope is one daemon's scope: project PUB and the account that names its reply prefix.
 var pubScope = natsgrant.Scope{Projects: []string{"PUB"}, Identity: "legion-daemon-PUB"}
 
-// A reply prefix is "_INBOX_" and the identity with every byte outside [A-Za-z0-9-] escaped
-// as _hh, including underscores, so it is one subject token and distinct identities stay distinct.
-func TestInboxPrefixIsOneTokenOfTheIdentity(t *testing.T) {
+// Every reply prefix InboxPrefix makes, which the auth service grants a daemon held or whole, is
+// under one root, "_INBOX_envoy.": the root, then the identity with every byte outside
+// [A-Za-z0-9-] escaped as _hh, underscores included, as one subject token, so distinct identities
+// stay distinct. The grant held to an identity's projects subscribes that prefix. An identity
+// spelled like a name the broker may later give one of its own clients under the root (_operator,
+// _measure) does not get that name, since its '_' is escaped. The other kinds' reply subjects are
+// not InboxPrefix's: Dispatch, a listener and a whole daemon keep _INBOX.>, and the measurement
+// job's grant is Measure()'s own.
+func TestEveryInboxPrefixIsUnderTheReplyRoot(t *testing.T) {
+	require.Equal(t, "_INBOX_envoy", natsgrant.ReplyRoot)
 	for identity, want := range map[string]string{
-		"legion-daemon-PUB": "_INBOX_legion-daemon-PUB",
-		"system:serviceaccount:legion-pub:legion-pub-daemon": "_INBOX_system_3aserviceaccount_3alegion-pub_3alegion-pub-daemon",
-		"daemon@example.iam.gserviceaccount.com":             "_INBOX_daemon_40example_2eiam_2egserviceaccount_2ecom",
-		"a.b*c>d e\tf":                                       "_INBOX_a_2eb_2ac_3ed_20e_09f",
-		"é":                                                  "_INBOX__c3_a9",
-		"\x00\r\n*>.":                                        "_INBOX__00_0d_0a_2a_3e_2e",
-		"a.b":                                                "_INBOX_a_2eb",
-		"a_b":                                                "_INBOX_a_5fb",
-		"daemon@example.com":                                 "_INBOX_daemon_40example_2ecom",
-		"daemon_example_com":                                 "_INBOX_daemon_5fexample_5fcom",
-		"a.b@x.com":                                          "_INBOX_a_2eb_40x_2ecom",
-		"a_b@x.com":                                          "_INBOX_a_5fb_40x_2ecom",
-		"daemon-1":                                           "_INBOX_daemon-1",
-		"daemon-2":                                           "_INBOX_daemon-2",
-		"Az09_-":                                             "_INBOX_Az09_5f-",
+		"legion-daemon-PUB": "_INBOX_envoy.legion-daemon-PUB",
+		"system:serviceaccount:legion-pub:legion-pub-daemon": "_INBOX_envoy.system_3aserviceaccount_3alegion-pub_3alegion-pub-daemon",
+		"daemon@example.iam.gserviceaccount.com":             "_INBOX_envoy.daemon_40example_2eiam_2egserviceaccount_2ecom",
+		"a.b*c>d e\tf":                                       "_INBOX_envoy.a_2eb_2ac_3ed_20e_09f",
+		"é":                                                  "_INBOX_envoy._c3_a9",
+		"\x00\r\n*>.":                                        "_INBOX_envoy._00_0d_0a_2a_3e_2e",
+		"a.b":                                                "_INBOX_envoy.a_2eb",
+		"a_b":                                                "_INBOX_envoy.a_5fb",
+		"daemon@example.com":                                 "_INBOX_envoy.daemon_40example_2ecom",
+		"daemon_example_com":                                 "_INBOX_envoy.daemon_5fexample_5fcom",
+		"a.b@x.com":                                          "_INBOX_envoy.a_2eb_40x_2ecom",
+		"a_b@x.com":                                          "_INBOX_envoy.a_5fb_40x_2ecom",
+		"daemon-1":                                           "_INBOX_envoy.daemon-1",
+		"daemon-2":                                           "_INBOX_envoy.daemon-2",
+		"Az09_-":                                             "_INBOX_envoy.Az09_5f-",
+		"_operator":                                          "_INBOX_envoy._5foperator",
+		"_measure":                                           "_INBOX_envoy._5fmeasure",
 	} {
 		got := natsgrant.InboxPrefix(identity)
 		require.Equal(t, want, got, "InboxPrefix(%q)", identity)
-		require.True(t, natsgrant.SessionToken(got), "InboxPrefix(%q) = %q is one subject token", identity, got)
+		rest, under := strings.CutPrefix(got, natsgrant.ReplyRoot+".")
+		require.True(t, under, "InboxPrefix(%q) = %q is under the reply root", identity, got)
+		require.True(t, natsgrant.SessionToken(rest), "InboxPrefix(%q) = %q is the root and one subject token", identity, got)
+		require.NotContains(t, []string{natsgrant.ReplyRoot + "._operator", natsgrant.ReplyRoot + "._measure"}, got,
+			"InboxPrefix(%q) is a name the broker may give one of its own clients under the root", identity)
 		options := natsgo.GetDefaultOptions()
 		require.NoError(t, natsgo.CustomInboxPrefix(got)(&options), "nats.go accepts InboxPrefix(%q)", identity)
 		grant, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})
@@ -104,7 +117,7 @@ func TestWithinProjectsHoldsTheDaemonGrantToItsProjects(t *testing.T) {
 		Publish: slices.Concat(info, creates, next, acks),
 		Subscribe: []string{
 			"notifications.envoy.exceptions.notifications.role.PUB.>",
-			"_INBOX_legion-daemon-PUB.>",
+			"_INBOX_envoy.legion-daemon-PUB.>",
 		},
 	}, got)
 }
@@ -228,7 +241,7 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		want    []string // nil with refused empty: dropped
 		refused string   // a word the refusal holds beside the entry
 	}{
-		{entry: "_INBOX.>", want: []string{"_INBOX_id.>"}},
+		{entry: "_INBOX.>", want: []string{"_INBOX_envoy.id.>"}},
 		{entry: "$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS"},
 		{entry: "$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS"},
 		{entry: "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>", want: creates},
@@ -290,7 +303,7 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		{entry: "", refused: "cannot be held"},
 	} {
 		for _, direction := range []string{"publish", "subscribe"} {
-			const inboxes, heldInboxes = "_INBOX.>", "_INBOX_id.>"
+			const inboxes, heldInboxes = "_INBOX.>", "_INBOX_envoy.id.>"
 			grant := natsgrant.Permissions{Publish: []string{inboxes}, Subscribe: []string{inboxes}}
 			if direction == "publish" {
 				grant.Publish = append(grant.Publish, row.entry)
@@ -372,7 +385,7 @@ func TestWithinProjectsHoldsEachProjectToItsOwnFilters(t *testing.T) {
 		Subscribe: []string{
 			"notifications.envoy.exceptions.notifications.role.OTHER.>",
 			"notifications.envoy.exceptions.notifications.role.PUB.>",
-			"_INBOX_id.>",
+			"_INBOX_envoy.id.>",
 		},
 	}, got)
 }

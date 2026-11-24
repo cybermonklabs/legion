@@ -237,6 +237,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
+			Name: "nats_daemon_service_token_file", Default: "the daemon's own connection presents an nkey seed, or no credential", RequiredBy: "no",
+			Description: "The file holding the platform identity token the daemon's own NATS connection presents to a hub whose connections the NATS auth service in the secrets broker admits: a projected Kubernetes ServiceAccount token for that service's audience, read afresh at each connect, whose account the broker's `BROKER_NATS_SERVICES` lists as a daemon. The connection retries a refusal, takes the account's own reply prefix and moves to a later token before the one it presented lapses. No agent receives it; a daemon seed set beside it refuses boot naming both.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonServiceTokenFile = v }),
+		},
+		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod works one issue of a configured project",
 			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
@@ -356,6 +361,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
 			Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
+		},
+		{
+			Name: "github_graphql_share", Default: "`0.5`: each query is followed by a pause as long as it took", RequiredBy: "no",
+			Description: "The share of the time this daemon's merge-state queries of one GitHub App installation may keep GitHub's GraphQL API at work: after each query the next waits (1 - share) / share of the time it took, at most 15 minutes. GitHub allows an installation 60 seconds of query processing time in 60 seconds, and every daemon that reads with the same installation spends that one allowance, so a deployment sets it near 1 divided by the number of daemons sharing the installation; a value below `0.01` (one daemon in a hundred) or above 1 is refused, and so is a value that is not a finite number.",
+			Read:        reads(readShare, func(f *fileConfig, v *float64) { f.GitHubGraphQLShare = v }),
 		},
 		{
 			Name: "controller_wake_interval_seconds", RequiredBy: "no",

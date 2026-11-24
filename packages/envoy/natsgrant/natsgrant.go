@@ -7,9 +7,9 @@
 // Each call returns lists of its own, so a caller may narrow a grant without changing another's.
 //
 // WithinProjects (projects.go) holds a grant to a Scope: the projects a token lists and the
-// account the token names. Nothing calls it yet: today the auth service refuses a Legion daemon
-// whose entry is held to projects, and from #4197 on it answers that daemon with this grant. It
-// writes _INBOX.> as the account's own reply prefix (InboxPrefix, which the client sets with
+// account the token names. The auth service answers a Legion daemon whose entry is held to
+// projects with it (internal/cipher/natscallout's scopeGrant). It writes _INBOX.> as the
+// account's own reply prefix (InboxPrefix, which the client sets with
 // nats.CustomInboxPrefix; it keeps [A-Za-z0-9-] and writes every other byte, '_' included, as '_'
 // and two hex digits, so no two accounts share one), each issue, role-exception and Legion lane as
 // the scope's projects', and each consumer call on the stream as the calls on the daemon's own
@@ -97,7 +97,11 @@ const inboxes = nats.InboxPrefix + ">"
 //     the calls nats.go's KV makes and the raise a start sends (KVWrite): the bucket's stream
 //     info, create and update, direct and stream message gets, writes to its keys, its watchers'
 //     consumer create and delete, and their flow-control replies;
-//   - the purge of the interest bucket, which its delete-marker collection sends.
+//   - the purge of the interest bucket, which its delete-marker collection sends, and of the
+//     known-session bucket, which the purge of its replaced chunks' markers sends. NATS grants a
+//     purge by stream alone (the subject a purge filters to is in its request), so each reaches
+//     the whole bucket; a user that holds the bucket's writes can already delete or roll up every
+//     key of it, so neither removes a record that user could not.
 //
 // Subscribe: reply inboxes, then the role lanes in the machine's queue group (bus.ListenerQueue),
 // which a listener of an earlier release subscribes in, and in the queue group every listener
@@ -124,7 +128,7 @@ func listenerGrant(machineID string) Permissions {
 	for _, bucket := range bus.ListenerBuckets() {
 		publish = append(publish, KVWrite(bucket)...)
 	}
-	publish = append(publish, jsAPI+"STREAM.PURGE."+kvStream+bus.InterestBucket)
+	publish = append(publish, jsAPI+"STREAM.PURGE."+kvStream+bus.InterestBucket, jsAPI+"STREAM.PURGE."+kvStream+bus.KnownSessionBucket)
 	return Permissions{
 		Publish: publish,
 		Subscribe: []string{
@@ -280,8 +284,9 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // ensureSpentProofBucket), so a full listener starts before an edge listener. The rest of
 // Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
 // calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
-// stream's create, its update and its direct get, the interest bucket's purge and the session
-// consumers' calls.
+// stream's create, its update and its direct get, the purges of the interest bucket and of the
+// known-session bucket (the edge's known-session store runs the chunk-marker pass too), and the
+// session consumers' calls.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
@@ -634,6 +639,10 @@ func Measure() Permissions {
 // characters but not its token, so the root's export does not reach it, and a wildcard matches
 // whole tokens, so no one export reaches every edge machine's prefix. The measurement job's prefix
 // before its move (legacyMeasureInbox) is outside the root too, and goes once no job sets it.
+// Every reply prefix InboxPrefix makes is under the root: the one the auth service grants a Legion
+// daemon it admits, held to its projects or whole, so ReplyRoot+".>" carries that daemon's push and
+// ordered consumer deliveries (a KV watch's among them). The root is not nats.go's own "_INBOX", so
+// no prefix under it reaches another client's replies under _INBOX.>.
 const ReplyRoot = "_INBOX_envoy"
 
 // MeasureInbox is the measurement job's inbox prefix (nats.js's inboxPrefix) under ReplyRoot.

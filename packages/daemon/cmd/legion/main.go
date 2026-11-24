@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 const (
@@ -216,8 +217,9 @@ func pluginsLine(cfg config.Config) string {
 // names a mise tool. Each refusal is written to stderr through printRefusal, as `legion start`
 // writes its own, so a URL a refusal quotes loses its query and its userinfo in both commands.
 // The OK line names the design-gate steps the file resolved to, in the order it named them
-// (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
-// public key when there is one, never the seed.
+// (`design-gate-steps=`, `none` for a deployment that gates none), each NATS nkey seed's public
+// key when there is one, never the seed, and the account the daemon's service token names when
+// nats_daemon_service_token_file is set, never the token.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
@@ -261,20 +263,23 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	if err == nil {
 		applyLinkedPlugins(&cfg)
 	}
-	paneNatsUser, daemonNatsUser := "", ""
+	var checked daemon.CheckedNATS
 	if err == nil {
-		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
+		checked, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
 		printRefusal(stderr, "legion config check", err)
 		return 1
 	}
 	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps())
-	if paneNatsUser != "" {
-		ok += " nats-nkey-user=" + paneNatsUser
+	if checked.PaneUser != "" {
+		ok += " nats-nkey-user=" + checked.PaneUser
 	}
-	if daemonNatsUser != "" {
-		ok += " nats-daemon-nkey-user=" + daemonNatsUser
+	if checked.DaemonUser != "" {
+		ok += " nats-daemon-nkey-user=" + checked.DaemonUser
+	}
+	if checked.DaemonServiceAccount != "" {
+		ok += " nats-daemon-service-account=" + checked.DaemonServiceAccount
 	}
 	fmt.Fprintln(stdout, ok)
 	for _, warning := range cfg.Warnings {
@@ -905,7 +910,7 @@ func experimentLine(name string, counts map[armDraw]int) string {
 // what act it was answered.
 //
 // The second count reads the published line rather than judging the wait a second time. An
-// answered root stands in that line, among the issues whose work came back, oldest first
+// answered root stands in that line, within its priority, among the issues whose work came back, oldest first
 // (record.Waiting carries every answered root there, whatever its design gate
 // says), until the pass that resumes it. Two answered roots are in no line this summary reads:
 // one of another Dispatch project, whose line this daemon does not build, and every one of them
@@ -1183,17 +1188,19 @@ type claimCall struct {
 	step  api.StepView
 }
 
-// openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
-// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
-// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
-// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
-// reads the same record to decide a turn has stopped moving, and this is where an operator reads
-// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
-// read with `legion claims list` instead.
+// openCalls is every working claim of the state whose agent is in a tool call the daemon has seen
+// the start of and no end of, by issue and then role: a working claim whose openCallWord is
+// non-empty. openCallsSummary names each of these rows with that word. That is the shape a stalled
+// turn leaves behind: the daemon reads the same record to decide a turn has stopped moving, and
+// this is where an operator reads it. Only a claim in state `working` has a turn in flight
+// (supervise.StateWorking): a retired or suspended claim keeps the step it was last in on its
+// record, on purpose, so a call open there is no agent in a call. A controller's claim is in none
+// of these — internal/projection puts it on no issue — and is read with `legion claims list`
+// instead.
 func openCalls(issues map[string]api.Issue) []claimCall {
 	var calls []claimCall
 	open := func(issue, role string, view api.ClaimView) {
-		if openCallWord(view.Step) == "" {
+		if view.State != string(supervise.StateWorking) || openCallWord(view.Step) == "" {
 			return
 		}
 		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})

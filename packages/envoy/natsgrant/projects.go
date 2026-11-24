@@ -6,8 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/nats-io/nats.go"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -31,23 +29,22 @@ type Scope struct {
 	Identity string
 }
 
-// inboxPrefixBase begins every reply prefix InboxPrefix makes: nats.go's own prefix, "_INBOX.",
-// with its dot written "_", so the token differs from nats.go's "_INBOX" and no prefix reaches
-// another's.
-var inboxPrefixBase = strings.TrimSuffix(nats.InboxPrefix, ".") + "_"
-
-// InboxPrefix is the reply prefix of the client whose credential names identity: "_INBOX_" and
-// identity with each byte outside [A-Za-z0-9-], including '_', escaped as '_' and two lowercase
-// hex digits. It is one subject token and distinct identities have distinct prefixes. The client
-// sets it with nats.CustomInboxPrefix and the auth service grants InboxPrefix(identity)+".>" in
-// place of _INBOX.>; both ends call this function with the identity their credential names.
+// InboxPrefix is the reply prefix of the client whose credential names identity: ReplyRoot, ".",
+// and identity with each byte outside [A-Za-z0-9-], including '_', escaped as '_' and two
+// lowercase hex digits. That last part is one subject token, and distinct identities have
+// distinct prefixes. Every '_' in it opens an escape that two hex digits close, so no identity's
+// token is a name the broker may later give one of its own clients under ReplyRoot, such as
+// _operator or _measure, whose '_' is followed by a letter that is no hex digit. The client sets it
+// with nats.CustomInboxPrefix and the auth service grants InboxPrefix(identity)+".>" in place of
+// _INBOX.>; both ends call this function with the identity their credential names.
 func InboxPrefix(identity string) string {
-	return token(inboxPrefixBase, identity)
+	return token(ReplyRoot+".", identity)
 }
 
 // token is prefix followed by s with each byte outside [A-Za-z0-9-], '_' included, written '_'
 // and its two lowercase hex digits: '_' always opens an escape, so distinct values give distinct
-// tokens, and the result holds no '.', wildcard, whitespace or control character.
+// tokens, and the part written after prefix holds no '.', wildcard, whitespace or control
+// character, so it is one subject token.
 func token(prefix, s string) string {
 	const digits = "0123456789abcdef"
 	var out strings.Builder

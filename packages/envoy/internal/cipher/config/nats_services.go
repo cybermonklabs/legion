@@ -78,8 +78,9 @@ const (
 // edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>. It refuses, naming the entry: an entry of
 // none of these forms or of an unknown kind; a dispatch, listener or edge-listener entry with no
 // machine id, and a daemon or measure entry with one; a machine id that is not one subject token;
-// a measure entry with -, since its grant holds a KV read no project scope can hold and it reads
-// no project's messages; an edge listener's entry with * or -, or whose projects are no list of
+// a dispatch, listener or measure entry with -, since each grant holds KV calls no project scope
+// can hold (natsgrant.WithinProjects refuses them), so such an entry could only ever be refused;
+// an edge listener's entry with * or -, or whose projects are no list of
 // at most oauthwire.MaxProjects project keys named once each; an account ParseAccount refuses (a
 // namespace's default account, a Google default or service-agent account); and an account given
 // twice, since one account connects as one service.
@@ -140,8 +141,11 @@ func parseNATSService(text string) (NATSService, error) {
 	case scope == allProjectsScope:
 		entry.AllProjects = true
 	case scope == exchangeScope:
-		if entry.Kind == NATSMeasure {
+		switch entry.Kind {
+		case NATSMeasure:
 			return NATSService{}, fmt.Errorf("%s entry %q holds the measurement job to its exchange projects, which its grant cannot be held to: it reads a KV bucket and no project's messages, so write *", NATSServicesVariable, text)
+		case NATSDispatch, NATSListener:
+			return NATSService{}, fmt.Errorf("%s entry %q holds a %s to its exchange projects, which its grant cannot be held to: it reads and writes KV buckets every project shares, so write *", NATSServicesVariable, text, entry.Kind)
 		}
 	default:
 		return NATSService{}, form()

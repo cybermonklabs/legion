@@ -1,17 +1,21 @@
-// Package testnkeys makes the nkey seeds and seed files the daemon's tests hand the code under
-// test. It is a package of its own, apart from internal/testnats, because testnats links
-// testcontainers-go, whose package init walks every process on the machine: ten seconds and a
-// gigabyte of allocation on a box running 25,000 of them. A test binary that starts itself again
-// as a command (cmd/legion's TestMain starts it as `legion`) pays every package init linked into
-// it at each start, so it takes its keys from here and links no testcontainers
+// Package testnkeys makes the nkey seeds, seed files and service tokens the daemon's tests hand
+// the code under test. It is a package of its own, apart from internal/testnats, because
+// testnats links testcontainers-go, whose package init walks every process on the machine: ten
+// seconds and a gigabyte of allocation on a box running 25,000 of them. A test binary that starts
+// itself again as a command (cmd/legion's TestMain starts it as `legion`) pays every package init
+// linked into it at each start, so it takes its keys from here and links no testcontainers
 // (cmd/legion's TestThisTestBinaryLinksNoTestcontainers). Nothing added here may import a package
 // that reaches testcontainers-go.
 package testnkeys
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nkeys"
 )
@@ -64,4 +68,19 @@ func UserSeed(t testing.TB) string {
 	t.Helper()
 	seed, _ := User(t)
 	return seed
+}
+
+// ServiceToken is an unsigned token shaped as a projected Kubernetes ServiceAccount token naming
+// account and lapsing at expiry, which testnats.CalloutServer's stand-in reads unverified, as the
+// client does.
+func ServiceToken(account string, expiry time.Time) string {
+	encode := func(value any) string {
+		raw, _ := json.Marshal(value)
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	return strings.Join([]string{
+		encode(map[string]string{"alg": "none"}),
+		encode(map[string]any{"sub": account, "iat": time.Now().Unix(), "exp": expiry.Unix()}),
+		"unsigned",
+	}, ".")
 }

@@ -20,6 +20,33 @@ export const MAX_ISSUE_BLOCKERS = 20;
 export const MAX_ISSUE_ADVANCES = 20;
 
 /**
+ * The most labels one issue holds, and so the most one `labels` or `labels_add` input names,
+ * before duplicates, which differ in case alone, are removed. `labels_add` is held to it twice:
+ * the input alone, and the issue's labels with the input added. Generated into Go as
+ * `contracts.MaxIssueLabels`, which `POST /api/v1/issues`, `PATCH /api/v1/issues/{key}` and the
+ * `label` filter of `GET /api/v1/issues` enforce as `400 LABELS_INPUT` naming the limit, and the
+ * issue tools' `labels` and `labels_add` take it as their bound.
+ */
+export const MAX_ISSUE_LABELS = 20;
+
+/**
+ * The longest label, in UTF-16 units, counted after the trim the issue routes apply; a blank or
+ * longer one is `400 LABELS_INPUT`. Generated into Go as `contracts.IssueLabelMax`, which those
+ * routes enforce, and which the label the dashboard gives an issue it files from a person's typed
+ * words (`DISPATCH_NEW_ISSUE_LABEL`) is held to at boot; the issue tools' labels take it as each
+ * item's bound.
+ */
+export const ISSUE_LABEL_MAX = 40;
+
+/**
+ * The most component ids one `components` input of mode `explicit` names, before duplicates are
+ * removed. Generated into Go as `contracts.MaxIssueComponents`, which `POST /api/v1/issues` and
+ * `PATCH /api/v1/issues/{key}` enforce as `400 COMPONENTS_INPUT` naming the limit, and the issue
+ * tools' `components.ids` take it as its bound.
+ */
+export const MAX_ISSUE_COMPONENTS = 50;
+
+/**
  * The longest issue title, in UTF-16 units, counted after the trim `POST /api/v1/issues` and
  * `PATCH /api/v1/issues/{key}` apply; a longer one is `400 CAP_EXCEEDED`. Production's longest
  * title was 326 characters when this was set. It bounds the duplicate-title check, which compares
@@ -225,10 +252,13 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
 
 /**
  * The code of the `403` for a write by an access token the secrets broker issued that names a
- * session and a service but no person: the machine holding it has signed nobody in, so Dispatch
- * has nobody to record the write under. Its reads are unaffected. The message names
- * `agent-secrets login`, the one command that makes the write possible, because whoever reads
- * the refusal is whoever must run it.
+ * session and a service but no person under the project scope `person`: the machine holding it
+ * has signed nobody in, so Dispatch has nobody to record the write under. Its reads are
+ * unaffected. The message names `agent-secrets login`, the one command that makes the write
+ * possible, because whoever reads the refusal is whoever must run it. A token that names a
+ * service and no person under the project scope `named` is no such token: an exchange account
+ * entry naming no person minted it, its service is that account, and its writes are recorded
+ * under the account.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 

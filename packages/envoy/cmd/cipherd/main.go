@@ -873,13 +873,21 @@ func main() {
 	// account it places each client in (BROKER_NATS_ACCOUNT).
 	if cfg.NATS.Enabled() {
 		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners), "account", cfg.NATS.Account)
+		// A service held to its exchange projects is held by the exchange list this broker trades
+		// by and by Dispatch's answers about those projects, which the service reads in the
+		// background; with no Dispatch to ask (BROKER_PROJECT_ACCESS_URL unset), it refuses that
+		// service by name.
+		deps := natscallout.Deps{
+			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify, Exchange: exchangePolicy.MappedForAccount,
+			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
+		}
+		if projectAccess != nil {
+			deps.Access = projectAccess.Access
+		}
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
 			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services, Account: cfg.NATS.Account,
-		}, natscallout.Deps{
-			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
-			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
-		})
+		}, deps)
 		fatal(err)
 		callout.Store(service)
 		go func() {

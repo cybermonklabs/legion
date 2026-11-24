@@ -129,13 +129,13 @@ func serviceKinds(t *testing.T) []config.NATSServiceKind {
 // admittedServiceGrant is the grant this service answers a connection of an entry of kind with,
 // as decideService builds it for the widest entry of that kind (every project, or, for an edge
 // listener, one project it lists), and whether it admits one at all: scopeGrant and guard refuse
-// the others.
+// the others. Neither entry is held to its exchange projects, so scopeGrant reads no Deps.
 func admittedServiceGrant(kind config.NATSServiceKind) (natsgrant.Permissions, bool) {
 	entry := config.NATSService{Kind: kind, MachineID: "example-machine", AllProjects: true}
 	if kind == config.NATSEdgeListener {
 		entry.AllProjects, entry.Projects = false, []string{"PRIV"}
 	}
-	grant, err := scopeGrant(entry, serviceGrant(entry))
+	grant, err := scopeGrant(Deps{}, entry, serviceGrant(entry))
 	if err != nil || guard(grant) != nil {
 		return natsgrant.Permissions{}, false
 	}

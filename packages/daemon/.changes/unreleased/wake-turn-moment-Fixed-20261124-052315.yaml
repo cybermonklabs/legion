@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+    A launch or a refresh relaunch that the wake pacing holds now runs at the turn the pacing gave
+    it. Its timer was armed for the wait from an earlier read of the clock, so it came due as much
+    later as the time between that read and the arm.
+time: 2026-11-24T05:23:15Z
+custom:
+    Issue: wake-turn-moment

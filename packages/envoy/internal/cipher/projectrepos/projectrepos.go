@@ -13,9 +13,7 @@
 // (BROKER_PROJECT_ACCESS_URL, BROKER_PROJECT_ACCESS_TOKEN_FILE), so the broker has one Dispatch and
 // one account there, and a token that does not work is the same error to both. It is a package of
 // its own rather than a method of that client so that the list it reads reaches no reader of the
-// membership answer. That answer still carries a list of its own (projectaccess.Answer's
-// Repositories), which is to be removed; until then this package keeps the edge listener's list
-// out of it.
+// membership answer, which carries no repositories.
 package projectrepos
 
 import (

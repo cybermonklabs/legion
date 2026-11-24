@@ -110,27 +110,28 @@ func TestMappedProjects(t *testing.T) {
 	}
 }
 
-// TestProjectsForAccountAnswersWhatTheTokenWouldCarry: the projects a token minted for one
-// account carries, read from the very entries Pod and Google mint from, so a grant made from this
-// answer and the token of that account cannot disagree.
-func TestProjectsForAccountAnswersWhatTheTokenWouldCarry(t *testing.T) {
+// TestMappedForAccountAnswersWhatTheTokenWouldCarry: the person and the projects a token minted
+// for one account carries, read from the very entries Pod and Google mint from, so a grant made
+// from this answer and the token of that account cannot disagree.
+func TestMappedForAccountAnswersWhatTheTokenWouldCarry(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {
 		name     string
 		account  string
+		person   string
 		projects []string
 		ok       bool
 	}{
-		{"a Kubernetes subject", workerAccount, []string{project}, true},
-		{"a Google account naming a person", pinnedAccount, []string{project}, true},
-		{"a Google account naming none", poolAccount, nil, true},
-		{"an unlisted Kubernetes subject", "system:serviceaccount:example-ns:example-other", nil, false},
-		{"an unlisted Google account", strangerAccount, nil, false},
-		{"a workflow's repository, which is no account", repository, nil, false},
+		{"a Kubernetes subject", workerAccount, person, []string{project}, true},
+		{"a Google account naming a person", pinnedAccount, person, []string{project}, true},
+		{"a Google account naming none", poolAccount, "", nil, true},
+		{"an unlisted Kubernetes subject", "system:serviceaccount:example-ns:example-other", "", nil, false},
+		{"an unlisted Google account", strangerAccount, "", nil, false},
+		{"a workflow's repository, which is no account", repository, "", nil, false},
 	} {
-		got, ok := set.ProjectsForAccount(c.account)
-		if !slices.Equal(got, c.projects) || ok != c.ok {
-			t.Errorf("ProjectsForAccount(%s, %q) = %v, %v; want %v, %v", c.name, c.account, got, ok, c.projects, c.ok)
+		got, mapped, ok := set.MappedForAccount(c.account)
+		if got != c.person || !slices.Equal(mapped, c.projects) || ok != c.ok {
+			t.Errorf("MappedForAccount(%s, %q) = %q, %v, %v; want %q, %v, %v", c.name, c.account, got, mapped, ok, c.person, c.projects, c.ok)
 		}
 		if c.ok {
 			var minted exchange.Claims
@@ -140,8 +141,8 @@ func TestProjectsForAccountAnswersWhatTheTokenWouldCarry(t *testing.T) {
 			} else {
 				minted, err = set.Google(googleToken(c.account, true, cloudProject, instanceName), "example-session", nil)
 			}
-			if err != nil || !slices.Equal(minted.Projects, got) {
-				t.Errorf("the token minted for %s carries %v (%v), and ProjectsForAccount answers %v: the two must agree", c.account, minted.Projects, err, got)
+			if err != nil || !slices.Equal(minted.Projects, mapped) || minted.Person != got {
+				t.Errorf("the token minted for %s carries %q and %v (%v), and MappedForAccount answers %q and %v: the two must agree", c.account, minted.Person, minted.Projects, err, got, mapped)
 			}
 		}
 	}

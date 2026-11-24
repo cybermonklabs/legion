@@ -24,7 +24,7 @@ import (
 func standIn(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-		"PRIV": {Visibility: "private", Owner: "carol@example.com", Listed: []string{"bob@example.com"}, Repositories: []string{"example/priv", "example/priv-old"}},
+		"PRIV": {Visibility: "private", Owner: "carol@example.com", Listed: []string{"bob@example.com"}},
 		"PUB":  {Visibility: "public", Owner: "carol@example.com"},
 	}, map[string]string{"bob@example.com": projectaccess.MemberRestricted, "carol@example.com": projectaccess.MemberFull})
 }
@@ -48,7 +48,7 @@ func TestAccessReadsTheK3Answer(t *testing.T) {
 	got.AskedAt = time.Time{}
 	want := projectaccess.Answer{
 		Project: "PRIV", Visibility: "private", Owner: "carol@example.com", Person: "carol@example.com",
-		MemberKind: projectaccess.MemberFull, Visible: true, Repositories: []string{"example/priv", "example/priv-old"},
+		MemberKind: projectaccess.MemberFull, Visible: true,
 		// The stand-in answers as a Dispatch with dispatch://INFRA-3862's #t-a-31 does: the key is
 		// always there, empty for a project naming no channel.
 		SlackChannels: []string{}, SlackChannelsPresent: true,
@@ -176,7 +176,7 @@ func TestAccessSendsTheAccountToken(t *testing.T) {
 			_, _ = w.Write([]byte(`{"person":"carol@example.com","member_kind":"full"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"project":"PRIV","visibility":"private","owner":"carol@example.com","person":"carol@example.com","member_kind":"full","visible":true,"repositories":[]}`))
+		_, _ = w.Write([]byte(`{"project":"PRIV","visibility":"private","owner":"carol@example.com","person":"carol@example.com","member_kind":"full","visible":true}`))
 	}))
 	t.Cleanup(recorder.Close)
 	client := projectaccess.New(recorder.URL+"/", projectaccesstest.StaticAccount("the-broker-account-token-not-a-secret"), nil)

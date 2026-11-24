@@ -34,9 +34,8 @@ const (
 )
 
 // Row is one project as Dispatch holds it: whether it is public or private, its owner, the
-// people its access list names, and two lists of repositories Dispatch keeps apart: the ones its
-// membership answer names for the project, and the ones its repository answer says the project's
-// issues resolve to.
+// people its access list names, and the repositories its repository answer says the project's
+// issues resolve to. Its membership answer carries no repositories.
 type Row struct {
 	// Visibility is "public" or "private".
 	Visibility string
@@ -44,9 +43,6 @@ type Row struct {
 	Owner string
 	// Listed are the lowercase logins the project's access list names.
 	Listed []string
-	// Repositories are the "owner/name" repositories Dispatch's membership answer names for the
-	// project.
-	Repositories []string
 	// Resolved are the "owner/name" repositories the project's issues resolve to, which the
 	// repository answer carries, sorted.
 	Resolved []string
@@ -104,7 +100,7 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 	}
 	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}}
 	for key, row := range rows {
-		row.Listed, row.Repositories, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Repositories), slices.Clone(row.Resolved)
+		row.Listed, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Resolved)
 		row.SlackChannels = slices.Clone(row.SlackChannels)
 		s.rows[key] = row
 	}
@@ -162,8 +158,7 @@ func (s *Server) SetMemberKind(person, kind string) {
 }
 
 // SetRepositories makes the list project's issues resolve to, which the repository route answers,
-// a copy of list from now on; an empty list is answered as []. The membership answer's own list
-// of the project does not change.
+// a copy of list from now on; an empty list is answered as [].
 func (s *Server) SetRepositories(project string, list []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -191,7 +186,7 @@ func (s *Server) SetStall(d time.Duration) {
 // project's visibility or access list does, so a test can change Dispatch under a client whose
 // cache already holds the earlier answer.
 func (s *Server) SetRow(key string, row Row) {
-	row.Listed, row.Repositories, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Repositories), slices.Clone(row.Resolved)
+	row.Listed, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Resolved)
 	row.SlackChannels = slices.Clone(row.SlackChannels)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -250,24 +245,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if repositories {
 			// Dispatch's repository answer: the project and the list its issues resolve to,
-			// sorted byte-wise, [] for none. The membership answer's own list is not part of it.
+			// sorted byte-wise, [] for none. The membership answer carries no list.
 			resolved := append([]string{}, row.Resolved...)
 			slices.Sort(resolved)
 			writeJSON(w, http.StatusOK, map[string]any{"project": key, "repositories": resolved})
 			return
 		}
-		list := row.Repositories
-		if list == nil {
-			list = []string{}
-		}
 		answer := map[string]any{
-			"project":      key,
-			"visibility":   row.Visibility,
-			"owner":        row.Owner,
-			"person":       person,
-			"member_kind":  s.kind(person),
-			"visible":      s.visible(row, person),
-			"repositories": list,
+			"project":     key,
+			"visibility":  row.Visibility,
+			"owner":       row.Owner,
+			"person":      person,
+			"member_kind": s.kind(person),
+			"visible":     s.visible(row, person),
 		}
 		if !row.OmitSlackChannels {
 			channels := row.SlackChannels
