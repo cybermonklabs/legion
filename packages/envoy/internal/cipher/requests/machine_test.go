@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
+// fixtureOperator is the person whose machine the fixture's session runs on.
 const testAudience = "broker"
 
 const (

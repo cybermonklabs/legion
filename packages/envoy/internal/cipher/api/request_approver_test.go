@@ -20,11 +20,10 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-
-	// approverService is the one service newApproverTestServer registers, and SERVICE_KEY's owner.
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
+// approverService is the one service newApproverTestServer registers, and SERVICE_KEY's owner.
 const approverService = "example-service"
 
 // newApproverTestServer is newTestServer plus SERVICE_KEY, an agent-tier secret approverService

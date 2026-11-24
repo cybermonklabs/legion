@@ -68,7 +68,7 @@ func groupStands(t *testing.T) (iam, directory *httptest.Server) {
 // chain check admits the member alone.
 func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 	iam, directory := groupStands(t)
-	cfg := config.Config{SecretsPrefix: policytest.Prefix, DirectoryURL: directory.URL, DirectoryAccount: wiredReader}
+	cfg := config.Config{Secrets: awsSecretsConfig(t, policytest.Prefix), DirectoryURL: directory.URL, DirectoryAccount: wiredReader}
 	reader := newGroupReader(cfg, iam.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podBearer}))
 
 	local := awstest.NewLocal(policytest.Secret("TEAM_TOKEN", record.GroupPrefix+wiredGroup, policy.TierAgent, "team-v1"))

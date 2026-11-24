@@ -41,7 +41,10 @@ func (c config) Settings() map[string]string {
 }
 
 // ParseConfig reads BROKER_SECRETS_KMS_KEY_ARN and holds the prefix to a Secrets Manager name
-// prefix ending in "/", and the key to a KMS key's ARN.
+// prefix ending in "/", and the key to a KMS key's ARN. It refuses any
+// BROKER_SECRETS_SECOND_PREFIX (secretstore.SecondPrefixVariable): a Secrets Manager source is an
+// ARN whose random suffix a move to another name always changes, so no second prefix carries a
+// grant across one.
 func (Backend) ParseConfig(prefix string, getenv func(string) string) (secretstore.Config, error) {
 	keyARN := getenv(keyVariable)
 	if strings.TrimSpace(keyARN) == "" {
@@ -52,6 +55,9 @@ func (Backend) ParseConfig(prefix string, getenv func(string) string) (secretsto
 	}
 	if !ValidKeyARN(keyARN) {
 		return nil, fmt.Errorf("%s must be a KMS key ARN, arn:aws:kms:<region>:<account>:key/<key id>, got %q", keyVariable, keyARN)
+	}
+	if getenv(secretstore.SecondPrefixVariable) != "" {
+		return nil, fmt.Errorf("%s is read only with BROKER_SECRETS_STORE=gcp-secret-manager, or the development store memory, and this broker's store is %s: an AWS Secrets Manager source is an ARN whose random suffix a move to another name always changes, so no second prefix carries a grant across one; unset it", secretstore.SecondPrefixVariable, Name)
 	}
 	return config{prefix: prefix, keyARN: keyARN}, nil
 }

@@ -39,7 +39,9 @@ func (c config) Settings() map[string]string {
 
 // ParseConfig reads BROKER_SECRETS_KMS_KEY_NAME and holds the prefix to
 // projects/<project number>/secrets/<secret-id prefix>-, and the key to a global Cloud KMS key's
-// resource name.
+// resource name. A Secret Manager source is the secret's resource name, which a move to another
+// prefix keeps but for the prefix, so the store reads BROKER_SECRETS_SECOND_PREFIX
+// (secretstore.SecondPrefixVariable) and holds a set one to the prefix's form.
 func (Backend) ParseConfig(prefix string, getenv func(string) string) (secretstore.Config, error) {
 	keyName := getenv(keyVariable)
 	if strings.TrimSpace(keyName) == "" {
@@ -50,6 +52,11 @@ func (Backend) ParseConfig(prefix string, getenv func(string) string) (secretsto
 	}
 	if err := ValidKeyName(keyName); err != nil {
 		return nil, fmt.Errorf("%s: %w", keyVariable, err)
+	}
+	if second := getenv(secretstore.SecondPrefixVariable); second != "" {
+		if err := ValidPrefix(second); err != nil {
+			return nil, fmt.Errorf("%s: %w", secretstore.SecondPrefixVariable, err)
+		}
 	}
 	return config{prefix: prefix, keyName: keyName}, nil
 }

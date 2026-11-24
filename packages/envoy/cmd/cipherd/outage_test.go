@@ -89,11 +89,11 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	// renewerLongestWait is agent-secrets renew's longest wait between two failed attempts
 	// (nextBackoff's cap), so a renewer whose broker is back renews within it.
 	renewerLongestWait := leasetime.RenewBackoffMax
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	fakeSecrets := `{"secrets": [
-		{"name": "` + testSecretsPrefix + `outage-token", "kms_key_id": "` + testSecretsKMSKeyARN + `", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "` + secretValue + `"}
+		{"name": "` + testSecretsPrefix + `outage-token", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "` + secretValue + `"}
 	]}`
-	if err := os.WriteFile(fakeSecretsFile, []byte(fakeSecrets), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(fakeSecrets), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	brokerBinary := buildBroker(t)
@@ -105,7 +105,8 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=" + front.url,
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + podAudience,
 		"BROKER_SERVICE_LOGINS=" + service + "=" + loginAccount,

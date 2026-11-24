@@ -42,6 +42,8 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
+// clientID is the broker's own client at the test's provider, and domain the Workspace domain
+// a person must belong to (BROKER_SIGNIN_DOMAIN).
 const (
 	// clientID is the broker's own client at the test's provider, and domain the Workspace domain
 	// a person must belong to (BROKER_SIGNIN_DOMAIN).
@@ -173,7 +175,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,
 		Approval: page,
 		Hold:     gate,
 	})

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -75,13 +76,15 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 // with none of the AWS fields, and secret_type_tag and approver_fields, as on AWS.
 func TestSettingsAnswersTheGCPStore(t *testing.T) {
 	const prefix = "projects/000000000000/secrets/agent-secrets-"
-	const key = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	const key = gcpKeyName
 	mux := http.NewServeMux()
 	cur, err := policy.NewCurrent(t.Context(), policytest.Loader(awstest.NewLocal()), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: gcp.Name, SecretsPrefix: prefix, SecretsKMSKey: key})
+	deps := storeDeps(t, "gcp")
+	deps.Policy = cur
+	api.Register(mux, deps)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	resp, err := http.Get(srv.URL + "/v1/settings")
@@ -106,16 +109,15 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 }
 
 // TestSettingsNameTheGoogleExchangeAudienceOnEitherStore pins the exchange audience GET
-// /v1/settings answers beside the store, on either store: the audience a machine's Google identity
-// token must carry (BROKER_GOOGLE_OIDC_AUDIENCE), so a machine's `agent-secrets` finds the
-// identity it can trade with no setting of its own, beside that store's own key field. A broker
-// that accepts no machine identity names no audience at all, and none ever names a Kubernetes one.
+// /v1/settings answers beside the store, on each store the registry holds: the audience a
+// machine's Google identity token must carry (BROKER_GOOGLE_OIDC_AUDIENCE), so a machine's
+// `agent-secrets` finds the identity it can trade with no setting of its own, beside that store's
+// own key field. A broker that accepts no machine identity names no audience at all, and none ever
+// names a Kubernetes one.
 func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
-	for _, store := range []struct{ name, kind, prefix, key, keyField string }{
-		{"aws", aws.Name, policytest.Prefix, policytest.KeyARN, "kms_key_arn"},
-		{"gcp", gcp.Name, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets", "kms_key_name"},
-	} {
-		t.Run(store.name, func(t *testing.T) {
+	for _, b := range backends.All() {
+		t.Run(b.ID(), func(t *testing.T) {
+			store := storeEnvs[b.ID()]
 			read := func(t *testing.T, google string) (map[string]any, string) {
 				t.Helper()
 				cur, err := policy.NewCurrent(t.Context(), policytest.Loader(awstest.NewLocal()), time.Hour)
@@ -123,8 +125,9 @@ func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
 					t.Fatal(err)
 				}
 				mux := http.NewServeMux()
-				api.Register(mux, api.Deps{Policy: cur, SecretsStore: store.kind, SecretsPrefix: store.prefix, SecretsKMSKey: store.key,
-					GoogleExchangeAudience: google})
+				deps := storeDeps(t, b.ID())
+				deps.Policy, deps.GoogleExchangeAudience = cur, google
+				api.Register(mux, deps)
 				srv := httptest.NewServer(mux)
 				t.Cleanup(srv.Close)
 				resp, err := http.Get(srv.URL + "/v1/settings")
@@ -143,8 +146,8 @@ func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
 			if got["google_exchange_audience"] != "agent-secrets-vm" {
 				t.Fatalf("settings = %s; want google_exchange_audience agent-secrets-vm", body)
 			}
-			if got["store"] != store.kind || got[store.keyField] != store.key {
-				t.Fatalf("settings = %s; want the store %s and its %s beside the audience", body, store.kind, store.keyField)
+			if got["store"] != b.Name() || got[store.keyField] != store.key {
+				t.Fatalf("settings = %s; want the store %s and its %s beside the audience", body, b.Name(), store.keyField)
 			}
 
 			_, body = read(t, "")
@@ -247,7 +250,7 @@ func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
 			t.Fatal(err)
 		}
 		mux := http.NewServeMux()
-		api.Register(mux, api.Deps{PublicURL: oneSessionBroker, Proof: verifier, Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, NotifyReread: notifier.notify})
+		api.Register(mux, api.Deps{PublicURL: oneSessionBroker, Proof: verifier, Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: awsSettings(t), NotifyReread: notifier.notify})
 		return mux
 	}
 	// signed is a session's reread of name, on ctx.

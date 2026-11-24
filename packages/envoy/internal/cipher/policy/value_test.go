@@ -15,13 +15,12 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/metrics"
-
-	// undecodable is a stored value no type's decoder reads: it is not JSON.
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// undecodable is a stored value no type's decoder reads: it is not JSON.
 const undecodable = "not json"
 
 // refusingReads is a awstest.Local whose GetSecretValue answers AccessDeniedException, as IAM

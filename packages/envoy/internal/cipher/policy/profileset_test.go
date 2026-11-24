@@ -17,12 +17,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
-
-	// The sources of the profile tests: secrets in the store, each owned by appOwner.
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
+// The sources of the profile tests: secrets in the store, each owned by appOwner.
 const (
 	appOwner = "ada@example.com"
 	// appSourceName is an agent-tier GitHub App of the accounts acme and ada

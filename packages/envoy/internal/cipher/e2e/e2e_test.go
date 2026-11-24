@@ -70,6 +70,8 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
+// dispatchAccount is the ServiceAccount this broker's BROKER_API_ACCOUNTS names as the caller
+// "dispatch": the identity that reaches the routes Dispatch's server calls.
 const (
 	// dispatchAccount is the ServiceAccount this broker's BROKER_API_ACCOUNTS names as the caller
 	// "dispatch": the identity that reaches the routes Dispatch's server calls.
@@ -225,7 +227,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,
 		// People sign in to the page at the same local issuer, which stands in for every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), srv.URL, st, reqMachine),
 	})

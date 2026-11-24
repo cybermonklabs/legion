@@ -12,13 +12,12 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
-
-	// racingTagWrites is a awstest.Local whose first tag write lets another writer's write (race) land
-	// first, as a second retag of the same secret between this one's read and its write does.
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
+// racingTagWrites is a awstest.Local whose first tag write lets another writer's write (race) land
+// first, as a second retag of the same secret between this one's read and its write does.
 type racingTagWrites struct {
 	*awstest.Local
 	race  func()

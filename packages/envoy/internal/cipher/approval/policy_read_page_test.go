@@ -12,14 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-
-	// retagOnAsk is a projectaccess.Access that, once armed, runs retag the first time it is asked
-	// about project, before it passes the question on: a policy refresh that lands while the page's
-	// pending list asks Dispatch about one of its rows. It runs on the broker's handler goroutine, so
-	// it keeps retag's error for the test to read rather than failing t there.
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
+// retagOnAsk is a projectaccess.Access that, once armed, runs retag the first time it is asked
+// about project, before it passes the question on: a policy refresh that lands while the page's
+// pending list asks Dispatch about one of its rows. It runs on the broker's handler goroutine, so
+// it keeps retag's error for the test to read rather than failing t there.
 type retagOnAsk struct {
 	inner   projectaccess.Access
 	project string

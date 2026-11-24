@@ -13,14 +13,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/metrics"
-
-	// pendingLine is the one line Current writes when it first finds the secret whose whole name in the
-	// store is id waiting for its value, owned by owner, on the pod's first load or not.
-	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// pendingLine is the one line Current writes when it first finds the secret whose whole name in the
+// store is id waiting for its value, owned by owner, on the pod's first load or not.
 func pendingLine(id, owner string, firstLoad bool) string {
 	return "INFO " + policy.PendingMessage + " name=" + id + " reason=" + policy.ReasonPendingValue + " owner=" + textValue(owner) + " first_load=" + strconv.FormatBool(firstLoad) + "\n"
 }

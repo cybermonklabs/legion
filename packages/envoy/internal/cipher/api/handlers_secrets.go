@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,35 +12,19 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 )
 
-// settingsResponse is GET /v1/settings's answer: the store the agent secrets live in and, per
-// store, where.
+// settingsResponse is GET /v1/settings's answer: the store the agent secrets live in, its prefix
+// and, per store, where (Fields).
 type settingsResponse struct {
-	// Which secret store holds the agent secrets: aws-secrets-manager or gcp-secret-manager. A
-	// broker from before this field answered none, and held them in AWS Secrets Manager.
+	// Which secret store holds the agent secrets, by its registry name (BROKER_SECRETS_STORE):
+	// aws-secrets-manager, gcp-secret-manager or memory. A broker from before this field
+	// answered none, and held them in AWS Secrets Manager.
 	Store string `json:"store"`
 	// The name prefix every agent secret sits under: with aws-secrets-manager a Secrets Manager
 	// name prefix ending in "/", with gcp-secret-manager projects/<project number>/secrets/<secret-id
 	// prefix>-. The secret a session asks for as DEEL_API_KEY is <prefix>deel-api-key.
 	SecretsPrefix string `json:"secrets_prefix"`
-	// With aws-secrets-manager, the ARN of the agent-secrets KMS key, which every agent secret
-	// must be encrypted with; absent otherwise.
-	KMSKeyARN string `json:"kms_key_arn,omitempty"`
-	// With aws-secrets-manager, the AWS account the agent-secrets key, and so every agent secret,
-	// is in; absent otherwise.
-	AWSAccountID string `json:"aws_account_id,omitempty"`
-	// With aws-secrets-manager, the AWS region the agent-secrets key, and so every agent secret,
-	// is in; absent otherwise.
-	AWSRegion string `json:"aws_region,omitempty"`
-	// With gcp-secret-manager, the resource name of the agent-secrets Cloud KMS key, which every
-	// agent secret must be encrypted with; absent otherwise.
-	KMSKeyName string `json:"kms_key_name,omitempty"`
-	// With gcp-secret-manager, the number of the project every agent secret is in, the one the
-	// prefix names; absent otherwise.
-	GCPProject string `json:"gcp_project,omitempty"`
 	// JudgeKeys is each key the broker serves whose judge tag gives the model judge seconds of it
 	// (policy.TagJudge), by name, with those seconds and the guidance the judge decides it on — the
 	// key's own guidance tag, never a value — and absent where no key carries one. It is what
@@ -69,6 +54,27 @@ type settingsResponse struct {
 	// to a broker that says this, since a broker from before them refuses a decision body carrying
 	// any of them 400 INVALID_DECISION. Dispatch in this tree sends none of them.
 	ApproverFields bool `json:"approver_fields"`
+	// Fields are the store's own fields (Deps.SettingsFields), written after the ones above by
+	// MarshalJSON. Each store documents its fields in its SettingsFields struct.
+	Fields map[string]string `json:"-"`
+}
+
+// fixedSettingsFields are the JSON names of settingsResponse's own fields, which no store's field
+// may take (Register refuses one that does).
+var fixedSettingsFields = []string{"store", "secrets_prefix", "judge_keys", "google_exchange_audience", "secret_type_tag", "approver_fields"}
+
+// MarshalJSON writes r's fields, and then the store's own Fields, as one object.
+func (r settingsResponse) MarshalJSON() ([]byte, error) {
+	type fixed settingsResponse
+	body, err := json.Marshal(fixed(r))
+	if err != nil || len(r.Fields) == 0 {
+		return body, err
+	}
+	fields, err := json.Marshal(r.Fields)
+	if err != nil {
+		return nil, err
+	}
+	return append(append(body[:len(body)-1], ','), fields[1:]...), nil
 }
 
 // judgeKey is one key in settingsResponse.JudgeKeys.
@@ -91,15 +97,7 @@ type judgeKey struct {
 // the key under the cloud credential alone, with no identity at the broker at all.
 func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 	resp := settingsResponse{Store: s.deps.SecretsStore, SecretsPrefix: s.deps.SecretsPrefix,
-		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true, ApproverFields: true}
-	switch s.deps.SecretsStore {
-	case gcp.Name:
-		resp.KMSKeyName = s.deps.SecretsKMSKey
-		resp.GCPProject = gcp.Project(s.deps.SecretsPrefix)
-	default:
-		resp.KMSKeyARN = s.deps.SecretsKMSKey
-		resp.AWSRegion, resp.AWSAccountID = aws.KeyARNParts(s.deps.SecretsKMSKey)
-	}
+		GoogleExchangeAudience: s.deps.GoogleExchangeAudience, SecretTypeTag: true, ApproverFields: true, Fields: s.deps.SettingsFields}
 	if m := s.deps.Machine; m != nil && m.Policy != nil {
 		set := m.Policy.Get()
 		for name, secret := range set.Secrets {

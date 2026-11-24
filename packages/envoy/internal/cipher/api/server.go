@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -101,13 +102,14 @@ type Deps struct {
 	Detached *Detached
 	// SecretsPrefix is BROKER_SECRETS_PREFIX, the namespace GET /v1/settings answers.
 	SecretsPrefix string
-	// SecretsStore is BROKER_SECRETS_STORE, the store GET /v1/settings names: aws.Name or
-	// gcp.Name.
+	// SecretsStore is BROKER_SECRETS_STORE, the store GET /v1/settings names (its registry
+	// entry's Name).
 	SecretsStore string
-	// SecretsKMSKey is the agent-secrets key GET /v1/settings answers: the AWS store's key ARN
-	// (BROKER_SECRETS_KMS_KEY_ARN), with its region and account, or the GCP store's Cloud KMS key
-	// name (BROKER_SECRETS_KMS_KEY_NAME).
-	SecretsKMSKey string
+	// SettingsFields are the store's own fields of GET /v1/settings, by JSON name, written after
+	// the fixed fields: the AWS store's key ARN with its account and region, the GCP store's key
+	// name and project, the memory store's file (secretstore.Config.Settings). A key equal to a
+	// fixed field's name panics Register.
+	SettingsFields map[string]string
 	// GoogleExchangeAudience is BROKER_GOOGLE_OIDC_AUDIENCE where BROKER_VM_SERVICES lists a
 	// machine that may trade a Google identity token at the token exchange, and empty otherwise.
 	// GET /v1/settings answers it, so a machine's `agent-secrets` mints a token for the right
@@ -282,6 +284,11 @@ func Register(mux *http.ServeMux, deps Deps) {
 	}
 	if deps.NATSHold.OperatorToken != nil && (deps.NATSHold.Pool == nil || deps.NATSHold.Schema == "") {
 		panic("api: Deps.NATSHold.OperatorToken needs the Pool and the Schema of the hold's tables")
+	}
+	for key := range deps.SettingsFields {
+		if slices.Contains(fixedSettingsFields, key) {
+			panic("api: Deps.SettingsFields holds " + key + ", a fixed field of GET /v1/settings")
+		}
 	}
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {

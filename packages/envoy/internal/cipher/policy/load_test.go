@@ -21,17 +21,16 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
-
-	// TestLoadServesEveryWellTaggedSecretOnTheKey pins what the loader reads from Secrets Manager: a
-	// secret's request name from its name under the prefix, owner and tier from its tags, and its ARN
-	// as the source, for every form Secrets Manager reports the agent-secrets key in — its ARN, its
-	// key id, and an alias that points at it by name or by ARN.
-	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
+// TestLoadServesEveryWellTaggedSecretOnTheKey pins what the loader reads from Secrets Manager: a
+// secret's request name from its name under the prefix, owner and tier from its tags, and its ARN
+// as the source, for every form Secrets Manager reports the agent-secrets key in — its ARN, its
+// key id, and an alias that points at it by name or by ARN.
 func TestLoadServesEveryWellTaggedSecretOnTheKey(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	keyID := policytest.KeyARN[strings.LastIndex(policytest.KeyARN, "/")+1:]

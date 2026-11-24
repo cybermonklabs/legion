@@ -18,6 +18,13 @@ type Config interface {
 	Settings() map[string]string
 }
 
+// SecondPrefixVariable is BROKER_SECRETS_SECOND_PREFIX, the prefix a deployment's move of its store
+// leaves or reaches (config.Config.SecretsSecondPrefix): a grant frozen under it counts as one of
+// the source the broker serves under BROKER_SECRETS_PREFIX. config.Load reads it whatever the
+// store, and holds it to what any two prefixes keep; each store's ParseConfig says whether the
+// store reads one at all, and of what form.
+const SecondPrefixVariable = "BROKER_SECRETS_SECOND_PREFIX"
+
 // OpenEnv is what cipherd hands every store it opens.
 type OpenEnv struct {
 	// Log is the broker's logger, which a store's SDK logs through where it logs at all.
@@ -55,7 +62,10 @@ type Backend interface {
 	// another store.
 	Variables() []string
 	// ParseConfig reads the store's configuration from getenv, prefix being
-	// BROKER_SECRETS_PREFIX, and refuses one the store cannot read with, naming the variable.
+	// BROKER_SECRETS_PREFIX, and refuses one the store cannot read with, naming the variable. It
+	// takes a stand on SecondPrefixVariable too, which config.Load reads for every store: a store
+	// whose sources a move to another prefix keeps holds a set value to its prefix form, and one
+	// whose sources such a move changes refuses every value.
 	ParseConfig(prefix string, getenv func(string) string) (Config, error)
 	// OpenStore opens the store cfg, a Config this Backend parsed, describes.
 	OpenStore(ctx context.Context, cfg Config, env OpenEnv) (Opened, error)
