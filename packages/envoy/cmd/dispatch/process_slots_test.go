@@ -15,7 +15,8 @@ import (
 // startDispatchProcessWith and the memory harness take a process's slot through takeProcessSlot;
 // reserveProcessSlots and parallelHoldingItsProcesses are the two other ways a test holds slots.
 //
-// No test waits for a slot while it holds one, and that is what ends every wait:
+// No test waits for a slot while it holds one, and that is what ends every wait. A test counts the
+// slots of the tests above it as its own (processSlots):
 //   - A test's first process waits for a slot, and the test holds none while it waits.
 //   - A test that runs n processes at once and calls t.Parallel reserves them before its first
 //     start (reserveProcessSlots). It takes the n at once, in its turn, and holds none while it
@@ -32,7 +33,7 @@ import (
 // So each wait is for slots that a running test gives back without waiting for any, and the oldest
 // waiter gets its slots as soon as enough are back: the queue drains whatever the number of tests
 // and whatever -parallel is.
-var dispatchSlots = newProcessSlots(testlimits.MaxProcessesAtOnce, rootTestName)
+var dispatchSlots = newProcessSlots(testlimits.MaxProcessesAtOnce)
 
 // takeProcessSlot is the slot of dispatchSlots that a Dispatch process of t holds from its start
 // until it exits (processSlots.take).
@@ -41,7 +42,7 @@ func takeProcessSlot(t testing.TB) (release func()) {
 	return dispatchSlots.take(t)
 }
 
-// reserveProcessSlots takes n slots of dispatchSlots for t's root test (processSlots.reserve).
+// reserveProcessSlots takes n slots of dispatchSlots for t (processSlots.reserve).
 func reserveProcessSlots(t testing.TB, n int) {
 	t.Helper()
 	dispatchSlots.reserve(t, n)
@@ -54,86 +55,108 @@ func parallelHoldingItsProcesses(t *testing.T) {
 	dispatchSlots.pauseParallel(t)
 }
 
-// rootTestName is the name of t's root test. A root test's subtests share its slots: a subtest
-// that waited for a slot while its parent's process held another would be a test waiting for a
-// slot while it holds one.
-func rootTestName(t testing.TB) string {
-	root, _, _ := strings.Cut(t.Name(), "/")
-	return root
-}
-
-// processSlots is a slotPool and the slots each root test holds of it. Each root test is one key
-// of byRoot, named by rootOf.
+// processSlots is a slotPool and the slots each test holds of it, by test name. A test counts the
+// slots of the tests above it as its own: a subtest that waited for a slot while its parent's
+// process held another would be a test waiting for a slot while it holds one, and a subtest uses
+// the slots its parent reserved. Sibling subtests are tests of their own, so parallel subtests
+// each wait for their own first slot.
 type processSlots struct {
 	pool   *slotPool
-	rootOf func(testing.TB) string
 	mu     sync.Mutex
-	byRoot map[string]*rootSlots
+	byTest map[string]*testSlots
 }
 
-// rootSlots are the slots one root test holds: reserved, taken all at once by reserve and held
-// until the test ends, of which inUse serve a running process; and held, each taken by one start
-// and given back when its process exits.
-type rootSlots struct{ reserved, inUse, held int }
+// testSlots are the slots one test holds: reserved, taken all at once by reserve and held until
+// the test ends, of which inUse serve a running process; and held, each taken by one start and
+// given back when its process exits.
+type testSlots struct{ reserved, inUse, held int }
 
-func newProcessSlots(size int, rootOf func(testing.TB) string) *processSlots {
-	return &processSlots{pool: &slotPool{size: size, free: size}, rootOf: rootOf, byRoot: map[string]*rootSlots{}}
+func newProcessSlots(size int) *processSlots {
+	return &processSlots{pool: &slotPool{size: size, free: size}, byTest: map[string]*testSlots{}}
 }
 
-// slotsOf is root's rootSlots, made at its first use. The caller holds s.mu.
-func (s *processSlots) slotsOf(root string) *rootSlots {
-	slots := s.byRoot[root]
+// slotsOf is the test name's testSlots, made at its first use. The caller holds s.mu.
+func (s *processSlots) slotsOf(name string) *testSlots {
+	slots := s.byTest[name]
 	if slots == nil {
-		slots = &rootSlots{}
-		s.byRoot[root] = slots
+		slots = &testSlots{}
+		s.byTest[name] = slots
 	}
 	return slots
 }
 
+// lineOf is the testSlots of the test name and of each test above it, nearest first, of those
+// that hold slots or are name itself. The caller holds s.mu.
+func (s *processSlots) lineOf(name string) []*testSlots {
+	line := []*testSlots{s.slotsOf(name)}
+	for parent, cut := cutLast(name); cut; parent, cut = cutLast(parent) {
+		if slots := s.byTest[parent]; slots != nil {
+			line = append(line, slots)
+		}
+	}
+	return line
+}
+
+// cutLast cuts name at its last slash, as a subtest's name joins its parent's, and answers the
+// parent's name.
+func cutLast(name string) (parent string, cut bool) {
+	at := strings.LastIndex(name, "/")
+	if at < 0 {
+		return name, false
+	}
+	return name[:at], true
+}
+
 // take is the slot one Dispatch process of t holds, and answers the call that gives it back. The
 // test's cleanup also runs that call, for a start that never ran a process, and only the first
-// call counts. A start that uses a reserved slot, and a start while another of the test's
-// processes runs, never wait; only a test that holds no slot waits for one (dispatchSlots says why).
+// call counts. A start that uses a reserved slot of t or a test above it, and a start while a
+// process of t or a test above it runs, never wait; only a test that holds no slot waits for one
+// (dispatchSlots says why).
 func (s *processSlots) take(t testing.TB) (release func()) {
 	t.Helper()
-	root := s.rootOf(t)
+	name := t.Name()
 	s.mu.Lock()
-	slots := s.slotsOf(root)
-	if slots.inUse < slots.reserved {
-		slots.inUse++
-		s.mu.Unlock()
-		return s.releaseLater(t, func() { slots.inUse-- }, 0)
+	line := s.lineOf(name)
+	running := 0
+	for _, slots := range line {
+		if slots.inUse < slots.reserved {
+			slots.inUse++
+			s.mu.Unlock()
+			return s.releaseLater(t, func() { slots.inUse-- }, 0)
+		}
+		running += slots.inUse + slots.held
 	}
-	running := slots.inUse + slots.held
+	own := line[0]
 	// Counted before the take, so that a start of this test on another goroutine meanwhile sees a
 	// process of this test running.
-	slots.held++
+	own.held++
 	s.mu.Unlock()
 	forget := func() {
 		s.mu.Lock()
-		slots.held--
+		own.held--
 		s.mu.Unlock()
 	}
 	if running == 0 {
 		if err := s.pool.take(1); err != nil {
 			forget()
-			t.Fatalf("%s cannot start a Dispatch process: %v", root, err)
+			t.Fatalf("%s cannot start a Dispatch process: %v", name, err)
 		}
-		return s.releaseLater(t, func() { slots.held-- }, 1)
+		return s.releaseLater(t, func() { own.held-- }, 1)
 	}
 	if refused := requireRunsAlone(t); refused != nil {
 		forget()
-		t.Fatalf("%s starts a Dispatch process while %d of its own run, and other tests can run beside it (%v). "+
-			"A parallel test that runs several processes at once reserves them before its first start "+
-			"(reserveProcessSlots(t, n)), so that it never waits for a slot while it holds one", root, running, refused)
+		t.Fatalf("%s starts a Dispatch process while %d of its own, or of a test above it, run, and other tests "+
+			"can run beside it (%v). A parallel test that runs several processes at once reserves them before "+
+			"its first start (reserveProcessSlots(t, n)), so that it never waits for a slot while it holds one",
+			name, running, refused)
 	}
 	if !s.pool.takeFree(1) {
 		forget()
 		t.Fatalf("%s starts its process number %d at once, and no process slot is free: tests paused at "+
 			"t.Parallel hold %d of the %d (testlimits.MaxProcessesAtOnce), and they come back only after the "+
-			"serial tests", root, running+1, s.pool.pausedNow(), s.pool.size)
+			"serial tests", name, running+1, s.pool.pausedNow(), s.pool.size)
 	}
-	return s.releaseLater(t, func() { slots.held-- }, 1)
+	return s.releaseLater(t, func() { own.held-- }, 1)
 }
 
 // releaseLater answers the call that runs forget under s.mu and gives n slots back to the pool,
@@ -152,36 +175,42 @@ func (s *processSlots) releaseLater(t testing.TB, forget func(), n int) func() {
 	return release
 }
 
-// reserve takes n slots for t's root test, all of them before it returns, and holds them until
-// that test ends (less any pauseParallel gives back). A test that runs n Dispatch processes at once
-// and calls t.Parallel calls it before its first start, and each start then takes a reserved slot
-// without waiting (take). It takes the n at once, in its turn, holding none while it waits.
+// reserve takes n slots for t, all of them before it returns, and holds them until t ends (less
+// any pauseParallel gives back). A parallel test that runs n Dispatch processes at once calls it
+// before its first start, and each start of it or of its subtests then takes a reserved slot
+// without waiting (take). It takes the n at once, in its turn, and neither t nor a test above it
+// holds a slot while it waits.
 func (s *processSlots) reserve(t testing.TB, n int) {
 	t.Helper()
-	root := s.rootOf(t)
+	name := t.Name()
 	if n > s.pool.size {
 		t.Fatalf("%s runs %d Dispatch processes at once, and testlimits.MaxProcessesAtOnce is %d. Every CI "+
-			"lane's Postgres is sized from that constant: raise it, so the lanes grow with it", root, n, s.pool.size)
+			"lane's Postgres is sized from that constant: raise it, so the lanes grow with it", name, n, s.pool.size)
 	}
 	s.mu.Lock()
-	slots := s.slotsOf(root)
-	holding := slots.reserved + slots.held
+	line := s.lineOf(name)
+	holding := 0
+	for _, slots := range line {
+		holding += slots.reserved + slots.held
+	}
 	s.mu.Unlock()
 	if holding > 0 {
-		t.Fatalf("%s reserves process slots while it holds %d: reserve them before its first Dispatch start", root, holding)
+		t.Fatalf("%s reserves process slots while it, or a test above it, holds %d: reserve them before the "+
+			"first Dispatch start", name, holding)
 	}
 	if err := s.pool.take(n); err != nil {
-		t.Fatalf("%s cannot reserve %d process slots: %v", root, n, err)
+		t.Fatalf("%s cannot reserve %d process slots: %v", name, n, err)
 	}
+	own := line[0]
 	s.mu.Lock()
-	slots.reserved += n
+	own.reserved += n
 	s.mu.Unlock()
 	t.Cleanup(func() {
 		// What the reservation still holds: pauseParallel gives back a slot the test no longer uses
 		// before it pauses.
 		s.mu.Lock()
-		held := slots.reserved
-		slots.reserved = 0
+		held := own.reserved
+		own.reserved = 0
 		s.mu.Unlock()
 		s.pool.give(held)
 	})
@@ -194,16 +223,16 @@ func (s *processSlots) reserve(t testing.TB, n int) {
 // pause that a queued start could then wait on.
 func (s *processSlots) pauseParallel(t *testing.T) {
 	t.Helper()
-	root := s.rootOf(t)
+	name := t.Name()
 	s.mu.Lock()
-	slots := s.slotsOf(root)
+	slots := s.slotsOf(name)
 	idle := slots.reserved - slots.inUse
 	slots.reserved -= idle
 	holding := slots.held + slots.inUse
 	s.mu.Unlock()
 	s.pool.give(idle)
 	if err := s.pool.pause(holding); err != nil {
-		t.Fatalf("%s cannot pause at t.Parallel holding %d process slots: %v", root, holding, err)
+		t.Fatalf("%s cannot pause at t.Parallel holding %d process slots: %v", name, holding, err)
 	}
 	t.Parallel()
 	s.pool.resume(holding)

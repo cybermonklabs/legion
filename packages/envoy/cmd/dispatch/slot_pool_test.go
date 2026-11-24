@@ -102,15 +102,16 @@ func TestASlotPoolRefusesAWaitOnASlotHeldAcrossAPause(t *testing.T) {
 func TestASecondStartNeverWaitsForASlot(t *testing.T) {
 	// Not parallel: its first row is a test that runs alone, which requireRunsAlone confirms
 	// through t.Setenv, and testing refuses that in a test under a parallel one.
+	const state = "one free and a take of two queued ahead of it"
 	t.Run("a test that runs alone", func(t *testing.T) {
-		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, false))
+		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, false), state)
 		if stopped != "" {
 			t.Fatalf("the second start of a test that runs alone stopped (%s), want it to take the free slot", stopped)
 		}
 	})
 	t.Run("a parallel test with no reservation", func(t *testing.T) {
 		t.Parallel()
-		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, false))
+		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, false), state)
 		if !strings.Contains(stopped, "reserveProcessSlots") {
 			t.Fatalf("the second start of a parallel test with no reservation stopped with %q, want it refused, "+
 				"naming reserveProcessSlots", stopped)
@@ -118,20 +119,20 @@ func TestASecondStartNeverWaitsForASlot(t *testing.T) {
 	})
 	t.Run("a parallel test that reserved two", func(t *testing.T) {
 		t.Parallel()
-		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, true))
+		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, true), state)
 		if stopped != "" {
 			t.Fatalf("the second start of a parallel test that reserved two stopped (%s), want its reserved slot", stopped)
 		}
 	})
 }
 
-// slotsWithATakeOfTwoQueued is a pool of four slots in TestASecondStartNeverWaitsForASlot's state,
-// with each subtest its own root test. Two slots are held across a pause, t's first process holds a
-// third (reserving two first when reserve is set), and a take of two is queued. When t ends, its
-// own slots go back through its cleanups, and the queued take must then be served.
+// slotsWithATakeOfTwoQueued is a pool of four slots of its own in TestASecondStartNeverWaitsForASlot's
+// state. Two slots are held across a pause, t's first process holds a third (reserving two first
+// when reserve is set), and a take of two is queued. When t ends, its own slots go back through
+// its cleanups, and the queued take must then be served.
 func slotsWithATakeOfTwoQueued(t *testing.T, reserve bool) *processSlots {
 	t.Helper()
-	slots := newProcessSlots(4, func(t testing.TB) string { return t.Name() })
+	slots := newProcessSlots(4)
 	queued := make(chan struct{})
 	// Registered first, so it runs last, once the cleanups registered below have given t's slots
 	// back: the queued take waits for slots a running test gives back, and gets them.
@@ -164,8 +165,9 @@ func slotsWithATakeOfTwoQueued(t *testing.T, reserve bool) *processSlots {
 // startOnItsOwnGoroutine starts t's next process on slots from a goroutine of its own, under a
 // testing.TB whose Fatalf stops that goroutine as a test's does, and answers why the start was
 // stopped, empty when it took a slot (whose release t's cleanup runs). It waits a bounded time, so
-// a start that waits for a slot fails the test by name instead of hanging it.
-func startOnItsOwnGoroutine(t *testing.T, slots *processSlots) (stopped string) {
+// a start that waits for a slot fails the test by name, saying it waited with state, instead of
+// hanging it.
+func startOnItsOwnGoroutine(t *testing.T, slots *processSlots, state string) (stopped string) {
 	t.Helper()
 	answered := make(chan string, 1)
 	go func() {
@@ -177,9 +179,54 @@ func startOnItsOwnGoroutine(t *testing.T, slots *processSlots) (stopped string) 
 	case stopped = <-answered:
 		return stopped
 	case <-time.After(10 * time.Second):
-		t.Fatal("the second start waited for a slot, with one free and a take of two queued ahead of it")
+		t.Fatalf("the start waited for a slot, with %s", state)
 		return ""
 	}
+}
+
+// Sibling subtests are tests of their own (processSlots): parallel subtests each take their own
+// first slot. With one count for a whole root test, the second sibling's first start counted the
+// first sibling's process as its own and was refused (dispatch-memory job 138518824605, every row
+// of TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound). Rows run one after another
+// each take a slot for their own process once the row before has given its back. And a subtest
+// uses the slots its parent reserved, as TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound's
+// rows do.
+func TestASubtestHoldsTheSlotsOfTheTestsAboveIt(t *testing.T) {
+	t.Parallel()
+	t.Run("parallel siblings", func(t *testing.T) {
+		slots := newProcessSlots(2)
+		for _, name := range []string{"a", "b"} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				if stopped := startOnItsOwnGoroutine(t, slots, "two slots and a sibling holding one"); stopped != "" {
+					t.Fatalf("a parallel subtest's first start stopped (%s), want a slot of its own", stopped)
+				}
+			})
+		}
+	})
+	t.Run("rows one after another", func(t *testing.T) {
+		slots := newProcessSlots(1)
+		for _, name := range []string{"first row", "second row", "third row"} {
+			t.Run(name, func(t *testing.T) {
+				if stopped := startOnItsOwnGoroutine(t, slots, "one slot, given back by the row before"); stopped != "" {
+					t.Fatalf("a row's start stopped (%s), want the slot the row before gave back", stopped)
+				}
+			})
+		}
+	})
+	t.Run("a parent's reservation", func(t *testing.T) {
+		slots := newProcessSlots(2)
+		slots.reserve(t, 2)
+		for _, name := range []string{"first row", "second row"} {
+			t.Run(name, func(t *testing.T) {
+				for range 2 {
+					if stopped := startOnItsOwnGoroutine(t, slots, "the parent's two reserved"); stopped != "" {
+						t.Fatalf("a subtest's start stopped (%s), want a slot its parent reserved", stopped)
+					}
+				}
+			})
+		}
+	})
 }
 
 // waitQueued waits a bounded time until pool has n takers queued.
