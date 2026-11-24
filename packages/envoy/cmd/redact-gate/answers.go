@@ -203,18 +203,25 @@ func (g *gate) answerMethods(c *census, dir string, fset *token.FileSet, pkg *ty
 			}
 		}
 	}
-	sort.Strings(got)
-	want := slices.Clone(cfg.Methods)
-	sort.Strings(want)
 	p := fset.Position(obj.Pos())
 	rel, _ := filepath.Rel(dir, p.Filename)
-	f := finding{File: filepath.ToSlash(rel), Line: p.Line, Function: cfg.Answer, What: strings.Join(got, ", "), Kind: "methods"}
+	c.Answers = append(c.Answers, exactly(finding{File: filepath.ToSlash(rel), Line: p.Line, Function: cfg.Answer, Kind: "methods"}, got, cfg.Methods, "its exported methods are", "a method"))
+}
+
+// exactly is f, a listing of the reader's type, with what it lists, got: OK only where got is
+// exactly want, in any order. are says what got is ("its exported methods are"), and one what one
+// more would be ("a method"), which answers the body's bytes and so lets a client print them.
+func exactly(f finding, got, want []string, are, one string) finding {
+	sort.Strings(got)
+	want = slices.Clone(want)
+	sort.Strings(want)
+	f.What = strings.Join(got, ", ")
 	if slices.Equal(got, want) {
-		f.OK, f.Why = true, "its exported methods are exactly "+strings.Join(want, ", ")
+		f.OK, f.Why = true, are+" exactly "+strings.Join(want, ", ")
 	} else {
-		f.Why = "its exported methods are " + strings.Join(got, ", ") + ", not exactly " + strings.Join(want, ", ") + ": a method that answers the body's bytes lets a client print them"
+		f.Why = are + " " + strings.Join(got, ", ") + ", not exactly " + strings.Join(want, ", ") + ": " + one + " that answers the body's bytes lets a client print them"
 	}
-	c.Answers = append(c.Answers, f)
+	return f
 }
 
 type answerReader struct {

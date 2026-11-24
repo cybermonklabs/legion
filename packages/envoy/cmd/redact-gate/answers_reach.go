@@ -7,8 +7,6 @@ import (
 	"go/types"
 	"path/filepath"
 	"reflect"
-	"slices"
-	"sort"
 	"strings"
 )
 
@@ -446,18 +444,9 @@ func (g *gate) answerFunctions(c *census, dir string, fset *token.FileSet, pkg *
 			}
 		}
 	}
-	sort.Strings(got)
-	want := slices.Clone(cfg.Functions)
-	sort.Strings(want)
 	p := fset.Position(answer.Pos())
 	rel, _ := filepath.Rel(dir, p.Filename)
-	f := finding{File: filepath.ToSlash(rel), Line: p.Line, Function: cfg.Answer, What: strings.Join(got, ", "), Kind: "functions"}
-	if slices.Equal(got, want) {
-		f.OK, f.Why = true, "the exported functions that take it are exactly "+strings.Join(want, ", ")
-	} else {
-		f.Why = "the exported functions that take it are " + strings.Join(got, ", ") + ", not exactly " + strings.Join(want, ", ") + ": a function that answers the body's bytes lets a client print them"
-	}
-	c.Answers = append(c.Answers, f)
+	c.Answers = append(c.Answers, exactly(finding{File: filepath.ToSlash(rel), Line: p.Line, Function: cfg.Answer, Kind: "functions"}, got, cfg.Functions, "the exported functions that take it are", "a function"))
 }
 
 // mentions reports whether t is the named type of name, or reaches it through a pointer, a slice,
