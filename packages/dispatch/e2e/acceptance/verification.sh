@@ -45,7 +45,9 @@
 # Where PROJECT already has one, every issue this script writes resolves to that repository, so
 # the setup reads the repository's default-branch head from GitHub with gh and every result is
 # recorded at that head: no check stands down. A repository gh cannot read fails the run, naming
-# it. Where FAKE_GITHUB_PORT is set the setup gives the fake, once and for the whole run, the one
+# it and a file beside the run's work directory, verification-gh.<six random characters>, which
+# keeps gh's answer and its own words: the run prints neither, nor any of an answer but a commit.
+# Where FAKE_GITHUB_PORT is set the setup gives the fake, once and for the whole run, the one
 # repository the run drives — PROJECT's default, or the reading section's own — with that head, a
 # look-alike of it and a pull request, since a server reading the fake asks the fake and not
 # GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this
@@ -329,6 +331,23 @@ refused_result() {
   expect "$1" "$2 is refused $want_code" "\"$want_code\"" '.code'
 }
 
+# kept_gh CALL ANSWER: keeps gh's own words ($work/gh) and ANSWER, what `gh api CALL` answered, in a
+# new file beside $work, which outlives the cleanup's removal of $work, and prints the words that
+# name that file. Whatever answers gh's call in GitHub's place holds gh's token and writes both, so
+# the run prints neither, and no part of an answer but a commit: the operator reads them there.
+kept_gh() {
+  local kept
+  if kept="$(mktemp "${work%/*}/verification-gh.XXXXXX" 2>/dev/null)" &&
+    {
+      printf 'gh api %s\nits answer:\n%s\nits own words (standard error):\n' "$1" "$2"
+      cat "$work/gh"
+    } >"$kept" 2>/dev/null; then
+    printf "gh's answer and its own words are in %s" "$kept"
+  else
+    printf "gh's answer and its own words could not be kept"
+  fi
+}
+
 # The commits the run records at, where PROJECT has no default repository: no issue this script
 # writes resolves to a repository then, so no result's commit is ever asked about, and these are
 # the script's own. Where PROJECT has one, the setup below replaces all three with that
@@ -365,12 +384,15 @@ if [[ -n "$default_repo" ]]; then
   command -v gh >/dev/null ||
     fail setup "read $default_repo's default-branch head" "gh is not on PATH, and every result this run records names that head"
   branch="$(gh api "repos/$default_repo" --jq .default_branch 2>"$work/gh")" && [[ -n "$branch" ]] ||
-    fail setup "read $default_repo's default branch with gh" "$(<"$work/gh")"
+    fail setup "read $default_repo's default branch with gh" \
+      "gh failed or answered no branch; $(kept_gh "repos/$default_repo --jq .default_branch" "$branch")"
   readonly branch
   head_commit="$(gh api "repos/$default_repo/commits/$branch" --jq .sha 2>"$work/gh")" ||
-    fail setup "read $default_repo's $branch head with gh" "$(<"$work/gh")"
+    fail setup "read $default_repo's default-branch head with gh" \
+      "gh failed; $(kept_gh "repos/$default_repo/commits/$branch --jq .sha" "$head_commit")"
   [[ "$head_commit" =~ ^[0-9a-f]{40}$ ]] ||
-    fail setup "read $default_repo's $branch head with gh" "gh answered '$head_commit', which is no commit"
+    fail setup "read $default_repo's default-branch head with gh" \
+      "gh answered no commit (40 lowercase hex digits); $(kept_gh "repos/$default_repo/commits/$branch --jq .sha" "$head_commit")"
   readonly head_commit
   commit_one="$head_commit"
   commit_two="$head_commit"
@@ -378,7 +400,7 @@ if [[ -n "$default_repo" ]]; then
   # every character replaced, so the two read alike only where a line cut to twelve shows them.
   commit_lookalike="${head_commit:0:12}$(printf '%s' "${head_commit:12}" |
     tr '0123456789abcdef' '89abcdef01234567')"
-  pass setup "read $default_repo's $branch head $head_commit with gh"
+  pass setup "read $default_repo's default-branch head $head_commit with gh"
 fi
 readonly commit_one commit_two commit_lookalike
 
