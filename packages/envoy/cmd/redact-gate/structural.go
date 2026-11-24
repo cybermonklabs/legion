@@ -153,75 +153,18 @@ func (w *walker) at(n ast.Node) (string, int) {
 	return w.rel, p.Line
 }
 
-// isBox reports whether t is the box's named type.
-func (w *walker) isBox(t types.Type) bool {
-	n, ok := types.Unalias(t).(*types.Named)
-	return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == w.boxPkg && n.Obj().Name() == w.boxName
-}
-
-// contains reports whether a value of type t holds the box anywhere: the box itself, or through a
-// pointer, a field (embedded or not), a slice, an array, a map's key or value, or a channel.
+// contains reports whether a value of type t holds the box anywhere (holdsBox).
 func (w *walker) contains(t types.Type, seen map[types.Type]bool) bool {
-	if seen[t] {
-		return false
-	}
-	seen[t] = true
-	switch t := types.Unalias(t).(type) {
-	case *types.Named:
-		return w.isBox(t) || w.contains(t.Underlying(), seen)
-	case *types.Pointer:
-		return w.contains(t.Elem(), seen)
-	case *types.Slice:
-		return w.contains(t.Elem(), seen)
-	case *types.Array:
-		return w.contains(t.Elem(), seen)
-	case *types.Map:
-		return w.contains(t.Key(), seen) || w.contains(t.Elem(), seen)
-	case *types.Chan:
-		return w.contains(t.Elem(), seen)
-	case *types.Struct:
-		for i := range t.NumFields() {
-			if w.contains(t.Field(i).Type(), seen) {
-				return true
-			}
-		}
-	}
-	return false
+	return holdsBox(t, w.boxPkg, w.boxName, seen)
 }
 
-// external reports whether t reaches one of the inventory's external error types.
+// external reports whether t reaches one of the inventory's external error types, through every
+// edge holdsBox follows but a channel's.
 func (w *walker) external(t types.Type, seen map[types.Type]bool) bool {
-	if seen[t] {
-		return false
-	}
-	seen[t] = true
-	switch t := types.Unalias(t).(type) {
-	case *types.Named:
-		if t.Obj().Pkg() != nil {
-			name := t.Obj().Pkg().Path() + "." + t.Obj().Name()
-			for _, e := range w.g.inv.Gate.External {
-				if e == name {
-					return true
-				}
-			}
-		}
-		return w.external(t.Underlying(), seen)
-	case *types.Pointer:
-		return w.external(t.Elem(), seen)
-	case *types.Slice:
-		return w.external(t.Elem(), seen)
-	case *types.Array:
-		return w.external(t.Elem(), seen)
-	case *types.Map:
-		return w.external(t.Key(), seen) || w.external(t.Elem(), seen)
-	case *types.Struct:
-		for i := range t.NumFields() {
-			if w.external(t.Field(i).Type(), seen) {
-				return true
-			}
-		}
-	}
-	return false
+	return edges{}.reaches(t, func(t types.Type) bool {
+		n, ok := t.(*types.Named)
+		return ok && n.Obj().Pkg() != nil && slices.Contains(w.g.inv.Gate.External, n.Obj().Pkg().Path()+"."+n.Obj().Name())
+	}, seen)
 }
 
 func (w *walker) file(f *ast.File) {

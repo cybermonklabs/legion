@@ -516,34 +516,13 @@ func (w *walker) resultReceiver(call *ast.CallExpr, parents []ast.Node) string {
 // parameter. A func type holds none, and a type's methods are not read, as guardedPackageRead
 // assumes.
 func holdsDynamic(t types.Type, seen map[types.Type]bool) bool {
-	t = types.Unalias(t)
-	if seen[t] {
-		return false
-	}
-	seen[t] = true
-	switch t := t.(type) {
-	case *types.Interface, *types.TypeParam:
-		return true
-	case *types.Named:
-		return holdsDynamic(t.Underlying(), seen)
-	case *types.Pointer:
-		return holdsDynamic(t.Elem(), seen)
-	case *types.Slice:
-		return holdsDynamic(t.Elem(), seen)
-	case *types.Array:
-		return holdsDynamic(t.Elem(), seen)
-	case *types.Chan:
-		return holdsDynamic(t.Elem(), seen)
-	case *types.Map:
-		return holdsDynamic(t.Key(), seen) || holdsDynamic(t.Elem(), seen)
-	case *types.Struct:
-		for i := range t.NumFields() {
-			if holdsDynamic(t.Field(i).Type(), seen) {
-				return true
-			}
+	return edges{chans: true}.reaches(t, func(t types.Type) bool {
+		switch t.(type) {
+		case *types.Interface, *types.TypeParam:
+			return true
 		}
-	}
-	return false
+		return false
+	}, seen)
 }
 
 // closedValue reports whether a value of t is a closed value, as guardedPackageRead's condition 3

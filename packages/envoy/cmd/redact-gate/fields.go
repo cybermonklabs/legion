@@ -355,32 +355,16 @@ func answersString(sig *types.Signature) bool {
 // or not (a strings.Reader holds its string unexported). A number, a bool, a function and a
 // channel cannot.
 func textual(t types.Type, seen map[types.Type]bool) bool {
-	if seen[t] {
-		return false
-	}
-	seen[t] = true
-	switch u := t.Underlying().(type) {
-	case *types.Basic:
-		return u.Info()&types.IsString != 0
-	case *types.Interface:
-		return true
-	case *types.Slice:
-		if b, ok := u.Elem().Underlying().(*types.Basic); ok && b.Kind() == types.Byte {
+	return edges{}.reaches(t, func(t types.Type) bool {
+		switch u := t.Underlying().(type) {
+		case *types.Basic:
+			return u.Info()&types.IsString != 0
+		case *types.Interface:
 			return true
+		case *types.Slice:
+			b, ok := u.Elem().Underlying().(*types.Basic)
+			return ok && b.Kind() == types.Byte
 		}
-		return textual(u.Elem(), seen)
-	case *types.Array:
-		return textual(u.Elem(), seen)
-	case *types.Map:
-		return textual(u.Key(), seen) || textual(u.Elem(), seen)
-	case *types.Pointer:
-		return textual(u.Elem(), seen)
-	case *types.Struct:
-		for i := range u.NumFields() {
-			if textual(u.Field(i).Type(), seen) {
-				return true
-			}
-		}
-	}
-	return false
+		return false
+	}, seen)
 }
