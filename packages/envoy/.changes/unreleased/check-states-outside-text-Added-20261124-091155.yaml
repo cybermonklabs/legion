@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+    A test (`TestAnEditOfThePullRequestBodyChangesNoState`) holds Dispatch to its rule for text
+    outside the commit that a check reads: GitHub's `edited` event of an open pull request that
+    changes its body and pushes nothing, taken by the delivery intake as production takes it,
+    publishes no `check.state_changed` event, and a pass at the head still reads yes. No behaviour
+    changes.
+time: 2026-11-24T09:11:55Z
+custom:
+    Issue: check-states-outside-text

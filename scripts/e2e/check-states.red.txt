@@ -93,3 +93,6 @@ go packages/daemon/internal/workflow ^TestAFailStateBeforeTheTesterCompletesStar
 
 # v-no-event-without-a-change: no settler and no state event, so the test does not build.
 go packages/envoy/internal/dispatch/api ^TestOneEventForEachChangeOfAStateAndNoneWhenAResultChangesNoState$ packages/envoy/internal/dispatch/api/check_states_publish_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+
+# v-outside-text: no settler and no state event, so the test does not build.
+go packages/envoy/internal/dispatch/api ^TestAnEditOfThePullRequestBodyChangesNoState$ packages/envoy/internal/dispatch/api/results_outside_text_test.go packages/envoy/internal/dispatch/api/check_states_test.go packages/envoy/internal/dispatch/api/check_states_ci_test.go
