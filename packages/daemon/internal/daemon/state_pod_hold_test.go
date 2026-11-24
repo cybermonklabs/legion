@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -101,11 +102,11 @@ func TestTheStateNamesAPodsStandingHold(t *testing.T) {
 	view := &source{
 		store: st, records: record.NewStore(), project: cfg.Project, projectToken: project,
 		runtime: "tmux", admissionCap: cfg.AdmissionCap, startedAt: time.Now(),
-		deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:    func() map[claim.Token]capabilities.Report { return nil },
 	}
 	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{
-		State: view, StateTransactions: st, Log: quietLogger(),
+		State: view, StateTransactions: st.Pool(), Log: quietLogger(),
 	}).Handler)
 	t.Cleanup(server.Close)
 
