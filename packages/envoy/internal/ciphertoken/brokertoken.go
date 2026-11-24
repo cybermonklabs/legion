@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // The outcomes a caller has to tell apart. None of them carries the token presented.
@@ -220,7 +221,10 @@ type Options struct {
 	// caller. New refuses a Verifier without one rather than letting a release lose the bound
 	// quietly.
 	Address func(r *http.Request) string
-	// HTTP sends the introspection; nil is a client bounded at introspectTimeout.
+	// HTTP sends the introspection; nil is a client bounded at introspectTimeout. Either is used
+	// as a copy that follows no redirect (redirects.Refused): the introspection carries the
+	// caller's own platform identity, and the broker's route answers no redirect, so a 3xx is a
+	// status the broker does not answer a sound request with, ErrBrokerUnreachable.
 	HTTP *http.Client
 	// AddressLimit is each source address's introspection bucket; the zero value is
 	// DefaultAddressLimit.
@@ -314,7 +318,7 @@ func New(options Options) (*Verifier, error) {
 		account:   options.Account,
 		origin:    origin,
 		originTLS: originTLS,
-		http:      client,
+		http:      redirects.Refused(client),
 		strategy:  rfc9449.NewDefaultStrategy(proofConfig{}, withoutNonces{options.Replay}),
 		address:   options.Address,
 		addresses: ratelimit.NewKeyed(limit),
