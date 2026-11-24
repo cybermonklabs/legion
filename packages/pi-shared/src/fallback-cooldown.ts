@@ -93,7 +93,7 @@ export function stepFallbackCooldown(
     case "fallback-applied": {
       const { restoreTo, entryId, cause, now } = input;
       if (cause === "other") {
-        return { ...state, arming: { restoreTo, entryId, dueAt: now, cause } };
+        return { ...state, arming: { restoreTo, entryId, dueAt: now + limits.baseMs, cause: "refusal" } };
       }
       const level = levelOf(state, restoreTo);
       const wait = waitMs(limits, level);
