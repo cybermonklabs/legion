@@ -2673,13 +2673,19 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
 // retro starts when the last one leaves (workflow's releaseHeldParents).
 //
-// `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
-// (workflow's passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree
-// now (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
-// moves a member to another tree. The first step deletes its rows and tells the issue's architect
-// once, whatever number of versions it passed over; the reason names each version, its document
-// and its giver, and the plan the first step runs: an owner's, of the issue's generation or carried
-// to it, or the default steps.
+// `plan-not-taken` is a plan its issue's first step did not take, the first step telling the
+// issue's architect once, whatever number of versions it passed over, after it deleted their
+// rows; it carries one of two meanings. A plan an earlier owner gave (workflow's
+// passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree now
+// (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
+// moves a member to another tree; the reason names each version, its document and its giver,
+// the plan the first step runs (an owner's, of the issue's generation or carried to it, or the
+// default steps), and that the architect may give the plan again with register_plan as its own.
+// Or a plan of an issue whose experiment's group takes no plan from its owner (workflow's
+// passOverOwners, tellNotTaken): every plan its owner or an earlier owner gave is passed over, the
+// run takes the project's default steps, and the reason names each version and the group
+// (intake's GroupClause), and offers no register_plan, which that issue's owner is answered
+// PLAN_NOT_TAKEN for.
 //
 // `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
 // launcher, older than the release that added the kind, could not look the session up by its id,

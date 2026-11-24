@@ -9,7 +9,7 @@ body: |-
   the daemon's RPC prompt did not start, read from that prompt's `input` and the next
   `agent_start`. The daemon fails the claim at once for a status that cannot clear, which ends the
   reminders, and counts any other refusal in the claim's run of provider-error turns, whose sixth
-  in a row tells the project's controller once. `legion.daemonApiVersion` is 239: install this
+  in a row tells the project's controller once. `legion.daemonApiVersion` is 240: install this
   release with a daemon of the same release.
 time: 2026-11-23T23:04:10.514806801Z
 custom:

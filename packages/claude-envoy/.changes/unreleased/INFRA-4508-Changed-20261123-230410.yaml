@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  `legion.daemonApiVersion` is 239 (dispatch://INFRA-4508): the daemon's turn-outcome report takes
+  `legion.daemonApiVersion` is 240 (dispatch://INFRA-4508): the daemon's turn-outcome report takes
   the provider's HTTP status and a mark for a turn that ran no prompt of the daemon's, which the
   Claude bridge now sends for a turn an inbox delivery started, the phase hook's reminder among
   them. The daemon judges such a turn from that report: a refusal whose status cannot clear fails

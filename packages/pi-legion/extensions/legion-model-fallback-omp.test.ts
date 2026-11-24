@@ -81,7 +81,8 @@ const TWO_STEPS: readonly string[] = [
 /**
  * The first wait a refusal of one selector buys, through `LEGION_REFUSAL_COOLDOWN_MS`
  * (`fallbackCooldownLimits`): seconds here, an hour in a deployment, so every case below runs
- * inside the pi-legion job's ten minutes.
+ * well inside the pi-legion job's limit (timeout-minutes: 28,
+ * .github/workflows/ci-job-pi-legion.yaml).
  */
 const COOLDOWN_MS = 4_000;
 

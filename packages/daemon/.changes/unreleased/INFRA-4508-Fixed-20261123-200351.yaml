@@ -13,7 +13,7 @@ body: |-
   the same session again on the ladder. A turn that ran no prompt of the daemon's, such as a phase
   reminder the plugin starts itself, has no prompt result, so the daemon judges it from its report
   to `POST /legion/v1/claims/turn-outcome`, which now carries the provider's `httpStatus` and
-  marks such a turn `unprompted` (daemon API contract 239; the Claude bridge sends both fields
+  marks such a turn `unprompted` (daemon API contract 240; the Claude bridge sends both fields
   too): a refusal that cannot clear fails the claim, which ends the plugin's reminders; one that
   can clear, or whose report carries no status, fails nothing, and the reminders keep their pace
   of one every 5 minutes. The answer's `failed` is true only for the report that failed the claim.

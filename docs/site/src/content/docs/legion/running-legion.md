@@ -557,17 +557,18 @@ What each part is for:
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi settings overlays
-  a role of a unit drawn into it names where the experiment reaches that role, and
+  a role of a unit drawn into it names where the experiment reaches that role,
   `instructions`, one markdown file on the daemon's own disk that the daemon reads at boot and
-  appends to that role's system prompt.
+  appends to that role's system prompt, and `plan`, how the issues drawn into it are done (below).
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
   A role of a drawn unit that the experiment reaches names each arm's `config_files` in its
   `PI_CONFIG_FILES` after the operator's own and the role's own, in the order the project's file
   declares the experiments, and ends its system prompt with each arm's `instructions` in that same
   order.
-  The draw is made once, when the unit is opened, and is recorded with the arm, the mode in force
-  and the instant; the launch then follows that record and not the mode, so moving a mode to `off`
+  The draw is made once, when the unit is opened, and is recorded with the arm, its `plan` where it
+  names one, the mode in force and the instant; the launch then follows that record and not the
+  mode, so moving a mode to `off`
   stops new draws and takes nothing from a unit already running.
   Under `runtime: kubernetes` each overlay must be a file one of the operator's pod mounts
   carries, and the day a project declares an arm with overlay files every live issue pod of the
@@ -575,6 +576,16 @@ What each part is for:
   ([Running Legion on Kubernetes](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md),
   "Operator configuration").
   Before you turn one on, write its [pre-registration](#pre-registering-an-experiment).
+- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
+  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
+  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
+  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
+  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+  The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
+  whatever the file says later.
+  An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
+  most one experiment of a project sets it; `owner-alone`, the owner doing the whole issue itself
+  in one step, is refused, since this release does not carry it out.
 - **`projects.<KEY>.commit_issue_trailer_repos`** (optional) names the repositories whose commits
   carry their issue key:
 
@@ -1041,10 +1052,12 @@ answer. A pre-registration states seven things.
      launch logs one line naming the issue, the role, the experiment and the arm. Read those
      lines and count the unit out of the exposure for that period.
    - **An arm the project's file no longer names.** The record keeps the arm, but a launch names
-     only the files the file still holds, so from the moment the arm leaves the file its units run
-     as a unit in no experiment runs. Take an arm out of the file only when the experiment is
-     over, and record the date if you do it sooner, because every unit of that arm is unexposed
-     from then on.
+     only the files the file still holds, so from the moment the arm leaves the file its units load
+     none of its files. Its `plan` is the one part that stays: Legion reads each issue's group
+     from the draw it recorded, so an issue of an arm whose `plan` is `default` still runs the
+     project's default steps and takes no plan from its owner. Take an arm out of the file only
+     when the experiment is over, and record the date if you do it sooner, because every unit of
+     that arm is unexposed to its files from then on.
 
 A template to copy:
 
@@ -1473,13 +1486,15 @@ Closing the terminal leaves the project without one, and the daemon logs
   earlier release's own `legion state` prints it.
 
   **The same answers in `legion state --json`.** Each issue carries `assignments`, one
-  `{experiment, variant, mode, drawnAt}` per answer that applies to it, in that same declared
+  `{experiment, variant, mode, drawnAt, plan?}` per answer that applies to it, in that same declared
   order and then any experiment the file no longer names, in the order of their names; the
   declaration each answer of a declared experiment was drawn from is in the settings, under
   `settings.projects.<KEY>.memory` for the block's experiment and
   `settings.projects.<KEY>.experiments` for the rest. An issue carries its tree's answer for a
   tree experiment and its own for an issue experiment, `drawnAt` is absent where no draw was
-  made, and the key itself is absent from an issue no experiment holds an answer for. The three
+  made, `plan` is the group the arm set at the draw (`owner` or `default`), which the issue keeps
+  whatever the file says later, and is absent where the arm set none, and the key itself is absent
+  from an issue no experiment holds an answer for. The three
   fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
   (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
   exactly as they did, absent together where nothing was drawn for that tree. Read
