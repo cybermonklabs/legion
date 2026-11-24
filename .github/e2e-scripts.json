@@ -292,7 +292,7 @@
     },
     {
       "script": "provider-error-retry.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
+      "needs": "a hosted job that installs the pinned Oh My Pi and this repository's Bun dependencies, with a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar and python3; the job registration is separate from this proof's timing fix"
     },
     {
       "script": "refusal-fallback-omp.sh",

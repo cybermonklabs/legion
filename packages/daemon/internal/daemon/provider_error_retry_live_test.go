@@ -455,9 +455,11 @@ func (r *providerErrorLive) ladderWalks() {
 	}
 	r.note("%s is %s, still holding its task (%d re-sends counted on the delivery), and %s is %s",
 		token, held.State, ladderSends-1, r.ladder, r.issue(r.ladder).Phase)
-	if got := r.stands[overloadedProvider].requestsHolding(marker); got < ladderSends {
-		t.Fatalf("the overloaded stand-in was asked %d times for a request carrying the task, want %d", got, ladderSends)
-	}
+	// The send's record precedes the HTTP request: wait for the stand-in itself, not for
+	// the poll of that record to happen late enough for the request to arrive.
+	r.await("the overloaded stand-in to receive every send carrying the task", paneReady, func() bool {
+		return r.stands[overloadedProvider].requestsHolding(marker) >= ladderSends
+	})
 	r.note("the overloaded stand-in answered 529 to %d requests, %d of them carrying the task itself",
 		r.stands[overloadedProvider].count(), r.stands[overloadedProvider].requestsHolding(marker))
 }
