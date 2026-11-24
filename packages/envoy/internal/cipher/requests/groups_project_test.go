@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -28,7 +28,7 @@ import (
 func TestAGroupsSecretOfAPrivateProject(t *testing.T) {
 	ctx := context.Background()
 	st := storetest.Open(t)
-	local := secrets.NewLocal(append(fixtureSecrets(),
+	local := awstest.NewLocal(append(fixtureSecrets(),
 		taggedSecret("PRIV_GROUP_KEY", approversForm, policy.TierHuman, privProject, "priv-group-v1"))...)
 	enrollmentID, key := newEnrollment(t, st, "session", "box-pg-"+t.Name(), new(fixtureOperator), nil)
 	directory := groupstest.New()

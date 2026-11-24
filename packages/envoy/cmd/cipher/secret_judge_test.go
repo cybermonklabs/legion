@@ -11,7 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestCreateAndRetagWriteTheJudgeTags: create and retag --judge SECONDS and --guidance TEXT write
@@ -63,7 +63,7 @@ func TestCreateAndRetagWriteTheJudgeTags(t *testing.T) {
 	})
 
 	t.Run("a value the broker would refuse is refused before any write", func(t *testing.T) {
-		local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
+		local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
 		writes := &countingTagWrites{Local: local}
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, writes, testAccount, adaSignIn)

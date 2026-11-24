@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/tlsalert/tlsalerttest"
 )
@@ -50,7 +51,7 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 	}{
 		{"gcp", "https://secrets.internal.example/", Settings{Store: secrets.StoreGCP, GCPProject: "000000000000"},
 			"the broker AGENT_SECRETS_URL names (GCP Secret Manager)", "GCP Secret Manager project 000000000000"},
-		{"aws", "http://127.0.0.1:13380", Settings{Store: secrets.StoreAWS, AWSAccountID: "111122223333", AWSRegion: "us-east-1"},
+		{"aws", "http://127.0.0.1:13380", Settings{Store: aws.Name, AWSAccountID: "111122223333", AWSRegion: "us-east-1"},
 			"the broker AGENT_SECRETS_URL names (AWS Secrets Manager)", "AWS Secrets Manager account 111122223333 in us-east-1"},
 		{"a broker from before the store field", "http://127.0.0.1:13380", Settings{AWSAccountID: "111122223333"},
 			"the broker AGENT_SECRETS_URL names (AWS Secrets Manager)", "AWS Secrets Manager account 111122223333"},
@@ -110,7 +111,7 @@ func TestExecFormNamesItsSourceBeforeItExecs(t *testing.T) {
 		line     string
 	}{
 		{"gcp", &fakeSettings, prefix + " (GCP Secret Manager)\n"},
-		{"aws", &Settings{Store: secrets.StoreAWS, AWSAccountID: "111122223333", AWSRegion: "us-east-1"}, prefix + " (AWS Secrets Manager)\n"},
+		{"aws", &Settings{Store: aws.Name, AWSAccountID: "111122223333", AWSRegion: "us-east-1"}, prefix + " (AWS Secrets Manager)\n"},
 		{"a broker from before the store field", &Settings{AWSAccountID: "111122223333", AWSRegion: "us-east-1"}, prefix + " (AWS Secrets Manager)\n"},
 		{"a store this release does not know", &Settings{Store: "vault"}, prefix + " (vault)\n"},
 		{"no settings route", nil, prefix + "\n"},
@@ -407,7 +408,7 @@ func TestNoSessionLineNamesAHostOrAStoreID(t *testing.T) {
 		source   string
 	}{
 		{"gcp", &fakeSettings, "the broker AGENT_SECRETS_URL names (GCP Secret Manager)"},
-		{"aws", &Settings{Store: secrets.StoreAWS, AWSAccountID: "111122223333", AWSRegion: "us-east-1"}, "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)"},
+		{"aws", &Settings{Store: aws.Name, AWSAccountID: "111122223333", AWSRegion: "us-east-1"}, "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)"},
 		{"a store this release does not know", &Settings{Store: "vault"}, "the broker AGENT_SECRETS_URL names (vault)"},
 		{"no settings route", nil, "the broker AGENT_SECRETS_URL names"},
 	} {

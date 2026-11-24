@@ -7,7 +7,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestTheKindsRollbackGuardIsRefusedByTheMergeBaseAndIgnoredHere is the head half of the kinds'
@@ -79,7 +79,7 @@ func TestTheKindsRollbackGuardIsRefusedByTheMergeBaseAndIgnoredHere(t *testing.T
 // the two guards and no list is no list. The broker before the kinds refused the kinds guard (the
 // golden), and the broker before the project tags the project one, so either refuses it.
 func TestBothGuardsAreTakenOutOfTheRequesters(t *testing.T) {
-	secret := func(name, requesters string) secrets.LocalSecret {
+	secret := func(name, requesters string) awstest.LocalSecret {
 		s := policytest.Proxied(policytest.Secret(name, guardOwner, policy.TierHuman, "v"), "github")
 		s.Tags[policy.TagProject] = "PRIV"
 		if requesters != "" {
@@ -91,7 +91,7 @@ func TestBothGuardsAreTakenOutOfTheRequesters(t *testing.T) {
 	if both != guardOwner+" "+policy.RequestersRollbackGuard+" "+policy.KindsRollbackGuard {
 		t.Fatalf("WithGuards(%q, true, true) = %q; want the list, the project guard, then the kinds guard", guardOwner, both)
 	}
-	loader := policytest.Loader(secrets.NewLocal(
+	loader := policytest.Loader(awstest.NewLocal(
 		secret("BOTH_LISTED", both), secret("NONE_LISTED", guardOwner),
 		secret("BOTH_ALONE", policy.WithGuards("", true, true)), secret("NONE_ALONE", ""),
 	))

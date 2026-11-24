@@ -14,7 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // The proxy URL and certificate a test server behind the airlock hands every release
@@ -44,7 +45,7 @@ func newProxiedTestServer(t *testing.T, names []string, adjust func(*api.Deps)) 
 // of its profiles file from here on.
 func proxyTag(t *testing.T, d *api.Deps, name, kind string) {
 	t.Helper()
-	local := d.Machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := d.Machine.Secrets.(awsstore.Store).Client.(*awstest.Local)
 	if _, err := local.TagResource(t.Context(), &secretsmanager.TagResourceInput{
 		SecretId: aws.String(policytest.ID(name)), Tags: []smtypes.Tag{{Key: aws.String(policy.TagProxy), Value: aws.String(kind)}},
 	}); err != nil {

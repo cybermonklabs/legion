@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
@@ -83,7 +84,7 @@ func readProfile(value, permissions, allow string) string {
 
 // profiledSource is the github-app secret stored as source holds it: of profileOperator at agent
 // tier, holding value, behind profileKind by its proxy tag and narrowed by its one profile.
-func profiledSource(source, secretType, value string) secrets.LocalSecret {
+func profiledSource(source, secretType, value string) awstest.LocalSecret {
 	return policytest.Narrowed(policytest.Proxied(policytest.TypeSecret(source, profileOperator, policy.TierAgent, secretType, value), profileKind))
 }
 
@@ -121,7 +122,7 @@ func (g *rolledGrants) AirlockRules() proxyrules.Rules { return g.machine.Load()
 type profileRig struct {
 	*rig
 	st           *store.Store
-	local        *secrets.Local
+	local        *awstest.Local
 	stand        *proxyrulestest.GitHubStand
 	minting      *proxyrulestest.Service
 	grants       *rolledGrants
@@ -135,7 +136,7 @@ func newProfileRig(t *testing.T, file string, o Options) *profileRig {
 	t.Helper()
 	pr := &profileRig{
 		st:     storetest.Open(t),
-		local:  secrets.NewLocal(profiledSource(profileSource, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))),
+		local:  awstest.NewLocal(profiledSource(profileSource, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))),
 		stand:  proxyrulestest.NewGitHubStand(proxyrulestest.GitHubOptions{Installations: profileInstallations, DistinctTokens: true}),
 		grants: &rolledGrants{},
 	}

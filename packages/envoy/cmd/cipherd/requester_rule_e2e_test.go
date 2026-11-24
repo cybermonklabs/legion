@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -845,13 +846,13 @@ func requestIDFromDenial(t *testing.T, stderr string) string {
 // read again, as `agent-secrets secret retag` does in production.
 type requesterStore struct {
 	path string
-	rows []secrets.LocalSecret
+	rows []awstest.LocalSecret
 }
 
 // newRequesterStore writes the run's six secrets and answers the store that holds them.
 func newRequesterStore(t *testing.T) *requesterStore {
 	t.Helper()
-	s := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []secrets.LocalSecret{
+	s := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []awstest.LocalSecret{
 		requesterRow(requesterGCloudSami, sami, policy.TierHuman, requesterGCloudValue, map[string]string{
 			policy.TagRequesters: requesterDaemonService + " " + sami,
 			policy.TagMaxGrant:   requesterMaxGrant,
@@ -912,8 +913,8 @@ func requesterStoreName(name string) string {
 // requesterRow is one secret of the fake store: its place in the store (requesterStoreName), the
 // key every secret of these tests is encrypted with (testSecretsKMSKeyARN), its owner, its tier
 // and whatever of this feature's tags the row sets.
-func requesterRow(name, owner, tier, value string, extra map[string]string) secrets.LocalSecret {
-	row := secrets.LocalSecret{
+func requesterRow(name, owner, tier, value string, extra map[string]string) awstest.LocalSecret {
+	row := awstest.LocalSecret{
 		Name:     requesterStoreName(name),
 		KmsKeyID: testSecretsKMSKeyARN,
 		Tags:     map[string]string{policy.TagOwner: owner, policy.TagTier: tier},

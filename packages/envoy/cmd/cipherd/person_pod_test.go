@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -80,7 +80,7 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 	clusterKey := issuer.PublishKey(t, "cluster-key")
 	store := &requesterStore{
 		path: filepath.Join(t.TempDir(), "fake-secrets.json"),
-		rows: []secrets.LocalSecret{requesterRow(personPodSecret, personPodPerson, policy.TierAgent, personPodSecretValue, nil)},
+		rows: []awstest.LocalSecret{requesterRow(personPodSecret, personPodPerson, policy.TierAgent, personPodSecretValue, nil)},
 	}
 	store.write(t)
 	cli := buildAgentSecrets(t)
@@ -203,7 +203,7 @@ func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 		privProject: {Visibility: "private", Owner: privateOwner, Listed: []string{personPodPerson}},
 		elseProject: {Visibility: "private", Owner: privateOwner},
 	}
-	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []secrets.LocalSecret{
+	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []awstest.LocalSecret{
 		requesterRow(privKey, policy.OwnerShared, policy.TierAgent, privValue, map[string]string{policy.TagProject: privProject}),
 		requesterRow(elseKey, policy.OwnerShared, policy.TierAgent, "else-value", map[string]string{policy.TagProject: elseProject}),
 	}}
@@ -326,7 +326,7 @@ func TestASecretOwnedByAMappedAccountsLoginServiceIsRefusedAtLoad(t *testing.T) 
 			personPodAdaAccount, cfg.PodOperators[personPodAdaAccount], cfg.ServiceLogins[personPodAdaAccount], personPodPerson, personPodAdaService)
 	}
 
-	set := policytest.Current(t, secrets.NewLocal(
+	set := policytest.Current(t, awstest.NewLocal(
 		policytest.Secret(loginOwnedSecret, personPodAdaService, policy.TierAgent, "login-owned-value"),
 		policytest.Secret(serviceOwnedSecret, registeredService, policy.TierAgent, "service-owned-value"),
 	), serviceNames(cfg)...).Get()

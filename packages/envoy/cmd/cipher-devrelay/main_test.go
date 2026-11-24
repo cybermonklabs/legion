@@ -36,17 +36,19 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
-)
 
-const (
 	// dispatchAccount is the ServiceAccount the test broker's BROKER_API_ACCOUNTS names as the
 	// caller "dispatch", and dispatchAudience the audience its projected token carries: devrelay
 	// stands in for Dispatch's server, so it presents that account's token.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+)
+
+const (
 	dispatchAccount  = "system:serviceaccount:example-ns:example-dispatch"
 	dispatchAudience = "agent-secrets"
 	testApprover     = "sami@example.com"
@@ -60,7 +62,7 @@ const (
 func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer *oidctest.Issuer) {
 	t.Helper()
 	st := storetest.Open(t)
-	local := secrets.NewLocal(policytest.Secret("AGENT_SECRETS_PROOF_APPROVAL", testApprover, policy.TierHuman, testValue))
+	local := awstest.NewLocal(policytest.Secret("AGENT_SECRETS_PROOF_APPROVAL", testApprover, policy.TierHuman, testValue))
 	cur := policytest.Current(t, local)
 
 	mux := http.NewServeMux()
@@ -96,7 +98,7 @@ func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer 
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// People sign in to the approval page at the same local issuer, which stands in for every
 		// provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), srv.URL, st, reqMachine),

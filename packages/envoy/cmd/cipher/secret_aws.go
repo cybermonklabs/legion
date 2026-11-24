@@ -33,13 +33,13 @@ import (
 	"github.com/aws/smithy-go/middleware"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // secretsAPI is the Secrets Manager calls the secret forms make: ListSecrets and DescribeSecret to
 // read, GetSecretValue for the value retag decodes (readValue), and writes for values, tags and
-// deletion. *secretsmanager.Client and secrets.Local satisfy it.
+// deletion. *secretsmanager.Client and awstest.Local satisfy it.
 type secretsAPI interface {
 	secretsmanager.ListSecretsAPIClient
 	DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error)
@@ -167,15 +167,15 @@ func requireAccount(ctx context.Context, st stsAPI, settings Settings, another s
 
 // checkSettingsKeyARN refuses, before any AWS call, settings whose aws_account_id or aws_region does
 // not match the account and region in kms_key_arn. The broker derives both from the key ARN the same
-// way (internal/cipher/api handlers_secrets.go, secrets.AWSKeyARNParts), so the account the sign-in is
+// way (internal/cipher/api handlers_secrets.go, aws.KeyARNParts), so the account the sign-in is
 // checked against (requireAccount) and the region the SDK is pinned to are the key ARN's, not a
 // separately-sent field a spoofed or plain-http broker could set on its own to steer a write. Each
 // field a refusal names prints as the broker's address lets its answer print (Settings.words).
 func checkSettingsKeyARN(settings Settings) error {
-	if !secrets.ValidAWSKeyARN(settings.KMSKeyARN) {
+	if !awsstore.ValidKeyARN(settings.KMSKeyARN) {
 		return fmt.Errorf("the broker's settings name an invalid KMS key ARN %s (expected arn:aws:kms:<region>:<account>:key/<key id>)", settings.words(strconv.Quote(settings.KMSKeyARN)))
 	}
-	region, account := secrets.AWSKeyARNParts(settings.KMSKeyARN)
+	region, account := awsstore.KeyARNParts(settings.KMSKeyARN)
 	if settings.AWSAccountID != account {
 		return fmt.Errorf("the broker's settings name account %s, but its KMS key ARN %s is in account %s: the broker's settings are inconsistent", settings.words(settings.AWSAccountID), settings.words(settings.KMSKeyARN), settings.words(account))
 	}
@@ -192,7 +192,7 @@ func isAccessDenied(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "AccessDeniedException"
 }
 
-// awsBackend is the secretBackend for store "" or secrets.StoreAWS: AWS Secrets Manager under the
+// awsBackend is the secretBackend for store "" or aws.Name: AWS Secrets Manager under the
 // AWS sign-in this command's environment gives it, pinned to the key ARN's account and region.
 type awsBackend struct {
 	settings Settings
@@ -374,10 +374,10 @@ func (b *awsBackend) list(ctx context.Context) ([]secretView, error) {
 			}
 			views = append(views, secretView{
 				Name: b.displayName(id), SecretName: id,
-				HasValue: secrets.HasCurrentVersion(e.SecretVersionsToStages),
+				HasValue: awsstore.HasCurrentVersion(e.SecretVersionsToStages),
 				Created:  e.CreatedDate, LastChanged: e.LastChangedDate,
 				Deleted: e.DeletedDate, EarliestPurge: earliestPurge(e.DeletedDate),
-			}.withTags(secrets.TagMap(e.Tags)))
+			}.withTags(awsstore.TagMap(e.Tags)))
 		}
 	}
 	return views, nil
@@ -390,11 +390,11 @@ func (b *awsBackend) show(ctx context.Context, slug string) (secretView, error) 
 	}
 	return secretView{
 		Name: b.displayName(aws.ToString(out.Name)), SecretName: aws.ToString(out.Name),
-		HasValue: secrets.HasCurrentVersion(out.VersionIdsToStages),
+		HasValue: awsstore.HasCurrentVersion(out.VersionIdsToStages),
 		Created:  out.CreatedDate, LastChanged: out.LastChangedDate,
 		Deleted: out.DeletedDate, EarliestPurge: earliestPurge(out.DeletedDate),
 		Versions: out.VersionIdsToStages,
-	}.withTags(secrets.TagMap(out.Tags)), nil
+	}.withTags(awsstore.TagMap(out.Tags)), nil
 }
 
 // prepareCreate makes nothing: AWS creates the secret with its value in store.
@@ -427,7 +427,7 @@ func (n *awsNewSecret) store(ctx context.Context, value string) error {
 		Name:         aws.String(n.b.id(n.slug)),
 		KmsKeyId:     aws.String(n.b.settings.KMSKeyARN),
 		SecretString: aws.String(value),
-		Tags:         secrets.TagList(n.tags),
+		Tags:         awsstore.TagList(n.tags),
 	}, attempts.record)
 	switch {
 	case err == nil:
@@ -530,11 +530,11 @@ func (b *awsBackend) currentTags(ctx context.Context, slug string) (heldTags, er
 	if err != nil {
 		return heldTags{}, err
 	}
-	return heldTags{tags: secrets.TagMap(held.Tags)}, nil
+	return heldTags{tags: awsstore.TagMap(held.Tags)}, nil
 }
 
 // readValue reads the secret's AWSCURRENT value with GetSecretValue, and refuses one that is not a
-// non-empty string, as the broker's own read does (secrets.AWS.Read).
+// non-empty string, as the broker's own read does (aws.Store.Read).
 func (b *awsBackend) readValue(ctx context.Context, slug string) (string, error) {
 	out, err := b.sm.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(b.id(slug))})
 	if err != nil {
@@ -618,7 +618,7 @@ func (b *awsBackend) tag(ctx context.Context, slug string, tags map[string]strin
 	var attempts awsAttempts
 	_, err := b.sm.TagResource(ctx, &secretsmanager.TagResourceInput{
 		SecretId: aws.String(b.id(slug)),
-		Tags:     secrets.TagList(tags),
+		Tags:     awsstore.TagList(tags),
 	}, attempts.record)
 	return tagOutcome(err, &attempts)
 }

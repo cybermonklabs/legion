@@ -33,6 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
 // sourceSettingsTimeout bounds the settings read describe makes. It is short because naming the
@@ -99,7 +100,7 @@ func (c *client) source(ctx context.Context) source {
 // field it names prints as the broker's address lets its answer print (Settings.words).
 func (s source) withSettings(settings Settings) source {
 	switch settings.Store {
-	case "", secrets.StoreAWS:
+	case "", aws.Name:
 		s.kind = "AWS Secrets Manager"
 		s.store = s.kind
 		if settings.AWSAccountID != "" {

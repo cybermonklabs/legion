@@ -12,7 +12,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // proxiedKinds are the kinds of these rows: deel, on api.deel.example, which allows two requests;
@@ -24,7 +25,7 @@ const proxiedKinds = `[` +
 
 // proxiedSecret is DEEL_TOKEN, ada's human-tier stored secret, which ben's request waits on her
 // for, with its proxy tag naming kind, or none for "".
-func proxiedSecret(kind string) secrets.LocalSecret {
+func proxiedSecret(kind string) awstest.LocalSecret {
 	secret := policytest.Secret("DEEL_TOKEN", ada, policy.TierHuman, "deel-v1")
 	if kind != "" {
 		secret = policytest.Proxied(secret, kind)
@@ -50,7 +51,7 @@ func TestTheApprovalPagePrintsTheKindOfASecretWithNoProfile(t *testing.T) {
 	} {
 		t.Run(c.kind, func(t *testing.T) {
 			r := newRig(t)
-			local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+			local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 			local.Put(proxiedSecret(c.kind))
 			r.machine.Policy = policytest.ProfiledCurrent(t, local, policytest.KindsFileOf(proxiedKinds))
 			served := r.machine.Policy.Get().Secrets["DEEL_TOKEN"]
@@ -104,7 +105,7 @@ func TestAnApprovalIsBoundToTheKindOfASecretWithNoProfile(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
-			local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+			local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 			local.Put(proxiedSecret(c.printed))
 			r.machine.Policy = policytest.ProfiledCurrent(t, local, policytest.KindsFileOf(proxiedKinds))
 			enrollmentID, key := r.benSession(t, "ben-box")

@@ -16,17 +16,19 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/metrics"
+
+	// awsListLag is the AWS store's ListLag, which every Local-backed Current here runs on.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
-// awsListLag is the AWS store's ListLag, which every Local-backed Current here runs on.
-var awsListLag = policytest.Store(secrets.NewLocal()).ListLag()
+var awsListLag = policytest.Store(awstest.NewLocal()).ListLag()
 
 // staleLister freezes ListSecrets at construction while DescribeSecret stays live: AWS's
 // documented ListSecrets lag, reproduced.
 type staleLister struct {
-	*secrets.Local
+	*awstest.Local
 	page *secretsmanager.ListSecretsOutput
 }
 
@@ -35,7 +37,7 @@ func (s staleLister) ListSecrets(context.Context, *secretsmanager.ListSecretsInp
 }
 
 func TestRefreshKeepsWhatARecentRereadSettled(t *testing.T) {
-	store := secrets.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	store := awstest.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	stale, err := store.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +71,7 @@ func TestRefreshKeepsWhatARecentRereadSettled(t *testing.T) {
 // TestRecentNamesExpireAfterListLag pins that the window is bounded: a reread outlives a lagging
 // listing until listLag has passed since it, and after that the listing wins again.
 func TestRecentNamesExpireAfterListLag(t *testing.T) {
-	store := secrets.NewLocal()
+	store := awstest.NewLocal()
 	stale, err := store.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +108,7 @@ func TestRecentNamesExpireAfterListLag(t *testing.T) {
 }
 
 // slowStore is the AWS store with a longer documented lag, as Secret Manager's six hours.
-type slowStore struct{ secrets.AWS }
+type slowStore struct{ aws.Store }
 
 func (slowStore) ListLag() time.Duration { return 6 * time.Hour }
 
@@ -114,7 +116,7 @@ func (slowStore) ListLag() time.Duration { return 6 * time.Hour }
 // may lag a write for hours, a reread that stopped serving a secret still holds past AWS's five
 // minutes against a listing that has not caught up, so a stale listing cannot reinstate it.
 func TestAnchorsLastTheStoresOwnLag(t *testing.T) {
-	store := secrets.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	store := awstest.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	stale, err := store.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +146,7 @@ func TestAnchorsLastTheStoresOwnLag(t *testing.T) {
 // slowLister answers a frozen page, then runs fetched: a reload whose listing is fetched at one
 // time and whose Load returns at a later one.
 type slowLister struct {
-	*secrets.Local
+	*awstest.Local
 	page    *secretsmanager.ListSecretsOutput
 	fetched func()
 }
@@ -160,7 +162,7 @@ func (s *slowLister) ListSecrets(context.Context, *secretsmanager.ListSecretsInp
 // listing was fetched: a reload whose lagging listing was read inside listLag of a reread, but
 // whose Load returns after it ran out, still rereads that name rather than trusting the listing.
 func TestARefreshStraddlingListLagStillRereadsTheName(t *testing.T) {
-	store := secrets.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	store := awstest.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	stale, err := store.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +207,7 @@ func TestARefreshStraddlingListLagStillRereadsTheName(t *testing.T) {
 // re-describe, and a reload listLag after the reread, from a listing that still predates the
 // delete, keeps it out rather than serving it again.
 func TestAReloadThatCatchesAChangeKeepsItForListLag(t *testing.T) {
-	store := secrets.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	store := awstest.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	stale, err := store.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +254,7 @@ func TestAReloadThatCatchesAChangeKeepsItForListLag(t *testing.T) {
 // DescribeSecret under the writer lock. TestRefreshKeepsWhatARecentRereadSettled pins the other
 // side: a served name a reread finds gone is still kept, so a lagging listing cannot bring it back.
 func TestARereadOfANameThatExistsNowhereCostsNoReload(t *testing.T) {
-	store := secrets.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	store := awstest.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	count := &policytest.CountingDescriber{SecretsManagerAPI: store}
 	loader := policytest.Loader(store)
 	loader.Store = policytest.StoreThrough(store, count)
@@ -276,7 +278,7 @@ func TestARereadOfANameThatExistsNowhereCostsNoReload(t *testing.T) {
 // the live policy already serves it records nothing: anyone may reread an existing name, and on a
 // store whose ListLag is hours each anchor would cost every reload in it a describe.
 func TestARereadThatConfirmsTheLiveAnswerCostsNoReload(t *testing.T) {
-	store := secrets.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	store := awstest.NewLocal(policytest.Secret("OLD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	count := &policytest.CountingDescriber{SecretsManagerAPI: store}
 	loader := policytest.Loader(store)
 	loader.Store = policytest.StoreThrough(store, count)
@@ -304,7 +306,7 @@ func TestARereadThatConfirmsTheLiveAnswerCostsNoReload(t *testing.T) {
 func TestARereadThatConfirmsAMaxGrantSecretCostsNoReload(t *testing.T) {
 	limited := policytest.TypeSecret("LIMITED_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
-	store := secrets.NewLocal(limited)
+	store := awstest.NewLocal(limited)
 	count := &policytest.CountingDescriber{SecretsManagerAPI: store}
 	loader := policytest.Loader(store)
 	loader.Store = policytest.StoreThrough(store, count)
@@ -331,7 +333,7 @@ func TestARereadThatConfirmsAMaxGrantSecretCostsNoReload(t *testing.T) {
 // Manager.
 func heldCurrent(t *testing.T) *policy.Current {
 	t.Helper()
-	store := secrets.NewLocal()
+	store := awstest.NewLocal()
 	page, err := store.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -400,11 +402,11 @@ func TestARereadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 	}
 }
 
-// abandonedRead is a secrets.Local whose GetSecretValue, once hold arms it, answers the reads hold
+// abandonedRead is a awstest.Local whose GetSecretValue, once hold arms it, answers the reads hold
 // lets pass as Local does, and from then on waits for each caller's context to end and answers
 // that context's error, as the SDK does: a value read its caller's deadline cuts short.
 type abandonedRead struct {
-	*secrets.Local
+	*awstest.Local
 	mu      sync.Mutex
 	holding bool
 	pass    int
@@ -449,7 +451,7 @@ func (s *abandonedRead) GetSecretValue(ctx context.Context, in *secretsmanager.G
 // ctx cut short, or wait for the writer lock on ctx); FIRST_KEY is then still served after the
 // reload and this test fails.
 func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *testing.T) {
-	local := secrets.NewLocal(
+	local := awstest.NewLocal(
 		typeSecret("FIRST_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
 		typeSecret("SECOND_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
 	)
@@ -533,7 +535,7 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 	}
 
 	t.Run("while its value read is out", func(t *testing.T) {
-		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
+		local := awstest.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 		store := &abandonedRead{Local: local}
 		cur, registry, logged := bootThrough(t, local, store)
 		gained := logChecker(logged)
@@ -550,7 +552,7 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 	})
 
 	t.Run("while it waits for the writer lock", func(t *testing.T) {
-		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
+		local := awstest.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 		store := &lockedOutRead{Local: local}
 		cur, registry, logged := bootThrough(t, local, store)
 		gained := logChecker(logged)
@@ -609,7 +611,7 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 // calls it has held. hang and unhang pair: a repeated hang keeps holding, and an unhang with
 // nothing held does nothing.
 type hangingLister struct {
-	*secrets.Local
+	*awstest.Local
 	page      *secretsmanager.ListSecretsOutput
 	heldCalls atomic.Int64
 	mu        sync.Mutex
@@ -651,7 +653,7 @@ func (h *hangingLister) ListSecrets(ctx context.Context, _ *secretsmanager.ListS
 // hangingLoader is the loader of an empty namespace whose listing lister answers.
 func hangingLoader(t *testing.T) (*hangingLister, policy.Loader) {
 	t.Helper()
-	store := secrets.NewLocal()
+	store := awstest.NewLocal()
 	page, err := store.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -792,7 +794,7 @@ func TestThePolicyWritesAChangeOfASecretsStateNotEachLoad(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		noOwner := policytest.Secret("NO_OWNER_KEY", owner, policy.TierAgent, "v")
 		delete(noOwner.Tags, policy.TagOwner)
-		store := &failingSecrets{Local: secrets.NewLocal(
+		store := &failingSecrets{Local: awstest.NewLocal(
 			policytest.Secret("SERVED_KEY", owner, policy.TierAgent, "v"),
 			policytest.Secret("NO_VALUE_KEY", owner, policy.TierAgent, ""),
 			policytest.Secret("BAD_OWNER_KEY", "sjawhar", policy.TierAgent, "v"),
@@ -947,7 +949,7 @@ func TestThePolicyWritesAChangeOfASecretsStateNotEachLoad(t *testing.T) {
 // second failure's line then fails this test.
 func TestAFailingReloadLogsOnceUntilItLoadsAgain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := &failingSecrets{Local: secrets.NewLocal(policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v"))}
+		store := &failingSecrets{Local: awstest.NewLocal(policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v"))}
 		registry := metrics.New()
 		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
 		logged := policytest.CaptureLog(t)

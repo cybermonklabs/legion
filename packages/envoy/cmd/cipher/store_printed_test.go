@@ -27,13 +27,13 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // echoingList is a Secrets Manager whose ListSecrets refuses with code and message, which
 // whoever answers at the store's address writes.
 type echoingList struct {
-	*secrets.Local
+	*awstest.Local
 	code, message string
 }
 
@@ -84,7 +84,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			"Secrets Manager ListSecrets: AWS refused it: AccessDeniedException (AWS's message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			useAWS(t, echoingList{Local: local, code: row.code, message: row.message}, testAccount, adaSignIn)
 			_, stderr, code := runSecret("list")
@@ -216,7 +216,7 @@ func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 				name, shown = "control: "+row.name+", beside a clean address", planted
 			}
 			t.Run(name, func(t *testing.T) {
-				local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+				local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 				startSecretBroker(t, row.answer)
 				if !clean {
 					t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))

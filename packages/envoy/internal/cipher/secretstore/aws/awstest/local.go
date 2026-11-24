@@ -1,4 +1,7 @@
-package secrets
+// Package awstest holds the AWS store's fake, Local, which stands in for the Secrets Manager and
+// KMS calls the AWS store and the agent-secrets CLI make, and the fixtures tests build with it.
+// Only tests import it.
+package awstest
 
 import (
 	"bytes"
@@ -8,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,9 +27,9 @@ import (
 // Local stands in, in memory, for the AWS calls the broker and the agent-secrets CLI make: Secrets
 // Manager's ListSecrets, DescribeSecret and GetSecretValue, which the broker reads with, its
 // CreateSecret, PutSecretValue, TagResource, UntagResource, DeleteSecret and RestoreSecret, which
-// the CLI writes with, and KMS's ListAliases. BROKER_FAKE_SECRETS_FILE loads one for local
-// development (LocalFromFile), and tests build one with NewLocal. A secret holding a value has one
-// version, whose id changes each time the value's bytes do, however they were written (number).
+// the CLI writes with, and KMS's ListAliases. Tests build one with NewLocal, or over a file with
+// FromFile. A secret holding a value has one version, whose id changes each time the value's
+// bytes do, however they were written (number).
 type Local struct {
 	mu      sync.Mutex
 	secrets map[string]LocalSecret
@@ -36,7 +40,7 @@ type Local struct {
 	// never a digest of the value.
 	version map[string]uint64
 	serial  uint64
-	// path is the file a LocalFromFile Local follows, and file the bytes its secrets were last
+	// path is the file a FromFile Local follows, and file the bytes its secrets were last
 	// read from; empty for a NewLocal one.
 	path string
 	file []byte
@@ -68,15 +72,23 @@ type LocalSecret struct {
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 }
 
-// localFile is BROKER_FAKE_SECRETS_FILE's shape.
+// localFile is FromFile's file shape.
 type localFile struct {
 	Secrets []LocalSecret `json:"secrets"`
 }
 
-// LocalARN is the ARN a Local gives the secret named name.
-func LocalARN(name string) string {
+// ARN is the ARN a Local gives the secret named name.
+func ARN(name string) string {
 	return "arn:aws:secretsmanager:local:000000000000:secret:" + name
 }
+
+// KeyARN is the agent-secrets key the AWS store of a test is built on, an AWS documentation
+// account's.
+const KeyARN = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+
+// currentStage is the staging label Secrets Manager puts on the version GetSecretValue reads when
+// it names none.
+const currentStage = "AWSCURRENT"
 
 // NewLocal holds secrets.
 func NewLocal(secrets ...LocalSecret) *Local {
@@ -92,14 +104,14 @@ func NewLocal(secrets ...LocalSecret) *Local {
 	return l
 }
 
-// LocalFromFile reads path, a local-development-only JSON file {"secrets": [LocalSecret, ...]},
+// FromFile reads path, a JSON file {"secrets": [LocalSecret, ...]},
 // into a Local that follows it: each call reads the file again and, when its bytes have changed,
 // answers from it, so an edit to the file is a write as Secrets Manager sees one. A secret Put
 // directly, or written with one of Local's write calls, stands until the file next changes. An
 // error names path and, for a file that does not parse, only the byte offset and field it failed
 // at, never the file's content: no secret value reaches an error message, local development
 // included.
-func LocalFromFile(path string) (*Local, error) {
+func FromFile(path string) (*Local, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -113,7 +125,7 @@ func LocalFromFile(path string) (*Local, error) {
 	return l, nil
 }
 
-// parseLocalFile reads data, the content of path, as BROKER_FAKE_SECRETS_FILE's shape.
+// parseLocalFile reads data, the content of path, as FromFile's file shape.
 func parseLocalFile(path string, data []byte) ([]LocalSecret, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -140,7 +152,7 @@ func parseLocalFile(path string, data []byte) ([]LocalSecret, error) {
 	return f.Secrets, nil
 }
 
-// follow reads a LocalFromFile Local's file again and, when its bytes have changed since they were
+// follow reads a FromFile Local's file again and, when its bytes have changed since they were
 // last read, takes its secrets from it, each value numbered against the one its name held before
 // (number), so a value the edit changed gets a new version id and one it left alone keeps its id.
 // A file it cannot read or parse fails the call. The caller holds l.mu.
@@ -238,14 +250,14 @@ func (l *Local) ListSecrets(_ context.Context, in *secretsmanager.ListSecretsInp
 			continue
 		}
 		out.SecretList = append(out.SecretList, types.SecretListEntry{
-			Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), KmsKeyId: s.kmsKeyID(),
+			Name: aws.String(s.Name), ARN: aws.String(ARN(s.Name)), KmsKeyId: s.kmsKeyID(),
 			Tags: s.awsTags(), SecretVersionsToStages: l.versionsToStages(s), DeletedDate: s.DeletedAt, CreatedDate: s.CreatedAt,
 		})
 	}
 	return out, nil
 }
 
-// DescribeSecret answers the secret SecretId names, by name or by LocalARN, with the tags, key and
+// DescribeSecret answers the secret SecretId names, by name or by ARN, with the tags, key and
 // version stages ListSecrets lists it with, and DeletedDate while it is scheduled for deletion;
 // ResourceNotFoundException for one it does not hold.
 func (l *Local) DescribeSecret(_ context.Context, in *secretsmanager.DescribeSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
@@ -256,18 +268,18 @@ func (l *Local) DescribeSecret(_ context.Context, in *secretsmanager.DescribeSec
 		return nil, err
 	}
 	return &secretsmanager.DescribeSecretOutput{
-		Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), KmsKeyId: s.kmsKeyID(),
+		Name: aws.String(s.Name), ARN: aws.String(ARN(s.Name)), KmsKeyId: s.kmsKeyID(),
 		Tags: s.awsTags(), VersionIdsToStages: l.versionsToStages(s), DeletedDate: s.DeletedAt, CreatedDate: s.CreatedAt,
 	}, nil
 }
 
-// held follows the file and answers the secret id names, by name or by LocalARN;
+// held follows the file and answers the secret id names, by name or by ARN;
 // ResourceNotFoundException for one Local does not hold. The caller holds l.mu.
 func (l *Local) held(id *string) (LocalSecret, error) {
 	if err := l.follow(); err != nil {
 		return LocalSecret{}, err
 	}
-	s, ok := l.secrets[strings.TrimPrefix(aws.ToString(id), LocalARN(""))]
+	s, ok := l.secrets[strings.TrimPrefix(aws.ToString(id), ARN(""))]
 	if !ok {
 		return LocalSecret{}, &types.ResourceNotFoundException{Message: aws.String("Secrets Manager can't find the specified secret.")}
 	}
@@ -295,7 +307,13 @@ func (s LocalSecret) kmsKeyID() *string {
 	return aws.String(s.KmsKeyID)
 }
 
-func (s LocalSecret) awsTags() []types.Tag { return TagList(s.Tags) }
+func (s LocalSecret) awsTags() []types.Tag {
+	list := make([]types.Tag, 0, len(s.Tags))
+	for _, key := range slices.Sorted(maps.Keys(s.Tags)) {
+		list = append(list, types.Tag{Key: aws.String(key), Value: aws.String(s.Tags[key])})
+	}
+	return list
+}
 
 // versionsToStages is one version labelled AWSCURRENT, versionID, for a secret holding a value,
 // none otherwise. The caller holds l.mu.
@@ -335,7 +353,7 @@ func (l *Local) GetSecretValue(_ context.Context, in *secretsmanager.GetSecretVa
 	if s.Value == "" {
 		return nil, &types.ResourceNotFoundException{Message: aws.String("Secrets Manager can't find the specified secret value for staging label: AWSCURRENT")}
 	}
-	return &secretsmanager.GetSecretValueOutput{Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), SecretString: aws.String(s.Value)}, nil
+	return &secretsmanager.GetSecretValueOutput{Name: aws.String(s.Name), ARN: aws.String(ARN(s.Name)), SecretString: aws.String(s.Value)}, nil
 }
 
 // CreateSecret holds a new secret named Name with KmsKeyId, Tags and SecretString as its value,
@@ -368,7 +386,7 @@ func (l *Local) CreateSecret(_ context.Context, in *secretsmanager.CreateSecretI
 	}
 	s := LocalSecret{Name: name, KmsKeyID: aws.ToString(in.KmsKeyId), Tags: withTags(nil, in.Tags), Value: aws.ToString(in.SecretString)}
 	l.hold(s)
-	out := &secretsmanager.CreateSecretOutput{Name: aws.String(name), ARN: aws.String(LocalARN(name))}
+	out := &secretsmanager.CreateSecretOutput{Name: aws.String(name), ARN: aws.String(ARN(name))}
 	if s.Value != "" {
 		out.VersionId = aws.String(l.versionID(name))
 	}
@@ -399,7 +417,7 @@ func (l *Local) PutSecretValue(_ context.Context, in *secretsmanager.PutSecretVa
 	s.Value = *in.SecretString
 	l.hold(s)
 	return &secretsmanager.PutSecretValueOutput{
-		Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), VersionId: aws.String(l.versionID(s.Name)), VersionStages: []string{currentStage},
+		Name: aws.String(s.Name), ARN: aws.String(ARN(s.Name)), VersionId: aws.String(l.versionID(s.Name)), VersionStages: []string{currentStage},
 	}, nil
 }
 
@@ -472,7 +490,7 @@ func (l *Local) DeleteSecret(_ context.Context, in *secretsmanager.DeleteSecretI
 	s.DeletedAt = &deletedAt
 	l.secrets[s.Name] = s
 	return &secretsmanager.DeleteSecretOutput{
-		Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name)), DeletionDate: aws.Time(deletedAt.Add(time.Duration(days) * 24 * time.Hour)),
+		Name: aws.String(s.Name), ARN: aws.String(ARN(s.Name)), DeletionDate: aws.Time(deletedAt.Add(time.Duration(days) * 24 * time.Hour)),
 	}, nil
 }
 
@@ -488,13 +506,13 @@ func (l *Local) RestoreSecret(_ context.Context, in *secretsmanager.RestoreSecre
 	}
 	s.DeletedAt = nil
 	l.secrets[s.Name] = s
-	return &secretsmanager.RestoreSecretOutput{Name: aws.String(s.Name), ARN: aws.String(LocalARN(s.Name))}, nil
+	return &secretsmanager.RestoreSecretOutput{Name: aws.String(s.Name), ARN: aws.String(ARN(s.Name))}, nil
 }
 
 // refuse is Local's refusal of a request it cannot answer as Secrets Manager would, named as
 // Local's so it never reads as Secrets Manager's own answer.
 func refuse(why string) error {
-	return errors.New("secrets.Local: " + why)
+	return errors.New("awstest.Local: " + why)
 }
 
 // ListAliases answers, in one page, the aliases Alias pointed at the key KeyId names by its ARN.

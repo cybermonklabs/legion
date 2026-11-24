@@ -12,9 +12,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	smithylogging "github.com/aws/smithy-go/logging"
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc/grpclog"
@@ -89,29 +86,4 @@ func (l grpcLog) Fatalln(args ...any) {
 func (l grpcLog) Fatalf(format string, args ...any) {
 	l.line(slog.LevelError, fmt.Sprintf(format, args...))
 	os.Exit(1)
-}
-
-// awsSDKMessage is the message of a line the AWS SDK writes (awsLog).
-const awsSDKMessage = "broker: aws sdk"
-
-// awsLog is the logger the AWS SDK writes through (loadAWSConfig). The SDK's default logger is a
-// log.Logger of its own on os.Stderr, with its own date prefix, which no handler of the process
-// reads; and with the AWS store or an IAM database the SDK does write, at WARN and without any
-// ClientLogMode, for example when the instance metadata service falls back to IMDSv1 or a
-// credential's expiry is extended. So each of its lines is a slog line of the default logger,
-// at WARNING (DEBUG for the SDK's debug lines, which the broker's INFO handler drops), with the
-// SDK's text as its text field, cut to answer.FieldBytes and masked as every line is.
-type awsLog struct{}
-
-func (awsLog) Logf(classification smithylogging.Classification, format string, v ...any) {
-	level := slog.LevelWarn
-	if classification == smithylogging.Debug {
-		level = slog.LevelDebug
-	}
-	slog.Log(context.Background(), level, awsSDKMessage, answer.ClipFields([]any{"text", fmt.Sprintf(format, v...)})...)
-}
-
-// loadAWSConfig is the AWS configuration the broker loads (openStore), with awsLog as its logger.
-func loadAWSConfig(ctx context.Context) (aws.Config, error) {
-	return awsconfig.LoadDefaultConfig(ctx, awsconfig.WithLogger(awsLog{}))
 }

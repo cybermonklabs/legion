@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // The proxy the fixture's releases name, and the certificate they hand over: any two strings the
@@ -87,7 +88,7 @@ func bound(names ...proxyrules.Binding) proxyrules.Rules {
 
 // appNames is the name of each of stored that is a github-app secret, which newPlaceholderFixture
 // serves through a profile.
-func appNames(stored ...secrets.LocalSecret) []string {
+func appNames(stored ...awstest.LocalSecret) []string {
 	var apps []string
 	for _, secret := range stored {
 		if secret.Tags[policy.TagType] == policy.TypeGitHubApp {
@@ -262,7 +263,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 		// none; secret the secret the fixture serves, and minted what its minter answers ("" for
 		// a stored secret, which has none).
 		kind   string
-		secret secrets.LocalSecret
+		secret awstest.LocalSecret
 		minted string
 		// real is the value that must appear nowhere in the answer, and want the slots the
 		// release must mint, each checked against where its placeholder landed.
@@ -435,7 +436,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		name string
 		// kind is the kind of policytest.Kinds the secret is behind, example where it names none.
 		kind   string
-		secret secrets.LocalSecret
+		secret awstest.LocalSecret
 		mint   string
 		// approve is for a type whose release refuses an automatic grant (azure-login).
 		approve  bool

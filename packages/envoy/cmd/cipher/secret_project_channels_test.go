@@ -12,7 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestRetagWritesAndRemovesProjectChannels: create and retag --project-channels slack write the
@@ -68,7 +68,7 @@ func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
 	})
 
 	t.Run("a malformed value is refused before any write", func(t *testing.T) {
-		local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		writes := &countingTagWrites{Local: local}
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, writes, testAccount, adaSignIn)
@@ -102,7 +102,7 @@ func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
 		tagged := policytest.Secret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, "v1")
 		tagged.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
 		plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
-		local := secrets.NewLocal(tagged, plain)
+		local := awstest.NewLocal(tagged, plain)
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 

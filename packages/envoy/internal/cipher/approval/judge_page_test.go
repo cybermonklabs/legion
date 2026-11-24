@@ -15,7 +15,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 )
 
@@ -31,7 +32,7 @@ const judgeModel = "claude-opus-4-6"
 // that tag.
 func judgeable(t *testing.T, r *rig) {
 	t.Helper()
-	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
 	policytest.JudgeTags(t, local, r.machine.Policy, "TEST_SECRET", 900, "grant for the billing job")
 	r.machine.Judge = func(requests.PendingRequest) {}
 }

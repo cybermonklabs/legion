@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // restrictedProfileFixture is newProfileFixture with Dispatch answering memberKind for the
@@ -80,7 +80,7 @@ const guestApprover = "guest@outside.example"
 func approverProfileFixture(t *testing.T, approver, approverKind string) (*profileFixture, *projectaccesstest.Server) {
 	t.Helper()
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, nil)
-	local := secrets.NewLocal(policytest.TypeSecret("APP_KEY", approver, policy.TierHuman, policy.TypeGitHubApp, standInAppValue(t)))
+	local := awstest.NewLocal(policytest.TypeSecret("APP_KEY", approver, policy.TierHuman, policy.TypeGitHubApp, standInAppValue(t)))
 	const block = `{"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}}`
 	f.Policy = policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(
 		`{"name": "APP_KEY", "github": `+block+`}`,

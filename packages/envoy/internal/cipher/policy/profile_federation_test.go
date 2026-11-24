@@ -6,7 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestAProfileOfAnAnthropicFederationSourceIsHeldToItsTypesRules: an anthropic-federation secret
@@ -21,10 +21,10 @@ import (
 // broker mints the type's token at each release and cannot narrow it there, so only the proxy
 // scopes it (spec v70 adds the type to the three of R2 that need it).
 func TestAProfileOfAnAnthropicFederationSourceIsHeldToItsTypesRules(t *testing.T) {
-	fedAdmin := func() secrets.LocalSecret {
+	fedAdmin := func() awstest.LocalSecret {
 		return policytest.TypeSecret("FED_ADMIN", appOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
 	}
-	stored := []secrets.LocalSecret{appSource(), policytest.Proxied(fedAdmin(), "anthropic")}
+	stored := []awstest.LocalSecret{appSource(), policytest.Proxied(fedAdmin(), "anthropic")}
 
 	cur, _ := profiled(t, stored, readProfile, `{"name": "FED_ADMIN_SHORT", "source": "FED_ADMIN", "maxGrant": "30m"}`)
 	set := cur.Get()
@@ -39,7 +39,7 @@ func TestAProfileOfAnAnthropicFederationSourceIsHeldToItsTypesRules(t *testing.T
 	if d, err := set.Evaluate("FED_ADMIN_SHORT", policy.Requester{Operator: appOwner}); err != nil || d.Outcome != policy.Approval || d.Approver != appOwner {
 		t.Fatalf("Evaluate(FED_ADMIN_SHORT) for its owner = %+v, %v; want an approval of %s", d, err, appOwner)
 	}
-	untagged, _ := profiled(t, []secrets.LocalSecret{appSource(), fedAdmin()}, readProfile, `{"name": "FED_ADMIN_SHORT", "source": "FED_ADMIN", "maxGrant": "30m"}`)
+	untagged, _ := profiled(t, []awstest.LocalSecret{appSource(), fedAdmin()}, readProfile, `{"name": "FED_ADMIN_SHORT", "source": "FED_ADMIN", "maxGrant": "30m"}`)
 	refusedProfile(t, untagged.Get(), "FED_ADMIN_SHORT", policy.ReasonProfileSourceNotProxied)
 	if refusal := untagged.Get().Refused[policytest.ID("FED_ADMIN")]; refusal.Reason != policy.ReasonProfileSourceNotProxied {
 		t.Errorf("the untagged source's own refusal = %+v; want %s", refusal, policy.ReasonProfileSourceNotProxied)

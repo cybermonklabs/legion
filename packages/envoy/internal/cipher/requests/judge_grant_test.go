@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // judgedGrant is one grant the model judge approved for names on enrollmentID, the state every
@@ -49,7 +49,7 @@ func releasedValue(release Release, name string) string {
 // own grant of the same secret is decided by a person and is held to the person's rule
 // throughout: none of this moves it.
 func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
-	deel := func(judge int) secrets.LocalSecret {
+	deel := func(judge int) awstest.LocalSecret {
 		s := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
 		if judge == 0 {
 			return s
@@ -108,7 +108,7 @@ func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
 // a key whose judge tag still covers the grant's lifetime passes, and one whose tag is gone, is
 // lower than that lifetime, or whose grant names no lifetime is no longer live.
 func TestJudgeStillDecidesReadsTheJudgeTag(t *testing.T) {
-	store := secrets.NewLocal(
+	store := awstest.NewLocal(
 		policytest.Judged(policytest.Secret("JUDGED_KEY", fixtureOperator, policy.TierHuman, "v"), 600, ""),
 		policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "v"),
 	)
@@ -136,7 +136,7 @@ func TestJudgeStillDecidesReadsTheJudgeTag(t *testing.T) {
 // below is signed in as, and a max-grant, an hour here (policytest.FixtureMaxGrant), which is
 // longer than any grant this file makes. Nothing else about the secret moves, so what answers
 // below is the admin tag and not a secret that changed hands, shrank its cap or lost its judge.
-func deelAsAdmin() secrets.LocalSecret {
+func deelAsAdmin() awstest.LocalSecret {
 	admin := policytest.ListedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, fixtureOperator, "deel-v1")
 	admin.Tags[policy.TagAdmin] = policy.AdminTrue
 	return policytest.Judged(admin, 900, "")

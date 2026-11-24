@@ -7,7 +7,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // tokensSourceName is a github-installations secret of the accounts acme and ada
@@ -15,7 +15,7 @@ import (
 const tokensSourceName = "APP_TOKENS"
 
 // tokensSource is tokensSourceName holding a value the decoder reads.
-func tokensSource() secrets.LocalSecret {
+func tokensSource() awstest.LocalSecret {
 	return policytest.TypeSecret(tokensSourceName, appOwner, policy.TierAgent, policy.TypeGitHubInstallations, policytest.TypeValue(policy.TypeGitHubInstallations))
 }
 
@@ -30,7 +30,7 @@ func tokensSource() secrets.LocalSecret {
 // and the github block rows are refused as a github block on a source of another type.
 func TestAGitHubInstallationsSourceIsServedOnlyThroughProfilesOfItsAccounts(t *testing.T) {
 	const tokensRead = `{"name": "TOKENS_READ", "source": "APP_TOKENS", "github": {"accounts": ["acme", "ada"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`
-	cur, _ := profiled(t, []secrets.LocalSecret{tokensSource()},
+	cur, _ := profiled(t, []awstest.LocalSecret{tokensSource()},
 		tokensRead,
 		`{"name": "OUTSIDE_READ", "source": "APP_TOKENS", "github": {"accounts": ["example-org"], "permissions": {"metadata": "read"}}}`,
 		`{"name": "REPOS_READ", "source": "APP_TOKENS", "github": {"accounts": ["ada"], "repositories": ["ada/proofs"], "permissions": {"metadata": "read"}}}`,
@@ -66,7 +66,7 @@ func TestAGitHubInstallationsSourceIsServedOnlyThroughProfilesOfItsAccounts(t *t
 func TestAGitHubInstallationsSecretIsRefusedWithNoProfileNoOwnersOrAValueTheDecoderRefuses(t *testing.T) {
 	id := policytest.ID(tokensSourceName)
 	t.Run("no profile", func(t *testing.T) {
-		cur, _ := profiled(t, []secrets.LocalSecret{tokensSource(), appSource()}, readProfile)
+		cur, _ := profiled(t, []awstest.LocalSecret{tokensSource(), appSource()}, readProfile)
 		if refusal := cur.Get().Refused[id]; refusal.Reason != policy.ReasonGitHubInstallationsNoProfile {
 			t.Fatalf("Refused[%s] = %+v; want %s", id, refusal, policy.ReasonGitHubInstallationsNoProfile)
 		}
@@ -74,14 +74,14 @@ func TestAGitHubInstallationsSecretIsRefusedWithNoProfileNoOwnersOrAValueTheDeco
 	t.Run("no github-owners tag", func(t *testing.T) {
 		source := tokensSource()
 		delete(source.Tags, policy.TagGitHubOwners)
-		cur, _ := profiled(t, []secrets.LocalSecret{source}, `{"name": "TOKENS_READ", "source": "APP_TOKENS", `+acmeRead+`}`)
+		cur, _ := profiled(t, []awstest.LocalSecret{source}, `{"name": "TOKENS_READ", "source": "APP_TOKENS", `+acmeRead+`}`)
 		if refusal := cur.Get().Refused[id]; refusal.Reason != policy.ReasonGitHubOwnersMissing {
 			t.Fatalf("Refused[%s] = %+v; want %s", id, refusal, policy.ReasonGitHubOwnersMissing)
 		}
 	})
 	t.Run("a value the decoder refuses", func(t *testing.T) {
 		source := policytest.TypeSecret(tokensSourceName, appOwner, policy.TierAgent, policy.TypeGitHubInstallations, `{"shapeVersion": 1, "installations": {}}`)
-		cur, _ := profiled(t, []secrets.LocalSecret{source}, `{"name": "TOKENS_READ", "source": "APP_TOKENS", `+acmeRead+`}`)
+		cur, _ := profiled(t, []awstest.LocalSecret{source}, `{"name": "TOKENS_READ", "source": "APP_TOKENS", `+acmeRead+`}`)
 		set := cur.Get()
 		if refusal := set.Refused[id]; refusal.Reason != policy.ReasonValueMalformed {
 			t.Fatalf("Refused[%s] = %+v; want %s", id, refusal, policy.ReasonValueMalformed)
@@ -104,7 +104,7 @@ func TestALoadOfAValueOfAnotherShapeVersionNamesTheVersionItReadAndTheOnesItKnow
 		t.Fatalf("the fixture value names no shapeVersion 1 to replace: %d bytes", len(value))
 	}
 	source := policytest.TypeSecret(tokensSourceName, appOwner, policy.TierAgent, policy.TypeGitHubInstallations, value)
-	cur, _ := profiled(t, []secrets.LocalSecret{source}, `{"name": "TOKENS_READ", "source": "APP_TOKENS", `+acmeRead+`}`)
+	cur, _ := profiled(t, []awstest.LocalSecret{source}, `{"name": "TOKENS_READ", "source": "APP_TOKENS", `+acmeRead+`}`)
 	set := cur.Get()
 	refusal := set.Refused[policytest.ID(tokensSourceName)]
 	profile := refusedProfile(t, set, "TOKENS_READ", policy.ReasonProfileSourceMissing)
@@ -150,7 +150,7 @@ func TestAProfileTakesAStoredSecretsNameOnlyWhereThatSecretIsSupersededByItsSour
 			if row.value != nil {
 				key.Value = *row.value
 			}
-			cur, _ := profiled(t, []secrets.LocalSecret{key, tokensSource()}, takeover)
+			cur, _ := profiled(t, []awstest.LocalSecret{key, tokensSource()}, takeover)
 			set := cur.Get()
 			if !row.served {
 				refusedProfile(t, set, appSourceName, policy.ReasonProfileNameTaken)

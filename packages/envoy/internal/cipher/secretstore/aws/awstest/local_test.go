@@ -1,4 +1,4 @@
-package secrets
+package awstest
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
 // secretsManager is the part of Secrets Manager's client the broker and the agent-secrets CLI call.
@@ -82,8 +83,8 @@ func TestLocalWriteLifecycle(t *testing.T) {
 		Name: id, KmsKeyId: aws.String("alias/dev"), SecretString: aws.String("v1"),
 		Tags: []types.Tag{tag("owner", "ada@example.com"), tag("tier", "agent")},
 	})
-	if err != nil || aws.ToString(created.ARN) != LocalARN(name) {
-		t.Fatalf("CreateSecret = %+v, %v; want it created at %s", created, err, LocalARN(name))
+	if err != nil || aws.ToString(created.ARN) != ARN(name) {
+		t.Fatalf("CreateSecret = %+v, %v; want it created at %s", created, err, ARN(name))
 	}
 	var exists *types.ResourceExistsException
 	if _, err := l.CreateSecret(ctx, &secretsmanager.CreateSecretInput{Name: id, SecretString: aws.String("v2")}); !errors.As(err, &exists) {
@@ -102,7 +103,7 @@ func TestLocalWriteLifecycle(t *testing.T) {
 		t.Fatalf("TagResource: %v", err)
 	}
 	d := describe()
-	if tags := TagMap(d.Tags); len(tags) != 2 || tags["owner"] != "ada@example.com" || tags["tier"] != "human" || aws.ToString(d.KmsKeyId) != "alias/dev" {
+	if tags := awsstore.TagMap(d.Tags); len(tags) != 2 || tags["owner"] != "ada@example.com" || tags["tier"] != "human" || aws.ToString(d.KmsKeyId) != "alias/dev" {
 		t.Fatalf("after retag: key %q, tags %v; want alias/dev, owner kept and tier human", aws.ToString(d.KmsKeyId), tags)
 	}
 
@@ -156,7 +157,7 @@ func TestLocalWriteLifecycle(t *testing.T) {
 // days InvalidParameterException, as in Secrets Manager. Every other request Local cannot answer as
 // Secrets Manager would (one naming no secret or no value, an empty or binary value, a client
 // request token, a version stage other than AWSCURRENT, a forced deletion) is refused with an error
-// naming secrets.Local rather than answered or stored as something else. A secret created with no
+// naming awstest.Local rather than answered or stored as something else. A secret created with no
 // value is held with no version, as Secrets Manager holds one.
 func TestLocalWritesRefuseWhatSecretsManagerRefuses(t *testing.T) {
 	ctx := context.Background()
@@ -196,8 +197,8 @@ func TestLocalWritesRefuseWhatSecretsManagerRefuses(t *testing.T) {
 		"PutSecretValue(VersionStages AWSPENDING)": second(l.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{SecretId: held, SecretString: aws.String("v2"), VersionStages: []string{"AWSPENDING"}})),
 		"DeleteSecret(ForceDeleteWithoutRecovery)": second(l.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{SecretId: held, ForceDeleteWithoutRecovery: aws.Bool(true)})),
 	} {
-		if err == nil || !strings.Contains(err.Error(), "secrets.Local") {
-			t.Errorf("%s = %v; want a refusal naming secrets.Local", call, err)
+		if err == nil || !strings.Contains(err.Error(), "awstest.Local") {
+			t.Errorf("%s = %v; want a refusal naming awstest.Local", call, err)
 		}
 	}
 	out, err := l.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: held})
@@ -225,7 +226,7 @@ func TestLocalWritesFollowTheFile(t *testing.T) {
 		}
 	}
 	write(`{"secrets": [{"name": "dev/agent-secrets/first", "value": "v1"}]}`)
-	l, err := LocalFromFile(path)
+	l, err := FromFile(path)
 	if err != nil {
 		t.Fatalf("LocalFromFile: %v", err)
 	}
@@ -256,7 +257,7 @@ func TestLocalNumbersAValueAnewWhenItsBytesChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := AWS{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}
+	store := awsstore.Store{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}
 	version := func(step string) string {
 		t.Helper()
 		described, err := store.Describe(ctx, name, secretstore.ReadOptions{})
@@ -336,13 +337,13 @@ func TestLocalFromFileNumbersAnEditedValueAnew(t *testing.T) {
 		}
 	}
 	write("value-a", "agent")
-	l, err := LocalFromFile(path)
+	l, err := FromFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	versions := func() map[string]string {
 		t.Helper()
-		listed, err := (AWS{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}).List(ctx, "dev/agent-secrets/", secretstore.ReadOptions{})
+		listed, err := (awsstore.Store{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}).List(ctx, "dev/agent-secrets/", secretstore.ReadOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}

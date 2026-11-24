@@ -1,16 +1,16 @@
 package secrets_test
 
-// This file holds the source of each secret each store lists, and the source the policy serves it
-// by, to what main answered before the store packages moved. Postgres holds a grant's source
-// (request_secrets.source), so a source whose format changes ends every live grant of an AWS or
-// GCP deployment that upgrades. testdata/source-recorded-on-main-<store>.json was written once, on
-// main, by this file as it was then:
+// This file holds the source of each secret the GCP store lists, and the source the policy serves
+// it by, to what main answered before the store packages moved. Postgres holds a grant's source
+// (request_secrets.source), so a source whose format changes ends every live grant of a GCP
+// deployment that upgrades. testdata/source-recorded-on-main-gcp.json was written once, on main,
+// by this file as it was then:
 //
 //	go test ./internal/cipher/secrets/ -run TestSourceFormatRecordedOnMain -args -record
 //
-// Never write the records again from later code: a record written by the code it checks compares
-// that code with itself and proves nothing. A change that means to move a source of either store
-// ends the grants that hold it, which the records exist to catch.
+// Never write the record again from later code: a record written by the code it checks compares
+// that code with itself and proves nothing. A change that means to move a source ends the grants
+// that hold it, which the record exists to catch.
 
 import (
 	"context"
@@ -49,23 +49,15 @@ var recordedSecrets = []struct {
 		`{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"r"}`},
 }
 
-// TestSourceFormatRecordedOnMain: each store lists each secret with the source main listed it
+// TestSourceFormatRecordedOnMain: the GCP store lists each secret with the source main listed it
 // with, and the policy serves it by the source main served it by. With -record it writes the
-// records instead, which the head comment allows on main alone.
+// record instead, which the head comment allows on main alone.
 func TestSourceFormatRecordedOnMain(t *testing.T) {
 	for _, row := range []struct {
 		store  string
 		prefix string
 		open   func(t *testing.T, prefix string) secretstore.Store
 	}{
-		{"aws", "example/agent-secrets/", func(t *testing.T, prefix string) secretstore.Store {
-			const key = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-			local := secrets.NewLocal()
-			for _, s := range recordedSecrets {
-				local.Put(secrets.LocalSecret{Name: prefix + s.slug, KmsKeyID: key, Tags: s.tags, Value: s.value})
-			}
-			return secrets.AWS{Client: local, KMS: local, KeyARN: key}
-		}},
 		{"gcp", "projects/000000000000/secrets/agent-secrets-", func(t *testing.T, prefix string) secretstore.Store {
 			const key = "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 			held := map[string]secrets.FakeGCPSecretForTest{}

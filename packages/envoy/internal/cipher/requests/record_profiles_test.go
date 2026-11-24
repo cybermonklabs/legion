@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestARecordsProfilesCarryTheirKindsScopeFromTheSetTheyWereReadIn: what the approval page prints
@@ -28,8 +28,8 @@ func TestARecordsProfilesCarryTheirKindsScopeFromTheSetTheyWereReadIn(t *testing
 		`{"name": "SEALED_READ", "allow": []}`,
 		`{"name": "WIDE_READ", "source": "WIDE_TOKEN", "proxy": "open"}`,
 	)
-	stored := func(deelKind string) *secrets.Local {
-		return secrets.NewLocal(
+	stored := func(deelKind string) *awstest.Local {
+		return awstest.NewLocal(
 			policytest.Proxied(policytest.Secret("DEEL_TOKEN", fixtureOperator, policy.TierHuman, "deel-v1"), deelKind),
 			policytest.Narrowed(policytest.Proxied(policytest.Secret("NARROW_READ", fixtureOperator, policy.TierHuman, "narrow-v1"), "open")),
 			policytest.Narrowed(policytest.Proxied(policytest.Secret("SEALED_READ", fixtureOperator, policy.TierHuman, "sealed-v1"), "open")),

@@ -6,7 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestTheFederationTypeTakesTheServiceAccountTypesPolicyFields: an anthropic-federation secret is
@@ -46,7 +46,7 @@ func TestTheFederationTypeTakesTheServiceAccountTypesPolicyFields(t *testing.T) 
 	if !policy.ValidType(policy.TypeAnthropicFederation) {
 		t.Fatalf("ValidType(%q) = false", policy.TypeAnthropicFederation)
 	}
-	set := loadOnly(t, secrets.NewLocal(policytest.TypeSecret("FED_ADMIN", approversOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))))
+	set := loadOnly(t, awstest.NewLocal(policytest.TypeSecret("FED_ADMIN", approversOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))))
 	if secret, served := set.Secrets["FED_ADMIN"]; !served || secret.Type() != policy.TypeAnthropicFederation {
 		t.Fatalf("FED_ADMIN = %+v, served %v, refused %v; want it served as %s", secret, served, set.Refused, policy.TypeAnthropicFederation)
 	}
@@ -63,7 +63,7 @@ func TestAPersonApprovesEveryReleaseOfAFederationSecret(t *testing.T) {
 	admin.Tags[policy.TagAdmin] = policy.AdminTrue
 	admin.Tags[policy.TagRequesters] = "ada@example.com"
 	admin.Tags[policy.TagMaxGrant] = "1h"
-	set := loadOnly(t, secrets.NewLocal(
+	set := loadOnly(t, awstest.NewLocal(
 		policytest.TypeSecret("FED_ADMIN", "ada@example.com", policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)),
 		admin,
 		policytest.TypeSecret("GCP_ADMIN", "ada@example.com", policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount)),

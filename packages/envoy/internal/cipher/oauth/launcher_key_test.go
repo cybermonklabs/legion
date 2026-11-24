@@ -28,7 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -215,7 +215,7 @@ func newLauncherAPI(t *testing.T, pool *pgxpool.Pool) *launcherAPI {
 	}
 	accounts := enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(issuer.URL(), launcherAPIAudience, keys)}
 	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: accounts, ServiceLogins: map[string]string{ciphertest.DaemonAccount: "legion-daemon"}}
-	rules := policytest.Current(t, secrets.NewLocal())
+	rules := policytest.Current(t, awstest.NewLocal())
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	logins := &machine.Service{
 		Store: st, Enroll: enr, Policy: rules, Audience: srv.URL, Skew: time.Minute,

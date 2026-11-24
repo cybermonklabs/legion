@@ -6,7 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // mintedBlock is a proxy block of kind dpop: the capability the broker mints and holds behind it
@@ -52,7 +52,7 @@ func TestADPoPProfileIsANameAndAProxyBlockAlone(t *testing.T) {
 // Beside another profile, that profile is still served.
 func TestADPoPProfileIsNeverServedAsASecret(t *testing.T) {
 	dpop := `{"name": "TEST_MINTED_TOKEN", ` + mintedBlock + `}`
-	for name, stored := range map[string][]secrets.LocalSecret{
+	for name, stored := range map[string][]awstest.LocalSecret{
 		"no stored secret of its name": nil,
 		"a stored secret of its name":  {policytest.Secret("TEST_MINTED_TOKEN", appOwner, policy.TierAgent, "stored-v1")},
 	} {

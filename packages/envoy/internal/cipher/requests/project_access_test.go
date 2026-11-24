@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -37,7 +37,7 @@ const (
 )
 
 // taggedSecret is a namespace secret tagged with project.
-func taggedSecret(name, owner, tier, project, value string) secrets.LocalSecret {
+func taggedSecret(name, owner, tier, project, value string) awstest.LocalSecret {
 	s := policytest.Secret(name, owner, tier, value)
 	s.Tags[policy.TagProject] = project
 	return s
@@ -48,10 +48,10 @@ func taggedSecret(name, owner, tier, project, value string) secrets.LocalSecret 
 // session at once; PRIV_HUMAN, shared and human tier, which anyone may approve; TEAM_TOKEN, the
 // operator's own agent-tier secret of TEAM; GONE_KEY, tagged with a project Dispatch does not
 // hold.
-func projectSecrets() []secrets.LocalSecret {
+func projectSecrets() []awstest.LocalSecret {
 	slack := policytest.Secret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, "the-real-slack-bot-value")
 	slack.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
-	return []secrets.LocalSecret{
+	return []awstest.LocalSecret{
 		taggedSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject, "priv-v1"),
 		taggedSecret("PRIV_HUMAN", policy.OwnerShared, policy.TierHuman, privProject, "priv-human-v1"),
 		taggedSecret("TEAM_TOKEN", fixtureOperator, policy.TierAgent, teamProject, "team-v1"),
@@ -150,7 +150,7 @@ func newProjectFixture(t *testing.T, rules proxyrules.Rules, team projectaccesst
 func newProfiledProjectFixture(t *testing.T, file string, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
 	t.Helper()
 	st := storetest.Open(t)
-	local := secrets.NewLocal(append(fixtureSecrets(), projectSecrets()...)...)
+	local := awstest.NewLocal(append(fixtureSecrets(), projectSecrets()...)...)
 	enrollmentID, key = newEnrollment(t, st, "session", "box-p-"+t.Name(), new(fixtureOperator), nil)
 	loader := policytest.Loader(local, fixtureService)
 	loader.ProjectChecks = true

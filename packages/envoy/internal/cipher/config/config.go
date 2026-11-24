@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -2872,7 +2873,7 @@ func Load(getenv func(string) string) (Config, error) {
 		EdgeListenAddr:            strings.TrimSpace(getenv("BROKER_EDGE_LISTEN_ADDR")),
 		EdgeURL:                   strings.TrimSpace(getenv("BROKER_EDGE_URL")),
 		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
-		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
+		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), aws.Name),
 		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
 		ProfilesFile:              getenv("BROKER_PROFILES_FILE"),
 		AirlockListenAddr:         orDefault(getenv("BROKER_AIRLOCK_LISTEN_ADDR"), "127.0.0.1:13381"),
@@ -2940,8 +2941,8 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("BROKER_AZURE_LOGIN_SECRET: %w", err)
 		}
 	}
-	if cfg.SecretsStore != secrets.StoreAWS && cfg.SecretsStore != secrets.StoreGCP {
-		return Config{}, fmt.Errorf("BROKER_SECRETS_STORE must be %s or %s, got %q", secrets.StoreAWS, secrets.StoreGCP, cfg.SecretsStore)
+	if cfg.SecretsStore != aws.Name && cfg.SecretsStore != secrets.StoreGCP {
+		return Config{}, fmt.Errorf("BROKER_SECRETS_STORE must be %s or %s, got %q", aws.Name, secrets.StoreGCP, cfg.SecretsStore)
 	}
 	// Each store takes its own key variable and refuses the other's, so a deployment moved
 	// between stores cannot keep the old key set and silently mean nothing by it.
@@ -3123,11 +3124,11 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, errors.New("BROKER_HOLD_REQUIRES_DEADLINE is true and BROKER_PROJECT_ACCESS_URL is not set: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, so with no URL it holds nobody; set BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE, or unset BROKER_HOLD_REQUIRES_DEADLINE")
 	}
 	switch cfg.SecretsStore {
-	case secrets.StoreAWS:
+	case aws.Name:
 		if !strings.HasSuffix(cfg.SecretsPrefix, "/") || strings.HasPrefix(cfg.SecretsPrefix, "/") || strings.ContainsFunc(cfg.SecretsPrefix, unicode.IsSpace) {
 			return Config{}, fmt.Errorf("BROKER_SECRETS_PREFIX must be a Secrets Manager name prefix ending in /, such as production/agent-secrets/, got %q", cfg.SecretsPrefix)
 		}
-		if !secrets.ValidAWSKeyARN(cfg.SecretsKMSKey) {
+		if !aws.ValidKeyARN(cfg.SecretsKMSKey) {
 			return Config{}, fmt.Errorf("BROKER_SECRETS_KMS_KEY_ARN must be a KMS key ARN, arn:aws:kms:<region>:<account>:key/<key id>, got %q", cfg.SecretsKMSKey)
 		}
 	case secrets.StoreGCP:

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
@@ -22,7 +23,7 @@ func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored := policytest.TypeSecret("AZURE_LOGIN", fixtureOperator, policy.TierHuman, policy.TypeAzureLogin, `{"tenant_id":"tenant","client_id":"client"}`)
-	local := secrets.NewLocal(stored)
+	local := awstest.NewLocal(stored)
 	set, err := policytest.Loader(local).Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +63,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 				stored.Tags[policy.TagOwner] = fixtureService
 				stored.Tags[policy.TagTier] = policy.TierAgent
 			}
-			local := secrets.NewLocal(stored)
+			local := awstest.NewLocal(stored)
 			set, err := policytest.Loader(local, fixtureService).Load(t.Context())
 			if err != nil {
 				t.Fatal(err)

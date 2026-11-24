@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 func TestSecretTypeWritesAndDisplaysBothStores(t *testing.T) {
@@ -175,7 +175,7 @@ func TestACreateOrSetExitsOneWhileTheBrokerServesAnotherType(t *testing.T) {
 	login := policytest.TypeValue(policy.TypeGoogleLogin)
 	for _, row := range []struct {
 		name, served string
-		held         *secrets.LocalSecret // nil: create
+		held         *awstest.LocalSecret // nil: create
 		args         []string
 		code         int
 		refusal      string // what a refused row's stderr names, beside the retag it asks for
@@ -192,10 +192,10 @@ func TestACreateOrSetExitsOneWhileTheBrokerServesAnotherType(t *testing.T) {
 		{"set of a stored secret: served as stored", "", new(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, "v1")), nil, 0, "", ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := secrets.NewLocal()
+			local := awstest.NewLocal()
 			args := []string{"set", "LOGIN_KEY"}
 			if row.held != nil {
-				local = secrets.NewLocal(*row.held)
+				local = awstest.NewLocal(*row.held)
 			} else {
 				args = append([]string{"create", "LOGIN_KEY", "--owner", "me", "--tier", "agent"}, row.args...)
 			}

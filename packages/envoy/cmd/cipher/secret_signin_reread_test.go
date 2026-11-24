@@ -16,7 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
@@ -51,7 +51,7 @@ func TestATypedWriteOnALapsedSignInRegistersItAgainAndIsChecked(t *testing.T) {
 			}
 			broker.lapse()
 
-			local := secrets.NewLocal()
+			local := awstest.NewLocal()
 			broker.mu.Lock()
 			broker.settings = map[string]any{"secrets_prefix": policytest.Prefix, "kms_key_arn": policytest.KeyARN,
 				"aws_account_id": testAccount, "aws_region": "us-east-1", "secret_type_tag": true}

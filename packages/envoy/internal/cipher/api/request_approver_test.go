@@ -19,10 +19,12 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+
+	// approverService is the one service newApproverTestServer registers, and SERVICE_KEY's owner.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// approverService is the one service newApproverTestServer registers, and SERVICE_KEY's owner.
 const approverService = "example-service"
 
 // newApproverTestServer is newTestServer plus SERVICE_KEY, an agent-tier secret approverService
@@ -31,7 +33,7 @@ const approverService = "example-service"
 func newApproverTestServer(t *testing.T) *testServer {
 	t.Helper()
 	return newTestServerWith(t, func(d *api.Deps) {
-		local := d.Machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+		local := d.Machine.Secrets.(aws.Store).Client.(*awstest.Local)
 		local.Put(policytest.Secret("SERVICE_KEY", approverService, policy.TierAgent, "service-v1"))
 		cur := policytest.Current(t, local, approverService)
 		d.Policy, d.Machine.Policy, d.MachineLogin.Policy = cur, cur, cur

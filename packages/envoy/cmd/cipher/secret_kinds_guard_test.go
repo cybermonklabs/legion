@@ -11,7 +11,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // kindsGuarded is list, a requesters tag's text ("" for none), with the kinds' rollback guard after
@@ -206,7 +207,7 @@ func TestRetagTakesTheKindsGuardOutOfAListWithTheLastProxyTag(t *testing.T) {
 		listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierHuman, "v1")
 		listed.Tags[policy.TagProxy] = "github"
 		listed.Tags[policy.TagRequesters] = kindsGuarded("ada@example.com")
-		local := secrets.NewLocal(listed)
+		local := awstest.NewLocal(listed)
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
 		useAWS(t, writes, testAccount, adaSignIn)
@@ -223,7 +224,7 @@ func TestRetagTakesTheKindsGuardOutOfAListWithTheLastProxyTag(t *testing.T) {
 		if _, _, code := runSecret("retag", "LISTED_KEY", "--proxy", "none"); code != 1 {
 			t.Fatalf("retag --proxy none with UntagResource refused: exit %d, want 1", code)
 		}
-		if tags := secrets.TagMap(describe(t, local, "LISTED_KEY").Tags); tags[policy.TagProxy] != "github" || tags[policy.TagRequesters] != kindsGuarded("ada@example.com") {
+		if tags := awsstore.TagMap(describe(t, local, "LISTED_KEY").Tags); tags[policy.TagProxy] != "github" || tags[policy.TagRequesters] != kindsGuarded("ada@example.com") {
 			t.Fatalf("a refused removal left tags %v, want the proxy tag and the guard as they were", tags)
 		}
 	})
@@ -287,7 +288,7 @@ func TestShowPrintsTheKindsGuardApart(t *testing.T) {
 	proxied.Tags[policy.TagRequesters] = kindsGuarded("")
 	bare := policytest.Secret("BARE_KEY", "ada@example.com", policy.TierAgent, "v1")
 	bare.Tags[policy.TagProxy] = "github"
-	local := secrets.NewLocal(both, proxied, bare)
+	local := awstest.NewLocal(both, proxied, bare)
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	for _, c := range []struct {

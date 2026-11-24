@@ -40,7 +40,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -158,9 +159,9 @@ type Rig struct {
 	// introspect and nothing else, for a test driving what a caller's powers refuse.
 	ListenerToken string
 	Store         *store.Store
-	// Secrets is the secrets.Local standing in for Secrets Manager, which a test writes to as a
+	// Secrets is the awstest.Local standing in for Secrets Manager, which a test writes to as a
 	// person would, before asking the broker to reread a secret.
-	Secrets *secrets.Local
+	Secrets *awstest.Local
 	// Registry holds the policy's two metrics as cmd/cipherd/main.go builds them on its own
 	// registry: broker_policy_store_reads_total, counted from the first load on, and
 	// broker_unservable_secrets, registered once that load answered; and, for a Rig built
@@ -378,11 +379,11 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 	st := storetest.Open(t, params...)
 	operator := "ada@example.com"
-	fixtures := []secrets.LocalSecret{
+	fixtures := []awstest.LocalSecret{
 		policytest.Secret("TEST_SECRET", operator, policy.TierHuman, "test-secret-v1"),
 		policytest.Secret("TEST_AUTO_SECRET", operator, policy.TierAgent, "test-auto-secret-v1"),
 	}
-	local := secrets.NewLocal(fixtures...)
+	local := awstest.NewLocal(fixtures...)
 	// The policy's metrics as main wires them: the store-read counter before the first load,
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
 	// The loader serves a secret tagged with a project only where the broker can ask Dispatch
@@ -521,7 +522,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach, PodRegistrars: podRegistrars,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine, WithApprovalHold(gate)),
 		Hold:     gate,
 	}

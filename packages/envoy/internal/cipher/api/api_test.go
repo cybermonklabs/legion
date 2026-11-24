@@ -41,17 +41,20 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+
+	// testApprover owns DEEL_API_KEY, a human-tier secret, so every request for it is an approval
+	// request to them; they are also every machine login's login_hint below.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
 const (
-	// testApprover owns DEEL_API_KEY, a human-tier secret, so every request for it is an approval
-	// request to them; they are also every machine login's login_hint below.
 	testApprover = "sami@example.com"
 	// dispatchAccount is the ServiceAccount BROKER_API_ACCOUNTS names as the caller "dispatch",
 	// the one that reaches the routes Dispatch's server calls; unlistedAccount is a real account
@@ -63,13 +66,13 @@ const (
 
 // testServer is a live broker HTTP server (real handlers, real Postgres) plus a direct handle to
 // its store — needed to seed fixtures (an enrollment, a launcher credential) the API itself has
-// no route to create directly — the secrets.Local standing in for Secrets Manager, which a test
+// no route to create directly — the awstest.Local standing in for Secrets Manager, which a test
 // writes to as a person would, and the local OIDC issuer its pod verifier trusts, which mints the
 // projected service-account tokens a pod enrollment presents.
 type testServer struct {
 	URL       string
 	Store     *store.Store
-	Secrets   *secrets.Local
+	Secrets   *awstest.Local
 	podIssuer *oidctest.Issuer
 	podKey    *oidctest.Key
 	// machine is the broker's requests.Machine, which reads a record as the approval page does.
@@ -133,7 +136,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	t.Helper()
 	st := storetest.Open(t)
 
-	local := secrets.NewLocal(
+	local := awstest.NewLocal(
 		policytest.Secret("DEEL_API_KEY", testApprover, policy.TierHuman, "deel-v1"),
 		policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"),
 		policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"),
@@ -213,7 +216,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		PodRegistrars: podRegistrars, PodRegistrationTokens: enroll.K8sPodVerifier{Verifier: registrationVerifier},
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// The page signs people in at the same local issuer, which stands in for every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, podKey), srv.URL, st, reqMachine),
 	}

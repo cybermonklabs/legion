@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
+	"github.com/sjawhar/envoy/internal/cipher/awssdk"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
@@ -68,6 +69,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/reread"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/wake"
 	"github.com/sjawhar/envoy/internal/cipher/wire"
@@ -75,12 +77,14 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
+
+	// machineLoginPendingTTL bounds how long a typed-code machine login waits for a human to decide
+	// it before the Sweeper expires it. Not a BROKER_* config knob (the shared broker contract's
+	// Configuration deltas name none for it): 15 minutes comfortably covers the "look at the
+	// terminal, type the code" UX the confirmation-code flow is built around.
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// machineLoginPendingTTL bounds how long a typed-code machine login waits for a human to decide
-// it before the Sweeper expires it. Not a BROKER_* config knob (the shared broker contract's
-// Configuration deltas name none for it): 15 minutes comfortably covers the "look at the
-// terminal, type the code" UX the confirmation-code flow is built around.
 const machineLoginPendingTTL = 15 * time.Minute
 
 // agentSecretPendingTTL bounds how long an agent_secret request waits for approval before the
@@ -346,7 +350,7 @@ func main() {
 	// BROKER_DATABASE_URL, whose connections sign in with RDS IAM tokens minted from it, and the
 	// Secrets Manager and KMS clients of the AWS store, unless the fake secrets file stands in.
 	// The GCP store needs none.
-	st, awsCfg, err := openStore(ctx, cfg, fakeSecrets == "" && cfg.SecretsStore == secrets.StoreAWS)
+	st, awsCfg, err := openStore(ctx, cfg, fakeSecrets == "" && cfg.SecretsStore == awsstore.Name)
 	fatal(err)
 	fatal(st.Migrate(ctx))
 	// The schema those migrations created their tables in, by which the NATS writer hold's routes
@@ -365,13 +369,13 @@ func main() {
 	var credentials string
 	switch {
 	case fakeSecrets != "":
-		local, err := secrets.LocalFromFile(fakeSecrets)
+		local, err := awstest.FromFile(fakeSecrets)
 		fatal(err)
 		// The file's kms_key_id names the agent-secrets key as the selected store configures it.
 		// Under gcp-secret-manager this is still the AWS store over the file, holding the Cloud KMS
 		// key name where it would hold an ARN: names follow Secrets Manager's rules and a source
 		// is a local ARN, which only a local run sees.
-		secretStore, credentials = secrets.AWS{Client: local, KMS: local, KeyARN: cfg.SecretsKMSKey}, "fake secrets file"
+		secretStore, credentials = awsstore.Store{Client: local, KMS: local, KeyARN: cfg.SecretsKMSKey}, "fake secrets file"
 	case cfg.SecretsStore == secrets.StoreGCP:
 		client, err := secrets.NewGCPClient(ctx)
 		fatal(err)
@@ -379,7 +383,7 @@ func main() {
 		secretStore, credentials = secrets.NewGCP(client, cfg.SecretsKMSKey), "application-default"
 	default:
 		sm := secretsmanager.NewFromConfig(awsCfg)
-		secretStore, credentials = secrets.AWS{Client: sm, KMS: kms.NewFromConfig(awsCfg), KeyARN: cfg.SecretsKMSKey}, "aws-sdk"
+		secretStore, credentials = awsstore.Store{Client: sm, KMS: kms.NewFromConfig(awsCfg), KeyARN: cfg.SecretsKMSKey}, "aws-sdk"
 	}
 	slog.Info("secret store", "store", cfg.SecretsStore, "credentials", credentials)
 	// The one registry every metric this process serves is built on, and the one the metrics
@@ -1101,7 +1105,7 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	var awsCfg aws.Config
 	var err error
 	if cfg.DatabaseIAM || awsAlso {
-		if awsCfg, err = loadAWSConfig(ctx); err != nil {
+		if awsCfg, err = awssdk.LoadConfig(ctx); err != nil {
 			return nil, aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
 		}
 	}
