@@ -11,11 +11,13 @@ body: |-
       write.
     - `verdict_repositories` (`repository`, `ci_reviewer`, `side_reviews`) names the repositories
       whose `legion-verdict` this daemon writes. On a head of an issue of its own project
-      (`legion/<KEY>`, or a task branch `legion/<KEY>.<slug>`) the verdict follows the steps of the
-      task's plan: `success` when each testing step's checks pass at that head, each review step
-      approved that head, and at least one approving review step was run by an agent that wrote
-      none of the change; `failure` on a check that fails, a review step's `changes`, or, once
-      every step has passed, no independent review, which the run's title names. On another head
+      (`legion/<KEY>`, or a task branch `legion/<KEY>.<slug>`) the verdict follows the checks, the
+      steps of the task's plan and the change's commits: `success` when each check reads yes at that
+      head whatever steps the plan names, each testing step passed and each review step approved
+      that head, and each commit of the change has a reader, an agent of such a step whose claim
+      made none of it, read from GitHub's compare of the base and the head; `failure` on a check
+      that fails, a review step's `changes`, or, once every check and step has passed, a commit with
+      no reader, which the run's title names and its summary lists. On another head
       it is the named CI reviewer's or a side reviewer's review, or a person's approval. A person's
       request for changes refuses either. The daemon writes over another writer's run or status of
       that name, sweeps the repositories at boot and every 10 minutes, and writes on each merge

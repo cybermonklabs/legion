@@ -133,7 +133,7 @@ const NO_CHECK =
 const MERGE_OF_THE_BASE =
   "Which checks run again after a merge of the base, and that a pass from before that merge carries none to its head. It states no condition of an approval, an acceptance or a merge of the pull request.";
 const VERDICT_WRITER =
-  "The daemon's rule for `legion-verdict` at a head, from each review step's verdict and Dispatch's state of each check there. No agent approves or accepts by it: the reviewer's gate and the architect's, each in its role part, state their facts.";
+  "The daemon's rule for `legion-verdict` at a head, from each review step's verdict, Dispatch's state of each check there and a reader of each commit of the change. No agent approves or accepts by it: the reviewer's gate and the architect's, each in its role part, state their facts.";
 const NO_CARRY =
   "That no pass and no verdict carries to a later head. It states no condition of an approval, an acceptance or a merge of the pull request.";
 const ACCEPTANCE_PAST_REVIEW =

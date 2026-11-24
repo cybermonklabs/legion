@@ -54,11 +54,12 @@ func (rig *verdictRig) mergeState(t *testing.T) string {
 	return pull.State
 }
 
-// noCompare fails the test where the daemon asked GitHub for a compare of two commits.
+// noCompare fails the test where the daemon asked GitHub for a compare of the change's base and a
+// head: it reads the change's commits only once each check reads yes and every step passed there.
 func (rig *verdictRig) noCompare(t *testing.T) {
 	t.Helper()
 	if _, events := rig.github.recorded(); slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "compared") }) {
-		t.Fatalf("GitHub saw %v, want no compare call: a pass counts at the head it was given at alone, and the daemon reads no diff", events)
+		t.Fatalf("GitHub saw %v, want no compare call: a pass counts at the head it was given at alone, and the change's commits are read only once every check and step passed there", events)
 	}
 }
 
@@ -89,25 +90,28 @@ func ownersPastReview(word, commit string) intake.ReviewVerdict {
 // C2's push case, on CAPTURE-1's legion/ head on the default steps: every step passed at code (H)
 // writes success there. After a push to code-2 (H2), the reviewer's approve and the owner's
 // acceptance at H2 write nothing while a check has no yes state at H2, though both read yes at H:
-// a step's pass at an earlier commit counts at no later head. Once each check reads yes at H2,
-// Dispatch's state there asks for the write, and success is written on H2. The fake GitHub records
-// no compare call.
+// a step's pass at an earlier commit counts at no later head. The fake GitHub records no compare
+// call while a check has no yes state at H2. Once each check reads yes at H2, Dispatch's state
+// there asks for the write, and success is written on H2.
 func TestLegionVerdictAStepsPassAtHCountsAtNoLaterHead(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode)
 	rig.acceptedAndWritten(t)
+	rig.github.mu.Lock()
+	rig.github.events = nil
+	rig.github.mu.Unlock()
 	rig.pushedTo(t, "code", "code-2")
 	rig.apply(t, verdictPastReview("approve", "code-2"))
 	rig.apply(t, ownersPastReview("approve", "code-2"))
 	rig.checkState(t, "code-2", "k1", verdict.StateYes)
 	rig.written(t)
 	rig.nothingWrittenOn(t, "code-2")
+	rig.noCompare(t)
 	rig.checkState(t, "code-2", "k2", verdict.StateYes)
 	rig.written(t)
 	rig.soleRun(t, "code-2", "success")
 	if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code", "code-2", "code-2", "code-2", "code-2"}) {
 		t.Fatalf("the workflow asked for writes on %v, want the acceptance's on code, then one on code-2 for each verdict and each check state", asked)
 	}
-	rig.noCompare(t)
 }
 
 // reviewerApprovedCode is CAPTURE-1's reviewer row as its approve of code, which ended the round,

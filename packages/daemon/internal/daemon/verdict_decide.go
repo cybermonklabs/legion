@@ -39,8 +39,8 @@ const (
 //
 // GitHub lists the pull requests of a commit (GET /commits/{sha}/pulls), and only the open ones whose
 // head is that commit are decided, each by decideVerdict. A failure needs no other read, and the
-// callers ask for none then. The reason of a failure for want of an independent review stays only
-// where the head's conclusion is the pull request's own.
+// callers ask for none then. The reason of a failure for a commit with no reader, and the commits it
+// names, stay only where the head's conclusion is the pull request's own.
 func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictRepository, repository ghrepo.Repository, number int, decided verdictDecision) (verdictDecision, error) {
 	if decided.head == currentHead {
 		return decided, nil
@@ -62,7 +62,7 @@ func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictReposi
 	}
 	combined := decided
 	if combined.conclusion = headConclusion(at); combined.conclusion != decided.conclusion {
-		combined.reason = ""
+		combined.reason, combined.noReader = "", nil
 	}
 	return combined, nil
 }
@@ -87,10 +87,24 @@ func headConclusion(at []verdictDecision) verdict.Conclusion {
 	return verdict.None
 }
 
-// openPullRequestsAt is the number of each open pull request of repository whose head is head, as
-// GitHub lists the pull requests of that commit with the daemon's read token (GET
-// /commits/{sha}/pulls).
+// openPullRequestsAt is the number of each open pull request of repository whose head is head
+// (pullRequestsAt).
 func (w *workflowRuntime) openPullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string) ([]int, error) {
+	pulls, err := w.pullRequestsAt(ctx, repository, head)
+	if err != nil {
+		return nil, err
+	}
+	open := make([]int, 0, len(pulls))
+	for _, pull := range pulls {
+		open = append(open, pull.Number)
+	}
+	return open, nil
+}
+
+// pullRequestsAt is each open pull request of repository whose head is head, with the branch it
+// merges into, as GitHub lists the pull requests of that commit with the daemon's read token (GET
+// /commits/{sha}/pulls).
+func (w *workflowRuntime) pullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string) ([]githubrest.PullRequest, error) {
 	serving := w.repositories.serving(repository)
 	client, err := readClient(ctx, w.tokens, w.githubAPI, serving)
 	if err != nil {
@@ -102,23 +116,24 @@ func (w *workflowRuntime) openPullRequestsAt(ctx context.Context, repository ghr
 	if err != nil {
 		return nil, fmt.Errorf("list the pull requests of %s at %s: %w", serving, head, err)
 	}
-	var open []int
+	var open []githubrest.PullRequest
 	for _, pull := range pulls {
 		if pull.State == "open" && pull.Head.SHA == head {
-			open = append(open, pull.Number)
+			open = append(open, pull)
 		}
 	}
 	return open, nil
 }
 
 // verdictDecision is what decideVerdict decided of a head: the head, legion-verdict's conclusion
-// there, on a Legion head the reason of a failure no step refused (verdict.Reason, which the run's
-// output names), the kind of head (headLegion, headOutside) and, on a Legion head of this project,
-// the issue that owns it.
+// there, on a Legion head the reason of a failure no check and no step refused (verdict.Reason, which
+// the run's output names) with each commit of the change that has no reader there, the kind of head
+// (headLegion, headOutside) and, on a Legion head of this project, the issue that owns it.
 type verdictDecision struct {
 	head       string
 	conclusion verdict.Conclusion
 	reason     verdict.Reason
+	noReader   []string
 	kind       string
 	issue      string
 }
@@ -191,8 +206,11 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 	case other != "":
 		return w.otherProjectsHead(repository, number, other, head), nil
 	case legion != nil:
-		w.independence(ctx, repository, number, legion)
+		w.readCommits(ctx, repository, number, legion)
 		decided.conclusion, decided.reason = verdict.Decide(legion.in)
+		if decided.reason == verdict.NoReader {
+			decided.noReader = verdict.CommitsWithNoReader(legion.in)
+		}
 		return decided, nil
 	case known:
 		return decided, nil
@@ -237,25 +255,25 @@ func (w *workflowRuntime) otherProjectsHead(repository ghrepo.Repository, number
 }
 
 // legionHead is what decideVerdict reads of a Legion head in its transaction (legionInputs): the
-// inputs verdict.Decide reads, and, by its index among their steps, the session names the daemon
-// records for the claim of each review step whose agent approved the head and ran no
-// implementation step of the task: the claims the Omp-Session test of the change's commits is
-// still to read (independence).
+// inputs verdict.Decide reads, all but the change's commits, which readCommits reads from GitHub
+// after the transaction, so it holds no connection over a GitHub call; the base branch the record
+// holds for the pull request, "" where it holds none; and the issue's default branch.
 type legionHead struct {
-	in       verdict.Inputs
-	sessions map[int][]string
+	in            verdict.Inputs
+	recordedBase  string
+	defaultBranch string
 }
 
 // legionInputs is what the record holds of head of issue's pull request pr: the steps of the task
-// its run walks (workflow.Engine.VerdictSteps), by #4611's step type; for the task's testing
-// steps, the states Dispatch published of its checks at the head (record.HeadStates), which every
-// testing step reads; for each review step, the verdict at the head of its step (store.StepVerdict,
-// workflow's recordVerdict), and whether the claim that gave it ran an implementation step of the
-// task, as the step starts record each step's agent; the sessions that claim records
-// (store.ClaimSessionNamesTx), none of which can be read where it records none; and every review
-// of the pull request delivered by webhook (store.VerdictReview), with entry's ci_reviewer, whose
-// request for changes refuses a Legion head too (spec R4). Each is read at head alone, so a pass at
-// an earlier commit counts at no later head.
+// its run walks (workflow.Engine.VerdictSteps), by #4611's step type; the states Dispatch published
+// of the task's checks at the head (record.HeadStates), which each must read yes there whatever steps
+// the plan names, and which every testing step reads; for each review step, the verdict at the head
+// of its step (store.StepVerdict, workflow's recordVerdict); the sessions the daemon records for the
+// claim of each review step's agent that approved the head, and of each testing step's agent that
+// its step's record names (store.ClaimSessionNamesTx), by which those agents read the change's
+// commits (verdict.Step.Sessions); and every review of the pull request delivered by webhook
+// (store.VerdictReview), with entry's ci_reviewer, whose request for changes refuses a Legion head
+// too (spec R4). Each is read at head alone, so a pass at an earlier commit counts at no later head.
 func (w *workflowRuntime) legionInputs(ctx context.Context, tx pgx.Tx, entry config.VerdictRepository, issue record.Issue, pr record.PullRequest, head string) (legionHead, error) {
 	repository, err := ghrepo.Parse("the repository of "+issue.Key+"'s pull request", pr.Repo)
 	if err != nil {
@@ -265,48 +283,43 @@ func (w *workflowRuntime) legionInputs(ctx context.Context, tx pgx.Tx, entry con
 	if err != nil {
 		return legionHead{}, err
 	}
-	implemented := map[claim.Token]bool{}
-	tested := false
-	for _, step := range steps {
-		switch {
-		case step.Type == planwords.TypeImplementation && step.Agent != "":
-			implemented[step.Agent] = true
-		case step.Type == planwords.TypeTesting:
-			tested = true
-		}
-	}
 	read := legionHead{in: verdict.Inputs{Head: head, Legion: true, Steps: make([]verdict.Step, 0, len(steps)), CIReviewer: entry.CIReviewer},
-		sessions: map[int][]string{}}
-	for i, step := range steps {
+		recordedBase: pr.Base, defaultBranch: issue.DefaultBranch}
+	for _, step := range steps {
 		read.in.Steps = append(read.in.Steps, verdict.Step{Type: step.Type})
-		if step.Type != planwords.TypeReview {
+		reader := step.Agent
+		switch step.Type {
+		case planwords.TypeReview:
+			given, found, err := store.StepVerdictTx(ctx, tx, repository, pr.Number, head, step.Place.Task, step.Place.Place)
+			if err != nil {
+				return legionHead{}, err
+			}
+			if !found || given.Issue != issue.Key {
+				continue
+			}
+			read.in.Steps[len(read.in.Steps)-1].Verdict = given.Verdict
+			if given.Verdict != verdict.ReviewerApprove {
+				continue
+			}
+			reader = claim.Token(given.Session)
+		case planwords.TypeTesting:
+		default:
 			continue
 		}
-		given, found, err := store.StepVerdictTx(ctx, tx, repository, pr.Number, head, step.Place.Task, step.Place.Place)
+		if reader == "" {
+			continue
+		}
+		names, err := store.ClaimSessionNamesTx(ctx, tx, reader)
 		if err != nil {
 			return legionHead{}, err
 		}
-		if !found || given.Issue != issue.Key {
-			continue
-		}
-		agent := claim.Token(given.Session)
-		read.in.Steps[i].Verdict, read.in.Steps[i].Wrote = given.Verdict, implemented[agent]
-		if given.Verdict != verdict.ReviewerApprove || implemented[agent] {
-			continue
-		}
-		names, err := store.ClaimSessionNamesTx(ctx, tx, agent)
-		if err != nil {
-			return legionHead{}, err
-		}
-		read.in.Steps[i].Unread, read.sessions[i] = len(names) == 0, names
+		read.in.Steps[len(read.in.Steps)-1].Sessions = names
 	}
-	if tested {
-		held, err := w.records.HeadStates(ctx, tx, issue.Key, pr.Repo, head)
-		if err != nil {
-			return legionHead{}, err
-		}
-		read.in.Checks = checksAt(held)
+	held, err := w.records.HeadStates(ctx, tx, issue.Key, pr.Repo, head)
+	if err != nil {
+		return legionHead{}, err
 	}
+	read.in.Checks = checksAt(held)
 	read.in.Reviews, err = reviewsOf(ctx, tx, repository, pr.Number)
 	return read, err
 }
@@ -324,39 +337,59 @@ func checksAt(held record.HeadStates) []verdict.Check {
 	return checks
 }
 
-// changeUnread is what the writer logs when it cannot read the change's commits, and so counts no
-// review step of the head as independent.
-const changeUnread = "verdict: the change's commits could not be read, so no review step counts as independent"
+// changeUnread is what the writer logs when it cannot read the change's commits, and so finds no
+// reader of any.
+const changeUnread = "verdict: the change's commits could not be read, so no commit has a reader"
 
-// independence reads the change's commits for the Omp-Session test of read's head where that test
-// decides anything: every testing and review step passed at the head (verdict.StepsPassed), and an
-// approving review step's claim ran no implementation step and records a session. A commit whose
-// Omp-Session trailer names one of that claim's sessions marks its step as one whose claim wrote
-// part of the change. Where the commits cannot be read the change is unread, and no review step
-// counts as independent (verdict.Inputs.Unread); the line it logs says why.
-func (w *workflowRuntime) independence(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead) {
-	readable := false
-	for _, names := range read.sessions {
-		readable = readable || len(names) > 0
-	}
-	if !readable || !verdict.StepsPassed(read.in) {
+// readCommits reads the change's commits of read's head where they decide anything: each check of
+// the task reads yes and every review step approved there (verdict.StepsPassed). The change is the
+// compare of the head with the branch the pull request merges into (compareBase). Each commit's
+// makers are the sessions its Omp-Session lines name (ompSessions). Where the commits cannot be read
+// the change is unread, and no commit has a reader (verdict.Inputs.Unread); the line it logs says
+// why.
+func (w *workflowRuntime) readCommits(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead) {
+	if !verdict.StepsPassed(read.in) {
 		return
 	}
-	trailers, err := w.changeSessions(ctx, repository, number, read.in.Head)
+	base, err := w.compareBase(ctx, repository, number, read)
+	var commits []verdict.Commit
+	if err == nil {
+		commits, err = w.changeCommits(ctx, repository, base, read.in.Head)
+	}
 	if err != nil {
 		read.in.Unread = true
 		w.log.Warn(changeUnread, "repository", repository.String(), "pull_request", number, "head", read.in.Head, "error", err)
 		return
 	}
-	for i, names := range read.sessions {
-		if slices.ContainsFunc(names, func(name string) bool { return trailers[name] }) {
-			read.in.Steps[i].Wrote = true
-		}
-	}
+	read.in.Commits = commits
 }
 
-// listedCommit is one commit of a pull request as GitHub lists them (GET /pulls/{number}/commits):
-// its id and its message.
+// compareBase is the branch pull request number merges into, with which its head's change is
+// compared: the base GitHub lists for it among the open pull requests at the head (pullRequestsAt,
+// the read atHead makes), so a child issue's change leaves out the commits its parent's branch
+// holds; where GitHub lists no such pull request there, the base the record holds; and only where
+// neither names one, the issue's default branch. Where GitHub's list cannot be read and the record
+// holds no base, the base is unknown, and the change is no reading (an error).
+func (w *workflowRuntime) compareBase(ctx context.Context, repository ghrepo.Repository, number int, read *legionHead) (string, error) {
+	pulls, err := w.pullRequestsAt(ctx, repository, read.in.Head)
+	if err != nil {
+		if read.recordedBase != "" {
+			return read.recordedBase, nil
+		}
+		return "", fmt.Errorf("the branch pull request %d merges into: %w", number, err)
+	}
+	for _, pull := range pulls {
+		if pull.Number == number && pull.Base.Ref != "" {
+			return pull.Base.Ref, nil
+		}
+	}
+	if read.recordedBase != "" {
+		return read.recordedBase, nil
+	}
+	return read.defaultBranch, nil
+}
+
+// listedCommit is one commit of the change as GitHub's compare lists it: its id and its message.
 type listedCommit struct {
 	SHA    string `json:"sha"`
 	Commit struct {
@@ -364,40 +397,34 @@ type listedCommit struct {
 	} `json:"commit"`
 }
 
-// changeCommitsListed is the most commits GitHub lists of a pull request: a list that long may
-// leave commits of the change out.
-const changeCommitsListed = 250
-
-// changeSessions is every session the Omp-Session trailers of the change's commits name: pull
-// request number's commits as GitHub lists them with the daemon's read token, which must reach
-// head, the head decided. A list GitHub refuses, one that holds as many commits as GitHub lists at
-// most, and one that does not reach head - the pull request stands at another head - is no
-// reading of the change, and an error.
-func (w *workflowRuntime) changeSessions(ctx context.Context, repository ghrepo.Repository, number int, head string) (map[string]bool, error) {
+// changeCommits is each commit of the change, in its order, with the sessions its Omp-Session lines
+// name: GitHub's compare of base and head (GET /compare/BASE...HEAD) with the daemon's read token,
+// a hundred commits to a page and every page, which must hold head. A pull request's own list of
+// commits stops at 250 (spec R4), and the compare's pages do not. A compare GitHub refuses, or one
+// that does not hold head, is no reading of the change, and an error.
+func (w *workflowRuntime) changeCommits(ctx context.Context, repository ghrepo.Repository, base, head string) ([]verdict.Commit, error) {
 	serving := w.repositories.serving(repository)
+	if base == "" {
+		return nil, fmt.Errorf("no base branch is known of %s's pull request at %s", serving, head)
+	}
 	client, err := readClient(ctx, w.tokens, w.githubAPI, serving)
 	if err != nil {
 		return nil, fmt.Errorf("mint the read token for %s: %w", serving, err)
 	}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
-	commits, err := githubrest.GetPages[listedCommit](read, client, "/pulls/"+strconv.Itoa(number)+"/commits")
+	listed, err := githubrest.GetListPages[listedCommit](read, client, "/compare/"+base+"..."+head+"?per_page=100", "commits")
 	if err != nil {
-		return nil, fmt.Errorf("list the commits of %s#%d: %w", serving, number, err)
+		return nil, fmt.Errorf("compare %s...%s of %s: %w", base, head, serving, err)
 	}
-	if len(commits) >= changeCommitsListed {
-		return nil, fmt.Errorf("%s#%d lists %d commits, the most GitHub lists, so the change may hold more", serving, number, len(commits))
+	if !slices.ContainsFunc(listed, func(c listedCommit) bool { return c.SHA == head }) {
+		return nil, fmt.Errorf("the %d commits of the compare %s...%s of %s do not hold %s", len(listed), base, head, serving, head)
 	}
-	if !slices.ContainsFunc(commits, func(c listedCommit) bool { return c.SHA == head }) {
-		return nil, fmt.Errorf("the %d commits GitHub lists of %s#%d do not reach %s", len(commits), serving, number, head)
+	commits := make([]verdict.Commit, 0, len(listed))
+	for _, c := range listed {
+		commits = append(commits, verdict.Commit{SHA: c.SHA, Makers: ompSessions(c.Commit.Message)})
 	}
-	sessions := map[string]bool{}
-	for _, c := range commits {
-		for _, session := range ompSessions(c.Commit.Message) {
-			sessions[session] = true
-		}
-	}
-	return sessions, nil
+	return commits, nil
 }
 
 // ompSessionLine is a commit message's Omp-Session trailer line, as `legion git` writes it
@@ -407,7 +434,8 @@ var ompSessionLine = regexp.MustCompile(`(?im)^omp-session:[ \t]*(\S+)[ \t\r]*$`
 
 // ompSessions is every session id an Omp-Session line of message names, wherever it stands in the
 // message: a squash or a cherry-pick can carry a commit's trailer into the body of another, and a
-// line read so can only take a review's independence away.
+// line read so makes that session a maker of the other commit too, which takes a reader away and
+// never adds one (R4's fourth departure).
 func ompSessions(message string) []string {
 	var sessions []string
 	for _, match := range ompSessionLine.FindAllStringSubmatch(message, -1) {

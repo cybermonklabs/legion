@@ -2827,7 +2827,11 @@ test("a phase worker and an architect have neither replay_give_up nor discard_gi
     ]) {
       await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
         content: [
-          { type: "text", text: `${parameters.op} is not available to a ${session.kind} session` },
+          {
+            type: "text",
+            // The article follows the kind, as tools.ts spells it: "an architect", "a worker".
+            text: `${parameters.op} is not available to ${/^[aeiou]/.test(session.kind) ? "an" : "a"} ${session.kind} session`,
+          },
         ],
         details: {},
         isError: true,

@@ -1538,7 +1538,8 @@ These arrive as messages on the Dispatch issue:
 - **A review round that no verdict decides.** Legion's reviewer ends its round with its verdict,
   `approve` or `changes`, in its completion of reviewing, on the head its `review` handoff names;
   the daemon records that verdict as the round's decision at that head, and writes `legion-verdict`
-  there once every testing and review step of the task has passed there, or one has failed. The
+  there once each check reads yes and every testing and review step of the task has passed there,
+  or a check reads no or a step has failed. The
   daemon refuses a reviewer's completion with no verdict (`REVIEWER_VERDICT_REQUIRED`)
   or with no head (`VERDICT_COMMIT_REQUIRED`), so a round its reviewer completed with no verdict is
   one whose completion the daemon recorded before it took the reviewer's verdict. The architect is
@@ -1603,16 +1604,19 @@ These arrive as messages on the Dispatch issue:
   request a person already merged needs nothing: the daemon reads that merge and closes the
   issue — or, for a root whose tree still runs, once the last other issue of that tree is done or
   parked.
-- **The merger reports `legion-verdict: failure (no independent review)`.** Every testing and
-  review step of the task passed at the head, and no review step whose verdict there is `approve`
-  was run by an agent whose claim wrote none of the change. A claim wrote part of the change when
-  it ran an implementation step of the task, or when a commit of the change names one of its
-  sessions in its `Omp-Session` trailer, read against the sessions the daemon records for that
-  claim; where the daemon cannot read those commits or sessions, it counts no review as
-  independent, and the run's summary says so. A task whose plan has no review step ends here too.
-  No push or move back cures it: the merger merges nothing, sends nothing back and tells the
-  task's owner, quoting the run's summary, and the owner asks a person. Only a person can merge
-  that head. The run is the daemon's own check run on the head:
+- **The merger reports `legion-verdict: failure (a commit with no reader)`.** Each check reads yes
+  and every testing and review step of the task passed at the head, and a commit of the change has
+  no reader there: no agent of the task whose review step's verdict at the head is `approve`, or
+  whose testing step passed there, has a claim that records a session and made none of that
+  commit. A commit's makers are the sessions its `Omp-Session` lines name, read against the
+  sessions the daemon records for each claim, and a claim that records no session reads no commit.
+  Where the daemon cannot read every commit of the change from GitHub's compare of the base and
+  the head, no commit has a reader, and the run's summary says so. A task whose plan has no testing
+  step and no review step ends here too. No push or move back cures it: the merger merges nothing,
+  sends nothing back and tells the task's owner once for that head, naming each commit with no
+  reader, and the owner asks a person, who can merge that head by INFRA-455's break-glass step.
+  The run is the daemon's own check run on the head, and its summary names each commit with no
+  reader:
   `gh api 'repos/<owner>/<repo>/commits/<head>/check-runs?check_name=legion-verdict' --jq '.check_runs[] | [.conclusion, .output.title, .output.summary]'`.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's

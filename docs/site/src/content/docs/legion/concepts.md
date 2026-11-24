@@ -229,9 +229,9 @@ against the issue's checks are the evidence, and a reviewer step sends no `appro
 them has no pass at the head. With no reviewer step, the owner's acceptance is the one review
 step, and the implementer writes the pull request body's `Look at first` and `Not proven / risk`
 lines at each round, and before each completion, its retro's included, answers and resolves each
-bot review thread still open, naming each one it declined to the architect. A task with no review
-step at all gets `legion-verdict` `failure` once every step has passed, since no review of it is
-independent ([review signalling](#review-signalling)). No step of any task gives an approving
+bot review thread still open, naming each one it declined to the architect. A task with no testing
+step and no review step gets `legion-verdict` `failure` once each check reads yes, since no agent
+of it reads its commits ([review signalling](#review-signalling)). No step of any task gives an approving
 GitHub review, since every role acts as the one App, the pull request's author: on a base that
 requires one, the merger waits and tells the architect which review is missing, and only a person
 can give it. With no acceptance step, the last step passing starts the retro; a parent that gets
@@ -466,14 +466,16 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   carries no verdict: the states Dispatch publishes of the issue's checks at the tested head decide
   testing.
 - **`legion-verdict`**, the required check the daemon writes on a head a Legion issue owns, follows
-  the steps of the task's plan at that head: `success` once each review step's verdict there is
-  `approve`, each check reads yes there where the task has a tester step, and at least one of those
-  review steps was run by an agent whose claim wrote none of the change; `failure` once a review
-  step's verdict is `changes` there, or, where the task has a tester step, a check reads no there,
-  and once every step passed with no such independent review; and nothing before.
-  A claim wrote part of the change when it ran an implementation step of the task, or when a commit
-  of the change names one of its sessions in its `Omp-Session` trailer, and where the daemon cannot
-  read those commits or sessions it counts no review as independent. A pass or a verdict at an
+  the checks, the steps of the task's plan and the commits of the change at that head: `success`
+  once each check reads yes there, whatever steps the plan names, each review step's verdict there
+  is `approve`, and each commit of the change has a reader; `failure` once a review step's verdict
+  is `changes` there or a check reads no there, and once each check reads yes and every step passed
+  while a commit has no reader; and nothing before. An agent of the task reads a commit when its
+  review step's verdict at that head is `approve`, or its testing step passed there, its claim
+  records a session, and no session of its claim made the commit. A commit's makers are the
+  sessions its `Omp-Session` lines name, so a commit with no such line has no agent maker. The
+  daemon reads the change from GitHub's compare of the pull request's base and the head, every
+  page, and where it cannot read every commit, no commit has a reader. A pass or a verdict at an
   earlier commit counts at no later head.
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
@@ -603,9 +605,10 @@ a base that requires an approving review, which no step of any task gives, the m
 the architect which review is missing. On a base that requires `legion-verdict`, GitHub
 merges only a head whose check reads `success`, which a push leaves without one until each review
 step's verdict names the new head; the merger's own merge of the base, below, is held the same
-way. Where that check reads `failure` for want of an independent review (its title reads
-`legion-verdict: failure (no independent review)`), no worker's change cures it: the merger merges
-nothing, sends nothing back and tells the architect, and only a person can merge that head.
+way. Where that check reads `failure` for a commit with no reader (its title reads
+`legion-verdict: failure (a commit with no reader)`, and its summary names each such commit), no
+worker's change cures it: the merger merges nothing, sends nothing back and tells the architect
+once for that head, and only a person can merge that head, by INFRA-455's break-glass step.
 
 When a merge fails, the decision is the merger's, on GitHub's own answer: wait for what GitHub
 waits for, merge again at the head it re-reads, or tell the architect what no worker can do — a

@@ -107,12 +107,21 @@ func (run fakeRun) appID() int64 {
 	return 0
 }
 
-// fakePull is an open pull request of acme/widgets besides pull request 86: its number, head
-// branch and head commit.
+// fakePull is an open pull request of acme/widgets: its number, head branch, head commit and the
+// branch it merges into, main where base is "".
 type fakePull struct {
 	number int
 	ref    string
 	head   string
+	base   string
+}
+
+// baseRef is the branch pull merges into.
+func (pull fakePull) baseRef() string {
+	if pull.base == "" {
+		return "main"
+	}
+	return pull.base
 }
 
 // fakeStatus is one commit status GitHub holds at a head, newest last, with its creator's login and
@@ -150,8 +159,11 @@ type fakeWrite struct {
 // request 86's merge state, `blocked` while its head has no legion-verdict run concluding success
 // and `clean` once it has, which is what a ruleset that requires the check answers; pull request
 // 86's commits, one for each head it stood at (history), oldest first, each made by the
-// implementer's session unless messages gives its message, and none at all where noCommits is set,
-// as GitHub answers a list it cannot serve; any other pull request named in pulls, whose reads it
+// implementer's session unless messages gives its message, as GitHub's compare of the base and a
+// head lists them, and none at all where noCommits is set, as GitHub answers a compare it cannot
+// serve; the branch pull request 86 merges into (base86, main where it is ""), whose tip holds the
+// first parentCommits commits of history, so a compare with that branch lists only the commits after
+// them while a compare with main lists them all; any other pull request named in pulls, whose reads it
 // counts in pullReads; and the open pull requests at a commit (GET /commits/{sha}/pulls): pull
 // request 86 at its head, and each of opened at its own. Each write and each read of pull request
 // 86 is recorded in order. failCreates is how many of the next creates of a check run GitHub
@@ -159,21 +171,23 @@ type fakeWrite struct {
 // 86, made once its head has a success run, still answer `blocked`, as GitHub does while it has
 // not yet counted a new run.
 type verdictGitHub struct {
-	mu          sync.Mutex
-	nextID      int64
-	head86      string
-	history     []string
-	messages    map[string]string
-	noCommits   bool
-	runs        []fakeRun
-	statuses    []fakeStatus
-	writes      []fakeWrite
-	events      []string
-	pulls       map[int]string
-	pullReads   map[int]int
-	opened      []fakePull
-	failCreates int
-	staleReads  int
+	mu            sync.Mutex
+	nextID        int64
+	head86        string
+	base86        string
+	parentCommits int
+	history       []string
+	messages      map[string]string
+	noCommits     bool
+	runs          []fakeRun
+	statuses      []fakeStatus
+	writes        []fakeWrite
+	events        []string
+	pulls         map[int]string
+	pullReads     map[int]int
+	opened        []fakePull
+	failCreates   int
+	staleReads    int
 }
 
 func newVerdictGitHub() *verdictGitHub {
@@ -187,7 +201,7 @@ func pullsAtCommit(commit string, pulls []fakePull) []map[string]any {
 	listed := []map[string]any{}
 	for _, pull := range pulls {
 		if pull.head == commit {
-			listed = append(listed, map[string]any{"number": pull.number, "state": "open", "base": map[string]any{"ref": "main"},
+			listed = append(listed, map[string]any{"number": pull.number, "state": "open", "base": map[string]any{"ref": pull.baseRef()},
 				"head": map[string]any{"ref": pull.ref, "sha": pull.head}})
 		}
 	}
@@ -200,9 +214,9 @@ func implementerCommit(sha string) string {
 	return "work at " + sha + "\n\nOmp-Session: " + captureImplementerSession + "\nLegion-Role: implementer\n"
 }
 
-// commits86 is pull request 86's commits as GitHub lists them (GET /pulls/86/commits): each head
-// of history up to the one it stands at, oldest first.
-func (g *verdictGitHub) commits86() []map[string]any {
+// commitsTo is pull request 86's commits up to head, oldest first: each head of history up to head,
+// with its message, and whether history reaches head at all.
+func (g *verdictGitHub) commitsTo(head string) ([]map[string]any, bool) {
 	listed := []map[string]any{}
 	for _, sha := range g.history {
 		message, given := g.messages[sha]
@@ -210,11 +224,35 @@ func (g *verdictGitHub) commits86() []map[string]any {
 			message = implementerCommit(sha)
 		}
 		listed = append(listed, map[string]any{"sha": sha, "commit": map[string]any{"message": message}})
-		if sha == g.head86 {
-			break
+		if sha == head {
+			return listed, true
 		}
 	}
-	return listed
+	return listed, false
+}
+
+// pullCommitsListed is the most commits GitHub lists of a pull request (GET /pulls/{number}/commits).
+const pullCommitsListed = 250
+
+// comparePage is one page of GitHub's compare of the base and head (GET /compare/BASE...HEAD): the
+// commits of the page the query names, per_page to a page, and the Link to the next page where one
+// is left. With no per_page GitHub pages nothing and lists the first 250 commits.
+func comparePage(r *http.Request, commits []map[string]any) (page []map[string]any, next string) {
+	size, err := strconv.Atoi(r.URL.Query().Get("per_page"))
+	if err != nil || size < 1 {
+		return commits[:min(len(commits), pullCommitsListed)], ""
+	}
+	at, err := strconv.Atoi(r.URL.Query().Get("page"))
+	if err != nil || at < 1 {
+		at = 1
+	}
+	from, to := min(len(commits), (at-1)*size), min(len(commits), at*size)
+	if to < len(commits) {
+		query := r.URL.Query()
+		query.Set("page", strconv.Itoa(at+1))
+		next = "<http://" + r.Host + r.URL.Path + "?" + query.Encode() + `>; rel="next"`
+	}
+	return commits[from:to], next
 }
 
 // runOutput is the title and summary of the output a write of a check run sent.
@@ -251,11 +289,34 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 		switch {
 		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "pulls" && parts[1] == "86" && parts[2] == "commits":
 			g.events = append(g.events, "listed the commits of pull request 86")
-			if g.noCommits {
+			listed, _ := g.commitsTo(g.head86)
+			answer(listed[:min(len(listed), pullCommitsListed)])
+		case r.Method == http.MethodGet && len(parts) >= 2 && parts[0] == "compare":
+			// A branch name holds slashes, and GitHub takes BASE...HEAD as it is.
+			spec := strings.Join(parts[1:], "/")
+			base, head, ranged := strings.Cut(spec, "...")
+			g.events = append(g.events, "compared "+spec)
+			if r.Header.Get("Authorization") != "Bearer "+readToken("acme") {
+				t.Errorf("the change %s was compared with %q, want the read token", spec, r.Header.Get("Authorization"))
+			}
+			commits, reached := g.commitsTo(head)
+			base86 := fakePull{base: g.base86}.baseRef()
+			switch {
+			case g.noCommits:
 				http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
 				return
+			case !ranged || base != "main" && base != base86 || !reached:
+				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+				return
 			}
-			answer(g.commits86())
+			if base != "main" {
+				commits = commits[min(g.parentCommits, len(commits)):]
+			}
+			page, next := comparePage(r, commits)
+			if next != "" {
+				w.Header().Set("Link", next)
+			}
+			answer(map[string]any{"status": "ahead", "total_commits": len(commits), "commits": page})
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "pulls" && parts[1] == "86":
 			state := "blocked"
 			if slices.ContainsFunc(g.runs, func(run fakeRun) bool {
@@ -268,7 +329,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 				}
 			}
 			g.events = append(g.events, "read pull request 86: "+state)
-			answer(map[string]any{"number": 86, "state": "open", "base": map[string]any{"ref": "main"},
+			answer(map[string]any{"number": 86, "state": "open", "base": map[string]any{"ref": fakePull{base: g.base86}.baseRef()},
 				"head": map[string]any{"ref": "legion/CAPTURE-1", "sha": g.head86}, "mergeable": true, "mergeable_state": state})
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "pulls":
 			number, _ := strconv.Atoi(parts[1])
@@ -297,7 +358,7 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			if r.Header.Get("Authorization") != "Bearer "+readToken("acme") {
 				t.Errorf("the pull requests at %s were listed with %q, want the read token", parts[1], r.Header.Get("Authorization"))
 			}
-			answer(pullsAtCommit(parts[1], append([]fakePull{{number: 86, ref: "legion/CAPTURE-1", head: g.head86}}, g.opened...)))
+			answer(pullsAtCommit(parts[1], append([]fakePull{{number: 86, ref: "legion/CAPTURE-1", head: g.head86, base: g.base86}}, g.opened...)))
 		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "commits" && parts[2] == "check-runs":
 			if r.Header.Get("Authorization") != verdictBearer() {
 				t.Errorf("the check runs of %s were listed with %q, want the verdict token", parts[1], r.Header.Get("Authorization"))
@@ -542,15 +603,25 @@ const (
 	captureReviewer           claim.Token = "legion-capture-capture-1-reviewer"
 	captureImplementer        claim.Token = "legion-capture-capture-1-implementer"
 	captureArchitect          claim.Token = "legion-capture-capture-1-architect"
+	captureTester             claim.Token = "legion-capture-capture-1-tester"
 	captureImplementerSession             = "implementer-session"
 	captureReviewerSession                = "reviewer-session"
 	captureArchitectSession               = "architect-session"
+	captureTesterSession                  = "tester-session"
 )
 
+// commitOf is the message of a commit whose Omp-Session line names session, as `legion git` writes
+// it for the agent of that session.
+func commitOf(session string) string {
+	return "a change\n\nOmp-Session: " + session + "\n"
+}
+
 // The places of CAPTURE-1's default steps (planner implementer tester reviewer acceptance:owner)
-// on its task default: the implementer's step, the reviewer's and the owner's acceptance.
+// on its task default: the implementer's step, the tester's, the reviewer's and the owner's
+// acceptance.
 const (
 	implementerStep = 2
+	testerStep      = 3
 	reviewerStep    = 4
 	acceptanceStep  = 5
 )
@@ -586,6 +657,16 @@ func seedClaimSession(t *testing.T, pool *store.Pool, token claim.Token, role cl
 			return err
 		}
 		_, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', 'session', $1, $2)`, session, string(token))
+		return err
+	})
+}
+
+// dropClaimSessions leaves token's claim recording no session: claim_sessions holds no name for it,
+// as an operator's release of its sessions leaves it, while the claim itself stands.
+func dropClaimSessions(t *testing.T, pool *store.Pool, token claim.Token) {
+	t.Helper()
+	inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `delete from claim_sessions where claim = $1`, string(token))
 		return err
 	})
 }
@@ -1578,22 +1659,32 @@ func TestLegionVerdictReadsAPullRequestNoRecordHoldsFromGitHub(t *testing.T) {
 	}
 }
 
-// The output of a legion-verdict run that concludes failure because every testing and review step
-// passed and no review was independent, as the merger reads it to tell the owner: the title, and
-// the summary for a change the daemon read, and for one whose commits or sessions it could not.
+// The output of a legion-verdict run that concludes failure because each check reads yes and every
+// testing and review step passed and a commit of the change has no reader, or the daemon could not
+// read the change's commits, as the merger reads it to tell the owner: the one title of both, and
+// the opening of each summary. The summary of a commit with no reader then names each such commit,
+// one to a line.
 const (
-	noIndependentTitle   = "legion-verdict: failure (no independent review)"
-	noIndependentSummary = "Every testing and review step of the task's plan passed at this head, and no review step that approved it was run by an agent whose claim wrote none of the change: an independent review is missing."
-	unreadSummary        = "Every testing and review step of the task's plan passed at this head, but the daemon could not read the change's commits or the sessions of the review steps' claims, so it counts no review as independent: an independent review is missing."
+	wantNoReaderTitle   = "legion-verdict: failure (a commit with no reader)"
+	wantNoReaderOpening = "Each check reads yes and every testing and review step of the task's plan passed at this head, and no agent of the task read these commits of the change"
+	wantUnreadOpening   = "Each check reads yes and every testing and review step of the task's plan passed at this head, but the daemon could not read every commit of the change"
 )
 
-// noIndependentReview fails the test unless the one legion-verdict run on code concludes failure
-// with the title and summary that name the missing independent review.
-func (rig *verdictRig) noIndependentReview(t *testing.T, summary string) {
+// noReader fails the test unless the one legion-verdict run on head concludes failure with the
+// title of a commit with no reader and a summary that opens with opening and names commits, in
+// their order, one to a line ("- <sha>"), and no other.
+func (rig *verdictRig) noReader(t *testing.T, head, opening string, commits ...string) {
 	t.Helper()
-	if run := rig.soleRun(t, "code", "failure"); run.Title != noIndependentTitle || run.Summary != summary {
-		t.Fatalf("the run's output reads %q / %q, want %q / %q: the merger's notice to the owner names the missing independent review",
-			run.Title, run.Summary, noIndependentTitle, summary)
+	run := rig.soleRun(t, head, "failure")
+	var named []string
+	for _, line := range strings.Split(run.Summary, "\n") {
+		if sha, ok := strings.CutPrefix(line, "- "); ok {
+			named = append(named, sha)
+		}
+	}
+	if run.Title != wantNoReaderTitle || !strings.HasPrefix(run.Summary, opening) || !slices.Equal(named, commits) {
+		t.Fatalf("the run's output reads %q / %q, want %q, a summary opening %q and naming the commits %q: the merger's notice to the owner names each commit with no reader",
+			run.Title, run.Summary, wantNoReaderTitle, opening, commits)
 	}
 }
 
@@ -1639,55 +1730,209 @@ func TestLegionVerdictWritesNothingBeforeEveryStepPassed(t *testing.T) {
 			t.Fatalf("the workflow asked for writes on %v, want the acceptance's on code", asked)
 		}
 		rig.nothingWrittenOn(t, "code")
-		if _, events := rig.github.recorded(); slices.Contains(events, "listed the commits of pull request 86") {
+		if _, events := rig.github.recorded(); readTheChange(events) {
 			t.Fatalf("GitHub saw %v, want no read of the change's commits before every step passed", events)
 		}
 	})
 }
 
-// C2: a plan of the steps implementer reviewer has no testing step: there the reviewer's approve at
-// H, from a claim that ran no implementation step and whose session no commit of the change
-// carries, writes success on H, whatever a check reads there.
-func TestLegionVerdictAPlanWithNoTestingStep(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
-		reviewingOnPlan(2, "implementer", "reviewer")(t, pool)
-		seedChecks(t, pool, "code", map[string]string{"k1": verdict.StateNo})
+// readTheChange is whether GitHub saw a read of pull request 86's commits among events: a compare
+// of its base and a head, or a list of its commits.
+func readTheChange(events []string) bool {
+	return slices.ContainsFunc(events, func(event string) bool {
+		return strings.HasPrefix(event, "compared ") || event == "listed the commits of pull request 86"
 	})
+}
+
+// C2: the fake's compare of the base and H gives a change of 300 commits, in three pages of 100,
+// each carrying the implementer's Omp-Session line; H is the 300th, code. With no line of the
+// reviewer's session, the plan implementer reviewer writes success on H once the reviewer approves
+// it; with the reviewer's line on commit 260, it writes failure there, and the summary names commit
+// 260 alone. GitHub's list of a pull request's commits stops at 250, so only the compare's every
+// page reads the whole change.
+func TestLegionVerdictReadsEveryPageOfALongChange(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		reviewer bool
+	}{
+		{"no line of the reviewer's session", false},
+		{"the reviewer's line on commit 260", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingOnPlan(2, "implementer", "reviewer"))
+			rig.github.mu.Lock()
+			rig.github.history = nil
+			for i := 1; i < 300; i++ {
+				rig.github.history = append(rig.github.history, fmt.Sprintf("c%03d", i))
+			}
+			rig.github.history = append(rig.github.history, "code")
+			if tc.reviewer {
+				rig.github.messages["c260"] = implementerCommit("c260") + "Omp-Session: " + captureReviewerSession + "\n"
+			}
+			rig.github.mu.Unlock()
+			rig.apply(t, reviewerVerdict("approve", "code", 1))
+			rig.written(t)
+			if _, events := rig.github.recorded(); !slices.Equal(compares(events), []string{"compared main...code", "compared main...code", "compared main...code"}) {
+				t.Fatalf("GitHub saw %v, want three pages of the compare of main and code", events)
+			}
+			if !tc.reviewer {
+				rig.soleRun(t, "code", "success")
+				return
+			}
+			rig.noReader(t, "code", wantNoReaderOpening, "c260")
+		})
+	}
+}
+
+// compares is each compare among events, in order.
+func compares(events []string) []string {
+	var compared []string
+	for _, event := range events {
+		if strings.HasPrefix(event, "compared ") {
+			compared = append(compared, event)
+		}
+	}
+	return compared
+}
+
+// R4: the change is GitHub's compare of the head with the branch its pull request merges into, which
+// the writer reads from the open pull request at the head as GitHub lists it. Here CAPTURE-1 is a
+// child issue: its pull request 86 merges into its parent's branch, legion/CAPTURE-0, whose tip holds
+// commit p1, and its record holds no base, as one recorded before the daemon kept the base. p1 names
+// a session of the reviewer's claim. With the plan implementer reviewer and the reviewer's approve at
+// code, the change is code alone, which the reviewer reads, so the head gets success. A compare with
+// the issue's default branch would count the parent's p1 as the child's, which no agent but its
+// maker read, and write failure.
+func TestLegionVerdictComparesTheHeadWithTheBranchItsPullRequestMergesInto(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingOnPlan(2, "implementer", "reviewer"))
+	rig.github.mu.Lock()
+	rig.github.base86, rig.github.parentCommits = "legion/CAPTURE-0", 1
+	rig.github.history = []string{"p1", "code"}
+	rig.github.messages["p1"] = commitOf(captureReviewerSession)
+	rig.github.mu.Unlock()
 	rig.apply(t, reviewerVerdict("approve", "code", 1))
 	rig.written(t)
+	if _, events := rig.github.recorded(); !slices.Equal(compares(events), []string{"compared legion/CAPTURE-0...code"}) {
+		t.Fatalf("GitHub saw %v, want one compare of legion/CAPTURE-0, the branch pull request 86 merges into, and code", events)
+	}
 	rig.soleRun(t, "code", "success")
 }
 
-// C2: a plan whose one review step's agent also ran its implementation step writes failure on H once
-// every step has passed there, and the merger's notice to the owner, the run's output, names the
-// missing independent review.
-func TestLegionVerdictAReviewAgentThatRanTheImplementationWritesFailure(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
-		reviewingOnPlan(2, "implementer", "reviewer")(t, pool)
-		seedStepStart(t, pool, "a", 1, captureReviewer, true)
+// C2: a plan of the steps implementer reviewer has no testing step. There, with each check reading
+// yes at H, the reviewer's approve at H, from a claim no session of which a commit of the change
+// names, writes success on H; a check that reads no at H writes failure there all the same, since
+// each check must read yes whatever steps the plan names (R28).
+func TestLegionVerdictAPlanWithNoTestingStep(t *testing.T) {
+	t.Run("each check yes", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingOnPlan(2, "implementer", "reviewer"))
+		rig.apply(t, reviewerVerdict("approve", "code", 1))
+		rig.written(t)
+		rig.soleRun(t, "code", "success")
 	})
-	rig.apply(t, reviewerVerdict("approve", "code", 1))
-	rig.written(t)
-	rig.noIndependentReview(t, noIndependentSummary)
+	t.Run("a check no", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+			reviewingOnPlan(2, "implementer", "reviewer")(t, pool)
+			seedChecks(t, pool, "code", map[string]string{"k1": verdict.StateNo})
+		})
+		rig.apply(t, reviewerVerdict("approve", "code", 1))
+		rig.written(t)
+		rig.soleRun(t, "code", "failure")
+	})
 }
 
-// C2: a plan whose review step's claim has a session in the Omp-Session trailer of a commit of the
-// change writes failure on H once every step has passed there, naming the missing independent
-// review: the reviewer pushed a commit under its own session.
-func TestLegionVerdictAnOmpSessionTrailerTakesIndependenceAway(t *testing.T) {
+// C2: a plan whose one review step's claim names its session in the Omp-Session line of a commit
+// writes failure on H once every step has passed there: no agent but that commit's maker approved
+// it. The run's summary names that commit.
+func TestLegionVerdictAReviewStepReadsNoCommitItsSessionMade(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingOnPlan(2, "implementer", "reviewer"))
 	rig.github.mu.Lock()
+	rig.github.history = []string{"code-0", "code"}
 	rig.github.messages["code"] = "fix a typo\n\nOmp-Session: " + captureReviewerSession + "\nLegion-Role: reviewer\n"
 	rig.github.mu.Unlock()
 	rig.apply(t, reviewerVerdict("approve", "code", 1))
 	rig.written(t)
-	rig.noIndependentReview(t, noIndependentSummary)
+	rig.noReader(t, "code", wantNoReaderOpening, "code")
+}
+
+// C2, the default steps, two ways. Where the claims of the tester, the reviewer and the owner each
+// record a session, a commit that names the reviewer's session and another that names the owner's
+// each have a reader - the reviewer's commit the tester and the owner, the owner's the tester and
+// the reviewer - so the head gets success; one independent review of the whole change, the rule
+// before, has none here. Where the tester's and the owner's claims record no session, a commit that
+// names the reviewer's session has no reader (R4's third departure), so the head gets failure once
+// every step has passed there, and the run's summary names that commit.
+func TestLegionVerdictEachCommitHasAReaderOnTheDefaultSteps(t *testing.T) {
+	t.Run("each of the three claims records a session", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+			acceptingAtCode(t, pool)
+			seedStepStart(t, pool, planwords.DefaultTask, testerStep, captureTester, true)
+			seedClaimSession(t, pool, captureTester, claim.RoleTester, captureTesterSession)
+		})
+		rig.github.mu.Lock()
+		rig.github.history = []string{"code-0", "code"}
+		rig.github.messages["code-0"] = commitOf(captureReviewerSession)
+		rig.github.messages["code"] = commitOf(captureArchitectSession)
+		rig.github.mu.Unlock()
+		rig.acceptedAndWritten(t)
+	})
+	t.Run("the tester's and the owner's claims record no session", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+			acceptingAtCode(t, pool)
+			seedStepStart(t, pool, planwords.DefaultTask, testerStep, captureTester, true)
+			dropClaimSessions(t, pool, captureArchitect)
+		})
+		rig.github.mu.Lock()
+		rig.github.messages["code"] = commitOf(captureReviewerSession)
+		rig.github.mu.Unlock()
+		rig.apply(t, rig.signOff(t))
+		rig.written(t)
+		rig.noReader(t, "code", wantNoReaderOpening, "code")
+	})
+}
+
+// C2: a commit with no Omp-Session line has no agent maker, as a person's commit has none, so each
+// agent that reads at the head reads it: with the plan implementer reviewer the reviewer's approve
+// writes success. The reviewer also reads a commit whose line names a session that no claim records,
+// a maker outside the task's claims, so that case writes success too.
+func TestLegionVerdictACommitWithNoAgentMakerOfTheTaskIsRead(t *testing.T) {
+	for _, tc := range []struct{ name, message string }{
+		{"a commit with no Omp-Session line", "Merge main into legion/CAPTURE-1\n"},
+		{"a commit naming a session no claim records", commitOf("a-session-of-no-claim")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingOnPlan(2, "implementer", "reviewer"))
+			rig.github.mu.Lock()
+			rig.github.messages["code"] = tc.message
+			rig.github.mu.Unlock()
+			rig.apply(t, reviewerVerdict("approve", "code", 1))
+			rig.written(t)
+			rig.soleRun(t, "code", "success")
+		})
+	}
+}
+
+// C2: where the reviewer's claim records no session, the daemon cannot tell whether a line names
+// it, so its approve reads no commit: the plan implementer reviewer writes failure on H once every
+// step has passed there, naming the change's one commit.
+func TestLegionVerdictAReviewerWhoseClaimRecordsNoSessionReadsNoCommit(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+		seedCapture(t, pool, phase.Reviewing, "needs_review", testerPassAtCode, reviewerWithout)
+		clearCaptureMergeState(t, pool)
+		seedPlan(t, pool, 2, "implementer", "reviewer")
+		seedStepStart(t, pool, "a", 1, captureImplementer, true)
+		seedClaimSession(t, pool, captureImplementer, claim.RoleImplementer, captureImplementerSession)
+		seedChecks(t, pool, "code", bothYes)
+	})
+	rig.apply(t, reviewerVerdict("approve", "code", 1))
+	rig.written(t)
+	rig.noReader(t, "code", wantNoReaderOpening, "code")
 }
 
 // C2: where the fake answers no list of the change's commits, the default steps write failure on H
-// once every step has passed there: the daemon counts no review as independent, and says why. So
-// does a list that does not reach H, which is the change of another head.
-func TestLegionVerdictUnreadCommitsCountNoReviewAsIndependent(t *testing.T) {
+// once every step has passed there: where the daemon cannot read every commit of the change, no
+// commit has a reader, and it says why. So does a list that does not reach H, which is the change of
+// another head.
+func TestLegionVerdictUnreadCommitsHaveNoReader(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		github func(*verdictGitHub)
@@ -1702,7 +1947,7 @@ func TestLegionVerdictUnreadCommitsCountNoReviewAsIndependent(t *testing.T) {
 			rig.github.mu.Unlock()
 			rig.apply(t, rig.signOff(t))
 			rig.written(t)
-			rig.noIndependentReview(t, unreadSummary)
+			rig.noReader(t, "code", wantUnreadOpening)
 			if lines := loggedMessages(t, rig.logs.String(), changeUnreadLine); len(lines) != 1 || lines[0]["head"] != "code" {
 				t.Fatalf("%q lines = %v, want one naming code", changeUnreadLine, lines)
 			}
@@ -1711,7 +1956,7 @@ func TestLegionVerdictUnreadCommitsCountNoReviewAsIndependent(t *testing.T) {
 }
 
 // changeUnreadLine is what the writer logs when it cannot read the change's commits.
-const changeUnreadLine = "verdict: the change's commits could not be read, so no review step counts as independent"
+const changeUnreadLine = "verdict: the change's commits could not be read, so no commit has a reader"
 
 // Every Omp-Session line of a commit's message names a session the Omp-Session test reads, in any
 // case of its key and wherever it stands, as a squash can carry it into the body of another: the
@@ -1734,20 +1979,76 @@ func TestLegionVerdictReadsEveryOmpSessionLine(t *testing.T) {
 	}
 }
 
-// C2: a plan with no review step writes failure on H once its steps have passed: here a plan of
-// the steps implementer tester, whose checks read yes at H.
-func TestLegionVerdictAPlanWithNoReviewStepWritesFailure(t *testing.T) {
-	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
-		seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
+// planWithNoReviewStep seeds CAPTURE-1 in testing on the plan implementer tester, the implementer's
+// step passed under its claim and the tester's step started under its own, with no check state held
+// at code; the tester's claim records its session where withSession is set.
+func planWithNoReviewStep(withSession bool) func(*testing.T, *store.Pool) {
+	return func(t *testing.T, pool *store.Pool) {
+		t.Helper()
+		seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: captureTester})
 		seedPlan(t, pool, 2, "implementer", "tester")
 		seedStepStart(t, pool, "a", 1, captureImplementer, true)
+		seedStepStart(t, pool, "a", 2, captureTester, false)
+		seedClaimSession(t, pool, captureImplementer, claim.RoleImplementer, captureImplementerSession)
+		if withSession {
+			seedClaimSession(t, pool, captureTester, claim.RoleTester, captureTesterSession)
+		}
+	}
+}
+
+// C2: a plan of the steps implementer tester has no review step. Its testing step passes once each
+// check reads yes at H, and the daemon takes that pass as its agent's read (R4's fifth departure):
+// with no commit naming a session of the tester's claim it writes success on H, where a commit
+// names the tester's session it writes failure there, naming that commit, and where the tester's
+// claim records no session it writes failure once each check reads yes. Nothing is written while a
+// check holds no state at H.
+func TestLegionVerdictAPlanWithNoReviewStep(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		withSession bool
+		message     string
+		success     bool
+	}{
+		{"no commit names the tester's session", true, "", true},
+		{"a commit names the tester's session", true, commitOf(captureTesterSession), false},
+		{"the tester's claim records no session", false, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, planWithNoReviewStep(tc.withSession))
+			if tc.message != "" {
+				rig.github.mu.Lock()
+				rig.github.messages["code"] = tc.message
+				rig.github.mu.Unlock()
+			}
+			rig.checkState(t, "code", "k1", verdict.StateYes)
+			rig.written(t)
+			rig.nothingWrittenOn(t, "code")
+			rig.checkState(t, "code", "k2", verdict.StateYes)
+			rig.written(t)
+			if tc.success {
+				rig.soleRun(t, "code", "success")
+				return
+			}
+			rig.noReader(t, "code", wantNoReaderOpening, "code")
+		})
+	}
+}
+
+// C2: a plan with no testing step and no review step writes failure on H once each check reads yes
+// there: no agent reads its commits. Nothing is written before.
+func TestLegionVerdictAPlanWithNoTestingStepAndNoReviewStep(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+		seedCapture(t, pool, phase.Implementing, "in_progress")
+		seedPlan(t, pool, 1, "implementer")
+		seedStepStart(t, pool, "a", 1, captureImplementer, false)
+		seedClaimSession(t, pool, captureImplementer, claim.RoleImplementer, captureImplementerSession)
 	})
 	rig.checkState(t, "code", "k1", verdict.StateYes)
 	rig.written(t)
 	rig.nothingWrittenOn(t, "code")
 	rig.checkState(t, "code", "k2", verdict.StateYes)
 	rig.written(t)
-	rig.noIndependentReview(t, noIndependentSummary)
+	rig.noReader(t, "code", wantNoReaderOpening, "code")
 }
 
 // R19's status half, over a status the daemon holds: once the daemon's own status stands at a head,

@@ -284,7 +284,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: verdictRepositoriesKey, Default: "the daemon writes `legion-verdict` on no repository", RequiredBy: "no",
-			Description: "The repositories on which this daemon writes the required check `legion-verdict` with its own verdict token: on a head a Legion issue owns from the steps of the task's plan, that is each review step's verdict there, the owner's acceptance among them, and, where the task has a tester step, Dispatch's state of each check there; on any other head from the last review of the entry's `ci_reviewer`, or from a side review the controller relays where the entry sets `side_reviews`; it writes the check on no other repository.",
+			Description: "The repositories on which this daemon writes the required check `legion-verdict` with its own verdict token: on a head a Legion issue owns from Dispatch's state of each check there, whatever steps the task's plan names, each review step's verdict there, the owner's acceptance among them, and a reader of each commit of the change, an agent of a review or testing step that passed there whose claim made none of that commit; on any other head from the last review of the entry's `ci_reviewer`, or from a side review the controller relays where the entry sets `side_reviews`; it writes the check on no other repository.",
 			Read:        reads(readVerdictRepositories, func(f *fileConfig, v []VerdictRepository) { f.VerdictRepositories = v }),
 		},
 		{

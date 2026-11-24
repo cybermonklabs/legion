@@ -431,7 +431,8 @@ func TestLegionVerdictAFactsWriteGoesBeforeTheSweepsWrites(t *testing.T) {
 // after a pass that wrote a conclusion or changed one, for GitHub to count the run it wrote, and
 // only the pass at boot asks one of a standing success. The pass still reads what R19 asks of the
 // head, the head's legion-verdict runs and its commit statuses, and what deciding the head reads:
-// the change's commits, for the Omp-Session test of every step passed there.
+// the open pull requests at the head, for the branch its change is compared with, and the change's
+// commits, for the Omp-Session test of every step passed there.
 func TestLegionVerdictSweepAsksNoMergeStateReadOfAnUnchangedSuccessHead(t *testing.T) {
 	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, acceptingAtCode, openCapture)
 	rig.acceptedAndWritten(t)
@@ -457,8 +458,8 @@ func TestLegionVerdictSweepAsksNoMergeStateReadOfAnUnchangedSuccessHead(t *testi
 	if readsAfter != readsBefore {
 		t.Fatalf("the sweep over an unchanged success head made %d more reads of pull request 86, want none", readsAfter-readsBefore)
 	}
-	if made := requestsAfter - requestsBefore; made != 5 {
-		t.Fatalf("the sweep made %d requests, want 5: its page of open pull requests, the merge queue's refs, the change's commits, and the head's runs and statuses", made)
+	if made := requestsAfter - requestsBefore; made != 6 {
+		t.Fatalf("the sweep made %d requests, want 6: its page of open pull requests, the merge queue's refs, the pull requests at the head, the change's commits, and the head's runs and statuses", made)
 	}
 	if writes, _ := rig.github.recorded(); len(writes) != 1 {
 		t.Fatalf("writes = %+v, want only the acceptance's", writes)

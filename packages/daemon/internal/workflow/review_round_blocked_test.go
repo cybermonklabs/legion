@@ -117,11 +117,14 @@ func (g *githubFake) read() {
 
 // decide is the writer's conclusion of legion-verdict on head, read from what the engine recorded
 // there as the daemon's writer reads it (its legionInputs): each step of the task the issue's run
-// walks (Engine.VerdictSteps), each review step's verdict at head with whether its agent ran an
-// implementation step of the task, and the issue's check states at head, decided by verdict.Decide.
-// It is a stand-in for that writer, which lives in internal/daemon, and it leaves out the one read
-// the writer makes outside the store: the Omp-Session trailers of the change's commits
-// (independence), which the daemon's TestLegionVerdict tests hold.
+// walks (Engine.VerdictSteps), each review step's verdict at head, and the issue's check states at
+// head, decided by verdict.Decide. It is a stand-in for that writer, which lives in
+// internal/daemon, and it leaves out the reads the writer makes outside the engine's records: the
+// change's commits from GitHub's compare and the sessions claim_sessions records for each claim
+// (readCommits). In their place the change is the head alone, made by the claims that ran an
+// implementation step, and each claim's one session is its token, so a review step's approve reads
+// the change unless its own claim ran the implementation. The daemon's TestLegionVerdict tests hold
+// the reads themselves.
 func (g *githubFake) decide(head string) verdict.Conclusion {
 	g.t.Helper()
 	in := verdict.Inputs{Head: head, Legion: true}
@@ -136,32 +139,37 @@ func (g *githubFake) decide(head string) verdict.Conclusion {
 		if err != nil {
 			return err
 		}
-		implemented, tested := map[claim.Token]bool{}, false
+		var implementers []string
 		for _, step := range steps {
 			if step.Type == plan.TypeImplementation && step.Agent != "" {
-				implemented[step.Agent] = true
+				implementers = append(implementers, string(step.Agent))
 			}
-			tested = tested || step.Type == plan.TypeTesting
 		}
+		in.Commits = []verdict.Commit{{SHA: head, Makers: implementers}}
 		for _, step := range steps {
 			decided := verdict.Step{Type: step.Type}
-			if step.Type == plan.TypeReview {
+			switch step.Type {
+			case plan.TypeReview:
 				given, found, err := store.StepVerdictTx(ctx, tx, repository, 42, head, step.Place.Task, step.Place.Place)
 				if err != nil {
 					return err
 				}
 				if found {
-					decided.Verdict, decided.Wrote = given.Verdict, implemented[claim.Token(given.Session)]
+					decided.Verdict, decided.Sessions = given.Verdict, []string{given.Session}
+				}
+			case plan.TypeTesting:
+				if step.Agent != "" {
+					decided.Sessions = []string{string(step.Agent)}
 				}
 			}
 			in.Steps = append(in.Steps, decided)
 		}
-		if !tested {
-			return nil
-		}
 		held, err := g.engine.store.HeadStates(ctx, tx, "LEGION-208", "sjawhar/legion", head)
 		for _, check := range held.Checks {
 			in.Checks = append(in.Checks, verdict.Check{Name: check, State: held.States[check].State})
+		}
+		if held.Checks != nil && in.Checks == nil {
+			in.Checks = []verdict.Check{}
 		}
 		return err
 	})

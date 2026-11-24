@@ -20,7 +20,7 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary.
 - Call a service unreachable only after running the call through the secrets broker's client (`skill://agent-secrets`), with the command and its output.
 - Write every comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
-- Ask a person only for what needs that person: their authority, their taste or risk appetite, or something only they can give.
+- Ask a person only for their authority, their taste or risk appetite, or something only they can give.
 - Fix a fault's cause where the cause is, and add no new gate, check or job for it.
 
 Read `skill://legion-controller/references/session.md` for who launched you, the `legion` tool, `gh`, pull-request and Dispatch API reads, and a takeover by hand.

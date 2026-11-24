@@ -1,6 +1,7 @@
 package verdict
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -36,16 +37,46 @@ func submitted(review Review, id int64, minute int) Review {
 	return review
 }
 
-// The steps of a task's plan at H, as the writer reads them: a review step whose agent approved H,
-// changes at H, or gave no verdict there; and the agent that approved H whose claim wrote part of
-// the change, or whose sessions the daemon could not read.
-var (
-	approves       = Step{Type: plan.TypeReview, Verdict: ReviewerApprove}
-	approvesWrote  = Step{Type: plan.TypeReview, Verdict: ReviewerApprove, Wrote: true}
-	approvesUnread = Step{Type: plan.TypeReview, Verdict: ReviewerApprove, Unread: true}
-	changes        = Step{Type: plan.TypeReview, Verdict: ReviewerChanges}
-	noVerdict      = Step{Type: plan.TypeReview}
+// The sessions the daemon records for the claims of a task's agents: the implementer's, the
+// reviewer's, the owner's at its acceptance, and the tester's; and a session that no claim of the
+// task records, as a session of a maker outside the task reads.
+const (
+	implementerSession = "ses-implementer"
+	reviewerSession    = "ses-reviewer"
+	ownerSession       = "ses-owner"
+	testerSession      = "ses-tester"
+	outsideSession     = "ses-outside"
 )
+
+// approvedAs is a review step whose agent approved H, its claim recording sessions; changes and
+// noVerdict are a review step whose agent asked for changes at H, or gave no verdict there.
+func approvedAs(sessions ...string) Step {
+	return Step{Type: plan.TypeReview, Verdict: ReviewerApprove, Sessions: sessions}
+}
+
+var (
+	approves  = approvedAs(reviewerSession)
+	accepts   = approvedAs(ownerSession)
+	changes   = Step{Type: plan.TypeReview, Verdict: ReviewerChanges, Sessions: []string{reviewerSession}}
+	noVerdict = Step{Type: plan.TypeReview}
+)
+
+// testedAs is a testing step whose agent's claim records sessions.
+func testedAs(sessions ...string) Step {
+	return Step{Type: plan.TypeTesting, Sessions: sessions}
+}
+
+// testingStep is a testing step whose agent no record names, so its claim records no session.
+var testingStep = Step{Type: plan.TypeTesting}
+
+// madeBy is a commit of the change whose Omp-Session lines name sessions, none for a commit with no
+// such line.
+func madeBy(sha string, sessions ...string) Commit {
+	return Commit{SHA: sha, Makers: sessions}
+}
+
+// implemented is a change of one commit, the implementer's.
+var implemented = []Commit{madeBy("c1", implementerSession)}
 
 // allYes is a head's set of two checks, each reading yes at H.
 var allYes = []Check{{Name: "k1", State: StateYes}, {Name: "k2", State: StateYes}}
@@ -57,21 +88,18 @@ func checks(state string) []Check {
 }
 
 // defaultSteps is a Legion head H of a task with the default steps, planner implementer tester
-// reviewer acceptance:owner: the head's checks, and the reviewer's step and the owner's acceptance
-// as given.
+// reviewer acceptance:owner: the head's checks, the reviewer's step and the owner's acceptance as
+// given, a tester whose claim records no session, and the change of the implementer's one commit.
 func defaultSteps(held []Check, reviewer, acceptance Step) Inputs {
 	return Inputs{Head: h, Legion: true, Checks: held, Steps: []Step{{Type: plan.TypePlanning}, {Type: plan.TypeImplementation},
-		{Type: plan.TypeTesting}, reviewer, acceptance}}
+		testingStep, reviewer, acceptance}, Commits: implemented}
 }
 
 // stepsOf is a Legion head H of a task with steps of these types: an implementation step, and
-// each of more as given.
+// each of more as given; its change is the implementer's one commit.
 func stepsOf(held []Check, more ...Step) Inputs {
-	return Inputs{Head: h, Legion: true, Checks: held, Steps: append([]Step{{Type: plan.TypeImplementation}}, more...)}
+	return Inputs{Head: h, Legion: true, Checks: held, Steps: append([]Step{{Type: plan.TypeImplementation}}, more...), Commits: implemented}
 }
-
-// testingStep is a testing step.
-var testingStep = Step{Type: plan.TypeTesting}
 
 // withReviews is in with reviews delivered by webhook.
 func withReviews(in Inputs, reviews ...Review) Inputs {
@@ -79,18 +107,40 @@ func withReviews(in Inputs, reviews ...Review) Inputs {
 	return in
 }
 
-// withUnread is in where the daemon could not read the change's commits.
+// withUnread is in where the daemon could not read every commit of the change.
 func withUnread(in Inputs) Inputs {
-	in.Unread = true
+	in.Unread, in.Commits = true, nil
+	return in
+}
+
+// withChange is in with the change of commits.
+func withChange(in Inputs, commits ...Commit) Inputs {
+	in.Commits = commits
+	return in
+}
+
+// withTester is in with its testing step's claim recording sessions.
+func withTester(in Inputs, sessions ...string) Inputs {
+	steps := slices.Clone(in.Steps)
+	for i := range steps {
+		if steps[i].Type == plan.TypeTesting {
+			steps[i].Sessions = sessions
+		}
+	}
+	in.Steps = steps
 	return in
 }
 
 // Decide is R4's table and refusals, one case per row and per refusal. On a head a Legion issue
-// owns, success only when every testing step reads yes at H for each check, every review step's
-// agent approved H, and at least one approving review step's agent is independent: its claim wrote
-// none of the change, and the daemon read its sessions and the change's commits. Failure on a check
-// no at H, on a review step's changes at H, and once every step has passed with no independent
-// review, which Decide names as its reason. Nothing before. A person's approval is never a
+// owns, success only when each check of the task reads yes at H whatever steps the plan names,
+// every testing and review step passed at H, and each commit of the change has a reader: an agent
+// of a review step that approved H, or of a testing step that passed there, whose claim records a
+// session and none of whose sessions made the commit (R29, with R4's departures). A commit's makers
+// are the sessions its Omp-Session lines name: a commit with no line has no agent maker, and a
+// session no claim records is a maker outside the task's claims. A claim that records no session
+// reads no commit. Failure on a check no at H, on a review step's changes at H, once every check
+// and step passed with a commit no agent read, which Decide names as its reason, and where the
+// daemon could not read every commit of the change. Nothing before. A person's approval is never a
 // verdict there, and a person's last request for changes at H refuses it. On any other head, the
 // ci_reviewer's last review, the side reviewer's verdict where the entry takes side reviews, or a
 // person's approval; and on every head a refusal - a failed step, the CI reviewer's request for
@@ -106,32 +156,51 @@ func TestDecideIsR4sTable(t *testing.T) {
 		reason Reason
 	}{
 		// A head a Legion issue owns, with the default steps.
-		{"a Legion head: every check yes, and both review steps approve, the reviewer independent", defaultSteps(allYes, approves, approves), Success, ""},
+		{"a Legion head: every check yes, both review steps approve, the implementer's commit read", defaultSteps(allYes, approves, accepts), Success, ""},
 		{"a Legion head: a check no at H, before any review", defaultSteps(checks(StateNo), noVerdict, noVerdict), Failure, ""},
-		{"a Legion head: a check no at H beats both approvals", defaultSteps(checks(StateNo), approves, approves), Failure, ""},
+		{"a Legion head: a check no at H beats both approvals", defaultSteps(checks(StateNo), approves, accepts), Failure, ""},
 		{"a Legion head: the reviewer's changes", defaultSteps(allYes, changes, noVerdict), Failure, ""},
 		{"a Legion head: the owner's changes after the reviewer's approve", defaultSteps(allYes, approves, changes), Failure, ""},
-		{"a Legion head: a check with no state at H", defaultSteps(checks(""), approves, approves), None, ""},
-		{"a Legion head: a check unknown at H", defaultSteps(checks(StateUnknown), approves, approves), None, ""},
-		{"a Legion head: no set of checks held at H", defaultSteps(nil, approves, approves), None, ""},
-		{"a Legion head: an empty set of checks at H", defaultSteps([]Check{}, approves, approves), Success, ""},
+		{"a Legion head: a check with no state at H", defaultSteps(checks(""), approves, accepts), None, ""},
+		{"a Legion head: a check unknown at H", defaultSteps(checks(StateUnknown), approves, accepts), None, ""},
+		{"a Legion head: no set of checks held at H", defaultSteps(nil, approves, accepts), None, ""},
+		{"a Legion head: an empty set of checks at H", defaultSteps([]Check{}, approves, accepts), Success, ""},
 		{"a Legion head: the reviewer approves and the owner has not", defaultSteps(allYes, approves, noVerdict), None, ""},
 		{"a Legion head: neither review step has a verdict", defaultSteps(allYes, noVerdict, noVerdict), None, ""},
-		{"a Legion head: both approve and both agents wrote part of the change", defaultSteps(allYes, approvesWrote, approvesWrote), Failure, NoIndependentReview},
-		{"a Legion head: the reviewer wrote part of the change, the owner none", defaultSteps(allYes, approvesWrote, approves), Success, ""},
-		{"a Legion head: the change's commits could not be read", withUnread(defaultSteps(allYes, approves, approves)), Failure, ChangeUnread},
-		{"a Legion head: the commits unread and every agent wrote part of the change", withUnread(defaultSteps(allYes, approvesWrote, approvesWrote)), Failure, ChangeUnread},
-		{"a Legion head: the reviewer's sessions could not be read and the owner wrote", defaultSteps(allYes, approvesUnread, approvesWrote), Failure, ChangeUnread},
-		{"a Legion head: the reviewer's sessions could not be read and the owner is independent", defaultSteps(allYes, approvesUnread, approves), Success, ""},
-		{"a Legion head: no independent review, and a check not yet yes", defaultSteps(checks(""), approvesWrote, approvesWrote), None, ""},
+		{"a Legion head: a commit of the reviewer's, which the owner reads", withChange(defaultSteps(allYes, approves, accepts),
+			madeBy("c1", reviewerSession)), Success, ""},
+		{"a Legion head: a commit of the reviewer's and one of the owner's, each read by the other", withChange(defaultSteps(allYes, approves, accepts),
+			madeBy("c1", reviewerSession), madeBy("c2", ownerSession)), Success, ""},
+		{"a Legion head: a commit whose lines name the reviewer and the owner, the tester recording no session", withChange(defaultSteps(allYes, approves, accepts),
+			madeBy("c1", implementerSession), madeBy("c2", reviewerSession, ownerSession)), Failure, NoReader},
+		{"a Legion head: the tester's pass reads a commit of the reviewer and the owner", withTester(withChange(defaultSteps(allYes, approves, accepts),
+			madeBy("c2", reviewerSession, ownerSession)), testerSession), Success, ""},
+		{"a Legion head: a commit whose lines name all three readers", withTester(withChange(defaultSteps(allYes, approves, accepts),
+			madeBy("c2", reviewerSession, ownerSession, testerSession)), testerSession), Failure, NoReader},
+		{"a Legion head: the change's commits could not be read", withUnread(defaultSteps(allYes, approves, accepts)), Failure, ChangeUnread},
+		{"a Legion head: the change's commits not read at all", withChange(defaultSteps(allYes, approves, accepts)), Failure, ChangeUnread},
+		{"a Legion head: a commit no agent read, and a check not yet yes", withChange(defaultSteps(checks(""), approves, accepts),
+			madeBy("c1", reviewerSession, ownerSession)), None, ""},
 
 		// A head a Legion issue owns, with a plan of other steps.
-		{"a plan implementer reviewer: the reviewer's approve, independent", stepsOf(nil, approves), Success, ""},
-		{"a plan implementer reviewer: a check's state is no testing step's", stepsOf(checks(StateNo), approves), Success, ""},
-		{"a plan implementer reviewer: the reviewer wrote part of the change", stepsOf(nil, approvesWrote), Failure, NoIndependentReview},
-		{"a plan implementer tester: every check yes and no review step", stepsOf(allYes, testingStep), Failure, NoIndependentReview},
-		{"a plan implementer tester: a check with no state", stepsOf(checks(""), testingStep), None, ""},
-		{"a plan implementer tester: a check no", stepsOf(checks(StateNo), testingStep), Failure, ""},
+		{"a plan implementer reviewer: every check yes and the reviewer's approve", stepsOf(allYes, approves), Success, ""},
+		{"a plan implementer reviewer: a check no, though the plan has no testing step", stepsOf(checks(StateNo), approves), Failure, ""},
+		{"a plan implementer reviewer: no set of checks held", stepsOf(nil, approves), None, ""},
+		{"a plan implementer reviewer: a commit of the reviewer's", withChange(stepsOf(allYes, approves), madeBy("c1", implementerSession),
+			madeBy("c2", reviewerSession)), Failure, NoReader},
+		{"a plan implementer reviewer: a commit with no Omp-Session line", withChange(stepsOf(allYes, approves), madeBy("c1")), Success, ""},
+		{"a plan implementer reviewer: a commit naming a session no claim records", withChange(stepsOf(allYes, approves),
+			madeBy("c1", outsideSession)), Success, ""},
+		{"a plan implementer reviewer: the reviewer's claim records no session", stepsOf(allYes, approvedAs()), Failure, NoReader},
+		{"a plan implementer tester: every check yes, no commit the tester's", stepsOf(allYes, testedAs(testerSession)), Success, ""},
+		{"a plan implementer tester: a commit of the tester's", withChange(stepsOf(allYes, testedAs(testerSession)),
+			madeBy("c1", testerSession)), Failure, NoReader},
+		{"a plan implementer tester: the tester's claim records no session", stepsOf(allYes, testingStep), Failure, NoReader},
+		{"a plan implementer tester: a check with no state", stepsOf(checks(""), testedAs(testerSession)), None, ""},
+		{"a plan implementer tester: a check no", stepsOf(checks(StateNo), testedAs(testerSession)), Failure, ""},
+		{"a plan with no testing step and no review step: every check yes", stepsOf(allYes), Failure, NoReader},
+		{"a plan with no testing step and no review step: a check with no state", stepsOf(checks("")), None, ""},
+		{"a plan with no testing step and no review step: a check no", stepsOf(checks(StateNo)), Failure, ""},
 
 		// A person's review of a Legion head.
 		{"a Legion head: a person's approval is no verdict", withReviews(defaultSteps(allYes, approves, noVerdict), approvedBy("a-writer", false, h)), None, ""},
@@ -191,7 +260,7 @@ func TestDecideIsR4sTable(t *testing.T) {
 			Reviews: []Review{approvedBy("another-bot[bot]", false, h), refusedBy("another-bot[bot]", false, h)}}, None, ""},
 		{"an outside head: a person's approval", Inputs{Head: h, CIReviewer: ciReviewer, Reviews: []Review{approvedBy("a-writer", true, h)}}, Success, ""},
 		{"an outside head: an approval by an account with no write access", Inputs{Head: h, CIReviewer: ciReviewer, Reviews: []Review{approvedBy("a-reader", false, h)}}, None, ""},
-		{"an outside head: no plan step is read", Inputs{Head: h, Steps: []Step{approvesWrote}, Checks: checks(StateNo),
+		{"an outside head: no plan step is read", Inputs{Head: h, Steps: []Step{approves}, Checks: checks(StateNo),
 			Reviews: []Review{approvedBy("a-writer", true, h)}}, Success, ""},
 
 		// A head no Legion issue owns, on a repository whose entry takes side reviews.
@@ -214,28 +283,47 @@ func TestDecideIsR4sTable(t *testing.T) {
 	}
 }
 
-// StepsPassed is whether every testing and review step of a Legion head's plan passed at the head,
-// which alone makes the independence of a review decide anything: the writer reads the change's
-// commits for the Omp-Session test only then.
+// StepsPassed is whether each check of a Legion head's task reads yes there, whatever steps the
+// plan names, and every review step's agent approved the head: only then do the readers of the
+// change's commits decide anything, so the writer reads the change's commits only then.
 func TestStepsPassedAtTheHead(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		in   Inputs
 		want bool
 	}{
-		{"every check yes and both review steps approve", defaultSteps(allYes, approvesWrote, approves), true},
-		{"a check with no state", defaultSteps(checks(""), approves, approves), false},
+		{"every check yes and both review steps approve", defaultSteps(allYes, approves, accepts), true},
+		{"a check with no state", defaultSteps(checks(""), approves, accepts), false},
 		{"a review step with no verdict", defaultSteps(allYes, approves, noVerdict), false},
 		{"a review step's changes", defaultSteps(allYes, approves, changes), false},
-		{"a plan with no testing step and no set held", stepsOf(nil, approves), true},
+		{"a plan with no testing step and no set held", stepsOf(nil, approves), false},
+		{"a plan with no testing step and every check yes", stepsOf(allYes, approves), true},
 		{"a plan with no review step", stepsOf(allYes, testingStep), true},
-		{"an outside head", Inputs{Head: h, Steps: []Step{approves}}, false},
+		{"a plan with no testing step and no review step", stepsOf(allYes), true},
+		{"an outside head", Inputs{Head: h, Steps: []Step{approves}, Checks: allYes}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := StepsPassed(tc.in); got != tc.want {
 				t.Errorf("StepsPassed(%+v) = %t, want %t", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// CommitsWithNoReader is each commit of the change no reader read, in the change's order, which the
+// run's summary names: a commit whose makers include the session of every agent that read at the
+// head. A step that did not pass at the head reads nothing: a review step with no approve there,
+// and a testing step whose checks do not all read yes.
+func TestCommitsWithNoReaderAreNamedInTheChangesOrder(t *testing.T) {
+	in := withTester(withChange(defaultSteps(allYes, approves, accepts),
+		madeBy("c1", reviewerSession, ownerSession, testerSession), madeBy("c2", implementerSession), madeBy("c3"),
+		madeBy("c4", testerSession, ownerSession, reviewerSession)), testerSession)
+	if got := CommitsWithNoReader(in); !slices.Equal(got, []string{"c1", "c4"}) {
+		t.Errorf("CommitsWithNoReader = %q, want c1 and c4, the two whose lines name every reader", got)
+	}
+	waiting := withTester(withChange(defaultSteps(checks(""), approves, noVerdict), madeBy("c1", reviewerSession)), testerSession)
+	if got := CommitsWithNoReader(waiting); !slices.Equal(got, []string{"c1"}) {
+		t.Errorf("CommitsWithNoReader where the tester's checks are not all yes and the owner gave no verdict = %q, want c1: the reviewer alone reads, and not its own commit", got)
 	}
 }
 

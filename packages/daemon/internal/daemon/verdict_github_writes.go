@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -172,27 +173,57 @@ func (w *workflowRuntime) recordedVerdictWrites(ctx context.Context, target verd
 	return runs, statuses, err
 }
 
-// The summaries of a legion-verdict run that concludes failure for want of an independent review
-// (verdict.NoIndependentReview, verdict.ChangeUnread), under the title verdictOutput gives it. The
-// merger reads them on the head it would merge and tells the owner (spec R4), so their words are
-// the merger's prompt's to quote: change them with prompts/roles/merger.md.
+// The output of a legion-verdict run that concludes failure on a Legion head where each check reads
+// yes and every testing and review step passed, because a commit of the change has no reader
+// (verdict.NoReader) or the daemon could not read the change's commits (verdict.ChangeUnread): one
+// title for both, and the opening of each summary, which for a commit with no reader then names
+// each such commit, one to a line ("- <sha>"). The merger reads them on the head it would merge and
+// tells the owner once for that head (spec R4), so their words are the merger's prompt's to quote:
+// change them with prompts/roles/merger.md.
 const (
-	noIndependentReviewSummary = "Every testing and review step of the task's plan passed at this head, and no review step that approved it was run by an agent whose claim wrote none of the change: an independent review is missing."
-	changeUnreadSummary        = "Every testing and review step of the task's plan passed at this head, but the daemon could not read the change's commits or the sessions of the review steps' claims, so it counts no review as independent: an independent review is missing."
+	noReaderTitle   = verdict.CheckName + ": failure (a commit with no reader)"
+	noReaderOpening = "Each check reads yes and every testing and review step of the task's plan passed at this head, and no agent of the task read these commits of the change. An agent reads a commit when it approved this head as a review step, or passed here as a testing step, its claim records a session, and no session of its claim made the commit, as the commit's Omp-Session lines name its makers:"
+	unreadOpening   = "Each check reads yes and every testing and review step of the task's plan passed at this head, but the daemon could not read every commit of the change, so no commit has a reader."
+	// summaryBound is the most bytes a run's summary carries of the commits it names: GitHub takes
+	// 65,535 characters at most, and a change of more commits with no reader than fit is named up to
+	// the bound and then counted.
+	summaryBound = 60000
 )
 
 // verdictOutput is the title and summary a check run of legion-verdict shows when it concludes
-// conclusion on a head of kind, decided being what the writer decided there: a failure for want
-// of an independent review says so, and every other conclusion names the head's kind alone.
+// conclusion on a head of kind, decided being what the writer decided there: a failure for a commit
+// with no reader names each such commit, a failure for commits the daemon could not read says so,
+// and every other conclusion names the head's kind alone.
 func verdictOutput(decided verdictDecision, conclusion verdict.Conclusion) map[string]string {
-	summary := map[verdict.Reason]string{verdict.NoIndependentReview: noIndependentReviewSummary, verdict.ChangeUnread: changeUnreadSummary}[decided.reason]
-	if summary == "" || conclusion != decided.conclusion {
-		return map[string]string{
-			"title":   verdict.CheckName + ": " + string(conclusion),
-			"summary": "The Legion daemon wrote this from the verdicts it records at this " + decided.kind + " head.",
+	if conclusion == decided.conclusion {
+		switch decided.reason {
+		case verdict.NoReader:
+			return map[string]string{"title": noReaderTitle, "summary": noReaderSummary(decided.noReader)}
+		case verdict.ChangeUnread:
+			return map[string]string{"title": noReaderTitle, "summary": unreadOpening}
 		}
 	}
-	return map[string]string{"title": verdict.CheckName + ": " + string(conclusion) + " (no independent review)", "summary": summary}
+	return map[string]string{
+		"title":   verdict.CheckName + ": " + string(conclusion),
+		"summary": "The Legion daemon wrote this from the verdicts it records at this " + decided.kind + " head.",
+	}
+}
+
+// noReaderSummary is the summary of a run that concludes failure for commits with no reader: the
+// opening, then each commit, one to a line, while the summary stays within summaryBound, and a count
+// of the commits left out after that.
+func noReaderSummary(commits []string) string {
+	var summary strings.Builder
+	summary.WriteString(noReaderOpening + "\n")
+	for i, sha := range commits {
+		line := "\n- " + sha
+		if summary.Len()+len(line) > summaryBound {
+			fmt.Fprintf(&summary, "\n\nand %d more commits with no reader, which this summary has no room for.", len(commits)-i)
+			break
+		}
+		summary.WriteString(line)
+	}
+	return summary.String()
 }
 
 // createVerdictRun creates the daemon's own legion-verdict check run on target's head, completed

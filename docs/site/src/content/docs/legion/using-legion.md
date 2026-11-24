@@ -131,9 +131,10 @@ template, and the later phases fill in their own lines:
 
 Legion's reviewer posts its findings as a `COMMENT` review, which decides nothing, and sends its
 verdict, `approve` or `changes`, to the daemon. The architect's acceptance is the issue's second
-review step. The daemon writes the required check `legion-verdict` from those verdicts, and from
-the issue's check results at the head where the task has a tester step, and writes `success` only
-where at least one approving review was made by an agent that wrote none of the change. Your own
+review step. The daemon writes the required check `legion-verdict` from those verdicts and from the
+issue's check results at the head, whatever steps the task's plan names, and writes `success` only
+where each commit of the change was read by an agent of the task that made none of it: one whose
+review step's verdict at the head is `approve`, or whose testing step passed there. Your own
 review counts one way: **Request changes**, submitted on GitHub from an account of type User with
 write access to the repository, refuses the head it names, and while the reviewer's round is open
 it also sends the work back to the implementer with your comments.
@@ -155,8 +156,9 @@ pull request instead.
 The repository's branch protection and code-owner rules decide when it lands: a review
 only you can give is waited for. Legion turns auto-merge on nowhere, approves no pull request on
 your behalf and changes nobody's right to merge. Where the base requires `legion-verdict` and that
-check reads `failure` for want of an independent review, the merger merges nothing and the
-architect asks you, since only a person can merge that head.
+check reads `failure` for a commit of the change that no agent of the task read, the merger merges
+nothing and the architect asks you, since only a person can merge that head, by INFRA-455's
+break-glass step.
 
 The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
 A root with work still running beneath it is the exception: its merge is recorded and the issue
