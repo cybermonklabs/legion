@@ -1,6 +1,9 @@
 package rendering
 
-import "fmt"
+import (
+	"fmt"
+	"unicode/utf8"
+)
 
 // The log metric filters both components register, and the alarms the listener pages with on its
 // filters' metrics.
@@ -117,7 +120,10 @@ var ListenerLogSignals = []LogSignal{
 			"503, which would replace the only task into the same failing rebuild with empty caches. " +
 			"The bus keeps retrying the rebuild with backoff. Read the line's `error` in %s for the " +
 			"failing bucket read: typically a JetStream that refuses or does not answer consumer " +
-			"creation for the KV streams.",
+			"creation for the KV streams. The stall may instead be the fixed naming mode's read of " +
+			"the cutover marker (`envoy.bucket` in `envoy_session_consumers`), which runs after the " +
+			"rebuild, so the caches are then current: `/healthz` names which, `KV watch rebuild` or " +
+			"`cutover marker read` with that bucket and key.",
 	},
 	{
 		// A start that dropped another deployment's overlapping stream subject: the WARN the bus
@@ -177,6 +183,25 @@ func (s LogSignal) MetricName() string { return s.metric }
 
 // Description is the alarm's description for a listener logging to the log group logGroup.
 func (s LogSignal) Description(logGroup string) string { return fmt.Sprintf(s.description, logGroup) }
+
+// MaxAlarmDescription is the longest description CloudWatch takes for an alarm, in characters
+// (PutMetricAlarm's AlarmDescription, 0 to 1024).
+const MaxAlarmDescription = 1024
+
+// CheckListenerLogGroup refuses logGroup, a listener's log group name, when an alarm's description
+// naming it (Description) would be longer than CloudWatch takes (MaxAlarmDescription), naming the
+// alarm and the length. CloudWatch takes a log group name of up to 512 characters, so a name it
+// takes can still make the longest description, reconnect-hooks-stalled's, too long: CloudWatch
+// would refuse that alarm at the apply, after the rest of the listener's resources.
+func CheckListenerLogGroup(logGroup string) error {
+	for _, s := range ListenerLogSignals {
+		if n := utf8.RuneCountInString(s.Description(logGroup)); n > MaxAlarmDescription {
+			return fmt.Errorf("the listener log group name %q makes the %s alarm's description %d characters, past CloudWatch's %d",
+				logGroup, s.alarm, n, MaxAlarmDescription)
+		}
+	}
+	return nil
+}
 
 // MetricFilters returns the signal's filters as a WebhookListener named name, whose
 // metricNamespace is namespace, registers them: <name>-<filter's name>.

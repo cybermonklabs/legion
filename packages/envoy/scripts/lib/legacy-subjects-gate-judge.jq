@@ -190,6 +190,28 @@ def old_filters:
   ([.config.filter_subject // empty] + (.config.filter_subjects // [])) as $filters
   | [$filters[] | select(type == "string") | select(old_form) | select(has_twin($filters) | not)];
 
+# durable_name is the durable a consumer of a durable's family is, the listener's, Dispatch's or a
+# daemon's (consumernames.LogicalOf): {logical} naming it, or {why} it cannot be read. A fixed
+# name, one with no ~, is the durable's own name. A fresh name (consumernames.FreshName: the
+# durable's name, ~ and a random suffix, ENVOY_CONSUMER_NAMES=fresh) is the durable it holds before
+# its last ~ only when its metadata envoy.logical (consumernames.LogicalMetadataKey) names that same
+# durable, as every fresh consumer's does and as consumernames.Names.Owns requires before any of
+# those families takes one; one whose metadata does not is no durable's, and nothing is read from
+# its name.
+def durable_name:
+  if (.name | contains("~") | not) then {logical: .name}
+  else (.name | sub("~[^~]*$"; "")) as $cut
+    | (.config.metadata | if type == "object" then .["envoy.logical"] else null end) as $meta
+    | if $meta == $cut then {logical: $cut}
+      elif $meta == null then {why: "it carries no metadata envoy.logical, which names the durable a fresh name is made for"}
+      else {why: "its metadata envoy.logical is \($meta | printable), not \($cut | printable), the name before its last ~"}
+      end
+  end;
+
+# daemon_dispatch says whether a consumer is a Legion daemon's dispatch durable,
+# legion-go-<project>-dispatch, under its fixed name or a fresh one (durable_name).
+def daemon_dispatch: durable_name | .logical // "" | test("^legion-go-.+-dispatch$");
+
 . as $in
 | ($in.job.lines // []) as $jl
 | ($jl | map(select(.leg == "end")) | length > 0) as $whole
@@ -320,7 +342,7 @@ def old_filters:
        ($consumerpages | last | .value.total) as $total
        | if ($consumers | length) != $total then {unknown: "the stream's consumers: the list read \($consumers | length) distinct of the \($total) the server counts"} else empty end
      else empty end),
-    (if $consumersread and ($consumers | map(select(.name | test("^legion-go-.+-dispatch$"))) | length) == 0 then
+    (if $consumersread and ($consumers | map(select(daemon_dispatch)) | length) == 0 then
        {unknown: "the stream's consumers: no Legion daemon consumer (legion-go-<project>-dispatch) is on the stream, so the daemons' consumers were not read"}
      else empty end),
     ($consumers[]
@@ -331,20 +353,27 @@ def old_filters:
     (if $consumersread and all($consumers[]; old_filters | length == 0) then
        {pass: "no consumer of the stream's \($consumers | length) filters a name only the old form matches (\($consumers | map(select(.name | startswith("legion-go-"))) | length) of them are Legion daemons')"}
      else empty end),
-    # Every listener that has served on the bus, by its durable (bus.ListenerDurable), bound now or
-    # not: one whose counter this reading did not read is a reader the counter leg could not see.
-    # A durable outlives its listener for its inactive_threshold, so a listener that is offline,
-    # asleep or restarting is named here too.
+    # Every listener that has served on the bus, by its durable (bus.ListenerDurable,
+    # listener-<machine>, under its fixed name or a fresh one, durable_name), bound now or not: one
+    # whose counter this reading did not read is a reader the counter leg could not see. A durable
+    # outlives its listener for its inactive_threshold, so a listener that is offline, asleep or
+    # restarting is named here too. A fresh name whose envoy.logical names no durable it holds is
+    # UNKNOWN by its name: its machine is not read from what follows listener-.
     (if $consumersread then
        ([$listeners[] | select(.unknown | not) | .machine | strings | gsub(" "; "-")]) as $machines
        | $consumers[]
        | select(.name | startswith("listener-"))
-       | (.name | ltrimstr("listener-")) as $m
-       | select(($machines | index($m)) == null)
-       | if .push_bound == true then
-           {unknown: "listener machine \($m | printable) is bound to its durable \(.name | printable) on the bus, and no listener this reading read serves as that machine: name it with --listener \($m | printable)=<url> if it runs outside the cluster, or, if it runs in the cluster and dials the bus by another address, name that NATS_URLS with --bus-alias"}
+       | durable_name as $d
+       | if $d.why then
+           {unknown: "listener durable \(.name | printable) has a fresh name (a ~ and a suffix), and \($d.why), so this reading cannot tell which machine it serves: no listener takes such a consumer for its durable (consumernames.Names.Owns), so find what made it with nats consumer info ENVOY_NOTIFICATIONS \(.name | printable)"}
          else
-           {unknown: "listener machine \($m | printable) has its durable \(.name | printable) on the bus and is not bound to it now (offline, asleep or restarting; last active \(.delivered.last_active // "never" | printable)), and no listener this reading read serves as that machine: what it counted while it ran cannot be read; read again while it runs, naming it with --listener \($m | printable)=<url> if it runs outside the cluster, or its NATS_URLS with --bus-alias if it runs in the cluster and dials the bus by another address"}
+           ($d.logical | ltrimstr("listener-")) as $m
+           | select(($machines | index($m)) == null)
+           | if .push_bound == true then
+               {unknown: "listener machine \($m | printable) is bound to its durable \(.name | printable) on the bus, and no listener this reading read serves as that machine: name it with --listener \($m | printable)=<url> if it runs outside the cluster, or, if it runs in the cluster and dials the bus by another address, name that NATS_URLS with --bus-alias"}
+             else
+               {unknown: "listener machine \($m | printable) has its durable \(.name | printable) on the bus and is not bound to it now (offline, asleep or restarting; last active \(.delivered.last_active // "never" | printable)), and no listener this reading read serves as that machine: what it counted while it ran cannot be read; read again while it runs, naming it with --listener \($m | printable)=<url> if it runs outside the cluster, or its NATS_URLS with --bus-alias if it runs in the cluster and dials the bus by another address"}
+             end
          end
      else empty end),
     # A listener container on another bus that serves as the machine of a listener this reading
@@ -663,7 +692,7 @@ def old_filters:
        elif ($missingconsumers | length) > 0 then {fact: "b", unknown: "\(fact_names.b): the server could not read \($missingconsumers | length) consumer(s) of the stream (\($missingconsumers[:5] | map(printable) | join(", "))), so what they acknowledged is not known"}
        elif ($consumers | length) != ($consumerpages | last | .value.total) then {fact: "b", unknown: "\(fact_names.b): the list read \($consumers | length) distinct consumer(s) of the \($consumerpages | last | .value.total) the server counts, so what the others acknowledged is not known"}
        elif ($consumers | length) == 0 then {fact: "b", unknown: "\(fact_names.b): the stream lists no consumer, and a census that read nothing passes nothing"}
-       elif ($consumers | map(select(.name | test("^legion-go-.+-dispatch$"))) | length) == 0 then {fact: "b", unknown: "\(fact_names.b): no Legion daemon consumer (legion-go-<project>-dispatch) is on the stream, so the daemons' consumers were not read"}
+       elif ($consumers | map(select(daemon_dispatch)) | length) == 0 then {fact: "b", unknown: "\(fact_names.b): no Legion daemon consumer (legion-go-<project>-dispatch) is on the stream, so the daemons' consumers were not read"}
        elif ($families | all(.whole) | not) then {fact: "b", unknown: "\(fact_names.b): the stream's subjects were not read whole, so its old-form messages are not known"}
        elif ($emptyfamilies | length) > 0 then {fact: "b", unknown: "\(fact_names.b): the stream's subjects under \($emptyfamilies | join(", ")) read none, so the read saw nothing and its old-form messages are not known"}
        elif any($oldlasts[]; (.last.seq | type) != "number" and (.last.gone | not)) then {fact: "b", unknown: "\(fact_names.b): the last message of \([$oldlasts[] | select((.last.seq | type) != "number" and (.last.gone | not))] | length) old-form subject(s) was not read, so the last old-form message a consumer takes is not known"}

@@ -50,6 +50,15 @@
 # no-delay case the ordering is not left to chance at all: the run waits until the server says the
 # consumer owes no ack for what the transport offered it (wait_for_acks_settled) before each
 # delete.
+#
+# ENVOY_CONSUMER_NAMES names how the listener names its session consumers, and this run reads a
+# session's consumer by the same rule. fixed, the default and the value when it is unset, is
+# s-<session id>. fresh is a new name at each creation, which the session's selection record in the
+# bucket envoy_session_consumers names as its current: the listener starts once to create
+# ENVOY_NOTIFICATIONS, the run makes that bucket and its sentinel from the stream as the operator's
+# create-bucket does, and the listener starts again, before any session registers. The run reads
+# the record's current wherever it reads a session's consumer (readCurrent,
+# scripts/e2e/lib/nats-stream.ts), and refuses any other value by name, as the listener does.
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
@@ -71,6 +80,12 @@ if [[ ! "$ack_delay_ms" =~ ^(0|[1-9][0-9]{0,3})$ ]] ||
     ((ack_delay_ms < ack_delay_min_ms || ack_delay_ms > ack_delay_max_ms)); }; then
   printf 'ERR: E2E_SESSION_ACK_DELAY_MS is %s; it must be 0, or a decimal from %s to %s written without a leading zero. Below %s the ack can reach the server before the clean stop reads the consumer floor, so this run would assert the re-offer case against a build that is right; above %s the windows own waits run out on the injection.\n' \
     "$ack_delay_ms" "$ack_delay_min_ms" "$ack_delay_max_ms" "$ack_delay_min_ms" "$ack_delay_max_ms" >&2
+  exit 2
+fi
+
+readonly consumer_names="${ENVOY_CONSUMER_NAMES:-fixed}"
+if [[ "$consumer_names" != fixed && "$consumer_names" != fresh ]]; then
+  printf 'ERR: ENVOY_CONSUMER_NAMES is %s; it must be fixed or fresh (unset means fixed).\n' "$consumer_names" >&2
   exit 2
 fi
 
@@ -176,6 +191,9 @@ readonly lapsed_role_lookup_response_file="${out_dir}/lapsed-role-lookup-respons
 readonly lapsed_role_reclaim_response_file="${out_dir}/lapsed-role-reclaim-response.json"
 readonly keep_false_role_response_file="${out_dir}/keep-false-role-response.json"
 readonly listener_log_file="${out_dir}/listener.log"
+# The log of the fresh naming mode's first listener start, the one that creates the stream the
+# selection bucket's sentinel reads (below), kept apart from the listener the run asserts on.
+readonly stream_listener_log_file="${out_dir}/listener-stream.log"
 readonly session_log_file="${out_dir}/session.log"
 readonly subscriber_log_file="${out_dir}/subscriber.log"
 readonly nats_log_file="${out_dir}/nats.log"
@@ -272,7 +290,7 @@ rm -f "$envelopes_file" "$session_frames_file" "$session_offers_file" "$session_
   "$nocursor_frames_file" "$nocursor_offers_file" "$nocursor_cursor_file" "${nocursor_cursor_file}.tmp" \
   "$nocursor_subscribe_response_file" "$nocursor_send_response_file" "$nocursor_registry_response_file" \
   "$nocursor_relaunch_response_file" "$nocursor_session_log_file" "$nocursor_ready_fifo" \
-  "$listener_log_file" "$session_log_file" "$subscriber_log_file" "$nats_log_file" \
+  "$listener_log_file" "$stream_listener_log_file" "$session_log_file" "$subscriber_log_file" "$nats_log_file" \
   "$listener_binary" "$nats_binary" "$session_ready_fifo" "$subscriber_ready_fifo"
 rm -rf "$nats_store_dir"
 : >"$envelopes_file"
@@ -288,6 +306,7 @@ rm -rf "$nats_store_dir"
 # still fails the moment its own process is gone, and still fails on its own deadline.
 : >"$nats_log_file"
 : >"$listener_log_file"
+: >"$stream_listener_log_file"
 : >"$session_log_file"
 : >"$subscriber_log_file"
 : >"$nocursor_session_log_file"
@@ -360,16 +379,63 @@ nats_url="nats://127.0.0.1:${nats_port}"
 readonly nats_url
 printf 'NATS: %s\n' "$nats_url"
 
+# start_listener LOG starts the listener, its log in LOG, and sets listener_pid to it.
+start_listener() {
+  PORT="${E2E_PORT:-0}" \
+    ENVOY_MACHINE_ID=e2e-local \
+    NATS_URLS="$nats_url" \
+    ENVOY_WEBHOOKS=github \
+    ENVOY_GITHUB_WEBHOOK_SECRET="$webhook_secret" \
+    ENVOY_REVIEWER_APP_ID=1 \
+    ENVOY_CI_DEBOUNCE=250ms \
+    ENVOY_CONSUMER_NAMES="$consumer_names" \
+    "$listener_binary" >"$1" 2>&1 &
+  listener_pid=$!
+}
+
+# make_session_bucket makes, in the fresh naming mode, the selection bucket the listener refuses
+# every session-consumer call without, as the operator's create-bucket makes it
+# (createSessionBucket, scripts/e2e/lib/nats-stream.ts): it waits for ENVOY_NOTIFICATIONS to exist,
+# reads where the stream starts, and only then makes the bucket and its sentinel. On a failure it
+# prints LOG, the log of the listener that was to create the stream.
+make_session_bucket() {
+  local sentinel
+  sentinel="$(
+    cd "$repo_root"
+    exec env E2E_NATS_URL="$nats_url" bun -e '
+      import { connect } from "nats";
+      import { createSessionBucket } from "./scripts/e2e/lib/nats-stream.ts";
+
+      const connection = await connect({ servers: process.env.E2E_NATS_URL, name: "envoy-e2e-session-bucket" });
+      const state = await createSessionBucket(connection, "ENVOY_NOTIFICATIONS", 30);
+      await connection.close();
+      process.stdout.write(`${JSON.stringify(state)}\n`);
+    '
+  )" || {
+    printf 'ERR: the session consumer selection bucket could not be made.\n' >&2
+    cat "$1" >&2
+    exit 1
+  }
+  printf 'session consumer selection bucket envoy_session_consumers made, sentinel %s\n' "$sentinel"
+}
+
+# The fresh naming mode: the stream exists before the bucket, as it does wherever an operator runs
+# create-bucket, so the listener starts once to create ENVOY_NOTIFICATIONS, the bucket is made from
+# that stream, and the listener is stopped and started again: the order a deployment meets, a
+# fresh-mode listener started once the operator has made the bucket. The second start is the one
+# the run serves on and asserts. No session registers before it.
+if [[ "$consumer_names" == fresh ]]; then
+  printf 'starting a first listener to create ENVOY_NOTIFICATIONS\n'
+  start_listener "$stream_listener_log_file"
+  printf 'making the session consumer selection bucket\n'
+  make_session_bucket "$stream_listener_log_file"
+  kill "$listener_pid" 2>/dev/null || true
+  wait "$listener_pid" 2>/dev/null || true
+  listener_pid=""
+fi
+
 printf 'starting listener\n'
-PORT="${E2E_PORT:-0}" \
-  ENVOY_MACHINE_ID=e2e-local \
-  NATS_URLS="$nats_url" \
-  ENVOY_WEBHOOKS=github \
-  ENVOY_GITHUB_WEBHOOK_SECRET="$webhook_secret" \
-  ENVOY_REVIEWER_APP_ID=1 \
-  ENVOY_CI_DEBOUNCE=250ms \
-  "$listener_binary" >"$listener_log_file" 2>&1 &
-listener_pid=$!
+start_listener "$listener_log_file"
 
 # wait_for_listener returns once the listener this script started logs the address it is bound to,
 # and sets listener_url from it; it fails the moment that process is gone, as it is when E2E_PORT
@@ -743,6 +809,11 @@ wait_for_consumer_frame_count() {
 # again would meet the same answer. The deadline is read after the connection is made and a
 # request already under way runs its own 2 s out, with a 100 ms pause behind it, so a wait that
 # runs out ends about 17 seconds after it starts, by name rather than by hanging.
+#
+# The consumer is the session's fixed name, s-<session id>, or in the fresh naming mode the current
+# its selection record names (readCurrent), read once before the first request: nothing between
+# the frames this waits on and this wait registers the session again. A record that names no
+# current ends the wait at once, as an answer that cannot change.
 wait_for_acks_settled() {
   local settle_session_id=$1
   local offers_file=$2
@@ -757,8 +828,10 @@ wait_for_acks_settled() {
   fi
   settled="$(
     cd "$repo_root"
-    exec env E2E_NATS_URL="$nats_url" E2E_SESSION_ID="$settle_session_id" E2E_TARGET_SEQ="$target" bun -e '
+    exec env E2E_NATS_URL="$nats_url" E2E_SESSION_ID="$settle_session_id" E2E_TARGET_SEQ="$target" \
+      E2E_CONSUMER_NAMES="$consumer_names" bun -e '
       import { connect, StringCodec } from "nats";
+      import { readCurrent } from "./scripts/e2e/lib/nats-stream.ts";
 
       const url = process.env.E2E_NATS_URL;
       const sessionID = process.env.E2E_SESSION_ID;
@@ -767,7 +840,12 @@ wait_for_acks_settled() {
       const target = Number(process.env.E2E_TARGET_SEQ);
       const codec = StringCodec();
       const connection = await connect({ servers: url, name: `envoy-e2e-acks-${sessionID}` });
-      const subject = `$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.s-${sessionID}`;
+      let subject = `$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.s-${sessionID}`;
+      if (process.env.E2E_CONSUMER_NAMES === "fresh") {
+        const current = await readCurrent(connection, sessionID);
+        if (current === "") throw new Error(`the selection record of ${sessionID} names no current consumer`);
+        subject = `$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.${current}`;
+      }
       const deadline = Date.now() + 15000;
       let last = "no answer";
       while (Date.now() < deadline) {

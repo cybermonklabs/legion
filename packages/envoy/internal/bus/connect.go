@@ -305,6 +305,12 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// A publish while reconnecting waits for the reconnect (ensureConnWithContext), so the wait
 	// between attempts is how long it waits after NATS is back.
 	opts.ReconnectWait = time.Second
+	// No reconnect buffer: a publish made while the connection is cut fails at once rather than
+	// wait in nats.go's buffer and go out on the next connection. A fixed-mode consumer create or
+	// durable bind checked against the marker gate of the old connection (GateOnMarker), whose
+	// request then timed out, must never reach the server on a connection whose cutover marker
+	// nothing has read: a server restarted inside a writer hold may come back converted
+	// (TestACreatePublishedWhileCutOffNeverReachesTheServerAfterTheReconnect).
 	opts.ReconnectBufSize = -1
 	opts.DisconnectedErrCB = func(_ *nats.Conn, err error) {
 		if err != nil {

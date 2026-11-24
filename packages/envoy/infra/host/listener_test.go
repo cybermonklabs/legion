@@ -216,6 +216,36 @@ func TestListenerWaitForHealthy(t *testing.T) {
 	})
 }
 
+// The host role is rendered only for a listener whose NATS user is a host-kind entry (hostUser):
+// unset and false render none, so the listener reads the cutover marker, and true renders
+// ENVOY_LISTENER_ROLE=host, last. The control is the earlier rendering, which gave every
+// host:Listener the role whatever user it connects as.
+func TestListenerRendersTheHostRoleOnlyForAHostUser(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		hostUser *bool
+		role     bool
+	}{
+		{name: "unset renders no role"},
+		{name: "false renders no role", hostUser: pulumi.BoolRef(false)},
+		{name: "true renders the host role", hostUser: pulumi.BoolRef(true), role: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := exampleArgs()
+			args.HostUser = row.hostUser
+			m, err := run(t, args, nil, "docker")
+			require.NoError(t, err)
+			envs, _ := envsOf(t, m.One(t, containerType))
+			want := slices.Clone(exampleEnvs)
+			if row.role {
+				want = append(want, "ENVOY_LISTENER_ROLE=host")
+				require.Equal(t, "ENVOY_LISTENER_ROLE=host", envs[len(envs)-1], "the role is rendered last")
+			}
+			require.ElementsMatch(t, want, envs)
+		})
+	}
+}
+
 func TestListenerAdoptAliasesEachChildToItsRootLevelName(t *testing.T) {
 	args := exampleArgs()
 	args.Watchdog = &host.WatchdogArgs{Host: "example-host-a"}

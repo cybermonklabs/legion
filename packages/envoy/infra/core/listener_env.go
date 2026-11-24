@@ -67,6 +67,11 @@ type ListenerConfig struct {
 	AgentSecretsURL      string
 	AgentSecretsAudience string
 	PublicURL            string
+	// HostListener renders ENVOY_LISTENER_ROLE=host (bus.ListenerRoleEnvVar): the listener of a
+	// host, connecting as the NATS user that host's sessions share (HostPermissions), which runs
+	// fixed consumer names for good and reads no cutover marker its user may not read. host:Listener
+	// sets it only under its hostUser input; every other listener leaves it false and renders no role.
+	HostListener bool
 	// ConsumerNames is how the listener names the JetStream consumers it creates,
 	// EnvConsumerNames: "fixed" or "fresh". "" leaves the variable unset, and the listener then
 	// runs fixed. CheckConsumerNames holds the rule.
@@ -314,10 +319,10 @@ func (c ListenerConfig) Check() error {
 // bus.SenderMessagesPerMinuteEnvVar then bus.SenderMessageBurstEnvVar, each only when its field
 // is above 0 too. aws/rendering's ListenerEnv sets no NATSReplicas here and writes its own
 // ENVOY_NATS_REPLICAS after all of Env's variables, the sender limit's included. The broker check
-// follows, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
-// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, and
-// EnvConsumerNames comes last, only on a config that sets it too, so a listener without either
-// renders what it always rendered, byte for byte.
+// comes next, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
+// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, then
+// the host role, only on a host's listener, and EnvConsumerNames last, only on a config that sets
+// it too, so a listener without any of them renders what it always rendered, byte for byte.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -379,6 +384,9 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 		if value != "" {
 			env = append(env, brokerVars[i].variable+"="+value)
 		}
+	}
+	if c.HostListener {
+		env = append(env, bus.ListenerRoleEnvVar+"="+bus.ListenerRoleHost)
 	}
 	if c.ConsumerNames != "" {
 		env = append(env, EnvConsumerNames+"="+c.ConsumerNames)

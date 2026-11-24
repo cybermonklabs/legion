@@ -172,15 +172,26 @@ func streamIDOf(t *testing.T, consumers *SessionConsumers) string {
 	return id
 }
 
-// pullSession starts a pull of sessionID's consumer, stopped when the test ends.
+// pullSession starts a pull of sessionID's consumer, s-<sessionID> in the fixed mode these tests
+// run in, stopped when the test ends.
 func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *SessionPull {
 	t.Helper()
-	pull, err := consumers.Pull(context.Background(), sessionID)
+	pull, err := consumers.Pull(context.Background(), sessionID, fixedName(t, sessionID))
 	if err != nil {
 		t.Fatalf("pull %s: %v", sessionID, err)
 	}
 	t.Cleanup(pull.Stop)
 	return pull
+}
+
+// fixedName is sessionID's consumer name in the fixed mode (SessionConsumerName).
+func fixedName(t *testing.T, sessionID string) string {
+	t.Helper()
+	name, ok := SessionConsumerName(sessionID)
+	if !ok {
+		t.Fatalf("%q names no session consumer", sessionID)
+	}
+	return name
 }
 
 // next returns the next message pull holds within 5 s.
@@ -217,7 +228,7 @@ func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if start != (SessionConsumerStart{Created: true, StartSeq: 1, StreamID: streamIDOf(t, consumers)}) {
+	if start != (SessionConsumerStart{Name: fixedName(t, "ses_settings"), Created: true, StartSeq: 1, StreamID: streamIDOf(t, consumers)}) {
 		t.Fatalf("Ensure of a new consumer on an empty stream = %+v, want created at 1 with no gap", start)
 	}
 	info, err := consumers.Info(ctx, "ses_settings")
@@ -258,7 +269,7 @@ func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
 	// The same settings again create nothing and change nothing, and report the start the
 	// consumer already has, which its session's entry records (SessionConsumerStart).
 	again, err := consumers.Ensure(ctx, "ses_settings", []string{contracts.LegacyAgentSubject("ses_settings"), "notifications.github.o.r.>"}, 0)
-	if err != nil || again != (SessionConsumerStart{StartSeq: config.OptStartSeq}) {
+	if err != nil || again != (SessionConsumerStart{Name: fixedName(t, "ses_settings"), StartSeq: config.OptStartSeq}) {
 		t.Fatalf("Ensure of a consumer as it stands = %+v, %v; want nothing done and its start %d", again, err, config.OptStartSeq)
 	}
 }
@@ -304,7 +315,7 @@ func TestRestartAtFloorNeverDeliversWhatTheStreamHeldBeforeTheConsumer(t *testin
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)
 	}
-	if start != (SessionConsumerStart{StartSeq: last + 1, StreamID: streamIDOf(t, consumers), AckFloor: last}) {
+	if start != (SessionConsumerStart{Name: fixedName(t, session), StartSeq: last + 1, StreamID: streamIDOf(t, consumers), AckFloor: last}) {
 		t.Fatalf("RestartAtFloor of a consumer that delivered nothing = %+v, want it kept at %d with no gap", start, last+1)
 	}
 
@@ -442,7 +453,7 @@ func TestRestartAtFloorWithNothingAwaitingAnAckKeepsTheConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)
 	}
-	if start != (SessionConsumerStart{StartSeq: written + 1, StreamID: streamIDOf(t, consumers), AckFloor: written}) {
+	if start != (SessionConsumerStart{Name: fixedName(t, session), StartSeq: written + 1, StreamID: streamIDOf(t, consumers), AckFloor: written}) {
 		t.Fatalf("RestartAtFloor with nothing awaiting an ack = %+v, want the consumer kept at %d", start, written+1)
 	}
 	after, err := consumers.Info(ctx, session)
@@ -502,7 +513,7 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)
 	}
-	if start != (SessionConsumerStart{Created: true, StartSeq: held, StreamID: streamIDOf(t, consumers)}) {
+	if start != (SessionConsumerStart{Name: fixedName(t, session), Created: true, StartSeq: held, StreamID: streamIDOf(t, consumers)}) {
 		t.Fatalf("RestartAtFloor with a message awaiting an ack = %+v, want the consumer created again at %d", start, held)
 	}
 	after, err := consumers.Info(ctx, session)
@@ -704,7 +715,7 @@ func TestAStartBelowTheStreamsFirstSequenceIsAGap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)
 	}
-	if start != (SessionConsumerStart{StartSeq: gone[0], Gap: true, StreamID: streamIDOf(t, consumers)}) {
+	if start != (SessionConsumerStart{Name: fixedName(t, session), StartSeq: gone[0], Gap: true, StreamID: streamIDOf(t, consumers)}) {
 		t.Fatalf("RestartAtFloor below the stream's first sequence = %+v, want it kept at %d with a gap", start, gone[0])
 	}
 
@@ -712,7 +723,7 @@ func TestAStartBelowTheStreamsFirstSequenceIsAGap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure seeded: %v", err)
 	}
-	if seeded != (SessionConsumerStart{Created: true, StartSeq: gone[0], Gap: true, StreamID: streamIDOf(t, consumers)}) {
+	if seeded != (SessionConsumerStart{Name: fixedName(t, "ses_seeded"), Created: true, StartSeq: gone[0], Gap: true, StreamID: streamIDOf(t, consumers)}) {
 		t.Fatalf("Ensure seeded below the stream's first sequence = %+v, want created at %d with a gap", seeded, gone[0])
 	}
 	held, err := consumers.Ensure(ctx, "ses_held", []string{contracts.LegacyAgentSubject("ses_held")}, last+1)
@@ -756,7 +767,7 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 	}
 	wg.Wait()
 	for i := range ids {
-		want := SessionConsumerStart{StartSeq: seqs[i], Gap: i < gone, StreamID: streamID, AckFloor: seqs[i] - 1}
+		want := SessionConsumerStart{Name: fixedName(t, ids[i]), StartSeq: seqs[i], Gap: i < gone, StreamID: streamID, AckFloor: seqs[i] - 1}
 		if errs[i] != nil || starts[i] != want {
 			t.Errorf("RestartAtFloor of %s = %+v, %v; want %+v", ids[i], starts[i], errs[i], want)
 		}
@@ -1110,7 +1121,7 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 		t.Fatalf("connect a session consumers connection of this row's own: %v", err)
 	}
 	t.Cleanup(mine.Close)
-	pull, err := mine.Pull(ctx, session)
+	pull, err := mine.Pull(ctx, session, fixedName(t, session))
 	if err != nil {
 		t.Fatalf("pull %s: %v", session, err)
 	}
@@ -1219,6 +1230,51 @@ func TestEnsureWithoutTheCreateGrantIsErrConsumerNotGranted(t *testing.T) {
 	}
 }
 
+// The adoption check's read of a candidate (ConsumerAdoptable) is a consumer API request like every
+// other: one the NATS user may not make is ErrConsumerNotGranted, the refusal the listener answers
+// as a grant's (503 no_grant for a session), not a bare publish refusal. The control is the same
+// read under a grant that allows it, which the server answers itself: no such candidate.
+func TestAnAdoptionReadWithoutTheInfoGrantIsErrConsumerNotGranted(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		granted bool
+	}{
+		{name: "without the info grant"},
+		{name: "control: with the info grant", granted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seed, public := testnats.User(t)
+			grants := []string{"$JS.API.INFO", "$JS.API.STREAM.>", "_INBOX.>"}
+			if tc.granted {
+				grants = append(grants, "$JS.API.CONSUMER.INFO.>")
+			}
+			uri := testnats.StartNkeyGranted(t, public, grants...).URL
+			t.Setenv("NATS_NKEY_SEED", seed)
+			owner, err := ConnectOwningStream([]string{uri})
+			if err != nil {
+				t.Fatalf("connect the stream's owner: %v", err)
+			}
+			t.Cleanup(owner.Close)
+			consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
+			if err != nil {
+				t.Fatalf("connect session consumers: %v", err)
+			}
+			t.Cleanup(consumers.Close)
+			const candidate = SessionConsumerNamePrefix + "~NOTGRANTED"
+			err = consumers.client.ConsumerAdoptable(context.Background(), candidate, consumers.freshConfig(candidate, "ses_notgranted", 1, nil))
+			if tc.granted {
+				if err == nil || errors.Is(err, ErrPublishDenied) || !strings.Contains(err.Error(), candidate) {
+					t.Fatalf("control: the granted read of a candidate the server does not hold = %v; want the server's own answer naming it", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
+				t.Fatalf("the adoption read without the info grant = %v; want ErrConsumerNotGranted wrapping the server's refusal", err)
+			}
+		})
+	}
+}
+
 // The consumer list reads every session consumer across its pages, and a listed consumer that a
 // restart would keep unchanged is kept with no call, at the start RestartAtFloor's keep returns;
 // one with a message awaiting an ack, or whose filter no longer matches, is left to RestartAtFloor.
@@ -1268,7 +1324,7 @@ func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
 		}
 	}
 	start, ok, err := consumers.KeepListed(ctx, kept, []string{contracts.LegacyAgentSubject(kept)}, listed[kept])
-	if want := (SessionConsumerStart{StartSeq: written + 1, StreamID: streamIDOf(t, consumers)}); err != nil || !ok || start != want {
+	if want := (SessionConsumerStart{Name: fixedName(t, kept), StartSeq: written + 1, StreamID: streamIDOf(t, consumers)}); err != nil || !ok || start != want {
 		t.Fatalf("KeepListed of an acked consumer = %+v, %t, %v; want %+v kept", start, ok, err, want)
 	}
 	if _, ok, err := consumers.KeepListed(ctx, held, []string{contracts.LegacyAgentSubject(held)}, listed[held]); err != nil || ok {

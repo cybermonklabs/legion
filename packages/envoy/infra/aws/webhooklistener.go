@@ -301,7 +301,9 @@ func NewWebhookListener(ctx *pulumi.Context, name string, args *WebhookListenerA
 // validate refuses the inputs NewWebhookListener cannot build a working listener from, each error
 // naming its input: a plain input holding a seed (seededPlainInput), an omitted webhooks, then
 // each webhook's secret ARN against webhooks, then the environment's plain inputs
-// (rendering.ListenerEnv.Check), the sender limit among them, then the service's.
+// (rendering.ListenerEnv.Check), the sender limit among them, then a log group name that would
+// make an alarm's description longer than CloudWatch takes (rendering.CheckListenerLogGroup), then
+// the service's.
 func (args *WebhookListenerArgs) validate() error {
 	if err := seededPlainInput(*args); err != nil {
 		return err
@@ -323,6 +325,9 @@ func (args *WebhookListenerArgs) validate() error {
 	// natsUrls may be known only later; the container definitions' apply refuses a bad one.
 	if err := args.environment(nil).Check(); err != nil {
 		return err
+	}
+	if err := rendering.CheckListenerLogGroup(args.LogGroupName); err != nil {
+		return fmt.Errorf("logGroupName: %w", err)
 	}
 	if len(args.SubnetIds) == 0 {
 		return errors.New("subnetIds names no subnet: the service has nowhere to place its task")

@@ -2463,6 +2463,7 @@ Its environment comes from the inputs:
 | `ENVOY_ALLOW_REMOTE_NATS` | `1` when any URL in `natsUrls` names a host other than `localhost` or a loopback address. The URL is read, never resolved. |
 | `ENVOY_SENDER_MESSAGES_PER_MINUTE` | `senderMessagesPerMinute`, when set |
 | `ENVOY_SENDER_MESSAGE_BURST` | `senderMessageBurst`, when set |
+| `ENVOY_LISTENER_ROLE` | `host`, only with `hostUser: true`: the listener connects as the NATS user its host's sessions share (`HostPermissions`), runs fixed consumer names for good, and reads no cutover marker of the selection bucket, which that user may not read. Unset otherwise: the listener reads the marker, and a read its grant refuses is no marker |
 | `NATS_NKEY_SEED` | `seed`, when set. The whole environment is then a secret in the stack's state. |
 
 The listener serves on the host's loopback, `127.0.0.1:<port>`. This version sets no listen host,
@@ -2484,6 +2485,7 @@ The listener's outputs are `containerName` and `port`.
 | `senderMessageBurst` | unset | `ENVOY_SENDER_MESSAGE_BURST`, at least 1 and only with `senderMessagesPerMinute`: how many of those messages one session may send at once. Unset, it equals the rate. |
 | `seed` | unset | A secret: the nkey seed of the NATS user the listener connects as. May come from another resource or stack. |
 | `waitForHealthy` | `true` | Whether `pulumi up` waits on the container's health check. See [Readiness](#readiness). |
+| `hostUser` | `false` | `true` only for a listener whose NATS user is a host-kind entry, the user its host's sessions share (`HostPermissions`): it renders `ENVOY_LISTENER_ROLE=host`. A listener on its own user (`ListenerHostPermissions`, `ListenerPermissions`) leaves it unset. |
 | `watchdog` | unset | `{host}`: deploys the watchdog on that SSH address. See [The watchdog](#the-watchdog). |
 | `adopt` | unset | `{container, image, watchdog}`: root-level resources this listener takes over. See [Moving an existing deployment onto it](#moving-an-existing-deployment-onto-it). |
 
@@ -2862,7 +2864,9 @@ missing data not breaching) and sends the OK transition there too, so the channe
 stop: `<N>-publish-failure` (a JetStream publish that did not complete), `<N>-webhook-refused` (a
 delivery NATS can never take, answered 422), `<N>-reconnect-hooks-stalled` (a KV watch rebuild that
 has not succeeded for a minute after a NATS reconnect, so the listener's caches serve what they
-last held and `/healthz` answers 200 `degraded`), `<N>-stream-subject-dropped` (a start that
+last held and `/healthz` answers 200 `degraded`; or, in the fixed consumer naming mode, a read of
+the cutover marker that keeps failing after the rebuild, which `/healthz` names as the `cutover
+marker read` with its bucket and key), `<N>-stream-subject-dropped` (a start that
 dropped another deployment's overlapping stream subject), `<N>-durable-refused` (a start that
 refused its durable consumer, or whose NATS grant refused the durable's read, create or update)
 and `<N>-subscribe-exhausted` (a start that gave up binding its durable subscription).
@@ -2875,6 +2879,9 @@ to read, and assumes the wiring of the deployment the alarms were written for: t
 deliveries come from Dispatch's GitHub App (`legion-envoy`), whose redelivery sweep retries them,
 and that Slack retries an event three times.
 A listener fed otherwise pages the same way, with descriptions that overstate what is retried.
+CloudWatch takes an alarm description of at most 1,024 characters, so the component refuses a
+`logGroupName` that would make any of these descriptions longer, naming the alarm, before it
+registers anything (`reconnect-hooks-stalled`'s, the longest, leaves room for about a hundred).
 
 Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn` and
 `internalUrl`, `http://<cloudMapServiceName>.<cloudMapNamespaceName>:9020`.
@@ -4071,8 +4078,9 @@ a listener of an earlier release subscribes in and a listener refused the shared
 to.
 
 After those entries, and in `ListenerPermissions` and `ListenerHostPermissions` alone, come the
-calls of the session consumers, one durable pull consumer per session named `s-<session id>`
-(`bus.SessionConsumers`), on any consumer of the stream: `$JS.API.CONSUMER.CREATE` (with and
+calls of the session consumers, one durable pull consumer per session named `s-<session id>` in the
+default fixed naming mode and `session~<random>` in the fresh one (`bus.SessionConsumers`), on any
+consumer of the stream: `$JS.API.CONSUMER.CREATE` (with and
 without a filter subject in its subject), `INFO`, `DELETE` and `MSG.NEXT` on
 `ENVOY_NOTIFICATIONS.*`, the acknowledgements `$JS.ACK.ENVOY_NOTIFICATIONS.*.>`, and the stream's
 consumer list `$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS`, which a listener that starts relaying
@@ -4086,6 +4094,23 @@ own durable alone; the server refuses its consumer calls, so it refuses every re
 asks for consumer delivery `503 no_grant` (one probe and one refusal per ten-minute
 episode), writing nothing, and a session registering through it is not registered at all and
 receives nothing until that user's grant carries the session consumers.
+
+Last in those two sets come the session consumers' selection bucket's calls,
+`envoy_session_consumers`, which a listener in the fresh consumer naming mode
+(`ENVOY_CONSUMER_NAMES=fresh`) keeps each session's current consumer name in, and which a listener
+in the default fixed mode reads at its start and on every new connection, making no consumer call
+on that connection until the read says the cutover has not converted the bucket: the leader read
+of a key's last message, `$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`, and the writes to
+`$KV.envoy_session_consumers.>` (`natsgrant.KVRecordStore`), the two calls the selection store
+makes. They hold no create or update of the bucket's stream, so no listener makes the bucket, or
+makes it again empty after a loss: the operator's create-bucket does, and every session-consumer
+call of the fresh mode refuses until it has. `HostPermissions` holds
+none of them, and a host's listener (`ENVOY_LISTENER_ROLE=host`, which `host:Listener` renders under `hostUser: true`)
+reads no marker at all: it runs fixed names for good. `HostPermissions` is retiring, no
+production connection holds it, and the cutover's window requires that no host listener runs at
+or after it, so a host listener never meets a converted bucket and its durable is never
+converted. A read it may not make would only have the server log a permissions violation at each
+start and connect. The listener refuses `ENVOY_CONSUMER_NAMES=fresh` beside that role.
 
 `SessionPermissions()` is what any agent session needs, with `*` for the session id. It publishes
 to `_INBOX.>`, for the replies to a session consumer's
@@ -4273,6 +4298,16 @@ What the lists do not hold back:
   takeover subjects wherever a client subscribes them: the cycle refusal above holds only for the
   notification stream's own consumers. No row creates such a consumer: this one is read from the
   server's rule above.
+- Its selection bucket calls are `ListenerPermissions`' leader read
+  (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`) and, in place of its write of every key, the
+  writes of a session's record and of its own durable's: `$KV.envoy_session_consumers.*` (a session
+  id is one token) and `$KV.envoy_session_consumers.durable.listener-<machine id>`. So it writes
+  every session's selection record, which names the consumer a session's messages come from in the
+  fresh naming mode: no reach past the consumer calls above, which already create, update and
+  delete any session's consumer. It writes neither the bucket's sentinel (`envoy.bucket`), where a
+  cutover marker it wrote would stop every fixed-mode listener at its next connect, nor another
+  listener's durable record; ending the bucket's replay mode, which rewrites the sentinel, is the
+  shared listeners' sweeps' (`natsgrant/edge_selection_test.go` holds both on a real server).
 
 Its read is the whole bus until subjects and keys name their project, and its writes through the
 consumer calls are as wide until something other than the edge creates its consumers. The auth

@@ -44,7 +44,7 @@ func healthzRoleViewRig(t *testing.T, consumer string) (func() (int, map[string]
 	}
 	var state atomic.Pointer[listenerDeps]
 	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
-	handler := healthzHandler(&state, nil)
+	handler := healthzHandler(&state, nil, nil)
 	get := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -56,6 +56,35 @@ func healthzRoleViewRig(t *testing.T, consumer string) (func() (int, map[string]
 		t.Fatalf("the rig's own /healthz = %d %v, want 200 healthy", code, body)
 	}
 	return get, registry, client
+}
+
+// /healthz names the process's consumer naming mode (ENVOY_CONSUMER_NAMES): the rig's client was
+// connected with no mode, so it runs, and reports, the fixed default.
+func TestHealthzReportsTheConsumerNamingMode(t *testing.T) {
+	get, _, client := healthzRoleViewRig(t, "listener-healthz-naming-mode")
+	code, body := get()
+	if code != http.StatusOK || body["consumer_names"] != "fixed" || string(client.ConsumerNames()) != "fixed" {
+		t.Fatalf("/healthz = %d %v (client mode %s); want 200 with consumer_names fixed", code, body, client.ConsumerNames())
+	}
+}
+
+// A /healthz whose read of the durable fails cannot say how the process's consumers are named on
+// the server, so it reports consumer_names UNKNOWN and says why, beside the durable's own error.
+// The control is the same listener before the durable was removed, which reports its mode.
+func TestHealthzReportsTheConsumerNamesUnknownWhenTheDurableReadFails(t *testing.T) {
+	const consumer = "listener-healthz-names-unknown"
+	get, _, client := healthzRoleViewRig(t, consumer)
+	if code, body := get(); code != http.StatusOK || body["consumer_names"] != "fixed" {
+		t.Fatalf("control: /healthz = %d %v; want 200 with consumer_names fixed", code, body)
+	}
+	if err := client.JS().DeleteConsumer(bus.Stream, consumer); err != nil {
+		t.Fatal(err)
+	}
+	code, body := get()
+	why, _ := body["consumer_names_unknown"].(string)
+	if code != http.StatusServiceUnavailable || body["consumer_names"] != "UNKNOWN" || !strings.Contains(why, "durable consumer") || !strings.Contains(why, "fixed") {
+		t.Fatalf("/healthz after the durable's read failed = %d %v; want 503 with consumer_names UNKNOWN naming the failed read and the configured mode", code, body)
+	}
 }
 
 // breakRoleClaimView leaves registry's role claim view where a listener start leaves it before

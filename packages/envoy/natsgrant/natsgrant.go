@@ -16,6 +16,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -126,13 +127,16 @@ func sessionConsumerCalls() []string {
 
 // Listener is the grant envoy-listener needs as machine machineID: the listener grant
 // (listenerGrant), then the session consumers' calls (sessionConsumerCalls), which only this set
-// and ListenerHost hold. A hub that renders this set for its own listener gives that listener
+// and ListenerHost hold, and the session consumers' selection bucket's leader read and key writes
+// (KVRecordStore of consumernames.SessionBucket), which the fresh consumer naming mode keeps and
+// the operator alone creates. A hub that renders this set for its own listener gives that listener
 // consumer delivery; a listener connecting as a host or Dispatch user does not have it, and has no
 // session of its own registered at all: every registration it cannot give a consumer is refused by
 // name and writes nothing.
 func Listener(machineID string) Permissions {
 	grant := listenerGrant(machineID)
 	grant.Publish = append(grant.Publish, sessionConsumerCalls()...)
+	grant.Publish = append(grant.Publish, KVRecordStore(consumernames.SessionBucket)...)
 	return grant
 }
 
@@ -244,8 +248,14 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // ensureSpentProofBucket), so a full listener starts before an edge listener. The rest of
 // Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
 // calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
-// stream's create, its update and its direct get, the interest bucket's purge and the session
-// consumers' calls.
+// stream's create, its update and its direct get, the interest bucket's purge, the session
+// consumers' calls, and the session consumers' selection bucket's leader read (KVRecordStore of
+// consumernames.SessionBucket), which the fixed naming mode's read of the cutover marker and the
+// fresh mode's selection records take, and which holds no direct get. Its writes to that bucket
+// are narrowed (edgeSelectionWrites): a session's record, under a key of one token, and its own
+// durable's record alone, so it writes neither the sentinel (consumernames.SentinelKey) nor another
+// listener's durable record. A shared listener's sweep ends the bucket's replay mode, which
+// rewrites the sentinel; an edge listener's sweep does not (cmd/listener's sessionConsumerSweep).
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
@@ -307,7 +317,10 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //   - Today's agent, relay and resume subjects name no project, so it can publish on any
 //     session's, and a consumer on any filter reads any stored message.
 //   - Its KV calls write every record of the seven buckets of bus.ListenerBuckets: interests,
-//     roles, sessions, known sessions, Legion agents, CI state and DPoP proofs.
+//     roles, sessions, known sessions, Legion agents, CI state and DPoP proofs. Its selection
+//     bucket writes (edgeSelectionWrites) write every session's selection record, which names the
+//     consumer a session's messages come from in the fresh naming mode: no reach past the consumer
+//     calls above, which already create, update and delete any session's consumer.
 func Edge(machineID string, projects []string) (Permissions, error) {
 	if !SessionToken(machineID) {
 		return Permissions{}, fmt.Errorf("natsgrant: the edge's machine id %q is not one subject token", machineID)
@@ -340,7 +353,11 @@ func Edge(machineID string, projects []string) (Permissions, error) {
 		publish = append(publish, bus.ExceptionTopicPrefix+contracts.RoleTopicPrefix+project+".>")
 	}
 	for _, entry := range Listener(machineID).Publish {
-		if !slices.Contains(removed, entry) {
+		switch {
+		case slices.Contains(removed, entry):
+		case entry == kvSubjects+consumernames.SessionBucket+".>":
+			publish = append(publish, edgeSelectionWrites(machineID)...)
+		default:
 			publish = append(publish, entry)
 		}
 	}
@@ -348,6 +365,21 @@ func Edge(machineID string, projects []string) (Permissions, error) {
 		Publish:   publish,
 		Subscribe: []string{EdgeInboxPrefix(machineID) + ".>", bus.DeliverSubjectPrefix + "*", EdgeRelayReplyPrefix(machineID) + ".>"},
 	}, nil
+}
+
+// edgeSelectionWrites are the edge listener's writes to the session consumers' selection bucket,
+// in place of Listener's write of every key (KVRecordStore): a session's record, whose key is one
+// token (a session id, consumernames.CheckKey), and the record of its own durable
+// (consumernames.DurableKey of bus.ListenerDurable). The sentinel's key (consumernames.SentinelKey)
+// and another listener's durable key are each two tokens, so neither is among them: a holder of an
+// edge credential cannot mark the bucket converted, which stops every fixed-mode listener at its
+// next connect until an operator rewrites the sentinel, nor rewrite another listener's durable
+// record.
+func edgeSelectionWrites(machineID string) []string {
+	return []string{
+		kvSubjects + consumernames.SessionBucket + ".*",
+		kvSubjects + consumernames.SessionBucket + "." + consumernames.DurableKey(bus.ListenerDurable(machineID)),
+	}
 }
 
 // KVWrite are the calls nats.go's KV makes on one bucket, in the order the grants list them:
@@ -369,6 +401,20 @@ func KVWrite(bucket string) []string {
 		jsAPI + "CONSUMER.CREATE." + stream + ".>",
 		jsAPI + "CONSUMER.DELETE." + stream + ".>",
 		jsFlow + stream + ".>",
+	}
+}
+
+// KVRecordStore is the two calls consumernames.KVStore makes on bucket, and nothing else: the
+// leader read of a key's last message (STREAM.MSG.GET) and the writes to its keys. It holds no
+// create or update of the bucket's stream, so its holder never makes a bucket another made, nor
+// makes it again empty after a loss, and none of nats.go's KV calls (the stream's info, a direct
+// get, a watcher's consumer and its flow control) that the store does not make. The listener holds
+// it for the session consumers' selection bucket (Listener), which the operator's create-bucket
+// alone creates: every session-consumer call refuses until the operator's recovery.
+func KVRecordStore(bucket string) []string {
+	return []string{
+		jsAPI + "STREAM.MSG.GET." + kvStream + bucket,
+		kvSubjects + bucket + ".>",
 	}
 }
 
@@ -556,9 +602,11 @@ func Host(machineID string) Permissions {
 
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
-// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
-// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefixes,
-// never _INBOX.>, where the listener's and Dispatch's push consumer deliveries and request replies
+// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and a
+// session's selection record in KV_envoy_session_consumers, from the stream's leader only, as
+// consumernames.KVStore reads it (no direct get, no write); and owns one test stream,
+// ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefixes, never
+// _INBOX.>, where the listener's and Dispatch's push consumer deliveries and request replies
 // arrive, so no subscription of its own receives another client's replies or deliveries. That alone
 // does not keep every other client's message from it: it still holds ENVOY_MEASURE's stream create
 // and update, whose configuration can source another stream and republish what it holds onto the
@@ -576,6 +624,7 @@ func Measure() Permissions {
 			jsAPI + "CONSUMER.LIST.*",
 			jsAPI + "CONSUMER.INFO.*.*",
 			jsAPI + "DIRECT.GET." + kvStream + "envoy_listener." + kvSubjects + "envoy_listener.lease.>",
+			jsAPI + "STREAM.MSG.GET." + kvStream + consumernames.SessionBucket,
 			jsAPI + "STREAM.CREATE.ENVOY_MEASURE",
 			jsAPI + "STREAM.UPDATE.ENVOY_MEASURE",
 			jsAPI + "STREAM.DELETE.ENVOY_MEASURE",

@@ -40,6 +40,34 @@ const (
 // deploys a listener that would refuse its value.
 const MaxSenderMessagesPerMinute = 60000
 
+// ListenerRoleEnvVar is envoy-listener's role, and ListenerRoleHost the one value it takes beside
+// unset: the listener of a host, connecting as the NATS user that host's sessions share
+// (natsgrant.Host). Such a listener runs fixed consumer names for good: the host user holds no read
+// or write of the selection bucket and no fresh name's create, natsgrant.Host is retiring (plan
+// E's t-e-59 deletes it), and the cutover's window has the precondition that no host listener runs
+// at or after it. So it reads no cutover marker and refuses the fresh mode (cmd/listener,
+// guardFixedNaming). It lives here because the listener's parse (internal/config) and
+// envoy-infra's rendering (github.com/sjawhar/envoy/infra/core), which may not compile a listener
+// package, name the same variable.
+const (
+	ListenerRoleEnvVar = "ENVOY_LISTENER_ROLE"
+	ListenerRoleHost   = "host"
+)
+
+// ParseListenerRole reads ListenerRoleEnvVar exactly, as consumernames.ParseMode reads the naming
+// mode: unset (or empty) is no role (false), ListenerRoleHost a host's listener (true), and anything
+// else, a padded value or one of spaces alone among it, is refused naming the variable and the value.
+func ParseListenerRole(value string) (bool, error) {
+	switch value {
+	case "":
+		return false, nil
+	case ListenerRoleHost:
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid %s %q: want %s, or leave it unset", ListenerRoleEnvVar, value, ListenerRoleHost)
+	}
+}
+
 // ParseNATSReplicas reads ReplicasEnvVar, the deployment's replica count: unset or blank is 1,
 // and otherwise a whole number from 1 to MaxReplicas. Anything else (0, a negative number, more
 // than NATS keeps, a word) is refused naming the variable and the value, at load rather than as a

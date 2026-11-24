@@ -205,8 +205,13 @@ other listeners' and Dispatch's included, which is why a user any session shares
 a `machineId` or a `dispatchMachineId` user therefore keeps its own durable alone and refuses
 every registration that asks for consumer delivery `503 no_grant`, so a session registering
 through it is not registered at all and receives nothing until its listener's grant carries the
-session consumers. Every set above subscribes to the role lanes in the queue group every listener
-shares, `envoy-roles`, beside the machine's own, since each user runs a listener.
+session consumers. The same two sets end with the session consumers' selection bucket
+`envoy_session_consumers`'s leader read and key writes, and none of its stream's create or update
+(`natsgrant.KVRecordStore`), so a listener keeps each session's current consumer name there in
+the fresh consumer naming mode and never makes the bucket itself
+([Permission sets](../README.md#permission-sets)). Every set above subscribes to the role lanes in
+the queue group every listener shares, `envoy-roles`, beside the machine's own, since each user
+runs a listener.
 
 `nkey` is the public key `envoy-infra seed generate` prints, and the seed stays in the secret
 store it wrote (see [NATS seeds](../README.md#nats-seeds)): a host's listener reads it from there
@@ -785,6 +790,11 @@ The release that adds `envoy_known_sessions` to `bus.ListenerBuckets()` adds tha
 `DispatchPermissions`, which changes the rendered users of every hub with a `listener`, a
 `machineId`, a `listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it
 replaces its VM once, with the outage below, and a hub with none of them keeps its VM.
+The release that adds the fresh consumer names (`ENVOY_CONSUMER_NAMES`) adds the selection bucket
+`envoy_session_consumers`'s calls, with no create or update of its stream, to `ListenerPermissions`
+and `ListenerHostPermissions`, which changes the rendered users of every hub with a `listener` or a
+`listenerMachineId` user: upgrading such a hub to it replaces its VM once, with the outage below,
+and a hub with neither keeps its VM.
 The release that adds `listener.senderMessagesPerMinute` and `listener.senderMessageBurst` renders
 neither variable for a hub that sets neither input, so such a hub keeps its VM. Setting, changing
 or removing either input changes the listener's `docker run` command in the cloud-config, so it
@@ -1722,8 +1732,10 @@ from its first answer, so there the probe passes at that answer. Readiness and l
 hub, which every pod shares, neither takes the one pod out of the Service nor restarts it. Only
 30 seconds of no answer at all takes the pod out of the Service (readiness, every 10 seconds, 3
 failures allowed), and a minute of it restarts the container (liveness, every 10 seconds, 6
-failures allowed). No probe reads `/healthz`, which the listener answers 200 `starting` from its
-first answer, before its `/v1` opens.
+failures allowed). No probe reads `/healthz`, whose status does not say whether `/v1` serves: the
+listener answers it 200 `starting` from its first answer, before its `/v1` opens, or, with
+`ENVOY_CONSUMER_NAMES=fresh`, `503` `not_ready` while the selection bucket refuses every consumer
+call (`startingSelectionHealth` in `cmd/listener`).
 The PodDisruptionBudget `<n>-listener` allows one unavailable pod, so a node drain or an
 Autopilot upgrade moves the pod rather than stalling on it. The pod-down alert below names this
 pod and its container.

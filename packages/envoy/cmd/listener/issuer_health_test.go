@@ -14,8 +14,9 @@ import (
 // /healthz's issuer fields name each configured issuer's discovery and leave the answer they are
 // added to as it was: a pair that is not configured is null, a configured one is false until its
 // issuer is read, and the status code and every other field are the answer's own, a 503 included,
-// so the fields never decide the status. Both of healthzHandler's ways of writing an answer are
-// read: its own (the starting answer) and writeDependencyHealth's (an unhealthy one).
+// so the fields never decide the status. Each of healthzHandler's ways of writing an answer is
+// read: its own (the starting answer), writeDependencyHealth's (an unhealthy one), and
+// writeDependencyHealthWith's, whose extra fields the cutover marker's stall answer carries.
 func TestTheHealthzIssuerFieldsNeverDecideTheAnswer(t *testing.T) {
 	auth := listenerAPIAuth{verifier: oidc.NewLazyVerifier("http://127.0.0.1:1", listenerTestAudience)}
 	issuers := func() map[string]any { return issuerHealthFields(auth) }
@@ -29,7 +30,7 @@ func TestTheHealthzIssuerFieldsNeverDecideTheAnswer(t *testing.T) {
 		{
 			name: "the starting answer",
 			answer: func(w http.ResponseWriter) {
-				healthzHandler(&starting, issuers).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+				healthzHandler(&starting, nil, issuers).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 			},
 			status: http.StatusOK,
 			fields: map[string]string{"status": `"starting"`},
@@ -42,6 +43,17 @@ func TestTheHealthzIssuerFieldsNeverDecideTheAnswer(t *testing.T) {
 			},
 			status: http.StatusServiceUnavailable,
 			fields: map[string]string{"status": `"unhealthy"`, "error": `"session kv unavailable: probe failed"`},
+		},
+		{
+			name: "a degraded dependency with extra fields",
+			answer: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Type", "application/json")
+				writeDependencyHealthWith(w, "cutover marker read", errors.New("read failed"), false,
+					map[string]any{"bucket": "envoy_sessions", "key": "envoy.bucket"}, issuers)
+			},
+			status: http.StatusOK,
+			fields: map[string]string{"status": `"degraded"`, "error": `"cutover marker read unavailable: read failed"`,
+				"bucket": `"envoy_sessions"`, "key": `"envoy.bucket"`},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {

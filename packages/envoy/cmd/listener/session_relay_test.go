@@ -791,7 +791,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 	rig.relays.setOwned(false)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	pull, err := rig.consumers.Pull(ctx, sessionID)
+	pull, err := rig.consumers.Pull(ctx, sessionID, fixedConsumerName(t, sessionID))
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
 	}
@@ -905,7 +905,7 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 	// take some of them away from.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pull, err := rig.consumers.Pull(ctx, sessionID)
+	pull, err := rig.consumers.Pull(ctx, sessionID, fixedConsumerName(t, sessionID))
 	if err != nil {
 		t.Fatalf("pull the session's consumer as its next owner: %v", err)
 	}

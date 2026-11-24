@@ -71,6 +71,9 @@ refused drop-not-a-point 'forced-order.sh: -drop stream: no hook of nats-server 
 # -server with an empty value is no version, not the default.
 refused server-empty "forced-order.sh: -server '' names no version" \
   '^=== RUN' -server '' ./internal/testnats/hooktest/
+# -timeout with an empty value is no duration, not go test's 10 minutes.
+refused timeout-empty "forced-order.sh: -timeout '' names no duration" \
+  '^=== RUN' -timeout '' ./internal/testnats/hooktest/
 # -C with an empty value names no module, not the caller's directory.
 refused c-empty "forced-order.sh: -C '' names no module directory" \
   '^=== RUN' -C '' ./internal/testnats/hooktest/
@@ -87,5 +90,5 @@ printf 'module example.com/replaced\n\ngo 1.21\n\nrequire github.com/nats-io/nat
 GOWORK=off refused replaced 'replaces github.com/nats-io/nats-server/v2 with ./fork' \
   '^forced-order.sh: nats-server v[0-9]' -C "$out/replacing-module" .
 
-echo "forced-order.test.sh: $failed failed of 5"
+echo "forced-order.test.sh: $failed failed of 6"
 [ "$failed" -eq 0 ]

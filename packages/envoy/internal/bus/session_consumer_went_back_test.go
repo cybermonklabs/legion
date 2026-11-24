@@ -108,7 +108,7 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 	// The reconcile the restarted server made of the consumer kicked its state file's write.
 	waitForStoredState(t, owner, session)
 	restarted := path(t, consumers, session, filters)
-	if want := (SessionConsumerStart{Created: true, StartSeq: 1, StreamID: id, AckFloor: 0}); restarted != want {
+	if want := (SessionConsumerStart{Name: fixedName(t, session), Created: true, StartSeq: 1, StreamID: id, AckFloor: 0}); restarted != want {
 		t.Errorf("the restart of a consumer whose ack floor %d is above the stream's last sequence %d = %+v; want %+v, the consumer created again at the stream's first sequence", info.AckFloor.Stream, held[1], restarted, want)
 	}
 	requireConsumerStart(t, consumers, session, 1, "the stream's first sequence, where the restart created it again")

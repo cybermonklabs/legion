@@ -1,18 +1,24 @@
 package natsgrant_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -56,7 +62,9 @@ func requireSet(t *testing.T, want set, got natsgrant.Permissions, name string) 
 }
 
 // Every set this package builds is, element for element and in order, the set infra/core built at
-// the merge base, so moving them here rewrites no hub's rendered authorization.
+// the merge base, so moving them here rewrites no hub's rendered authorization; with one decided
+// change since: Listener and ListenerHost end with the selection bucket's reads and writes
+// (withSelectionBucket), which the fresh consumer naming mode needs.
 func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	var base mergeBase
 	readJSON(t, "testdata/merge-base-grants.json", &base)
@@ -66,8 +74,8 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 			want set
 			got  natsgrant.Permissions
 		}{
-			"Listener":     {base.Listener[id], natsgrant.Listener(id)},
-			"ListenerHost": {base.ListenerHost[id], natsgrant.ListenerHost(id)},
+			"Listener":     {withSelectionBucket(base.Listener[id]), natsgrant.Listener(id)},
+			"ListenerHost": {withSelectionBucket(base.ListenerHost[id]), natsgrant.ListenerHost(id)},
 			"Dispatch":     {base.Dispatch[id], natsgrant.Dispatch(id)},
 			"Host":         {base.Host[id], natsgrant.Host(id)},
 		} {
@@ -80,10 +88,62 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
 }
 
+// withSelectionBucket is s with the session consumers' selection bucket's calls appended to its
+// publish list, as Listener appends them: the record store's leader read and key writes
+// (KVRecordStore), the two calls consumernames.KVStore makes.
+func withSelectionBucket(s set) set {
+	stream := "KV_" + consumernames.SessionBucket
+	s.Publish = append(slices.Clone(s.Publish),
+		"$JS.API.STREAM.MSG.GET."+stream,
+		"$KV."+consumernames.SessionBucket+".>",
+	)
+	return s
+}
+
+// The selection bucket's grant is the two calls the listener makes on it, through
+// consumernames.KVStore: the leader read of a key's last message and the writes to its keys. It
+// can neither create the bucket's stream nor update it, so a listener never makes a lost bucket
+// again empty, and it holds none of nats.go's KV calls the listener does not make (the stream's
+// info, a direct get, a watcher's consumer and its flow control). Only the users that manage
+// session consumers hold it. Before, the listener held seven entries on the bucket, KVWrite less
+// the stream's create and update.
+func TestTheListenerWritesTheSelectionBucketAndCannotCreateIt(t *testing.T) {
+	stream := "KV_" + consumernames.SessionBucket
+	want := []string{"$JS.API.STREAM.MSG.GET." + stream, "$KV." + consumernames.SessionBucket + ".>"}
+	for name, grant := range map[string]natsgrant.Permissions{
+		"Listener":     natsgrant.Listener("example-host-a"),
+		"ListenerHost": natsgrant.ListenerHost("example-host-a"),
+	} {
+		var held []string
+		for _, entry := range grant.Publish {
+			if strings.Contains(entry, stream) || strings.HasPrefix(entry, "$KV."+consumernames.SessionBucket+".") {
+				held = append(held, entry)
+			}
+		}
+		require.Equal(t, want, held, "%s's entries on the selection bucket", name)
+	}
+	// Control: KVWrite, which every other bucket's writer holds, does carry the create.
+	require.Contains(t, natsgrant.KVWrite(consumernames.SessionBucket), "$JS.API.STREAM.CREATE."+stream)
+	for _, refused := range []string{"$JS.API.STREAM.CREATE." + stream, "$JS.API.STREAM.UPDATE." + stream} {
+		for name, grant := range map[string]natsgrant.Permissions{
+			"Listener":     natsgrant.Listener("example-host-a"),
+			"ListenerHost": natsgrant.ListenerHost("example-host-a"),
+			"Dispatch":     natsgrant.Dispatch("example-host-a"),
+			"Host":         natsgrant.Host("example-host-a"),
+		} {
+			require.NotContains(t, grant.Publish, refused, "%s may create or update the selection bucket", name)
+		}
+	}
+	require.NotContains(t, natsgrant.Dispatch("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
+	require.NotContains(t, natsgrant.Host("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
+}
+
 // Measure is the measurement job's grant as the deployment repository deploys it today
-// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31), plus one
-// transitional subscribe, the job's inbox under the reply root, which the deployment repository's
-// copy adds in its own change while the job's inbox moves
+// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31), plus the leader
+// read of a session's selection record ($JS.API.STREAM.MSG.GET.KV_envoy_session_consumers), which
+// the job needs once sessions run on fresh names and which the auth service grants it after the
+// callout cutover, and one transitional subscribe, the job's inbox under the reply root, which the
+// deployment repository's copy adds in its own change while the job's inbox moves
 // (TestMeasureSubscribesItsInboxUnderBothRoots). It is written out, as the copy writes it. The
 // copy there goes when the job moves to the auth service, and this test with it.
 func TestMeasureMatchesTheDeployedList(t *testing.T) {
@@ -93,6 +153,99 @@ func TestMeasureMatchesTheDeployedList(t *testing.T) {
 		"the fixture is the deployed list before the move, to which this test adds the moved inbox")
 	deployed.Subscribe = append(deployed.Subscribe, "_INBOX_envoy._measure.>")
 	requireSet(t, deployed, natsgrant.Measure(), "Measure()")
+}
+
+// The measurement job's grant reads a session's selection record from the stream's leader, as
+// consumernames.KVStore reads it, and nothing else of the bucket's API: the server refuses its
+// direct get, a write of a key, and its stream's create, update, purge and delete. The control is
+// the same grant without the leader read, which the server refuses the read.
+func TestTheMeasurementGrantReadsASessionsRecordAndNothingElseOfTheBucket(t *testing.T) {
+	stream := "KV_" + consumernames.SessionBucket
+	leaderRead := "$JS.API.STREAM.MSG.GET." + stream
+	measure := natsgrant.Measure()
+	without := measure
+	without.Publish = slices.DeleteFunc(slices.Clone(measure.Publish), func(entry string) bool { return entry == leaderRead })
+
+	for _, tc := range []struct {
+		name  string
+		grant natsgrant.Permissions
+		reads bool
+	}{
+		{name: "control: the grant without the leader read", grant: without, reads: false},
+		{name: "Measure()", grant: measure, reads: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			seed, public := testnats.User(t)
+			_, admin := testnats.User(t)
+			quote := func(subjects []string) string {
+				out := make([]string, len(subjects))
+				for i, subject := range subjects {
+					out[i] = strconv.Quote(subject)
+				}
+				return strings.Join(out, ", ")
+			}
+			config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } }, { nkey: %q } ]\n}\nno_auth_user: %q\n",
+				public, quote(tc.grant.Publish), quote(tc.grant.Subscribe), admin, admin)
+			_, uri := testnats.StartConfig(t, config, []string{"-js"}, true)
+			adminConn := testnats.Connect(t, uri)
+			t.Cleanup(adminConn.Close)
+			adminStore, err := consumernames.CreateSessionBucket(ctx, adminConn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone})
+			require.NoError(t, err)
+			_, err = adminStore.Write(ctx, "ses-measured", consumernames.Record{Current: "session~N", Start: 7}, 0)
+			require.NoError(t, err)
+
+			violations := make(chan error, 16)
+			conn, err := testnats.ConnectSeed(t, uri, seed, natsgo.CustomInboxPrefix("_INBOX_envoy_measure"),
+				natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) { violations <- err }))
+			require.NoError(t, err)
+			t.Cleanup(conn.Close)
+			refused := func(subject string) {
+				t.Helper()
+				deadline := time.After(10 * time.Second)
+				for {
+					select {
+					case err := <-violations:
+						if strings.Contains(err.Error(), "Permissions Violation for Publish to") && strings.Contains(err.Error(), strconv.Quote(subject)) {
+							return
+						}
+					case <-deadline:
+						t.Fatalf("the server named no publish violation for %q", subject)
+					}
+				}
+			}
+
+			readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			record, _, err := consumernames.NewKVStore(consumernames.ConnRequester{Conn: conn}).Read(readCtx, "ses-measured")
+			if !tc.reads {
+				require.Error(t, err, "the grant without the leader read read the record")
+				refused(leaderRead)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, "session~N", record.Current)
+
+			for _, subject := range []string{
+				"$JS.API.DIRECT.GET." + stream,
+				"$KV." + consumernames.SessionBucket + ".ses-measured",
+				"$JS.API.STREAM.CREATE." + stream,
+				"$JS.API.STREAM.UPDATE." + stream,
+				"$JS.API.STREAM.PURGE." + stream,
+				"$JS.API.STREAM.DELETE." + stream,
+			} {
+				require.NoError(t, conn.Publish(subject, []byte("{}")))
+				require.NoError(t, conn.Flush())
+				refused(subject)
+			}
+		})
+	}
+	require.Len(t, without.Publish, len(measure.Publish)-1, "Measure() holds the leader read once")
+	for _, entry := range measure.Publish {
+		if entry != leaderRead && (strings.Contains(entry, stream) || strings.Contains(entry, "$KV."+consumernames.SessionBucket)) {
+			t.Fatalf("Measure() names the selection bucket in %q besides its leader read", entry)
+		}
+	}
 }
 
 // subscribes reports whether grant lets a client hold a plain subscription, one with no queue
@@ -268,11 +421,12 @@ func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 // notification topic, the finite list of the edge's own subjects - the agent subjects, each
 // project's role subjects, the relay subjects, every edge machine's relay receipts, the resume
 // lane, and the exception lanes of the agent subjects and of each project's role subjects - and no
-// create or update of the stream or of any bucket's stream, and no direct get of any bucket. In
-// subscribe: its own machine's inbox prefix in place of every
-// reply inbox, every session's relay subject and its own machine's relay receipts, and neither
-// role-lane queue group. So a change to Listener reaches Edge, and the golden above says that it
-// did.
+// create or update of the stream or of any bucket's stream, and no direct get of any bucket; and
+// in place of the write of every key of the selection bucket, a session's record (a key of one
+// token) and its own durable's record. In subscribe: its own machine's inbox prefix in place of
+// every reply inbox, every session's relay subject and its own machine's relay receipts, and
+// neither role-lane queue group. So a change to Listener reaches Edge, and the golden above says
+// that it did.
 func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 	for _, id := range []string{"m", "example-hub"} {
 		require.Equal(t, "_INBOX_envoy_edge_"+id, natsgrant.EdgeInboxPrefix(id), "EdgeInboxPrefix(%q)", id)
@@ -284,6 +438,9 @@ func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 				return strings.HasPrefix(entry, "$JS.API.STREAM.CREATE.") || strings.HasPrefix(entry, "$JS.API.STREAM.UPDATE.") || strings.HasPrefix(entry, "$JS.API.DIRECT.GET.")
 			})
 			require.Len(t, kept, len(listener.Publish)-1-2*(1+len(bus.ListenerBuckets()))-len(bus.ListenerBuckets()), "Listener(%q) holds every notification topic, the create and update of the stream and of each bucket's stream, and each bucket's direct get", id)
+			selection := slices.Index(kept, "$KV.envoy_session_consumers.>")
+			require.NotEqual(t, -1, selection, "Listener(%q) writes every key of the selection bucket", id)
+			kept = slices.Replace(kept, selection, selection+1, "$KV.envoy_session_consumers.*", "$KV.envoy_session_consumers.durable.listener-"+id)
 			own := []string{"notifications.agent.>"}
 			for _, project := range projects {
 				own = append(own, "notifications.role."+project+".>")

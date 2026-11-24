@@ -128,12 +128,7 @@ func holdsStream(srv *natsserver.Server, stream string) bool {
 // which alone takes it, so it would go unanswered whatever the drop did.
 func TestACreateWhoseAnswerADropLostIsSentAgainAndAnswered(t *testing.T) {
 	cluster := StartCluster(t, 3)
-	leader := -1
-	for i, member := range cluster.Servers {
-		if member.natsServer().JetStreamIsLeader() {
-			leader = i
-		}
-	}
+	leader := cluster.MetaLeader()
 	if leader < 0 {
 		t.Fatal("no member of the ready cluster leads its meta group")
 	}

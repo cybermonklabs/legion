@@ -110,9 +110,12 @@
 #     machine it was read as: the start-time gauge of a listener outside the cluster must name the
 #     machine the operator gave, and a pod's must name its container's ENVOY_MACHINE_ID when it names
 #     one, so a URL serving another listener is UNKNOWN, never that machine's count. Every listener
-#     with its durable on the bus (listener-<machine>, bus.ListenerDurable), bound now or not, must
-#     be one of those: one that is not is UNKNOWN by name, so a listener nobody named, or one offline
-#     at the reading, is never left out of the count while its durable lasts.
+#     with its durable on the bus (listener-<machine>, bus.ListenerDurable; in the fresh naming mode
+#     listener-<machine>~<random>, whose machine is read from its metadata envoy.logical, the
+#     durable's name, and never from the name past its ~), bound now or not, must be one of those:
+#     one that is not is UNKNOWN by name, so a listener nobody named, or one offline at the
+#     reading, is never left out of the count while its durable lasts. A fresh name whose
+#     envoy.logical does not name the durable before its last ~ is UNKNOWN by its name.
 #   - Over NATS, from a one-off Job in namespace envoy that connects as the in-cluster listener
 #     does (lib/legacy-subjects-gate-nats.sh): who the server says the connection is, the stream's
 #     info, every consumer of the stream, the stream's subjects under notifications.dispatch.issue.>,

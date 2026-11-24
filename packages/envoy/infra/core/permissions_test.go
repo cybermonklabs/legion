@@ -108,9 +108,18 @@ var sessionConsumerPublish = []string{
 	"$JS.ACK.ENVOY_NOTIFICATIONS.*.>",
 }
 
-// listenerPublish is the listener's own publish grant: the base grant, then the session consumers'
+// selectionBucketPublish are the session consumers' selection bucket's calls, which the fresh
+// consumer naming mode keeps and the operator alone creates: the record store's leader read and
+// key writes (natsgrant.KVRecordStore), which ListenerPermissions adds after the session consumers'
 // calls.
-var listenerPublish = append(append([]string{}, listenerBasePublish...), sessionConsumerPublish...)
+var selectionBucketPublish = []string{
+	"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
+	"$KV.envoy_session_consumers.>",
+}
+
+// listenerPublish is the listener's own publish grant: the base grant, then the session consumers'
+// calls, then the selection bucket's.
+var listenerPublish = append(append(append([]string{}, listenerBasePublish...), sessionConsumerPublish...), selectionBucketPublish...)
 
 // listenerSubscribe is the listener's subscribe grant for example-host-a: reply inboxes, then the
 // role lanes in the machine's queue group and in the one every listener shares.

@@ -11,6 +11,9 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -101,6 +104,62 @@ func TestHealthzAnswersAHookStallPastTheRepairGrace(t *testing.T) {
 		t.Fatalf("/healthz a whole bus.RepairGrace into the stall reported %q, want it to name the KV watch rebuild and %q", reported, errHookStallRewatch)
 	}
 	t.Logf("/healthz a whole bus.RepairGrace into the stall: %d %s", code, reported)
+}
+
+// In the fixed mode the main client's last reconnect hook reads the cutover marker on the new
+// connection (bus.Client.GateOnMarker), after the hooks that rewatch the caches. A marker it cannot
+// read fails that hook on every run, so the hooks stall while the caches follow their buckets again;
+// past bus.RepairGrace /healthz names the marker read, with the selection bucket and the sentinel's
+// key, as the cause. Before, it named the KV watch rebuild, which sent an operator to watchers that
+// were fine. The control is the stall a failing rewatch causes, which still names the KV watch
+// rebuild (TestHealthzAnswersAHookStallPastTheRepairGrace), and the same listener before the stall,
+// healthy with its marker read.
+func TestHealthzNamesAStalledMarkerReadAsTheStallsCause(t *testing.T) {
+	client, clock, get := hookStallFixture(t, "listener-healthz-marker-stall")
+	ctx := context.Background()
+	conn := testnats.Connect(t, testnats.URL(t))
+	t.Cleanup(conn.Close)
+	if _, err := consumernames.CreateSessionBucket(ctx, conn, 1, consumernames.StoreState{Boundary: 1}); err != nil {
+		t.Fatal(err)
+	}
+	client.GateOnMarker(nil)
+	if err := client.ReadMarker(ctx); err != nil {
+		t.Fatalf("control: the marker read before the stall = %v", err)
+	}
+	if code, body := get(); code != http.StatusOK || body["status"] != "healthy" {
+		t.Fatalf("control: /healthz with the marker read = %d %v, want 200 healthy", code, body)
+	}
+	js, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.KeyValue(ctx, consumernames.SessionBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A server answer stored over the sentinel, as a request's reply subject can store one.
+	if _, err := kv.Put(ctx, consumernames.SentinelKey, []byte(`{"type":"io.nats.jetstream.api.v1.stream_info_response","total":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Conn.ForceReconnect(); err != nil {
+		t.Fatalf("reconnect in place: %v", err)
+	}
+	waitFor(t, 30*time.Second, "the failed run of the reconnect hooks to be recorded", func() bool {
+		_, hookErr := client.HookStall()
+		return hookErr != nil
+	})
+	clock.Advance(bus.RepairGrace)
+	code, body := get()
+	if code != http.StatusOK || body["status"] != "degraded" {
+		t.Fatalf("/healthz a whole bus.RepairGrace into the marker read's stall = %d %v, want 200 degraded", code, body)
+	}
+	reported := fmt.Sprint(body["error"])
+	if !strings.HasPrefix(reported, "cutover marker read") || strings.Contains(reported, "KV watch rebuild") ||
+		body["bucket"] != consumernames.SessionBucket || body["key"] != consumernames.SentinelKey {
+		t.Fatalf("/healthz a whole bus.RepairGrace into the marker read's stall = %v; want the cutover marker read named as the cause, with bucket %s and key %s, and no KV watch rebuild",
+			body, consumernames.SessionBucket, consumernames.SentinelKey)
+	}
+	t.Logf("/healthz a whole bus.RepairGrace into the marker read's stall: %d %v", code, body)
 }
 
 // hookStallFixture is the listener a hook stall is tested against, on the package's shared NATS

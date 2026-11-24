@@ -36,12 +36,14 @@ import (
 // (edgeStreamPresent). Its grant creates and raises no bucket's stream either, so each bucket is
 // found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds at fewer copies
 // than ENVOY_NATS_REPLICAS, ends the open naming the create or raise the server refused; no
-// keeper raises a bucket after.
+// keeper raises a bucket after. Either client runs the consumer naming mode cfg read
+// (bus.WithConsumerNames), which the session consumers' connection takes from it
+// (connectSessionDelivery).
 func connectListenerBus(cfg config.Service, edge *edgeGrant) (*bus.Client, error) {
 	if edge == nil {
 		return bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
 	}
-	client, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection())...)
+	client, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection(), bus.WithConsumerNames(cfg.ConsumerNames))...)
 	if err != nil {
 		return nil, err
 	}

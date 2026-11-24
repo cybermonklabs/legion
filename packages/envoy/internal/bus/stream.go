@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/natsversion"
@@ -30,8 +31,10 @@ const Stream = "ENVOY_NOTIFICATIONS"
 // a clustered restore the servers can report different Created times (per nats-server's clustered
 // restore code), so it can change again at a later leader election. Every relay frame carries the
 // key's value in its Envoy-Stream-Id header (cmd/listener/session_relay.go), so a session can tell
-// a cursor of its own apart from one belonging to a stream that was restored.
-const StreamIDMetadataKey = "envoy_stream_id"
+// a cursor of its own apart from one belonging to a stream that was restored. It is the library's
+// key (consumernames.StreamIdentityMetadataKey), so a last floor every family records is read
+// against the one identity.
+const StreamIDMetadataKey = consumernames.StreamIdentityMetadataKey
 
 // The JetStream KV buckets Envoy's stores keep, each named for what it holds.
 const (
@@ -114,17 +117,21 @@ const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
 const LegionWakeTopic = NotificationTopicPrefix + "legion.wake"
 
 // DispatchDeliveryDurable is the stream's durable consumer Dispatch's delivery intake binds, over
-// every GitHub notification (internal/dispatch/delivery).
-const DispatchDeliveryDurable = "delivery-events"
+// every GitHub notification (internal/dispatch/delivery): the family table's
+// (consumernames.DispatchDeliveryDurable), one of the two keys of Dispatch's selection store.
+const DispatchDeliveryDurable = consumernames.DispatchDeliveryDurable
 
 // DispatchJobDurable is the stream's durable consumer Dispatch's job intake binds, over a deploy
-// run's job events (internal/dispatch/delivery).
-const DispatchJobDurable = "delivery-jobs"
+// run's job events (internal/dispatch/delivery): the family table's
+// (consumernames.DispatchJobDurable), the other key of Dispatch's selection store.
+const DispatchJobDurable = consumernames.DispatchJobDurable
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
-// binds. A space in the machine id is a hyphen in the name.
+// binds: the family table's prefix (consumernames.ListenerDurablePrefix), the one the session
+// store's key rule takes a durable's key by, and the machine id. A space in the machine id is a
+// hyphen in the name.
 func ListenerDurable(machineID string) string {
-	return "listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return consumernames.ListenerDurablePrefix + strings.ReplaceAll(machineID, " ", "-")
 }
 
 // ListenerQueue is the queue group the listener of machine machineID subscribes the role lanes in,

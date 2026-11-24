@@ -64,7 +64,10 @@
     "$JS.API.CONSUMER.DELETE.ENVOY_NOTIFICATIONS.*",
     "$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.*",
     "$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS",
-    "$JS.ACK.ENVOY_NOTIFICATIONS.*.>"
+    "$JS.ACK.ENVOY_NOTIFICATIONS.*.>",
+    "$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
+    "$KV.envoy_session_consumers.*",
+    "$KV.envoy_session_consumers.durable.listener-m"
   ],
   "subscribe": [
     "_INBOX_envoy_edge_m.>",

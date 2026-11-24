@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/config"
@@ -589,7 +590,9 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 
 // healthzHandler is the listener's /healthz. It answers 200 "starting" until main publishes deps
 // once the durable consumer binds, which during a rolling deploy waits out the task being replaced
-// while /v1 already serves; 200 "healthy" with the durable consumer's lag once every dependency
+// while /v1 already serves, except that in the fresh naming mode a start whose selection state
+// refuses every call answers 503 "not_ready" instead (startingSelectionHealth), since its durable
+// never binds; 200 "healthy" with the durable consumer's lag once every dependency
 // answers; 503 "unhealthy" when NATS is unavailable, the durable subscription is inactive, a
 // cache's watcher has stopped, the durable consumer is gone, a bus check did not answer within
 // healthzBudget, or the durable consumer is
@@ -622,7 +625,12 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // nowhere here: the bus runs the hooks again within seconds of a failure (internal/bus/recovery.go,
 // recoverUntilHealthy), so a rebuild under the bound is being repaired, and a listener would
 // otherwise read as degraded over every reconnect. The stall is one bus.Client's, naming no
-// cache, so a listener that keeps no CI cache needs no branch of its own.
+// cache, so a listener that keeps no CI cache needs no branch of its own. In the fixed naming mode
+// the client's last hook reads the cutover marker on the new connection (bus.Client.GateOnMarker,
+// registered after the cache rewatch), so a stall whose last failure is that read
+// (bus.ErrMarkerRead) has rebuilt the watches: it is reported as the dependency "cutover marker
+// read", with the selection bucket and the sentinel's key beside the error, so neither the answer
+// nor the paging alarm sends an operator to watchers that are fine.
 //
 // The checks that go to the bus share one healthzBudget taken from the request's own context: the
 // flush, each cache's KV ping and the durable consumer's info read. A ping or that read that has
@@ -670,11 +678,21 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // Every answer, starting, healthy, degraded and unhealthy alike, also carries what issuers answers
 // (issuerHealthFields: the identity token issuers' "oidc" and "google"); nil adds nothing. Those
 // fields never decide the status (writeHealth).
-func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[string]any) http.HandlerFunc {
+func healthzHandler(deps *atomic.Pointer[listenerDeps], starting *atomic.Pointer[bus.Client], issuers func() map[string]any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		d := deps.Load()
 		if d == nil {
+			// A fresh start whose sentinel refuses every call never binds its durable: say so
+			// rather than "starting" for as long as the bind retries.
+			if starting != nil {
+				ctx, cancel := context.WithTimeout(r.Context(), healthzBudget)
+				defer cancel()
+				if body := startingSelectionHealth(ctx, starting.Load()); body != nil {
+					writeHealth(w, http.StatusServiceUnavailable, body, issuers)
+					return
+				}
+			}
 			writeHealth(w, http.StatusOK, map[string]any{"status": "starting"}, issuers)
 			return
 		}
@@ -704,10 +722,16 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[strin
 				return
 			}
 		}
-		consumerInfo, err := d.client.JS().ConsumerInfo(bus.Stream, d.consumer, nats.Context(ctx))
+		consumerInfo, err := durableInfo(ctx, d.client, d.consumer)
 		if err != nil {
 			// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
-			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound), issuers)
+			// Whether the durable the server holds is named as this process names it is unknown
+			// then, so consumer_names says so, and why, beside the configured mode.
+			writeDependencyHealthWith(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound), map[string]interface{}{
+				"consumer_names": "UNKNOWN",
+				"consumer_names_unknown": fmt.Sprintf("the durable consumer's read failed, so the %s naming mode this process runs is unconfirmed on the server: %v",
+					d.client.ConsumerNames(), err),
+			}, issuers)
 			return
 		}
 		// One read and no confirming second one, unlike durableProbe's: the endpoint reports the
@@ -719,14 +743,8 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[strin
 		}
 		// Last, below every 503 check: "degraded" is the answer only when nothing worse holds.
 		if stall, hookErr := d.client.HookStall(); stall >= bus.RepairGrace {
-			rebuild := fmt.Errorf("no rebuild has succeeded for %s", stall.Round(time.Second))
-			if hookErr != nil {
-				// The last failure says what is broken; the stall, for how long. A run still in
-				// flight past the grace has no error of its own, and writeDependencyHealth needs
-				// one, so then the stall is the whole report.
-				rebuild = fmt.Errorf("%w (%w)", hookErr, rebuild)
-			}
-			writeDependencyHealth(w, "KV watch rebuild", rebuild, false, issuers)
+			dependency, stalled, extra := hookStallHealth(stall, hookErr)
+			writeDependencyHealthWith(w, dependency, stalled, false, extra, issuers)
 			return
 		}
 		response := map[string]interface{}{"status": "healthy"}
@@ -738,6 +756,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[strin
 		}
 		response["num_pending"] = consumerInfo.NumPending
 		response["num_ack_pending"] = consumerInfo.NumAckPending
+		response["consumer_names"] = string(d.client.ConsumerNames())
 		// Last, so that no fault above is reported as this one: every check before it that can
 		// answer 503 has passed. The answer keeps the fields above it, so a reader of the counters
 		// loses none while the view fills or while its repair is late. A view that cannot answer
@@ -753,9 +772,24 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps], issuers func() map[strin
 		} else if err := repair.Err(); err != nil {
 			response["status"] = "degraded"
 			response["error"] = dependencyUnavailable("role claim repair", err)
+		} else if err := sessionSelectionHealth(ctx, d); err != nil {
+			response["status"] = "degraded"
+			response["error"] = dependencyUnavailable("session consumer selection bucket "+consumernames.SessionBucket, err)
 		}
 		writeHealth(w, http.StatusOK, response, issuers)
 	}
+}
+
+// sessionSelectionHealth is, in the fresh consumer naming mode, why the session consumers' calls
+// are refused (bus.SessionConsumers.SelectionHealth): the selection bucket, its sentinel or a key
+// missing, or the cutover not run, each named. Every registration is then refused, while the
+// listener's other routes serve, so /healthz answers degraded rather than unhealthy. nil in the
+// fixed mode, whose /healthz answers as it did before the setting.
+func sessionSelectionHealth(ctx context.Context, d *listenerDeps) error {
+	if d.consumers == nil || d.consumers.consumers == nil {
+		return nil
+	}
+	return d.consumers.consumers.SelectionHealth(ctx)
 }
 
 // roleClaimRepairHealth is the "role_claim_repair" field of a /healthz answer: the role claim
@@ -815,16 +849,23 @@ func healthzPing(ctx context.Context, cache kvCache) (answered bool, err error) 
 }
 
 func writeDependencyHealth(w http.ResponseWriter, dependency string, err error, terminal bool, issuers func() map[string]any) {
+	writeDependencyHealthWith(w, dependency, err, terminal, nil, issuers)
+}
+
+// writeDependencyHealthWith is writeDependencyHealth with extra fields beside status and error.
+func writeDependencyHealthWith(w http.ResponseWriter, dependency string, err error, terminal bool, extra map[string]any, issuers func() map[string]any) {
 	statusCode := http.StatusOK
 	status := "degraded"
 	if terminal {
 		statusCode = http.StatusServiceUnavailable
 		status = "unhealthy"
 	}
-	writeHealth(w, statusCode, map[string]any{
+	body := map[string]any{
 		"status": status,
 		"error":  dependencyUnavailable(dependency, err),
-	}, issuers)
+	}
+	maps.Copy(body, extra)
+	writeHealth(w, statusCode, body, issuers)
 }
 
 // writeHealth writes one /healthz answer: statusCode, and body with what issuers answers added
@@ -953,6 +994,7 @@ func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
 		bus.WithStreamMaxBytes(cfg.StreamMaxBytes),
 		bus.WithKeptBuckets(bus.ListenerBuckets()...),
 		bus.WithSilentCutDetection(),
+		bus.WithConsumerNames(cfg.ConsumerNames),
 	}
 }
 
@@ -1068,6 +1110,14 @@ func main() {
 	// meets them.
 	warnIgnoredEnv(logger, "ENVOY_HOST_BRIDGE", "the listener no longer pushes a message to a session's serve port, so it opens no connection this would address")
 	warnIgnoredEnv(logger, "ENVOY_SUBSCRIBE_ALL_TOPICS", "the listener no longer holds a live topics subscription, so there is no such subscription to turn on")
+	// Before any NATS connect, so a listener the writer hold refuses still names its mode. The line
+	// also carries ENVOY_STREAMS_OPERATOR_MADE as it was set, null when unset, which the cutover's
+	// mode check reads beside the naming mode.
+	streamsOperatorMade := slog.Any("streams_operator_made", nil)
+	if value, set := os.LookupEnv("ENVOY_STREAMS_OPERATOR_MADE"); set {
+		streamsOperatorMade = slog.String("streams_operator_made", value)
+	}
+	logger.Info("session consumer naming mode", slog.String("consumer_names", string(cfg.ConsumerNames)), streamsOperatorMade)
 	apiToken := os.Getenv("ENVOY_API_TOKEN")
 	oidcIssuer, oidcAudience, err := resolveListenerOIDCConfig(os.Getenv)
 	if err != nil {
@@ -1236,9 +1286,12 @@ func main() {
 	// /metrics is always reachable — NOT gated by readiness.
 	mux.Handle("/metrics", met.Handler())
 
-	// /healthz is always reachable, before NATS setup as well as after it. Every answer carries
-	// the identity token issuers' fields (issuerHealthFields), which never decide its status.
-	mux.HandleFunc("/healthz", healthzHandler(&deps, func() map[string]any { return issuerHealthFields(apiAuthConfig) }))
+	// /healthz is always reachable, before NATS setup as well as after it. Before the durable binds
+	// it reads the selection bucket's sentinel through startingClient, once that client connects.
+	// Every answer carries the identity token issuers' fields (issuerHealthFields), which never
+	// decide its status.
+	var startingClient atomic.Pointer[bus.Client]
+	mux.HandleFunc("/healthz", healthzHandler(&deps, &startingClient, func() map[string]any { return issuerHealthFields(apiAuthConfig) }))
 
 	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
 	// durable consumer. It says only that the process answers, for the startup and liveness
@@ -1301,6 +1354,7 @@ func main() {
 		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
 		log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
 	}
+	startingClient.Store(client)
 	// starting is the context the bucket opens below run under, and it is context.Background() on
 	// purpose: do not replace it with a context a signal ends. The opens wait on the cluster until
 	// it answers them (a bucket's create, a raise's copies, a member applying a create, a stream's
@@ -1682,6 +1736,16 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
+	converted := func(err error) {
+		logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	if err := startConsumerNaming(cfg.HostListener, delivery.consumers, client, met, logger, converted); err != nil {
+		logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
+		delivery.close()
+		client.Conn.Close()
+		os.Exit(1)
+	}
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below). An edge listener's relay takes its receipts under its
 	// machine's receipt family (natsgrant.EdgeRelayReplyPrefix), on which the replica serving the
@@ -1912,6 +1976,7 @@ func main() {
 		sessions: sessions,
 		deps:     ready,
 		relays:   relays,
+		edge:     edge != nil,
 		logger:   logger,
 	}, sessionConsumerSweepInterval))
 

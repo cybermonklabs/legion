@@ -115,9 +115,11 @@ func v1API(auth listenerAPIAuth, gate *startingGate) http.Handler {
 // reading it (pkg/neg/types/types.go:394-417 at ba5195c), and toZoneNetworkEndpointMap adds every
 // address with no Ready check (pkg/neg/syncers/utils.go:254). So a replica whose /healthz answers
 // 503 for a cut bus stays in the NEG, and only this answer stops the balancer sending it /v1
-// requests. /healthz does not serve here: it answers 200 "starting" from the listener's first
-// answer (healthzHandler), since the probes that read it must not take a starting listener out of
-// service.
+// requests. /healthz does not serve here: in the fixed naming mode it answers 200 "starting" from
+// the listener's first answer (healthzHandler), since the probes that read it must not take a
+// starting listener out of service, and so does the fresh mode once its selection state admits
+// calls; a fresh start whose selection state refuses every call answers 503 "not_ready" instead
+// (startingSelectionHealth).
 func readyzHandler(gate *startingGate, served *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		d := served.Load()

@@ -19,7 +19,10 @@
 # is not the first reading's, a second reading sooner than a counter line may be old, and an answer
 # that is no JSON object. A first reading on a bus that still holds old-form messages, interests and
 # consumer
-# filters is a first reading that names each. A listener that dials the bus by another address
+# filters is a first reading that names each. A listener's durable and a Legion daemon's under a
+# fresh name (ENVOY_CONSUMER_NAMES=fresh, <durable>~<random>) are read as the durable their
+# metadata envoy.logical names, and one whose envoy.logical is missing or names another durable is
+# UNKNOWN by its name. A listener that dials the bus by another address
 # than the listener Deployment's is skipped, and its durable unread, until --bus-alias names that
 # address, and is then held to its restarts as any listener is, while a listener on another bus
 # stays skipped, its NATS_URLS printed with any credential masked, and makes the reading UNKNOWN
@@ -273,6 +276,14 @@ consumer() {
 # consumers_page CONSUMER... prints one consumer list answer holding them all.
 consumers_page() {
   printf '%s\n' "$@" | jq -cs '{type: "io.nats.jetstream.api.v1.consumer_list_response", total: length, offset: 0, limit: 256, consumers: .}'
+}
+
+# fresh PATTERN prints each ConsumerInfo line it reads, those whose name matches the regex PATTERN
+# as the fresh naming mode names them (consumernames.FreshName: the logical name, `~` and 22 random
+# letters and digits) and carrying the metadata envoy.logical, the logical name
+# (consumernames.LogicalMetadataKey); the others as read.
+fresh() {
+  jq -c --arg p "$1" 'if (.name | test($p)) then .config.metadata = {"envoy.logical": .name} | .name += "~Ab12Cd34Ef56Gh78Ij90Kl" | .config.durable_name = .name else . end'
 }
 
 # subjects_page SUBJECT... prints one stream info answer listing the subjects, one message each.
@@ -1356,6 +1367,63 @@ reading
 expect_status 3
 expect_line "UNKNOWN: listener machine laptop has its durable listener-laptop on the bus and is not bound to it now (offline, asleep or restarting; last active 2026-11-20T23:59:00Z)"
 expect_line "read again while it runs, naming it with --listener laptop=<url> if it runs outside the cluster, or its NATS_URLS with --bus-alias if it runs in the cluster and dials the bus by another address"
+done_case
+
+# The fresh naming mode (ENVOY_CONSUMER_NAMES=fresh) names a listener's durable
+# listener-<machine>~<random>, its metadata envoy.logical naming the durable listener-<machine>
+# (consumernames.DurableNaming): the census reads the machine from that metadata, never from the
+# name past its ~, and a fresh name whose metadata does not name the durable its name holds is no
+# machine's.
+new_case "listeners on fresh durable names are read as their machines, and a clean fleet read twice opens"
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers | fresh '^listener-')")" "")"
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 0
+expect_last "GATE OPEN"
+expect_no_line "listener machine"
+done_case
+
+new_case "a listener offline at the reading on a fresh durable name, that nobody named, is UNKNOWN by the machine its envoy.logical names"
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers)" "$(consumer listener-laptop '["notifications.agent.>","notifications.dispatch.>"]' false "$durable_lapse_ns" | fresh '^listener-')")" "")"
+reading
+expect_status 3
+expect_line "UNKNOWN: listener machine laptop has its durable listener-laptop~Ab12Cd34Ef56Gh78Ij90Kl on the bus and is not bound to it now"
+expect_line "naming it with --listener laptop=<url> if it runs outside the cluster"
+done_case
+
+new_case "a fresh listener durable with no envoy.logical is UNKNOWN, though its name begins with a machine this reading read"
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers | fresh '^listener-gke$' | jq -c 'del(.config.metadata)')")" "")"
+reading
+expect_status 3
+expect_line "UNKNOWN: listener durable listener-gke~Ab12Cd34Ef56Gh78Ij90Kl has a fresh name (a ~ and a suffix), and it carries no metadata envoy.logical, which names the durable a fresh name is made for, so this reading cannot tell which machine it serves"
+expect_no_line "listener machine gke"
+done_case
+
+new_case "a fresh listener durable whose envoy.logical names another durable is UNKNOWN, though that durable's machine was read"
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers | fresh '^listener-gke$' | jq -c '.config.metadata["envoy.logical"] = "listener-dispatch"')")" "")"
+reading
+expect_status 3
+expect_line "UNKNOWN: listener durable listener-gke~Ab12Cd34Ef56Gh78Ij90Kl has a fresh name (a ~ and a suffix), and its metadata envoy.logical is listener-dispatch, not listener-gke, the name before its last ~, so this reading cannot tell which machine it serves"
+expect_no_line "listener machine"
+done_case
+
+# A Legion daemon's durable in the fresh naming mode is legion-go-<project>-<kind>~<random>, its
+# envoy.logical the durable's name (consumernames.LogicalNaming): it is the daemon's consumer the
+# census of consumers requires, at both readings.
+new_case "a Legion daemon's consumers on fresh names are the daemon's, and a clean fleet read twice opens"
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers | fresh '^legion-go-')")" "")"
+first_reading_secs 200 reading
+reading --since "$FAKE/earlier.json"
+expect_status 0
+expect_last "GATE OPEN"
+expect_no_line "no Legion daemon consumer"
+done_case
+
+new_case "a fresh daemon-named consumer whose envoy.logical names another durable is no Legion daemon's dispatch consumer"
+replace_row consumers 0 "$(line consumers 0 0 "$(consumers_page "$(clean_consumers | fresh '^legion-go-ACME-dispatch$' | jq -c '.config.metadata["envoy.logical"] = "legion-go-ACME-wake"')")" "")"
+reading
+expect_status 3
+expect_line "UNKNOWN: the stream's consumers: no Legion daemon consumer (legion-go-<project>-dispatch) is on the stream"
 done_case
 
 new_case "readings further apart than a listener's durable outlives its listener are UNKNOWN"

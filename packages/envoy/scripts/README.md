@@ -587,6 +587,7 @@ packages/envoy/scripts/forced-order.sh ./internal/testnats/hooktest/
 packages/envoy/scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
 packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
 packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -timeout 25m ./internal/bus/
 ```
 
 It copies nats-server's module at the version it runs out of the module cache, applies
@@ -620,15 +621,20 @@ that version reports is refused before anything is built, so a mistyped point ca
 on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
 test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
 line).
-`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` holds it to five of
-those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
-an empty `-C`, a module that replaces nats-server), with the fixture package
-`internal/testnats/hooktest/skiponly`.
-`ci.yaml`'s `envoy-go-race` job runs that test, then the script on `./internal/testnats/hooktest/`
-twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`. Its
-`daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
-nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
-the 10 minutes in its time budget.
+`-timeout <duration>` replaces go test's 10-minute `-timeout`, and an empty value is refused;
+`GO_TEST_TIMEOUT` does the same where the flag is not given, but a CI step gives the flag, since a
+`GO*` name in a step's env leaves its job's go commands unreduced. `forced-order.test.sh` holds
+it to six of those refusals (a package whose tests all skip, a `-drop` name that is no point, an
+empty `-server`, an empty `-C`, an empty `-timeout`, a module that replaces nats-server), with the
+fixture package `internal/testnats/hooktest/skiponly`.
+`ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
+the version the workspace links, on `./internal/testnats/hooktest/`, `./internal/bus/`,
+`./consumernames/` and `./cmd/listener/` with `-timeout 25m`, since every session row runs on one
+copy, an R1 cluster and R3; and with `-server 2.10.29` on `./internal/testnats/hooktest/` and
+`./consumernames/` alone, since the session consumers and the listener refuse 2.10.29 and their
+rows would all skip there. Its `daemon-go` job runs it with `-C packages/daemon` and no
+`-server`. So when `go.mod` moves to a nats-server with no hooks, both unversioned steps fail
+until the hooks are ported. Each job counts each step's timeout in its time budget.
 
 ## aws-moto-check.sh
 
@@ -1175,8 +1181,9 @@ delete the code that reads both):
   to the stream, which its grant (`notifications.>`) and the stream's subjects let it store. Until
   the switch every reader takes both forms. After it no session consumer filters the old form, so
   such a message is stored, acknowledged to the listener and never delivered: lost, with no error
-  to anyone. Its durable `listener-<machine>` on the stream names it to a reading (`UNKNOWN`)
-  until the durable lapses, 7 days after the listener last used it (`cmd/listener/durable.go`).
+  to anyone. Its durable `listener-<machine>` on the stream (`listener-<machine>~<random>` in the
+  fresh naming mode) names it to a reading (`UNKNOWN`) until the durable lapses, 7 days after the
+  listener last used it (`cmd/listener/durable.go`).
   (a3) holds the user it connects as to a listener pin, so a listener the pins run is behind only
   when that pin is, and then the gate shuts; one run outside the pins under that user is not seen.
 - **A session whose consumer is gone** (deregistered, swept, or unpulled past its inactive
@@ -1283,9 +1290,15 @@ What it reads, all of it read-only:
   nobody named, or one offline, asleep or restarting at the reading, is never left out of the count
   while its durable lasts (7 days unbound); the line says to name it with `--listener` if it runs
   outside the cluster, or its `NATS_URLS` with `--bus-alias` if it runs in the cluster and dials the
-  bus by another address. A listener container on another bus that serves as the machine of a
-  listener the reading read prints `UNKNOWN`, naming both: that machine's durable can be either's,
-  so the one read does not show what the other counted. So does one whose `ENVOY_MACHINE_ID` is no
+  bus by another address. In the fresh naming mode (`ENVOY_CONSUMER_NAMES=fresh`) the durable is
+  `listener-<machine>~<random>`, and the gate reads its machine from its metadata `envoy.logical`,
+  which names the durable `listener-<machine>`, never from the name past its `~`; a fresh name
+  whose `envoy.logical` is missing or names another durable than the one before its last `~` prints
+  `UNKNOWN` by its name, since no listener takes such a consumer. A Legion daemon's
+  `legion-go-<project>-dispatch` is read the same way under a fresh name. A listener container on
+  another bus that serves as the machine of a listener the reading read prints `UNKNOWN`, naming
+  both: that machine's durable can be either's, so the one read does not show what the other
+  counted. So does one whose `ENVOY_MACHINE_ID` is no
   literal value (set through `valueFrom` or `envFrom`, holding a `$(VAR)` reference Kubernetes
   expands, or not set), whose machine the gate cannot read; set it as a literal value. A literal
   machine is read trimmed of white space, as the listener reads it. A listener container that lists

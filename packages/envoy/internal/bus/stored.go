@@ -278,6 +278,25 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
+	return c.requestConfirmedMsg(ctx, &nats.Msg{Subject: subject, Data: data})
+}
+
+// requestConfirmedMsg is requestConfirmed of msg, whose header it sends: the conditional write of
+// a selection record carries its expected last sequence there (consumernames.KVStore). msg's
+// reply subject is set to the request's own inbox.
+func (c *Client) requestConfirmedMsg(ctx context.Context, msg *nats.Msg) (*nats.Msg, error) {
+	return c.request(ctx, msg, false)
+}
+
+// requestGated is requestConfirmedMsg of a consumer call (SessionConsumers): on a client with a
+// marker gate (GateOnMarker) it is refused with ErrMarkerUnread, unsent, unless the gate is open
+// for the connection it would go out on, as that connection is right before the publish.
+func (c *Client) requestGated(ctx context.Context, msg *nats.Msg) (*nats.Msg, error) {
+	return c.request(ctx, msg, true)
+}
+
+// request is requestConfirmedMsg, and requestGated when gated is set.
+func (c *Client) request(ctx context.Context, msg *nats.Msg, gated bool) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
@@ -293,7 +312,12 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 		return nil, err
 	}
 	defer replies.Unsubscribe()
-	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg)
+	if gated {
+		if err := c.markerUnreadOn(conn); err != nil {
+			return nil, err
+		}
+	}
+	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: msg.Subject, Reply: inbox, Header: msg.Header, Data: msg.Data}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}

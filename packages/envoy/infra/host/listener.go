@@ -47,6 +47,12 @@ type ListenerArgs struct {
 	// default true; false for a listener whose NATS is not reachable from where the stack is
 	// applied (the container is created and Docker restarts it until it connects)
 	WaitForHealthy *bool `pulumi:"waitForHealthy,optional"`
+	// default false; true only for a listener whose NATS user is a host-kind entry, the user its
+	// host's sessions share (core.HostPermissions, natsgrant.Host): it renders
+	// ENVOY_LISTENER_ROLE=host, and that listener runs fixed consumer names for good and reads no
+	// cutover marker its user may not read. Unset, the listener renders no role and reads the
+	// marker, and a read its grant refuses is no marker.
+	HostUser *bool `pulumi:"hostUser,optional"`
 }
 
 // WatchdogArgs deploy the systemd watchdog that recreates a removed envoy-listener container.
@@ -107,7 +113,7 @@ func resolveListener(name string, args *ListenerArgs) (listenerPlan, error) {
 	}
 	plan := listenerPlan{
 		containerName: defaultContainerName,
-		plain:         core.ListenerConfig{MachineID: args.MachineID, Port: core.DefaultListenerPort},
+		plain:         core.ListenerConfig{MachineID: args.MachineID, Port: core.DefaultListenerPort, HostListener: args.HostUser != nil && *args.HostUser},
 		packages:      []string{"docker"},
 	}
 	if args.ContainerName != nil {

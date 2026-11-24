@@ -8,10 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
+	"github.com/sjawhar/envoy/internal/fixtureenv"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -72,5 +75,44 @@ func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
 	started.waitHealthy(t)
 	if output := started.Output.String(); strings.Contains(output, "role lane subscribed") || !strings.Contains(output, "role lane not subscribed") {
 		t.Fatalf("the edge listener opened a role lane, or did not say it opened none:\n%s", output)
+	}
+}
+
+// An edge listener's main client runs the process's consumer naming mode (ENVOY_CONSUMER_NAMES),
+// as every other listener's does, so its durable and its sessions' consumers, whose connection
+// takes the mode from this client (connectSessionDelivery), are named by the mode its start logs.
+// The client of the listener that owns the stream, which takes the mode through
+// listenerStreamOptions, is read beside it under the same settings.
+func TestAnEdgeListenersClientRunsTheConsumerNamingMode(t *testing.T) {
+	for _, mode := range []consumernames.Mode{consumernames.ModeFixed, consumernames.ModeFresh} {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Setenv("ENVOY_MACHINE_ID", "edge-naming-mode")
+			t.Setenv("NATS_URLS", testnats.URL(t))
+			t.Setenv(consumernames.ModeEnvVar, string(mode))
+			t.Setenv(config.EdgeProjectsEnvVar, edgeProject)
+			for _, name := range []string{bus.ReplicasEnvVar, bus.StreamMaxBytesEnvVar, bus.ListenerRoleEnvVar} {
+				fixtureenv.Unset(t, name)
+			}
+			cfg, err := config.Load(9020)
+			if err != nil {
+				t.Fatalf("load the edge listener's settings: %v", err)
+			}
+			owning, err := connectListenerBus(cfg, nil)
+			if err != nil {
+				t.Fatalf("connect the listener that owns the stream: %v", err)
+			}
+			t.Cleanup(owning.Close)
+			edge, err := connectListenerBus(cfg, testEdgeGrant(t, metrics.New()))
+			if err != nil {
+				t.Fatalf("connect the edge listener: %v", err)
+			}
+			t.Cleanup(edge.Close)
+			if got := owning.ConsumerNames(); got != mode {
+				t.Errorf("the client that owns the stream runs %s names, want %s, the mode %s sets", got, mode, consumernames.ModeEnvVar)
+			}
+			if got := edge.ConsumerNames(); got != mode {
+				t.Errorf("the edge listener's client runs %s names, want %s, the mode %s sets", got, mode, consumernames.ModeEnvVar)
+			}
+		})
 	}
 }

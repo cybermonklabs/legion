@@ -178,7 +178,8 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
 - **Health**: every listener serves `GET /readyz`, which answers whether /v1 can serve; the edge's load balancer health check reads it, and the deployment's health-check policy for the edge names the path.
   It answers `503 {"status":"starting"}` until the /v1 gate opens, `503 {"status":"unavailable","error":"nats unavailable"}` while the bus does not answer after that, the same check that turns `/healthz` `503` (`busAnswers`), and `200 {"status":"serving"}` otherwise, again as soon as the bus answers. It takes no credential and reads no store (`readyzHandler`).
   So the load balancer's check drops a replica whose bus is cut, whose `/v1` answers bus-unavailable `503`s, and takes it back when the bus returns. The pod's readiness does not do that: GKE's standalone NEGs keep a NOT-READY endpoint, since ingress-gce's `EndpointsDataFromEndpointSlices` drops only terminating endpoints and records Ready without reading it (`pkg/neg/types/types.go:394-417` at `ba5195c`), and `toZoneNetworkEndpointMap` adds every address with no Ready check (`pkg/neg/syncers/utils.go:254`).
-  `/healthz` is unchanged for its other callers: it answers `200 {"status":"starting"}` from the listener's first answer, before `/v1` serves, so a balancer that read it would send requests to a pod that answers them `503`.
+  `/healthz` is unchanged for its other callers: in the fixed naming mode it answers `200 {"status":"starting"}` from the listener's first answer, before `/v1` serves, and so does the fresh mode once its selection state admits calls; a fresh start whose bucket is missing, whose sentinel is absent, malformed or of another family, or whose cutover is not done answers `503 {"status":"not_ready"}` instead (`healthzHandler`, `startingSelectionHealth`; `/healthz` under the consumer names below).
+  So a balancer that read it would send requests to a starting pod whose `/v1` answers them `503`.
 
 - **A `503` and the balancer's retry**: Google's balancer sends a request that carries no body once more after a `502`, `503` or `504`, with the same headers, its DPoP proof among them, and a proof is good for one request.
   So the listener answers every `503` it can before it checks or records the proof: the closed `/v1` gate answers before any credential is read (`startingGate.ahead`, `v1API`), on every listener, and a broker or a spent-proof store that did not answer ends the check before the proof is recorded.
@@ -343,6 +344,75 @@ The OS chooses the NATS and listener ports, and the run builds each URL from the
 `E2E_NATS_PORT` or `E2E_PORT` sets a port explicitly: it is used as given, and one already in use fails the run with `address already in use`.
 The session opens no port of its own.
 CI runs the driver as the `envoy-e2e-local` job of `.github/workflows/ci.yaml`.
+
+## The listener's session consumers
+
+Each registered session gets a JetStream consumer of its own on `ENVOY_NOTIFICATIONS`, and the
+listener binds a durable of its own. How they are named, and the record behind the fresh names,
+are in [`consumernames/README.md`](consumernames/README.md).
+
+- **Names.** In the fixed mode a session's consumer is `s-<session id>` and the listener's durable
+  is `listener-<machine id>`. In the fresh mode each creation gets a name never made before:
+  `session~<random>`, carrying the metadata `envoy.logical` and `envoy.session_id`, and
+  `listener-<machine id>~<random>`, carrying `envoy.logical`, where `<random>` is 22 characters
+  drawn from `crypto/rand`. Their records live in the KV bucket
+  `envoy_session_consumers`. The start's bind, the monitor's rebuild, the probe, the bound wait and
+  `/healthz` all read the durable through its record. The sweep lists only `session~` names that
+  carry `envoy.session_id`.
+- **The mode setting.** `ENVOY_CONSUMER_NAMES` is `fixed` (also when unset) or `fresh`, read once
+  at the start and exactly: any other value, a padded one among them, refuses the start. The start
+  logs `session consumer naming mode` with `consumer_names` and `streams_operator_made` (the raw
+  `ENVOY_STREAMS_OPERATOR_MADE`, null when unset) before its first NATS connect.
+- **A host's listener.** `ENVOY_LISTENER_ROLE=host`, read exactly, marks a listener that connects
+  as the NATS user its host's sessions share (`natsgrant.Host`). It runs fixed names for good, reads
+  no cutover marker, and refuses `ENVOY_CONSUMER_NAMES=fresh`. The `host:Listener` component
+  renders the role only under its input `hostUser: true`.
+- **The fixed mode's marker gate.** The session consumers' connection and the main client, on
+  which the durable is created and bound, each make no consumer call and no durable create,
+  correction or bind until a read of the selection bucket's cutover marker (`envoy.bucket`) on that
+  very connection says the cutover did not convert the bucket. A missing bucket counts as no
+  marker, and so does a read the connection's grant refuses (the listener beside Dispatch holds no
+  such read).
+  - Every disconnect shuts the gate, and each reconnect reads the marker again.
+  - A converted bucket stops the process, naming `ENVOY_CONSUMER_NAMES`.
+  - A read that fails keeps the gate shut and is read again. Meanwhile a registration is answered
+    `503 consumer_error` naming the marker.
+  - At the start, a marker the listener cannot read makes the start wait rather than run fixed
+    names unread.
+  - A read the listener's user may not make is no marker, so the gate opens: the listener beside
+    Dispatch holds no read of the bucket in this build. So the session family's convert, which
+    replaces that listener's `listener-<machine id>` too, runs only once that listener's grant
+    reads the bucket; until then a fixed listener there would create the converted name again.
+- **The fresh mode** refuses every session-consumer call until the bucket's sentinel says the
+  cutover is done. A registration over lost or unproven selection state is answered
+  `503 consumer_error`. A key holding no record of its own is answered naming the key and the
+  bucket, for that session alone. An open operation's candidate that is not as the listener creates
+  it is answered naming the consumer. A registration whose NATS user may not read the bucket is
+  answered `503 no_grant`. The listener's grant (`natsgrant.KVRecordStore("envoy_session_consumers")`)
+  holds the bucket's leader read and key writes, the two calls the store makes, and no create or
+  update of its stream.
+- **`/healthz`:**
+  - The healthy answer carries `consumer_names` (`fixed` or `fresh`). When the durable's read
+    fails, it is `UNKNOWN`, with `consumer_names_unknown` naming the failed read and the
+    configured mode.
+  - In the fresh mode, while the start has not bound its durable over a selection state that
+    refuses every call, the answer is `503` `not_ready`, with `bucket` and `reason`: `missing` (no
+    bucket), or, with `key` `envoy.bucket` too, `cutover not done` (with the sentinel's `cutover`,
+    none or `rolled_back`), `absent`, `another family` or `malformed`. The start logs a sentinel's
+    state once per change.
+  - Once serving, a missing bucket, sentinel or cutover marker, or a session's lost key, is
+    `200 degraded` naming `session consumer selection bucket envoy_session_consumers`, with every
+    field of the healthy answer kept. A refusal clears once a call is admitted.
+  - In the fixed mode, a marker read that keeps failing after a reconnect stalls the reconnect
+    hooks after the KV watches are rebuilt. Past a minute the answer is `200 degraded` naming the
+    `cutover marker read`, with `bucket` and `key`, rather than the `KV watch rebuild`.
+- **The counter.** `envoy_session_consumer_names_total{op,outcome}` on `/metrics` counts each
+  selection step in the fresh mode. `op` is one of `select`, `create`, `replace`, `delete`,
+  `recover`, `missing_current`, `last_floor` or `cleanup`. `outcome` is one of `ok`, `adopted`,
+  `retired`, `refused`, `conflict`, `limit` or `error`.
+- **Local runs.** `ENVOY_CONSUMER_NAMES=fresh packages/envoy/scripts/e2e-local.sh` makes the
+  selection bucket and its sentinel, with the cutover done, before the listener serves, and checks
+  the same answers as the default run.
 
 ## Contract source of truth
 
