@@ -20,6 +20,7 @@ import {
   isPhaseOp,
   legionToolDescription,
   mintClaimGrant,
+  phaseInputAfter,
   PHASE_OP_SENTENCES,
   phaseOpParameters,
   pluginBuildOf,
@@ -526,7 +527,7 @@ export function createLegionTool(deps: {
   readonly session: (context: SessionContext) => LegionToolSession;
   /** Mints the controller's grant, authenticated by its registration's secret. */
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
-  /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
+  /** Told of each successful step completion or backward move, never a look's report. */
   readonly onPhaseCompleted: (context: SessionContext) => void;
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
    * update message on its pod, and its phase stays open. */
@@ -765,9 +766,10 @@ export function createLegionTool(deps: {
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of
           // `@legion/pi-shared/phase-stall`).
-          if (operation === "handoff_complete" || operation === "request_backward_move") {
+          const effect = phaseInputAfter(operation, parameters);
+          if (effect === "phase-closed") {
             onPhaseCompleted(context);
-          } else if (operation === "ready_for_update") {
+          } else if (effect === "update-answered") {
             onUpdateAnswered(context);
           }
           return jsonSuccess(answer);

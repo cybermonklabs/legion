@@ -1586,9 +1586,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       session: () => session,
     }).execute("", parameters, undefined, undefined, context());
 
-  // Each of the three verdicts is posted with a fresh grant, the summary and no commit, and the
-  // check task's turn is closed as a phase's would be. The pending names its next look, which
-  // travels as the daemon's own `wakeAt`.
+  // A named check report posts a grant and report only, and leaves phase input open.
   for (const verdict of ["pending", "pass", "fail"]) {
     const wake = verdict === "pending" ? { wake_at: NEXT_LOOK } : {};
     await expect(
@@ -1596,11 +1594,11 @@ test("a report on its closed issue's production check carries a verdict and no c
         op: "handoff_complete",
         summary: `Look 2: ${verdict}.`,
         verdict,
+        check_opened_at: openCheck.openedAt,
         ...wake,
       })
     ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
-    expect(calls.slice(-3)).toEqual([
-      ["record", { issue: "LEGION-208" }],
+    expect(calls.slice(-2)).toEqual([
       [
         "grant",
         { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
@@ -1611,31 +1609,31 @@ test("a report on its closed issue's production check carries a verdict and no c
           grantId: "grant-208",
           summary: `Look 2: ${verdict}.`,
           verdict,
+          checkOpenedAt: openCheck.openedAt,
           ...(verdict === "pending" ? { wakeAt: NEXT_LOOK } : {}),
         },
       ],
     ]);
   }
-  expect(completed).toEqual(["ses_208", "ses_208", "ses_208"]);
+  expect(completed).toEqual([]);
 
-  // Refused after the record is read, with nothing minted or posted: a report with no verdict.
+  // A missing verdict is refused before any daemon call.
   const noVerdict = await run(claimSession("implementer"), {
     op: "handoff_complete",
     summary: "Looked.",
+    check_opened_at: openCheck.openedAt,
   });
   expect(noVerdict.isError).toBe(true);
   expect(noVerdict.content).toEqual([
     {
       type: "text",
-      text: "handoff_complete on a production check names a verdict of pass, pending or fail",
+      text: "handoff_complete with check_opened_at names a verdict of pass, pending or fail",
     },
   ]);
-  expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
-  expect(completed).toHaveLength(3);
+  expect(calls).toHaveLength(6);
+  expect(completed).toHaveLength(0);
 
-  // A completion on a done issue carries what a check report carries, whatever role sends it, and
-  // the daemon decides which it is: the tester's report on a check the tester's role works is
-  // posted, with the wake its pending named.
+  // A tester's named report posts the wake its pending supplied.
   const { calls: testerCalls, daemon: testerDaemon } = recordingDaemon({
     state: {
       issues: {
@@ -1659,7 +1657,7 @@ test("a report on its closed issue's production check carries a verdict and no c
     session: () => claimSession("tester"),
   }).execute(
     "",
-    { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: NEXT_LOOK },
+    { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: NEXT_LOOK, check_opened_at: openCheck.openedAt },
     undefined,
     undefined,
     context()
@@ -1672,13 +1670,11 @@ test("a report on its closed issue's production check carries a verdict and no c
       summary: "Looked.",
       verdict: "pending",
       wakeAt: NEXT_LOOK,
+      checkOpenedAt: openCheck.openedAt,
     },
   ]);
 
-  // The implementer's completion on a done issue carries what a check report carries whatever the
-  // record shows: once the check closed, or when none opened, no commit is looked up and the
-  // report is posted as given, for the daemon to answer (api/handoff.go): CHECK_NOT_OPEN for a
-  // session working a look, and CHECK_LOOK_NOT_SERVED for one that works none.
+  // A named report on an absent check is posted for the daemon to refuse.
   const { calls: closedCalls, daemon: closedDaemon } = recordingDaemon({
     state: { issues: { "LEGION-208": { key: "LEGION-208", phase: "done" } } },
   });
@@ -1692,11 +1688,11 @@ test("a report on its closed issue's production check carries a verdict and no c
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
     session: () => claimSession("implementer"),
-  }).execute("", { op: "handoff_complete", summary: "Looked." }, undefined, undefined, context());
+  }).execute("", { op: "handoff_complete", summary: "Looked.", verdict: "pass", check_opened_at: openCheck.openedAt }, undefined, undefined, context());
   expect(implementerAtDone.isError).toBeUndefined();
   expect(closedCalls.at(-1)).toEqual([
     "handoffComplete",
-    { grantId: "grant-208", summary: "Looked.", verdict: "" },
+    { grantId: "grant-208", summary: "Looked.", verdict: "pass", checkOpenedAt: openCheck.openedAt },
   ]);
 });
 

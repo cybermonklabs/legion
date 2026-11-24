@@ -168,7 +168,7 @@ const grantRequest = {
 }
 
 test("answerLegionTool closes only a step and answers an update without closing a look", async () => {
-  const { client } = await daemon({ state: stateAtPhase("testing") })
+  const { client } = await daemon({ state: stateAtPhase("testing"), "/legion/v1/claims/ready-for-update": {} })
   const calls: string[] = []
   const runtime = { daemon: client, claim: () => implementer, handoffReport: async () => ({ commit: "c0ffee" }), branchHead: async () => "" }
   const hook = { phaseClosed: () => { calls.push("closed") }, updateAnswered: () => { calls.push("update") } }

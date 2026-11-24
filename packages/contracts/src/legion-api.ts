@@ -44,8 +44,8 @@ const dispatchPriority = z.number().int().min(0).max(3).nullable().optional();
  * refuses a few strings that decode takes (`+24:00`, a comma before the fraction). `timestamp`
  * above takes `2026-11-06T10:00Z`, which that decode rejects, so a plugin that validated a request
  * field against it would send a body the daemon answers with its generic invalid-body error rather
- * than the field's own guidance. The plugin reads this same schema for both fields a session
- * sends — `wake_at` and `read_release_records`' `since`
+ * than the field's own guidance. The plugin reads this same schema for the request times
+ * `wake_at`, `check_opened_at` and `read_release_records`' `since`
  * (`packages/pi-shared/src/legion-phase-ops.ts`). Only a field a session sends reads it: every
  * other field here is the daemon's own output, which Go always writes with seconds. */
 export const LegionInstant = timestamp.regex(
@@ -609,12 +609,12 @@ const legionCheckView = z.object({
   pullRequest: z.number().int().positive().optional(),
   mergeCommit: z.string().optional(),
   openedAt: timestamp.optional(),
-  role: nonEmptyString,
+  role: nonEmptyString.optional(),
   looks: z.number().int().nonnegative(),
   lookOpen: z.boolean().optional(),
   lastWake: legionCheckWakeView.optional(),
   nextWakeAt: timestamp.optional(),
-  last: z.boolean(),
+  last: z.boolean().optional(),
 });
 
 /** `record.Answer` — the act that ended a root's wait on a person: a person's answer on the awaited
@@ -2170,7 +2170,8 @@ export function legionPlanRatingLoneField(
 }
 
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
- * completion, or the checking role's report on a look of its closed issue's production check.
+ * completion, or a production check's look report when `checkOpenedAt` names that check. The
+ * field alone selects the call, on any phase; absent it, the completion is a phase's.
  * A file-backed phase (planning, implementing, testing, reviewing) ends with a handoff record on
  * the Dispatch issue, which the worker writes with `dispatch handoff-write` under its own session;
  * its completion names it, `handoffId` and `handoffVersion`, which the daemon reads back from
@@ -2212,6 +2213,7 @@ export const LegionHandoffCompleteRequest = z
     commit: nonEmptyString.optional(),
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
+    checkOpenedAt: LegionInstant.optional(),
     wakeAt: LegionInstant.optional(),
     planRating: legionPlanRatingScale(z.number()).optional(),
     planReason: legionPlanReason.optional(),
@@ -2223,6 +2225,10 @@ export const LegionHandoffCompleteRequest = z
   )
   .refine((request) => request.returnTo === undefined || request.verdict === "fail", {
     message: "returnTo is carried only by a completion with the verdict fail",
+  })
+  .refine((request) => request.checkOpenedAt === undefined ||
+    (request.commit === undefined && request.handoffId === undefined && request.handoffVersion === undefined), {
+    message: "a report naming checkOpenedAt carries no commit, handoffId or handoffVersion",
   });
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
@@ -2433,9 +2439,7 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
   "check",
-  "check.role",
   "check.looks",
-  "check.last",
   "designGate",
   "designGate.currentVersion",
   "designGate.approvedVersion",
