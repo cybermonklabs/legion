@@ -129,7 +129,7 @@ export function restoreDue(
   const arming = state.arming;
   if (arming === undefined) return undefined;
   if (arming.cause === "refusal") return now >= arming.dueAt ? arming : undefined;
-  return suppressed() ? undefined : arming;
+  return arming;
 }
 
 export interface FallbackCooldownLimits {
