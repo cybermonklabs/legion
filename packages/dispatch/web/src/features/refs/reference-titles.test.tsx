@@ -8,6 +8,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
 import type { AskRead, CommentRead, IssueReferenceSummary, MessageRead } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
+import { warmMarkdownRenderer } from "./markdown-engine";
 
 const ASK_ID = "2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b";
 
@@ -149,6 +150,8 @@ function messageRead(id: string, fields: Record<string, unknown>): MessageRead {
 }
 
 test("a reference to a deleted comment says it is deleted and never reads as an empty link", async () => {
+  // The link is in the body, which `MarkdownBody` draws once the lazy Markdown engine loads.
+  await warmMarkdownRenderer();
   spies.push(
     spyOn(api, "getComment").mockResolvedValue({
       comment: {
@@ -191,6 +194,8 @@ test("a reference to a deleted comment says it is deleted and never reads as an 
 });
 
 test("a reference to a deleted message says it is deleted and never reads as an empty link", async () => {
+  // The link is in the body, which `MarkdownBody` draws once the lazy Markdown engine loads.
+  await warmMarkdownRenderer();
   spies.push(
     spyOn(api, "getMessage").mockResolvedValue(
       messageRead(DELETED_MESSAGE, {
