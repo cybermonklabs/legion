@@ -651,11 +651,14 @@ func (r *Runtime) readLog(ctx context.Context, pod, container string, lines int6
 // newlines the read took off the API, and whether it stopped at read bytes. A read that stopped
 // there ends inside a line the stream goes on with, unless the last byte it took is a newline,
 // and the text drops that unfinished line, the bytes after the last newline, as it drops the head
-// of a read whose older bytes tailBytes cut (dropCutHead).
+// of a read whose older bytes tailBytes cut (dropCutHead). A stream the API server refused is its
+// projection (projectKubeError): client-go's error quotes the server's words, or, where they are
+// no Status, the log's URL, options and all, and the answer's body. A body read that fails is
+// net/http's own words for it, which hold nothing the stream sent, and is returned as it came.
 func (r *Runtime) readLogOnce(ctx context.Context, pod, container string, lines int64, limit, read int) (text string, whole bool, seen int64, bounded bool, err error) {
 	stream, err := r.kube.CoreV1().Pods(r.namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container, TailLines: &lines}).Stream(ctx)
 	if err != nil {
-		return "", false, 0, false, err
+		return "", false, 0, false, projectKubeError("read the log of pod "+pod, err)
 	}
 	defer stream.Close()
 	counted := &logByteCounter{r: io.LimitReader(stream, int64(read)+1)}
@@ -737,12 +740,13 @@ func (r *Runtime) events(ctx context.Context, pod *corev1.Pod) string {
 	return strings.Join(parts, " | ")
 }
 
-// podEvents lists the events the API server holds for pod, this incarnation's only.
+// podEvents lists the events the API server holds for pod, this incarnation's only: an error is
+// the list's projection (projectKubeError).
 func (r *Runtime) podEvents(ctx context.Context, pod *corev1.Pod) ([]corev1.Event, error) {
 	selector := fields.Set{"involvedObject.kind": "Pod", "involvedObject.name": pod.Name, "involvedObject.uid": string(pod.UID)}
 	list, err := r.kube.CoreV1().Events(r.namespace).List(ctx, metav1.ListOptions{FieldSelector: selector.String()})
 	if err != nil {
-		return nil, err
+		return nil, projectKubeError("list the events of pod "+pod.Name, err)
 	}
 	return list.Items, nil
 }

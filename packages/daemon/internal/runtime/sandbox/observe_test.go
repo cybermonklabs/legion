@@ -1,11 +1,13 @@
 package sandbox
 
 import (
-	"errors"
+	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -545,7 +547,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 
 // breakablePods serves the pod informer's list and watch from the tracker until a test breaks
 // them: then every list and watch request fails, as they do while the API server is unreachable,
-// and the watch in flight ends.
+// with the refused dial net/http's client reaches client-go with, and the watch in flight ends.
 type breakablePods struct {
 	g      *rig
 	broken atomic.Bool
@@ -556,7 +558,7 @@ type breakablePods struct {
 func withBreakablePods(b *breakablePods) rigOption {
 	return func(g *rig, _ *Options) {
 		b.g = g
-		refused := errors.New("dial tcp 192.0.2.1:443: connect: connection refused")
+		refused := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 		g.kube.PrependReactor("list", "pods", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
 			if b.broken.Load() {
 				return true, nil, refused

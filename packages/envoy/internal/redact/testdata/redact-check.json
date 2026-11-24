@@ -17,7 +17,8 @@
       "github.com/sjawhar/envoy/oauth2call.Tokens",
       "(github.com/sjawhar/envoy/configaddr.Address).Words",
       "(github.com/sjawhar/envoy/configaddr.Address).Cause",
-      "(github.com/sjawhar/envoy/configaddr.Address).Error"
+      "(github.com/sjawhar/envoy/configaddr.Address).Error",
+      "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.projectKubeError"
     ],
     "printers": [
       "github.com/sjawhar/envoy/internal/redact.ruled",
@@ -3117,6 +3118,401 @@
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
         "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
         "capture": "dispatch.duplicates"
+      },
+      {
+        "row": "sandbox-kube-answer-status",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.answer/status"
+      },
+      {
+        "row": "sandbox-kube-answer-text-403",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.answer/text-403"
+      },
+      {
+        "row": "sandbox-kube-answer-text-500",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.answer/text-500"
+      },
+      {
+        "row": "sandbox-kube-answer-unknown-reason",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.answer/unknown-reason"
+      },
+      {
+        "row": "sandbox-kube-answer-malformed-status",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.answer/malformed-status"
+      },
+      {
+        "row": "sandbox-kube-answer-decode",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.answer/decode"
+      },
+      {
+        "row": "sandbox-kube-resend-log",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.resend-log"
+      },
+      {
+        "row": "sandbox-kube-carried-rotated-bearer",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.carried/rotated-bearer"
+      },
+      {
+        "row": "sandbox-kube-carried-create-body",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.carried/create-body"
+      },
+      {
+        "row": "sandbox-kube-carried-update-body",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.carried/update-body"
+      },
+      {
+        "row": "sandbox-kube-printers",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.printers"
+      },
+      {
+        "row": "sandbox-kube-log-stream",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.reads/log-tail"
+      },
+      {
+        "row": "sandbox-kube-probe-log",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.reads/probe-log"
+      },
+      {
+        "row": "sandbox-kube-events",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.reads/events"
+      },
+      {
+        "row": "sandbox-kube-install",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.install/installed"
+      },
+      {
+        "row": "sandbox-kube-census",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.install/census"
+      },
+      {
+        "row": "sandbox-kube-probe-refusal",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.probe/refusal"
+      },
+      {
+        "row": "sandbox-kube-probe-detail",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.probe/detail"
+      },
+      {
+        "row": "sandbox-kube-transport-events",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.transport/events"
+      },
+      {
+        "row": "sandbox-kube-transport-log-tail",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.transport/log-tail"
+      },
+      {
+        "row": "sandbox-kube-transport-informer-list",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.transport/informer-list"
+      },
+      {
+        "row": "sandbox-kube-transport-informer-watch",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.transport/informer-watch"
+      },
+      {
+        "row": "sandbox-kube-informer-list",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/before-sync"
+      },
+      {
+        "row": "sandbox-kube-informer-list-log",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/before-sync-log"
+      },
+      {
+        "row": "sandbox-kube-informer-watch",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/watch-after-sync"
+      },
+      {
+        "row": "sandbox-kube-informer-watch-log",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/watch-after-sync-log"
+      },
+      {
+        "row": "sandbox-kube-informer-services",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/services-after-sync"
+      },
+      {
+        "row": "sandbox-kube-informer-services-log",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/services-after-sync-log"
+      },
+      {
+        "row": "sandbox-kube-watch-event",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/watch-event-status"
+      },
+      {
+        "row": "sandbox-kube-watch-event-unstructured",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/watch-event-unstructured"
+      },
+      {
+        "row": "sandbox-kube-watch-event-object",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/watch-event-object"
+      },
+      {
+        "row": "sandbox-kube-list-trace",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/runtime/sandbox/kube_standin_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_rows_test.go",
+          "packages/daemon/internal/runtime/sandbox/kubeerror_informer_test.go"
+        ],
+        "capture": "kubeerror.informer/list-trace"
+      },
+      {
+        "row": "sandbox-kube-supervise-last-start-failure",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/supervise/kube_refusal_record_test.go"],
+        "capture": "kubeerror.supervise/last-start-failure"
+      },
+      {
+        "row": "sandbox-kube-supervise-last-death-cause",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/supervise/kube_refusal_record_test.go"],
+        "capture": "kubeerror.supervise/last-death-cause"
+      },
+      {
+        "row": "sandbox-kube-daemon-outbox-retry",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/daemon/kube_refusal_outbox_test.go"],
+        "capture": "kubeerror.daemon/outbox-retry"
+      },
+      {
+        "row": "sandbox-kube-daemon-outbox-log",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/daemon/kube_refusal_outbox_test.go"],
+        "capture": "kubeerror.daemon/outbox-log"
+      },
+      {
+        "row": "sandbox-kube-legion-boot-refusal",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/cmd/legion/kube_refusal_boot_test.go"],
+        "capture": "kubeerror.legion/boot-refusal"
+      },
+      {
+        "row": "sandbox-kube-legion-boot-transient-stopped",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/cmd/legion/kube_refusal_boot_test.go"],
+        "capture": "kubeerror.legion/boot-transient-stopped"
+      },
+      {
+        "row": "sandbox-kube-api-operator-refusal",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/api/kube_refusal_answer_test.go"],
+        "capture": "kubeerror.api/operator-refusal"
+      },
+      {
+        "row": "sandbox-kube-api-claim-answer",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/api/kube_refusal_answer_test.go"],
+        "capture": "kubeerror.api/claim-answer"
+      },
+      {
+        "row": "sandbox-kube-api-state-answer",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/api/kube_refusal_answer_test.go"],
+        "capture": "kubeerror.api/state-answer"
+      },
+      {
+        "row": "sandbox-kube-daemon-kubeconfig-server",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/daemon/kubeconfig_url_test.go"],
+        "capture": "kubeerror.daemon/kubeconfig-server"
+      },
+      {
+        "row": "sandbox-kube-daemon-kubeconfig-proxy-url",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/daemon/internal/daemon/kubeconfig_url_test.go"],
+        "capture": "kubeerror.daemon/kubeconfig-proxy-url"
+      },
+      {
+        "row": "sandbox-kube-api-state-projection",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/api/kube_refusal_projection_test.go",
+          "packages/daemon/internal/api/kube_refusal_answer_test.go"
+        ],
+        "capture": "kubeerror.api/state-projection"
       }
     ],
     "boundary_fields": {
@@ -11336,6 +11732,468 @@
         "preimage": "redact.Field(state.fullName)",
         "replacement": "state.fullName"
       }
+    },
+    {
+      "id": "sandbox-kube-answer-status",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAKubernetesRefusalOfARuntimeRequestPrintsNoneOfWhatTheRequestCarried/status",
+      "production": "sandbox resend (every read and write of the runtime's requests, patientKube and patientDynamic): a refusal whose Status echoes the bearer the request carried in its message, details and cause is kept as its projection (projectKubeError): the code and reason, none of the server's words",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.resend",
+      "capture": "kubeerror.answer/status",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/busy.go",
+        "preimage": "projectKubeError(what, err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-answer-text-403",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAKubernetesRefusalOfARuntimeRequestPrintsNoneOfWhatTheRequestCarried/text-403",
+      "production": "sandbox resend through writeSecret: a plain-text 403 whose body echoes the bearer, which client-go quotes as a Forbidden status's message, prints as its status alone"
+    },
+    {
+      "id": "sandbox-kube-answer-text-500",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAKubernetesRefusalOfARuntimeRequestPrintsNoneOfWhatTheRequestCarried/text-500",
+      "production": "sandbox resend through writeSecret: a plain-text 500 whose body echoes the bearer, which client-go quotes in its generic server error, prints as its status alone"
+    },
+    {
+      "id": "sandbox-kube-answer-unknown-reason",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAKubernetesRefusalOfARuntimeRequestPrintsNoneOfWhatTheRequestCarried/unknown-reason",
+      "production": "sandbox resend through writeSecret: a Status of a reason apimachinery does not know, the bearer, prints its code and the reason other"
+    },
+    {
+      "id": "sandbox-kube-answer-malformed-status",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAKubernetesRefusalOfARuntimeRequestPrintsNoneOfWhatTheRequestCarried/malformed-status",
+      "production": "sandbox resend through writeSecret: a Status that does not decode, sent as text, which client-go quotes whole, prints as its status alone"
+    },
+    {
+      "id": "sandbox-kube-answer-decode",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAKubernetesRefusalOfARuntimeRequestPrintsNoneOfWhatTheRequestCarried/decode",
+      "production": "sandbox resend through readSandbox: a 200 whose object names no kind, which apimachinery quotes whole (Object 'Kind' is missing in '<body>'), prints as the decode class"
+    },
+    {
+      "id": "sandbox-kube-resend-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestALaunchsRequestTheAPIServerAnsweredOverloadedLogsNoneOfWhatItCarried",
+      "production": "sandbox resend: a launch's read answered overloaded and then refused, each Status echoing the bearer: neither of resend's two log lines nor the launch's error holds it (the projection is made before either line)"
+    },
+    {
+      "id": "sandbox-kube-busy-unreasoned-503",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnOverloadedOrAdmissionDeniedAnswerToALaunchIsDecidedAsBefore/unreasoned-503",
+      "production": "sandbox resend and serverBusy: a 503 that names no reason is a launch's overload, sent again until the server answers it, as before the projection"
+    },
+    {
+      "id": "sandbox-kube-busy-admission-denied",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnOverloadedOrAdmissionDeniedAnswerToALaunchIsDecidedAsBefore/admission-denied",
+      "production": "sandbox resend and serverBusy: a 500 whose message says an admission webhook denied the request is a refusal, sent once, as before the projection"
+    },
+    {
+      "id": "sandbox-kube-carried-rotated-bearer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestARotatedBearerTheAPIServerEchoesPrintsNoneOfIt",
+      "production": "sandbox resend through writeSecret: a read that carries the bearer client-go read again from its rotated file, which the server echoes, prints none of it"
+    },
+    {
+      "id": "sandbox-kube-carried-create-body",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestASecretValueTheAPIServerEchoesPrintsNoneOfIt/create-body",
+      "production": "sandbox resend through writeSecret: a Secret create whose body value the server echoes in its refusal prints none of it"
+    },
+    {
+      "id": "sandbox-kube-carried-update-body",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestASecretValueTheAPIServerEchoesPrintsNoneOfIt/update-body",
+      "production": "sandbox resend through writeSecret: a Secret update whose body value the server echoes in its refusal prints none of it"
+    },
+    {
+      "id": "sandbox-kube-printers",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAKubernetesRefusalPrintsNoneOfWhatItCarriedUnderAnyPrinter",
+      "production": "sandbox kubeError: the runtime's error for a refusal that echoes the bearer under Error, every fmt verb, %w, slog's JSON and text handlers and encoding/json, each error it unwraps to, and the APIStatus and *StatusError errors.As finds, none reaching the answer's words"
+    },
+    {
+      "id": "sandbox-kube-log-stream",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAPodLogOrEventsReadPrintsNoneOfWhatItsRequestCarried/log-tail",
+      "production": "sandbox readLogOnce, through logTail (a death's detail): a pod log's stream refused with a Status that echoes the bearer is its projection",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.Runtime).readLogOnce",
+      "capture": "kubeerror.reads/log-tail",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/observe.go",
+        "preimage": "projectKubeError(\"read the log of pod \"+pod, err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-probe-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAPodLogOrEventsReadPrintsNoneOfWhatItsRequestCarried/probe-log",
+      "production": "sandbox probeLog (the image probe's judgement): the probe pod's log stream refused with a Status that echoes the bearer is its projection",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.Runtime).probeLog",
+      "capture": "kubeerror.reads/probe-log",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/probe.go",
+        "preimage": "projectKubeError(\"read the log of probe pod \"+name, err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-events",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAPodLogOrEventsReadPrintsNoneOfWhatItsRequestCarried/events",
+      "production": "sandbox podEvents, through events (a wait's and a probe's detail): the events' list refused with a Status that echoes the bearer is its projection",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.Runtime).podEvents",
+      "capture": "kubeerror.reads/events",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/observe.go",
+        "preimage": "projectKubeError(\"list the events of pod \"+pod.Name, err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-reset-log",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAResetPodLogPrintsOnlyTheTransportsOwnWords",
+      "production": "sandbox readLogOnce: a log stream whose connection is reset mid-body fails with the network's own words, which hold nothing the stream sent, and prints as before (no body read is projected)"
+    },
+    {
+      "id": "sandbox-kube-install",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheInstallationChecksPrintNoneOfWhatTheirRequestsCarried/installed",
+      "production": "sandbox CheckInstalled (the boot refusal): the CRD's 403 and the controller Deployment's 404, each a Status that echoes the bearer, name the piece and the status by refusal's projection",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.refusal",
+      "capture": "kubeerror.install/installed",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/install.go",
+        "preimage": "projectKubeError(\"get \"+piece, err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-census",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheInstallationChecksPrintNoneOfWhatTheirRequestsCarried/census",
+      "production": "sandbox CensusLegacyIssueSandboxes (the boot refusal): the project's Sandbox list refused with a Status that echoes the bearer is its projection",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.rejectLegacyIssueSandboxes",
+      "capture": "kubeerror.install/census",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/install.go",
+        "preimage": "projectKubeError(\"list the project's Sandboxes\", err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-probe-refusal",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheImageProbesRefusalAndDetailPrintNoneOfWhatItsRequestCarried/refusal",
+      "production": "sandbox createProbe and apiOutcome: the probe Sandbox's create refused 403 with a Status that echoes the bearer is a definitive image refusal that prints none of it"
+    },
+    {
+      "id": "sandbox-kube-probe-detail",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheImageProbesRefusalAndDetailPrintNoneOfWhatItsRequestCarried/detail",
+      "production": "sandbox createProbe and apiOutcome: the probe Sandbox's create refused 500 with a Status that echoes the bearer is a transient outcome whose detail (bootprobe's retry line) prints none of it"
+    },
+    {
+      "id": "sandbox-kube-transport-events",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestATransportFailureOfAQueryBearingRequestPrintsNoQuery/events",
+      "production": "sandbox podEvents, through events: a list that reaches no server prints its class and the refused connection, never net/http's URL, whose field selector holds the pod's uid"
+    },
+    {
+      "id": "sandbox-kube-transport-log-tail",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestATransportFailureOfAQueryBearingRequestPrintsNoQuery/log-tail",
+      "production": "sandbox readLogOnce, through logTail: a log stream that reaches no server prints its class and the refused connection, never net/http's URL, whose options hold the container"
+    },
+    {
+      "id": "sandbox-kube-transport-informer-list",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestATransportFailureOfAQueryBearingRequestPrintsNoQuery/informer-list",
+      "production": "sandbox informer and New (the boot refusal): an informer's list that reaches no server prints its class and the refused connection, never net/http's URL, whose label selector holds the project"
+    },
+    {
+      "id": "sandbox-kube-transport-informer-watch",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestATransportFailureOfAQueryBearingRequestPrintsNoQuery/informer-watch",
+      "production": "sandbox informer and feed.check (the store's staleness, which a view refuses with): an informer's watch that reaches no server prints its class and the refused connection, never net/http's URL, whose label selector holds the project"
+    },
+    {
+      "id": "sandbox-kube-setup-token-file",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestASetupTokenFileFailurePrintsItsPathAndNoCredential",
+      "production": "sandbox clientsOf (a setup site): a bearer file that cannot be read refuses the client's construction naming the path the configuration gave, as before: no request was sent, so no server text, and no bearer"
+    },
+    {
+      "id": "sandbox-kube-informer-list",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnInformerRefusalPrintsNoneOfWhatItsRequestCarried/before-sync",
+      "production": "sandbox informer's list callback, its feed and New (the boot refusal): every list and watch of the pods refused before the stores synced with a Status that echoes the bearer",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.Runtime).informer",
+      "capture": "kubeerror.informer/before-sync",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/sandbox.go",
+        "preimage": "projectKubeError(\"list \"+f.resource, err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-informer-list-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnInformerRefusalPrintsNoneOfWhatItsRequestCarried/before-sync",
+      "production": "client-go's reflector, fed by sandbox informer's list callback: its own lines at the daemon's level (the watch-error handler's Failed to watch) hold none of the bearer"
+    },
+    {
+      "id": "sandbox-kube-informer-watch",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnInformerRefusalPrintsNoneOfWhatItsRequestCarried/watch-after-sync",
+      "production": "sandbox informer's watch callback, its feed, view and evaluate (an Uncertain observation's detail): the pods' watch refused after the stores synced with a Status that echoes the bearer",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.Runtime).informer",
+      "capture": "kubeerror.informer/watch-after-sync",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/sandbox.go",
+        "preimage": "projectKubeError(\"watch \"+f.resource, err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-informer-watch-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnInformerRefusalPrintsNoneOfWhatItsRequestCarried/watch-after-sync",
+      "production": "client-go's reflector, fed by sandbox informer's watch callback: its own lines at the daemon's level hold none of the bearer"
+    },
+    {
+      "id": "sandbox-kube-informer-services",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnInformerRefusalPrintsNoneOfWhatItsRequestCarried/services-after-sync",
+      "production": "sandbox informer's watch callback and cacheServiceRefusal (a repository cache's CacheStatus.Reason): the Services' watch refused after the stores synced with a Status that echoes the bearer"
+    },
+    {
+      "id": "sandbox-kube-informer-services-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnInformerRefusalPrintsNoneOfWhatItsRequestCarried/services-after-sync",
+      "production": "client-go's reflector, fed by sandbox informer's watch callback for the Services: its own lines at the daemon's level hold none of the bearer"
+    },
+    {
+      "id": "sandbox-kube-watch-event",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnInformerRefusalPrintsNoneOfWhatItsRequestCarried/watch-event-status",
+      "production": "sandbox projectWatch: an error a typed pod watch delivers once it opened, a Status that echoes the bearer, reaches client-go's reflector, which logs it (Warning: watch ended with error), as its projection",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.projectedWatch).forward",
+      "capture": "kubeerror.informer/watch-event-status",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/kubeerror.go",
+        "preimage": "projectKubeError(p.op, apierrors.FromObject(event.Object))",
+        "replacement": "apierrors.FromObject(event.Object)"
+      }
+    },
+    {
+      "id": "sandbox-kube-watch-event-unstructured",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnInformerRefusalPrintsNoneOfWhatItsRequestCarried/watch-event-unstructured",
+      "production": "sandbox projectWatch: an error the dynamic Sandbox watch delivers, a Status it decodes as unstructured, reaches the reflector as its projection"
+    },
+    {
+      "id": "sandbox-kube-watch-event-object",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnInformerRefusalPrintsNoneOfWhatItsRequestCarried/watch-event-object",
+      "production": "sandbox projectWatch: an error event on the Service watch whose object is no Status, which apierrors.FromObject prints whole, reaches the reflector as the decode class"
+    },
+    {
+      "id": "sandbox-kube-list-trace",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestASlowFailedListsTraceLinePrintsNoneOfWhatItCarried",
+      "production": "client-go's reflector trace of a list over 10 s (k8s.io/utils trace, at klog verbosity 2, which the row sets and no daemon does), fed by sandbox informer's list callback: the error it formats is the projection"
+    },
+    {
+      "id": "sandbox-kube-reflector-refused-watch",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheReflectorsDecisionsOnAProjectedErrorAreTheBases/refused-watch",
+      "production": "sandbox informer and kubeError.As: a refused watch is backed off and watched again with no list (the reflector's isWatchErrorRetriable reads the errno)"
+    },
+    {
+      "id": "sandbox-kube-reflector-too-large",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheReflectorsDecisionsOnAProjectedErrorAreTheBases/too-large",
+      "production": "sandbox informer and kubeError.Status: a list refused for a too-large resource version is listed again at once from none (isTooLargeResourceVersionError reads the cause)"
+    },
+    {
+      "id": "sandbox-kube-reflector-expired",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheReflectorsDecisionsOnAProjectedErrorAreTheBases/expired",
+      "production": "sandbox projectWatch and kubeError.Status: a watch-list whose stream says Expired is asked again from no resource version with no list (isExpiredError reads the reason)"
+    },
+    {
+      "id": "sandbox-kube-reflector-too-many-requests",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheReflectorsDecisionsOnAProjectedErrorAreTheBases/too-many-requests",
+      "production": "sandbox informer and kubeError.Status: a watch answered 429 is backed off and watched again with no list or watch-list (IsTooManyRequests reads the reason)"
+    },
+    {
+      "id": "sandbox-kube-context-errors",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestACanceledOrTimedOutRequestIsStillTheContextsError",
+      "production": "sandbox resend and kubeError.Is: a canceled request and one past its deadline are still context.Canceled and context.DeadlineExceeded to errors.Is"
+    },
+    {
+      "id": "sandbox-kube-client-go-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestClientGosOwnLinesPrintNoneOfAKubernetesErrorsWords",
+      "production": "sandbox RouteClientLogs (cmd/legion's start and probe-boot route klog through it): an error client-go logs whole (utilruntime.HandleErrorWithContext) prints as its projection",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.projectAttr",
+      "capture": "kubeerror.client-go-log",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/kubeerror.go",
+        "preimage": "projectKubeError(\"client-go\", err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-supervise-last-start-failure",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/supervise",
+      "test": "TestAKubernetesRefusalTheSandboxRuntimeMetIsKeptOnTheClaimWithNoCredential/last-start-failure",
+      "production": "the real Sandbox runtime's Spawn (sandbox.New, relaunch, ensureSandbox, its Sandbox read through resend) refused by a 403 Status that echoes the bearer the request carried, handed to the machine as the runtime's answer to its spawn (Deps.Runtime): launchNow keeps the error's text as Claim.LastStartFailure (storetext.FarSideError), logs it through logFarSideError ('supervise: launch failed') and fails the claim with it (failLaunch, fail's 'supervise: claim failed'), the machine logging through the daemon's production logger (a JSON handler under redact.HandlerOptions); the row reads LastStartFailure and every line the machine logged"
+    },
+    {
+      "id": "sandbox-kube-supervise-last-death-cause",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/supervise",
+      "test": "TestAKubernetesRefusalTheSandboxRuntimeMetIsKeptOnTheClaimWithNoCredential/last-death-cause",
+      "production": "the real Sandbox runtime's Probe (evaluate, verdict, ended, roleLog, readLog, readLogOnce) of a claim whose pod ended and whose log read the API refuses with a 403 Status that echoes the bearer, its Gone observation handed to the working machine (RuntimeObservation) that holds the process it observed: died logs the detail ('supervise: process died'), keeps it as Claim.LastDeathCause (deathCause, storetext.FarSideText) and as the ended-work record's cause (endDied, recordGoneEnd, EndedWork.Cause, logged as 'supervise: the relaunch ended work the agent had running'), the machine logging through the daemon's production logger; the row reads LastDeathCause, EndedWork.Cause and every line the machine logged"
+    },
+    {
+      "id": "sandbox-kube-daemon-outbox-retry",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAKubernetesRefusalOfAnIssueSuspensionReachesTheOutboxWithNoCredential/outbox-retry",
+      "production": "daemon outbox issue_suspend row's stored last_error: outbox.RunOnce, runRow, execute, suspendIssue over the real Sandbox runtime (sandbox.New, Runtime.SuspendIssue, endIssuePod's read of the issue's Sandbox through patientObjects.Get and resend, refused 403 with a Status echoing the bearer), then settle, retry, retryAt and record.Store.RetryOutbox (storetext.FarSideError) into outbox.last_error"
+    },
+    {
+      "id": "sandbox-kube-daemon-outbox-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAKubernetesRefusalOfAnIssueSuspensionReachesTheOutboxWithNoCredential/outbox-log",
+      "production": "daemon outbox settle's log of the same refused issue_suspend row (\"outbox row failed\" with storetext.FarSideError of the error, and storetext.LogWhole), through a JSON handler under redact.HandlerOptions as cmd/legion's start builds it: outbox.RunOnce, runRow, execute, suspendIssue, sandbox Runtime.SuspendIssue's Sandbox read through resend"
+    },
+    {
+      "id": "sandbox-kube-legion-boot-refusal",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestProbeBootPrintsAKubernetesRefusalWithNoCredentialItsAnswerEchoed",
+      "production": "legion probe-boot's stderr: runProbeBoot's printRefusal of daemon.ProbeBoot's cluster check (sandboxBootOf's clusterCheck, sandbox.CheckInstalled, checkInstalled, refusal) over the client the kubeconfig gives (daemon's kubeClient): a 403 on the Sandbox CRD read whose Status echoes the bearer in its message, details and cause is kept as its projection (projectKubeError), so the refusal names the CRD and the 403 and none of the API server's words"
+    },
+    {
+      "id": "sandbox-kube-legion-boot-transient-stopped",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestProbeBootLogsATransientKubernetesFailureWithNoCredentialWhenStoppedWaiting",
+      "production": "legion probe-boot's stderr: the first attempt of Prober.ProbeImage's create meets an echoing 500 (createProbe, patientObjects.Create, resend's projectKubeError, apiOutcome), bootprobe.Run logs its retry line with Outcome.Detail through runProbeBoot's JSON handler under redact.HandlerOptions, and the command's context is cancelled while it waits, as main's signal.NotifyContext cancels it on a SIGINT, so printRefusal prints bootprobe's abandoned-probe refusal"
+    },
+    {
+      "id": "sandbox-kube-api-operator-refusal",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestAKubernetesRefusalOfALaunchReachesTheAPIsAnswersWithNoCredential/operator-refusal",
+      "production": "api spawn (POST /legion/v1/operator/claims) through operatorFailure: the root architect's launch, refused by the Sandbox runtime itself (sandbox.New, Spawn) when the Kubernetes API answers its read of the claim's Sandbox 403 with a Status echoing the bearer, reaches the machine through the fake runtime's Spawn answer and fails the claim; the route answers 500 through refuse (claim.Refusal, writeAnswer, writeAnswerFrom) and logs it under 'api: an operator request failed' (logFailure) through the daemon's production logger (slog JSON under redact.HandlerOptions); the body and the line hold the runtime's projection (resend's projectKubeError), none of the bearer"
+    },
+    {
+      "id": "sandbox-kube-api-claim-answer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestAKubernetesRefusalOfALaunchReachesTheAPIsAnswersWithNoCredential/claim-answer",
+      "production": "api list (GET /legion/v1/operator/claims) through operatorView, writeUnparsedAnswer and writeAnswerFrom: the claim as its machine holds it after the Sandbox runtime's refused Spawn, its lastStartFailure (supervise's storetext.FarSideError of the refusal) and its failure's detail, hold the runtime's projection of the Kubernetes refusal, none of the bearer"
+    },
+    {
+      "id": "sandbox-kube-api-state-answer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestAKubernetesRefusalOfALaunchReachesTheAPIsAnswersWithNoCredential/state-answer",
+      "production": "api stateRoute (GET /legion/v1/state) through projectState's repeatable-read snapshot of the store's pool, ClaimViewOf and writeAnswerFrom: the claim the store holds after the Sandbox runtime's refused Spawn, read in the route's own transaction (store.ClaimsTx, as internal/daemon's source reads it) and placed on its issue as internal/projection places it (the test's StateSource, since internal/projection imports api), its lastStartFailure and its failure's detail hold the runtime's projection of the Kubernetes refusal, none of the bearer"
+    },
+    {
+      "id": "sandbox-kube-daemon-kubeconfig-server",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAKubeconfigURLClientGoCannotParsePrintsNoneOfItsUserInformation/server",
+      "production": "daemon kubeClient and kubeconfigURLs (the boot's read of runtime.kubernetes.kubeconfig under its current context): a cluster server URL client-go cannot parse, carrying user information, is refused naming the file, the cluster and the field, before the boot's first client (sandbox.CheckInstalled, clientsOf, rest.DefaultServerURL) quotes url.Parse's text"
+    },
+    {
+      "id": "sandbox-kube-daemon-kubeconfig-proxy-url",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAKubeconfigURLClientGoCannotParsePrintsNoneOfItsUserInformation/proxy-url",
+      "production": "daemon kubeClient and kubeconfigURLs (under the configured context): a cluster proxy-url client-go cannot parse, carrying user information, is refused naming the file, the cluster and the field, before clientcmd's validation (ClientConfig) quotes it"
+    },
+    {
+      "id": "sandbox-kube-legion-boot-exhausted",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestProbeBootPrintsAnExhaustedImageProbeWithNoCredential",
+      "production": "legion probe-boot's stderr once the image probe's attempts ran out: every attempt of Prober.ProbeImage's create meets an echoing 500 (createProbe, patientObjects.Create, resend's projectKubeError, apiOutcome), bootprobe.Run logs a retry line with Outcome.Detail after each of the first five through runProbeBoot's JSON handler under redact.HandlerOptions, and printRefusal prints the probe's exhausted refusal, which carries the last attempt's detail; the row shortens the waits through daemon.ProbeBoot's retry (cmd/legion's probeBootRetry), which the base has not, so it binds resend's projection",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.resend",
+      "capture": "kubeerror.legion/boot-exhausted",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/busy.go",
+        "preimage": "projectKubeError(what, err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-api-state-projection",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestAKubernetesRefusalOfALaunchReachesTheProjectedStateWithNoCredential",
+      "production": "api stateRoute (GET /legion/v1/state) through projectState's repeatable-read snapshot of the store's pool, internal/projection.Project (which places the claim on its issue by the architect's phases row and builds its view with api.ClaimViewOf) and writeAnswerFrom: a root's architect, recorded as the workflow records one (issue at admitted, tree open under the workflow, phases row naming the claim), whose machine (supervise.NewMachine over api.NewBootTokens' recording store) was refused every launch by the Sandbox runtime itself (sandbox.New, Spawn) when the Kubernetes API answered its read of the claim's Sandbox 403 with a Status echoing the bearer; the machine stores the refusal as lastStartFailure (storetext.FarSideError) and fails the claim, and the projected architect view's lastStartFailure and failure detail hold the runtime's projection (resend's projectKubeError: 'kubernetes: get sandboxes <name>: the API server answered 403 Forbidden'), none of the bearer"
     }
   ],
   "bun": [
@@ -14230,6 +15088,81 @@
       "source": "the class search of the coordinator's review of the TypeScript slice, finding (a)",
       "guard": "pi-shared-unheld-role-reason",
       "note": "not a leak: the base reads it the same way, and the row pins that the change kept it"
+    },
+    {
+      "site": "daemon sandbox runtime, the requests sent through resend (patientDynamic's Get, List, Create, Update, Patch and Delete, patientKube's Secret Get, Create, Update and Delete and pod Get): census requests 1-9, 13-20, 23-26, 28-43 and 50 (addresses.go:131, cleanup.go:56,94,115,138, ghcredential.go:155,167,258,320, issue_suspend.go:88,148, launcher.go:868,886,918, launcher_auth.go:188, leak_check.go:70, observe.go:147, probe.go:380,551,565,580, relaunch.go:809,873,1088,1135,1404,1407,1419,1423,1427,1642,1658, repocache.go:308,314,344,374,993, sandbox.go:1408), whose StatusError printed the API server's message",
+      "source": "the client-go census at df40decadf9, section 2",
+      "guard": "sandbox-kube-answer-status"
+    },
+    {
+      "site": "daemon sandbox resend's two log lines (busy.go:94-95, 109-110), which logged a launch's overloaded answer and the answer after it whole",
+      "source": "the client-go census at df40decadf9, section 2's shared request adapters",
+      "guard": "sandbox-kube-resend-log"
+    },
+    {
+      "site": "daemon sandbox installation checks: census requests 10 and 11 (install.go:42,50, the CRD and controller Deployment reads)",
+      "source": "the client-go census at df40decadf9, section 2",
+      "guard": "sandbox-kube-install"
+    },
+    {
+      "site": "daemon sandbox layout census: census request 12 (install.go:165, the project's Sandbox list)",
+      "source": "the client-go census at df40decadf9, section 2",
+      "guard": "sandbox-kube-census"
+    },
+    {
+      "site": "daemon sandbox pod log stream: census request 21 (observe.go:656), and its Stream fallback's URL and body",
+      "source": "the client-go census at df40decadf9, section 2",
+      "guard": "sandbox-kube-log-stream"
+    },
+    {
+      "site": "daemon sandbox events list: census request 22 (observe.go:743)",
+      "source": "the client-go census at df40decadf9, section 2",
+      "guard": "sandbox-kube-events"
+    },
+    {
+      "site": "daemon sandbox probe pod log stream: census request 27 (probe.go:1108)",
+      "source": "the client-go census at df40decadf9, section 2",
+      "guard": "sandbox-kube-probe-log"
+    },
+    {
+      "site": "daemon sandbox informers' lists: census requests 44, 46 and 48 (sandbox.go:539,545,549)",
+      "source": "the client-go census at df40decadf9, section 2",
+      "guard": "sandbox-kube-informer-list"
+    },
+    {
+      "site": "daemon sandbox informers' watches: census requests 45, 47 and 49 (sandbox.go:542,546,552)",
+      "source": "the client-go census at df40decadf9, section 2",
+      "guard": "sandbox-kube-informer-watch"
+    },
+    {
+      "site": "client-go's reflector turns an error a watch delivers once it opened into an error it logs (reflector.go:1010-1011, 664), which no watch-error handler sees",
+      "source": "the client-go census at df40decadf9, section 3F",
+      "guard": "sandbox-kube-watch-event"
+    },
+    {
+      "site": "client-go's reflector logs a failed list or watch through its default watch-error handler (reflector.go:215-229)",
+      "source": "the client-go census at df40decadf9, section 3F",
+      "guard": "sandbox-kube-informer-list-log"
+    },
+    {
+      "site": "client-go's token source logs a failed rotation (token_source.go:188), and client-go logs other errors whole through apimachinery's error handlers: klog, which the daemon now routes through its own logger",
+      "source": "the client-go census at df40decadf9, section 3F",
+      "guard": "sandbox-kube-client-go-log"
+    },
+    {
+      "site": "daemon Kubernetes setup sites (clients.go:73,77, install.go:94, daemon kubernetes.go:334): a client's construction and the in-cluster configuration's read, which send no request; they print as before (R4), no server text reaching them",
+      "source": "the client-go census at df40decadf9, section 2's setup errors",
+      "guard": "sandbox-kube-setup-token-file"
+    },
+    {
+      "site": "daemon kubernetes.go:343,351 (the kubeconfig's read): a cluster server or proxy-url client-go cannot parse was quoted as written, user information and all, by url.Parse's error at the boot's first client and by clientcmd's validation",
+      "source": "the t-7 report's third concern, the coordinator's second round",
+      "guard": "sandbox-kube-daemon-kubeconfig-server"
+    },
+    {
+      "site": "daemon kubernetes.go:351: a kubeconfig proxy-url client-go cannot parse, quoted by clientcmd's validation",
+      "source": "the t-7 report's third concern, the coordinator's second round",
+      "guard": "sandbox-kube-daemon-kubeconfig-proxy-url"
     }
   ]
 }

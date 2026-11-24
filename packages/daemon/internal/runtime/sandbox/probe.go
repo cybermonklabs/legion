@@ -1100,14 +1100,15 @@ func (r *Runtime) unstarted(ctx context.Context, name string, uid types.UID, bud
 // (lastBytes), so a refusal's quote reaches the OK line whatever a line's length. The read stops at
 // probeLogReadBytes, and one byte more read past it tells a read its bound stopped from one that
 // reached the log's end: such a read can stop inside a URL, before its "@", and redact.Read drops
-// the run it stopped inside, when that run holds "://", before the URL rule reads the rest.
+// the run it stopped inside, when that run holds "://", before the URL rule reads the rest. A
+// stream the API server refused is its projection (projectKubeError), as readLogOnce's is.
 func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 	reading, cancel := call(ctx)
 	defer cancel()
 	lines := int64(probeLogLines)
 	stream, err := r.kube.CoreV1().Pods(r.namespace).GetLogs(name, &corev1.PodLogOptions{Container: probeContainer, TailLines: &lines}).Stream(reading)
 	if err != nil {
-		return "", err
+		return "", projectKubeError("read the log of probe pod "+name, err)
 	}
 	defer stream.Close()
 	// The read keeps the log's end, not its head: a refusal quotes the log's end, and tailBytes

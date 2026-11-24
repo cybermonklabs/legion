@@ -145,7 +145,7 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 		})
 		spec := workerSpec(t)
 		spec.Generation = 2
-		if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), "the launch stops at its delete") {
+		if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), "delete Sandbox "+name+": kubernetes: delete sandboxes "+name+": ") {
 			t.Fatalf("the first launch = %v, want it stopped at its delete of the Sandbox", err)
 		}
 		if s := g.sandbox(name); s == nil || s.UID != copied.GetUID() {

@@ -29,14 +29,18 @@ type imageProber interface {
 // stage that reads nothing of the worker pod — the store and its claims fence and migration and the
 // GitHub App mint, which a booting daemon runs before the probe, and the NATS connection and the
 // Dispatch listing it runs after — and writes nothing but its probe Sandbox, which it deletes.
-func ProbeBoot(ctx context.Context, cfg config.Config, lookup func(string) (string, bool), log *slog.Logger) (bootprobe.ImageReport, error) {
-	return probeBoot(ctx, cfg, lookup, log, func(ctx context.Context, rc *rest.Config, opts sandbox.Options) (imageProber, error) {
+// retry is how often the probe tries the image again after an attempt that said nothing
+// definitive. Its zero value is the booting daemon's own policy (imageProbeRetry, bootprobe.Image's
+// six attempts over about five minutes), which `legion probe-boot` runs; only a test of that
+// command gives another, to reach the probe's exhausted refusal in seconds.
+func ProbeBoot(ctx context.Context, cfg config.Config, lookup func(string) (string, bool), log *slog.Logger, retry bootprobe.Retry) (bootprobe.ImageReport, error) {
+	return probeBoot(ctx, cfg, lookup, log, retry, func(ctx context.Context, rc *rest.Config, opts sandbox.Options) (imageProber, error) {
 		return sandbox.NewProber(ctx, rc, opts)
 	})
 }
 
 // probeBoot is ProbeBoot over newProber, which builds the probe's runtime.
-func probeBoot(ctx context.Context, cfg config.Config, lookup func(string) (string, bool), log *slog.Logger,
+func probeBoot(ctx context.Context, cfg config.Config, lookup func(string) (string, bool), log *slog.Logger, retry bootprobe.Retry,
 	newProber func(context.Context, *rest.Config, sandbox.Options) (imageProber, error),
 ) (bootprobe.ImageReport, error) {
 	if cfg.Runtime.Name != "kubernetes" {
@@ -49,6 +53,9 @@ func probeBoot(ctx context.Context, cfg config.Config, lookup func(string) (stri
 	boot, err := sandboxBootOf(cfg, reads.sandbox)
 	if err != nil {
 		return bootprobe.ImageReport{}, err
+	}
+	if retry != (bootprobe.Retry{}) {
+		boot.probe.Retry = retry
 	}
 	checking, cancel := context.WithTimeout(ctx, bootTimeout)
 	defer cancel()

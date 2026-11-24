@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 const (
@@ -366,6 +367,9 @@ func reservedUnder(request, limit string) string {
 func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	log := slog.New(slog.NewJSONHandler(stderr, redact.HandlerOptions(nil)))
 	slog.SetDefault(log)
+	// client-go's own lines (the Kubernetes runtime's reflectors, its token source) go through the
+	// same logger, each error as the runtime prints it, rather than to stderr as klog writes them.
+	sandbox.RouteClientLogs(log)
 
 	// The inherited socket is adopted first, before the configuration's key commands run, so none
 	// of them inherits its descriptor: from here on only the close-on-exec copy serving it is open.
