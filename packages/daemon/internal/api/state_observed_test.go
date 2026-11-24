@@ -154,20 +154,7 @@ func TestTheStateRouteServesTheWholeStateForAnyOtherView(t *testing.T) {
 			Log: slog.New(slog.NewJSONHandler(&logged, nil))})
 		recorder := httptest.NewRecorder()
 		server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state"+query, nil))
-		var warnings []map[string]any
-		for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
-			if line == "" {
-				continue
-			}
-			var record map[string]any
-			if err := json.Unmarshal([]byte(line), &record); err != nil {
-				t.Fatalf("decode log line %s: %v", line, err)
-			}
-			if record["level"] == "WARN" {
-				warnings = append(warnings, record)
-			}
-		}
-		return recorder, src, warnings
+		return recorder, src, warnRecords(t, logged.String())
 	}
 
 	whole, wholeSource, wholeWarnings := serveLogged(t, "")
@@ -209,6 +196,26 @@ func TestTheStateRouteServesTheWholeStateForAnyOtherView(t *testing.T) {
 			}
 		})
 	}
+}
+
+// warnRecords decodes logged, the JSON lines of a slog JSON handler, and returns the records at
+// WARN, in the order they were logged.
+func warnRecords(t *testing.T, logged string) []map[string]any {
+	t.Helper()
+	var found []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logged), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log line %s: %v", line, err)
+		}
+		if record["level"] == "WARN" {
+			found = append(found, record)
+		}
+	}
+	return found
 }
 
 // An observed read that fails is answered 500 with nothing of the view, and its transaction is

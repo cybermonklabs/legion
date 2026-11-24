@@ -1,5 +1,9 @@
 package delivery
 
+// held_durable_export.go is the held durable as a consumer outside this package uses it
+// (HeldDurable, NewHeldDurable, HeldMessage): Dispatch's Legion state intake (legion.Intake)
+// delivers from a durable of its own through it. The held durable itself is held_durable.go's.
+
 import (
 	"context"
 	"time"

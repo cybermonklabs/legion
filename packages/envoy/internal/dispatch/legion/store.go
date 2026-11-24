@@ -225,58 +225,17 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 func settingWritten(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
 	var err error
 	if stateURL == "" {
-		_, err = tx.Exec(ctx, `
-			with forgotten as (delete from legion_event_cursors where project = $1)
-			select pg_notify($2, $1)
-		`, project, SettingsChannel)
-	} else if err = resetCursor(ctx, tx, project, stateURL); err == nil {
+		_, err = tx.Exec(ctx, `delete from legion_event_cursors where project = $1`, project)
+	} else {
+		err = resetCursor(ctx, tx, project, stateURL)
+	}
+	if err == nil {
 		_, err = tx.Exec(ctx, `select pg_notify($2, $1)`, project, SettingsChannel)
 	}
 	if err != nil {
 		return fmt.Errorf("forget where the Legion events of %s stood: %w", project, err)
 	}
 	return nil
-}
-
-// resetCursor is what settingWritten does to project's cursor for a write of stateURL, inside tx:
-// it locks the cursor, then writes the cursor the write resets it to (cursor.reset, writeCursor)
-// and deletes the parts held for it. It writes nothing for a project with no cursor, or for a
-// write that names the daemon the cursor follows while a message holds the owed read.
-func resetCursor(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
-	current, err := scanCursor(tx.QueryRow(ctx, `select `+cursorColumns+` from legion_event_cursors where project = $1 for update`, project))
-	if err != nil || !current.exists || (current.stateURL == stateURL && current.readHolder != nil) {
-		return err
-	}
-	if err := writeCursor(ctx, tx, project, current.reset(stateURL)); err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `delete from legion_event_parts where project = $1`, project)
-	return err
-}
-
-// reset is the cursor that a write of the setting naming stateURL resets c to (resetCursor): a
-// cursor that follows no daemon, with every column at its empty value (emptyCursor) but these.
-//   - lastReadStartedAt is c's.
-//   - releasedHolder is c's readHolder where c followed another daemon (a stateURL that is
-//     neither empty nor the write's URL) and a message held the read, and c's releasedHolder
-//     otherwise.
-//   - previousStateID and previousStateURL are none where the write names the URL recorded there.
-//     They are c's store and URL where c followed a URL other than the write's and held a store,
-//     and c's own pair otherwise.
-func (c cursor) reset(stateURL string) cursor {
-	next := emptyCursor()
-	next.exists, next.lastReadStartedAt, next.releasedHolder = true, c.lastReadStartedAt, c.releasedHolder
-	if c.stateURL != "" && c.stateURL != stateURL && c.readHolder != nil {
-		next.releasedHolder = c.readHolder
-	}
-	next.previousStateID, next.previousStateURL = c.previousStateID, c.previousStateURL
-	switch {
-	case c.previousStateURL != nil && *c.previousStateURL == stateURL:
-		next.previousStateID, next.previousStateURL = nil, nil
-	case c.stateURL != stateURL && c.stateID != nil:
-		next.previousStateID, next.previousStateURL = c.stateID, &c.stateURL
-	}
-	return next
 }
 
 // recordRead is the step every whole read's record takes inside its transaction (recordWhole):

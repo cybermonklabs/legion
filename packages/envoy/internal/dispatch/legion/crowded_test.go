@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -240,8 +241,8 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 	}
 }
 
-// TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain: read-rule-cases rows 3.5 and 8.1
-// (the reviewer's finding PRRT_kwDORFy7ds67Zthz). A boot of a store the cursor drops - a store
+// TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain: read-rule-cases rows 3.5 and
+// 8.1. A boot of a store the cursor drops - a store
 // marked as no daemon of the project, or the recorded old store - while the cursor follows the
 // setting's URL in another store a read verified, is judged as a message of another store, on the
 // project's runner and past the cap of stateMaxWaiting alike: it owes the store read and holds
@@ -255,7 +256,7 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 // store. C's URL comes to serve the dropped store at 40, with no write of the setting. Work queued
 // on INFRA's runner keeps it busy with no read in flight, 16 messages of C's store wait behind
 // that work, and the dropped store's boot at 41 arrives past the cap. The runner is let go. Within
-// 75 s, a minute on on the intake's clock, INFRA's cursor follows the dropped store at 41.
+// 75 s, a minute on the intake's clock, INFRA's cursor follows the dropped store at 41.
 //
 // At d69f92b6, judgeCrowded finished the boot as a message of a dropped store (cursor.forgets)
 // while no read was in flight: it owed nothing, and INFRA stayed on C's store.
@@ -294,13 +295,7 @@ func TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain(t *testing.T)
 			c.serves(daemonStateIn("INFRA", 40, inPhase("reviewing"), tc.store, bootRun))
 			rig.clock.advance(ReadRetryAfter + time.Second)
 			release := make(chan struct{})
-			released := false
-			let := func() {
-				if !released {
-					released = true
-					close(release)
-				}
-			}
+			let := sync.OnceFunc(func() { close(release) })
 			t.Cleanup(let)
 			if !rig.intake.durable.Queue("INFRA", func(ctx context.Context) {
 				select {
@@ -356,7 +351,7 @@ func readsLockWaiters(t *testing.T, rig *intakeRig) int {
 }
 
 // TestEventsPastTheCapWhileTheFirstReadOfAProjectWithNoCursorIsRecordedAreApplied: R3-h and the
-// second invariant of read-rule-cases (the reviewer's finding PRRT_kwDORFy7ds67ZtiA). A project
+// second invariant of read-rule-cases. A project
 // with no cursor row gives its starting read's record no row to lock. Messages past the cap of
 // stateMaxWaiting that judgeCrowded judges while that record is written give the project a cursor
 // that follows no daemon, and record on it the gap read they owe, its holder and the sequences

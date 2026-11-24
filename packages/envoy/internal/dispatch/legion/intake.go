@@ -21,7 +21,7 @@ package legion
 // read owed where a message past the cap that joined it carries a sequence of the read's store
 // above its snapshot, the store read owed where such a message is of another store that the cursor
 // the read leaves does not drop, and otherwise the first such message's redelivery is judged as any
-// message's (judgeCrowded, recordWhole). A message that holds the owed read, whatever store it is
+// message's (judgeCrowded, cursor.afterRead). A message that holds the owed read, whatever store it is
 // of, makes it at its redelivery or goes back to the stream again: no message is acknowledged while
 // the cursor names it as the holder, unless the read rule releases it (cursor.readFor), a write of
 // the setting ended its hold (endHold), or a Dispatch process of an earlier build keeps the intake
@@ -950,7 +950,7 @@ func (in *Intake) pruneHourly(ctx context.Context) {
 //     daemon whose store was replaced is found again, so that boot is judged as a message of
 //     another store below (outcomeOtherStore, ReadReasonStore): it calls for a store read and holds
 //     it as any message does. A good read that finds that store takes the mark off, or clears the
-//     record of the store the setting named before (recordWhole); a read that finds the cursor's
+//     record of the store the setting named before (cursor.afterRead); a read that finds the cursor's
 //     store unchanged leaves it.
 //   - A project with no starting point calls for a read whatever else holds (ReadReasonStart). It
 //     is due ReadRetryAfter after the project's newest whole read began, as every read is, and
@@ -1143,7 +1143,7 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 	// it cannot show it is of the daemon the setting names: after a setting names another daemon,
 	// the one it named before may still publish under the same project, and its stateId would then
 	// pass for the named daemon's store. Only a good whole read of the daemon the setting names
-	// sets the store (recordWhole).
+	// sets the store (cursor.afterRead).
 	if _, err := tx.Exec(ctx, `
 		update legion_event_cursors
 		set last_seq = $2, run = $3, schema_version = coalesce($4, schema_version)

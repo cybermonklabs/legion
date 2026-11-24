@@ -1172,7 +1172,7 @@ func main() {
 		// name (a project with no starting point, a boot that does not follow or whose schema
 		// version moved, a gap, a read owed since one failed, a message of another store, a message
 		// the database refuses for good), a project's reads at least legion.ReadRetryAfter apart,
-		// and no timer reads one. A connect that fails stops the delivery intakes before the exit,
+		// and no recurring timer reads one. A connect that fails stops the delivery intakes before the exit,
 		// since they may hold their durables already.
 		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, legionIntakeLeases, legionSettingsWake)
 		if err != nil {

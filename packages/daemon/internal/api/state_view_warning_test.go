@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -35,20 +34,7 @@ func TestTheStateRouteLogsTheOtherViewWarningAtMostOnceAMinuteAndNamesTheCountOf
 	}
 	warnings := func() []map[string]any {
 		t.Helper()
-		var found []map[string]any
-		for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
-			if line == "" {
-				continue
-			}
-			var record map[string]any
-			if err := json.Unmarshal([]byte(line), &record); err != nil {
-				t.Fatalf("decode log line %s: %v", line, err)
-			}
-			if record["level"] == "WARN" {
-				found = append(found, record)
-			}
-		}
-		return found
+		return warnRecords(t, logged.String())
 	}
 	// wantLines requires that the log holds exactly want lines, and that the last one names views
 	// and the count of the requests that were not logged before it.

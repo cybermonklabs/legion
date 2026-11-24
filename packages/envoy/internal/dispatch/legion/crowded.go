@@ -3,13 +3,12 @@ package legion
 // crowded.go holds the crowded key of a project's messages (dispatch://INFRA-3931): how many of a
 // project's messages wait on its runner and the count's two ends (waitingCounts, Intake.finished),
 // the message past stateMaxWaiting that runs on a key of its own beside the runner (crowdedKey,
-// judgeCrowded), and what that message asks of the whole read in flight on the runner
-// (readInFlight, readsNow, inFlight).
+// judgeCrowded), and what that message asks of the whole read in flight on the runner (readsNow,
+// inFlight).
 
 import (
 	"context"
 	"fmt"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 )
@@ -34,16 +33,6 @@ const crowdedKeyPrefix = "\xffcrowded:"
 // of the project. Its handler makes no read (judgeCrowded).
 func crowdedKey(project string) string {
 	return crowdedKeyPrefix + project
-}
-
-// readInFlight is the whole read in flight on one project's runner (Intake.reading). started is
-// when it began, on the intake's clock, so a message past stateMaxWaiting that holds the read after
-// it goes back to the stream until ReadRetryAfter after that start. pastCap is the stream sequence
-// of the first message past stateMaxWaiting the intake judged since it began, 0 for none: that
-// message takes the hold of the read after it (judgeCrowded, Intake.inFlight, cursor.readFor).
-type readInFlight struct {
-	started time.Time
-	pastCap int64
 }
 
 // waitingCounts is, for one subscription of the durable, how many messages of each project are
@@ -106,7 +95,7 @@ func (in *Intake) finished(msg *natsgo.Msg) {
 // and is acknowledged unapplied (outcomeCrowded), and the cursor keeps its sequence as the highest
 // it skipped in its store (cursor.skips), so the read in flight, which clears the reasons it was
 // made for, leaves the gap read owed where that sequence is past its snapshot, and the store read
-// owed where it is of another store that the cursor the read leaves does not drop (recordWhole). A
+// owed where it is of another store that the cursor the read leaves does not drop (cursor.afterRead). A
 // project with no cursor yet, whose starting read is queued or in flight, is given one that follows
 // no daemon (lockCursor), so the read it owes is recorded.
 func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (outcome, error) {

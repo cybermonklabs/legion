@@ -389,7 +389,7 @@ func standsAt(current cursor, held []part) (seq *int64, run *string) {
 // boot above the position that is not the next sequence is ReadReasonBoot. A boot at or below the
 // position is a replay of one the position already holds when its run is the position's run - the
 // run of the newest message applied or held, or the stateRun of the daemon that served the last
-// good whole read (recordWhole) - and otherwise a daemon whose sequence went back (a database
+// good whole read (cursor.afterRead) - and otherwise a daemon whose sequence went back (a database
 // restore), which is ReadReasonBoot too. A message whose first sequence is past the next one is
 // ReadReasonGap: events the stream no longer holds. So is a message above the held parts that does
 // not continue them (stateMessage.continues): a part of another run or another store, or one that

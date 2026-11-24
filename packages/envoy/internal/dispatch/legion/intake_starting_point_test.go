@@ -295,7 +295,7 @@ func lastReadStartedAt(t *testing.T, rig *intakeRig, project string) time.Time {
 
 // TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart: R3 starts the whole reads
 // of one project at least 60 seconds apart, whatever their reasons (read-rule-cases v11, rules 1
-// and 3; the reviewer's review 6040785045). A minute after INFRA's take-over read, a write of
+// and 3). A minute after INFRA's take-over read, a write of
 // INFRA's setting naming its daemon A again is read at once. Ten seconds later on the intake's
 // clock, a write names a second daemon B. Its starting read is not due, so the write's wake queues
 // the starting point once more for the end of the minute (startLater). B is not read before the

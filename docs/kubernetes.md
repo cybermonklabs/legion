@@ -2595,15 +2595,16 @@ After the roll, the intake reads a project's daemon whole again in these cases, 
 - **A message of another store** (reason `store`): the message's `stateId` is not the `daemon.stateId` of the last good read.
   The intake applies nothing of it, and the read finds again a daemon whose store was replaced.
 
-A project's whole reads start at least a minute apart, whatever their reason, and a good starting read holds back no read after it.
+A project's whole reads start at least a minute apart, whatever their reason, the starting read included, and a good starting read holds back the read after it as every read does.
 A message that calls for a read inside that minute makes none: the intake records the read owed on the project's cursor, with the message's reason.
 The first message that owes the read goes back to the stream unacknowledged until the minute has passed, and its redelivery makes the read.
 For each such hand-back the intake logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO, with the project, the message's sequences, the read the message calls for as `reason`, its `delivery` count and the `delay`, and logs no other line for that delivery.
 The intake acknowledges every later message that joins the owed read.
 A read that fails sends the first message back for another minute, at most 10 times in all.
 Its next delivery is then acknowledged, whatever its read comes to, and the intake logs `legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed` at WARN.
-A failed read that no message holds waits for the project's next message, boot, settings change or take-over, which makes it once the minute is over: a failed starting read is one, since no message makes it, and so is a read whose message went back 10 times.
-No timer makes a read.
+A failed read that no message holds waits for the project's next message, boot, settings change or take-over, which makes it once the minute is over: a failed starting read that no message made is one, and so is a read whose message went back 10 times.
+No recurring timer reads a daemon.
+Where the project's newest whole read began less than a minute before a write of the setting or a take-over, the starting read is not due: that write or take-over queues the project's starting point once more for the end of the minute, and a message that arrives meanwhile holds the starting read as any owed read.
 While a message holds the read, the durable's ack floor stays below it, so a take-over of the durable replays every message after it: at most about 11 minutes of messages where the daemon answers each read within seconds.
 The read's log line names the first reason as `reason` and every reason it was owed for as `reasons`, for example `reasons=gap,boot`.
 So a burst of messages that each call for a read, forged or from a bug, makes one read a minute and holds no other project's messages for longer than that one read, and each project that owes a read holds one message of the durable's window.
@@ -2636,7 +2637,7 @@ The kind check keeps every kind an earlier release writes, `phase_ended`, `confl
 Roll Dispatch back first, and then the daemon.
 A Dispatch of this release reads a daemon without the change once and records a failed read, since that daemon serves no `daemon.stateSeq`.
 That daemon sends no event, so Dispatch reads it again only at a take-over of the durable or at a write of a Legion setting (`cursor.readFor` in `legion/cursor.go`), and its board shows nothing between those reads.
-A write of that project's own setting reads it at once, and a take-over or a write of another project's setting reads it only a minute or more after the last read.
+A write of that project's own setting reads it at once where the last whole read began a minute or more before, and otherwise at the end of that minute; a take-over or a write of another project's setting reads it only a minute or more after the last read.
 Where a daemon was rolled back under a Dispatch of this release, `PUT` the project's Legion setting again with the same URL once the daemon runs this release again.
 The boot event of that roll forward follows the cursor and carries the same schema version the earlier daemon's state served, since the migration stayed applied, so nothing else has Dispatch read the state the earlier daemon wrote.
 

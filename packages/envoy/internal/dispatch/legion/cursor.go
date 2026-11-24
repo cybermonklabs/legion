@@ -3,11 +3,12 @@ package legion
 // cursor.go holds the intake's cursor of one project (dispatch://INFRA-3931): the cursor type, which
 // is legion_event_cursors' row, and what it says of a message and of a read (follows, forgets,
 // drops, marks, holdsStore, heldBy, releases, skips and the rest); the one read rule every call for
-// a whole read decides by (cursor.readFor, readAnswer, owedRead), the bounds of a message's hold of
-// an owed read (holdAtLeast, stateMaxHolds) and what the rule owes, recorded on the row (owe); the
-// cursor a whole read leaves (cursor.afterRead); and the row's columns, its reads and its writes
-// (cursorColumns, scanCursor, writeCursor, readPosition, Intake.position, lockPosition,
-// lockCursor).
+// a whole read decides by (cursor.readFor, readAnswer, owedRead), with the whole read in flight it
+// reads (readInFlight), the bounds of a message's hold of an owed read (holdAtLeast,
+// stateMaxHolds) and what the rule owes, recorded on the row (owe); the cursor a whole read leaves
+// (cursor.afterRead) and the one a write of the setting resets it to (cursor.reset, resetCursor);
+// and the row's columns, its reads and its writes (cursorColumns, scanCursor, writeCursor,
+// readPosition, Intake.position, lockPosition, lockCursor).
 
 import (
 	"context"
@@ -208,6 +209,16 @@ func dueAfter(started, now time.Time) time.Duration {
 	return max(started.Add(ReadRetryAfter).Sub(now), 0)
 }
 
+// readInFlight is the whole read in flight on one project's runner (Intake.reading). started is
+// when it began, on the intake's clock, so a message past stateMaxWaiting that holds the read after
+// it goes back to the stream until ReadRetryAfter after that start. pastCap is the stream sequence
+// of the first message past stateMaxWaiting the intake judged since it began, 0 for none: that
+// message takes the hold of the read after it (judgeCrowded, Intake.inFlight, cursor.readFor).
+type readInFlight struct {
+	started time.Time
+	pastCap int64
+}
+
 // readAnswer is what the read rule answers a call for a whole read (cursor.readFor).
 type readAnswer struct {
 	// read is a whole read made now, for reason, the one its legion_reads row records, joined,
@@ -337,20 +348,23 @@ func (c cursor) readFor(reason string, now time.Time, seq int64, made bool, flig
 	if reason != "" && !slices.Contains(c.readReasons, reason) {
 		answer.owe = reason
 	}
+	// back is the hand-back delay of a message that holds the read: the time left in the minute,
+	// at least holdAtLeast and at most ReadRetryAfter.
+	back := min(max(dueIn, holdAtLeast), ReadRetryAfter)
 	switch {
 	case seq == 0:
 		// No message calls: none holds the read.
 	case flight != nil && flight.pastCap == seq && !c.heldBy(seq):
 		// Row 8.1: the first message past the cap since the read in flight began takes the hold
 		// of the read after it, from a count of 1, whatever message the cursor names.
-		answer.back = min(max(dueIn, holdAtLeast), ReadRetryAfter)
+		answer.back = back
 		answer.hold, answer.holds = true, 1
 	case c.readHolder != nil && *c.readHolder != seq:
 		// The cursor names another message as the holder: this one holds none.
 	case c.readHolder != nil && c.readHolds >= stateMaxHolds:
 		answer.release, answer.holds = true, c.readHolds
 	default:
-		answer.back = min(max(dueIn, holdAtLeast), ReadRetryAfter)
+		answer.back = back
 		answer.hold, answer.holds = c.readHolder == nil, c.readHolds+1
 	}
 	return answer
@@ -560,6 +574,47 @@ func writeCursor(ctx context.Context, tx pgx.Tx, project string, c cursor) error
 		c.schemaVersion, c.previousStateID, c.previousStateURL, c.foreignStateIDs, c.releasedHolder, c.skippedStateIDs,
 		c.skippedSeqs)
 	return err
+}
+
+// resetCursor is what settingWritten does to project's cursor for a write of stateURL, inside tx:
+// it locks the cursor, then writes the cursor the write resets it to (cursor.reset, writeCursor)
+// and deletes the parts held for it. It writes nothing for a project with no cursor, or for a
+// write that names the daemon the cursor follows while a message holds the owed read.
+func resetCursor(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
+	current, err := scanCursor(tx.QueryRow(ctx, `select `+cursorColumns+` from legion_event_cursors where project = $1 for update`, project))
+	if err != nil || !current.exists || (current.stateURL == stateURL && current.readHolder != nil) {
+		return err
+	}
+	if err := writeCursor(ctx, tx, project, current.reset(stateURL)); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `delete from legion_event_parts where project = $1`, project)
+	return err
+}
+
+// reset is the cursor that a write of the setting naming stateURL resets c to (resetCursor): a
+// cursor that follows no daemon, with every column at its empty value (emptyCursor) but these.
+//   - lastReadStartedAt is c's.
+//   - releasedHolder is c's readHolder where c followed another daemon (a stateURL that is
+//     neither empty nor the write's URL) and a message held the read, and c's releasedHolder
+//     otherwise.
+//   - previousStateID and previousStateURL are none where the write names the URL recorded there.
+//     They are c's store and URL where c followed a URL other than the write's and held a store,
+//     and c's own pair otherwise.
+func (c cursor) reset(stateURL string) cursor {
+	next := emptyCursor()
+	next.exists, next.lastReadStartedAt, next.releasedHolder = true, c.lastReadStartedAt, c.releasedHolder
+	if c.stateURL != "" && c.stateURL != stateURL && c.readHolder != nil {
+		next.releasedHolder = c.readHolder
+	}
+	next.previousStateID, next.previousStateURL = c.previousStateID, c.previousStateURL
+	switch {
+	case c.previousStateURL != nil && *c.previousStateURL == stateURL:
+		next.previousStateID, next.previousStateURL = nil, nil
+	case c.stateURL != stateURL && c.stateID != nil:
+		next.previousStateID, next.previousStateURL = c.stateID, &c.stateURL
+	}
+	return next
 }
 
 // rowReader is what readPosition reads through: the pool, outside any transaction, or a

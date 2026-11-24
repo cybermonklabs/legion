@@ -10,7 +10,7 @@
 // with no starting point, a boot that does not follow, a boot whose schema version moved, a gap
 // the stream no longer holds, a read owed since one failed, a message of another store and a
 // message the database refuses for good, and a project's reads start at least ReadRetryAfter
-// apart. No timer reads a daemon. So the Legion board (api/legion_board.go) and the four metrics
+// apart. No recurring timer reads a daemon. So the Legion board (api/legion_board.go) and the four metrics
 // (legion/metrics) read Dispatch's own tables rather than a daemon.
 //
 // Two bounds hold a read (the plan's D14, the spec's contract 6): RequestTimeout on the call and

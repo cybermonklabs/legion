@@ -60,6 +60,8 @@ type intakeClock struct {
 	mu     sync.Mutex
 	offset time.Duration
 	jump   time.Duration
+	// done ends with the test (testing.T.Context), and with it every call after still waits to make.
+	done <-chan struct{}
 }
 
 func (c *intakeClock) now() time.Time {
@@ -88,12 +90,17 @@ func (c *intakeClock) jumps(jump time.Duration) {
 // after runs f on a goroutine of its own once the clock reads d past its reading now: once the wall
 // clock and the test's advances together have moved it that far. It is the rig's Intake.after, so
 // a starting point a wake deferred (Intake.startLater) runs when the test moves the clock past the
-// minute. It reads the clock without its jump, so it moves nothing.
+// minute. It reads the clock without its jump, so it moves nothing. A call still waiting when the
+// test ends (done) is never made, so no deferred call reaches an intake its test stopped.
 func (c *intakeClock) after(d time.Duration, f func()) {
 	at := c.peek().Add(d)
 	go func() {
 		for c.peek().Before(at) {
-			time.Sleep(10 * time.Millisecond)
+			select {
+			case <-c.done:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
 		}
 		f()
 	}()
@@ -128,7 +135,7 @@ func newIntakeRig(t *testing.T) *intakeRig {
 	}
 	return &intakeRig{
 		t: t, database: database, publisher: publisher, leases: leases, wake: make(chan struct{}, 1),
-		clock: &intakeClock{}, logs: logs, run: rigRun,
+		clock: &intakeClock{done: t.Context().Done()}, logs: logs, run: rigRun,
 	}
 }
 
