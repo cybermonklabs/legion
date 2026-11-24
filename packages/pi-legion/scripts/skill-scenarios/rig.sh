@@ -2100,8 +2100,13 @@ launch_rpc() {
   : >"$R/out.txt"
   rm -f "$R/rpc.in"
   mkfifo "$R/rpc.in"
+  # The rig's end of the session's stdin. Every child inherits it, so the script closes it first:
+  # while any process held it open, rpc_end's close would give Oh My Pi no end of input, and it
+  # would be killed rather than exit.
+  exec {rpc_fd}<>"$R/rpc.in"
   cat >"$R/launch-rpc.sh" <<EOF
 #!/usr/bin/env bash
+exec $rpc_fd>&-
 cd $(printf %q "$R/cwd") || exit 1
 mapfile -t vars <$(printf %q "$R/pane.env")
 export TZ=UTC
@@ -2114,7 +2119,6 @@ env -i "\${vars[@]}" $(printf %q "$omp") --model @default --mode rpc --append-sy
     printf '{"at":"%(%Y-%m-%dT%H:%M:%S)T.%sZ","ms":%s,"got":%s}\n' "\$s" "\$u" "\$s\${u:0:3}" "\$frame"
   done >>$(printf %q "$R/rpc-events.jsonl")
 EOF
-  exec {rpc_fd}<>"$R/rpc.in"
   launched=$(rpc_now)
   launched=${launched#* }
   start_process omp bash "$R/launch-rpc.sh"

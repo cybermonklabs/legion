@@ -312,6 +312,7 @@ describe("a setup that fails after install_model_route", () => {
         "on_exit",
         "drop_unready_keys",
         "install_model_route",
+        "route_model_line",
         "cmd_profile",
       ].map(fn),
       "checkout_commit() { printf 'fixture parents=base\\n'; }",
@@ -2006,7 +2007,7 @@ describe("batch_scored", () => {
       "scored_attempt() {",
       "  local dir=$work/runs/$1-$3-$2-$4",
       '  mkdir -p "$dir" && printf "%s\\n" "$4" >>"$work/launches"',
-      '  if [ "$4" -ge "${SCORED_FROM:-999}" ]; then echo \'{"outcome":"scored"}\' >"$dir/row.json"; else echo \'{"outcome":"rig-error"}\' >"$dir/row.json"; fi',
+      '  if [ -n "$SCORED_FROM" ] && [ "$4" -ge "$SCORED_FROM" ]; then echo \'{"outcome":"scored"}\' >"$dir/row.json"; else echo \'{"outcome":"rig-error"}\' >"$dir/row.json"; fi',
       "}",
     ].join("\n");
     const cell = (work: string, count: number, scoredFrom?: number) =>
@@ -2190,7 +2191,9 @@ function rpcRun(name: string, plan: FakeOmpPlan, starts: string[], thens: string
     events,
     at,
     prompts: events.filter((event) => "prompt" in event),
-    sent: jsonLines(path.join(R, "rpc-sent.jsonl")).map((line) => ({ ms: line.ms as number, ...(line.sent as Record<string, unknown>) })),
+    sent: jsonLines(path.join(R, "rpc-sent.jsonl")).map(
+      (line): Record<string, unknown> & { ms: number } => ({ ...(line.sent as Record<string, unknown>), ms: line.ms as number })
+    ),
     out: existsSync(path.join(R, "out.txt")) ? readFileSync(path.join(R, "out.txt"), "utf8") : "",
   };
 }
