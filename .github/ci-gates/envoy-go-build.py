@@ -71,8 +71,8 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
     # The web app's display-tree fixture, whose content the fixture step's --check compares the
     # trees it builds with, and whose existence the other test of WEB_FIXTURE_TESTS,
     # TestTheWebFixtureFindsItsFilesFromAnyDirectory (web_fixtures_test.go:248-255), stats in
-    # that same step. Declared on this step and not as a RULES row keyed on
-    # web_fixtures_test.go: a row keyed on the file would put the fixture into every job that
+    # that same step. Declared on this step and not as a //ci:reads line in
+    # web_fixtures_test.go: a line in that file would put the fixture into every job that
     # compiles pmdoc's tests, envoy-go's unit step among them, which skips both tests and so
     # touches the file in no way. The fixture is this job's read alone.
     ("packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json",

@@ -3,7 +3,7 @@
 # typecheck of the script directories that are no workspace. No go command runs here. The
 # typechecks' programs are check-ts-filters.sh's to list (ci_ts_programs.py); what is declared
 # here is what a step reads outside any program.
-GATE = gate("tooling_checks", TOOLING_JOB, reads=CLAUDE_ENVOY_BUILD + GUIDE_LAYOUT_READS + reads(
+GATE = gate("tooling_checks", TOOLING_JOB, reads=CLAUDE_ENVOY_BUILD + reads(
     (CONTRACTS_SRC, f"scripts/dispatch/ask-census.ts:3-9 ({at(TOOLING_JOB, 'Typecheck the Dispatch census script')}); "
                     f"scripts/e2e/lib/envoy-bridge.ts:9-10 ({at(TOOLING_JOB, 'Typecheck the plan ratings read test')})"),
     (TEST_FIXTURES_SRC, f"{at(TOOLING_JOB, 'Typecheck the Dispatch census script')} and "

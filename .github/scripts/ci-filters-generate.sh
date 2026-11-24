@@ -51,7 +51,8 @@ head_root=$PWD
 # The generation took 46 s of the ci-filters job's check in run 44974321862 and 52 s of the changes
 # job in run 45017125244: a run past 300 s is one that has stopped making progress. A child that
 # ignores the TERM is killed 15 s later. The changes job's step timeout of 9 minutes holds this
-# tree's run, the base's fetch and install, and the base's run together (ci.yaml says the sum).
+# tree's run, the base's fetch and install, and the base's run together; the comment above the
+# changes job's timeout-minutes in ci.yaml adds up the job's steps.
 LIMIT=${CI_FILTERS_LIMIT:-300}
 
 # every_filter <first line>: a filters file whose every filter is `'**'`, under that first line.

@@ -1,5 +1,5 @@
 # The envoy-infra module's live tests against nats-server and Postgres, the merge-queue half
-# of the old envoy-infra-go job; envoy_infra_build below is the half a pull request runs.
+# of the old envoy-infra-go job; envoy_infra_build (envoy-infra-build.py) is the half a pull request runs.
 GATE = gate("envoy_infra_go", "envoy-infra-go", exact=[
     # One go test per package, each running only what the natslive tag adds to it: the
     # untagged tests of the three are envoy-infra-build's unit step's (TAG_RUNS).

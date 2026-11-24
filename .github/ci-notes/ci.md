@@ -22,9 +22,12 @@ generate` and writes every filter into the runner's temporary directory; its one
 dorny/paths-filter step reads that path (an expression with no colon, which the action reads as
 the path of a file, `isPathInput` in its src/main.ts, and opens with `fs.readFileSync` from the
 workspace). The job uploads the filters as computed (`ci-filters.computed.yaml`) as the run's
-`ci-filters` artifact, which the lint job holds to the tsc programs and the image builds, and
-from which the test job's router outputs' harness reads the filter names. A script run by hand
-computes them with `.github/scripts/check-ci-filters.sh generate <file>`. On pull_request
+`ci-filters` artifact: the lint job holds them to the tsc programs and the image builds
+(check-ts-filters.sh, check-image-trigger-paths.sh), and the test job's filter-check and
+router-outputs harnesses read them. A script run by hand computes them with
+`.github/scripts/check-ci-filters.sh generate <file>`. Each output of the job but ref_is_main
+reads its one paths-filter step, and rule 19 of .github/scripts/check-ci-filters.sh refuses an
+output naming a filter no gate declares. On pull_request
 dorny/paths-filter reads the file list from the API, a rename read as the delete of the old name
 and the add of the new one; on a merge group it diffs base_sha..head_sha with git. A dispatched run
 computes the file too and filters nothing.
@@ -34,15 +37,16 @@ the two scripts that run them, or a file they read such as package.json (the gen
 them) - can make many filters select less while no filter selects the change: a read dropped from
 a helper every Bun gate shares narrows two dozen filters, and the committed file used to show that
 drop because every filter named the file. So when the run's base commit is known (the pull
-request's base, the merge group's base) and the change touches one of those files, the script
+request's base, the merge group's base, which the generation step hands the script as
+`CI_FILTERS_BASE`) and the change touches one of those files, the script
 computes the base tree's filters too, with the base tree's own engine, and each filter whose
 patterns differ is `'**'` in what the paths-filter step reads: every job whose selection the change
 could have moved runs. Each such filter is printed in the step's log and summary with the patterns
 only one side has. A base tree whose filters cannot be computed makes every filter `'**'`. A
 change that touches none of those files is not compared, and costs no second computation.
 
-When the computation fails for any reason - a step before it that failed (each runs with
-`continue-on-error`), a go command that cannot run, a gate file or a `//ci:` line that cannot be
+When the computation fails for any reason - a step before it that failed (setup-go, Bun's setup
+and the install each run with `continue-on-error`), a go command that cannot run, a gate file or a `//ci:` line that cannot be
 read, a run past five minutes - the script writes instead a file in which every filter the changes
 job hands on is `'**'`, its first line `# FAIL-OPEN:` with the reason, and exits 0: every job
 runs, as on a dispatch, and the paths filter's verdicts and the outputs stay one shape. The run is
@@ -53,20 +57,8 @@ TypeScript listing, which only the changes job runs. The `full-ci` term still ho
 suites back on a pull request that has no label, as it does when their filters match; the merge
 group runs them.
 
-The job's steps. Each step before the generation runs with `continue-on-error`: one that fails
-makes the generation fail too, which falls open to selecting every job. setup-go keeps no Go
-cache: its key is exact, so each pull request's first run and every merge group missed it, and
-each miss saved 895 MB. The generation step hands the script the run's base (the merge group's
-base, the pull request's base) as `CI_FILTERS_BASE`, so a change to the computation itself
-selects every filter it alters against the base tree's. The upload keeps the filters as computed
-for the lint job, which holds them to the tsc programs and the image builds
-(check-ts-filters.sh, check-image-trigger-paths.sh), and for the test job's filter-check and
-router-outputs harnesses. The job's timeout, 30 minutes, is above the sum of its steps' own,
-28: the generation's 9 (ci-filters-generate.sh stops this tree's run at 300 s and kills it 15 s
-later, and bounds the base's fetch at 65 s and its install at 125 s, so it ends within 505 s),
-3 each for the checkout, setup-go, Bun's setup and install, the upload and the paths filter,
-and 1 for the ref. Each output of the job but ref_is_main reads its one paths-filter step; rule
-19 of .github/scripts/check-ci-filters.sh refuses an output naming a filter no gate declares.
+The job's setup-go keeps no Go cache: its key is exact, so each pull request's first run and
+every merge group missed it, and each miss saved 895 MB.
 
 Why computed. The filters were one file every job's filter was in, and every pull request that
 added a read, a test file or a package a job compiles edited it, most of them at the same lines:
@@ -549,11 +541,10 @@ filter also held three fixture sets whose only readers are the dashboard's and t
 proof editor's unit tests, and they are not here: dispatch-ui's filter names all
 three, and with the dispatch_browser_pr output ungated on a pull request they would
 start four shard machines and the merge job for a fixture-only change. The
-dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite reads,
-and check-ci-filters.sh holds this filter to that gate - it refuses a filter that
-misses a read, never one that is too wide, so a path is in this list because a
-browser row reads it and for no other reason. The list is the dispatch_browser_suite
-group, which dispatch_browser and dispatch_browser_pr both name.
+dispatch_browser gate (browser_gate in .github/scripts/ci_job_reads.py) says what this
+suite reads, and the changes job computes this filter from it: a path is in this filter
+because a browser row reads it and for no other reason. The dispatch_browser_pr gate is
+the same helper, so both filters hold the same patterns.
 
 ## dispatch_browser: dispatch_ui's set, which the SPA and the e2e helpers load,
 
@@ -644,12 +635,9 @@ Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
 
 The dispatch-browser-pr job calls the same workflow as dispatch-browser, with the
 `pull-request` lane: its legs are the same jobs of that file over fewer projects and
-rows, so they read what the full lane's read, and the two filters name the one
-dispatch_browser_suite group. Neither the generated `!**/*_test.go` block nor the
-listed block of packages/contracts/src can sit in that group: rule 17 of
-check-ci-filters.sh and check-ts-filters.sh each want a block in the list of the
-filter it is for, so each filter carries its own pair, which those checks write and
-hold. This output carries no hold term: the pull-request lane is the rule's one named
+rows, so they read what the full lane's read: both gates are browser_gate of
+.github/scripts/ci_job_reads.py, so the two computed filters hold the same patterns, each
+with its own generated `!` patterns and listed block. This output carries no hold term: the pull-request lane is the rule's one named
 exception (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 
 ## envoy_go: Its natslive step runs cmd/listener's natslive tests
@@ -1449,8 +1437,8 @@ ci-images job then refuses.
 
 ## The browser suite's two outputs, one per lane
 
-Two outputs over one list of patterns (the dispatch_browser_suite group of
-.github/ci-filters.yaml), one for each of ci.yaml's two callers of
+Two outputs over one set of reads (browser_gate in .github/scripts/ci_job_reads.py, which
+both gates are), one for each of ci.yaml's two callers of
 .github/workflows/dispatch-browser.yaml. dispatch_browser_pr selects the dispatch-browser-pr job,
 which runs the `pull-request` lane, the two projects and the `@pr` rows a change to the dashboard
 is held to: no hold term, so it comes back on every push of a pull request its paths select.

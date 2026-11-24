@@ -103,6 +103,10 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
+    # Above the sum of its steps' own timeouts, 28 minutes: the filter generation's 9
+    # (ci-filters-generate.sh stops this tree's run at 300 s and kills it 15 s later, and bounds the
+    # base's fetch at 65 s and its install at 125 s, so it ends within 505 s), 3 each for the
+    # checkout, setup-go, Bun's setup and install, the upload and the paths filter, and 1 for the ref.
     timeout-minutes: 30
     outputs:
       # why, for each output below with a `lane:` term: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
@@ -238,6 +242,7 @@ jobs:
         timeout-minutes: 3
         with:
           persist-credentials: false
+      # why: .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs (no Go cache)
       - continue-on-error: true
         timeout-minutes: 3
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

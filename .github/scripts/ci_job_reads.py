@@ -2011,7 +2011,7 @@ def browser_gate(filter, job):
     # ./cmd/dev-oidc-issuer, which that first entry names. No job's e2e/harness-postgres.ts runs
     # a go command in CI: each job that starts stacks there hands it the connection limit that
     # a pinned step below reads.
-    return gate(filter, job, exact=[
+    gate_ = gate(filter, job, exact=[
         # The four commands the shard and alone jobs' scripts built before those jobs moved
         # into a container, built once in the binaries job and downloaded by both: this is the
         # closure that build compiles and no other. The step names an output (-o) and pins
@@ -2146,6 +2146,14 @@ def browser_gate(filter, job):
       + setup_go(BROWSER_BINARIES, f"{ENVOY}/go.mod", BROWSER_SITE)
       + setup_go(BROWSER_MP, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)
       + CI_SELF + BROWSER_SITE_SELF, workflow=CI)
+    # Three package trees the suite's filter named by hand before the filters were computed,
+    # beyond what the gate's reads above select: both callers' filters keep them, each tree's
+    # tests aside.
+    return with_reads(gate_, [
+        Read(f"{ENVOY}/internal/dispatch/delivery/**", f"filter {filter} held it by hand before the filters were computed", but=("**/*_test.go",)),
+        Read(f"{ENVOY}/internal/dispatch/pmdoc/**", f"filter {filter} held it by hand before the filters were computed", but=("**/*_test.go",)),
+        Read(f"{ENVOY}/internal/cipher/policy/**", f"filter {filter} held it by hand before the filters were computed", but=("**/*_test.go",)),
+    ])
 
 
 
