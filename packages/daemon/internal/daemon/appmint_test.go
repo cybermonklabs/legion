@@ -616,6 +616,139 @@ func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *test
 	}
 }
 
+// The boot's logins read runs each App's token_command once across its attempts, since each run
+// asks the secrets broker for a release, which may wait on a person's approval of a grant. Here
+// GitHub answers the review App's first viewer read 502, after the logins read took both Apps'
+// releases. The next attempt reads the review App alone (appLoginsAtBoot), under the release it
+// kept (appauth's loginRelease), so each App's command runs twice in all for its release of every
+// installation: once for the logins read and once for the key proof, which never takes a release
+// the logins read was answered with. Before, the next attempt read both Apps again, each running
+// its command a second time for the logins read.
+func TestABootRunsEachAppsTokenCommandOnceForTheLoginsReadAcrossItsAttempts(t *testing.T) {
+	quickAppMints(t)
+	dir := t.TempDir()
+	runs := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".runs") }
+	var refused atomic.Bool
+	tokens := commandTokensWith(t, func(w http.ResponseWriter, r *http.Request) bool {
+		review := strings.HasPrefix(r.Header.Get("Authorization"), "token ghs_"+string(appauth.Review)+"_")
+		if r.Method == http.MethodPost && r.URL.Path == "/graphql" && review && refused.CompareAndSwap(false, true) {
+			http.Error(w, "{}", http.StatusBadGateway)
+			return true
+		}
+		return false
+	}, func(role appauth.AppRole) string {
+		return fmt.Sprintf(`[ -n "${%s}" ] || echo run >>%q; `, appauth.TokenCommandOwner, runs(role))
+	})
+	if err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second); err != nil {
+		t.Fatalf("boot = %v, want it to read the review App's login again after GitHub's 502 and serve", err)
+	}
+	if !refused.Load() {
+		t.Fatal("GitHub answered no viewer read of the review App 502: the attempt this test is about never failed")
+	}
+	for _, role := range appauth.Roles {
+		ran, err := os.ReadFile(runs(role))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read the %s App's runs: %v", role, err)
+		}
+		if n := strings.Count(string(ran), "run\n"); n != 2 {
+			t.Errorf("the %s App's token_command ran %d times for its release of every installation, want 2: one for the logins read across its attempts and one for the key proof", role, n)
+		}
+	}
+}
+
+// A token GitHub refuses on the boot's logins read (the review App's viewer read answered 401)
+// stops the boot at once, naming the App and GitHub's answer: a refusal is the App's answer, not
+// GitHub's trouble (appAttempt), so no attempt waits out the 401 to read the login again, and each
+// App's token_command, whose run may wait on a person's approval of a grant, runs once. The key
+// proof never starts. An attempt the test's 500 ms bound ends on a loaded box is transient and runs
+// again under the release it kept (appauth's loginRelease), which is the boot doing its job, so
+// the row reads the 401 in the waited-out attempts' lines, not the number of reads GitHub saw.
+func TestABootStopsAtOnceWhenGitHubRefusesAnAppsTokenOnTheLoginsRead(t *testing.T) {
+	quickAppMints(t)
+	dir := t.TempDir()
+	runs := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".runs") }
+	tokens := commandTokensWith(t, func(w http.ResponseWriter, r *http.Request) bool {
+		review := strings.HasPrefix(r.Header.Get("Authorization"), "token ghs_"+string(appauth.Review)+"_")
+		if r.Method == http.MethodPost && r.URL.Path == "/graphql" && review {
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+			return true
+		}
+		return false
+	}, func(role appauth.AppRole) string {
+		return fmt.Sprintf(`[ -n "${%s}" ] || echo run >>%q; `, appauth.TokenCommandOwner, runs(role))
+	})
+	logs := &syncBuffer{}
+	err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
+	if err == nil || !strings.Contains(err.Error(), "read the review App's login") || !strings.Contains(err.Error(), "(401)") {
+		t.Fatalf("boot = %v, want it refused, naming the review App's login read and GitHub's 401", err)
+	}
+	for _, line := range loggedMessages(t, logs.String(), "boot probe failed transiently") {
+		if detail, _ := line["detail"].(string); line["probe"] == "GitHub App logins read" && strings.Contains(detail, "(401)") {
+			t.Errorf("the boot waited out the review App's 401 to read its login again: %q", detail)
+		}
+	}
+	for _, role := range appauth.Roles {
+		ran, err := os.ReadFile(runs(role))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read the %s App's runs: %v", role, err)
+		}
+		if n := strings.Count(string(ran), "run\n"); n != 1 {
+			t.Errorf("the %s App's token_command ran %d times, want once: the boot stops at the logins read", role, n)
+		}
+	}
+}
+
+// A token GitHub refuses under the release the logins read kept stops the boot at once too:
+// GitHub answers the review App's first viewer read 502, so the logins read keeps that App's
+// release (appauth's loginRelease) and its next attempt reads under it, and GitHub answers that
+// read, and every later one, 401. The boot stops naming the 401, waits out no attempt that carries
+// it, and runs each App's token_command once: the kept release served the second read. Found by
+// Tester4958-2: the row above refuses a fresh release, and a refusal made transient only for a
+// kept release, which production would wait out across appMintRetry's attempts on the same
+// refused token, passed it.
+func TestABootStopsAtOnceWhenGitHubRefusesTheTokenTheLoginsReadKept(t *testing.T) {
+	quickAppMints(t)
+	dir := t.TempDir()
+	runs := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".runs") }
+	var reads atomic.Int32
+	tokens := commandTokensWith(t, func(w http.ResponseWriter, r *http.Request) bool {
+		review := strings.HasPrefix(r.Header.Get("Authorization"), "token ghs_"+string(appauth.Review)+"_")
+		if r.Method == http.MethodPost && r.URL.Path == "/graphql" && review {
+			if reads.Add(1) == 1 {
+				http.Error(w, "{}", http.StatusBadGateway)
+				return true
+			}
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+			return true
+		}
+		return false
+	}, func(role appauth.AppRole) string {
+		return fmt.Sprintf(`[ -n "${%s}" ] || echo run >>%q; `, appauth.TokenCommandOwner, runs(role))
+	})
+	logs := &syncBuffer{}
+	err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
+	if n := reads.Load(); n < 2 {
+		t.Fatalf("GitHub was asked the review App's login %d times: the read under the kept release never came (boot = %v)", n, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "read the review App's login") || !strings.Contains(err.Error(), "(401)") {
+		t.Fatalf("boot = %v, want it refused, naming the review App's login read and GitHub's 401", err)
+	}
+	for _, line := range loggedMessages(t, logs.String(), "boot probe failed transiently") {
+		if detail, _ := line["detail"].(string); line["probe"] == "GitHub App logins read" && strings.Contains(detail, "(401)") {
+			t.Errorf("the boot waited out the review App's 401 under the release it kept to read its login again: %q", detail)
+		}
+	}
+	for _, role := range appauth.Roles {
+		ran, err := os.ReadFile(runs(role))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read the %s App's runs: %v", role, err)
+		}
+		if n := strings.Count(string(ran), "run\n"); n != 1 {
+			t.Errorf("the %s App's token_command ran %d times, want once: the read after the 502 uses the release it kept", role, n)
+		}
+	}
+}
+
 // A start whose proof of an App's key GitHub refuses for a spent rate limit waits until the reset
 // GitHub names and serves after it (c-boot-mint-rate-limit case 1, on the key proof), saying so in
 // one line that names the call, the time it waits until and the total waited. The refusals outlast

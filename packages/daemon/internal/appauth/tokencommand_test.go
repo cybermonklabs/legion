@@ -827,6 +827,129 @@ func TestTokenModeAppLoginReadsTheViewerAndChecksTheAppID(t *testing.T) {
 	}
 }
 
+// A login read in token mode that failed after it took its release (GitHub's 502 on the viewer
+// read) reads again under the same release, so the command, each run of which asks the secrets
+// broker for a release that may wait on a person's approval, runs once for it. The release is
+// kept while more than twenty minutes of it are left (refreshWindow), as a lease is served; past
+// that the next read runs the command again.
+func TestTokenModeAppLoginKeepsItsReleaseUntilItReadsTheLogin(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+	github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890", viewerErr: http.StatusBadGateway}
+	var stderr bytes.Buffer
+	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+	defer tokens.Close()
+	viewer := func(status int) {
+		github.mu.Lock()
+		github.viewerErr = status
+		github.mu.Unlock()
+	}
+	var transient *TransientError
+	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+	viewer(0)
+	if login, err := tokens.AppLogin(context.Background(), Review); err != nil || login != "legion-reviewer[bot]" {
+		t.Fatalf("AppLogin after the 502 = %q, %v; want legion-reviewer[bot]", login, err)
+	}
+	if got := broker.runs(t); len(got) != 1 {
+		t.Fatalf("the command ran %d times for a login read GitHub answered 502 and the read after it (%q), want once: the read after the 502 ran the command again", len(got), got)
+	}
+
+	// A new read takes a new release and keeps it: 21 minutes of it left, it is read under again.
+	viewer(http.StatusBadGateway)
+	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+	now = now.Add(39 * time.Minute)
+	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+	}
+	if got := broker.runs(t); len(got) != 2 {
+		t.Fatalf("the command ran %d times (%q), want 2: the release kept with 21 minutes left was not read under", len(got), got)
+	}
+	// 19 minutes left: the next read runs the command again.
+	now = now.Add(2 * time.Minute)
+	viewer(0)
+	if login, err := tokens.AppLogin(context.Background(), Review); err != nil || login != "legion-reviewer[bot]" {
+		t.Fatalf("AppLogin with the kept release near its expiry = %q, %v; want legion-reviewer[bot]", login, err)
+	}
+	if got := broker.runs(t); len(got) != 3 {
+		t.Fatalf("the command ran %d times (%q), want 3: a release kept within twenty minutes of its expiry was read under", len(got), got)
+	}
+}
+
+// A token GitHub refuses on the login read in token mode is a refusal, not GitHub's trouble: a
+// viewer read answered 401 or 403, and a token whose App is not the configured app_id, each answer
+// AppLogin with an error that is no TransientError, so the boot stops at once (internal/daemon's
+// appAttempt) rather than wait it out and read under the kept release again (loginRelease).
+func TestTokenModeAppLoginRefusesATokenGitHubRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		viewerErr int
+		role      AppRole
+		want      string
+	}{
+		{"viewer 401", http.StatusUnauthorized, Review, "read the review App's bot login (GraphQL viewer) failed (401)"},
+		{"viewer 403", http.StatusForbidden, Review, "read the review App's bot login (GraphQL viewer) failed (403)"},
+		{"another App's token", 0, Implement, "released a token of App 67890 (legion-reviewer), not of the configured app_id 12345"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+			broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+			github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890", viewerErr: tc.viewerErr}
+			var stderr bytes.Buffer
+			tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+			defer tokens.Close()
+			_, err := tokens.AppLogin(context.Background(), tc.role)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("AppLogin = %v, want the refusal %q", err, tc.want)
+			}
+			var transient *TransientError
+			if errors.As(err, &transient) {
+				t.Errorf("AppLogin = %v, a TransientError: the boot would wait out a token GitHub refused and read under it again, want a refusal that stops the boot", err)
+			}
+		})
+	}
+}
+
+// A refusal under the release AppLogin kept is a refusal too: GitHub answers the first viewer read
+// 502, so AppLogin keeps the release it took (loginRelease), and then refuses the read under that
+// same release (401, 403). The second read uses the kept release, so the command runs once, and
+// its error is no TransientError, so the boot stops at once rather than wait the refused token out
+// across its attempts and read under it again. Found by Tester4958-2: the rows above use a fresh
+// release each, and a refusal made transient only for a kept release passed them all.
+func TestTokenModeAppLoginRefusesATokenGitHubRefusesUnderTheReleaseItKept(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("viewer %d", status), func(t *testing.T) {
+			now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+			broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+			github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890", viewerErr: http.StatusBadGateway}
+			var stderr bytes.Buffer
+			tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+			defer tokens.Close()
+			var transient *TransientError
+			if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+				t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+			}
+			github.mu.Lock()
+			github.viewerErr = status
+			github.mu.Unlock()
+			_, err := tokens.AppLogin(context.Background(), Review)
+			if got := broker.runs(t); len(got) != 1 {
+				t.Fatalf("the command ran %d times (%q), want once: the read after the 502 did not use the release it kept", len(got), got)
+			}
+			want := fmt.Sprintf("read the review App's bot login (GraphQL viewer) failed (%d)", status)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("AppLogin under the kept release = %v, want the refusal %q", err, want)
+			}
+			if errors.As(err, &transient) {
+				t.Errorf("AppLogin under the kept release = %v, a TransientError: the boot would wait out the refused token and read under it again, want a refusal that stops the boot", err)
+			}
+		})
+	}
+}
+
 // InstalledOn in token mode reads the owner's installation's repositories: a repository it lists
 // is installed, one it does not list, or an owner with no installation, is not; GitHub's trouble is
 // transient. An installation token reads any public repository, so GET /repos/{owner}/{repo} could

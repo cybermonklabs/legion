@@ -1,0 +1,26 @@
+kind: Added
+body: |-
+  Legion runs a task's steps in any order the plan check allows: `register_plan` and
+  `projects.<KEY>.default_steps` take the planner at any place, and the tester, the reviewer and
+  the owner's acceptance in any order after the implementer, each role once. The daemon reads the
+  task's own order wherever it read the default one. A return to an earlier step of the task is a
+  move back and counts its pass and its pair, and only a review that requests changes counts a
+  review round. The step after the owner's acceptance gets the report that the owner accepted, and
+  a parent whose last step is not the owner's sign-off waits before its retro for the issues
+  beneath it. `accepting`, `retro` and `merging` hold no admission slot in any order. A merge
+  forward of the base asks the reviewer to approve the new head only where the task's reviewer
+  step already ran. The implementer is asked to merge forward again only while a step of the task
+  remains before the merge; where the merge comes next, the merger is asked on the move into
+  `merging`. A conflict confirmed while an issue is held is decided as in the phase the hold came
+  from, and the architect's notice says the issue stays held from that phase. A hook's `moves` may
+  name each of the 28 moves back that some task's order makes, seven more than before; the loader
+  refuses the other 14 pairs of two phases by name.
+
+  An earlier release reads every task by the default order and refuses those seven hook pairs. A
+  rollback past this release waits until no task in another order runs. Then put each project's
+  `default_steps` in the default order, remove those hook pairs from `legion.yaml`, and delete the
+  `hook_prompt` rows the earlier release refuses. `docs/kubernetes.md`, "Rolling back the release
+  that runs a task's steps in any order", gives the query and the delete.
+time: 2026-11-23T09:29:42Z
+custom:
+    Issue: pr5161

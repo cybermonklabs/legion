@@ -412,7 +412,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 # of the build is no package. TABLE, the file the list is in, is the workspaces section's constant
 # below: both rules name that one file, so there is one spelling of it here. A race build of
 # another job fills another family's cache, for another lane, and is not this rule's: the
-# envoy-infra job's fills envoy-infra-go's unit step.
+# envoy-infra job's fills envoy-infra-build's unit step.
 RACE_TEST = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b")
 RACE_FLAG = re.compile(r"(?<![\w-])-race\b")
 RACE_LIST = "DAEMON_RACE_PACKAGES"

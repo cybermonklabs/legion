@@ -98,10 +98,10 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 		}
 	}
 
-	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))
 	rows := map[claim.Role]int{}
 	for _, ask := range rig.asks() {
 		rows[ask.Role]++
+		text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))
 		if ask.Round != podUpdateRound || ask.Pod != podUpdatePod || ask.Text != text {
 			t.Errorf("the ask to the %s = %+v, want round %s of pod %s with the round's text:\n%s", ask.Role, ask, podUpdateRound, podUpdatePod, text)
 		}
@@ -151,6 +151,42 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	}
 }
 
+// The reviewer creates no commit and pushes nothing (its role part), so the ask a pod round sends
+// it tells it to push nothing, and asks it to commit nothing a subagent made. A role that commits
+// is still told to push its commits and what its subagents made: the implementer, and the merger,
+// which makes and pushes the merge of the base forward in merging (roles/merger.md), whose
+// unpushed merge commit the pod's replacement would lose.
+func TestPodUpdateTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
+	t.Parallel()
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleMerger}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleReviewer), readyWorker(claim.RoleMerger))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	for _, role := range roles {
+		rig.awaitRound(role, podUpdateRound)
+	}
+	rig.clock.advance(time.Minute)
+	rig.tick()
+	told := map[claim.Role]string{}
+	for _, ask := range rig.asks() {
+		told[ask.Role] = ask.Text
+	}
+	for _, role := range roles {
+		text, commits := told[role], role != claim.RoleReviewer
+		if text == "" {
+			t.Fatalf("the %s was asked nothing, want one ask", role)
+		}
+		for _, says := range []string{"1. Push every commit that you want to keep to this issue's branch.", "Then commit and push what it made."} {
+			if strings.Contains(text, says) != commits {
+				t.Errorf("the ask to the %s holds %q: %t, want %t", role, says, !commits, commits)
+			}
+		}
+		if says := "1. You create no commit, so you push nothing."; strings.Contains(text, says) == commits {
+			t.Errorf("the ask to the %s holds %q: %t, want %t", role, says, commits, !commits)
+		}
+	}
+}
+
 // The round's terms are fixed when it opens (dispatch://INFRA-2981 R9, verification's
 // c-early-release terms case). A later sweep that reads other drift for the same pod writes no
 // new reasons over the open round, and the ask the sweep publishes names the reasons the round
@@ -182,13 +218,12 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 				role, c.UpdateRound, c.UpdateReasons, podUpdateDrift)
 		}
 	}
-	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))
 	asks := rig.asks()
 	if len(asks) != len(roles) {
 		t.Fatalf("the sweeps enqueued %d asks, want one for each of the %d roles: %+v", len(asks), len(roles), asks)
 	}
 	for _, ask := range asks {
-		if ask.Text != text {
+		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace)); ask.Text != text {
 			t.Errorf("the ask to the %s says:\n%s\nwant the round's own terms:\n%s", ask.Role, ask.Text, text)
 		}
 	}

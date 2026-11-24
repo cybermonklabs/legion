@@ -28,6 +28,21 @@ func quiet(t *testing.T, cap int) *Admission {
 	return newAdmission(t, cap, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
+// drawSource is the random source of an admission quietDrawing builds: its engine's source, which
+// the admission draws with too (workflow.Engine's ExperimentSource). An engine takes its source
+// when it is built, so a test changes what this one reads between passes by setting next.
+type drawSource struct{ next func(uint64) (uint64, error) }
+
+func (s *drawSource) draw(bound uint64) (uint64, error) { return s.next(bound) }
+
+// quietDrawing is quiet whose engine draws every `random` experiment from the drawSource it
+// answers, which reads refusingSource until the test sets another.
+func quietDrawing(t *testing.T, cap int) (*Admission, *drawSource) {
+	t.Helper()
+	source := &drawSource{next: refusingSource(t)}
+	return newAdmissionDrawing(t, testProject, cap, config.DesignGate("").Steps(), slog.New(slog.NewTextHandler(io.Discard, nil)), source.draw), source
+}
+
 // seedMirror writes what Dispatch says of key, an issue of this package's project, as
 // seedMirrorIn writes it.
 func seedMirror(t *testing.T, pool *pgxpool.Pool, key, status string, waits ...string) {

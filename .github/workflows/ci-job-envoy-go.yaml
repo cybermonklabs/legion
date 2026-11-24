@@ -162,8 +162,8 @@ jobs:
       # with no database and no Bun, and a change to only what they read must not start this
       # one. So are internal/dispatch/architecture/notes, internal/runnerlog,
       # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
-      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
-      # internal/wirecheck, which envoy-go-checks tests in their place (LISTENERWIRE_PACKAGES):
+      # envoy-go-build tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
+      # internal/wirecheck, which envoy-go-build tests in their place (LISTENERWIRE_PACKAGES):
       # listenerwire's clients test type-checks daemon packages, so a change to only those daemon
       # packages starts no job with a database. The pattern is built in
       # .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built from, so
@@ -179,7 +179,7 @@ jobs:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
       # it, so a run here would ask nothing of it, and
       # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it
-      # a read of this job; envoy-go-checks runs both, the first with the check, and both texts
+      # a read of this job; envoy-go-build runs both, the first with the check, and both texts
       # are built from the same list. So are the backend count's four tests of cmd/cipher,
       # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package

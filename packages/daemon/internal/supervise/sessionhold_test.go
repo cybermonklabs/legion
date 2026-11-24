@@ -1095,12 +1095,12 @@ func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 }
 
 // A death's relaunch of a claim recording a session another claim holds is refused by start's own
-// hold (Machine.start) and charged to the launch budget like any refused launch (launchNow), so at
+// hold (Machine.start) and charged to the launch budget like any refused launch (launchTries), so at
 // the budget the claim fails rather than relaunching at the probe interval for ever. No resume
 // reaches the runtime. The resume, retry and delivery routes refuse such a claim before start
 // (resumeRefusal); a death has no route to refuse, so this row is what reads start's charge.
 //
-// The control (the pull request records the run): launchNow sending start's refusal down the
+// The control (the pull request records the run): launchTries sending start's refusal down the
 // retry that charges nothing, as it sends errHoldUnanswered: the claim is left launching.
 func TestADeathsRelaunchIntoAHeldSessionIsChargedToTheLaunchBudget(t *testing.T) {
 	const other = claim.Token("legion-legion-LEGION-209-tester")
@@ -1108,7 +1108,7 @@ func TestADeathsRelaunchIntoAHeldSessionIsChargedToTheLaunchBudget(t *testing.T)
 	h.reach(StateReady)
 	h.store.setHold(sessionID(session), other)
 	// The death itself is charged one launch failure (relaunchAfterFailure), and the relaunch start
-	// refuses is charged the second, which spends the budget (launchNow).
+	// refuses is charged the second, which spends the budget (launchTries).
 	h.deps.Limits.LaunchFailures = 2
 	h.restart()
 	resumes := len(h.calls("Resume"))
