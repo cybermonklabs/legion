@@ -108,11 +108,15 @@ func realHelper(t *testing.T) string {
 	return sock
 }
 
-// serveRealHelper is serveRealHelperWith sending the helper's broker calls through
-// http.DefaultClient.
+// serveRealHelper is serveRealHelperWith sending the helper's broker calls through a client of
+// its own. It is not http.DefaultClient: the helper fires a session's revoke off and that revoke
+// outlives the call it belongs to, so a test that replaces http.DefaultTransport (reachedAs,
+// useGoogleAPIsStandIn) would be writing what the revoke reads.
 func serveRealHelper(t *testing.T, brokerURL, operator string) (*helper.Server, string) {
 	t.Helper()
-	return serveRealHelperWith(t, brokerURL, operator, http.DefaultClient)
+	client := &http.Client{Transport: &http.Transport{}}
+	t.Cleanup(client.CloseIdleConnections)
+	return serveRealHelperWith(t, brokerURL, operator, client)
 }
 
 func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
