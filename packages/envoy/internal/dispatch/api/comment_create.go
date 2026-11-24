@@ -700,6 +700,9 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// read the owner as it may, and the thread target below lists the owner's open asks as it may
 	// read them (askIDInputForOwner).
 	writer, ok := s.readerAs(w, r, actor)
+	if !ok {
+		return
+	}
 
 	// Every Envoy listener lookup this comment needs happens here, with no transaction and no
 	// pooled connection held (resolveCommentDeliveries). beginCommentWrite re-reads the issue's
@@ -757,7 +760,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if !isSuggestion {
 		documentCtx = docs.WithCommentMarks(documentCtx)
 	}
-	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, ledger, actor, owner, input)
+	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, ledger, writer, owner, input)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1247,7 +1250,7 @@ func commentStored(
 		(ownerAddress != "" && !graphstore.AddressFits(ownerAddress)) {
 		return commentStoreWrite{unprojected: true}, nil
 	}
-	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress, project, parties)
+	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress, "", nil)
 	return commentStoreWrite{written: graphstore.PlanUncaused([]graphstore.Node{node}, tuples)}, nil
 }
 

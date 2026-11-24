@@ -48,7 +48,6 @@ func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Requ
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	who, ok := s.readerOf(w, r)
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select key, default_assignee
 		from projects
@@ -113,7 +112,6 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	who, ok := s.readerOf(w, r)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

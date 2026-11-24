@@ -549,9 +549,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		login = actor.ID
-	}
-	who, ok := s.readerOf(w, r)
-	if !ok {
+	} else if !s.requireAuthenticated(w, r) {
 		return
 	}
 	project := strings.TrimSpace(query.Get("project"))
@@ -895,7 +893,6 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 	issueCounts := map[string]int{}
 	missing := false
 
-	viewer := refs.VisibilityArg(who)
 	first := &pgx.Batch{}
 	first.Queue(issueRowStatement, key).QueryRow(func(row pgx.Row) error {
 		issue, progress, err := scanIssueRow(row)
@@ -1218,12 +1215,11 @@ func scanExternalLinks(rows pgx.Rows) ([]model.ExternalLink, error) {
 // loadIssueWithProgress is loadIssue together with the issue's progress, which the read response
 // carries beside the issue (model.IssueProgress says why it is not a field of it).
 func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, who model.Actor, key string) (model.Issue, model.IssueProgress, error) {
-	viewer := refs.VisibilityArg(who)
-	issue, progress, err := scanIssueRow(q.QueryRow(ctx, issueRowStatement, key, viewer))
+	issue, progress, err := scanIssueRow(q.QueryRow(ctx, issueRowStatement, key))
 	if err != nil {
 		return model.Issue{}, model.IssueProgress{}, err
 	}
-	rows, err := q.Query(ctx, issueExternalLinksStatement, key, viewer)
+	rows, err := q.Query(ctx, issueExternalLinksStatement, key)
 	if err != nil {
 		return model.Issue{}, model.IssueProgress{}, err
 	}

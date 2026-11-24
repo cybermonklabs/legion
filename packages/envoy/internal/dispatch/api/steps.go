@@ -107,7 +107,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), actor, key)
+	s.writeIssueStep(w, r, input.write(), actor, key, false)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
@@ -138,7 +138,7 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	if input.RatingReason != nil {
 		write.Rating.Reason = *input.RatingReason
 	}
-	s.writeIssueStep(w, r, write, actor, key)
+	s.writeIssueStep(w, r, write, actor, key, true)
 }
 
 // writeIssueStep is the one write of a step record behind both routes, by actor to the issue key:
@@ -159,7 +159,7 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 		return
 	}
 	defer tx.Rollback(r.Context())
-	project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key, actor, "a step record")
 	if !ok {
 		return
 	}
@@ -255,7 +255,6 @@ func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pg
 		s.writeHandlerError(w, err)
 		return "", false
 	}
-	var project string
 	if err := tx.QueryRow(r.Context(), `
 		select project_key from issues where key = $1
 	`, key).Scan(&project); err != nil {
@@ -279,7 +278,6 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	who, ok := s.readerOf(w, r)
 	key := r.PathValue("key")
 	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, key)
 	if err != nil {

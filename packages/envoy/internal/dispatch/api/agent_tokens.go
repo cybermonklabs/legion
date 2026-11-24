@@ -147,7 +147,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 			"scopes is required: it is the whole set the token is to hold")
 		return
 	}
-	reader, ok := s.readerOf(w, r)
+	scopes, ok := tokenScopes(w, actor, input.Scopes)
 	if !ok {
 		return
 	}

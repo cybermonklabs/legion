@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The summary reads serve what a rendered dispatch:// reference shows, an issue's title and status
@@ -54,12 +53,10 @@ type documentSummary struct {
 const summaryLatestVersion = `(select max(v.number) from artifact_versions v where v.artifact_id = a.id)`
 
 func (s *server) getIssueSummary(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	ctx := r.Context()
-	viewer := refs.VisibilityArg(who)
 	var summary issueSummary
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
 		select key, project_key, title, status from issues where key = $1
@@ -90,7 +87,6 @@ func (s *server) getProjectDocumentSummary(w http.ResponseWriter, r *http.Reques
 	}
 	ctx := r.Context()
 	q := s.deps.Store.Pool
-	viewer := refs.VisibilityArg(who)
 	read := func(predicate string, value string) (documentSummary, error) {
 		var summary documentSummary
 		err := q.QueryRow(ctx, `
@@ -103,7 +99,7 @@ func (s *server) getProjectDocumentSummary(w http.ResponseWriter, r *http.Reques
 		}
 		return summary, err
 	}
-	summary, err := resolveDocumentReference(ctx, s, q, artifactTarget{Project: r.PathValue("key")}, r.PathValue("slug"),
+	summary, err := resolveDocumentReference(ctx, s, q, who, artifactTarget{Project: r.PathValue("key")}, r.PathValue("slug"),
 		func(refKey string) (documentSummary, error) { return read(`a.ref_key = $1`, refKey) },
 		func(id string) (documentSummary, error) { return read(`a.id = $1::uuid`, id) },
 	)

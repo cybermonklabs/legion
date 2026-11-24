@@ -282,9 +282,9 @@ func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() er
 	openedEventIDs := make(map[string]int64, len(askIDs))
 	counts := map[string]int{}
 	partIDs := make([]refs.AskIDs, len(asks))
-	events.QueueOpenedEventIDs(b, askIDs, readableEvents(who), openedEventIDs)
+	events.QueueOpenedEventIDs(b, askIDs, events.EveryEvent, openedEventIDs)
 	countsErr := refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
-	refs.QueueAskPartIDs(b, asks, partIDs)
+	refs.QueueAskPartIDs(b, who, asks, partIDs)
 	return func() error {
 		if countsErr != nil {
 			return countsErr
@@ -359,7 +359,7 @@ func attachAskReadFields(ctx context.Context, q queryer, who model.Actor, asks [
 	if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
 		return err
 	}
-	return attachAskPartIDs(ctx, q, asks)
+	return attachAskPartIDs(ctx, q, who, asks)
 }
 
 func (s *server) loadAskAnchorArtifact(

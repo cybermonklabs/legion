@@ -165,6 +165,9 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	// What the writer sees, resolved before the transaction holds a connection: the ask's owner
 	// is read as the writer may read it (loadAskOwner), and so is the session (the file comment).
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

@@ -380,7 +380,7 @@ func issueClaimSession(claim *model.IssueClaim) string {
 // rather than by re-deriving when a holder must be judged. It decides nothing; claimBlockedBy
 // does, under the lock, against the row as it stands then.
 func (s *server) judgeHolder(
-	ctx context.Context, key string, actor model.Actor, rule personRule,
+	ctx context.Context, who model.Actor, key string, actor model.Actor, rule personRule,
 ) (judgement, error) {
 	holder, err := s.readIssueClaim(ctx, who, key)
 	if err != nil {
@@ -606,6 +606,7 @@ func claimLegionManagedStatus(ctx context.Context, tx pgx.Tx, key string) *bool 
 // comes back from the update itself (queueIssueClaim), which costs no statement.
 func (s *server) claimWrite(
 	ctx context.Context,
+	who model.Actor,
 	key string,
 	actor model.Actor,
 	decide func(before model.Issue) (claimChange, error),
@@ -702,12 +703,15 @@ func (s *server) claimCycle(
 	// The issue is read as the caller reads it, so the reader is resolved here, before the write
 	// holds a connection.
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	applied, err := resolveThenLock(r.Context(),
 		func(ctx context.Context) (judgement, error) {
-			return s.judgeHolder(ctx, key, actor, rule)
+			return s.judgeHolder(ctx, who, key, actor, rule)
 		},
 		func(ctx context.Context, judged judgement) (claimApplied, error) {
-			return s.claimWrite(ctx, key, actor, func(before model.Issue) (claimChange, error) {
+			return s.claimWrite(ctx, who, key, actor, func(before model.Issue) (claimChange, error) {
 				return decide(before, judged)
 			})
 		},

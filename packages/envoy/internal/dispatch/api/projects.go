@@ -32,8 +32,7 @@ const projectListQuery = `
 	`
 
 func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), projectListQuery)

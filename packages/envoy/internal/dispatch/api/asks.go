@@ -354,7 +354,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// report no review.
 	if advice != nil && owner.IssueKey != nil {
 		advice.StandingReview = s.standingReviewAdvice(
-			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
+			r.Context(), tx, ledger, who, routeOpenAsk, *owner.IssueKey,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
@@ -468,6 +468,9 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// What the writer sees, resolved before the transaction for the same reason: the ask is
 	// loaded as the writer may read it (loadAsk).
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -699,7 +702,6 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	who, ok := s.readerOf(w, r)
 	sessionID := strings.TrimSpace(r.URL.Query().Get("author_session"))
 	project := strings.TrimSpace(r.URL.Query().Get("project"))
 	if sessionID == "" && project == "" {
@@ -1003,9 +1005,9 @@ func (s *server) loadAskEdits(ctx context.Context, q queryer, who model.Actor, a
 	rows, err := q.Query(ctx, `
 		select payload->'previous', payload->'edited_by', created_at
 		from events
-		where type = 'ask.edited' and payload->>'id' = $1 and `+eventReadableSQL("events", "$2")+`
+		where type = 'ask.edited' and payload->>'id' = $1
 		order by id asc
-	`, askID, refs.VisibilityArg(who))
+	`, askID)
 	if err != nil {
 		return nil, fmt.Errorf("load ask edits: %w", err)
 	}
@@ -1062,7 +1064,7 @@ func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, who model.A
 	rows, err := q.Query(ctx, answerEventsQuery(
 		`e.payload->>'id', e.payload->'answer', e.id`,
 		`e.payload->>'id' = any($1::text[])`, "$2",
-	), askIDs, refs.VisibilityArg(who))
+	), askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load ask answers: %w", err)
 	}
@@ -1116,13 +1118,13 @@ func (s *server) loadAskAnswers(ctx context.Context, q queryer, who model.Actor,
 func (s *server) loadAsk(ctx context.Context, q queryer, who model.Actor, id string) (model.Ask, error) {
 	ask, _, err := scanAskRead(q.QueryRow(ctx, `
 		select `+askReadColumns+`
-		`+askReadFromSeenBy("$2")+`
+		`+askReadFrom+`
 		where a.id = $1 and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
 	`, id, refs.VisibilityArg(who)))
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := s.attachOpenedEventIDs(ctx, q, &who, []*model.Ask{&ask}); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, q, []*model.Ask{&ask}); err != nil {
 		return model.Ask{}, err
 	}
 	return ask, nil
@@ -1246,13 +1248,13 @@ func askReadPointers(asks []model.Ask) []*model.Ask {
 func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (model.Ask, error) {
 	ask, err := scanAskRow(tx.QueryRow(ctx, `
 		select `+askRowColumns+`
-		`+askRowFromSeenBy("$2")+`
+		`+askRowFrom+`
 		where a.id = $1
-	`, id, refs.VisibilityArg(who)))
+	`, id))
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := s.attachOpenedEventIDs(ctx, tx, nil, []*model.Ask{&ask}); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{&ask}); err != nil {
 		return model.Ask{}, err
 	}
 	return ask, nil
@@ -1271,9 +1273,6 @@ func (s *server) attachOpenedEventIDs(
 		return nil
 	}
 	readable := events.EveryEvent
-	if who != nil {
-		readable = readableEvents(*who)
-	}
 	openedEventIDs, err := events.OpenedEventIDs(ctx, q, askIDs, readable)
 	if err != nil {
 		return err
