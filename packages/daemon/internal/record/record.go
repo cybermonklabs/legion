@@ -2437,10 +2437,10 @@ type Store interface {
 	// again, or holds none for a reason that is not a wait.
 	ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error
 	// ReleaseTreeSlots frees the slot of every issue of tree and clears Issue.ReleasedForWaitAt
-	// from every issue of it, and answers the issues whose slot it freed, in slot order, and the
-	// number of slots project's issues hold afterwards: the re-admission of the tree's own root,
-	// which ends the generation those rows and marks were of (admit's releaseTreeSlots).
-	ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, project, tree string) ([]string, int, error)
+	// from every issue of it, and answers the issues whose slot it freed, in slot order: the
+	// re-admission of the tree's own root, which ends the generation those rows and marks were of
+	// (admit's releaseTreeSlots).
+	ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error)
 	// OweMembers sets Issue.MembersOwed on the root key: its re-admission has started a generation
 	// whose members are still to be brought back (admit's readmit).
 	OweMembers(ctx context.Context, tx pgx.Tx, key string) error

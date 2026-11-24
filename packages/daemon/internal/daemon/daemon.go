@@ -3055,13 +3055,13 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 	return nil
 }
 
-func (s projectRecords) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, project, tree string) ([]string, int, error) {
-	released, held, err := s.Store.ReleaseTreeSlots(ctx, tx, project, tree)
+func (s projectRecords) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
+	released, err := s.Store.ReleaseTreeSlots(ctx, tx, tree)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	s.liveOnCommit(ctx)
-	return released, held, nil
+	return released, nil
 }
 
 // liveOnCommit asks for a read of the live records once the transaction that wrote one commits

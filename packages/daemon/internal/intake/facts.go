@@ -549,9 +549,11 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // pass: the pause held every promotion, and the pass runs now rather than at the next fact or
 // tick. Admission promotes on it as on every fact that is not a Dispatch issue
 // (admit.Admission.applyFact); the workflow engine and the blockers mirror do nothing for it.
-// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass leaves
-// free wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and
-// nothing else.
+// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass's own
+// release leaves free wakes the controller as any fact's pass does
+// (admit.Admission.wakeForFreeSlot), and nothing else. The rows a re-admission freed while the
+// pause held (admit's releaseTreeSlots) wake nothing; the resume's notice tells the controller
+// of that capacity.
 //
 // It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
 // is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies

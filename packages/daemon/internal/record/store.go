@@ -2393,26 +2393,21 @@ func (s *Postgres) ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue st
 	return nil
 }
 
-func (s *Postgres) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, project, tree string) ([]string, int, error) {
+func (s *Postgres) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
 	if _, err := tx.Exec(ctx, "update issues set released_for_wait_at = null where tree = $1 and released_for_wait_at is not null", tree); err != nil {
-		return nil, 0, fmt.Errorf("clear the releases for a wait of %s's tree: %w", tree, err)
+		return nil, fmt.Errorf("clear the releases for a wait of %s's tree: %w", tree, err)
 	}
 	rows, err := tx.Query(ctx, `with released as (delete from slots using issues
 		where slots.issue = issues.key and issues.tree = $1 returning slots.issue, slots.index)
 		select issue from released order by index, issue`, tree)
 	if err != nil {
-		return nil, 0, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
+		return nil, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
 	}
 	released, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, 0, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
+		return nil, fmt.Errorf("release the slots of %s's tree: %w", tree, err)
 	}
-	var held int
-	if err := tx.QueryRow(ctx, `select count(*) from slots join issues on issues.key = slots.issue
-		where issues.project = $1`, project).Scan(&held); err != nil {
-		return nil, 0, fmt.Errorf("count the slots of %s after releasing %s's tree: %w", project, tree, err)
-	}
-	return released, held, nil
+	return released, nil
 }
 
 // OweMembers and ClearMembersOwed are the two writers of members_owed: PutIssue names the column

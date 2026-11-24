@@ -1623,14 +1623,19 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // no slot-free wake follows for these rows. A member arriving from another tree keeps the row it
 // held there (Waiting's queued-root loop), so only the tree's own root coming back reaches this.
 // Each release is logged with the slots the project holds after it, lowered in slot order, as
-// releaseSlots logs its own.
+// releaseSlots logs its own; the count is read here, where every caller of logSlot counts, and
+// only when something was released.
 func (a *Admission) releaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) error {
-	released, held, err := a.store.ReleaseTreeSlots(ctx, tx, a.project, tree)
+	released, err := a.store.ReleaseTreeSlots(ctx, tx, tree)
+	if err != nil || len(released) == 0 {
+		return err
+	}
+	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
 		return err
 	}
 	for i, key := range released {
-		a.logSlot(ctx, "released", key, held+len(released)-1-i)
+		a.logSlot(ctx, "released", key, len(own)+len(released)-1-i)
 	}
 	return nil
 }

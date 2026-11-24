@@ -73,10 +73,10 @@ import (
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047),
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
-// applied sequence, 20261121170714, the plan of an experiment's draw (20261123165139) and
-// dispatch://INFRA-5463's 20261123212127, so an upgrade of a database main migrated applies it
-// just before those ten. It adds pull_requests.statuses at its default, the empty list, and it
-// touches no outbox_kind_check.
+// applied sequence, 20261121170714, the plan of an experiment's draw (20261123165139),
+// dispatch://INFRA-5463's 20261123212127 and dispatch://INFRA-5471's 20261123224717, so an
+// upgrade of a database main migrated applies it just before those eleven. It adds
+// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), it stands below the design news too, and it touches no
@@ -119,8 +119,8 @@ import (
 // at a default that every row it finds reads as no plan (migration_20261117034837_test.go).
 // The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
 // default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
-// above every migration named here but dispatch://INFRA-5463's 20261123212127, and touches no
-// outbox_kind_check.
+// above every migration named here but dispatch://INFRA-5463's 20261123212127 and
+// dispatch://INFRA-5471's 20261123224717, and touches no outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -128,15 +128,15 @@ import (
 // (20261119003157) stands above every other version of this list but the design news,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
-// applied sequence, 20261121170714, the plan of an experiment's draw (20261123165139) and
-// dispatch://INFRA-5463's 20261123212127: it names every kind the plan-record list names and its
-// own two, phase_ended among them. The same
+// applied sequence, 20261121170714, the plan of an experiment's draw (20261123165139),
+// dispatch://INFRA-5463's 20261123212127 and dispatch://INFRA-5471's 20261123224717: it names
+// every kind the plan-record list names and its own two, phase_ended among them. The same
 // migration deletes the queued phase_ended rows, the seeded one below among them, and adds
 // pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
-// 20261120012547, 20261120042902, 20261120055717, 20261120144241, 20261121170714, 20261123165139
-// and 20261123212127, is the last of them to rewrite outbox_kind_check: it names those kinds and
-// design_changes.
+// 20261120012547, 20261120042902, 20261120055717, 20261120144241, 20261121170714, 20261123165139,
+// 20261123212127 and 20261123224717, is the last of them to rewrite outbox_kind_check: it names
+// those kinds and design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the
 // design news among them, and before dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, 20261121170714,
