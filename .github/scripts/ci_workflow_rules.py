@@ -492,6 +492,93 @@ def check_race_fill_packages(packages: list, job: str, problems: list) -> None:
                                                   f"command as the list reads, so the next change to either shows as a difference"))
 
 
+# The job of ci-caches.yaml that fills the browser binaries' family, the job of
+# dispatch-browser.yaml whose build it fills, and each pair of steps that must run one command.
+BINARIES_FILL_JOB = "browser-binaries"
+BINARIES_READER = ".github/workflows/dispatch-browser.yaml"
+BINARIES_READER_JOB = "binaries"
+BINARIES_STEPS = [
+    ("Build the binaries the browser suite runs",
+     "Build the binaries the browser suite runs, as the binaries job does"),
+    ("Read the connections each stack's Postgres must allow",
+     "Read the connections each stack's Postgres must allow, as the binaries job does"),
+]
+
+
+def named_step(document: dict, job_id: str, step_name: str) -> dict | None:
+    """The step of a job by its name, or None where either is absent."""
+    for step in (((document.get("jobs") or {}).get(job_id) or {}).get("steps") or []):
+        if str((step or {}).get("name", "")) == step_name:
+            return step
+    return None
+
+
+# A go command inside a step's run: `go` where a command starts - at the line's start, inside
+# `$( )`, or after `;`, `&&` or `|` - with the variable assignments before it, which are part of
+# what it compiles (CGO_ENABLED), and its arguments to the end of the line or to the character
+# that ends the command. So a command inside `$( )` reads as itself, and the same text quoted
+# inside an `echo` is no command.
+GO_COMMAND = re.compile(r"(?:^|\$\(|&&|\|\||;|\|)\s*((?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*go\s+[^\n;&|)]*)")
+
+
+def go_commands(run: str) -> list:
+    """Every go command of a step's run, each as its words: the command an object's cache key is
+    computed from, without the shell around it that only moves its output."""
+    return [match.group(1).split() for line in script_lines(run)
+            for match in GO_COMMAND.finditer(line)]
+
+
+def check_binaries_fill_commands(problems: list) -> None:
+    """ci-caches.yaml's BINARIES_FILL_JOB fills the family dispatch-browser.yaml's
+    BINARIES_READER_JOB restores, and an entry holds an object under the key the command that made
+    it computes: the compiler's flags and CGO_ENABLED are in that key, so the fill's go commands
+    must be the reader's, word for word. They cannot be one text: a Run pinned to a script's text
+    is reduced over every job of the called workflow, and the shard and alone jobs run in a
+    container, so a shared script would make that filter read every Go file of the repository
+    (ci_job_reads.py's browser gate says so where it lists no script Run). So the two texts stay
+    apart and this rule holds them equal.
+
+    Each pair of BINARIES_STEPS is (the reader's step, the fill's). The shell around a go command
+    differs on purpose - the reader writes its binaries into $RUNNER_TEMP and its count into
+    $GITHUB_OUTPUT, the fill needs neither - so the rule compares the go commands alone, each from
+    its `go` to the end of its line, in order. A missing job or step fails rather than passing
+    quietly: this rule exists to hold that one build, so a tree without it is a fill whose entry
+    no job reads, not a rule with nothing to do. Either workflow absent from the repository leaves
+    nothing to hold."""
+    if not (REPO / CACHE_WORKFLOW).is_file() or not (REPO / BINARIES_READER).is_file():
+        return
+    caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
+    reader = load_repository_yaml(REPO / BINARIES_READER) or {}
+    if BINARIES_FILL_JOB not in (caches.get("jobs") or {}):
+        problems.append(error(CACHE_WORKFLOW, f"this workflow has no job {BINARIES_FILL_JOB}, so nothing fills the "
+                                              f"family {BINARIES_READER}'s {BINARIES_READER_JOB} job restores and that job "
+                                              f"compiles its binaries from nothing on every run; name the fill job here, or "
+                                              f"drop this rule with the family it holds"))
+        return
+    for reader_step, fill_step in BINARIES_STEPS:
+        mine = named_step(caches, BINARIES_FILL_JOB, fill_step)
+        theirs = named_step(reader, BINARIES_READER_JOB, reader_step)
+        if theirs is None:
+            problems.append(error(BINARIES_READER, f"job {BINARIES_READER_JOB} has no step \"{reader_step}\", which job "
+                                                   f"{BINARIES_FILL_JOB} of {CACHE_WORKFLOW} fills the cache for; rename the "
+                                                   f"step in both files, or drop the pair from this rule"))
+            continue
+        if mine is None:
+            problems.append(error(CACHE_WORKFLOW, f"job {BINARIES_FILL_JOB} has no step \"{fill_step}\", so it does not "
+                                                  f"run what {BINARIES_READER}'s \"{reader_step}\" runs and its entry holds "
+                                                  f"none of those objects"))
+            continue
+        ours, yours = go_commands(str(mine.get("run", ""))), go_commands(str(theirs.get("run", "")))
+        if ours != yours:
+            problems.append(error(CACHE_WORKFLOW, f"job {BINARIES_FILL_JOB}'s \"{fill_step}\" runs "
+                                                  f"{'; '.join(' '.join(c) for c in ours) or '(no go command)'}, where "
+                                                  f"{BINARIES_READER}'s {BINARIES_READER_JOB} job runs "
+                                                  f"{'; '.join(' '.join(c) for c in yours) or '(no go command)'}: an object's cache "
+                                                  f"key holds the flags and the CGO_ENABLED of the command that made it, so the "
+                                                  f"entry this fill saves answers none of that job's keys and it compiles from "
+                                                  f"nothing, with nothing failing; write the one command in both files"))
+
+
 def check_race_fill_scripts(fills: list, problems: list) -> None:
     """Each (fill job, script, its workdir, its compile call) of `fills` is a ci-caches.yaml job
     that fills a family whose race step runs a script: the job's steps in that workdir run the

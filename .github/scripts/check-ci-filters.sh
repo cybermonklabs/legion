@@ -297,6 +297,20 @@
 #      import at their top level, and every gate file where one of them loads the gate files
 #      (ci_job_reads.py), naming the gate, the harness, the file and how it is reached. A harness
 #      tests what it reaches, so a change to one of those files alone must start its step.
+#  23. a go command of .github/workflows/ci-caches.yaml's browser-binaries job's build or
+#      connections step that is not the one dispatch-browser.yaml's binaries job runs in the step
+#      of that name, naming both texts; and a job or step of either side that is gone. That fill
+#      saves the cache family that job restores, and an object's cache key holds the flags and the
+#      CGO_ENABLED of the command that made it, so a command that drifts leaves the fill saving an
+#      entry which answers none of that job's keys: the job finds its entry, compiles everything
+#      from nothing, and nothing fails - the shape measured in job 138563907113, where a
+#      3.18 GB entry of another family left 427 of 1,034 packages to compile. The two cannot be one
+#      text: a Run pinned to a script's text is reduced over every job of the called workflow, and
+#      the shard and alone jobs run in a container, so a shared script would make that filter read
+#      every Go file of the repository (ci_job_reads.py's browser gate says so where it lists no
+#      script Run). The rule compares the go commands alone, each with the variable assignments in
+#      front of it, since the shell around them differs on purpose: the job writes its binaries
+#      into $RUNNER_TEMP and its count into $GITHUB_OUTPUT, and the fill needs neither.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

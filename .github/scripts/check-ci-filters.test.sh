@@ -3100,6 +3100,84 @@ YAML
     $'      - id: go-cache\n        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-app-${{ runner.os }}\n          restore-keys: ${{ format(\'go-app-{0}-\', runner.os) }}\n      - name: Test the app'
 }
 
+# binaries_fill <root>: the shape rule 23 holds - dispatch-browser.yaml's binaries job, and the
+# browser-binaries job of ci-caches.yaml that fills the family it restores, each running the same
+# two go commands with another shell around them.
+binaries_fill() {
+  cat > "$1/.github/workflows/dispatch-browser.yaml" <<'YAML'
+name: Dispatch browser
+on:
+  workflow_call:
+jobs:
+  binaries:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build the binaries the browser suite runs
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/bin/" ./cmd/app
+        working-directory: mod
+      - name: Read the connections each stack's Postgres must allow
+        id: connections
+        run: |
+          connections=$(go run ./cmd/app)
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: mod
+YAML
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+  browser-binaries:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build the binaries the browser suite runs, as the binaries job does
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/bin/" ./cmd/app
+        working-directory: mod
+      - name: Read the connections each stack's Postgres must allow, as the binaries job does
+        run: go run ./cmd/app
+        working-directory: mod
+YAML
+}
+
+echo "case: the browser-binaries fill runs the binaries job's go commands"
+root=$(fixture binaries-fill)
+cache_workflow "$root"
+binaries_fill "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: the browser-binaries fill's build drops the binaries job's CGO_ENABLED"
+root=$(fixture binaries-fill-cgo)
+cache_workflow "$root"
+binaries_fill "$root"
+replace "$root/.github/workflows/ci-caches.yaml" \
+  $'          CGO_ENABLED=0 go build -ldflags=\'-s -w\' -o "$RUNNER_TEMP/bin/" ./cmd/app\n        working-directory: mod\n      - name: Read the connections each stack\'s Postgres must allow, as' \
+  $'          go build -ldflags=\'-s -w\' -o "$RUNNER_TEMP/bin/" ./cmd/app\n        working-directory: mod\n      - name: Read the connections each stack\'s Postgres must allow, as'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both commands and what the entry then answers" \
+  "$(contains "$out" "job browser-binaries's \"Build the binaries the browser suite runs, as the binaries job does\" runs go build .*, where .github/workflows/dispatch-browser.yaml's binaries job runs CGO_ENABLED=0 go build .*answers none of that job's keys")"
+
+echo "case: the browser-binaries fill's connections step names another package"
+root=$(fixture binaries-fill-package)
+cache_workflow "$root"
+binaries_fill "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "        run: go run ./cmd/app" "        run: go run ./lib"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and both packages" \
+  "$(contains "$out" "job browser-binaries's \"Read the connections each stack's Postgres must allow, as the binaries job does\" runs go run ./lib, where .github/workflows/dispatch-browser.yaml's binaries job runs go run ./cmd/app")"
+
+echo "case: the browser-binaries fill is gone while the job that reads its family is not"
+root=$(fixture binaries-fill-gone)
+cache_workflow "$root"
+binaries_fill "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "  browser-binaries:" "  other-binaries:"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says the family is filled by nothing" \
+  "$(contains "$out" "this workflow has no job browser-binaries, so nothing fills the family .*binaries job restores")"
+
 echo "case: a family ci-caches.yaml saves under the key and paths ci.yaml restores"
 root=$(fixture cache-round-trip)
 cache_workflow "$root"
