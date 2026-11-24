@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptrace"
@@ -32,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/serverwait"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -341,17 +343,56 @@ func (b *Broker) Operator() string {
 }
 
 // oauthConfig is the OAuth client the helper logs a machine in and refreshes its login with: the
-// broker's device authorization and token endpoints, the client's id sent in the form.
-func (b *Broker) oauthConfig() *oauth2.Config {
+// broker's device authorization and token endpoints, each joined onto the address
+// (cipheraddr.Address.Join, the address's path and query kept), and the client's id sent in the
+// form. An address that is no absolute URL with a host is refused by its class, "not a valid URL"
+// (redact.ClassNotAURL), which prints no part of it.
+func (b *Broker) oauthConfig() (*oauth2.Config, error) {
+	deviceAuth, err := b.URL.Join("/v1/oauth/device_authorization")
+	if err != nil {
+		return nil, redact.Masked(err, redact.ClassNotAURL)
+	}
+	token, err := b.URL.Join("/v1/oauth/token")
+	if err != nil {
+		return nil, redact.Masked(err, redact.ClassNotAURL)
+	}
 	return &oauth2.Config{
 		ClientID: oauthwire.ClientID, Scopes: []string{oauthwire.Scope},
 		Endpoint: oauth2.Endpoint{
-			DeviceAuthURL: b.URL.Raw() + "/v1/oauth/device_authorization",
-			TokenURL:      b.URL.Raw() + "/v1/oauth/token",
+			DeviceAuthURL: deviceAuth.String(),
+			TokenURL:      token.String(),
 			AuthStyle:     oauth2.AuthStyleInParams,
 		},
-	}
+	}, nil
 }
+
+// request is a request of method to path at the broker, path joined onto the address
+// (cipheraddr.Address.Join, the address's path and query kept ahead of path's), and the URL a proof
+// of it signs (proof.TargetURI), which the broker checks against its public URL and the path it was
+// asked. An address that is no absolute URL with a host is refused by its class, "not a valid URL"
+// (redact.ClassNotAURL), and a path no URL can hold (an id a caller gave holding a '#', a bad
+// escape or a control byte) as errPathUnsendable; neither prints any part of the address or the
+// path.
+func (b *Broker) request(ctx context.Context, method, path string, body io.Reader) (*http.Request, string, error) {
+	target, err := b.URL.Join(path)
+	switch {
+	case errors.Is(err, urljoin.ErrRef):
+		return nil, "", errPathUnsendable
+	case err != nil:
+		return nil, "", redact.Masked(err, redact.ClassNotAURL)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
+	if err != nil {
+		return nil, "", b.URL.Error(err)
+	}
+	return req, proof.TargetURI(target), nil
+}
+
+// errPathUnsendable is request's refusal of a path no URL can hold: one that ends in an id a caller
+// gave (`unenroll --enrollment`) holding a '#', which net/http would cut off as a fragment and send
+// the rest, a bad escape or a control byte. The path is not printed, since that id can be what a
+// person typed.
+var errPathUnsendable = errors.New("the request's path is not one a URL can hold: the id it ends in holds a '#', a bad escape or a control byte (the id is not printed)")
 
 // httpClient is b.HTTP, or http.DefaultClient when it is nil, as net/http reads a nil client, with
 // redirects refused (redirects.Refused): every call the helper makes to the broker carries a
@@ -503,7 +544,10 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cfg := b.oauthConfig()
+	cfg, err := b.oauthConfig()
+	if err != nil {
+		return "", err
+	}
 	ctx, reach := traceReach(ctx)
 	da, err := redact.OAuth2(cfg.DeviceAuth(context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(b.contextClient(ctx))),
 		oauth2.SetAuthURLParam("request", compact), oauth2.SetAuthURLParam("dpop_jkt", thumbprint)))
@@ -688,15 +732,14 @@ func (b *Broker) keepLogin(key *ecdsa.PrivateKey, tok *oauth2.Token, code, opera
 // It is best effort: a failure is logged at WARN, never retried, and changes nothing the helper
 // holds.
 func (b *Broker) retireReplaced(old *machineCredential) {
-	url := b.URL.Raw() + "/v1/operator/machines/" + old.id + "/retire"
 	err := func() error {
-		compact, err := proof.SignLauncher(old.key, old.id, http.MethodPost, url, time.Now())
+		req, htu, err := b.request(context.Background(), http.MethodPost, "/v1/operator/machines/"+old.id+"/retire", nil)
 		if err != nil {
 			return err
 		}
-		req, err := http.NewRequest(http.MethodPost, url, nil)
+		compact, err := proof.SignLauncher(old.key, old.id, http.MethodPost, htu, time.Now())
 		if err != nil {
-			return b.URL.Error(err)
+			return err
 		}
 		req.Header.Set("Proof", compact)
 		return b.do(req, []int{http.StatusNoContent}, nil)
@@ -1087,8 +1130,12 @@ func (s *retrySchedule) after(err error, nextRefresh func() time.Duration) time.
 // keep a token the broker may have rotated away, so the presented login is kept and the refresh
 // retried. The caller holds credMu.
 func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *MachineFile, refusal string, err error) {
-	tok, err := redact.OAuth2(b.oauthConfig().TokenSource(b.tokenContext(ctx, cred.key),
-		&oauth2.Token{RefreshToken: cred.refreshToken, Expiry: time.Unix(1, 0)}).Token())
+	cfg, err := b.oauthConfig()
+	var tok *oauth2.Token
+	if err == nil {
+		tok, err = redact.OAuth2(cfg.TokenSource(b.tokenContext(ctx, cred.key),
+			&oauth2.Token{RefreshToken: cred.refreshToken, Expiry: time.Unix(1, 0)}).Token())
+	}
 	if err != nil {
 		err = b.URL.Error(err)
 		var re *oauth2.RetrieveError
@@ -1582,11 +1629,6 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 func (b *Broker) enrollUnder(ctx context.Context, authority *cipherclient.Authority, cred *machineCredential,
 	kind, runtimeID, thumbprint string, sessionID *string, projects []string,
 ) (string, time.Time, error) {
-	url := b.URL.Raw() + "/v1/enrollments"
-	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodPost, url, time.Now())
-	if err != nil {
-		return "", time.Time{}, err
-	}
 	var operator *string
 	if authority.Operator != "" {
 		operator = &authority.Operator
@@ -1596,9 +1638,13 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *cipherclient.Author
 		return "", time.Time{}, err
 	}
 	ctx, reach := traceReach(ctx)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, htu, err := b.request(ctx, http.MethodPost, "/v1/enrollments", bytes.NewReader(body))
 	if err != nil {
-		return "", time.Time{}, b.URL.Error(err)
+		return "", time.Time{}, err
+	}
+	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodPost, htu, time.Now())
+	if err != nil {
+		return "", time.Time{}, err
 	}
 	req.Header.Set("Proof", compact)
 	req.Header.Set("Content-Type", "application/json")
@@ -1646,14 +1692,13 @@ func (b *Broker) Renew(ctx context.Context, s *Session) (time.Time, identity, er
 // that back would tell it nothing it does not have.
 func (b *Broker) renewIdentity(ctx context.Context, cur identity) (time.Time, error) {
 	id := cur.EnrollmentID
-	url := b.URL.Raw() + "/v1/enrollments/" + id + "/renew"
-	compact, err := proof.Sign(cur.Key, id, http.MethodPost, url, time.Now())
+	req, htu, err := b.request(ctx, http.MethodPost, "/v1/enrollments/"+id+"/renew", nil)
 	if err != nil {
 		return time.Time{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	compact, err := proof.Sign(cur.Key, id, http.MethodPost, htu, time.Now())
 	if err != nil {
-		return time.Time{}, b.URL.Error(err)
+		return time.Time{}, err
 	}
 	req.Header.Set("Proof", compact)
 	var out leaseReply
@@ -1694,15 +1739,14 @@ func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 // settled as known or unknown (requestReach.settle) before anything else reads it, so Revoke's
 // retry after a 403, a known refusal, never follows an unknown outcome.
 func (b *Broker) revokeUnder(ctx context.Context, authority *cipherclient.Authority, cred *machineCredential, enrollmentID string) error {
-	url := b.URL.Raw() + "/v1/enrollments/" + enrollmentID
-	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodDelete, url, time.Now())
+	ctx, reach := traceReach(ctx)
+	req, htu, err := b.request(ctx, http.MethodDelete, "/v1/enrollments/"+enrollmentID, nil)
 	if err != nil {
 		return err
 	}
-	ctx, reach := traceReach(ctx)
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodDelete, htu, time.Now())
 	if err != nil {
-		return b.URL.Error(err)
+		return err
 	}
 	req.Header.Set("Proof", compact)
 	if err := b.do(req, []int{http.StatusNoContent, http.StatusNotFound}, nil); err != nil {
@@ -1712,7 +1756,7 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *cipherclient.Author
 			// gave, which for `unenroll --enrollment` is typed and was never accepted by the
 			// broker: a credential pasted in its place would print. The route names the call
 			// without it, and no Error, Cause or Class of the failure names the URL again.
-			err = b.URL.Named(err, http.MethodDelete+" "+b.URL.String()+"/v1/enrollments/(the enrollment id, not printed)")
+			err = b.URL.Named(err, http.MethodDelete+" "+b.URL.Route("/v1/enrollments/(the enrollment id, not printed)"))
 		}
 		err = reach.settle(err)
 		if cred == nil {
