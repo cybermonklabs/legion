@@ -738,15 +738,20 @@ A file a process writes and then runs (a script, a helper git runs, a fake comma
 `PATH`) can fail to run with `ETXTBSY`: a fork of the process holds the write descriptor until its
 exec. Code a deployment runs writes such a file with `programfile.Write`
 (`packages/envoy/programfile`), which holds `syscall.ForkLock` while the file is open, so no fork
-falls inside the write, and a test writes one with `testexec.WriteFile`, which calls it. Each
-module's `internal/textcheck` holds its files to this with `testexec.RequireGuarded`, which fails
-on a directory with no `go.mod` or no test file; a write in a form the guard does not see still
-needs `programfile.Write`, or `testexec.WriteFile` in a test, by hand. In a package whose tests run
-one at a time only the running test can fork, so `os.WriteFile` is safe in its test files, and a
-file a command such as `cp` writes needs nothing. A test of a place that writes such a file runs it
-with `testexec.RunsBeside`. The package docs say the rest: `programfile.Write` the writer's
-contract, `testexec.Unguarded` the forms the guard names and misses and what it leaves out, and
-`testexec.RunsBeside` when such a test skips.
+falls inside the write, and a test writes one with `testexec.WriteFile`, which calls it. A
+package whose tests call `Parallel` writes such a file with it in its test files, a test-support
+package (a name that begins or ends with `test`) in every file, and any test that starts a command
+from another goroutine wherever it writes one, whether or not its package calls `Parallel`. Only a
+test that starts no command from another goroutine, in a package whose tests run one at a time,
+has no fork beside its write, so `os.WriteFile` is safe there; a file a command such as `cp`
+writes needs nothing. Each module's `internal/textcheck` holds its files to this with
+`testexec.RequireGuarded`, which fails on a directory with no `go.mod` or no test file. It does not
+read the test files of a package whose tests run one at a time, so a test there whose own
+goroutines start a command needs `testexec.WriteFile` by hand, as does a write in a form the guard
+does not see, and such a write in the code a deployment runs needs `programfile.Write`. A test of a
+place that writes such a file runs it with `testexec.RunsBeside`. The package docs say the rest:
+`programfile.Write` the writer's contract, `testexec.Unguarded` the forms the guard names and
+misses and what it leaves out, and `testexec.RunsBeside` when such a test skips.
 
 ## A Go test that opens a NATS client
 
