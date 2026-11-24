@@ -61,30 +61,31 @@ func decodeRecord(key string, record []byte, layout kvchunk.Layout) (storedRow, 
 // revision, into the row it stores, with the revision of the entry it was read from (kvchunk.Read,
 // which reads a record's chunks from the stream's leader and a manifest a rewrite replaced under
 // it again). A record this build cannot decode is ErrMalformedInterest, logged at WARN naming the
-// session, and carries a layout only when its chunks joined and its JSON did not decode, so the
-// write that replaces it deletes those chunks unless another session's row names them (ownLayout).
-// It carries none for a damaged chunked record (kvchunk.ErrDamaged), whose chunks were never
-// proved to be its own, and none for a record that is no row of sessionID (ErrInterestUnbound): a
-// record naming another session is that session's, a copy of its manifest names that session's
-// chunks, and this listener's cache, which ownLayout reads, can be behind that session's newest
-// generation. So the write that replaces either deletes none of the chunks it names, and the
-// store's collection takes those no record names once they are older than kvchunk.Grace.
-// nats.ErrKeyNotFound is a record deleted while it was read, and any other error a read that did
-// not answer.
+// session, at its revision and with no layout, whatever made it so, because nothing proves its
+// chunks are its own:
+//   - a damaged chunked record (kvchunk.ErrDamaged): its chunks did not join into what its manifest
+//     names, so they were never shown to be any record's;
+//   - a record that is no row of sessionID (ErrInterestUnbound): one naming another session is that
+//     session's, and a copy of its manifest under this key names that session's chunks;
+//   - a record whose chunks joined and whose JSON does not decode: any writer of the bucket can store
+//     a manifest naming another record's chunks, a prefix of them among them, which joins with its
+//     own length and SHA-256 into bytes that decode as nothing.
+//
+// The write that replaces such a record therefore deletes none of the chunks its manifest names,
+// and the store's collection takes those no record names once they are older than kvchunk.Grace
+// (collectInterestChunks). nats.ErrKeyNotFound is a record deleted while it was read, and any other
+// error a read that did not answer.
 func (r *Registry) decodeEntry(ctx context.Context, kv bus.KeyValue, sessionID string, value []byte, revision uint64) (storedRow, uint64, error) {
 	record, layout, revision, err := kvchunk.Read(ctx, kv, sessionID, value, revision)
 	if errors.Is(err, kvchunk.ErrDamaged) {
-		return storedRow{layout: layout}, revision, r.malformedRecord(sessionID, revision, err)
+		return storedRow{}, revision, r.malformedRecord(sessionID, revision, err)
 	}
 	if err != nil {
 		return storedRow{}, 0, err
 	}
 	stored, err := decodeRecord(sessionID, record, layout)
-	if errors.Is(err, ErrInterestUnbound) {
-		return storedRow{}, revision, r.malformedRecord(sessionID, revision, err)
-	}
 	if err != nil {
-		return storedRow{layout: layout}, revision, r.malformedRecord(sessionID, revision, err)
+		return storedRow{}, revision, r.malformedRecord(sessionID, revision, err)
 	}
 	return stored, revision, nil
 }
@@ -122,15 +123,14 @@ func (r *Registry) malformedRecordAs(msg, sessionID string, revision uint64, err
 // only over the very revision it read, so it cannot undo a write that landed after it.
 //
 // A record past one message is written as its chunks and then its manifest, the manifest with that
-// same compare-and-swap, and the chunks replaced named are deleted once it lands, unless another
-// session's row names them too (ownLayout): a manifest copied under this session's key names
-// another record's chunks, and an unsubscribe of this session lands over it (kvchunk.Write says
-// what else a write deletes and what it leaves to the reaper's collection). The manifest carries
-// row's view for an earlier build (ChunkedRecordView), so a listener of that build serves and
-// counts the session from it. A session id under the chunk keys' prefix is refused
-// (kvchunk.ReservedKey): no record stands there.
+// same compare-and-swap, and the chunks replaced named are deleted once it lands: replaced is the
+// layout of a row of this session, since a record that is no such row carries none (decodeEntry),
+// and a chunk is written once, under a generation no other write uses, so no other row names them
+// (kvchunk.Write says what else a write deletes and what it leaves to the reaper's collection).
+// The manifest carries row's view for an earlier build (ChunkedRecordView), so a listener of that
+// build serves and counts the session from it. A session id under the chunk keys' prefix is
+// refused (kvchunk.ReservedKey): no record stands there.
 func (r *Registry) putInterestAt(ctx context.Context, sessionID string, row Interest, record []byte, revision uint64, replaced kvchunk.Layout) (kvchunk.Written, uint64, error) {
-	replaced = r.ownLayout(sessionID, replaced)
 	kv, epoch := r.watcher.Handle()
 	view := func(room int) ([]byte, error) {
 		return ChunkedRecordView(room, row.Topics, func(topics []string) ([]byte, error) {

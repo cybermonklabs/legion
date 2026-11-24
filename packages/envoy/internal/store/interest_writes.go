@@ -17,13 +17,12 @@ import (
 
 // deleteInterest deletes sessionID's interest at the revision the bucket stream's leader reports
 // (bus.KeyValue.DeleteAtRead, whose read is never a copy's), each bucket call waiting no longer
-// than ctx (bus.Bounded), and then the chunks of the record it
-// deleted when that record is the one the cache holds, joined, for the session, and no other
-// session's row names them (ownLayout). A manifest the delete read but no read of this listener
-// joined names chunks never proved to be this record's, so they are left to the reaper's
-// collection, which takes only chunks no row names. A delete ctx abandoned may still land after
-// this answer, and that is safe: it deletes only the revision it read, so a write that landed
-// since is kept, and its chunks are left to the reaper's collection. A record the read found
+// than ctx (bus.Bounded), and then the chunks of the record it deleted when that record is the row
+// the cache holds, joined, for the session. A manifest the delete read but no read of this listener
+// joined into the session's row names chunks never proved to be this record's, so they are left to
+// the reaper's collection, which takes only chunks no row names. A delete ctx abandoned may still
+// land after this answer, and that is safe: it deletes only the revision it read, so a write that
+// landed since is kept, and its chunks are left to the reaper's collection. A record the read found
 // absent is left alone, delete and all, so a registration that stored the session's row between
 // that read and this delete keeps it; the cache is brought in line with the bucket either way
 // (reconcileDeleted).
@@ -45,30 +44,11 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	if deleted != nil {
 		revision = max(revision, deleted.Revision())
 		if layout, err := kvchunk.ReadLayout(deleted.Value()); err == nil && layout.Chunked() && layout.Generation == held.layout.Generation {
-			r.deleteChunks(ctx, kv, sessionID, r.ownLayout(sessionID, held.layout))
+			r.deleteChunks(ctx, kv, sessionID, held.layout)
 		}
 	}
 	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision, deleted != nil)
 	return nil
-}
-
-// ownLayout is layout when no row the cache holds for another session names its generation, and
-// the zero layout otherwise. A generation is new for each write, so only a manifest copied under
-// another key - which any writer of the bucket can store - shares one, and the chunks it names are
-// then not this record's alone: a write or a delete of this record leaves them to the reaper's
-// collection, which takes only chunks no row names. It reads every row only for a chunked layout.
-func (r *Registry) ownLayout(sessionID string, layout kvchunk.Layout) kvchunk.Layout {
-	if !layout.Chunked() {
-		return layout
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for key, row := range r.cache.All() {
-		if key != sessionID && row.layout.Generation == layout.Generation {
-			return kvchunk.Layout{}
-		}
-	}
-	return layout
 }
 
 // rowOf is whether a value is a row of sessionID (boundInterest), the test a read fenced on a
@@ -86,9 +66,9 @@ func rowOf(sessionID string) func(value []byte) bool {
 // deleteInterestAt deletes sessionID's interest record only while its latest revision is
 // revision, and reports whether the bucket took the delete: a bucket that refused it holds a row
 // stored since, which is no error here (JetStream's wrong last sequence, bus.IsCASConflict), and
-// that row stands. layout is the layout of the record read at revision, whose chunks a delete the
-// bucket took deletes after it, unless another session's row names them too (ownLayout,
-// deleteChunks). Each bucket call waits no longer than ctx (bus.Bounded). A delete ctx abandoned
+// that row stands. layout is the layout of the record read at revision, a row of this session
+// (decodeEntry gives no other record a layout), whose chunks a delete the bucket took deletes after
+// it (deleteChunks). Each bucket call waits no longer than ctx (bus.Bounded). A delete ctx abandoned
 // may still land after this answer, and that is safe: it deletes the one revision it names, so a
 // write that landed since is kept, and the chunks of the record it deleted are left to the
 // reaper's collection.
@@ -115,7 +95,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 	if err != nil {
 		return false, err
 	}
-	r.deleteChunks(ctx, kv, sessionID, r.ownLayout(sessionID, layout))
+	r.deleteChunks(ctx, kv, sessionID, layout)
 	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision, true)
 	return true, nil
 }

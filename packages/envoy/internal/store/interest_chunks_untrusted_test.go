@@ -324,80 +324,101 @@ func TestAWriteOverADamagedManifestDeletesNoChunkItNames(t *testing.T) {
 	requireTopics(t, "the owner's record", row, sortedTopics(topics))
 }
 
+// storeOwner stores item's record of topics through reg and returns the manifest the bucket holds
+// under the session's key and the layout it names, which must be chunked.
+func storeOwner(t *testing.T, reg *Registry, kv natsgo.KeyValue, item Interest, topics []string) ([]byte, kvchunk.Layout) {
+	t.Helper()
+	if _, err := reg.Upsert(item, topics); err != nil {
+		t.Fatalf("store %s's record: %v", item.SessionID, err)
+	}
+	head, err := kv.Get(item.SessionID)
+	if err != nil {
+		t.Fatalf("read %s's manifest: %v", item.SessionID, err)
+	}
+	layout, err := kvchunk.ReadLayout(head.Value())
+	if err != nil || !layout.Chunked() {
+		t.Fatalf("%s's key holds %.60q (%v), want a manifest", item.SessionID, head.Value(), err)
+	}
+	return head.Value(), layout
+}
+
+// requireOwnerWhole fails t unless the bucket still holds every one of keys, the chunks of
+// ses_owner's live record, and a bucket read through reg answers that record whole with want.
+func requireOwnerWhole(t *testing.T, reg *Registry, kv natsgo.KeyValue, keys, want []string, when string) {
+	t.Helper()
+	live := kvchunktest.LiveChunkKeys(t, kv)
+	for _, key := range keys {
+		if !slices.Contains(live, key) {
+			t.Fatalf("%s the bucket no longer holds %s, a chunk of the owner's live record (it holds %d chunks)", when, key, len(live))
+		}
+	}
+	row, _, err := reg.RefreshAt(t.Context(), "ses_owner")
+	if err != nil {
+		t.Fatalf("%s a bucket read of the owner answers %v, want its record whole", when, err)
+	}
+	requireTopics(t, "the owner's record "+when, row, want)
+}
+
+// firstChunksManifest is a manifest naming only the first chunks of layout, all of them but the
+// last, with their own length and SHA-256: one any writer of the bucket can store, which passes
+// every check a read makes (kvchunk.ReadLayout, and join's length and SHA-256 against the manifest's
+// own claims) and joins into a prefix of the record layout stores, bytes that decode as no record.
+func firstChunksManifest(t *testing.T, kv natsgo.KeyValue, layout kvchunk.Layout) []byte {
+	t.Helper()
+	if layout.Chunks < 2 {
+		t.Fatalf("the record is in %d chunks, want 2 or more so a manifest can name some of them", layout.Chunks)
+	}
+	var prefix []byte
+	for _, key := range layout.Keys()[:layout.Chunks-1] {
+		chunk, err := kv.Get(key)
+		if err != nil {
+			t.Fatalf("read chunk %s: %v", key, err)
+		}
+		prefix = append(prefix, chunk.Value()...)
+	}
+	sum := sha256.Sum256(prefix)
+	named, err := json.Marshal(kvchunk.Layout{Generation: layout.Generation, Chunks: layout.Chunks - 1, Bytes: len(prefix), SHA256: hex.EncodeToString(sum[:])})
+	if err != nil {
+		t.Fatalf("encode the manifest of the first chunks: %v", err)
+	}
+	return append(append([]byte(`{"chunked":`), named...), '}')
+}
+
+// copiedManifests are the manifests a writer of the bucket can store under another session's key
+// to name the owner's chunks, built from the owner's manifest head and its layout: an exact copy,
+// which joins into the owner's record, a record naming the owner (ErrInterestUnbound); one with a
+// forged SHA-256, which no read joins (kvchunk.ErrDamaged); and one naming only the owner's first
+// chunks, which joins into bytes that are no record (ErrMalformedInterest).
+func copiedManifests(t *testing.T, kv natsgo.KeyValue, head []byte, layout kvchunk.Layout) map[string][]byte {
+	t.Helper()
+	forged := layout
+	forged.SHA256 = strings.Repeat("0", 64)
+	encoded, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatalf("encode the forged manifest: %v", err)
+	}
+	return map[string][]byte{
+		"an exact copy":            head,
+		"a forged SHA-256":         append(append([]byte(`{"chunked":`), encoded...), '}'),
+		"the owner's first chunks": firstChunksManifest(t, kv, layout),
+	}
+}
+
 // A manifest copied or borrowed under another session's key names the owner's chunks, so neither
 // the write that replaces it, nor an unsubscribe of the copy's session, nor the deregistration that
-// deletes it deletes them: an exact copy, which the cache joins and keeps no row for, since the
-// record it joins names the owner's session (ErrInterestUnbound); one with a forged SHA-256, which
-// no read joins; and one naming only the owner's first chunks, with their own length and SHA-256,
-// which every read joins into bytes that are no record (ErrMalformedInterest, with that layout).
-// Each time the owner's record still reads whole and its chunks stay in the bucket. The write of
-// the copy's session lands under its own key (writeRowAt). Over the third manifest it replaces a
-// record whose chunks joined, so its layout names the owner's generation, and only ownLayout, which
-// finds the owner's row of that generation in the cache, keeps the write from deleting the owner's
-// first chunks. The control is the owner's own deregistration, which deletes them.
+// deletes it deletes them (copiedManifests names the three shapes). Each time the owner's record
+// still reads whole and its chunks stay in the bucket. None of the three is a row of the copy's
+// session, so decodeEntry answers each with no layout and the write over it deletes no chunk it
+// names. The control is the owner's own deregistration, which deletes them.
 func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	kv := rawInterests(t, conn)
 	topics := kvchunktest.Topics("owner", 400)
-	if _, err := reg.Upsert(Interest{SessionID: "ses_owner", MachineID: "m1"}, topics); err != nil {
-		t.Fatalf("store the owner's record: %v", err)
-	}
-	head, err := kv.Get("ses_owner")
-	if err != nil {
-		t.Fatalf("read the owner's manifest: %v", err)
-	}
-	chunks := kvchunktest.LiveChunkKeys(t, kv)
-	borrowed, err := kvchunk.ReadLayout(head.Value())
-	if err != nil {
-		t.Fatalf("read the owner's layout: %v", err)
-	}
-	borrowed.SHA256 = strings.Repeat("0", 64)
-	forged, err := json.Marshal(borrowed)
-	if err != nil {
-		t.Fatalf("encode the borrowed manifest: %v", err)
-	}
-	if borrowed.Chunks < 2 {
-		t.Fatalf("the owner's record is in %d chunks, want 2 or more so a manifest can name some of them", borrowed.Chunks)
-	}
-	// The owner's first chunks alone, joined with their own length and SHA-256: a manifest any writer
-	// of the bucket can store, which passes every check a read makes (ReadLayout, join) and joins into
-	// a prefix of the owner's JSON.
-	var prefix []byte
-	for _, key := range borrowed.Keys()[:borrowed.Chunks-1] {
-		chunk, err := kv.Get(key)
-		if err != nil {
-			t.Fatalf("read the owner's chunk %s: %v", key, err)
-		}
-		prefix = append(prefix, chunk.Value()...)
-	}
-	sum := sha256.Sum256(prefix)
-	first := kvchunk.Layout{Generation: borrowed.Generation, Chunks: borrowed.Chunks - 1, Bytes: len(prefix), SHA256: hex.EncodeToString(sum[:])}
-	named, err := json.Marshal(first)
-	if err != nil {
-		t.Fatalf("encode the manifest of the owner's first chunks: %v", err)
-	}
-	manifests := map[string][]byte{
-		"an exact copy":            head.Value(),
-		"a forged SHA-256":         append(append([]byte(`{"chunked":`), forged...), '}'),
-		"the owner's first chunks": append(append([]byte(`{"chunked":`), named...), '}'),
-	}
-	requireOwnerWhole := func(after string) {
-		t.Helper()
-		row, _, err := reg.RefreshAt(t.Context(), "ses_owner")
-		if err != nil {
-			t.Fatalf("after %s the owner's record reads %v, want it whole", after, err)
-		}
-		requireTopics(t, "the owner's record after "+after, row, sortedTopics(topics))
-		// The copy's own unsubscribe stores chunks of its own beside the owner's; the owner's stay.
-		live := kvchunktest.LiveChunkKeys(t, kv)
-		for _, key := range chunks {
-			if !slices.Contains(live, key) {
-				t.Fatalf("after %s the bucket no longer holds %s, a chunk of the owner's record (it holds %v)", after, key, live)
-			}
-		}
-	}
-	for what, manifest := range manifests {
+	head, layout := storeOwner(t, reg, kv, Interest{SessionID: "ses_owner", MachineID: "m1"}, topics)
+	chunks := layout.Keys()
+	want := sortedTopics(topics)
+	for what, manifest := range copiedManifests(t, kv, head, layout) {
 		for _, step := range []struct {
 			name string
 			do   func() error
@@ -428,7 +449,7 @@ func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 			if err := step.do(); err != nil {
 				t.Fatalf("%s: %v", step.name, err)
 			}
-			requireOwnerWhole(step.name)
+			requireOwnerWhole(t, reg, kv, chunks, want, "after "+step.name)
 		}
 	}
 	if _, err := reg.Remove(t.Context(), "ses_owner", nil, RoleReleaseAuthority{}); err != nil {
@@ -442,79 +463,88 @@ func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 	}
 }
 
-// A write over a copy of another session's manifest deletes none of the chunks the copy names, also
-// where this listener's cache is behind the owner's record. The copy joins into the owner's record,
-// which names the owner (ErrInterestUnbound), and the layout of a record that names another session
-// is never its key's own. Here the writer's watcher is stopped while a second listener rewrites the
-// owner's record to a new generation, so the writer's cache still holds the owner's older row and no
-// row of it names the generation the copy names (ownLayout finds none). The write took the copy's
-// joined layout as the one it replaced and, once its head landed, deleted the owner's live chunks,
-// after which every read of the owner answered a damaged record. The control is the owner's record
-// read whole, and every chunk its manifest names in the bucket, before the copy is written over.
+// A write over a manifest under another session's key that names the owner's chunks deletes none of
+// them, also where this listener's cache is behind the owner's record, which no read of the cache can
+// guard: the writer's watcher is stopped while a second listener rewrites the owner's record to a
+// new generation, so the writer's cache still holds the owner's older row and no row of it names the
+// generation the manifest names. An exact copy joins into the owner's record, which names the owner
+// (ErrInterestUnbound); a manifest naming only the owner's first chunks joins into bytes that are no
+// record (ErrMalformedInterest). Neither is a row of the copy's session, so decodeEntry answers both
+// with no layout, and no write over them, merging or planned, and no unsubscribe or deregistration
+// of the copy's session deletes a chunk they name. Each did once: the merging and the planned write
+// took the joined layout as the one they replaced and, once their head landed, deleted the owner's
+// live chunks, after which every read of the owner answered a damaged record. The control is the
+// owner's record read whole, and every chunk its manifest names in the bucket, before the manifest is
+// written over.
 func TestAWriteOverACopyOfANewerManifestThanTheCacheHoldsLeavesTheOwnerWhole(t *testing.T) {
-	conn := kvchunktest.SmallPayloadNATS(t)
-	writer := openRegistry(t, conn)
-	other := openRegistry(t, conn)
-	kv := rawInterests(t, conn)
-	first := kvchunktest.Topics("owner", 400)
-	if _, err := writer.Upsert(Interest{SessionID: "ses_owner", MachineID: "m1"}, first); err != nil {
-		t.Fatalf("store the owner's record: %v", err)
+	shapes := map[string]func(t *testing.T, kv natsgo.KeyValue, head []byte, layout kvchunk.Layout) []byte{
+		"an exact copy": func(_ *testing.T, _ natsgo.KeyValue, head []byte, _ kvchunk.Layout) []byte { return head },
+		"the owner's first chunks": func(t *testing.T, kv natsgo.KeyValue, _ []byte, layout kvchunk.Layout) []byte {
+			return firstChunksManifest(t, kv, layout)
+		},
 	}
-	cachedOwner := func() (storedRow, bool) {
-		writer.mu.RLock()
-		defer writer.mu.RUnlock()
-		return writer.cache.Get("ses_owner")
-	}
-	older, ok := cachedOwner()
-	if !ok || !older.layout.Chunked() {
-		t.Fatalf("the writer's cache holds %+v for the owner (%t), want a chunked row", older.layout, ok)
-	}
-	writer.watcher.Stop()
-	second := kvchunktest.Topics("rewritten", 400)
-	if _, err := other.Upsert(Interest{SessionID: "ses_owner", MachineID: "m2"}, second); err != nil {
-		t.Fatalf("rewrite the owner's record through the second listener: %v", err)
-	}
-	head, err := kv.Get("ses_owner")
-	if err != nil {
-		t.Fatalf("read the owner's manifest: %v", err)
-	}
-	newer, err := kvchunk.ReadLayout(head.Value())
-	if err != nil || !newer.Chunked() {
-		t.Fatalf("the owner's key holds %.60q (%v), want a manifest", head.Value(), err)
-	}
-	if lagging, _ := cachedOwner(); lagging.layout.Generation == newer.Generation {
-		t.Fatalf("the writer's cache already holds the owner's generation %s, so the case is not the lagging one", newer.Generation)
-	}
-	want := sortedTopics(first, second)
-	requireOwnerWhole := func(when string) {
-		t.Helper()
-		live := kvchunktest.LiveChunkKeys(t, kv)
-		for _, key := range newer.Keys() {
-			if !slices.Contains(live, key) {
-				t.Fatalf("%s the bucket no longer holds %s, a chunk of the owner's live record (it holds %d chunks)", when, key, len(live))
+	copyRow := Interest{SessionID: "ses_copy", MachineID: "m1"}
+	copyTopics := []string{"notifications.team.copy"}
+	paths := map[string]func(t *testing.T, writer *Registry) error{
+		"upsert": func(_ *testing.T, writer *Registry) error {
+			_, err := writer.Upsert(copyRow, copyTopics)
+			return err
+		},
+		"planned": func(t *testing.T, writer *Registry) error {
+			plan, err := writer.PlanInterest(t.Context(), copyRow.SessionID, copyTopics)
+			if err != nil {
+				return err
 			}
+			_, err = writer.UpsertPlanned(t.Context(), copyRow, plan)
+			return err
+		},
+		"unsubscribe": func(t *testing.T, writer *Registry) error {
+			_, err := writer.Remove(t.Context(), copyRow.SessionID, copyTopics, RoleReleaseAuthority{})
+			return err
+		},
+		"deregistration": func(t *testing.T, writer *Registry) error {
+			_, err := writer.Remove(t.Context(), copyRow.SessionID, nil, RoleReleaseAuthority{})
+			return err
+		},
+	}
+	for shape, manifestOf := range shapes {
+		for path, do := range paths {
+			t.Run(shape+"/"+path, func(t *testing.T) {
+				conn := kvchunktest.SmallPayloadNATS(t)
+				writer := openRegistry(t, conn)
+				other := openRegistry(t, conn)
+				kv := rawInterests(t, conn)
+				first := kvchunktest.Topics("owner", 400)
+				storeOwner(t, writer, kv, Interest{SessionID: "ses_owner", MachineID: "m1"}, first)
+				cachedOwner := func() (storedRow, bool) {
+					writer.mu.RLock()
+					defer writer.mu.RUnlock()
+					return writer.cache.Get("ses_owner")
+				}
+				older, ok := cachedOwner()
+				if !ok || !older.layout.Chunked() {
+					t.Fatalf("the writer's cache holds %+v for the owner (%t), want a chunked row", older.layout, ok)
+				}
+				writer.watcher.Stop()
+				second := kvchunktest.Topics("rewritten", 400)
+				head, newer := storeOwner(t, other, kv, Interest{SessionID: "ses_owner", MachineID: "m2"}, second)
+				if lagging, _ := cachedOwner(); lagging.layout.Generation == newer.Generation {
+					t.Fatalf("the writer's cache already holds the owner's generation %s, so the case is not the lagging one", newer.Generation)
+				}
+				want := sortedTopics(first, second)
+				requireOwnerWhole(t, other, kv, newer.Keys(), want, "before the "+path+" over "+shape)
+				if _, err := kv.Put(copyRow.SessionID, manifestOf(t, kv, head, newer)); err != nil {
+					t.Fatalf("store %s under %s: %v", shape, copyRow.SessionID, err)
+				}
+				if err := do(t, writer); err != nil {
+					t.Fatalf("the %s over %s: %v", path, shape, err)
+				}
+				requireOwnerWhole(t, other, kv, newer.Keys(), want, "after the "+path+" over "+shape)
+				t.Logf("the writer's cache held generation %s of the owner, the bucket %s; the %s over %s left all %d of the owner's chunks",
+					older.layout.Generation, newer.Generation, path, shape, len(newer.Keys()))
+			})
 		}
-		row, _, err := other.RefreshAt(t.Context(), "ses_owner")
-		if err != nil {
-			t.Fatalf("%s a bucket read of the owner answers %v, want its record whole", when, err)
-		}
-		requireTopics(t, "the owner's record "+when, row, want)
 	}
-	requireOwnerWhole("before the write over the copy")
-
-	if _, err := kv.Put("ses_copy", head.Value()); err != nil {
-		t.Fatalf("copy the owner's manifest under ses_copy: %v", err)
-	}
-	row, err := writer.Upsert(Interest{SessionID: "ses_copy", MachineID: "m1"}, []string{"notifications.team.copy"})
-	if err != nil {
-		t.Fatalf("the write over the copy: %v", err)
-	}
-	if row.SessionID != "ses_copy" || !slices.Equal(row.Topics, []string{"notifications.team.copy"}) {
-		t.Fatalf("the write over the copy stored %+v, want ses_copy's own row holding its one topic", row)
-	}
-	requireOwnerWhole("after the write over the copy")
-	t.Logf("the writer's cache held generation %s of the owner, the bucket %s; the write over the copy left all %d of the owner's chunks",
-		older.layout.Generation, newer.Generation, len(newer.Keys()))
 }
 
 // A delete that reads nothing - its leader read made just before the record's registration landed
