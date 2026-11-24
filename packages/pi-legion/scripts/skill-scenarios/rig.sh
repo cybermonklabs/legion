@@ -868,16 +868,17 @@ given_services() {
 # percent-decoded as libpq decodes it (`%73slpassword=` is `sslpassword=`), the other parameters
 # stay in their order, and a query that keeps none prints no `?`. For a URL pg-url.sh refuses,
 # pg-url.sh names the fault on standard error, and safe_url prints a fixed placeholder, never the
-# URL. Any other URL, the NATS one, is read as Go's net/url reads it, which nats.go parses a server
-# URL with: the password runs to the last `@` before the path, the query or the fragment, so a raw
-# `@` in it goes too.
+# URL. Any other URL, the NATS one, loses its whole user info, as bus.NATSURLWithoutUserinfo takes
+# it out: nats.go reads a user name with no password as a token, so the user name is the credential
+# too. It is read as Go's net/url reads it, which nats.go parses a server URL with: the user info
+# runs to the last `@` before the path, the query or the fragment, so a raw `@` in it goes too.
 safe_url() {
   local url scheme rest user='' kept='' param key
   local -a params=()
   case $1 in
   postgres://* | postgresql://*) ;;
   *)
-    printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^/?#]*@,\1@,'
+    printf '%s\n' "$1" | sed -E 's,^([a-z]+://)[^/?#]*@,\1,'
     return
     ;;
   esac

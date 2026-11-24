@@ -671,9 +671,37 @@ describe("safe_url", () => {
         "postgres://u@127.0.0.1:5433/d?sslmode=disable&application_name=x\n" +
         "postgresql://u@127.0.0.1:5433/d\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
-        "nats://u@127.0.0.1:4222\n" +
+        "nats://127.0.0.1:4222\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
       stderr: "-: refused a Postgres URL: a host holds a raw @ (the URL is not printed)\n",
+    });
+  });
+
+  // Catches: a NATS URL whose user name safe_url keeps. nats.go reads a user name with no password
+  // as a token (bus.NATSURLWithoutUserinfo), so the whole user info is the credential, as it is
+  // for a user name and a password: safe_url prints neither part of either.
+  test("safe_url drops the whole user info of a NATS URL, a token included", () => {
+    const token = "tokA1b2C3d4E5f6";
+    const withUser = (user: string, password = "") => {
+      const url = new URL("nats://127.0.0.1:4222");
+      url.username = user;
+      url.password = password;
+      return url.href;
+    };
+    const { code, stdout, stderr } = bash(
+      `. ${JSON.stringify(pgUrl)}\n${fn("safe_url")}\nfor url; do safe_url "$url"; done`,
+      [withUser(token), withUser("user", token)]
+    );
+    expect({
+      code,
+      stdout,
+      stderr,
+      leaked: stdout.includes(token) || stdout.includes("user"),
+    }).toEqual({
+      code: 0,
+      stdout: "nats://127.0.0.1:4222\nnats://127.0.0.1:4222\n",
+      stderr: "",
+      leaked: false,
     });
   });
 });
@@ -862,12 +890,12 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
   // The batch hands fixturebuckets SKILL_SCENARIOS_NATS_URL, which can carry one: the failure
   // names the server as safe_url prints it, and fixturebuckets.log holds what fixturebuckets
   // printed, which names no user info (fixturebuckets/main_test.go).
-  test("a failed provisioning of a given NATS names it without its password", () => {
+  test("a failed provisioning of a given NATS names it without its user info", () => {
     const { code, stdout, stderr, log, services } = provision(withPassword("127.0.0.1:4222"));
     expect({ code, stdout, stderr, log }).toEqual({
       code: 1,
       stdout: "",
-      stderr: `skill-scenarios: fixturebuckets could not provision nats://user@127.0.0.1:4222 with the buckets a listener copies; see ${services}/logs/fixturebuckets.log\n`,
+      stderr: `skill-scenarios: fixturebuckets could not provision nats://127.0.0.1:4222 with the buckets a listener copies; see ${services}/logs/fixturebuckets.log\n`,
       log: "fixturebuckets: nats: no servers available for connection\n",
     });
   });
