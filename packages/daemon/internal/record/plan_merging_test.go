@@ -121,3 +121,40 @@ func TestTasksThatMergeReadsALeftRowAsItStoodBeforeItsLeave(t *testing.T) {
 		t.Fatalf("OnlyTaskThatMerges of a child of one task parked at its review = %q, %v, want c", got, ok)
 	}
 }
+
+// A merge holds the work of each task its task needs, and of each task such a task needs, through
+// tasks whose work did not merge: a need whose work merged ends the walk there, since its work is
+// on the default branch already. Of a, done at its last step, and m, done at its merge: b, which
+// needs a, holds a; d, which needs m and a, holds a alone; x, which needs y, done at its last step
+// and needing a, holds a and y, in id order. A task that needs none holds none, and so does a task
+// the plan does not hold.
+//
+// The fault it catches is a merge that leaves open the pull request of a task whose work it holds,
+// or closes one whose work another merge put on the default branch (its controls: the needs read
+// one level deep, under which x holds y alone; and a merged need walked as any other, under which d
+// holds a and m).
+func TestTheTasksThatAMergeHolds(t *testing.T) {
+	last, merge := TaskPlace{Kind: PlaceStep, Position: 1}, TaskPlace{Kind: PlaceMerge}
+	stored := StoredPlan{Tasks: []PlanTask{
+		{Task: "a", State: TaskDone, Place: last},
+		{Task: "b", Needs: []string{"a"}, State: TaskRunning, Place: merge},
+		{Task: "d", Needs: []string{"m", "a"}, State: TaskRunning, Place: merge},
+		{Task: "m", State: TaskDone, Place: merge},
+		{Task: "x", Needs: []string{"y"}, State: TaskRunning, Place: merge},
+		{Task: "y", Needs: []string{"a"}, State: TaskDone, Place: last},
+	}}
+	for _, tc := range []struct {
+		task string
+		want []string
+	}{
+		{"b", []string{"a"}},
+		{"d", []string{"a"}},
+		{"x", []string{"a", "y"}},
+		{"a", nil},
+		{"z", nil},
+	} {
+		if got := stored.HeldBy(tc.task); !slices.Equal(got, tc.want) {
+			t.Errorf("HeldBy(%s) = %q, want %q", tc.task, got, tc.want)
+		}
+	}
+}

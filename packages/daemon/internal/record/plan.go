@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -486,6 +487,33 @@ func (t PlanTask) workMerged() bool {
 	return t.State == TaskDone && t.Place == TaskPlace{Kind: PlaceMerge}
 }
 
+// HeldBy is the id of each task whose work the merge of task of p holds, in id order: each task
+// that task needs, and each task that such a task needs, through tasks whose work did not merge
+// (WorkMerged). A need whose work merged ends the walk there, since its work, and all the work it
+// holds, is on the default branch already. It is the one statement of which pull requests a merge
+// closes (the workflow's closeHeldPullRequests). None for a task that needs none, and for a task p
+// does not hold.
+func (p StoredPlan) HeldBy(task string) []string {
+	row, ok := p.TaskOf(task)
+	if !ok {
+		return nil
+	}
+	held := map[string]bool{}
+	walk := slices.Clone(row.Needs)
+	for len(walk) > 0 {
+		id := walk[len(walk)-1]
+		walk = walk[:len(walk)-1]
+		if held[id] || p.WorkMerged(id) {
+			continue
+		}
+		held[id] = true
+		if need, ok := p.TaskOf(id); ok {
+			walk = append(walk, need.Needs...)
+		}
+	}
+	return slices.Sorted(maps.Keys(held))
+}
+
 // TasksThatMerge is the ids of the tasks of p that have a merge, done or to come, in id order: each
 // task that the rule of the plan merges over every task of p, a left task as its row stood before
 // its leave, and each task whose work merged (WorkMerged). A running generation holds no left task,
@@ -574,8 +602,8 @@ func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
 
 // HoldsBranch says whether a pull request on branch is one of the issue keyed issueKey, whose plan
 // at its generation p is (nil, or no tasks, for an issue with no plan rows there): the one rule by
-// which the workflow records a pull request (its issueForBranch), and by which the merge of the
-// pull request of the task that merges closes the others (closeOtherTaskPullRequests). It is
+// which the workflow records a pull request (its issueForBranch), and by which a merge closes the
+// pull requests whose work it holds (closeHeldPullRequests). It is
 // where a task of the plan holds branch (TasksOfBranch), and the issue's own branch
 // (claim.IssueBranch) where the plan holds no task, as an issue that ran before plans did. A pull
 // request on any other branch of an issue's shape (claim.BranchIssue) is none of the issue's: a

@@ -25,8 +25,8 @@ var checkTaskWakes = []struct {
 		"woken by the wake named at the last look — production runs yesterday's build; the release train runs at 09:00."},
 	{"the retry of a look nobody reported", wakeNamed, "the retry of a look nobody reported: look bound",
 		"woken by the wake named at the last look — the retry of a look nobody reported: look bound."},
-	{"the bound", wakeBound, boundText(14*24*time.Hour) + " since the issue closed",
-		"woken by the bound: 14 days since the issue closed."},
+	{"the bound", wakeBound, boundText(14*24*time.Hour) + " since the check opened",
+		"woken by the bound: 14 days since the check opened."},
 }
 
 // checkTaskFor is the task of a look woken by cause with detail, last marking the bound's look.
@@ -100,7 +100,7 @@ func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
 			t.Errorf("the task of a look that is not the last = %q, want it to say %q", task, want)
 		}
 	}
-	last := checkTaskFor(wakeBound, boundText(14*24*time.Hour)+" since the issue closed", true)
+	last := checkTaskFor(wakeBound, boundText(14*24*time.Hour)+" since the check opened", true)
 	if strings.Contains(last, asks) {
 		t.Errorf("the last look's task asks for a wake: %q", last)
 	}

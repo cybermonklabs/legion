@@ -453,7 +453,7 @@ func TestADoneChildSetDoneAgainKeepsItsChecks(t *testing.T) {
 }
 
 // The check's bound starts its last look, told that it is the last and the check's own bound,
-// counted from the issue's close; a pending report of the last look closes the check as not run,
+// counted from the check's open; a pending report of the last look closes the check as not run,
 // and so does its silence. A look open at the bound defers the bound by the look bound, and a bound
 // row that comes due before the check's bound changes nothing and queues no row, since the
 // check's own row comes at its bound.
@@ -484,12 +484,12 @@ func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.
 			rig.clock.now = rig.clock.now.Add(CheckLookBound)
 			rig.apply("bound", intake.CheckBound{Issue: "LEGION-209"})
 			check = productionCheck(t, rig.pool, "LEGION-209")
-			if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || check.LastWakeDetail != "2 days since the issue closed" {
+			if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || !strings.HasPrefix(check.LastWakeDetail, "2 days ") {
 				t.Fatalf("the check at its bound = %+v, want its last look 2 open, woken by the bound", check)
 			}
 			starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
 			if len(starts) != 2 || starts[1].CheckLook != 2 || !strings.Contains(starts[1].Task, "This is the last look: no look follows.") ||
-				!strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") || !strings.Contains(starts[1].Task, "did not run") {
+				!strings.Contains(starts[1].Task, "woken by the bound: 2 days ") || !strings.Contains(starts[1].Task, "did not run") {
 				t.Fatalf("start rows = %+v, want the last look's task saying so", starts)
 			}
 			rig.apply("end", tc.end)
@@ -513,9 +513,8 @@ func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.
 
 // The bound's look is told the check's own bound (BoundAt less OpenedAt), never the project's
 // bound of the daemon that reaches it: a check opened under a 2-day bound whose daemon is then
-// rebuilt with 3 days starts its last look at the bound it opened with, told 2 days since the
-// issue closed. Every other rig reaches the bound under the bound it opened with, where the two
-// read the same.
+// rebuilt with 3 days starts its last look at the bound it opened with, told 2 days. Every other
+// rig reaches the bound under the bound it opened with, where the two read the same.
 func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
 	rig := childCheckRig(t)
 	rig.apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pending", Summary: "not deployed yet"})
@@ -525,11 +524,11 @@ func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
 	rig.clock.now = checkOpened.Add(checkBound)
 	applyFacts(t, rig.pool, rebuilt)("bound", intake.CheckBound{Issue: "LEGION-209"})
 	check := productionCheck(t, rig.pool, "LEGION-209")
-	if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || check.LastWakeDetail != "2 days since the issue closed" {
+	if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || !strings.HasPrefix(check.LastWakeDetail, "2 days ") {
 		t.Fatalf("the check at its bound under a rebuilt 3-day bound = %+v, want its last look 2 open, woken by its own 2-day bound", check)
 	}
 	starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
-	if len(starts) != 2 || !strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") {
+	if len(starts) != 2 || !strings.Contains(starts[1].Task, "woken by the bound: 2 days ") {
 		t.Fatalf("start rows = %+v, want the last look's task naming the check's own 2-day bound", starts)
 	}
 }

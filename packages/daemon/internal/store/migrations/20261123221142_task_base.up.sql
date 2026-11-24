@@ -20,11 +20,23 @@
 -- did with the column standing. The way back drops the column and the version row, so the
 -- roll-forward's Migrate applies this file again and writes each running task's base again.
 --
+-- Nor does that release decode the notice kind pull-request-close-refused, which this release adds:
+-- the notice, outbox kind 'notice', that tells the issue's architect the pull requests of tasks
+-- whose close GitHub refused as it would refuse it again, so each stays open. It decodes an outbox
+-- row strictly and refuses a notice kind it does not know (record.DecodeOutboxPayload, "unknown
+-- notice kind"), so such a row left queued fails on every attempt and never finishes, and while its
+-- backoff holds it is one of the rows record.Store.WaitingNotices returns, so GET /legion/v1/state
+-- answers an error for the whole project, as 20261120042902_claim_agent_resume_generation.up.sql
+-- says of the kind it adds. The way back deletes each such notice this release queued and had not
+-- sent when the daemon stopped; a sent notice leaves no row. What the delete costs is those
+-- tellings: the architect is not told of a close GitHub refused before the daemon stopped.
+--
 -- There is no down file. This directory keeps none, so the way back is the one transaction that
 -- closes this header, its last paragraph (migrations.WayBack), run with the daemon stopped and
 -- before the earlier image is pinned, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1.
 --
 -- begin;
+-- delete from outbox where kind = 'notice' and payload->>'kind' = 'pull-request-close-refused';
 -- alter table plan_tasks drop column if exists base;
 -- delete from schema_version where version = 20261123221142;
 -- commit;

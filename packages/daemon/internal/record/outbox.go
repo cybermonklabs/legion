@@ -2834,6 +2834,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // again on its backoff, and the reason names the task, the need and the branch GitHub lacks. No
 // earlier release decodes it, so the way back of migration 20261121165047 deletes its unsent rows.
 //
+// `pull-request-close-refused` is the pull requests of tasks a row that closes them could not
+// close, told to the issue's architect once, as the row ends (the daemon's closeTaskPullRequests,
+// finishRefused): GitHub refused each close as it would refuse it again, so each stays open and
+// Legion will not try again. The reason names each pull request, the comment Legion was writing
+// and GitHub's answer to each. No earlier release decodes it, so the way back of migration
+// 20261123221142 deletes its unsent rows.
+//
 // `parts-done`, `report-refused` and `merge-returned` are for the sub-owner of a task, the agent
 // that writes the task's parts. Nothing writes them yet: this release decodes them, and the work
 // of a sub-owner that will write them comes later. `parts-done` will say that each part of the
@@ -2851,7 +2858,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
-	"task-join-failed", "parts-done", "report-refused", "merge-returned",
+	"task-join-failed", "pull-request-close-refused", "parts-done", "report-refused", "merge-returned",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left

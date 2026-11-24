@@ -301,9 +301,13 @@ func (r *ownerStepsRig) runStep(step string, answer stepAnswer, next phase.Phase
 }
 
 // launchesOfRole is every launch of role's claim on the walk's issue the daemon running now has
-// made, in order.
+// made, in order (launchesOfClaim).
 func (r *ownerStepsRig) launchesOfRole(role claim.Role) []string {
-	token := r.token(role)
+	return r.launchesOfClaim(r.token(role))
+}
+
+// launchesOfClaim is every launch of token's claim the daemon running now has made, in order.
+func (r *ownerStepsRig) launchesOfClaim(token claim.Token) []string {
 	var methods []string
 	for _, call := range r.rt.Calls() {
 		if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {

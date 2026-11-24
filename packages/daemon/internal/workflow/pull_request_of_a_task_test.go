@@ -38,12 +38,14 @@ func openedOn(number int, branch string, at time.Time, reopened bool) intake.Pul
 // legion/LEGION-208, while no task was given that branch, is not recorded either: the task b was
 // stopped before its first step, so it was given no branch, and a took legion/LEGION-208.a. And a
 // row on a branch no task holds, which the record holds all the same, is not closed by the merge
-// of the task that merges: only the other task's pull request is.
+// of the task that merges, at its merge, which ends the issue: only the other task's pull request
+// is.
 //
 // The faults: the pull request is recorded as the issue's, so a fact of it moves the issue, and the
-// merge closes it as the implement App with `Merged in #2.`. The controls: the recorder without
-// the rule (each pull request is recorded); a task stopped before its first step read as holding
-// the issue's branch (b's pull request); the merge's close without the rule (#9 is closed).
+// merge closes it as the implement App with `Issue LEGION-208 is done; its last merge is #2.`. The
+// controls: the recorder without the rule (each pull request is recorded); a task stopped before
+// its first step read as holding the issue's branch (b's pull request); the merge's close without
+// the rule (#9 is closed).
 func TestAPullRequestOnABranchNoTaskWasGivenIsNotTheIssues(t *testing.T) {
 	at := time.Date(2026, 11, 23, 9, 0, 0, 0, time.UTC)
 
@@ -86,7 +88,7 @@ func TestAPullRequestOnABranchNoTaskWasGivenIsNotTheIssues(t *testing.T) {
 		seedTasks(t, pool, root.Key, root.Generation,
 			planTask{id: "design", steps: []string{"tester:design"}, agents: []claim.Agent{"test-design"}, state: record.TaskDone, place: atStep(1)},
 			planTask{id: "impl", steps: []string{"implementer:impl"}, agents: []claim.Agent{"impl-impl"}, needs: []string{"design"},
-				state: record.TaskRunning, place: atStep(1)})
+				state: record.TaskRunning, place: atMerge})
 		seedTaskBranch(t, pool, root.Key, "design", "legion/LEGION-208")
 		seedTaskBranch(t, pool, root.Key, "impl", "legion/LEGION-208.impl")
 		openPR(t, pool, root.Key, 1, "legion/LEGION-208")
@@ -97,7 +99,7 @@ func TestAPullRequestOnABranchNoTaskWasGivenIsNotTheIssues(t *testing.T) {
 
 		mustSpend(t, "the merge of #2", applyFacts(t, pool, engine)("merged-2",
 			intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 2, MergeSHA: "merge-2", HeadSHA: "head-legion/LEGION-208.impl"}))
-		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Numbers: []int{1}, Comment: "Merged in #2."}}
+		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Numbers: []int{1}, Comment: "Issue LEGION-208 is done; its last merge is #2."}}
 		if got := closesOf(t, pool, root.Key); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the closes of pull requests after the merge of #2 = %+v, want %+v: #9 is on a branch no task holds", got, want)
 		}

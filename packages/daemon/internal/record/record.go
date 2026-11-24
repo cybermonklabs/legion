@@ -2148,6 +2148,11 @@ type Store interface {
 	ProductionCheckOf(ctx context.Context, tx pgx.Tx, issue string, openedAt time.Time) (*ProductionCheck, error)
 	ProductionChecksOf(ctx context.Context, tx pgx.Tx, issue string) ([]ProductionCheck, error)
 	PutProductionCheck(ctx context.Context, tx pgx.Tx, check ProductionCheck) error
+	// CarryProductionChecks moves each open check of issue at generation from to generation to: a
+	// hand-over that carries its run carries the run of its open checks with it, so a check opened
+	// at a merge of that run is still a check of the run that holds the issue. A closed check keeps
+	// the generation it opened in.
+	CarryProductionChecks(ctx context.Context, tx pgx.Tx, issue string, from, to uint64) error
 	// OpenProductionChecks is every open check, oldest opened first, then by issue;
 	// OpenProductionChecksOfTree those of tree's issues, in the same order.
 	OpenProductionChecks(ctx context.Context, tx pgx.Tx) ([]ProductionCheck, error)

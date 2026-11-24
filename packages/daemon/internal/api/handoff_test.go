@@ -1272,10 +1272,9 @@ func TestACheckReportNamingAWakeWhereNoLookFollowsIsRefused(t *testing.T) {
 // taken.
 //
 // The implementer holds its look by the one path that reaches this refusal: a start row queued
-// before start rows carried the check instance, whose zero instance names no check
-// (record.ProductionCheck.NamedBy), so the look is not refused as a replaced check's and the
-// role is what catches it. Every look this daemon starts is the check's own role's and names
-// its instance (workflow's startLook).
+// before start rows carried the check instance, whose zero instance reads the issue's newest
+// check (record.Store.ProductionCheckOf), so the role is what catches it. Every look this daemon
+// starts is the check's own role's and names its instance (workflow's startLook).
 func TestACheckReportFromAnotherRoleIsRefusedAndTheChecksOwnRolesIsRecorded(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)

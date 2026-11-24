@@ -29,15 +29,16 @@ import (
 // every claim suspended with its session, for a later todo to resume; a child closed as done with
 // no merged pull request of its run (close_root, a human's done) is finished, so each of its claims
 // is closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
-// the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while
-// its parent keeps running in a pod of its own. A child closed as done with a merged pull request of
-// its run still owes the production check of each such merge, where the project opens one
-// (Engine.checkRole): five of its claims are closed, the checking role's is not, no IssueSuspend is
-// written, and each check opens in that role's live session; the check's close writes the
-// suspension (closeCheck). A project whose `production_check` is off checks nothing in production,
-// so its merged child close is like any other done: every claim is closed and the Sandbox deleted
-// with the pod and the disk it ran on. A leave at any other status opens no check: a park suspends
-// the issue's claims and its pod, which a look would need.
+// the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while its
+// parent keeps running in a pod of its own. A child closed as done with a production
+// check that stays open past the close — one of its checks open already, or the check of a merged
+// pull request of its run that this leave opens — keeps the claim of each such check's agent
+// (keptClaims): every other claim is closed, no IssueSuspend is written, and each check the leave
+// opens starts in its agent's live session; the check's own close retires its claim and writes the
+// suspension (closeCheck). A project whose `production_check` is off checks nothing in
+// production and opens no check, so its merged child's close is like any other done: every claim is
+// closed and the Sandbox deleted with the pod and the disk it ran on. A leave at any other status
+// opens no check: a park suspends the issue's claims and its pod, which a look would need.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session
 // it kept when a start of its role reaches it: the architect's and the planner's at its next first
 // phase start. Every claim above is one of Legion's own; the issue's Dispatch claim is the
@@ -120,12 +121,15 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return err
 	}
 	merged := slices.ContainsFunc(merges, func(pr record.PullRequest) bool { return pr.State == record.PullRequestMerged })
-	op, except := record.SuperviseOp("suspend"), claim.Role("")
+	op := record.SuperviseOp("suspend")
 	if status == "done" {
 		op = "issue_close"
 	}
-	if merged {
-		except = e.checkRole()
+	// The claims a close keeps are read before the leave opens its checks, which it does last, so
+	// the claim of each check it will open is computed here from the plan alone (checkClaim).
+	except, err := e.keptClaims(ctx, tx, issue, status, merges)
+	if err != nil {
+		return err
 	}
 	if err := e.everyClaim(ctx, tx, issue, op, fmt.Sprintf("%s is %s", issue.Key, status), except); err != nil {
 		return err
@@ -148,7 +152,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if root == nil {
 		return fmt.Errorf("suspend issue %s: tree root %s is not recorded", issue.Key, issue.Tree)
 	}
-	if except == "" {
+	if len(except) == 0 {
 		if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{
 			Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.Generation,
 		}); err != nil {
@@ -193,6 +197,50 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return err
 	}
 	return e.openCheckIfMerged(ctx, tx, issue, merges, lingers)
+}
+
+// keptClaims is the claim of each production check of issue that stays open past its leave at
+// status, which that leave's walk over every claim leaves out (everyClaim): at a close (status
+// done), the claim of each open check of the issue, and the claim of each check the leave will
+// open, one for each merged pull request of merges that no check of the issue checks (checksMerge),
+// as openCheck will write it (Generation the issue's, Task the pull request's, Role the project's
+// checking role). Each claim is checkClaim's, the claim each row of that check names, so the claim
+// kept here is the claim the check's own close retires. A leave at any other status keeps none: a
+// park suspends every claim and the pod. A project that checks nothing in production opens no check,
+// so it keeps no claim for one.
+func (e *Engine) keptClaims(ctx context.Context, tx pgx.Tx, issue record.Issue, status string, merges []record.PullRequest) ([]claim.Token, error) {
+	if status != "done" {
+		return nil, nil
+	}
+	checks, err := e.store.ProductionChecksOf(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	var kept []record.ProductionCheck
+	for _, check := range checks {
+		if check.Open() {
+			kept = append(kept, check)
+		}
+	}
+	if role := e.checkRole(); role != "" {
+		for _, pr := range merges {
+			if pr.State != record.PullRequestMerged || slices.ContainsFunc(checks, func(check record.ProductionCheck) bool { return e.checksMerge(check, pr) }) {
+				continue
+			}
+			kept = append(kept, record.ProductionCheck{Issue: issue.Key, Project: issue.Project, Generation: issue.Generation, Task: pr.Task, Role: role})
+		}
+	}
+	var tokens []claim.Token
+	for _, check := range kept {
+		token, err := e.checkClaim(ctx, tx, check)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(tokens, token) {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens, nil
 }
 
 // leaveByTasks is the one place where an issue whose tasks put it in done leaves the workflow:
@@ -534,7 +582,7 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		return err
 	}
 	for _, member := range members {
-		if err := e.everyClaim(ctx, tx, member, "suspend", fmt.Sprintf("the tree of %s lingers", root.Key), ""); err != nil {
+		if err := e.everyClaim(ctx, tx, member, "suspend", fmt.Sprintf("the tree of %s lingers", root.Key), nil); err != nil {
 			return err
 		}
 		if err := e.enqueue(ctx, tx, member.Key, record.IssueSuspend{
@@ -691,7 +739,7 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	// whose step's claim is none of those by the role alone, so a claim that comes up after this read
 	// gets its close when the row runs. The tree's cleanup waits for every claim these rows reach.
 	for _, member := range members {
-		targets, err := e.claimTargets(ctx, tx, member, "")
+		targets, err := e.claimTargets(ctx, tx, member, nil)
 		if err != nil {
 			return intake.Result{}, err
 		}

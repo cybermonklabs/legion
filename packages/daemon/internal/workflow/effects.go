@@ -415,11 +415,6 @@ func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
 	return row
 }
 
-// suspend stops role's worker on issue, for reason, which the suspended claim logs.
-func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, reason string) error {
-	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason})
-}
-
 // testerVerdictLabel labels the tester's verdict a started worker's task carries. The reviewer's
 // prompt names it as the tester's result rather than its own (prompts/go/reviewer.md), which a test
 // ties to it.

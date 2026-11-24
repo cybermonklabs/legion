@@ -1871,6 +1871,17 @@ func (s *Postgres) PutProductionCheck(ctx context.Context, tx pgx.Tx, check Prod
 	return nil
 }
 
+func (s *Postgres) CarryProductionChecks(ctx context.Context, tx pgx.Tx, issue string, from, to uint64) error {
+	if from > maxInt64 || to > maxInt64 {
+		return fmt.Errorf("carry the open production checks of %s from generation %d to %d: a generation does not fit a bigint", issue, from, to)
+	}
+	if _, err := tx.Exec(ctx, `update production_checks set generation = $3 where issue = $1 and generation = $2 and closed_at is null`,
+		issue, int64(from), int64(to)); err != nil {
+		return fmt.Errorf("carry the open production checks of %s from generation %d to %d: %w", issue, from, to, err)
+	}
+	return nil
+}
+
 func (s *Postgres) OpenProductionChecks(ctx context.Context, tx pgx.Tx) ([]ProductionCheck, error) {
 	return openProductionChecks(ctx, tx, "", "list the open production checks")
 }

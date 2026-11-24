@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -52,37 +53,152 @@ func OpenPullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.
 	}
 }
 
-// ClosePullRequest closes pull request number of repo, whose REST API github calls, with comment
-// written on it first (POST /repos/{owner}/{repo}/issues/{number}/comments, then PATCH
-// /repos/{owner}/{repo}/pulls/{number} with the state closed), and answers whether it closed it. A
-// pull request GitHub shows closed already, merged or not, is left as it is, with no comment, so a
-// close made again writes nothing. Every answer other than 2xx is an error naming the repository and
-// the pull request and wrapping GitHub's *githubrest.Answer.
+// Closed is what a close of a pull request (ClosePullRequest) found and made. Now is true where
+// this call closed it. By is the login GitHub names as its closer where it was closed already: the
+// implement App's login for a close Legion made, by this row's earlier try or by another row, and
+// another login for someone else's close. Merged is true where it was merged, which nothing
+// closes. Unread is why GitHub named no closer of a pull request closed already (ClosedByNull, or
+// GitHub's answer to the read, which it would answer again), and empty otherwise.
+type Closed struct {
+	Now    bool
+	By     string
+	Merged bool
+	Unread string
+}
+
+// ClosedByNull is Closed.Unread of a pull request closed already whose closed_by GitHub answers
+// as null: GitHub names no closer, and gives no cause.
+const ClosedByNull = "closed_by is null"
+
+// ClosePullRequest closes pull request number of repo, whose REST API github calls, and then
+// writes comment on it once, as login, the implement App's bot login, whose token github holds. A
+// retry of a row that closes pull requests runs it again from the top, so each step reads what an
+// earlier try made:
+//  1. The comment passes this repository's own private-name rules first (leakguard.Rules), since
+//     it is published on GitHub as a pull request's body is: a comment they match, and a rule pass
+//     that could not be made to run, are each an error, and nothing is sent.
+//  2. GET /pulls/{number}. A merged pull request is left as it is: no close and no comment.
+//  3. An open one is closed (PATCH /pulls/{number} with the state closed), then commented (step
+//     5). A close GitHub refuses sends no comment, so no comment says Legion closed a pull request
+//     that stays open.
+//  4. One closed already is read for who closed it (GET /issues/{number}, its closed_by, which the
+//     pull request object does not carry). Where it is login, Legion made the close, by an earlier
+//     try of this row or by another row, and it is commented (step 5): a second row can so write a
+//     second comment, each true. Where it is another login, someone else closed it, and it gets no
+//     close and no comment. Where GitHub names no closer (a closed_by of null, or an answer it
+//     would give again, RefusedForGood), it gets no comment on a guess, and the call answers why
+//     (Closed.Unread). Any other failure of the read is an error, and the row tries again.
+//  5. Its comments are read (GET /issues/{number}/comments, every page), and comment is written
+//     (POST /issues/{number}/comments) unless one of them is login's with that body, byte for
+//     byte: the row fixes the comment's text, so it needs no hidden marker.
 //
-// The comment is published on GitHub as a pull request's body is, so it passes this repository's
-// own private-name rules first (leakguard.Rules): a comment they match, and a rule pass that could
-// not be made to run, are each an error, and nothing is sent.
-func ClosePullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, comment string) (bool, error) {
-	failed := func(err error) error {
-		return fmt.Errorf("close pull request #%d on %s: %w", number, repo, err)
+// Every answer other than 2xx is an error naming the repository and the pull request and wrapping
+// GitHub's *githubrest.Answer. An error at step 5 answers the close that stands (Closed.Now or
+// Closed.By), so the caller can tell a pull request closed with no comment from one left open.
+func ClosePullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, comment, login string) (Closed, error) {
+	failed := func(closed Closed, err error) (Closed, error) {
+		return closed, fmt.Errorf("close pull request #%d on %s: %w", number, repo, err)
 	}
 	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.Record{Label: "the pull request's comment", Text: comment}); err != nil {
-		return false, failed(err)
+		return failed(Closed{}, err)
 	}
 	var pull githubrest.PullRequest
 	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", number), &pull); err != nil {
-		return false, failed(err)
+		return failed(Closed{}, err)
 	}
-	if pull.State != "open" {
-		return false, nil
+	var closed Closed
+	switch {
+	case pull.Merged || pull.MergedAt != nil:
+		return Closed{Merged: true}, nil
+	case pull.State == "open":
+		if err := github.Patch(ctx, fmt.Sprintf("/pulls/%d", number), map[string]string{"state": "closed"}, nil); err != nil {
+			return failed(Closed{}, err)
+		}
+		closed = Closed{Now: true}
+	default:
+		by, unread, err := closedBy(ctx, github, number)
+		if err != nil {
+			return failed(Closed{}, err)
+		}
+		if unread != "" || by != login {
+			return Closed{By: by, Unread: unread}, nil
+		}
+		closed = Closed{By: login}
 	}
-	if err := github.Post(ctx, fmt.Sprintf("/issues/%d/comments", number), map[string]string{"body": comment}, nil); err != nil {
-		return false, failed(err)
+	if err := commentOnce(ctx, github, number, comment, login); err != nil {
+		return failed(closed, err)
 	}
-	if err := github.Patch(ctx, fmt.Sprintf("/pulls/%d", number), map[string]string{"state": "closed"}, nil); err != nil {
-		return false, failed(err)
+	return closed, nil
+}
+
+// closedBy is the login GitHub names as the closer of issue or pull request number (GET
+// /issues/{number}, its closed_by), or why it names none (Closed.Unread): ClosedByNull for a
+// closed_by that is null or names no login, and GitHub's answer where it refuses the read as it
+// would refuse it again (RefusedForGood). Any other failure of the read is the error.
+func closedBy(ctx context.Context, github githubrest.Client, number int) (by, unread string, err error) {
+	var issue struct {
+		ClosedBy *struct {
+			Login string `json:"login"`
+		} `json:"closed_by"`
 	}
-	return true, nil
+	if err := github.Get(ctx, fmt.Sprintf("/issues/%d", number), &issue); err != nil {
+		var answer *githubrest.Answer
+		if errors.As(err, &answer) && RefusedForGood(err) {
+			return "", answer.Error(), nil
+		}
+		return "", "", err
+	}
+	if issue.ClosedBy == nil || issue.ClosedBy.Login == "" {
+		return "", ClosedByNull, nil
+	}
+	return issue.ClosedBy.Login, "", nil
+}
+
+// issueComment is a comment GitHub lists on an issue or a pull request: its body and its author.
+type issueComment struct {
+	Body string `json:"body"`
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+// commentOnce writes comment on pull request number as login unless it holds login's comment of
+// that body already.
+func commentOnce(ctx context.Context, github githubrest.Client, number int, comment, login string) error {
+	comments, err := githubrest.GetPages[issueComment](ctx, github, fmt.Sprintf("/issues/%d/comments", number))
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(comments, func(c issueComment) bool { return c.User.Login == login && c.Body == comment }) {
+		return nil
+	}
+	return github.Post(ctx, fmt.Sprintf("/issues/%d/comments", number), map[string]string{"body": comment}, nil)
+}
+
+// RefusedForGood says whether err, a failure of a step of a close of a pull request
+// (ClosePullRequest), is one a try again would meet again: the private-name rules' refusal of the
+// comment (*leakguard.Refusal), whose text the row fixes, and a GitHub answer
+// (*githubrest.Answer) of 403 that is no rate limit (the App lacks the permission, or the
+// repository is archived), 404 (no such pull request on the repository), 410 or 422 (GitHub refuses
+// the write as sent). Every other failure can pass and is tried again: a rate limit, any 5xx, a 401,
+// a 409, any other status, and an error that carries no answer (a network fault, a timeout, the
+// rules' own setup).
+func RefusedForGood(err error) bool {
+	var refusal *leakguard.Refusal
+	if errors.As(err, &refusal) {
+		return true
+	}
+	var answer *githubrest.Answer
+	if !errors.As(err, &answer) {
+		return false
+	}
+	switch answer.Status {
+	case http.StatusForbidden:
+		return !answer.RateLimited
+	case http.StatusNotFound, http.StatusGone, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 // SetBase sets the base of pull request number of repo, whose REST API github calls, to base

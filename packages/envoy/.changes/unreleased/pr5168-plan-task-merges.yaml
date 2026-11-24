@@ -1,0 +1,5 @@
+kind: Added
+body: "Dispatch's `plan_task` block takes the attribute `merges` (`merges=\"true\"` or `merges=\"false\"`) from block schema version 11: a task that names it merges its work by itself. The issue page labels the attribute."
+time: 2026-11-24T17:43:24.000000000Z
+custom:
+    Issue: pr5168

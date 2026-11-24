@@ -50,8 +50,8 @@ func actEnd(t *testing.T, pool *pgxpool.Pool, key, task, kind string) string {
 }
 
 // assertNoClose fails if key's outbox holds anything of a close of the issue: a status of done, an
-// issue_close or a suspension of a claim, a suspension of its pod, a linger's close, a child-closed
-// notice or a production check.
+// issue_close or a suspension of a claim, a suspension of its pod, a linger's close or a
+// child-closed notice.
 func assertNoClose(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	for _, write := range statusWrites(t, pool, key) {
@@ -73,21 +73,19 @@ func assertNoClose(t *testing.T, pool *pgxpool.Pool, key string) {
 	if containsNotice(noticeKinds(t, pool, key), "child-closed") {
 		t.Errorf("the notices of %s hold child-closed, want none: the issue goes on", key)
 	}
-	if check := productionCheck(t, pool, key); check != nil {
-		t.Errorf("the production check of %s = %+v, want none: this merge is not the issue's last", key, check)
-	}
 }
 
 // The merge of one task's pull request makes that task done, and the issue goes on while another
 // task runs: of a (merges), at its merge, and b (no needs), at its first step, the merge of a's pull
 // request leaves a done at its merge, b as it was, and the issue in implementing, with the end of
 // a's merge recorded passed. Nothing of a close is queued: no status done, no issue_close and no
-// suspension, no linger's close, no child-closed notice and no production check. The same holds in
-// a lingering tree, where no transition runs and the close writes its own rows.
+// suspension, no linger's close and no child-closed notice. The merge opens the production check
+// of its own merge, a's, as each merge does. The same holds in a lingering tree, where no
+// transition runs and the close writes its own rows.
 //
 // The fault it catches is the merge of a task that is not the last closing the issue (its control:
 // closeMerged with no read of lastToFinish, the revision before, whose close in a lingering tree
-// writes the status done, tells the architect above child-closed and opens the production check).
+// writes the status done and tells the architect above child-closed).
 func TestTheMergeOfOneTaskMakesItDoneAndTheIssueGoesOn(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -128,6 +126,7 @@ func TestTheMergeOfOneTaskMakesItDoneAndTheIssueGoesOn(t *testing.T) {
 				t.Errorf("the end of a's merge is %q, want passed", end)
 			}
 			assertNoClose(t, pool, key)
+			checksAre(t, pool, key, "merge-a")
 		})
 	}
 }

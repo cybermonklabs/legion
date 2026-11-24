@@ -772,9 +772,17 @@ func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
 // workerOf is role's claimant on issue, an issue of the tree of the walk's issue: the one already
 // registered, or the launch the daemon makes now, registered and ready under a session of its own.
 func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
+	r.t.Helper()
+	return r.claimantOf(issue, r.tokenOf(issue, role), role)
+}
+
+// claimantOf is the claimant of token, a claim of role on issue, as workerOf answers it: the one
+// already registered, or the launch the daemon makes now, registered and ready under a session of
+// its own. A claim whose agent is named for no role, a production check's fresh agent among them,
+// is reached by its token alone.
+func (r *stepRecordsRig) claimantOf(issue string, token claim.Token, role claim.Role) *stepClaimant {
 	t := r.t
 	t.Helper()
-	token := r.tokenOf(issue, role)
 	if c, ok := r.claims[token]; ok {
 		return c
 	}

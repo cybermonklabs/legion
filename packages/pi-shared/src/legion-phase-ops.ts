@@ -391,7 +391,7 @@ export function legionToolDescription(host: {
     "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
     "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
     "needs no handoff and no commit: it carries its verdict and summary alone. Its task's first line is `Production check of <KEY>`. " +
-    "Legion hands that task to the role the check records once the issue closes, after its last merge. " +
+    "Legion hands that task to the role the check records after each merge of a task. " +
     "A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
     "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
     "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +

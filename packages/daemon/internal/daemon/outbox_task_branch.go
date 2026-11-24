@@ -9,12 +9,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // branchClient is the client a write of one of issue's branches is made with, and the repository
@@ -197,14 +199,26 @@ func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, ta
 	return err
 }
 
-// closeTaskPullRequests closes each pull request the row names, of tasks of the row's issue (the
-// other tasks' at the merge, a removed task's at the version that removed it, an earlier run's at
+// closeTaskPullRequests closes each pull request the row names, of tasks of the row's issue (those
+// whose work a merge holds, a removed task's at the version that removed it, an earlier run's at
 // the first step of a run started again), as branchClient makes each write of a branch (the
-// implement App), within branchRowTimeout:
-// the row's comment is written on each, then it is closed (ghbranch.ClosePullRequest). A pull
-// request GitHub shows closed already is done, so a row that runs again, or one that a failure cut
-// short and that runs again on its backoff, closes only those still open. A row of a generation the
-// issue has left finishes without acting.
+// implement App), within branchRowTimeout: each is closed, then the row's comment is written on it
+// once, as the implement App's login (ghbranch.ClosePullRequest), which the outbox's token source
+// answers, as the boot requires of it (appauth.Logins). A row that runs again finds each close and
+// each comment an earlier try made. A row of a generation the issue has left finishes without
+// acting.
+//
+// It reads each answer as one of these (ghbranch.RefusedForGood decides which failure is for
+// good), and logs one line of each number:
+//   - closed now, closed by Legion before, or merged: the number is done;
+//   - closed by someone else, or closed with no closer GitHub names: the number is done, with no
+//     comment, and the line names that login (INFO), the null (INFO) or GitHub's answer (WARN);
+//   - closed, and its comment refused for good: the pull request is closed, so the number is done,
+//     and a WARN line names GitHub's answer;
+//   - its close refused for good, so it stays open: the row goes on to the rest, and then answers
+//     *pullRequestsCloseRefused, naming each such number, which ends the row and tells the issue's
+//     architect once (permanentRefusal, finishRefused);
+//   - any other failure can pass: the row answers it at once and runs again whole on its backoff.
 func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow, payload record.TaskPullRequestsClose) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -221,17 +235,117 @@ func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow
 	if err != nil {
 		return err
 	}
+	logins, ok := r.tokens.(appauth.Logins)
+	if !ok {
+		return fmt.Errorf("close the pull requests of tasks of %s: the GitHub App token source answers no App login, which the comment is written as", issue.Key)
+	}
+	login, err := logins.AppLogin(ctx, appauth.Implement)
+	if err != nil {
+		return fmt.Errorf("read the implement App's login to close the pull requests of tasks of %s: %w", issue.Key, err)
+	}
+	refused := &pullRequestsCloseRefused{issue: issue.Key, comment: payload.Comment}
 	for _, number := range payload.Numbers {
-		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment)
-		if err != nil {
+		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment, login)
+		line := []any{"row", row.ID, "issue", issue.Key, "pullRequest", number}
+		switch {
+		case err == nil && closed.Now:
+			r.log.Info("outbox closed the pull request of a task of the issue", append(line, "comment", payload.Comment)...)
+		case err == nil && closed.Merged:
+			r.log.Info("outbox left the merged pull request of a task of the issue as it is", line...)
+		case err == nil && closed.By == login:
+			r.log.Info("outbox found the pull request of a task of the issue closed by Legion before, and its comment written once", append(line, "comment", payload.Comment)...)
+		case err == nil && closed.By != "":
+			r.log.Info("outbox left the pull request of a task of the issue as its closer left it, with no comment: Legion did not close it", append(line, "closedBy", closed.By)...)
+		case err == nil && closed.Unread == ghbranch.ClosedByNull:
+			r.log.Info("outbox left the pull request of a task of the issue closed, with no comment: GitHub names no one who closed it", append(line, "unread", closed.Unread)...)
+		case err == nil:
+			r.log.Warn("outbox left the pull request of a task of the issue closed, with no comment: GitHub refused the read of who closed it", append(line, "unread", storetext.FarSideError(closed.Unread))...)
+		case (closed.Now || closed.By != "") && ghbranch.RefusedForGood(err):
+			r.log.Warn("outbox closed the pull request of a task of the issue, and GitHub refused its comment for good", append(line, "error", storetext.FarSideError(err.Error()))...)
+		case ghbranch.RefusedForGood(err):
+			refused.refused = append(refused.refused, closeRefused{number: number, err: err})
+		default:
 			return fmt.Errorf("close the pull request #%d of a task of %s: %w", number, issue.Key, err)
 		}
-		if closed {
-			r.log.Info("outbox closed the pull request of a task of the issue", "row", row.ID, "issue", issue.Key, "pullRequest", number,
-				"comment", payload.Comment)
-		}
+	}
+	if len(refused.refused) > 0 {
+		return refused
 	}
 	return nil
+}
+
+// pullRequestsCloseRefused is a row that closes pull requests of tasks of issue, with comment, that
+// GitHub refused for good to close each pull request of refused: each stays open, and a try again
+// would meet the same answer, so the row ends and the issue's architect is told once (notice).
+type pullRequestsCloseRefused struct {
+	issue   string
+	comment string
+	refused []closeRefused
+}
+
+// closeRefused is a pull request whose close GitHub refused for good, and the failure it answered.
+type closeRefused struct {
+	number int
+	err    error
+}
+
+func (e *pullRequestsCloseRefused) Error() string {
+	return fmt.Sprintf("GitHub refused the close of %s of %s for good: %s", e.named(), e.issue, e.answers())
+}
+
+// numbers is the number of each pull request whose close GitHub refused, in the row's order.
+func (e *pullRequestsCloseRefused) numbers() []int {
+	numbers := make([]int, len(e.refused))
+	for i, refused := range e.refused {
+		numbers[i] = refused.number
+	}
+	return numbers
+}
+
+// named is the pull requests whose close GitHub refused, as words: `pull request #43`, `pull
+// requests #43 and #45`, `pull requests #43, #45 and #47`.
+func (e *pullRequestsCloseRefused) named() string {
+	numbers := make([]string, len(e.refused))
+	for i, refused := range e.refused {
+		numbers[i] = fmt.Sprintf("#%d", refused.number)
+	}
+	if len(numbers) == 1 {
+		return "pull request " + numbers[0]
+	}
+	return "pull requests " + strings.Join(numbers[:len(numbers)-1], ", ") + " and " + numbers[len(numbers)-1]
+}
+
+// answers is GitHub's answer to each refused close, each bounded as a far side's text is
+// (storetext.FarSideError): the one answer alone, or each after its number, `#43: <answer>; #45:
+// <answer>`. A GitHub answer reads `<status> to <method> <path>: <body>`; a refusal of the
+// private-name rules reads as its own error.
+func (e *pullRequestsCloseRefused) answers() string {
+	answers := make([]string, len(e.refused))
+	for i, refused := range e.refused {
+		text := refused.err.Error()
+		var answer *githubrest.Answer
+		if errors.As(refused.err, &answer) {
+			text = fmt.Sprintf("%d to %s %s: %s", answer.Status, answer.Method, answer.Path, answer.Body)
+		}
+		answers[i] = storetext.FarSideError(text)
+		if len(e.refused) > 1 {
+			answers[i] = fmt.Sprintf("#%d: %s", refused.number, answers[i])
+		}
+	}
+	return strings.Join(answers, "; ")
+}
+
+// notice is the pull-request-close-refused notice that tells the issue's architect which pull
+// requests stay open, that Legion will not try again, how to close each, the comment Legion was
+// writing and GitHub's answer to each.
+func (e *pullRequestsCloseRefused) notice() record.Notice {
+	it := "it"
+	if len(e.refused) > 1 {
+		it = "each"
+	}
+	return record.Notice{Kind: "pull-request-close-refused", Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("GitHub refused Legion's close of %s of %s, as it would refuse %s again, so %s stays open and Legion will not try again. Close %s with gh pr close where its work should not land. The comment Legion was writing: %q GitHub answered: %s",
+			e.named(), e.issue, it, it, it, e.comment, e.answers())}
 }
 
 // joined applies fact, the end of the join row made (intake.TaskJoined), through the outbox's

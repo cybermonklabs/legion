@@ -2865,7 +2865,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// closeMergedTelling's rather than a second transition's because a merged issue's close waits
 	// for the issues beneath it still in the workflow (for a root, the rest of its tree), and an
 	// issue that arrives there and waits must be told why: the notice its architect got at the
-	// merge could not say it, since the issue was elsewhere then.
+	// merge could not say it, since the issue was elsewhere then. The close of the pull requests
+	// whose work that merge holds is queued here too (closeHeldPullRequests), since the merge landed
+	// while the task stood short of its merge, where it queues none.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
 		if err := e.start(ctx, tx, s, starting, func(at Standing) string {
@@ -2906,6 +2908,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 		return err
 	}
 	if mergedAlready {
+		if err := e.closeHeldPullRequests(ctx, tx, s, *pr); err != nil {
+			return err
+		}
 		return e.closeMergedTelling(ctx, tx, s, pr)
 	}
 	// The issue leaves the workflow where its tasks put it in done (putIssue), through the one place
@@ -3259,9 +3264,9 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// everyClaim enqueues op for every claim of issue but the one except's close reaches
-// (claimTargets), one row for each, on issue's tree and generation.
-func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, op record.SuperviseOp, reason string, except claim.Role) error {
+// everyClaim enqueues op for every claim of issue but each claim of except (claimTargets), one row
+// for each, on issue's tree and generation.
+func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, op record.SuperviseOp, reason string, except []claim.Token) error {
 	targets, err := e.claimTargets(ctx, tx, issue, except)
 	if err != nil {
 		return err
@@ -3284,24 +3289,23 @@ type claimTarget struct {
 }
 
 // claimTargets is every claim of issue a request for all of them reaches (everyClaim, and the
-// linger's tree close), but the one except's close reaches: each stored claim of issue
+// linger's tree close), but each claim of except: each stored claim of issue
 // (record.Store.IssueClaims) by its token, whether or not its agent ever reported a handoff — its
 // architect among them, which admission starts with a root's tree and a child's first phase start
 // starts for a child (StartFirstPhase). Two claims can hold one role — a keyed agent on a step of
 // another role, beside that role's own claim from an earlier version of the plan — so a row naming
 // a role alone would reach the claim of the worker on that role's step twice and leave the other
-// claim without its request. except is the one role left out, "" for none: a merged child's close
-// leaves out the role that works its production check (Engine.checkRole), whose claim the check's
-// own close retires (closeCheck); that close names the role alone, so the claim it reaches, and the
-// one left out here, is the claim of the worker on that role's step (record.WorkerClaim).
+// claim without its request. except is the claims left out, none for nil: a child's close leaves
+// out the claim of each production check that stays open past it (leave), which that check's own
+// close retires (closeCheck), naming the same claim (checkClaim).
 //
 // A claim can also come up after this read: a start already past its fences when the request's
 // fact commits brings its claim up later, with no row of its own. So each role the issue can hold
-// (record.IssueRoles: Legion's own and each role of the deployment that ran on it) but except,
-// whose worker claim is none of the stored claims, is a target by the role alone: the executor
-// reaches the claim the record gives that role's step when the row runs, and treats a request for
-// a claim that does not exist as done.
-func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue, except claim.Role) ([]claimTarget, error) {
+// (record.IssueRoles: Legion's own and each role of the deployment that ran on it) whose worker
+// claim (record.WorkerClaim) is none of the stored claims and none of except is a target by the
+// role alone: the executor reaches the claim the record gives that role's step when the row runs,
+// and treats a request for a claim that does not exist as done.
+func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue, except []claim.Token) ([]claimTarget, error) {
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return nil, fmt.Errorf("the claims of %s: %w", issue.Key, err)
@@ -3315,18 +3319,15 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return nil, err
 	}
 	// Every issue the record holds has a key of Dispatch's shape, so each of its roles names a
-	// claim token (claim.NewToken): a failure here is a record the daemon did not write.
-	var excepted claim.Token
-	if except != "" {
-		if excepted, err = record.WorkerClaim(project, issue.Key, except, rows); err != nil {
-			return nil, fmt.Errorf("the %s of %s: %w", except, issue.Key, err)
-		}
+	// claim token (claim.NewToken): a failure here is a record the daemon did not write. Each claim
+	// left out counts as reached, so no row by role reaches it either.
+	named := make(map[claim.Token]bool, len(except))
+	for _, token := range except {
+		named[token] = true
 	}
 	var targets []claimTarget
-	// The excepted claim counts as reached, so no row by role reaches it either.
-	named := map[claim.Token]bool{excepted: excepted != ""}
 	for _, c := range claims {
-		if c.Token == excepted {
+		if slices.Contains(except, c.Token) {
 			continue
 		}
 		targets = append(targets, claimTarget{role: c.Role, token: c.Token})
@@ -3337,9 +3338,6 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return nil, err
 	}
 	for _, role := range roles {
-		if role == except {
-			continue
-		}
 		worker, err := record.WorkerClaim(project, issue.Key, role, rows)
 		if err != nil {
 			return nil, fmt.Errorf("the %s of %s: %w", role, issue.Key, err)

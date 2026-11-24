@@ -62,11 +62,13 @@ func leaveUnnamed(log *slog.Logger, key, repo, why string) {
 // (its own, an ancestor's, or the project's default), that repository's default branch and GitHub's
 // spelling of it, both from one read of GitHub per repository (backfillRead). One read of
 // Dispatch's listing serves every record. A record Dispatch resolves to no repository, or does not
-// list, is left, as is one whose pull request, or failing one, whose workspace (a tmux daemon's,
-// issueWorkspaces), is in another repository than the one Dispatch resolves, as GitHub names
-// either: it names the repository the issue worked in, and a record on another would create its
-// branch there, disarm a stranger's pull request, and strand the workspace's unpushed work; the
-// log says to set the issue's repository in Dispatch to that one.
+// list, is left, as is one where any pull request of its tasks, or failing one, its workspace (a
+// tmux daemon's, issueWorkspaces), is in another repository than the one Dispatch resolves, as
+// GitHub names either: each pull request of a task names the repository the issue worked in,
+// whether or not that task's work merges by itself, and a record on another would create its branch
+// there, disarm a stranger's pull request, and strand the workspace's unpushed work; the log names
+// the first such pull request in task order and says to set the issue's repository in Dispatch to
+// that one.
 //
 // The record keeps the spelling of the shared clone under stateDir that spells the repository
 // case-insensitively, since the issue's workspace and its sessions were made under that spelling
@@ -90,19 +92,15 @@ func leaveUnnamed(log *slog.Logger, key, repo, why string) {
 // name it moved to reach it before that pass as after it.
 func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (filled []ghrepo.Repository, left bool, err error) {
 	var unfilled []record.Issue
-	pulls := map[string]record.PullRequest{}
+	pulls := map[string][]record.PullRequest{}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
 		if unfilled, err = records.UnfilledIssues(ctx, tx, project); err != nil {
 			return err
 		}
 		for _, issue := range unfilled {
-			pull, err := records.MergePullRequest(ctx, tx, issue.Key)
-			if err != nil {
+			if pulls[issue.Key], err = records.TaskPullRequests(ctx, tx, issue.Key); err != nil {
 				return err
-			}
-			if pull != nil {
-				pulls[issue.Key] = *pull
 			}
 		}
 		return nil
@@ -179,8 +177,9 @@ type filling struct {
 }
 
 // fillOf is what issue's record is filled with from repo, the repository Dispatch resolves it to,
-// as fillRepositories says, or why it is left, naming the step that settles it.
-func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pulls map[string]record.PullRequest, clones []workspace.Workspace,
+// as fillRepositories says, or why it is left, naming the step that settles it. pulls holds each
+// pull request of each task of each issue (record.Store.TaskPullRequests), in task order.
+func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pulls map[string][]record.PullRequest, clones []workspace.Workspace,
 	stateDir string, named *defaultBranches, renames ghrepo.Renames) (filling, error) {
 	read, err := backfillRead(ctx, named, repo)
 	if err != nil {
@@ -201,9 +200,11 @@ func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pul
 		return filling{}, fmt.Errorf("GitHub renamed %s to %s, and the shared clone %s still has the old name: set the repository of %s in Dispatch to %s, or remove that clone if no issue works in it",
 			repo, read.Name, spelled[0], issue.Key, read.Name)
 	}
-	if pull, ok := pulls[issue.Key]; ok && !renames.Same(pull.Repo, repo.String()) && !renames.Same(pull.Repo, read.Name.String()) {
-		return filling{}, fmt.Errorf("Dispatch resolves it to %s, but its pull request #%d is on %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
-			repo, pull.Number, pull.Repo, pull.Repo, issue.Key, pull.Repo)
+	for _, pull := range pulls[issue.Key] {
+		if !renames.Same(pull.Repo, repo.String()) && !renames.Same(pull.Repo, read.Name.String()) {
+			return filling{}, fmt.Errorf("Dispatch resolves it to %s, but its pull request #%d is on %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
+				repo, pull.Number, pull.Repo, pull.Repo, issue.Key, pull.Repo)
+		}
 	}
 	workspaces, err := issueWorkspaces(stateDir, issue.Key)
 	if err != nil {

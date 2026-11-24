@@ -157,7 +157,12 @@ func TestTheTaskBaseMigrationWritesTheBaseOfEachRunningTask(t *testing.T) {
 // The way back of the task base, the last paragraph of the migration's header
 // (migrations.WayBack), run as its one transaction, drops plan_tasks.base and the migration's
 // version row, so the roll forward's Migrate applies the file again and writes each running task's
-// base again.
+// base again. It also deletes each unsent pull-request-close-refused notice, a kind no earlier
+// release decodes, and keeps a task-join-failed one, whose own migration's way back deletes it.
+//
+// The fault it catches is a notice an earlier release cannot decode left queued at a rollback,
+// which fails every try of its row and the state of its project (its control: the way back without
+// its delete, under which the row stays).
 func TestTheWayBackOfTheTaskBaseDropsTheColumn(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -165,6 +170,18 @@ func TestTheWayBackOfTheTaskBaseDropsTheColumn(t *testing.T) {
 	seedTaskBaseRows(t, store)
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+		for _, kind := range []string{"pull-request-close-refused", "task-join-failed"} {
+			payload := `{"kind":"` + kind + `","role":"architect","reason":"a notice of ` + kind + `"}`
+			if err := record.NewStore().Enqueue(ctx, tx, record.OutboxRow{Kind: record.OutboxKindNotice, Issue: taskBaseIssue, Payload: []byte(payload),
+				NextAt: time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("queue the two notices: %v", err)
 	}
 
 	if _, err := store.Pool().Exec(ctx, wayBackOf(t, taskBaseVersion, taskBaseRelease), pgx.QueryExecModeSimpleProtocol); err != nil {
@@ -181,6 +198,9 @@ func TestTheWayBackOfTheTaskBaseDropsTheColumn(t *testing.T) {
 	}
 	if recorded {
 		t.Fatalf("schema_version still holds %d after the way back, so the roll forward would not apply it again", taskBaseVersion)
+	}
+	if got := rowsAsText(t, store, `select payload->>'kind' from outbox where kind = 'notice' order by id`); !slices.Equal(got, []string{"task-join-failed"}) {
+		t.Fatalf("the notices queued after the way back are of the kinds %q, want the task-join-failed one alone", got)
 	}
 
 	applied, err := store.Migrate(ctx)

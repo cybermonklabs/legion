@@ -492,7 +492,10 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // (store.IssueSandboxHome) for good. The child stays where it is until a person labels it, which
 // admits it as an orphan. A message row Dispatch refused tells the architect that owns the issue
 // (noticeRecipient) what was not posted and Dispatch's own refusal (messagePostRefused), since
-// nothing else would: the message is the daemon's only word on the issue for what it carries.
+// nothing else would: the message is the daemon's only word on the issue for what it carries. A
+// row that closes pull requests of tasks, which GitHub refused for good to close some of, tells the
+// architect which stay open, the comment and GitHub's answer to each
+// (pullRequestsCloseRefused.notice), since no try again would close them.
 // Each of those notice rows is written in the finish's own transaction, which owns the commit hook
 // that write registers (projectRecords, intake.OnCommit), so the notice's lane is woken as the
 // finish commits and the notice is published without a sweep. Only the hand-over's finish takes
@@ -580,6 +583,22 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// Nobody is told, for the step record's reasons: the plan is history of a run that went
 		// on without it, and the line is what says Dispatch does not hold it.
 		told = r.recordDropped(row, "plan", value.ID, cause)
+	case record.TaskPullRequestsClose:
+		// GitHub refused for good the close of each pull request the refusal names, so each stays
+		// open and no try again closes it: the architect is told once, in the finish's transaction,
+		// so the notice is written once, as the row ends with it. permanentRefusal ended the row
+		// only on a *pullRequestsCloseRefused, so refused is set.
+		var refused *pullRequestsCloseRefused
+		errors.As(cause, &refused)
+		notice, err := record.NewOutboxRow(row.Issue, refused.notice(), r.now().UTC())
+		if err != nil {
+			return err
+		}
+		follow = func(ctx context.Context, tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, notice) }
+		told = func() {
+			r.log.Error("outbox close of task pull requests refused by GitHub for good and ended; each named stays open, and its architect is told",
+				"row", row.ID, "issue", row.Issue, "pullRequests", refused.numbers(), "error", kept)
+		}
 	}
 	var scoped context.Context
 	var finished func(write func(pgx.Tx) error) error
@@ -841,6 +860,12 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
 	case record.OutboxKindStepRecord, record.OutboxKindPlanRecord:
 		return recordRefused(err)
+	case record.OutboxKindTaskPullRequestsClose:
+		// Permanent where GitHub refused for good the close of a pull request the row names, the
+		// rest closed (closeTaskPullRequests): a try again would meet the same answer, and its
+		// finish tells the architect which pull requests stay open.
+		var refused *pullRequestsCloseRefused
+		return errors.As(err, &refused)
 	default:
 		return false
 	}

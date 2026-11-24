@@ -1519,6 +1519,13 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		if err := a.store.CarryPlan(ctx, tx, stored.Key, oldGeneration, stored.Generation, true); err != nil {
 			return fmt.Errorf("carry the plan to re-admitted orphan %s: %w", stored.Key, err)
 		}
+		// The carried run keeps its open production checks: a check opened at a merge of the run is
+		// a check of the run that holds the issue, which looks while the run goes on, where a check of
+		// an earlier run waits and its bound closes it as not run (workflow's checkOfAnEarlierRun). A
+		// closed check keeps the generation it opened in.
+		if err := a.store.CarryProductionChecks(ctx, tx, stored.Key, oldGeneration, stored.Generation); err != nil {
+			return fmt.Errorf("carry the open production checks to re-admitted orphan %s: %w", stored.Key, err)
+		}
 		// The carried run keeps the phase it ran in, past admitted (record.Issue.CarriesRun), so it
 		// never leaves admitted, where a run's plan is written otherwise: its new generation's plan
 		// node is written here (WritePlan), after the carry, so it names the plan the run carries.

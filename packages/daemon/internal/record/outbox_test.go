@@ -558,6 +558,21 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 			}
 		})
 	}
+	// A notice of a close GitHub refused for good is a kind the validation takes: it makes a row,
+	// and the row decodes to it.
+	t.Run("a pull-request-close-refused notice makes a row and decodes", func(t *testing.T) {
+		notice := Notice{Kind: "pull-request-close-refused", Role: claim.RoleArchitect,
+			Reason: `GitHub refused Legion's close of pull request #43 of LEGION-208, as it would refuse it again, so it stays open and Legion will not try again.`}
+		row, err := NewOutboxRow("LEGION-208", notice, now)
+		if err != nil {
+			t.Fatalf("NewOutboxRow of a pull-request-close-refused notice: %v", err)
+		}
+		decoded, err := DecodeOutboxPayload(row)
+		got, ok := decoded.(Notice)
+		if err != nil || !ok || got.Kind != notice.Kind || got.Role != notice.Role || got.Reason != notice.Reason {
+			t.Fatalf("the row decodes as %#v, %v; want %#v", decoded, err, notice)
+		}
+	})
 }
 
 // subOwnerNotices is one notice of each kind Legion gives the sub-owner of a task: that each part of
@@ -1279,6 +1294,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 				StatusNotTakenYet + " " + EndChildRule},
 		{Kind: "task-join-failed", Role: claim.RoleArchitect,
 			Reason: "task d of LEGION-208 waits for the join of its needs: GitHub has no branch legion/LEGION-208.c of its need c. Push that branch again, or stop the task with stop_task."},
+		{Kind: "pull-request-close-refused", Role: claim.RoleArchitect,
+			Reason: `GitHub refused Legion's close of pull request #43 of LEGION-208, as it would refuse it again, so it stays open and Legion will not try again. Close it with gh pr close where its work should not land. The comment Legion was writing: "Merged in #45." GitHub answered: 403 to PATCH /pulls/43: {"message":"Resource not accessible by integration"}`},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

@@ -45,8 +45,8 @@ func mergingTasks(t *testing.T, pool *pgxpool.Pool, aState, bState record.PullRe
 // (PhaseFinished), and the boot's sweep of merged issues (sweepMerged) closes nothing: the issue
 // stands in merging, b at its merge, with no production check. Once #45 merges, the phase is
 // finished, and the sweep closes the issue as merged on b's merge: it is done, b is done at its
-// merge, its leave retires its claims but the checking role's, and the production check it opens
-// is on #45 and its merge commit.
+// merge, its leave retires each claim but the claim of its check's agent, the fresh check-b since
+// b has no tester step, and the production check it opens is on #45 and its merge commit.
 //
 // The fault it catches is the work of a task that does not merge read as the issue's merge, which
 // ends the issue before its merge (its control: the readers on the issue's first pull request in
@@ -92,8 +92,13 @@ func TestTheMergeOfAnIssueIsItsMergingTasksPullRequest(t *testing.T) {
 		t.Fatalf("LEGION-209 stands in %s after the sweep of its merged #45, want done", got)
 	}
 	assertTask(t, tasksOf(t, pool, engine, "LEGION-209"), "b", record.TaskDone, merge)
-	if closed := superviseRequests(t, pool, "issue_close"); closed["LEGION-209/implementer"] != 1 || closed["LEGION-209/tester"] != 0 {
-		t.Fatalf("issue_close rows %v, want the implementer's and none for the tester, which works the production check of a merged close", closed)
+	fresh, err := claim.AgentToken("legion", "LEGION-209", "check-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed := superviseRequests(t, pool, "issue_close"); closed["LEGION-209/implementer"] != 1 || closed["LEGION-209/tester"] != 1 ||
+		len(claimRows(t, pool, "LEGION-209", "issue_close", fresh)) != 0 {
+		t.Fatalf("issue_close rows %v, want the implementer's and the tester's, and none naming check-b's claim %s, which works the production check of b's merge", closed, fresh)
 	}
 	if check := productionCheck(t, pool, "LEGION-209"); check == nil || check.Number != 45 || check.MergeSHA != "merge-45" {
 		t.Fatalf("the production check after the close = %+v, want one on #45 at merge-45, the merging task's pull request", check)

@@ -26,9 +26,10 @@ import (
 // `implementer tester` is done at its merge, and the check the merge opens gives its first look to
 // the tester's own session, the one that tested the task: the claim takes it where its pane still
 // runs, and a resume of that session where the close's suspension has stopped it. An issue whose
-// plan is `implementer` runs no tester, and the check's first look opens on a fresh tester session,
-// a spawn that resumes none. Each issue is done before its check ends, and each check ends with the
-// tester's report. The control is `production_check: off`, under which the same walk opens no check.
+// plan is `implementer` runs no tester, so the check's agent is a fresh agent of its task a,
+// check-a, whose first look opens on a spawn that resumes no session; no tester claim is launched.
+// Each issue is done before its check ends, and each check ends with its agent's report. The
+// control is `production_check: off`, under which the same walk opens no check.
 func TestAProductionCheckFollowsAPlan(t *testing.T) {
 	t.Run("a plan with a tester and a plan with none", func(t *testing.T) {
 		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2,
@@ -48,9 +49,16 @@ func TestAProductionCheckFollowsAPlan(t *testing.T) {
 		r.givePlan("implementer")
 		r.openGate(phase.Implementing)
 		r.walkSteps([]string{"implementer"})
-		fresh := r.worker(claim.RoleTester)
-		if launches := r.launchesOfRole(claim.RoleTester); len(launches) != 1 || launches[0] != "Spawn" || lastLaunch(t, r.rt, fresh.token).ResumeSessionFile != "" {
-			t.Fatalf("%s's tester was launched %v, want one Spawn that resumes no session: no tester ran on the plan implementer, so the check opens on a fresh session", r.key, launches)
+		token, err := claim.AgentToken(r.project, r.key, "check-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh := r.claimantOf(r.key, token, claim.RoleTester)
+		if launches := r.launchesOfClaim(token); len(launches) != 1 || launches[0] != "Spawn" || lastLaunch(t, r.rt, token).ResumeSessionFile != "" {
+			t.Fatalf("%s's check agent %s was launched %v, want one Spawn that resumes no session: no tester ran on the plan implementer, so the check goes to a fresh agent of task a", r.key, token, launches)
+		}
+		if launches := r.launchesOfRole(claim.RoleTester); len(launches) != 0 {
+			t.Fatalf("%s's tester was launched %v, want never: the check of task a, which has no tester step, is check-a's", r.key, launches)
 		}
 		r.lookOpens(fresh)
 		r.reportLook(fresh)
