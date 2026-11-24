@@ -675,6 +675,11 @@ fi
 # three-second deadline holds three or four tries, nowhere near the sixty the counter allows. A
 # poll that had lost its deadline would run all sixty here, over a minute, and the count below is
 # what says which of the two bounds ended this one.
+# Each try is bounded by what the deadline leaves, never by a fresh minute of its own: a try that
+# started a second before the deadline would otherwise end a minute past it, while the script's
+# comments and store.go promise a read that ends inside the deadline. The timeout stand-in
+# recorded the bound every client container was given, so the same run reads those bounds back:
+# both are facts of one poll, and each run of it waits out its three real seconds.
 fresh_env
 printf 'always\n' >"$schema.key"
 if output=$(SCHEMA_READ_DEADLINE=3 AUTODEPLOY_TEST_SLEEP_REAL=1 deploy_once); then
@@ -691,17 +696,6 @@ fi
 if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]] || [[ -s "$log" ]]; then
   fail 'deployer did not report the unreadable schema version and stop once its deadline had passed'
 fi
-
-# Each try is bounded by what the deadline leaves, never by a fresh minute of its own: a try that
-# started a second before the deadline would otherwise end a minute past it, while the script's
-# comments and store.go promise a read that ends inside the deadline. The timeout stand-in
-# recorded the bound every client container was given, so this reads those bounds back.
-fresh_env
-printf 'always\n' >"$schema.key"
-if output=$(SCHEMA_READ_DEADLINE=3 AUTODEPLOY_TEST_SLEEP_REAL=1 deploy_once); then
-  fail 'deployer deployed behind a key no session released under a three-second deadline'
-fi
-no_secret 'the bounds the tries were given'
 bounds=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk '{print $2}' || true)
 if [[ -z "$bounds" ]]; then
   fail 'no container run of the schema read recorded the bound it was given'

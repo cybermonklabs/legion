@@ -90,6 +90,25 @@ func TestPodUpdateContractIsTheContractThatIntroducedTheOp(t *testing.T) {
 	}
 }
 
+// OwnerPlanContract is the contract whose entry in version.go added the owner's plan: the routes
+// register_plan and stop_task, a completion's returnTo, and the issues' holdReason task-stopped
+// and children. The number is pinned, as PodUpdateContract's is, because the declared table records
+// the two new hold reasons and the two new held words at it, and the value strips hold them back
+// from a caller below it (answers.go's holdReasons and heldReasons): a constant left behind at a
+// renumber would serve a plugin that cannot parse them the new values. Above the daemon's own
+// contract, no caller could be served them.
+func TestTheOwnerPlanContractIsTheContractThatAddedThePlan(t *testing.T) {
+	const addedOwnerPlan = 219
+	if OwnerPlanContract != addedOwnerPlan {
+		t.Fatalf("OwnerPlanContract = %d, want %d, the contract whose entry in version.go added register_plan, stop_task, returnTo and the two new hold reasons",
+			OwnerPlanContract, addedOwnerPlan)
+	}
+	if OwnerPlanContract > DaemonAPIVersion {
+		t.Fatalf("OwnerPlanContract = %d, above DaemonAPIVersion %d: no caller could be served the two new hold reasons",
+			OwnerPlanContract, DaemonAPIVersion)
+	}
+}
+
 // entryHeader matches the head of one numbered entry of version.go's doc comment: `// <n>: `.
 var entryHeader = regexp.MustCompile(`(?m)^// (\d+): `)
 

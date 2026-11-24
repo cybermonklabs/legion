@@ -34,7 +34,7 @@ func TestArgvMatchesTheShippedStrings(t *testing.T) {
 			name: "new-session with update-environment emptied in the same invocation",
 			got:  newSessionArgv(socket, "legion-omp"),
 			want: []string{
-				"tmux", "-L", "legion-omp", "new-session", "-d", "-s", "legion-omp", "-n",
+				"tmux", "-f", "/dev/null", "-L", "legion-omp", "new-session", "-d", "-s", "legion-omp", "-n",
 				"__legion_bootstrap", "sleep 3600", ";", "set-option", "-t", "legion-omp",
 				"update-environment", "",
 			},

@@ -2744,10 +2744,10 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	if len(asking) == 0 {
 		return
 	}
-	text := supervise.UpdateTask(round, roundReasons(group, round), *bound)
+	reasons := roundReasons(group, round)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
-		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: text}
+		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: supervise.UpdateTask(c.Role, round, reasons, *bound)}
 	}
 	written, err := s.enqueue(ctx, issue, rows...)
 	if err != nil {

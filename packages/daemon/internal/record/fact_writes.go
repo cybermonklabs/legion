@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"time"
@@ -53,15 +54,17 @@ func noteIssueWrite(ctx context.Context, key string) {
 }
 
 // IssueStepRun is one place of an issue the store holds a row of starts for: the place, the
-// latest start's count, agent, moment and run, and the generation that start's kept write names.
-// Each writer of a row keeps the write with the count in its own transaction (RaiseStepStarts,
-// OpenUncountedStep), so a committed row names one; the 0 that a row with none reads as is the
-// read's default alone.
+// latest start's count, agent, moment and run, the generation that start's kept write names, and
+// that write (Kept), the record's identity, which the end of a run no step of its walk holds
+// writes again (workflow's endOffWalk). Each writer of a row keeps the write with the count in its
+// own transaction (RaiseStepStarts, OpenUncountedStep), so a committed row names one; the 0 that a
+// row with none reads as is the read's default alone.
 type IssueStepRun struct {
 	Issue string
 	Place StepPlace
 	StepStart
 	Generation uint64
+	Kept       StepRecord
 }
 
 // StepRuns is every row of starts of each of issues, by issue and place, in one read of the
@@ -72,7 +75,7 @@ func (s *Postgres) StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `select issue, task, kind, place, starts, agent, started_at, run,
-		coalesce((record->>'generation')::bigint, 0) from step_starts where issue = any($1) order by issue, kind, place`, issues)
+		coalesce((record->>'generation')::bigint, 0), record from step_starts where issue = any($1) order by issue, kind, place`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("read the runs of %v: %w", issues, err)
 	}
@@ -81,11 +84,17 @@ func (s *Postgres) StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]
 	for rows.Next() {
 		var run IssueStepRun
 		var at *time.Time
-		if err := rows.Scan(&run.Issue, &run.Place.Task, &run.Place.Kind, &run.Place.Place, &run.Starts, &run.Agent, &at, &run.Run, &run.Generation); err != nil {
+		var kept []byte
+		if err := rows.Scan(&run.Issue, &run.Place.Task, &run.Place.Kind, &run.Place.Place, &run.Starts, &run.Agent, &at, &run.Run, &run.Generation, &kept); err != nil {
 			return nil, fmt.Errorf("read the runs of %v: %w", issues, err)
 		}
 		if at != nil {
 			run.StartedAt = at.UTC()
+		}
+		if kept != nil {
+			if err := json.Unmarshal(kept, &run.Kept); err != nil {
+				return nil, fmt.Errorf("read the kept start of %s %s/%s/%d: %w", run.Issue, run.Place.Task, run.Place.Kind, run.Place.Place, err)
+			}
 		}
 		runs = append(runs, run)
 	}

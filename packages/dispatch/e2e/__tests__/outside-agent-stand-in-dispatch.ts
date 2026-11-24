@@ -15,7 +15,8 @@
  *  token (`Authorization: Bearer <fullToken>`) on whoami, the credential-grants list
  *  (`<state>/full-grants.json`) and the GitHub proxy's read, which `<state>/proxy-refuses-token`
  *  makes 403 OAUTH_SCOPE_REQUIRED; and 401 to anything else. Its access list names the test person
- *  until `POST /_remove`, the owner's removal; in a browser gate's run (`<state>/browser`) the list
+ *  until `POST /_remove`, the owner's removal, which leaves `<state>/removed` (the stand-in public
+ *  leg's window ends on it); in a browser gate's run (`<state>/browser`) the list
  *  is `<state>/listed`, which the owner's routes by cookie change: PUT and DELETE
  *  `/api/v1/projects/EXAMPLE/access/people/<address>` (DELETE leaves `<state>/removed`) and POST
  *  `.../invitations`, which makes a link (kept in `<state>/links`) for an address the list names
@@ -69,6 +70,7 @@ const server = Bun.serve({
     }
     if (path === "/_remove") {
       listed = false;
+      writeFileSync(join(settings.state, "removed"), "");
       return Response.json({});
     }
     const proxyRuns = `GET /api/github/rest/repos/${settings.proxyRepository}/actions/runs`;

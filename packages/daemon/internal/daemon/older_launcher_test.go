@@ -271,7 +271,7 @@ func (r *olderLauncherRig) restart() {
 // agent the decision launches waits in the runtime (fake.Runtime.OnSpawn): that Spawn alone waits
 // for its context to end, as the Sandbox runtime's Spawn waits on a pod that is coming up, and then
 // answers that context's error, so the call is recorded and nothing is started. The launch is cut
-// short, and writes nothing after the write its try made before its start (launchNow).
+// short, and writes nothing after the write its try made before its start (launchTries).
 func (r *olderLauncherRig) stopInTheFreshSpawn(ev supervise.Event) {
 	r.t.Helper()
 	waiting := make(chan struct{})

@@ -16,9 +16,12 @@ import (
 
 // A backward move between two phases that show the same Dispatch status writes no status row, so
 // the reason goes as a message row of its own: carried only on a status row, it would reach no
-// issue, and the issue would show nothing of the move. The three such pairs are the implementer
-// asking for a new plan (in_progress), the architect sending accepting back to reviewing
-// (needs_review) and the merger sending merging back to retro (retro).
+// issue, and the issue would show nothing of the move. In the default steps the three such pairs
+// are the implementer asking for a new plan (in_progress), the architect sending accepting back
+// to reviewing (needs_review) and the merger sending merging back to retro (retro); a task whose
+// planner stands after its implementer, or whose reviewer stands after its acceptance, moves back
+// between the same two statuses the other way, planning to implementing or reviewing to
+// accepting.
 func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
 	for _, tc := range []struct {
 		from, to phase.Phase
@@ -39,8 +42,13 @@ func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
 			role := phase.RoleFor(tc.from)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: tc.from, Generation: 1, Status: PhaseStatus(tc.from), Rank: "U"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: "claim"})
-			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
-				intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the plan names the wrong table"})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the plan names the wrong table"}
+			if role == claim.RoleArchitect {
+				// An architect's move names its owner and the run it read (api's phaseBackward).
+				move = rootsMoveBack(t, pool, engine, "LEGION-208", tc.to, "the plan names the wrong table")
+			}
+			applyRefusingNothing(t, pool, engine, move)
 			assertPhase(t, pool, tc.to)
 			var statuses int
 			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = $1", string(record.OutboxKindDispatchStatus)).Scan(&statuses); err != nil || statuses != 0 {

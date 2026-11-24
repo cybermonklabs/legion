@@ -203,10 +203,12 @@ const (
 // stops every role's test database at once. In each role it spares the role-init itself, not its
 // descendants; the shim, the oldest direct child of the role-init that is this binary run as
 // `worker-shim` (an orphan the role leaves is adopted by the role-init too); every direct child of
-// the shim, which is the agent before and after its start wrapper execs it, the secrets renewer,
-// the working copy's adoption and the CodeGraph warm-up; Oh My Pi's helpers but its eval kernel,
-// each reached from the agent through a chain of helpers; and a Claude Code role's `claude` and its
-// MCP server.
+// the shim but the CodeGraph warm-up (codegraphWarmUp), which is the agent before and after its
+// start wrapper execs it, the secrets renewer and the working copy's adoption; Oh My Pi's helpers
+// but its eval kernel, each reached from the agent through a chain of helpers; and a Claude Code
+// role's `claude` and its MCP server. The warm-up and all it starts may be ended: the shim starts
+// it during the agent's session load (warmCodegraph, internal/shim), its end ends no session, and
+// the next start runs it again or finds the index its last build left.
 //
 // A process is the role's whose role-init is its ancestor by the parent chain, else the role's
 // whose role-init shares its PID namespace, else no role's. The ancestor comes first because a
@@ -305,6 +307,9 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 		session[shim.PID] = true
 		for _, agent := range t.Children(shim.PID) {
 			session[agent.PID] = true
+			if codegraphWarmUp(agent) {
+				continue
+			}
 			protectAgent(t, agent, protected)
 		}
 	}
@@ -455,6 +460,22 @@ func protectAgent(t *memoryguard.Table, agent *memoryguard.Process, protected ma
 			}
 		}
 	}
+}
+
+// codegraphWarmUp is whether p, a direct child of a role's shim, is the CodeGraph warm-up rather
+// than the agent: the image's `codegraph` command (runCodegraph, internal/workspace), a shell
+// script that execs its bundled node on lib/dist/bin/codegraph.js, so the warm-up reads as that
+// script under its shell until the exec (argument 1 is the script, or argument 0 where it runs as
+// itself) and as node on codegraph.js after it. Each is matched by a whole base name, `codegraph`
+// or `codegraph.js`, never by a part of one, so an agent whose arguments name the CodeGraph plugin
+// (`pi-codegraph`) is not taken for the warm-up.
+func codegraphWarmUp(p *memoryguard.Process) bool {
+	for i, arg := range p.Args {
+		if base := filepath.Base(arg); (base == "codegraph" && i <= 1) || base == "codegraph.js" {
+			return true
+		}
+	}
+	return false
 }
 
 // isTestPG is whether pid, a direct child of the launcher whose executable is a postgres, runs in

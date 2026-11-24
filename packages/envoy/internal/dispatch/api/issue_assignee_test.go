@@ -38,8 +38,11 @@ func expectAssignee(t *testing.T, got *string, want string) {
 		}
 		return
 	}
-	if got == nil || *got != want {
-		t.Fatalf("assignee = %v, want %q", got, want)
+	if got == nil {
+		t.Fatalf("assignee = null, want %q", want)
+	}
+	if *got != want {
+		t.Fatalf("assignee = %q, want %q", *got, want)
 	}
 }
 
