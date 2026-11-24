@@ -55,7 +55,7 @@ func seedRenameRecords(t *testing.T, pool *store.Pool, project string, seeds ...
 	records := record.NewStore()
 	opened := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	closed := opened.Add(time.Hour)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, seed := range seeds {
 			if err := records.PutIssue(ctx, tx, record.Issue{Key: seed.key, Project: project, Tree: seed.key, Title: seed.key,
 				Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", HandedOver: true, Rank: "A",
@@ -215,6 +215,7 @@ func transferredRepositories() *repositories {
 // left on the old name; with the configured spelling written (renameTransfer answering the pair's
 // own `to`), every row written holds CyberMonkLabs/Legion, a spelling nothing publishes under.
 func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
 	cfg.PostgresDSN = pool.Config().ConnString()
@@ -279,6 +280,7 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 // included, is undone with it. Control: with the pass deleted from the boot, the next boot writes
 // nothing either; with a failed write stopping the boot, the first boot never answers /healthz.
 func TestARenameWriteThatFailsIsLoggedAndTheNextBootWritesIt(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
 	cfg.PostgresDSN = pool.Config().ConnString()
@@ -352,6 +354,7 @@ func (r renamePodRuntime) IssuePod(issue string) (string, bool) {
 // nothing), the boot writes the new name under the live pod; with the release's pod end removed
 // (releaseIssue's endPods), the issue stays on the old name after its pod is gone.
 func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	if _, err := rig.pool.Exec(ctx, "update issues set repo = $2, github_repo = $2 where key = $1", rig.issue.Key, renameFrom); err != nil {
@@ -399,6 +402,7 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 // issue and not by repository (store.TakeWorkspaceBundleForRestore). Control: with the pass at
 // that hook deleted (releaseIssue's endPods), the next launch's spec names the `from`.
 func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	key := rig.issue.Key
@@ -444,7 +448,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 	// The refresher's read of the live records, which that wake runs (refreshLive), over the
 	// workflow's own records.
 	rig.w.records = rig.issues
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error { return rig.w.refreshCacheRepositories(ctx, tx) }); err != nil {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error { return rig.w.refreshCacheRepositories(ctx, tx) }); err != nil {
 		t.Fatalf("read the live records again: %v", err)
 	}
 	if cached := repositoryNames(rig.w.cacheRepositories()); !slices.Equal(cached, []string{renameTo}) {
@@ -487,6 +491,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 // writes the new name too; with podEndKeep keeping the issue whatever IssueKeepsVolume answers,
 // that later pod end leaves it on the old name.
 func TestAReleaseThatKeepsTheVolumeLeavesTheIssueOnItsOldName(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		kept   bool
@@ -576,6 +581,7 @@ func (r presenceRuntime) IssuePod(issue string) (string, bool) {
 // kept issues are written too; with bootKeep not asking the runtime about the volume, LEGION-4 is
 // written.
 func TestABootKeepsEachIssueWhoseWorkspaceTheRuntimeMayStillHold(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedRenameRecords(t, pool, "LEGION",
 		renameSeed{key: "LEGION-1", repo: renameFrom}, renameSeed{key: "LEGION-2", repo: renameFrom}, renameSeed{key: "LEGION-3", repo: renameFrom},
@@ -615,6 +621,7 @@ func TestABootKeepsEachIssueWhoseWorkspaceTheRuntimeMayStillHold(t *testing.T) {
 // close writes the child under its workspace too; with the tree close's pod end removed
 // (endTreePods), the root stays on the old name.
 func TestUnderTmuxAnIssueKeepsItsNamesWhileItsWorkspaceIsUnderTheOldName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st, err := store.Open(ctx, pool.Config().ConnString())
@@ -724,6 +731,7 @@ func (c closeAuthority) EndPausePodHold(context.Context, string, string, store.P
 // close leaves the old name; with it run whatever the store answered, the refused one writes the
 // new name under the pod it left standing.
 func TestAnIssueCloseEndsItsPodOnlyWhenTheStoreAuthorizedIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		authorized bool
@@ -781,6 +789,7 @@ func renameRuntime(t *testing.T, pool *store.Pool, installs appauth.Installation
 // 10). Control: with the gate taken out (run writing every configured pair, as though
 // renameTransfer left none), the boot writes both issues while the `from` still answers installed.
 func TestAPairConfiguredBeforeItsTransferIsLeftUntilGitHubShowsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	seedRenameRecords(t, pool, "LEGION", renameSeed{key: "LEGION-1", repo: renameFrom, note: true}, renameSeed{key: "LEGION-2", repo: renameFrom})
@@ -830,6 +839,7 @@ func TestAPairConfiguredBeforeItsTransferIsLeftUntilGitHubShowsIt(t *testing.T) 
 // (TestAPairConfiguredBeforeItsTransferIsLeftUntilGitHubShowsIt). Control: with the gate taken out
 // (run writing every configured pair), the boot writes the pair in each case.
 func TestAPairWhoseReadsDoNotAnswerIsLeft(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		github func(t *testing.T) string
@@ -874,6 +884,7 @@ func TestAPairWhoseReadsDoNotAnswerIsLeft(t *testing.T) {
 // Control: with the gate taken out (run writing every configured pair, as though renameTransfer
 // left none), the boot writes the pair.
 func TestAPairWhoseNewNameARoleAppIsNotInstalledOnIsLeft(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedRenameRecords(t, pool, "LEGION", renameSeed{key: "LEGION-1", repo: renameFrom, note: true})
 	installs := &installations{missing: map[string]bool{"implement " + renameFrom: true, "review " + renameFrom: true, "review " + renameTo: true}}
@@ -903,6 +914,7 @@ func TestAPairWhoseNewNameARoleAppIsNotInstalledOnIsLeft(t *testing.T) {
 // redirect (readInstallations reading every name by InstalledOn), both Apps answer installed on
 // the `from`, the rule serves it as itself, and the pass leaves the pair.
 func TestAGitHubRedirectOfAPairsOldNameShowsItsTransfer(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -1037,6 +1049,7 @@ func (g *transferredGitHub) take() []string {
 // transferred before candidates), the boot's pass and the pod end each send GitHub the pair's
 // reads.
 func TestTheRenamePassSendsGitHubNoRequestForAPairNoRowNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	github := newTransferredGitHub(t)
 	pool := isolatedOutboxPool(t)

@@ -302,8 +302,8 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: mergerAcceptedHead,
 		Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext}
 	told := r.awaitHeard(claim.RoleMerger, 1, bound)
-	if told[0].Message != ask.Message(r.key, liveRepo) || !strings.Contains(told[0].Message, "The merge and its conflict are yours to resolve") {
-		t.Fatalf("the merger was told %q, want the merge forward's ask to the merger %q", told[0].Message, ask.Message(r.key, liveRepo))
+	if told[0].Message != ask.Message(r.key, record.PullRequest{Repo: liveRepo}) || !strings.Contains(told[0].Message, "The merge and its conflict are yours to resolve") {
+		t.Fatalf("the merger was told %q, want the merge forward's ask to the merger %q", told[0].Message, ask.Message(r.key, record.PullRequest{Repo: liveRepo}))
 	}
 	r.note("read back: one message on the merger's role topic — %s", told[0].Message)
 	checksRed := func() ([]record.Notice, []record.Notice) {
@@ -367,17 +367,20 @@ func (r *conflictMergerLive) mergerMergeLands() {
 	landed := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardLanded, Head: mergerAcceptedHead,
 		Landed: mergerMergeHead, Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext}
 	told := r.awaitHeard(claim.RoleMerger, 2, bound)
-	if told[1].Message != landed.Message(r.key, liveRepo) ||
+	// The landing asked the reviewer, since the issue's task has a reviewer step, so the merger's
+	// landing holds its merge to that approval (MergeForward.ReviewAsked).
+	landedPR := record.PullRequest{Repo: liveRepo, MergeForward: &record.MergeForward{Landed: mergerMergeHead, ReviewAsked: true}}
+	if told[1].Message != landed.Message(r.key, landedPR) ||
 		!strings.Contains(told[1].Message, "only once the reviewer's approval of that head is on the pull request") {
-		t.Fatalf("the merger was told %q, want the landing %q", told[1].Message, landed.Message(r.key, liveRepo))
+		t.Fatalf("the merger was told %q, want the landing %q", told[1].Message, landed.Message(r.key, landedPR))
 	}
 	r.note("read back: the merger's role topic took the landing — %s", told[1].Message)
 	review := landed
 	review.Role, review.Step = claim.RoleReviewer, record.MergeForwardReview
 	asked := r.awaitHeard(claim.RoleReviewer, 1, bound)
-	if asked[0].Message != review.Message(r.key, liveRepo) || !strings.Contains(asked[0].Message, "git show --remerge-diff "+mergerMergeHead) ||
+	if asked[0].Message != review.Message(r.key, landedPR) || !strings.Contains(asked[0].Message, "git show --remerge-diff "+mergerMergeHead) ||
 		!strings.Contains(asked[0].Message, mergerAcceptedHead) {
-		t.Fatalf("the reviewer was told %q, want the review of the merge %q", asked[0].Message, review.Message(r.key, liveRepo))
+		t.Fatalf("the reviewer was told %q, want the review of the merge %q", asked[0].Message, review.Message(r.key, landedPR))
 	}
 	r.note("read back: the reviewer's role topic took the review ask — %s", asked[0].Message)
 	logged := r.awaitLogged("workflow: the merge forward landed", r.key, bound)
@@ -570,9 +573,9 @@ func (r *conflictMergerLive) pullRequest() record.PullRequest {
 }
 
 // phaseChangedLine is the line the daemon logs for each move of an issue its transition table
-// makes, once the move commits (workflow's transition), naming the phase it left (`from`) and the
-// phase it entered (`to`). A hold, its release and a lingering tree's close write the phase
-// without it.
+// makes, once the move commits (workflow's arrive), naming the phase it left (`from`) and the
+// phase it entered (`to`). A failed claim's hold and its release write the phase outside that
+// table, and log no such line.
 const phaseChangedLine = "workflow: phase changed"
 
 // phaseMoves is each move of the issue the daemon logged (phaseChangedLine), oldest first, as

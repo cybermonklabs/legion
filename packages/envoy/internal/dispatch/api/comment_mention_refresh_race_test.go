@@ -23,6 +23,7 @@ import (
 // repeat's claim, the one the row carries, so its next refresh writes the row again and the
 // attempt does not lapse into the delivery sweep's hands.
 func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -101,6 +102,7 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 // all three). The send, the refresh and the rule are the server's own, on the database; only
 // their order is the test's. The control row runs the refresh while the send is parked.
 func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		across bool
@@ -280,6 +282,7 @@ func lockCaller() string {
 // wrote that row again. The try stays marked in flight until park records its claim under that
 // lock (mentionSender.park), so the refresh re-reads nothing there.
 func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPark(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		during  bool
@@ -408,6 +411,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 // control row has no hand-off: the try, under the sender's own claim, waits behind the earlier
 // events and parks again.
 func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		handOff bool

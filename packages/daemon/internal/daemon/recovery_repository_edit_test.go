@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -26,6 +27,7 @@ import (
 // sequence 1 from its listing, the edit reached no record, and no note said that Legion keeps
 // zeta/tools.
 func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (newHeldEditRecovery).
 	const key = "LEGION-1800"
 	h := newHeldEditRecovery(t, key)
 	h.edit(t, key, "orbit/gadgets", 2)
@@ -56,6 +58,7 @@ func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing
 // records the issue on zeta/tools at sequence 3, with nothing said on it. Before, the held listing
 // recorded the issue at sequence 1, behind both edits.
 func TestTwoEditsOfAnUnrecordedIssuesRepositoryDuringARecoveryRecordItAtTheNewer(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (newHeldEditRecovery).
 	const key = "LEGION-1802"
 	h := newHeldEditRecovery(t, key)
 	h.edit(t, key, "orbit/gadgets", 2)
@@ -71,6 +74,7 @@ func TestTwoEditsOfAnUnrecordedIssuesRepositoryDuringARecoveryRecordItAtTheNewer
 // zeta/tools. The record keeps zeta/tools, takes the edit's sequence, and the daemon says on the
 // issue that Legion keeps zeta/tools and does not apply the change to orbit/gadgets.
 func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
@@ -101,6 +105,7 @@ func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
 // parent. Before, the pass let zeta/tools go with the child unrecorded, and no later pass listed
 // it.
 func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testing.T) {
+	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
 	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
@@ -212,9 +217,9 @@ func recordedAs(t *testing.T, w *workflowRuntime, key string) string {
 func repoNoteOf(t *testing.T, w *workflowRuntime, key string) *record.RepoNote {
 	t.Helper()
 	var note *record.RepoNote
-	if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(context.Background(), w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		note, err = w.records.RepoNote(context.Background(), tx, key)
+		note, err = w.records.RepoNote(ctx, tx, key)
 		return err
 	}); err != nil {
 		t.Fatal(err)

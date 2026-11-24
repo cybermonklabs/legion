@@ -36,6 +36,7 @@ import (
 // row ends undelivered at its first attempt, and the test fails where it reads the row after that
 // attempt.
 func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
@@ -112,6 +113,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(
 // (outbox.roleMessage, cybermonklabs/legion#4088): the message the pause held finishes undelivered
 // once the resume lets its row run, and launches nothing.
 func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
@@ -153,6 +155,7 @@ func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t 
 // that gap, still reaches the role once its session holds the topic. The test lets the row run once
 // in the gap: the role ready, its topic not yet held.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyAndItsRoleClaim(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
@@ -201,6 +204,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyA
 // lets the row run, it ends undelivered, and the test fails where it reads the row's mark or the
 // message.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseBeforeTheRoleIsBack(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
@@ -257,6 +261,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseBeforeTheR
 // the cancelled stop answers no pause, the row's attempt after the second resume ends it
 // undelivered, and the test fails where it reads the row after that attempt.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseWhoseStopItsResumeCancels(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
@@ -337,6 +342,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseWhoseStopI
 // stopped again after its pod's release answers 0, since its first stop is older than that
 // release.
 func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

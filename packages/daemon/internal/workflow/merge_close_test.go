@@ -321,8 +321,8 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 // A root's merge while a child runs records the merge and waits: the root stays in merging
 // with nothing written to Dispatch, no linger deadline and no member suspended, and its architect
 // is told once, by name, which issue the close waits for. The merged root holds no slot while it
-// waits, since merging stands past its review (record.KeepsSlot), and the merge takes none from
-// the running child.
+// waits, since merging keeps none (record.KeepsSlot), and the merge takes none from the running
+// child.
 func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	assertPhase(t, rig.pool, phase.Merging)

@@ -89,7 +89,7 @@ func TestADsnThatNamesTheIdleBoundKeepsItsValue(t *testing.T) {
 func TestTheIdleBoundEndsAStalledTransactionAndFreesTheConnection(t *testing.T) {
 	store := storeWith(t, map[string]string{idleBoundParam: "1s", "pool_max_conns": "1"})
 	ctx := context.Background()
-	tx, err := store.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the transaction that stalls: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestTheIdleBoundEndsAStalledTransactionAndFreesTheConnection(t *testing.T) 
 func TestALongStatementSurvivesTheIdleBound(t *testing.T) {
 	store := storeWith(t, map[string]string{idleBoundParam: "1s"})
 	ctx := context.Background()
-	tx, err := store.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the transaction with the long statement: %v", err)
 	}

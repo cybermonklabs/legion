@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -179,7 +180,7 @@ const roleClaimReleaseAttempts = 3
 // delete ctx abandoned may still land after this answer, and that is safe: it deletes only the
 // revision it read, the claim this release authorised, and a claim written since is kept.
 //
-// A delete that lost that condition (nats.ErrKeyExists) met a record written since the read, and
+// A delete that lost that condition (bus.IsCASConflict) met a record written since the read, and
 // the writers it could have met are told apart by reading the claim again rather than by
 // answering success to all of them: the release goes on while the record the re-read returned is
 // still the grant it read (RoleClaim.sameGrant) and it may still free that record
@@ -264,7 +265,7 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 // a role no record claims.
 //
 // The write is conditional on the revision the claim was read at, and a lost compare-and-swap
-// (nats.ErrKeyExists) is read the way the release's delete reads one, through the same loop
+// (bus.IsCASConflict) is read the way the release's delete reads one, through the same loop
 // (writeRoleClaim): the claim is read again and the mark written at the revision that record
 // stands at, up to roleClaimReleaseAttempts writes in all, while the record is still the claim
 // this hand-back read - the same session and the same grant (RoleClaim.sameGrant), still
@@ -380,7 +381,7 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 		return ExpiredRoleClaimReleased, nil
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return ExpiredRoleClaimMissing, nil
-	case errors.Is(err, nats.ErrKeyExists):
+	case bus.IsCASConflict(err):
 		return ExpiredRoleClaimSuperseded, nil
 	default:
 		return ExpiredRoleClaimRetained, fmt.Errorf("release role %s's expired claim held by %s: %w", role, claim.HolderSessionID, err)
@@ -425,38 +426,51 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 // A view that cannot be served (ErrRoleViewNotReady) names no roles at all, which is not the
 // answer that the session holds none. A deregistration it refuses releases the record's roles,
 // each read as every role weighed is, and then falls back to releaseAllRoleClaimsByScan, the scan
-// of the bucket itself, which finds the claims whose lane topic the record does not carry. That
-// scan releases each claim from the record it delivered rather than reading it again, and says
-// there what that costs.
+// of the bucket itself, for the claims whose lane topic the record does not carry. A role the
+// record named was read once already, so the scan leaves it alone, whatever that release did: a
+// grant made since that read is left standing, as it is where the view names the role, and a
+// release that failed has already ended this one. That scan releases each claim from the record
+// it delivered rather than reading it again, and says there what that costs.
 func (r *Registry) releaseAllRoleClaims(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) error {
-	roles, viewErr := r.weighedRoles(sessionID, topics)
-	for _, role := range roles {
+	weighed, viewErr := r.weighedRoles(sessionID, topics)
+	for _, role := range weighed {
 		if _, err := r.releaseRoleClaim(ctx, sessionID, role, release); err != nil {
 			return err
 		}
 	}
 	// weighedRoles returns only RolesHeldBy's refusal, which is only ErrRoleViewNotReady -
 	// RoleViewErr's error is the one error it has - and the scan is the answer to any refusal, so
-	// no refusal leaves a claim the view would have named unreleased silently.
+	// no refusal leaves a claim the view would have named unreleased silently. A release that
+	// failed returned above, so the loop weighed every role of weighed, and the scan leaves them
+	// all alone.
 	if viewErr != nil {
-		return r.releaseAllRoleClaimsByScan(ctx, sessionID, viewErr, release)
+		return r.releaseAllRoleClaimsByScan(ctx, sessionID, weighed, viewErr, release)
 	}
 	return nil
 }
 
 // releaseAllRoleClaimsByScan releases every claim sessionID holds that the role bucket holds a
-// record for, read from one scan of the bucket. It is releaseAllRoleClaims' fallback, so it runs
-// only while the role claim view cannot say which roles the session holds, and it logs one INFO
-// line naming the session and carrying viewErr, the refusal RolesHeldBy answered that caller
-// with, each time it does: a listener whose view is not serving then says so on every
-// deregistration that pays for the scan, rather than only in /healthz. The refusal is carried in
-// rather than read from the view again here, because a view that became servable in between
-// would leave the line with no reason at all for a scan this deregistration is paying for.
+// record for, read from one scan of the bucket, but those of weighed. It is releaseAllRoleClaims'
+// fallback, so it runs only while the role claim view cannot say which roles the session holds,
+// and it logs one INFO line naming the session and carrying viewErr, the refusal RolesHeldBy
+// answered that caller with, each time it does: a listener whose view is not serving then says so
+// on every deregistration that pays for the scan, rather than only in /healthz. The refusal is
+// carried in rather than read from the view again here, because a view that became servable in
+// between would leave the line with no reason at all for a scan this deregistration is paying
+// for.
 //
 // The scan itself runs under bus.Bounded over roleClaimsUntil, so the fallback waits no longer
 // than the caller's context and the listing it walks away from ends there too: an unbounded scan
 // inside an HTTP handler is what holds a deregistration past the route's budget, and one left
 // running past it reads the bucket for a caller that is gone.
+//
+// A role of weighed, which the caller's release of the record's roles read already, is left
+// alone before anything else is asked of its record: reading it again here would take a grant
+// made since that read for the claim the release read, and free it - a second delete in one
+// deregistration, of a role its claimant had just been granted. Whatever that release did - freed
+// the claim, left a grant made since its read standing, or left a key it cannot read to the role
+// reaper with a line of its own - is that role's answer, so the scan neither releases nor counts
+// it.
 //
 // Every claim comes from that one scan, which carries each record's value and revision, so the
 // sweep sends nothing per key but the deletes it owes. A claim stored under a key NATS refuses
@@ -512,7 +526,7 @@ func (r *Registry) releaseAllRoleClaims(ctx context.Context, sessionID string, t
 // heartbeating never becomes. The other direction stays safe either way, because the delete
 // releaseReadRoleClaim sends is conditional on the revision the scan read: a claim another
 // session wins after the scan is kept, not deleted.
-func (r *Registry) releaseAllRoleClaimsByScan(ctx context.Context, sessionID string, viewErr error, release RoleReleaseAuthority) error {
+func (r *Registry) releaseAllRoleClaimsByScan(ctx context.Context, sessionID string, weighed []string, viewErr error, release RoleReleaseAuthority) error {
 	r.logger().Info("role registry fell back to a scan of the role bucket to release a session's claims; its claim view cannot be served",
 		slog.String("session_id", sessionID),
 		slog.String("reason", viewErr.Error()),
@@ -536,6 +550,9 @@ func (r *Registry) releaseAllRoleClaimsByScan(ctx context.Context, sessionID str
 	}
 	for _, scanned := range claims {
 		role := scanned.Role
+		if slices.Contains(weighed, role) {
+			continue
+		}
 		if err := r.roles().RefusesRead(role); err != nil {
 			refusedKeys.met(role, err)
 			continue

@@ -479,7 +479,7 @@ func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *
 	if _, served := cur.Get().Secrets["SECOND_KEY"]; !served {
 		t.Fatal("the reload refused SECOND_KEY, whose value read its context cut short")
 	}
-	if got, want := gained(), refusedLine(policytest.ID("FIRST_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
+	if got, want := gained(), valueRefusedLine(policytest.ID("FIRST_KEY"), typeOwner, false, decodeWhy(t, policy.TypeGoogleLogin, undecodable)); got != want {
 		t.Fatalf("the reload whose context ended during its second value read logged:\n%s\nwant:\n%s", got, want)
 	}
 
@@ -489,7 +489,7 @@ func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *
 	}
 	refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
 	refusedAs(t, cur.Get(), "SECOND_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), refusedLine(policytest.ID("SECOND_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
+	if got, want := gained(), valueRefusedLine(policytest.ID("SECOND_KEY"), typeOwner, false, decodeWhy(t, policy.TypeGoogleLogin, undecodable)); got != want {
 		t.Fatalf("the next load logged:\n%s\nwant:\n%s", got, want)
 	}
 }
@@ -527,7 +527,7 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 			t.Fatalf("the policy has read %d values; want 3, the boot's, the reread's and the next load's read of the same version again", n)
 		}
 		refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
-		if got, want := gained(), refusedLine(policytest.ID("APP_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
+		if got, want := gained(), valueRefusedLine(policytest.ID("APP_KEY"), typeOwner, false, decodeWhy(t, policy.TypeGoogleLogin, undecodable)); got != want {
 			t.Fatalf("the load that read the version again logged:\n%s\nwant:\n%s", got, want)
 		}
 	}
@@ -719,6 +719,28 @@ func refusedLine(id, reason, owner string, firstLoad bool, was string) string {
 		line += " was=" + was
 	}
 	return line + "\n"
+}
+
+// valueRefusedLine is the RefusedMessage line of a ReasonValueMalformed refusal: refusedLine with
+// the refusal's detail after it, the decoder's or the mint's words ("" for none), quoted as slog's
+// text output quotes a value that holds a space.
+func valueRefusedLine(id, owner string, firstLoad bool, detail string) string {
+	line := strings.TrimSuffix(refusedLine(id, policy.ReasonValueMalformed, owner, firstLoad, ""), "\n")
+	if detail != "" {
+		line += " detail=" + strconv.Quote(detail)
+	}
+	return line + "\n"
+}
+
+// decodeWhy is policy.DecodeValue's refusal of value read as secretType, which a value refusal
+// carries as its detail. A value the decoder reads is a test bug.
+func decodeWhy(t *testing.T, secretType, value string) string {
+	t.Helper()
+	err := policy.DecodeValue(secretType, value)
+	if err == nil {
+		t.Fatalf("the decoder reads the %s value the test calls undecodable", secretType)
+	}
+	return err.Error()
 }
 
 // noProfilesLine is the exact ProfilesAppliedMessage line a policy with no profiles file writes

@@ -26,6 +26,7 @@ import (
 // comment is published to its own topic, the copy the silent listener's failed mention gets
 // (TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment) included.
 func TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		route     string
@@ -73,6 +74,7 @@ func TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone(t *testing.T
 // person started, on an issue with no route - adds no copy: the comment's comment.created payload
 // is unchanged, and once the outbox has looked at it again it still reached no topic of s2's.
 func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	// Never released: the send to s2 waits until its caller gives up, and the attempt fails.
 	_ = state.hold("s2")
@@ -131,6 +133,7 @@ func commentCreatedRow(t *testing.T, database *store.Store, commentID string) co
 // sweep; when that resend fails too, the claimant still hears the comment, from the claimant copy
 // the outbox held for it.
 func TestAClaimantWhoseResentMentionFailsStillHearsTheComment(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
@@ -333,6 +336,7 @@ func (p *recordingOutboxPublisher) topicsAbout(t *testing.T, commentID string) [
 // fails too reaches no new destination: the outbox publishes nothing of the comment to the new
 // route, and the comment.created row keeps the publication its first publish recorded.
 func TestAFailedRetryOfAMentionSendsTheCommentToNoNewDestination(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	// Never released: every send to s2 waits until its caller gives up, and its attempt fails.
 	_ = state.hold("s2")
@@ -559,6 +563,7 @@ func aMentionQueuedPastALease(t *testing.T) heldLaneComment {
 // session's copy as a comment_fallback_copies row instead. When the queued send then lands, the
 // row settles with nothing published, so the session hears the comment once, from the mention.
 func TestAMentionQueuedPastALeaseHoldsItsCopyAndSettlesItWhenTheSendLands(t *testing.T) {
+	t.Parallel()
 	held := aMentionQueuedPastALease(t)
 	destinations := awaitPublishedCommentCreated(t, held.database, held.comment)
 	if slices.Contains(destinations, contracts.LegacyAgentSubject("s1")) {
@@ -586,6 +591,7 @@ func TestAMentionQueuedPastALeaseHoldsItsCopyAndSettlesItWhenTheSendLands(t *tes
 // The copy held for a mention waiting on a held lane is the session's only one when that send
 // fails: the fallback pass publishes it to that destination alone, once.
 func TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails(t *testing.T) {
+	t.Parallel()
 	held := aMentionQueuedPastALease(t)
 	awaitPublishedCommentCreated(t, held.database, held.comment)
 	awaitFallbackCopies(t, held.database, held.comment, []string{contracts.LegacyAgentSubject("s1")}, false)
@@ -626,6 +632,7 @@ func TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails(t *testing.T) 
 // here s1's host refuses that send too, so the pass publishes the copy and s1 hears the comment
 // exactly once, from the outbox.
 func TestARetryThatFailsDoesNotHoldTheCommentOfTheAttemptItOvertook(t *testing.T) {
+	t.Parallel()
 	lane := aMentionQueuedBehindAStalledSend(t, "session:s1")
 	lane.listener.refuseSends("s1")
 	retry := dispatchRequest(t, lane.handler, http.MethodPost, "/api/v1/comments/"+lane.queued+"/deliveries",

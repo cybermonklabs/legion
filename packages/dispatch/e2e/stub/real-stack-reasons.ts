@@ -141,6 +141,8 @@ export const realStackReasons: Record<string, string> = {
   "going-new-issue.e2e.ts":
     "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
+  "graph-store.e2e.ts":
+    "both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",
@@ -296,6 +298,8 @@ export const realStackReasons: Record<string, string> = {
     "opens the document's live room; where a result's commit stands is the server's comparison with the PR head",
   "visual.e2e.ts":
     "it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects",
+  "visual-guard.e2e.ts":
+    "the writes the guard must stop go to the real API and the live document room, and a second page reads the server back",
   "workspace.e2e.ts": "it asserts the counts and the titles the server groups a workspace into",
   "writer-spelling.e2e.ts": "asserts the readings inside the live document editor",
   "writes.e2e.ts":

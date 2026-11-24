@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -89,6 +90,7 @@ projects:
       - {repo: sjawhar/legion, workflow: .github/workflows/release.yaml, step: Apply}
   WIDGETS:
     production_check: off
+    default_steps: [implementer, reviewer]
 gates:
   design: root-issues
 github_apps:
@@ -1021,7 +1023,9 @@ func populatedState(t *testing.T) State {
 	// tree on its own, so a root and its child stand in different arms of one experiment; and,
 	// on the root LEGION-210, a row a hand-over settled at no arm at all — an empty variant, an
 	// empty mode and no instant — which is how a reader tells a unit settled at no arm from a
-	// unit never drawn, which carries no row.
+	// unit never drawn, which carries no row; and, on the child LEGION-209, the row of an
+	// experiment that sets how its issues are done, `planning`, which carries the group its arm set
+	// at the draw (`plan`), here `default`.
 	memoryDrawn := AssignmentView{Experiment: "memory", Variant: "memory", Mode: string(config.ExperimentRandom), DrawnAt: &memoryDrawnAt}
 	root := state.Issues["LEGION-208"]
 	root.Assignments = []AssignmentView{
@@ -1046,6 +1050,7 @@ func populatedState(t *testing.T) State {
 		Assignments: []AssignmentView{
 			memoryDrawn,
 			{Experiment: "plan-length", Variant: "long", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
+			{Experiment: "planning", Variant: "b", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt, Plan: string(config.PlanGroupDefault)},
 		},
 		// The child the workflow holds at `admitted`: it stands in no line, and the Dispatch
 		// links `admission.blocked` names are what hold it where it stands, which is the
@@ -1132,8 +1137,9 @@ func TestStateGolden(t *testing.T) {
 // own state, asked through the route itself. The caller is served at the recorded contract at or
 // below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
 // block in the shape contract 152 gave it, written from the same entries
-// (withoutRepositoriesLive), and every other key as a caller at shapedAnswersContract is served
-// it, since no other row of stateNarrowings stands between shapedAnswersContract and
+// (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
+// row stands above that contract too, and every other key as a caller at shapedAnswersContract is
+// served it, since no other row of stateNarrowings stands between shapedAnswersContract and
 // repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
 // contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
 // view's `updateState` and `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a
@@ -1499,7 +1505,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //     `pause`, the key every other resume leaves out;
 //   - the holds are a background-work streak over eleven passes with the kinds its session
 //     reported in `detail`, and a teardown's overtaken hold, which reads a hold and not the view
-//     behind it and so carries no detail at all (outbox.recordPodHold).
+//     behind it and so carries no detail at all (outbox.cancelRelease).
 func TestReleaseRecordsResponseGolden(t *testing.T) {
 	released := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{
@@ -1766,6 +1772,23 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "signoff.json", SignOffResponse{})
 	golden(t, "root-close.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
+}
+
+// The two routes of the owner's plan (contract 219) each have a fixture, named for its route as
+// the routes above are. register_plan answers the plan it took, each task with the steps its block
+// names as the plan writes them (registeredPlan), and stop_task answers the empty object of a
+// fact route. `@legion/contracts` parses both, so a field the daemon adds to either is caught
+// there.
+func TestOwnerPlanRouteGoldens(t *testing.T) {
+	golden(t, "plan-register.json", PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
+		ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+		Version:    4,
+		Tasks: []plan.Task{{
+			ID:    "a",
+			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
+		}},
+	})})
+	golden(t, "task-stop.json", EmptyResponse{})
 }
 
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes

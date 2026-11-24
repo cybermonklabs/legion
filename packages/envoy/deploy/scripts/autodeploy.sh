@@ -82,12 +82,17 @@ compose_with_tag() {
 # script to that (its static check, and a behavioural row).
 
 # config_failed STATUS ERRFILE COMMAND WHAT logs why a `docker compose config` ended with STATUS: a
-# timeout by name, any other failure by compose_refusal's reason from ERRFILE, with COMMAND, the
-# one an operator runs to read Compose's own message; WHAT ends the line ("not deploying <sha>").
+# timeout by name; any other failure as Compose that cannot run, by name, when `docker compose
+# version` fails too, else by compose_refusal's reason from ERRFILE, with COMMAND, the one an
+# operator runs to read Compose's own message; WHAT ends the line ("not deploying <sha>"). Compose
+# is probed here, after a read failed, and not before every read: each `docker compose` starts the
+# docker CLI and the Compose plugin twice, and a pass that deploys reads the configuration twice.
 # Its line goes to file descriptor 3, as the readers that call it run inside a command substitution.
 config_failed() {
   if (($1 == 124)); then
     log "docker compose config did not answer within 60 s; run \`$3\` to see why; $4" >&3
+  elif ! docker compose version >/dev/null 2>&1; then
+    log "docker compose cannot run (docker compose version failed); the deployer reads Dispatch's settings through Compose's own configuration; $4" >&3
   else
     log "Compose refused $COMPOSE_FILE with the env file in $COMPOSE_DIR: $(compose_refusal "$2" "$1" "$3"); $4" >&3
   fi
@@ -246,13 +251,10 @@ resolved_settings() {
   return 0
 }
 
-# compose_ready WHAT says whether the deployer can read Compose's configuration at all: `docker
-# compose` that runs, and python3, each refused by name with WHAT ending the line.
-compose_ready() {
-  if ! docker compose version >/dev/null 2>&1; then
-    log "docker compose cannot run (docker compose version failed); the deployer reads Dispatch's settings through Compose's own configuration; $1"
-    return 1
-  fi
+# python3_ready WHAT says whether the deployer can read Compose's configuration with python3,
+# refused by name with WHAT ending the line. That `docker compose` runs at all is asked only once a
+# read of the configuration fails (config_failed).
+python3_ready() {
   if ! command -v python3 >/dev/null; then
     log "python3 is not on PATH; the deployer reads Dispatch's settings from docker compose config with it; $1"
     return 1
@@ -625,9 +627,9 @@ deploy() {
   # deployed tag was running against when the deployer first tried to replace it (schema_applied,
   # above). Kept while that tag stays deployed, it is what a rollback to it needs: a retry after a
   # failed deploy that migrated starts from the moved schema. A value the deployer before this one
-  # wrote is a bare max(version), which roll_back_or_stop compares the old way.
-  recorded=$(compose_values "could not read ENVOY_IMAGE_SCHEMA; not deploying $sha" ENVOY_IMAGE_SCHEMA) || return 1
-  recorded=${recorded#=}
+  # wrote is a bare max(version), which roll_back_or_stop compares the old way. run_once read it,
+  # in the one read of the env file that also gave the deployed tag.
+  recorded=$3
   if [[ -n "$recorded" && "${recorded%:*}" == "$previous" ]]; then
     baseline="${recorded##*:}"
     if [[ ! "$baseline" =~ ^[0-9]+-[0-9]+-[0-9a-f]{64}$ && ! "$baseline" =~ ^[0-9]+$ ]]; then
@@ -679,14 +681,17 @@ deploy() {
 }
 
 run_once() {
-  local sha deployed
+  local sha deployed recorded values
   if sha=$(newest_published_main); then
-    compose_ready "not deploying $sha" || return 1
-    # A tag that cannot be read is refused by name, never taken for "no tag".
-    deployed=$(deployed_tag "could not read the deployed ENVOY_IMAGE_TAG; not deploying $sha") || return 1
+    python3_ready "not deploying $sha" || return 1
+    # A tag that cannot be read is refused by name, never taken for "no tag". The schema record
+    # deploy compares comes from the same read of the env file, which no step before it writes.
+    values=$(compose_values "could not read the deployed ENVOY_IMAGE_TAG; not deploying $sha" ENVOY_IMAGE_TAG ENVOY_IMAGE_SCHEMA) || return 1
+    { IFS= read -r deployed && IFS= read -r recorded; } <<<"$values"
+    deployed=${deployed#=}
     if [[ "$sha" != "$deployed" ]]; then
       log "main has a newer published image: $sha (deployed $deployed)"
-      deploy "$sha" "$deployed"
+      deploy "$sha" "$deployed" "${recorded#=}"
     fi
   else
     log "no published image among the last 30 main commits"
@@ -701,7 +706,7 @@ if [[ "$once" == true ]]; then
   exit 0
 fi
 
-if compose_ready "the deployer starts all the same"; then
+if python3_ready "the deployer starts all the same"; then
   log "autodeploy started; deployed=$(deployed_tag "the deployer starts all the same" || printf 'unread')"
 else
   log "autodeploy started"

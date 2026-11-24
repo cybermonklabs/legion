@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { delimiter, dirname, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_STREAM_WATCH_INTERVAL_MS,
@@ -102,6 +102,8 @@ import type { InboundSubscription } from "@legion/envoy-client/inbound-connectio
 import { connectListenerRelay } from "@legion/envoy-client/listener-relay";
 import { machineID } from "@legion/envoy-client/machine";
 import {
+  clientBuild,
+  clientConnectionName,
   connectNats,
   NATS_DIAL_PLAN,
   NATS_DIAL_TOKEN_DROPPED,
@@ -137,6 +139,8 @@ import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
+  keyTakenDetails,
+  keyTakenText,
   type MessageMetadataArguments,
   parseEnvoyToolArguments,
   publishConfirmationText,
@@ -371,6 +375,36 @@ export function setNatsConnectForTests(
 // file's stand-in, with that file's state. Production callers never call this.
 export function resetNatsConnectForTests(): void {
   delete natsConnectStore[NATS_CONNECT];
+}
+
+/** The directory of this module: `dist/` in a packed build (`dist/envoy.js`), `extensions/` when
+ *  it runs from source. */
+const MODULE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * What this plugin's NATS connection names as its build after its name (`clientConnectionName`),
+ * which legacy-subjects-gate.sh reads from the hub's census of connections: the build-commit stamp
+ * the worker image writes beside the packed bundle, else, for a packed build, the release version
+ * its manifest carries, else none (a plugin run from its source). A test replaces it.
+ */
+let buildSource: { readonly stamp: string; readonly packed: boolean } = {
+  stamp: join(MODULE_DIRECTORY, "build-commit"),
+  packed: basename(MODULE_DIRECTORY) === "dist",
+};
+
+export function setBuildSourceForTests(source: {
+  readonly stamp: string;
+  readonly packed: boolean;
+}): void {
+  buildSource = source;
+}
+
+/** This plugin's build as its NATS connection names it, read at each dial. */
+function connectionBuild(): string | undefined {
+  return clientBuild(
+    buildSource.stamp,
+    buildSource.packed ? { name: packageName, version: packageVersion } : undefined
+  );
 }
 
 /**
@@ -1293,7 +1327,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       standIn?.connect ?? connect,
       natsConnectionOptions({
         servers: natsUrls,
-        name: `omp-${sessionID || "unknown"}`,
+        name: clientConnectionName(`omp-${sessionID || "unknown"}`, connectionBuild()),
         credential: natsCredential,
       }),
       { ...plan, budgetMs: natsDialBudget(left, PASS_AFTER_DIAL_MS, plan) },
@@ -5438,6 +5472,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             ...(typeof idempotencyKey === "string" ? { idempotencyKey } : {}),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_send"), keyTakenDetails(result));
+          }
           return toolSuccess(sendConfirmationText(result), {
             event_id: result.envelope.event_id,
             recipient: result.recipient,
@@ -5457,6 +5494,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             message: stringFor(parameters, "message"),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_publish"), keyTakenDetails(result));
+          }
           // The skip is the listener's own delivery: the role lane skips the holder it resolved
           // when that holder is the message's source, and the fanout skips every interest whose
           // session is that source. The session still gets its own publish from its own

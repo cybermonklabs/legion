@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # shellcheck source-path=SCRIPTDIR
-# The public leg of the outside agent's acceptance, rows P1 to P10: what an outside person's agent
-# does and is refused from the public internet, off the private network, through the three edge
-# origins alone. A workflow on a runner on the public internet runs it after its own browser has
-# signed the test person in. outside-agent-acceptance.md, beside this file, says what each row
-# reads, how the tailnet leg starts this one, and the gate both legs make.
+# The public leg of the outside agent's acceptance, rows P1 to P10 and the Codex leg's C0 to C7:
+# what an outside person's agent does and is refused from the public internet, off the private
+# network, through the three edge origins alone. A workflow on a runner on the public internet runs
+# it after its own browser has signed the test person in. outside-agent-acceptance.md, beside this
+# file, says what each row reads, how the tailnet leg starts this one, and the gate both legs make.
 #
 # It is written for bash 3.2 (as macOS ships it) and later, and sources outside-agent-lib.sh from
 # beside it, what both legs share. It drives what the outside person installs and runs: Oh My Pi
 # (`omp`) in tmux, as packages/pi-envoy/scripts/smoke-delivery.sh runs it, the `dispatch` command
-# the plugin ships, and curl. Calls that carry the agent's broker credential, which only the
-# holder of its key can sign, go through outside-agent-probe.ts beside this file, run with bun.
+# the plugin ships, and curl; and, after P10, outside-agent-codex.sh beside it, which runs the
+# Codex CLI with the codex-envoy plugin under P2's device login (rows C0-C7). Calls that carry the
+# agent's broker credential, which only the holder of its key can sign, go through
+# outside-agent-probe.ts beside this file, run with bun.
 #
 # Every process it starts runs with `env -i` and section (c)'s settings alone, under a HOME of
 # its own in a `mktemp -d` directory, so nothing of the machine it runs on reaches them:
@@ -41,14 +43,26 @@
 #   OUTSIDE_PATH_TARGETS      the target list outside-path-reach.sh reads (P9).
 #   OUTSIDE_REVOKE_COMMAND    the workflow's revoke step (row revocations), and OUTSIDE_T5_COMMAND
 #                             its browser in the T5 window (rows T5-cookie and T5-passkey).
-# Optional: OUTSIDE_OTHER_PROJECT (default EXAMPLE) and OUTSIDE_OTHER_REPOSITORY (default
+#   OUTSIDE_INSIDE_DISPATCH_URL
+#                             Dispatch's private origin, which C2's control points the Codex
+#                             plugin's DISPATCH_URL at (outside-agent-codex.sh). No default: the
+#                             workflow passes it as it passes the edge origins; without it C2 reads
+#                             UNKNOWN.
+#   OUTSIDE_CODEX_ENVOY_VERSION, OUTSIDE_CODEX_ENVOY_COMMIT, OUTSIDE_DEVICE_LOGIN_COMMIT
+#                             the exact @sjawhar/codex-envoy release the Codex leg installs from npm,
+#                             the commit its provenance must name, and the device login's merge
+#                             commit that commit must hold (row C0). Without the version every C row
+#                             reads UNKNOWN; without either commit, C0 does.
+# Optional: OUTSIDE_CODEX_ENVOY_SOURCE=checkout (a development run of the Codex leg, whose C0 reads
+# UNKNOWN); OUTSIDE_OTHER_PROJECT (default EXAMPLE) and OUTSIDE_OTHER_REPOSITORY (default
 # example-owner/example-repo), the project and repository P5 must be refused;
 # OUTSIDE_AGENT_PUBLIC_TSV, a file that gets a copy of the TSV; OUTSIDE_GITHUB_EVENT_SECONDS
 # (default 900), how long P5 waits for an event; OUTSIDE_T5_SECONDS (default 1200), the longest
 # the T5 window stays open.
 #
-# Output: on stdout a TSV, the header `row want got verdict`, one line per row P1 to P10, the rows
-# revocations, T5-agent, T5-cookie and T5-passkey, and a last `verdict` line. Progress goes to
+# Output: on stdout a TSV, the header `row want got verdict`, one line per row P1 to P10, the
+# Codex leg's C0 to C7, the rows revocations, T5-agent, T5-cookie and T5-passkey, and a last
+# `verdict` line. Progress goes to
 # stderr. A row reads PASS, FAIL or UNKNOWN: UNKNOWN when it could not run, its `got` naming what
 # it could not read, never PASS. A row quotes no output of an operator's command, which may print
 # a cookie, a code or an invite token: only its exit status and a fixed phrase. Exit 0 when every
@@ -279,18 +293,24 @@ else
   p2_pid=$!
   background="$background $p2_pid"
   code=''
+  p2_ended=''
   deadline=$(($(now) + 60))
-  while [ -z "$code" ] && [ "$(now)" -lt "$deadline" ]; do
+  # Whether the login still runs is read before its log: a login that has ended has written all it
+  # printed, so a code it printed as it ended is still read, and the wait ends on that read.
+  while [ -z "$code" ] && [ -z "$p2_ended" ] && [ "$(now)" -lt "$deadline" ]; do
+    running_child "$p2_pid" || p2_ended=yes
     while IFS= read -r line; do
       case $line in *'and enter the code '*) code=${line##*and enter the code } ;; esac
     done <"$work/p2.log"
-    [ -z "$code" ] || break
-    running_child "$p2_pid" || break
-    sleep 1
+    [ -n "$code" ] || [ -n "$p2_ended" ] || pause
   done
   if [ -z "$code" ]; then
     last=$(tr '\n' ' ' <"$work/p2.log")
-    row P2 "$want2" "dispatch login printed no code within 60 s: ${last:0:300}" UNKNOWN
+    if [ -n "$p2_ended" ]; then
+      row P2 "$want2" "dispatch login ended and printed no code: ${last:0:300}" UNKNOWN
+    else
+      row P2 "$want2" "dispatch login printed no code within 60 s: ${last:0:300}" UNKNOWN
+    fi
   else
     set -f
     # shellcheck disable=SC2086 # a command line, split on blanks on purpose
@@ -300,7 +320,7 @@ else
     approved=$?
     p2_code=$code
     answer=$(tr '\n' ' ' <"$work/p2.approve")
-    await_child "$p2_pid" 300 1
+    await_child "$p2_pid" 300
     exited=$child_exit
     mode=''
     # The mode as ls prints it: stat's flags differ between GNU and BSD, and macOS ships BSD's.
@@ -412,7 +432,7 @@ if [ -z "$problem" ]; then
   deadline=$(($(now) + 30))
   while [ -z "$model_port" ] && [ "$(now)" -lt "$deadline" ]; do
     model_port=$(json_field port "$(cat "$work/model.log")")
-    [ -n "$model_port" ] || sleep 1
+    [ -n "$model_port" ] || pause
   done
   if [ -n "$model_port" ]; then
     mkdir -p "$home/.omp/agent"
@@ -484,7 +504,7 @@ EOF
         esac
         return 0
       fi
-      sleep 1
+      pause
     done
     return 1
   }
@@ -492,7 +512,7 @@ EOF
   ready=''
   deadline=$(($(now) + 60))
   while [ -z "$ready" ] && [ "$(now)" -lt "$deadline" ]; do
-    case $(pane) in *"outside-e2e-$nonce"*) ready=yes ;; *) sleep 1 ;; esac
+    case $(pane) in *"outside-e2e-$nonce"*) ready=yes ;; *) pause ;; esac
   done
   omp_clear_screens "$tmux_socket" outside-e2e
   # Whether the edge serves a relay socket at all, asked as the probe's own session so that the
@@ -582,7 +602,7 @@ else
   refused interest 'notifications.github.>' repository_not_in_project
   refused publish "notifications.dispatch.issue.$project.$project-1.comment.created" topic_not_published
   say "P5: waiting for the event probe"
-  await_child "$event_pid" $((event_seconds + 120)) 2
+  await_child "$event_pid" $((event_seconds + 120))
   event=$(cat "$work/p5.event" 2>/dev/null)
   status=$(json_field status "$event")
   delivered=$(json_field event "$event")
@@ -731,13 +751,14 @@ else
   # Every token the Oh My Pi session traded before it was first read on the session list had
   # expired 300 s after that read at the latest, and the socket it opened with that token closed
   # 25 s after: the session opens its socket before it registers. What it holds after that came
-  # through a socket it opened again.
-  while [ "$(now)" -lt $((session_seen_at + 330)) ]; do sleep 5; done
+  # through a socket it opened again. The leg sleeps until then, and no longer.
+  left=$((session_seen_at + 330 - $(now)))
+  [ "$left" -le 0 ] || sleep "$left"
   sent=$(probe send "$session_id" "outside-e2e after-reopen $nonce")
   sent_at=$(now)
   shown=''
   while [ -z "$shown" ] && [ "$(now)" -le $((sent_at + 10)) ]; do
-    case $(shown_text) in *"outside-e2e after-reopen $nonce"*) shown=$(($(now) - sent_at)) ;; *) sleep 1 ;; esac
+    case $(shown_text) in *"outside-e2e after-reopen $nonce"*) shown=$(($(now) - sent_at)) ;; *) pause ;; esac
   done
   sent_status=$(json_field status "$sent")
   if [ -n "$(unknown_of "$sent")" ] || [ -z "$sent_status" ]; then
@@ -804,6 +825,45 @@ else
   fi
 fi
 
+# --- C0-C7: the outside person's Codex agent, under P2's device login. outside-agent-codex.sh,
+# beside this file, runs it with this leg's HOME, where P2's login is, so no second login is
+# approved; it installs the pinned Codex and the plugin's npm release itself. Its rows join this
+# leg's TSV, each read through worst_row, so a row it wrote twice reads as its worst copy. ---
+codex_rows='C0 C1 C2 C3 C4 C5 C6 C7'
+problem=$(probe_problem)
+[ -n "$problem" ] || [ -f "$here/outside-agent-codex.sh" ] ||
+  problem="outside-agent-codex.sh is not beside this file in $here"
+if [ -n "$problem" ]; then
+  for name in $codex_rows; do row "$name" "the Codex leg's row $name" "$problem" UNKNOWN; done
+else
+  say "C0-C7: outside-agent-codex.sh"
+  : >"$work/codex.tsv"
+  env -i "PATH=$work/tools:$PATH" "HOME=$home" "TERM=${TERM:-xterm-256color}" \
+    "TMPDIR=${TMPDIR:-/tmp}" OUTSIDE_DISPATCH_URL="$dispatch" OUTSIDE_BROKER_URL="$broker" \
+    OUTSIDE_LISTENER_URL="$listener" OUTSIDE_INSIDE_DISPATCH_URL="${OUTSIDE_INSIDE_DISPATCH_URL:-}" \
+    OUTSIDE_PROJECT="$project" OUTSIDE_PERSON="$person" OUTSIDE_PEER_SESSION="$peer" \
+    OUTSIDE_DEVICE_LOGIN_HOME="$home" OUTSIDE_ALLOW_HTTP="$allow_http" \
+    OUTSIDE_CODEX_ENVOY_VERSION="${OUTSIDE_CODEX_ENVOY_VERSION:-}" \
+    OUTSIDE_CODEX_ENVOY_COMMIT="${OUTSIDE_CODEX_ENVOY_COMMIT:-}" \
+    OUTSIDE_DEVICE_LOGIN_COMMIT="${OUTSIDE_DEVICE_LOGIN_COMMIT:-}" \
+    OUTSIDE_CODEX_ENVOY_SOURCE="${OUTSIDE_CODEX_ENVOY_SOURCE:-}" \
+    OUTSIDE_CODEX_TSV="$work/codex.tsv" bash "$here/outside-agent-codex.sh" >/dev/null </dev/null
+  codex_exit=$?
+  for name in $codex_rows; do
+    line=$(worst_row "$work/codex.tsv" "$name")
+    if [ -z "$line" ]; then
+      row "$name" "the Codex leg's row $name" "outside-agent-codex.sh wrote no $name row (exit $codex_exit)" UNKNOWN
+      continue
+    fi
+    IFS="$tab" read -r _ want got verdict <<EOF
+$line
+EOF
+    case $verdict in PASS | FAIL | UNKNOWN) row "$name" "$want" "$got" "$verdict" ;; *)
+      row "$name" "$want" "the Codex leg's row reads $(cell "$verdict"), which is no verdict: $got" UNKNOWN ;;
+    esac
+  done
+fi
+
 # --- revocations: before the window, while the person's cookie still reads their own list, the
 # workflow's OUTSIDE_REVOKE_COMMAND (a command line, split on blanks) revokes every device login
 # the run approved but P2's, which it is told as OUTSIDE_EDGE_REVOKE_KEEP. After the owner's removal
@@ -834,13 +894,13 @@ fi
 # up to OUTSIDE_T5_SECONDS (default 1200) the leg trades P2's device login afresh every 10 s, and
 # keeps a relay socket open with the newest token, opening another when one closes, as the agent
 # would. Once a trade is refused, it watches the socket open then until it closes or 325 s pass,
-# and goes on trading every 10 s meanwhile: a trade answered after the refusal reads FAIL, since
-# the removal stops every trade and not one. The socket's close passes only with the edge's own
-# codes, 4401 (its token expired) or 4403 (refused before its expiry): any other close says
-# nothing of the removal. OUTSIDE_T5_COMMAND, the workflow's browser, runs beside it with
-# OUTSIDE_T5_DEADLINE (Unix s) and OUTSIDE_T5_TSV: it polls the person's cookie until it gets 401
-# and then tries the passkey sign-in, writing rows T5-cookie and T5-passkey there, which are
-# copied into this leg's TSV. ---
+# and goes on trading every 10 s meanwhile and once more as it closes: a trade answered after the
+# refusal reads FAIL, since the removal stops every trade and not one. The socket's close passes
+# only with the edge's own codes, 4401 (its token expired) or 4403 (refused before its expiry): any
+# other close says nothing of the removal. OUTSIDE_T5_COMMAND, the workflow's browser, runs beside
+# it with OUTSIDE_T5_DEADLINE (Unix s) and OUTSIDE_T5_TSV: it polls the person's cookie until it
+# gets 401 and then tries the passkey sign-in, writing rows T5-cookie and T5-passkey there, which
+# are copied into this leg's TSV. ---
 t5_seconds=${OUTSIDE_T5_SECONDS:-1200}
 want_t5a="once the owner removes ${person:-<OUTSIDE_PERSON>}: a fresh trade of the device login is refused and no later trade answered, and the relay socket open at that moment closes 4401 or 4403"
 want_t5c="the person's cookie answered 401 after the removal"
@@ -896,7 +956,12 @@ else
       probe_as="outside-e2e-t5-$nonce" probe_exec hold "$t5_seconds" >"$socket_log" &
       socket_pid=$!
       background="$background $socket_pid"
-      sleep 3
+      # Its first line, `opened_at` or `unknown`, looked at every pause for up to 3 s; a socket
+      # that ended has written all it will.
+      socket_until=$(($(now) + 3))
+      while [ ! -s "$socket_log" ] && running_child "$socket_pid" && [ "$(now)" -lt "$socket_until" ]; do
+        pause
+      done
       case $(cat "$socket_log") in *'"unknown"'*) socket_unread=$(text_of "$socket_log") ;; esac
     fi
     sleep 10
@@ -913,7 +978,8 @@ else
       socket_open=yes
     fi
     while [ "$(now)" -le $((refused_at + 325)) ]; do
-      sleep 10
+      # The 10 s between two trades, cut short by the close of the socket this watch is for.
+      if [ -n "$socket_open" ]; then end_within "$socket_pid" 10; else sleep 10; fi
       answer=$(probe trade)
       case $(json_field traded "$answer") in
         false) refusals=$((refusals + 1)) ;;
@@ -954,7 +1020,7 @@ else
     row T5-cookie "$want_t5c" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
     row T5-passkey "$want_t5p" "OUTSIDE_T5_COMMAND is unset, so the browser was not read" UNKNOWN
   else
-    await_child "$t5_driver" $((deadline + 30 - $(now))) 2
+    await_child "$t5_driver" $((deadline + 30 - $(now)))
     driver_end="${child_exit:+exit $child_exit}"
     driver_end=${driver_end:-still running}
     for name in T5-cookie T5-passkey; do

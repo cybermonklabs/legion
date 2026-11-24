@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -22,6 +23,8 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // The tests in this file run the listener binary of this checkout in the environment
 // gcp:ClusteredNatsHub renders for its listener pod, so they carry the natslive tag. The unit

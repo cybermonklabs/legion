@@ -14,6 +14,7 @@ import (
 // testdata/routes.txt, which TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the
 // table against.
 func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
+	t.Parallel()
 	if shapeless := shapelessRoutes((&server{deps: Deps{TestHooksEnabled: true}}).routes()); len(shapeless) > 0 {
 		t.Fatalf("mounted rows with no shape: %v", shapeless)
 	}
@@ -29,6 +30,7 @@ func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
 // out is the emitter's own refusal (openapi.go, requestBody), which holds every row the document
 // is written from, so the predicate for a body is stated there alone.
 func TestRouteShapesDescribeASuccess(t *testing.T) {
+	t.Parallel()
 	for name, shape := range routeShapes {
 		if shape.Status < http.StatusOK || shape.Status >= http.StatusMultipleChoices {
 			t.Errorf("%s: success status %d is not a 2xx", name, shape.Status)

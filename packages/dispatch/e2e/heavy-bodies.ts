@@ -3,7 +3,7 @@
 // every body here is drawn by one spec or the other. Eight of the nine are written as documents
 // through the API by Go, which spells them again in
 // `packages/envoy/internal/dispatch/pmdoc/heavybodies`, where `pmdoc`'s own tests and
-// `internal/dispatch/api`'s heavy-document-write test read them; Go spells three bodies more that
+// `internal/dispatch/api`'s heavy-document-write test read them; Go spells five bodies more that
 // no spec here draws, and `nestedThenTextLines` is this side's alone. The bodies both sides spell
 // must be the very same bytes - a shape changed on one alone would leave the other comparing a
 // different body against the same numbers (sjawhar/legion#2519) - and what holds them to that is
