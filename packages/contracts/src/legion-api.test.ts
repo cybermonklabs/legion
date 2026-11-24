@@ -332,7 +332,7 @@ const schemas: Record<string, z.ZodType> = {
   // case "the rated completion the daemon reads parses under the contract's names" below.
   "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
   // `api.HandoffCompleteRequest` as the reviewer's completion of reviewing sends it (contract
-  // 255): its verdict approve on the head its record names. Written by `internal/api`'s
+  // 272): its verdict approve on the head its record names. Written by `internal/api`'s
   // TestReviewerVerdictBodiesGolden, with the three below: the reviewer's verdict past review
   // (`api.ReviewVerdictRequest`), the owner's, which names the issue it is for, and their empty
   // answer.
@@ -1850,7 +1850,7 @@ test("a backward move may name its issue and its head", () => {
   expect(LegionPhaseBackwardRequest.safeParse({ ...move, commit: "" }).success).toBeFalse();
 });
 
-// The owner's sign-off is its approve at the head it names (contract 255), so it names one.
+// The owner's sign-off is its approve at the head it names (contract 272), so it names one.
 test("a sign-off names the head it accepts", () => {
   const signOff = { grantId: "grant-208", issue: "LEGION-208" };
   expect(LegionSignOffRequest.safeParse({ ...signOff, commit: "c0ffee" }).success).toBeTrue();

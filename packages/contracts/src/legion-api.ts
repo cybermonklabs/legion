@@ -2127,7 +2127,7 @@ export function legionPlanRatingLoneField(
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
  * `verdict` is `approve` or `changes` for the completion of a review step, the reviewer's
- * (`LEGION_REVIEWER_VERDICTS`, `REVIEWER_VERDICT_REQUIRED`; contract 255, before which a
+ * (`LEGION_REVIEWER_VERDICTS`, `REVIEWER_VERDICT_REQUIRED`; contract 272, before which a
  * reviewer's `pass` is read as approve and its `fail` as changes), which the daemon takes only
  * from the claim the step's record names (`VERDICT_CALLER_FORBIDDEN`), `pass`, `pending` or
  * `fail` for a check report (`CHECK_VERDICT_REQUIRED`), and the empty string for every other phase
@@ -2172,13 +2172,13 @@ export const LegionHandoffCompleteRequest = z
     message: "returnTo is carried only by a tester's completion, which names no verdict",
   });
 
-/** The reviewer's verdict on the head it reviewed (contract 255): `approve`, the head may merge,
+/** The reviewer's verdict on the head it reviewed (contract 272): `approve`, the head may merge,
  * or `changes`, the head needs changes. The daemon takes no other word of a reviewer on that
  * contract (`REVIEWER_VERDICT_REQUIRED`). */
 export const LEGION_REVIEWER_VERDICTS = ["approve", "changes"] as const;
 
 /** `api.ReviewVerdictRequest`, the verdict past review of the agent of a review step (`POST
- * /legion/v1/review-verdict`, contract 255): its `verdict` on `commit`, the head its issue's pull
+ * /legion/v1/review-verdict`, contract 272): its `verdict` on `commit`, the head its issue's pull
  * request moved to while the issue stands in accepting, retro or merging, and `summary`. `issue`
  * is the issue the verdict is for: the architect that ran a child's owner acceptance names it,
  * since its grant is of its own issue, and the reviewer leaves it out, so the grant's issue is the
@@ -2323,7 +2323,7 @@ export const LegionWaveReleaseRequest = z.strictObject({
  * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
  * grant's (`ISSUE_NOT_GRANTS`). `commit` is the head the architect sends back, required for that
- * grant (contract 255): the daemon takes the move only where it is the pull request's current head
+ * grant (contract 272): the daemon takes the move only where it is the pull request's current head
  * (`VERDICT_HEAD_NOT_CURRENT` otherwise, changing nothing) and records it there as the owner's
  * acceptance's `changes`. A phase worker names none. */
 export const LegionPhaseBackwardRequest = z.strictObject({
@@ -2357,7 +2357,7 @@ export const LegionEscalateRequest = z.strictObject({
 /** `api.SignOffRequest`, the owning architect's acceptance of an issue in `accepting` at `commit`,
  * the head it accepts, which moves its task to its next step, or to `retro` where the acceptance is
  * the task's last step; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`).
- * From contract 255 it names that head, and the daemon takes it only where it is the pull request's
+ * From contract 272 it names that head, and the daemon takes it only where it is the pull request's
  * current head (`VERDICT_HEAD_NOT_CURRENT` otherwise, changing nothing) and records it there as the
  * owner's acceptance's `approve`. From contract 219 the daemon judges it again when it applies it,
  * and refuses it, changing nothing, where the architect no longer owns the issue (`ISSUE_NOT_OWNED`,

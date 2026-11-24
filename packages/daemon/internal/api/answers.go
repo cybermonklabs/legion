@@ -47,7 +47,7 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 206, 213, 219, 220, 228 and 255 are constants rather than their numbers,
+// 193, 202, 205, 206, 213, 219, 220, 228 and 272 are constants rather than their numbers,
 // because the entries that added them name them (shapedAnswersContract, the shaped answers' entry;
 // repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; CheckStatesContract, the check states'; cachesSourceContract,
