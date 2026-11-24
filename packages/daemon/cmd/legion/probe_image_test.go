@@ -254,7 +254,7 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 }
 
 // curlAfterTheHandshake is a curl that answers as curl 8.18.0 on OpenSSL 3.5.5 does, the curl of
-// an image on an Ubuntu 26.04 base: from 8.17.0, curl on OpenSSL verifies a chain only after the
+// an image on an Ubuntu 26.04 base: curl 8.17.0 to 8.23.0 on OpenSSL verify a chain only after the
 // handshake, so at a server that serves a chain it holds no key for, curl fails the server's
 // signature whatever its trust store holds. Its `--version` names that build, and every other
 // call ends with the line that curl printed at such a server, exit 35.
