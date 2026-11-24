@@ -2296,9 +2296,11 @@ CLAIM_MODEL_SCRIPT = (f"go test -count=1 -timeout {CLAIM_MODEL_TIMEOUT} -v -run 
                       f"{CLAIM_MODEL_PACKAGE}")
 
 # The PostgreSQL 16 job: three tests of internal/dispatch/delivery whose subject differs between
-# PostgreSQL 16 and the 18 every other job runs, by name, against a PostgreSQL 16 service
-# (.github/workflows/ci-job-envoy-go-postgres16.yaml says which and why). They stay in envoy-go's
-# and envoy-go-race's runs of the package as well: those are their runs on 18. -run and -v are
+# PostgreSQL 16 and the 18 every other job runs, by name, against a PostgreSQL 16 service (the job
+# envoy-go-postgres16 of .github/workflows/ci-job-envoy-go.yaml says which and why). The job is
+# the second job of envoy-go's file, run under ci.yaml's envoy-go call and gated by its filter, so
+# its step is an Exact entry of the envoy_go gate. The three tests stay in envoy-go's and
+# envoy-go-race's runs of the package as well: those are their runs on 18. -run and -v are
 # outside the simple form, so the step is pinned whole, and a -run moves no closure: the step
 # compiles every test file of the package.
 POSTGRES16_JOB = "envoy-go-postgres16"
@@ -3531,13 +3533,21 @@ GATES = [
             (ENVOY, ["./natsgrant/"], "go test -tags natslive ./natsgrant/", {"tags": "natslive"}),
             (ENVOY, ["./cmd/listener/"], "go test -tags natslive ./cmd/listener/", {"tags": "natslive"}),
         ]),
+        # The PostgreSQL 16 job, the second job of envoy-go's file (POSTGRES16_JOB): its three tests
+        # by name (POSTGRES16_TESTS). Its Run is the plain go test of the package, which compiles
+        # every test file of internal/dispatch/delivery whichever three the -run selects, and
+        # which the unit step's run of the package already puts on this gate's filter.
+        pinned_step(POSTGRES16_JOB, POSTGRES16_STEP, ENVOY, POSTGRES16_SCRIPT, [
+            (ENVOY, [POSTGRES16_PACKAGE], f"go test -run of three tests in {POSTGRES16_PACKAGE} on PostgreSQL 16", {}),
+        ], workflow=job_file("envoy-go")),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', UNIT_TEST_STEP)} runs it, and "
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
         (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
-    ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
+    ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod")
+      + setup_go(POSTGRES16_JOB, f"{ENVOY}/go.mod", workflow=job_file("envoy-go")) + bun_job("envoy-go")),
 
     # envoy's Go build, vet, format, generated-code and migration checks, the half of the old
     # envoy-go-checks job a pull request runs
@@ -3755,15 +3765,6 @@ GATES = [
             (ENVOY, [CLAIM_MODEL_PACKAGE], f"go test -run of the sender claim model's two tests in {CLAIM_MODEL_PACKAGE}", {}),
         ]),
     ], reads=setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod")),
-
-    # The PostgreSQL 16 job: its three tests by name (POSTGRES16_TESTS), pinned whole since a -run
-    # is outside the simple form. Its Run is the plain go test of the package, which compiles every
-    # test file of internal/dispatch/delivery whichever three the -run selects.
-    gate("envoy_go_postgres16", POSTGRES16_JOB, exact=[
-        pinned_step(POSTGRES16_JOB, POSTGRES16_STEP, ENVOY, POSTGRES16_SCRIPT, [
-            (ENVOY, [POSTGRES16_PACKAGE], f"go test -run of three tests in {POSTGRES16_PACKAGE} on PostgreSQL 16", {}),
-        ]),
-    ], reads=setup_go(POSTGRES16_JOB, f"{ENVOY}/go.mod")),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's

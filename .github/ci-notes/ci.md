@@ -2121,21 +2121,24 @@ carries a Postgres service.
 
 `envoy-go-postgres16` runs three tests of the Dispatch delivery package against PostgreSQL 16, on a
 runner of its own: every other job runs PostgreSQL 18, where a read of a catalog column that 16
-lacks and the places 16 keeps in a function's stored body both pass unseen. The steps' comment in
-ci-job-envoy-go-postgres16.yaml says which tests and why. Its service is the PostgreSQL 16 row of
-.github/ci-images.yaml, so the job needs ci-images for order, as tool-fallback does: a row and its
-first consumer can land in one push, since the copy of that run lands before this job pulls it. It
-carries `!cancelled()` for the reason tool-fallback's note gives: a run that selected this job and
-not ci-images still runs it.
+lacks and the places 16 keeps in a function's stored body both pass unseen. The steps' comment
+says which tests and why.
 
-Its filter, `envoy_go_postgres16`, is the closure of the plain test build of
-./internal/dispatch/delivery (`go list -deps -test` in packages/envoy), one pattern per directory:
-the job runs three tests with `go test -run`, and a -run moves no closure. Beside it are what those
-packages embed and the testdata of the package whose tests the job runs: the two schema files
-internal/dispatch/pmdoc embeds; every migration, which internal/dispatch/store embeds and whose
-20261117111040 attribution_locale_test.go also reads from disk; and packages/envoy/cmd/dispatch/README.md,
-which delivery's counts_in_documents_test.go holds to the constants that decide the intake hold's
-lease, renewal and retry (docnumbers.Check).
+It is the second job of ci-job-envoy-go.yaml, and it has no caller, no file and no filter of its
+own: ci.yaml already calls as many reusable workflows as check-workflow-files.sh allows it. So
+ci.yaml's `envoy-go` call runs it beside envoy-go's own job, under that call's `if:` and
+envoy-go's filter, `envoy_go`, which already holds the closure of the delivery package's test
+build, since envoy-go's unit step tests that package; ci_job_reads.py holds the job's step to that
+gate as an Exact entry. GitHub marks a call job failed when any job of the file it calls fails, so
+ci-ok reads a red PG16 job as envoy-go's failure, and the job's ci-ok report names `envoy-go`, as
+every job of a called file does.
+
+Its service is the PostgreSQL 16 row of .github/ci-images.yaml, and it does not wait for
+ci-images: envoy-go's call has no `needs: ci-images`, which would hold envoy-go's own steps behind
+the copy. So the job pulls a row the package must already hold. That holds for the row it names,
+which an earlier run of ci-images copied, and it is why a change of the job's image is safe only
+once a run of ci-images has copied the new row: a new row and the job's move to it in one push
+would pull a digest no copy has made yet.
 
 ## Why the document service runs alone under the race detector
 

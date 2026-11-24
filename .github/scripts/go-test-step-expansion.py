@@ -336,7 +336,7 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go-postgres16.yaml",
+            (".github/workflows/ci-job-envoy-go.yaml",
              "Test the attribution's database guard and the reading's identity on PostgreSQL 16"),
             (".github/workflows/ci-job-envoy-go-race.yaml",
              "Race-test delivery, the store, the bus, the listener, the registry store, the session "
