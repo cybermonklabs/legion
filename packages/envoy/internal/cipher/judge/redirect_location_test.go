@@ -16,8 +16,10 @@ import (
 // quotes that token. One net/http cannot parse (unparsed) is net/http's error whatever the
 // client's redirect policy, since Go parses a Location before it asks CheckRedirect; one that
 // parses names an address on another host nothing listens at (elsewhere), which a following
-// client asks, naming the Location in its error. The read's error, which a run's row and log
-// carry, holds no run of the token and no word of the Location. Captures judge.redirect/<case>.
+// client would ask, naming the Location in its error, and which the judge's read, whose client
+// follows no redirect, refuses as the 302 it is (TestAJudgeReadFollowsNoRedirect). The read's
+// error, which a run's row and log carry, holds no run of the token and no word of the Location.
+// Captures judge.redirect/<case>.
 func TestAJudgeReadRedirectPrintsNoLocationOfIt(t *testing.T) {
 	const token = "mz6rd-not-a-secret-RDX-c2f8"
 	closed, err := net.Listen("tcp", "127.0.0.1:0")

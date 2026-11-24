@@ -1,0 +1,41 @@
+kind: Fixed
+body: |-
+  A failed request that carries a credential no longer prints net/http's or an SDK's error as it
+  came. Go parses a redirect's `Location` before it asks the client's redirect policy, and quotes
+  a `Location` or a status line it cannot parse; a client that follows a redirect names the
+  `Location` it asked and sends the credential on; and an AWS or Google Cloud SDK's error quotes
+  net/http's error and the answer's message, request id and body. So whatever answered in a
+  server's place could put the request's credential into a log line, a printed error or a served
+  body. Each such call now prints its failure as its configured address allows (`redact.Cause`),
+  by its class (`redact.Class`), through the new `redact.Unanswered` (net/http's operation, the
+  call's name, and a transport failure's own words or the failure's class), or through the new
+  `redact.AWS` (the service, the operation, the answer's status and an error code from a closed
+  set). The calls: the listener's broker read; the introspection Dispatch and the listener ask the
+  broker; Dispatch's agent-secrets client, GitHub App client, S3 and GCS file stores, Bedrock
+  embedder, Azure embeddings call and Entra exchange; the broker's wake notice to Envoy, its
+  judge's and project access reads of Dispatch, its generateIdToken mint, its Secrets Manager and
+  KMS store and its RDS token mint; the OIDC revocation; `going`'s chat call and `agentloop`'s
+  decision call and run; the MCP bridge's SSE connect; `dev-proxy-stands`' enroll-pod,
+  probe-bound and load; and the load test's listener client, Dispatch client, guard check and
+  Cloud Monitoring reads. `redact.ReadAnswer` and `redact.StreamAnswer`'s stream answer a body
+  read that fails on a line the answer wrote, such as a chunked body's trailer, as the failure's
+  class (`the request failed`); a transport failure and a body cut short (`io.ErrUnexpectedEOF`)
+  come back as before.
+  What callers see change: the listener's broker read, the introspection, Dispatch's
+  agent-secrets client, the broker's wake notice, judge read and project access read,
+  `dev-proxy-stands probe-bound` and the load test's clients follow no redirect: a 3xx is the
+  answer, refused by its status, and the host a `Location` names is sent nothing (a project access
+  read answered with a redirect is refused by its status, no longer read as Dispatch's outage
+  where the `Location` did not answer). The GitHub App client and the MCP bridge's SSE connect
+  follow a redirect only on their server's own origin, so GitHub's redirect for a renamed
+  repository is still followed. `agentloop`'s refusal of a redirect names its status and not the
+  `Location`'s host, and a run's provider failure names the endpoint's status rather than the
+  provider's message. A failed S3, Bedrock, Secrets Manager or KMS call prints its operation, the
+  answer's status and, where it is one the closed set names, its error code, rather than the
+  service's message; a failed GCS call prints its status, a missing bucket or the missing
+  permission. The redirect policy is one public package, `github.com/sjawhar/envoy/redirects`
+  (`Refused`, `SameOrigin`, `Status`, and the stand-ins in `redirects/redirectstest`), which the
+  daemon imports too; `internal/redirects` is gone.
+time: 2026-11-24T03:27:23Z
+custom:
+    Issue: pr4368

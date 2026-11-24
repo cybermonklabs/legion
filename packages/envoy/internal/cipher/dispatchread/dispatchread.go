@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // ErrBrokerRefused is the broker's own account token not working: Dispatch answering 401 or 403 to
@@ -57,13 +58,16 @@ type Reader struct {
 
 // New is a reader of the Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
 // (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader) on every call. A nil httpClient is
-// http.DefaultClient. Each call, the dial and the body's read included, is bounded by timeout
-// whatever the client, and a body longer than limit bytes is an error.
+// http.DefaultClient. Either is used as a copy that follows no redirect (redirects.Refused): every
+// call carries the broker's account token, and Dispatch's access routes answer no redirect, so a
+// 3xx is Dispatch's answer, which Get hands back by its status as it does any other. Each call,
+// the dial and the body's read included, is bounded by timeout whatever the client, and a body
+// longer than limit bytes is an error.
 func New(baseURL string, account ciphertoken.Account, httpClient *http.Client, timeout time.Duration, limit int) Reader {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return Reader{base: strings.TrimRight(baseURL, "/"), account: account, http: httpClient, timeout: timeout, limit: limit}
+	return Reader{base: strings.TrimRight(baseURL, "/"), account: account, http: redirects.Refused(httpClient), timeout: timeout, limit: limit}
 }
 
 // Answer is what Dispatch answered one call: its status, and its whole body, held with the record

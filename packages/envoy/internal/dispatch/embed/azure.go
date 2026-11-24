@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // The route and api-version AzureClient posts to, held here alone because INFRA-399's live probe

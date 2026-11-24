@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 const (

@@ -18,7 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // GoogleAccountCacheTTL is how long a GoogleAccount reuses the token it last read. The metadata

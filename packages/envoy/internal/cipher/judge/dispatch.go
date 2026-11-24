@@ -1,6 +1,7 @@
 package judge
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // ErrNoIssue is Dispatch answering 404 for the key a request's reason named: the key has an
@@ -47,7 +49,10 @@ type Dispatch struct {
 	// the reader so a test can stand in for it; cmd/cipherd wires
 	// ciphertoken.NewAccountToken(BROKER_JUDGE_DISPATCH_TOKEN_FILE).
 	Account ciphertoken.Account
-	// HTTP is the client every call is made with; a nil client is http.DefaultClient.
+	// HTTP is the client every call is made with; a nil client is http.DefaultClient. Either is
+	// used as a copy that follows no redirect (redirects.Refused): every call carries the broker's
+	// account token, and none of the routes it reads answers a redirect, so a 3xx is Dispatch's
+	// answer by its status, which Issue, Assignee and Ask refuse as any status they do not read.
 	HTTP *http.Client
 }
 
@@ -232,11 +237,7 @@ func (d Dispatch) get(ctx context.Context, endpoint, token string, into any) (in
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/json")
-	client := d.HTTP
-	if client == nil {
-		client = http.DefaultClient
-	}
-	answer, err := client.Do(request)
+	answer, err := redirects.Refused(cmp.Or(d.HTTP, http.DefaultClient)).Do(request)
 	if err != nil {
 		// net/http's error can quote the answering party's words (a Location that does not parse,
 		// read before any redirect policy), so it is named by its class alone (redact.Class).

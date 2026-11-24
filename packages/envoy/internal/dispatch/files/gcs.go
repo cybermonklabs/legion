@@ -23,7 +23,8 @@ import (
 // GCS is a Store over one Google Cloud Storage bucket, through the JSON API. It needs exactly two
 // permissions on the bucket, storage.objects.create and storage.objects.get (roles/storage.objectCreator
 // and roles/storage.objectViewer cover them), and never overwrites or deletes an object: every
-// write carries a create-only precondition, and no call it makes deletes.
+// write carries a create-only precondition, and no call it makes deletes. Each failure of a call
+// prints through gcsFailure, never as the client's own text.
 type GCS struct {
 	objects *storage.ObjectsService
 	bucket  string
@@ -72,7 +73,7 @@ func (s *GCS) Put(ctx context.Context, sha, mime string, body []byte) error {
 	case err == nil:
 		return nil
 	case !isGCSNotFound(err):
-		return fmt.Errorf("read file %s's metadata: %w", sha, err)
+		return fmt.Errorf("read file %s's metadata: %w", sha, gcsFailure(err))
 	}
 	md5Sum := md5.Sum(body)
 	crc := make([]byte, 4)
@@ -94,7 +95,7 @@ func (s *GCS) Put(ctx context.Context, sha, mime string, body []byte) error {
 	if err == nil || gcsStatus(err) == http.StatusPreconditionFailed {
 		return nil
 	}
-	return fmt.Errorf("put file %s: %w", sha, err)
+	return fmt.Errorf("put file %s: %w", sha, gcsFailure(err))
 }
 
 // Get opens the object under sha. The request that fetches its headers is bounded by
@@ -110,7 +111,7 @@ func (s *GCS) Get(ctx context.Context, sha string) (*Object, error) {
 		if isGCSNotFound(err) {
 			return nil, fmt.Errorf("get file %s: %w", sha, ErrNotFound)
 		}
-		return nil, fmt.Errorf("get file %s: %w", sha, err)
+		return nil, fmt.Errorf("get file %s: %w", sha, gcsFailure(err))
 	}
 	size := response.ContentLength
 	if size < 0 {
@@ -143,7 +144,7 @@ func (s *GCS) Healthy(ctx context.Context) error {
 	if err == nil || isGCSNotFound(err) {
 		return nil
 	}
-	return fmt.Errorf("read an object's metadata in bucket %s: %w", s.bucket, err)
+	return fmt.Errorf("read an object's metadata in bucket %s: %w", s.bucket, gcsFailure(err))
 }
 
 // gcsStatus is the HTTP status of a GCS error, or 0 for an error that carries none.
@@ -165,5 +166,44 @@ func isGCSNotFound(err error) bool {
 	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusNotFound {
 		return false
 	}
-	return !strings.Contains(apiErr.Message+" "+apiErr.Body, "bucket does not exist")
+	return !strings.Contains(apiErr.Message+" "+apiErr.Body, gcsBucketMissing)
+}
+
+// gcsBucketMissing is the words GCS's 404 says a missing bucket in, where a missing object's says
+// "No such object".
+const gcsBucketMissing = "bucket does not exist"
+
+// gcsPermissions are the permissions the store needs, the ones a refusal is named by.
+var gcsPermissions = []string{"storage.objects.get", "storage.objects.create"}
+
+// gcsFailure is err, the failure of a call to GCS through its client, as a message may print it:
+// the status GCS answered, as redact.StatusLine prints it, with the bucket named missing where a
+// 404 says so (as isGCSNotFound reads it) and the permission named where a 403 says one the store
+// needs is denied (gcsPermissions); for a call that drew no answer, the class of its failure
+// (redact.Class). Nothing else of the client's text prints: googleapi.Error quotes GCS's message,
+// or with none the whole body, as whatever answered at GCS's address wrote them, and a call that
+// drew no answer fails with net/http's error, which quotes a Location that does not parse and names
+// the one a followed redirect asked. The client follows every redirect, and its transport
+// (cloud.google.com/go/auth's) puts the bearer on each request it sends, so either Location can
+// carry it. It unwraps to err, so gcsStatus and isGCSNotFound still read googleapi.Error.
+func gcsFailure(err error) error {
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) || apiErr.Code == 0 {
+		return redact.Class(err)
+	}
+	text := "the server answered HTTP " + redact.StatusLine(apiErr.Code)
+	said := apiErr.Message + " " + apiErr.Body
+	switch apiErr.Code {
+	case http.StatusNotFound:
+		if strings.Contains(said, gcsBucketMissing) {
+			text += ": the bucket does not exist"
+		}
+	case http.StatusForbidden:
+		for _, permission := range gcsPermissions {
+			if strings.Contains(said, "Permission '"+permission+"' denied") {
+				text += ": missing permission " + permission
+			}
+		}
+	}
+	return redact.Masked(err, text)
 }

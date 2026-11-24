@@ -17,7 +17,7 @@ import (
 
 // baseline runs the row's test unmutated in a scratch copy of the snapshot (stage 4); it must
 // pass. A test shared by several rows runs once. The longest correct run is kept. A run past its
-// bound is UNKNOWN, not a failure.
+// bound, or one that skipped the row's test or a subtest of it, is UNKNOWN, not a failure.
 func (g *gate) baseline(r *row, baselines map[string]error) {
 	key := r.Package + r.File + "\x00" + r.Test
 	if _, done := baselines[key]; !done {
@@ -34,7 +34,8 @@ func (g *gate) baseline(r *row, baselines map[string]error) {
 	}
 	if err := baselines[key]; err != nil {
 		var late lateRun
-		if errors.As(err, &late) {
+		var skipped skippedRun
+		if errors.As(err, &late) || errors.As(err, &skipped) {
 			g.unknown("stage 4 (baseline) row %s: the unmutated test %s %v", r.ID, r.Test, err)
 		} else {
 			g.fail("stage 4 (baseline) row %s: the unmutated test %s %v", r.ID, r.Test, err)
@@ -43,7 +44,8 @@ func (g *gate) baseline(r *row, baselines map[string]error) {
 }
 
 // gateRow copies the snapshot, applies the row's one mutation, checks the diff, runs the test and
-// judges the evidence (stage 5).
+// judges the evidence (stage 5). A run past its bound, or one that skipped the row's test or a
+// subtest of it, leaves the mutant unproven: UNKNOWN, neither caught nor survived.
 func (g *gate) gateRow(r *row, at [2]int) {
 	copyDir, err := g.copy(r)
 	if err != nil {
@@ -74,7 +76,12 @@ func (g *gate) gateRow(r *row, at [2]int) {
 		g.unknown("stage 5 (mutation) row %s (%q in %s): the mutant's test %v", r.ID, r.Mutation.Preimage, r.Function, res.late())
 		return
 	}
-	if verdict := res.evidence(r); verdict != "" {
+	verdict := res.evidence(r)
+	if len(res.skipped) > 0 && !res.compileError {
+		g.unknown("stage 5 (mutation) row %s (%q in %s): %s", r.ID, r.Mutation.Preimage, r.Function, verdict)
+		return
+	}
+	if verdict != "" {
 		g.fail("stage 5 (mutation) row %s (%q in %s): %s", r.ID, r.Mutation.Preimage, r.Function, verdict)
 		return
 	}
@@ -179,6 +186,7 @@ type result struct {
 	asserted                            []string // REDACT-ASSERT <capture> lines
 	captures                            map[string][]string
 	blind                               []string // the print test's blind rows ("blind: ...")
+	skipped                             []string // the row's test and subtests that were skipped, each with its skip's line
 	elapsed                             time.Duration
 	startup, bound                      time.Duration // the start-up run's time, and the run's bound
 	stall                               string        // what a run past its bound printed of it
@@ -203,10 +211,21 @@ func (res result) late() lateRun {
 	return lateRun{bound: res.bound, startup: res.startup, stall: res.stall}
 }
 
+// skippedRun is a run that skipped the row's test or a subtest of it (go test's skip action, a
+// Bun testcase's <skipped>): UNKNOWN, neither a pass nor a failure, since what was skipped
+// checked nothing. A row's test that needs a test database skips without its URL.
+// check-redact-remote-text.sh refuses a skipped row the same way.
+type skippedRun struct{ tests []string }
+
+func (s skippedRun) Error() string {
+	return fmt.Sprintf("skipped %s, so it neither passed nor failed: run it again with what the skip asks for", strings.Join(s.tests, "; "))
+}
+
 var (
 	captureLine = regexp.MustCompile(`REDACT-CAPTURE (\S+) ([A-Za-z0-9+/=]+)`)
 	assertLine  = regexp.MustCompile(`REDACT-ASSERT ([^\s:]+)`)
 	blindLine   = regexp.MustCompile(`blind: [^\n]*`)
+	loggedLine  = regexp.MustCompile(`^\s+\S+\.go:\d+: `) // a line t.Log, t.Error or t.Skip printed
 )
 
 // marked reports whether the output captured under k holds a marker.
@@ -223,7 +242,9 @@ func (res result) marked(k string) bool {
 
 // baselineErr is why the unmutated test did not pass, or nil. A test that failed names the first
 // designated assertion it failed at with a marker in the output captured there, and how many of
-// the print test's rows were blind, so a control reads which check caught it.
+// the print test's rows were blind, so a control reads which check caught it. A run that skipped
+// the row's test or a subtest of it is UNKNOWN (skippedRun) even where another subtest failed:
+// the row's test did not run whole, so the run is not the row's.
 func (res result) baselineErr() error {
 	switch {
 	case res.compileError:
@@ -232,6 +253,8 @@ func (res result) baselineErr() error {
 		return res.late()
 	case !res.ran:
 		return errors.New("is missing: it did not run")
+	case len(res.skipped) > 0:
+		return skippedRun{tests: res.skipped}
 	case res.failed:
 		why := res.note
 		for _, k := range res.asserted {
@@ -252,7 +275,9 @@ func (res result) baselineErr() error {
 // under the row's capture, or under capture/<form> - with a marker in the output captured under
 // that same name, and the reason otherwise: a wrong assertion where the test failed elsewhere
 // while its captured output holds a marker, no output evidence where it failed at the designated
-// assertion but the output it captured there holds none.
+// assertion but the output it captured there holds none. A run that skipped the row's test or a
+// subtest of it leaves the mutant unproven, whatever else it shows: the row's test did not run
+// whole.
 func (res result) evidence(r *row) string {
 	switch {
 	case res.compileError:
@@ -261,6 +286,8 @@ func (res result) evidence(r *row) string {
 		return "the mutant's test " + res.late().Error()
 	case !res.ran:
 		return "the test is missing"
+	case len(res.skipped) > 0:
+		return "the mutant is unproven, neither caught nor survived: its test " + skippedRun{tests: res.skipped}.Error()
 	case !res.failed:
 		return "a surviving mutant: the test passed with the mutation applied"
 	}
@@ -348,6 +375,7 @@ func (g *gate) runTest(copyDir string, r *row) result {
 	var printed strings.Builder // all the test binary printed, in order, for a run past its bound
 	var built strings.Builder   // the go command's build output, which -json gives as build-output events
 	var tests []string
+	said := map[string]string{} // each test's last logged line that is no REDACT- line: a skip's reason
 	for _, line := range strings.Split(string(out), "\n") {
 		if !strings.HasPrefix(line, "{") {
 			if strings.Contains(line, "build failed") || strings.Contains(line, "[setup failed]") || compilerLine.MatchString(line) {
@@ -389,6 +417,15 @@ func (g *gate) runTest(copyDir string, r *row) result {
 			if regexp.MustCompile(`_test\.go:\d+: `).MatchString(e.Output) && !strings.Contains(e.Output, "REDACT-") && res.note == "" {
 				res.note = strings.TrimSpace(e.Output)
 			}
+			if loggedLine.MatchString(e.Output) && !strings.Contains(e.Output, "REDACT-") {
+				said[e.Test] = strings.TrimSpace(e.Output)
+			}
+		case "skip":
+			skipped := e.Test
+			if why := said[e.Test]; why != "" {
+				skipped += " (" + why + ")"
+			}
+			res.skipped = append(res.skipped, skipped)
 		}
 	}
 	for _, test := range tests {
@@ -534,6 +571,9 @@ func (g *gate) runBun(copyDir string, r *row, res result, start time.Time) resul
 	state := junitState(string(xml), r.Test)
 	res.ran = state != ""
 	res.failed = state == "failed"
+	if state == "skipped" {
+		res.skipped = []string{r.Test}
+	}
 	if res.failed {
 		res.note = lastLines(text, 3)
 	}

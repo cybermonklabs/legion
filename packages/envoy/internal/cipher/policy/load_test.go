@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
@@ -69,7 +70,7 @@ type failingAliases struct{ calls int }
 
 func (f *failingAliases) ListAliases(context.Context, *kms.ListAliasesInput, ...func(*kms.Options)) (*kms.ListAliasesOutput, error) {
 	f.calls++
-	return nil, errors.New("AccessDeniedException: not authorized to perform kms:ListAliases")
+	return nil, &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform kms:ListAliases"}
 }
 
 // TestARefusalForANameOrTagCostsNoAliasLookup pins that the policy asks whether a secret is on
@@ -365,7 +366,7 @@ func (f *failingSecrets) ListSecrets(ctx context.Context, in *secretsmanager.Lis
 	failing := f.failing
 	f.mu.Unlock()
 	if failing {
-		return nil, errors.New("ThrottlingException: Rate exceeded")
+		return nil, &smithy.GenericAPIError{Code: "ThrottlingException", Message: "Rate exceeded"}
 	}
 	return f.Local.ListSecrets(ctx, in, opts...)
 }
@@ -396,7 +397,7 @@ func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
 		store.mu.Lock()
 		store.failing = true
 		store.mu.Unlock()
-		const failed = "ERROR agent secret policy load failed; previous policy kept error=\"list secrets under " + policytest.Prefix + ": ThrottlingException: Rate exceeded\"\n"
+		const failed = "ERROR agent secret policy load failed; previous policy kept error=\"list secrets under " + policytest.Prefix + ": error code ThrottlingException\"\n"
 		await(t, func() bool { return strings.Contains(logged.String(), failed) })
 		if cur.Get() != edited {
 			t.Fatalf("a failed reload replaced the policy: %+v", cur.Get())

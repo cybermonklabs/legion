@@ -37,15 +37,22 @@ func newModelTransport(endpoint Endpoint) *modelTransport {
 // the token to whatever server the Location names. A redirect fails the call instead, with an
 // error client.Do returns above this transport, so the retry never sees it and the caller is
 // told the endpoint redirected rather than left to read an empty stream.
+//
+// That error names the redirecting status alone, and in words redact.Masked holds, which are what
+// redact.Cause prints of the call's failure. A Location is the answering party's own words, and it
+// can carry the credential the call sent, in its query and in its host alike; Go's client wraps
+// this error in a *url.Error that names the Location in full, which is why Run and Decide print a
+// failed call through redact.Cause and never as it came.
 func (t *modelTransport) client() *http.Client {
 	return &http.Client{Transport: t, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
-		// The host alone, since a Location can carry a query: this message names no
-		// more of it than the server a credential would have gone to. (Go's own
-		// client wraps the error in a *url.Error that names the Location in full.)
-		return fmt.Errorf("the %s endpoint answered %s, a redirect to %s, which is never followed",
-			t.kind, redact.StatusLine(req.Response.StatusCode), req.URL.Host)
+		return redact.Masked(errRedirect, fmt.Sprintf("the %s endpoint answered %s, a redirect, which is never followed",
+			t.kind, redact.StatusLine(req.Response.StatusCode)))
 	}}
 }
+
+// errRedirect is the failure of a model call whose endpoint answered a redirect, which client
+// never follows.
+var errRedirect = errors.New("agentloop: the endpoint answered a redirect, which is never followed")
 
 // defaultRetryWait is how long the retry waits when the response names no wait (retryable).
 const defaultRetryWait = time.Second

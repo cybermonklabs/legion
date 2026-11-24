@@ -19,7 +19,11 @@ import (
 )
 
 // Client is one listener: its base URL, the bearer a call sends when it is not empty, and the HTTP
-// client whose timeout bounds each call.
+// client whose timeout bounds each call, which follows no redirect (redirects.Refused), since
+// every call carries the bearer. A call that got no answer fails as the listener's address allows
+// (redact.Cause): a transport failure's own text beside a clean address, or its class. net/http's
+// own error can quote a Location that did not parse (Go reads one before any redirect policy), or
+// name a redirect a following client asked, and either can echo the bearer.
 type Client struct {
 	URL   string
 	Token string
@@ -94,7 +98,7 @@ func (c *Client) Sessions(ctx context.Context) (int, redact.Answer, error) {
 	c.authorize(request)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
-		return 0, redact.Answer{}, err
+		return 0, redact.Answer{}, redact.Cause(err, c.URL)
 	}
 	defer response.Body.Close()
 	body, err := redact.ReadAnswer(response, answerLimit)
@@ -119,7 +123,7 @@ func (c *Client) post(ctx context.Context, path string, body any) (redact.Answer
 	c.authorize(request)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
-		return redact.Answer{}, err
+		return redact.Answer{}, redact.Cause(err, c.URL)
 	}
 	defer response.Body.Close()
 	answer, _ := redact.ReadAnswer(response, answerLimit)

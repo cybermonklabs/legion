@@ -16,7 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // The route HTTPClient posts to, held here alone: it is appended to the configured endpoint,
@@ -321,7 +321,10 @@ func (c *HTTPClient) Chat(ctx context.Context, request ChatRequest, onText func(
 	httpRequest.Header.Set("Authorization", "Bearer "+token)
 	response, err := c.http.Do(httpRequest)
 	if err != nil {
-		return nil, fmt.Errorf("going: chat completions: %w", err)
+		// net/http's error can quote the answering party's words, which can echo the bearer: a
+		// Location that does not parse, read before the redirect check. So it says the failure as
+		// the request's URL allows (redact.Cause): a transport failure's own text, or its class.
+		return nil, fmt.Errorf("going: chat completions: %w", redact.Cause(err, c.url))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {

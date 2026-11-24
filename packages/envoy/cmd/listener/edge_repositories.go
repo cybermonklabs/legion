@@ -31,7 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 const (

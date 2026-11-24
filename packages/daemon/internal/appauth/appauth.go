@@ -21,10 +21,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/redact"
-	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 

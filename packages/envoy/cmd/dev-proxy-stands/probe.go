@@ -5,9 +5,10 @@
 //
 // They are subcommands of this binary rather than programs scripts/airlock-check.sh writes out
 // and builds, so that CI compiles and vets them with everything else here. Each is still a
-// plain Go HTTP client over the standard library alone: it reads the proxy, NO_PROXY and the
-// trust bundle from its own environment, as net/http does for any Go program, and that is the
-// whole point of the probe.
+// plain Go HTTP client: it reads the proxy, NO_PROXY and the trust bundle from its own
+// environment, as net/http does for any Go program, and that is the whole point of the probe.
+// probe-bound's request carries a bearer, so its client follows no redirect and its failure
+// prints through redact; neither changes how it reads the proxy or the trust bundle.
 package main
 
 import (
@@ -18,6 +19,9 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // privateAddress is the private address literal check k4's probe asks for. A literal, not a
@@ -71,15 +75,21 @@ func runProbeBound(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "dev-airlock-stands probe-bound: unexpected argument %q\n", fs.Arg(0))
 		return exitUsageError
 	}
-	request, err := http.NewRequest(http.MethodGet, os.Getenv("AIRLOCK_S_URL")+"/go", nil)
+	address := os.Getenv("AIRLOCK_S_URL") + "/go"
+	request, err := http.NewRequest(http.MethodGet, address, nil)
 	if err != nil {
 		fmt.Fprintln(stdout, "error", err)
 		return 0
 	}
 	request.Header.Set("Authorization", "Bearer "+os.Getenv("AIRLOCK_DEMO_TOKEN"))
-	answer, err := http.DefaultClient.Do(request)
+	// The request carries the bearer, so its client follows no redirect (redirects.Refused): a
+	// Location is the answering party's words, and a 3xx prints as its status like any answer.
+	// net/http's error can still quote one (a Location that does not parse, read before any
+	// redirect policy), so it prints as the bound host's address allows (redact.Cause): a
+	// transport failure's own text, or its class.
+	answer, err := redirects.Refused(http.DefaultClient).Do(request)
 	if err != nil {
-		fmt.Fprintln(stdout, "error", err)
+		fmt.Fprintln(stdout, "error", redact.Cause(err, address))
 		return 0
 	}
 	defer func() { _ = answer.Body.Close() }()

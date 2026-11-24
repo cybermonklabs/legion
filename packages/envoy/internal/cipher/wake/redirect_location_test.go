@@ -18,9 +18,11 @@ import (
 // which carries the broker's account token, with a redirect whose Location quotes that token. One
 // net/http cannot parse (unparsed) is net/http's error whatever the client's redirect policy, since
 // Go parses a Location before it asks CheckRedirect; one that parses names an address on another
-// host nothing listens at (elsewhere), which a following client asks, naming the Location in its
-// error. The warning Notify logs holds no run of the token and no word of the Location. The twin
-// shows the stand-in's echo reaches net/http's own error. Captures wake.redirect/<case>.
+// host nothing listens at (elsewhere), which a following client would ask, naming the Location in
+// its error, and which Notify, whose client follows no redirect, logs as the 302 it is
+// (TestANoticeFollowsNoRedirect). The warning Notify logs holds no run of the token and no word of
+// the Location. The twin shows the stand-in's echo reaches net/http's own error. Captures
+// wake.redirect/<case>.
 func TestANoticeRedirectLogsNoLocationOfIt(t *testing.T) {
 	const token = "vf2hc-not-a-secret-RDX-5a9d"
 	closed, err := net.Listen("tcp", "127.0.0.1:0")

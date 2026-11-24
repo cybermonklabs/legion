@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/loadtest/listenerclient"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // The Verified Linux spec loop's own sessions (-unit-starts), beside the step's flat -sessions
@@ -362,12 +363,13 @@ type natsSub struct{ sub *nats.Subscription }
 func (s natsSub) unsubscribe() error { return s.sub.Unsubscribe() }
 
 // newLoopListener is one loop session's listener: the endpoint it registers, heartbeats,
-// unsubscribes and publishes on, with the run's listener bearer. A refusal names the endpoint and
+// unsubscribes and publishes on, with the run's listener bearer, through a client that follows no
+// redirect (redirects.Refused), as listenerclient.Client asks. A refusal names the endpoint and
 // route it came from, the status and what the listener said (listenerclient.Refusal): five
 // endpoints and three routes share it, and the log lines that print it carry only the session id,
 // so the URL is what attributes a 401 to one of them.
 func newLoopListener(url, token string) *listenerclient.Client {
-	return &listenerclient.Client{URL: url, Token: token, HTTP: &http.Client{Timeout: loopCallTimeout}}
+	return &listenerclient.Client{URL: url, Token: token, HTTP: redirects.Refused(&http.Client{Timeout: loopCallTimeout})}
 }
 
 // loopRelay is one loop session's consumer delivery: the epoch it registers with, its resume

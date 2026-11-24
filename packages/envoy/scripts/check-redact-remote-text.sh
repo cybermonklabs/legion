@@ -5,8 +5,8 @@
 # of remote text (packages/envoy/AGENTS.md, "redact.Error(err, base)"). Run it from anywhere in
 # the repository; it prints one line per inventory row and exits 0 only when every step and every
 # row passed, 1 when one failed, 2 when it refused to run or to read a judge of its rows (below),
-# and 3 when nothing failed but a run went past its bound (UNKNOWN: neither a pass nor a failure;
-# run it again).
+# and 3 when nothing failed but a run went past its bound, or a run of the mutation gate skipped a
+# row's test (UNKNOWN: neither a pass nor a failure; run it again).
 #
 # It reads its inventory, packages/envoy/internal/redact/testdata/redact-check.json: each row a
 # requirement, a Go package (relative to packages/envoy) or a Bun test file (relative to the
@@ -520,11 +520,11 @@ if [ "$unknown" -ne 0 ]; then
 fi
 
 # Stages 4 and 5 of the gate: each row's test unmutated, then each mutation alone. The gate exits 3
-# when a run went past its bound and nothing failed.
+# when a run went past its bound or skipped a row's test, or a subtest of it, and nothing failed.
 "$gate" -stage mutate
 status=$?
 if [ "$status" -eq 3 ]; then
-  echo "check c-redact-remote-text: UNKNOWN in the mutation gate: a run went past its bound and nothing failed, so run the check again"
+  echo "check c-redact-remote-text: UNKNOWN in the mutation gate: a run went past its bound or skipped a test and nothing failed, so run the check again"
   exit 3
 fi
 if [ "$status" -ne 0 ]; then

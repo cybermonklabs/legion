@@ -55,8 +55,10 @@ var ErrAnswerTooLarge = errors.New("redact: the answer's body is longer than its
 // ReadAnswer reads resp's body, at most limit bytes, as an Answer, with the record of the
 // requests that led to resp (Carried). It does not close the body; its caller does. A body that
 // holds more than limit bytes is the Answer of its first limit bytes and an error that wraps
-// ErrAnswerTooLarge; a read that fails is an Answer with the status and no body, and the read's own
-// error, a transport failure, which quotes nothing the answer wrote.
+// ErrAnswerTooLarge; a read that fails is an Answer with the status and no body, and the read's
+// error as a message may print it (unreadable): a transport failure's own error as it came, and
+// any other by its class, unwrapping to it, since net/http's text of a body it could not read
+// can quote a line the answer wrote.
 func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
 	a := &answer{status: resp.StatusCode, rec: answerRecord(resp)}
 	if resp.Body == nil || resp.Body == http.NoBody {
@@ -64,7 +66,7 @@ func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return Answer{a}, err
+		return Answer{a}, unreadable(err)
 	}
 	if int64(len(data)) > limit {
 		data = data[:limit]
@@ -78,7 +80,8 @@ func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
 // StreamAnswer is resp's body as a stream of at most limit bytes, for a body that is data and is
 // read as it arrives - a tar unpacked, an event stream followed, a stored object served on - and
 // never prints: the streaming form of Answer.StreamTo, for a body too large or too long-lived to
-// hold. A read past limit fails with ErrAnswerTooLarge. Closing the stream closes resp's body.
+// hold. A read past limit fails with ErrAnswerTooLarge, and a read that fails otherwise with its
+// error as ReadAnswer's prints it (unreadable). Closing the stream closes resp's body.
 func StreamAnswer(resp *http.Response, limit int64) io.ReadCloser {
 	return &answerStream{body: resp.Body, left: limit}
 }
@@ -106,7 +109,7 @@ func (s *answerStream) Read(p []byte) (int, error) {
 	}
 	n, err := s.body.Read(p)
 	s.left -= int64(n)
-	return n, err
+	return n, unreadable(err)
 }
 
 func (s *answerStream) Close() error {

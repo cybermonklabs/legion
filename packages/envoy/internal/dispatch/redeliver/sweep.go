@@ -53,8 +53,8 @@
 //     alone, with the value's size. The error still names the layout, or the field and the type.
 //     The reason of a time parse error quotes the text after a valid time, and it is cut alone
 //     too, with the reason's size.
-//   - A transport error cuts its URL, with the URL's size, and its cause. A line the cause quotes
-//     is cut with the cause's text, with the size of the cause's text.
+//   - A transport error names its target as githubapp.ShownBody shows it, with the target's size,
+//     and its failure by redact.Unanswered: a transport failure's own words or a fixed class.
 //   - githubapp.ShownErr answers no error longer than 4,414 bytes. An error whose text is still
 //     longer after the cuts above is cut whole, with the size of that text.
 //

@@ -676,7 +676,7 @@ func TestAReloadGivesUpWithinItsInterval(t *testing.T) {
 			t.Fatal(err)
 		}
 		lister.hang()
-		const failed = "ERROR " + policy.LoadFailedMessage + " error=\"list secrets under " + policytest.Prefix + ": context deadline exceeded\"\n"
+		const failed = "ERROR " + policy.LoadFailedMessage + " error=\"list secrets under " + policytest.Prefix + ": timed out\"\n"
 		await(t, func() bool { return strings.Contains(logged.String(), failed) })
 		lister.unhang()
 		if err := rereadWithin(t, cur, context.Background(), "NEW_KEY"); err != nil {
@@ -960,7 +960,7 @@ func TestAFailingReloadLogsOnceUntilItLoadsAgain(t *testing.T) {
 			store.mu.Unlock()
 		}
 		const (
-			failed    = "ERROR " + policy.LoadFailedMessage + " error=\"list secrets under " + policytest.Prefix + ": ThrottlingException: Rate exceeded\"\n"
+			failed    = "ERROR " + policy.LoadFailedMessage + " error=\"list secrets under " + policytest.Prefix + ": error code ThrottlingException\"\n"
 			recovered = "INFO " + policy.LoadRecoveredMessage + "\n"
 		)
 		for _, step := range []struct {

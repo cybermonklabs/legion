@@ -13,6 +13,7 @@ import (
 	"github.com/aws/smithy-go/logging"
 
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -120,7 +121,10 @@ type bedrockEmbedResponse struct {
 }
 
 // Embed calls Bedrock once for up to BedrockMaxBatchTexts texts; a caller with more batches it
-// itself (embedqueue does, one batch at a time). A throttle comes back marked for IsThrottled.
+// itself (embedqueue does, one batch at a time). A throttle comes back marked for IsThrottled. A
+// failed call prints through redact.AWS, never as the SDK's own text, which quotes net/http's error
+// (a Location whatever answers at Bedrock's address can write the call's credential into) and the
+// answer's request id and message.
 func (c *BedrockClient) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
 	bounded, err := boundBatch(texts, BedrockMaxBatchTexts)
 	if err != nil || bounded == nil {
@@ -143,7 +147,7 @@ func (c *BedrockClient) Embed(ctx context.Context, texts []string, inputType Inp
 		Accept:      contentType,
 	})
 	if err != nil {
-		err = fmt.Errorf("embed: bedrock invoke model: %w", err)
+		err = fmt.Errorf("embed: bedrock invoke model: %w", redact.AWS(err))
 		if bedrockThrottled(err) {
 			return nil, &throttleError{err: err}
 		}

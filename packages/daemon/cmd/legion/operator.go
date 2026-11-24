@@ -15,9 +15,9 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/redact"
-	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // operatorCall is one command that reaches the daemon over the operator's bearer — each `legion

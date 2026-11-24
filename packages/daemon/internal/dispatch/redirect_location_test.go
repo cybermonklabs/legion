@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/redirects/redirectstest"
 )
 
 // TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError is the round-7 red team's probe of

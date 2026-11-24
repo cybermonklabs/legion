@@ -33,6 +33,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // --- sending ---------------------------------------------------------------------------------------
@@ -472,7 +474,9 @@ func (rr *replayRun) do(ctx context.Context, base, token string, act *replayActi
 	}
 	tr := &http.Transport{DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, MaxIdleConnsPerHost: 4, IdleConnTimeout: replayActionDeadline}
 	defer tr.CloseIdleConnections()
-	ac := &api{base: base, token: token, client: &http.Client{Transport: tr}}
+	// The action's requests carry the stack's bearer, so its client follows no redirect, as
+	// newAPI's does (redirects.Refused).
+	ac := &api{base: base, token: token, client: redirects.Refused(&http.Client{Transport: tr})}
 	var state replayActionState
 	ok := true
 	// hasTurn says the action is a write on a document, whose turn it takes before it writes.

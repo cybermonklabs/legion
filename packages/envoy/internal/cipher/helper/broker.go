@@ -31,8 +31,8 @@ import (
 	"github.com/sjawhar/envoy/internal/ctxlock"
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/serverwait"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // operatorFileNamed is how every message names the operator file: by the setting that names it,

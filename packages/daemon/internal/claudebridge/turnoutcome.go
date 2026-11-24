@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // reportTimeout bounds one report's call. A turn's outcome is a few hundred bytes to a daemon on
@@ -59,7 +61,10 @@ type turnReports struct {
 // startTurnReports is the reporter for cfg, or nil when the environment the bridge was given names
 // no daemon, no boot token file or no generation: a bridge run by hand reports to nobody. A boot
 // token file it cannot read is the same, said once, since nothing it could report would
-// authenticate.
+// authenticate. Its client follows no redirect (redirects.Refused): every report carries the boot
+// token in its body, which a followed 307 or 308 would send to the host the Location names, and
+// the daemon's turn-outcome route answers none. A 3xx is the daemon's answer, refused by its status
+// (post).
 func startTurnReports(cfg Config, logger *log.Logger) *turnReports {
 	if cfg.DaemonURL == "" || cfg.BootTokenFile == "" || cfg.Generation == 0 {
 		logger.Printf("reporting no turn outcomes: this pane names %s", missingReportInputs(cfg))
@@ -74,7 +79,7 @@ func startTurnReports(cfg Config, logger *log.Logger) *turnReports {
 		url:        strings.TrimSuffix(cfg.DaemonURL, "/") + "/legion/v1/claims/turn-outcome",
 		bootToken:  strings.TrimSpace(string(token)),
 		generation: cfg.Generation,
-		client:     &http.Client{},
+		client:     redirects.Refused(&http.Client{}),
 		clock:      cfg.clock(),
 		log:        logger,
 	}
@@ -138,12 +143,16 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	}()
 	post, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url, bytes.NewReader(body))
 	if err != nil {
-		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, err)
+		r.log.Printf("could not report the outcome of turn %d: %v", request.Sequence, redact.Unanswered(err, nil, ""))
 		return
 	}
 	post.Header.Set("Content-Type", "application/json")
 	response, err := r.client.Do(post)
 	if err != nil {
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// which it reads before any redirect policy), and that party can write the boot token
+		// there, so the line names the failure through redact.Unanswered.
+		err = redact.Unanswered(err, post, "")
 		if cause := context.Cause(ctx); cause != nil {
 			err = fmt.Errorf("%w (%v)", cause, err)
 		}

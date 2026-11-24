@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // Envoy sends a "secret request <state>" notification directly to the target session, presenting
@@ -32,7 +33,10 @@ import (
 type Envoy struct {
 	URL     string
 	Account ciphertoken.Account
-	HTTP    *http.Client
+	// HTTP sends the notice, as a copy that follows no redirect (redirects.Refused): the notice
+	// carries the broker's account token, and the listener answers /v1/messages/send itself with
+	// no redirect, so a Location is the answering party's words and a 3xx a status Notify logs.
+	HTTP *http.Client
 }
 
 type secretRequestPayload struct {
@@ -80,7 +84,7 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+bearer)
-	resp, err := e.HTTP.Do(req)
+	resp, err := redirects.Refused(e.HTTP).Do(req)
 	if err != nil {
 		// net/http's error can quote the answering party's words (a Location that does not parse,
 		// read before any redirect policy), so it is logged as Envoy's address allows

@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/redirects"
-	"github.com/sjawhar/legion/daemon/internal/redirects/redirectstest"
+	"github.com/sjawhar/envoy/redirects"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
 
 // unansweredToken is the bearer the requests below carry, which each stand-in echoes.

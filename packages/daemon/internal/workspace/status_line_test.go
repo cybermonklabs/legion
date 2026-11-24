@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/redirects/redirectstest"
 )
 
 // initOnly is a Runner whose every command succeeds and prints nothing: unpackCache's git init,
