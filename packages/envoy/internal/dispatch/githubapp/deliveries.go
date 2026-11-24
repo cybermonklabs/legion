@@ -42,7 +42,8 @@ type Delivery struct {
 // *RateLimitError. before, when set, runs ahead of each page's request, and its error ends the
 // listing: the sweep uses it to check a shared rate limit before every request. The first page's
 // target is the client's own, and every later one is a next page link GitHub answered, which each
-// error and note of its request names as the rule reads it (answeredTarget).
+// error and note of its request names as the rule reads it, with the record of the request whose
+// answer named it (answeredTarget).
 func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() error) ([]Delivery, error) {
 	if c == nil {
 		return nil, ErrNoAppKey
@@ -70,7 +71,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		if status != http.StatusOK {
 			return nil, fmt.Errorf("GET %s: %s", shown, StatusText(status, body.Words().String()))
 		}
-		next, nextShown, err := nextLink(header.Get("Link"), c.base)
+		next, nextShown, err := nextLink(body, header.Get("Link"), c.base)
 		if err != nil {
 			return nil, err
 		}
@@ -740,14 +741,15 @@ func NewStatusError(status int, body redact.Answer) *StatusError {
 // as answeredTarget shows GitHub's text.
 const nextLinkMaxBytes = 2048
 
-// nextLink returns the rel="next" target of an RFC 8288 Link header, and that target as each error
-// and note of its request names it (answeredTarget), refusing one outside the client's API origin,
-// since the next page is fetched with the App's JWT, one that carries user information, which
-// net/http would send as the request's credential, and one longer than nextLinkMaxBytes. A link
-// is GitHub's text, so each refusal names it as answeredTarget prints it, never as ShownBody or
-// ShownErr would: the rule's reading, cut. url.Parse's error quotes the link again, so the refusal
-// of a link it cannot parse holds that *url.Error with the link printed so too (refusedLink).
-func nextLink(header, base string) (string, string, error) {
+// nextLink returns the rel="next" target of header, the Link header of answer, and that target as
+// each error and note of its request names it (answeredTarget), refusing one outside the client's
+// API origin, since the next page is fetched with the App's JWT, one that carries user information,
+// which net/http would send as the request's credential, and one longer than nextLinkMaxBytes. A
+// link is GitHub's text, so each refusal names it as answeredTarget prints it, never as ShownBody
+// or ShownErr would: the rule's reading with answer's record, cut. url.Parse's error quotes the
+// link again, so the refusal of a link it cannot parse holds that *url.Error with the link printed
+// so too (refusedLink).
+func nextLink(answer redact.Answer, header, base string) (string, string, error) {
 	for _, part := range strings.Split(header, ",") {
 		segments := strings.Split(part, ";")
 		if len(segments) < 2 {
@@ -763,7 +765,7 @@ func nextLink(header, base string) (string, string, error) {
 			continue
 		}
 		target := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(segments[0]), "<"), ">")
-		shown := answeredTarget(target)
+		shown := answeredTarget(answer, target)
 		if len(target) > nextLinkMaxBytes {
 			return "", "", fmt.Errorf("next page link %q is longer than %d bytes", shown, nextLinkMaxBytes)
 		}
@@ -786,11 +788,14 @@ func nextLink(header, base string) (string, string, error) {
 	return "", "", nil
 }
 
-// answeredTarget is target, a request's target that holds text GitHub answered (a next page link),
-// as each error and note of the request names it: as the rule reads it (redact.Field), then as
-// ShownBody shows GitHub's text, so no credential the text carries prints and a long one is still
+// answeredTarget is target, a request's target that holds text answer gave (a next page link its
+// Link header names), as each error and note of the request names it: held with the record of the
+// request answer came to (answer.Said), so it prints as the rule reads it with every credential
+// that request carried redacted, then as ShownBody shows GitHub's text, so a long one is still
 // cut.
-func answeredTarget(target string) string { return ShownBody(redact.Field(target)) }
+func answeredTarget(answer redact.Answer, target string) string {
+	return ShownBody(answer.Said(target).String())
+}
 
 // refusedLink is err, url.Parse's error of a next page link, with the link printed as shown: the
 // *url.Error url.Parse answers, copied with shown for its URL and its cause as ShownErr shows it,

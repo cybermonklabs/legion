@@ -101,6 +101,40 @@ func serverError(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprint(w, `{"message":"Server Error"}`)
 }
 
+// TestANextLinkPrintsNoTokenItsRequestCarried: whatever answers in GitHub's place names a next page
+// whose path echoes the App's JWT the listing's request carried, on the API origin, and answers
+// that page 500. The refusal-free link is followed, and the error Deliveries answers and the note
+// send makes on the attempt name the next page's target with no piece of the JWT: the link, a
+// header's value, is held with the record of the request its answer came to. Captures
+// githubapp.next-link-echo.
+func TestANextLinkPrintsNoTokenItsRequestCarried(t *testing.T) {
+	var jwt atomic.Value
+	client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() == "/app/hook/deliveries?per_page=100" {
+			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			jwt.Store(token)
+			w.Header().Set("Link", "<http://"+r.Host+"/app/hook/deliveries/"+token+`?per_page=100>; rel="next"`)
+			fmt.Fprint(w, "[]")
+			return
+		}
+		serverError(w, r)
+	})
+	ctx, attempt := githubreads.Begin(context.Background())
+	_, err := client.Deliveries(ctx, time.Time{}, nil)
+	if err == nil {
+		t.Fatal("a next page GitHub failed answered no error")
+	}
+	_, _, cause := attempt.Outcome()
+	token, _ := jwt.Load().(string)
+	if token == "" {
+		t.Fatal("the listing's first request carried no JWT")
+	}
+	redacttest.RequireNoPiece(t, "githubapp.next-link-echo", err.Error()+" | "+cause, token)
+	if !strings.Contains(err.Error(), "status 500") || cause == "" {
+		t.Errorf("Deliveries answered %q and noted %q, want the next page's 500 named and noted", err, cause)
+	}
+}
+
 // TestACredentialedNextLinkIsRefusedAsTheRuleReadsIt: the deliveries listing's Link header names a
 // next page that carries a credential, and nextLink refuses it: one longer than nextLinkMaxBytes,
 // one url.Parse cannot parse, one on another origin, and one on the API origin that carries user

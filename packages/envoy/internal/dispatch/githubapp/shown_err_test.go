@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 // shownMost is the longest text ShownBody makes: shownBodyRunes runes of at most utf8.UTFMax bytes
@@ -654,7 +655,7 @@ func TestANextLinkRefusalShowsTheLinkToABound(t *testing.T) {
 				t.Fatalf("the link is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(row.link), nextLinkMaxBytes)
 			}
 
-			next, _, err := nextLink("<"+row.link+`>; rel="next"`, base)
+			next, _, err := nextLink(answertest.Of(http.StatusOK, "[]"), "<"+row.link+`>; rel="next"`, base)
 			if err == nil {
 				t.Fatalf("the %d-byte link was followed (%d bytes); want a refusal", len(row.link), len(next))
 			}

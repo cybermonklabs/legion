@@ -2120,6 +2120,15 @@
         "capture": "githubapp.limit-header-echo"
       },
       {
+        "row": "githubapp-next-link-echo",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.next-link-echo"
+      },
+      {
         "row": "api-ci-detail-repo",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
         "files": [
@@ -7209,12 +7218,12 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/githubapp",
       "test": "TestACredentialedNextLinkIsRefusedAsTheRuleReadsIt",
-      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answeredTarget: a next page link prints as the rule reads it, then as ShownBody cuts it",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answeredTarget: a next page link prints as the rule reads it, with its answer's record, then as ShownBody cuts it",
       "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answeredTarget",
       "capture": "githubapp.next-link",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
-        "preimage": "redact.Field(target)",
+        "preimage": "answer.Said(target).String()",
         "replacement": "target"
       }
     },
@@ -7228,8 +7237,22 @@
       "capture": "githubapp.next-link",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
-        "preimage": "shown := answeredTarget(target)",
+        "preimage": "shown := answeredTarget(answer, target)",
         "replacement": "shown := ShownBody(target)"
+      }
+    },
+    {
+      "id": "githubapp-next-link-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestANextLinkPrintsNoTokenItsRequestCarried",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answeredTarget: a next page link that echoes the listing request's JWT prints without it",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answeredTarget",
+      "capture": "githubapp.next-link-echo",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
+        "preimage": "answer.Said(target).String()",
+        "replacement": "redact.Field(target)"
       }
     },
     {
@@ -10334,6 +10357,11 @@
       "site": "githubapp graphQLLimitWording's header fallback: a header that echoes the request's credential, read with no record of the request",
       "source": "the review of the slice's report",
       "guard": "githubapp-limit-header-echo"
+    },
+    {
+      "site": "githubapp nextLink and Deliveries: a Link header's next page that echoes the request's JWT, read with no record of the request",
+      "source": "the review of the slice's report",
+      "guard": "githubapp-next-link-echo"
     },
     {
       "site": "api ciUnreadDetail and readCIRuns: the stored head's repository as it came, in the detail and in refs.SplitGitHubRepo's refusal",
