@@ -72,25 +72,25 @@ func issueMessages(t *testing.T, pool *store.Pool) []string {
 	return bodies
 }
 
-// heldMessage is one Dispatch message row the outbox holds for LEGION-208: its body and when it is
-// due to post.
-type heldMessage struct {
+// issueMessageRow is one Dispatch message row the outbox holds for LEGION-208: its body and when it
+// is due to post.
+type issueMessageRow struct {
 	body string
 	due  time.Time
 }
 
 // heldMessages is every Dispatch message row the outbox holds for LEGION-208, in order.
-func heldMessages(t *testing.T, pool *store.Pool) []heldMessage {
+func heldMessages(t *testing.T, pool *store.Pool) []issueMessageRow {
 	t.Helper()
-	var held []heldMessage
+	var held []issueMessageRow
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `select payload->>'body', next_at from outbox where issue = 'LEGION-208' and kind = $1 order by id`,
 			string(record.OutboxKindDispatchMessage))
 		if err != nil {
 			return err
 		}
-		held, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (heldMessage, error) {
-			var message heldMessage
+		held, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueMessageRow, error) {
+			var message issueMessageRow
 			err := row.Scan(&message.body, &message.due)
 			return message, err
 		})
@@ -102,7 +102,7 @@ func heldMessages(t *testing.T, pool *store.Pool) []heldMessage {
 }
 
 // requireDueAt fails unless message is due at want, to the database's microsecond.
-func requireDueAt(t *testing.T, message heldMessage, want time.Time, what string) {
+func requireDueAt(t *testing.T, message issueMessageRow, want time.Time, what string) {
 	t.Helper()
 	if gap := message.due.Sub(want); gap > time.Millisecond || gap < -time.Millisecond {
 		t.Fatalf("%s is due at %s, want %s: the message is held for the hour from the first of its prompts to end", what, message.due.UTC(), want.UTC())
