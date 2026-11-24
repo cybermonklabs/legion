@@ -322,15 +322,15 @@ absolute path; a command given `--models` when none of them names one is refused
 `load` reads Oh My Pi the same way. A saved capture is read back and not made again; the
 installed copies of the profile's other skills that its record names, which its replays answer a
 read of such a skill from, are not in it but in the cache (`<cache-dir>/skills/<key>`), which is
-not kept with `--out`. So where the cache lacks one of them (on a new machine, say), the case's
-context is built again before the replays, as the capture built it, under a scratch directory of
-its own that is removed after: that makes each missing copy again from its repository at its
-commit. A saved capture whose copies are all in the cache builds nothing and reads no repository.
-One whose copies that build does not give again (the case's profile names another commit or
-another copy, or the record keeps a copy under another cache key) is refused (exit 2, or that
-task's failure in `load`), naming the case, the arm and the first copy that differs: make it again
-under a new `--out`. The run stops above 1 GiB of peak resident memory, and no new model call
-starts once the replies cost `--budget-usd` at list price.
+not kept with `--out`. Before replay, the runner makes each missing skill copy again from its
+repository at its commit, as the capture did. It does not build plugins, compose a role prompt
+or read context files. If all copies are cached, the runner builds nothing and reads no
+repository. If refilling the cache gives different copies from the saved record (the case's
+profile names another commit or copy, or the record keeps a copy under another cache key), the
+runner refuses the capture (exit 2, or that task's failure in `load`), naming the case, the arm
+and the first copy that differs: make it again under a new `--out`. The run stops above 1 GiB
+of peak resident memory, and no new model call starts once the replies cost `--budget-usd` at
+list price.
 
 The gateway serves two routes, and each case runs on its own model's: the Anthropic Messages
 route (`/v1/messages`, `anthropic/<id>`) and the OpenAI Responses route (`/v1/responses`,

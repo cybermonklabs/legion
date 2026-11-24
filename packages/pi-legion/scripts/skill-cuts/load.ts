@@ -119,11 +119,11 @@
  * Skill reads follow the behaviour replay's rule (the architect, 2026-11-22T18:58Z and
  * 18:59:51Z). On Oh My Pi, a reply whose every tool call reads a skill file is answered as
  * replay.ts answers one: a read of another skill the profile installs from that skill's installed
- * copy (context.ts's `installedCopies` of the capture's record, made again before the runs where
- * the cache lacks it, capture.ts's `restoreCopies`), a read of a skill it does not
- * install with Oh My Pi's unknown-skill result, a read of another file of the tested skill from
- * its directory. Then the body goes again with the reply and the answers, at most MAX_SKILL_ROUNDS
- * times. A run comes to one of four outcomes (RunOutcome):
+ * copy (context.ts's `installedCopies` of the capture's record, made again from its repository at
+ * its commit by `restoredCapture` where the cache lacks it), a read of a skill it does not
+ * install with Oh My Pi's unknown-skill result, and a read of another file of the tested skill
+ * from its directory. Then the body goes again with the reply and the answers, at most
+ * MAX_SKILL_ROUNDS times. A run comes to one of four outcomes (RunOutcome):
  *
  * - `loaded`: a reply reads the skill, the first one or one after answered rounds, before any
  *   reply does more than read skill files. The run ends at that reply.
@@ -262,12 +262,11 @@ import {
   type RecordedLine,
   rawBodyFile,
   renamedListingBlocks,
-  restoreCopies,
+  restoredCapture,
   rewriteBody,
   type SavedHead,
   type SessionFacts,
   type Sourced,
-  savedCapture,
   sessionCheckout,
   sessionFacts,
   sessionHeads,
@@ -1881,15 +1880,10 @@ class LoadTest {
       profile.profile,
       this.daemonImages.get(task.id)
     );
-    let capture = savedCapture(files, arm);
-    const scratchDir = path.join(this.root, "captures");
-    if (capture !== undefined) {
-      await restoreCopies(c, arm, capture, {
-        source: this.o.source,
-        cacheDir: this.o.cacheDir,
-        scratchDir,
-      });
-    }
+    let capture = await restoredCapture(c, arm, files, {
+      source: this.o.source,
+      cacheDir: this.o.cacheDir,
+    });
     if (capture === undefined && models !== undefined) {
       const { name, renamedFrom } = this.settings;
       const listing = profile.profile.recordedListing;
@@ -1908,7 +1902,7 @@ class LoadTest {
       capture = await captureBody(c, arm, {
         omp: this.o.omp,
         outDir: path.dirname(files.body),
-        scratchDir,
+        scratchDir: path.join(this.root, "captures"),
         cacheDir: this.o.cacheDir,
         source: this.o.source,
         models,

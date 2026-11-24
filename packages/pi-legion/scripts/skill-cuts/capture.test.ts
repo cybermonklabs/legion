@@ -3049,6 +3049,50 @@ test("a saved capture whose cache holds every installed copy its record names is
   expect({ made: saved.made, reads }).toEqual({ made: false, reads: [] });
 });
 
+// Catches: restoring a skill copy by reading the case's plugins, role prompt or context files.
+test("a saved capture restores missing skill copies without reading its plugins, role prompt or context files", async () => {
+  const root = path.join(dir, "copies-only");
+  const base = f1Case("c-copies-only");
+  const c: Case = {
+    ...base,
+    context: "legion:acme:implementer",
+    profile: {
+      ...base.profile,
+      plugins: [{ repo: "acme/plugin", commit: COMMIT, path: "packages/plugin", name: "plugin" }],
+    },
+  };
+  const old = path.join(root, "old");
+  writeTree(old, { "SKILL.md": OLD_SKILL, "references/x.md": X });
+  const arm = buildArm(c, "old", { old, new: old }, root);
+  const outDir = path.join(root, "out");
+  const cacheDir = path.join(root, "cache");
+  saveOldCapture(outDir, c, [skillsCopy("beta"), skillsCopy("delta")]);
+  const source: RepoSource = {
+    name: "only repository skills",
+    async file(repo, _commit, file) {
+      throw new Error(`unexpected file ${file} of ${repo}`);
+    },
+    async tree(repo, commit, at, dest) {
+      if (repo === "acme/skills" && commit === COMMIT) {
+        if (at === "skills/beta") return writeTree(dest, { "SKILL.md": BETA_SKILL });
+        if (at === "skills/delta") return writeTree(dest, { "SKILL.md": DELTA_SKILL });
+      }
+      throw new Error(`unexpected tree ${at} of ${repo} at ${commit}`);
+    },
+  };
+  const saved = await captureBody(c, arm, {
+    outDir,
+    scratchDir: path.join(root, "scratch"),
+    cacheDir,
+    source,
+    hints,
+    session: SESSION,
+  });
+  expect(saved.made).toBe(false);
+  const betaKey = cacheKey("acme/skills", COMMIT, "skills/beta");
+  expect(readFileSync(path.join(cacheDir, "skills", betaKey, "SKILL.md"), "utf8")).toBe(BETA_SKILL);
+});
+
 // Catches: a saved capture replayed with other copies than the ones it was made with, where the
 // case's profile now names another commit of a copy than its record does, or the record keeps a
 // copy under another cache key than the build gives it.
@@ -3097,8 +3141,8 @@ test("a saved capture whose installed copies, made again, differ from the ones i
       `case ${id} arm old: the saved capture ${files.record} installed ${wasWords} where the case's profile now gives beta from skills/beta of acme/skills at ${COMMIT} (cache key ${betaKey}), so a replay of it would answer a read of that skill from another copy than the one it was made with: make it again under a new --out`
     );
   }
-  // The context each refusal built again is gone; the copies it made stay in the cache.
-  expect(readdirSync(path.join(options.scratchDir, "copies"))).toEqual([]);
+  // Even when the copies differ, rebuilding them never makes a scratch directory.
+  expect(existsSync(options.scratchDir)).toBe(false);
   expect(readFileSync(path.join(options.cacheDir, "skills", betaKey, "SKILL.md"), "utf8")).toBe(
     BETA_SKILL
   );
