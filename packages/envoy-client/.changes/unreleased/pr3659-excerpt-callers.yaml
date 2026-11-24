@@ -1,4 +1,0 @@
-kind: Changed
-body: |-
-  The header of `excerpt.ts` no longer names pi-shared's daemon client among the callers of
-  `bodyForText`, which that client does not call.

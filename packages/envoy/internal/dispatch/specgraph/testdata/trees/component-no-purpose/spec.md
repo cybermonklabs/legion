@@ -1,2 +1,0 @@
-:::component{#dispatch name="Dispatch"}
-:::

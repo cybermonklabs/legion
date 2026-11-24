@@ -1,2 +1,0 @@
-kind: Added
-body: IssueSummary carries created_by (the creating actor, or null) and created_at.
