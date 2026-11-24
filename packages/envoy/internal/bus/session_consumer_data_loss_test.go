@@ -35,6 +35,7 @@ import (
 // neither, or past the stream's end, where create clamps it to the stream's first sequence; neither
 // is the start after the floor the server reports, L + 1, which the test requires.
 func TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgain(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	owner, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
 	if err != nil {

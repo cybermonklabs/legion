@@ -107,6 +107,7 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 // A drain runs its hooks once the delivery subscriptions have drained and before the connection's
 // own drain, within the drain's deadline, so a hook's requests still reach the server.
 func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
+	t.Parallel()
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {

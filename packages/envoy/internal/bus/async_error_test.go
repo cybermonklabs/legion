@@ -226,6 +226,7 @@ func TestAHandshakeReadFailsTheWaysARealReadFails(t *testing.T) {
 // own. The errors are built as nats.go builds the one it hands the async error callback for a
 // server's -ERR (processErr).
 func TestOnlyTheServersRefusalOfTheCoreSubscriptionMarksItRefused(t *testing.T) {
+	t.Parallel()
 	violation := func(text string) error { return fmt.Errorf("%w: %s", nats.ErrPermissionViolation, text) }
 	own := violation(`Permissions Violation for Subscription to "notifications.>" using queue "live"`)
 	current := &nats.Conn{}
