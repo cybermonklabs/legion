@@ -336,9 +336,15 @@ func xidHoldWindowMemory() (unheld string) {
 			}
 		}
 	}
+	// DIAGNOSTIC BRANCH, not for the pull request: what the hold found and what each populate
+	// answered, so the burst test can say whether a page it reads as absent was one the hold made
+	// present at all.
 	tracer := xidFindTracerMemory(maps)
+	xidDiagHeld = tracer
+	xidDiagPopulate = xidDiagPopulate[:0]
 	for _, r := range tracer {
-		unix.Syscall(unix.SYS_MADVISE, r.start, r.end-r.start, unix.MADV_POPULATE_WRITE)
+		_, _, errno := unix.Syscall(unix.SYS_MADVISE, r.start, r.end-r.start, unix.MADV_POPULATE_WRITE)
+		xidDiagPopulate = append(xidDiagPopulate, fmt.Sprintf("%#x-%#x:%v", r.start, r.end, errno))
 	}
 	if refused {
 		return "the kernel refused mbind MPOL_LOCAL on the process's mappings, so NUMA balancing may move a page under the window's thread"
@@ -362,6 +368,13 @@ func xidHoldMemory() bool { return xidHoldWindowMemory() == "" }
 // hold (xidHoldWindowMemory): xidTracerRanges, in a variable so that the test of a BEGIN that finds
 // none can plant that (TestABeginThatFindsNoTracerMemoryIsUnknown).
 var xidFindTracerMemory = xidTracerRanges
+
+// DIAGNOSTIC BRANCH, not for the pull request: the ranges the last hold found, and one line per
+// range with what its MADV_POPULATE_WRITE answered.
+var (
+	xidDiagHeld     []xidTracerRange
+	xidDiagPopulate []string
+)
 
 // xidTracerRange is an address range of the execution tracer's memory, or, in
 // xidMappedBeforeTrace, of anything the process had mapped.

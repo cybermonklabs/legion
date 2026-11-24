@@ -83,6 +83,9 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 	var mapped, grown []xidTracerRange
 	var named bool
 	var waited time.Duration
+	// DIAGNOSTIC BRANCH, not for the pull request.
+	var diagHeld []xidTracerRange
+	var diagPopulate, diagAbsentHeld []string
 	// As Measure does, with the collector held off, so none of its workers writes events.
 	runWithoutCollector(func() {
 		var err error
@@ -101,6 +104,9 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 			if i == 1 {
 				xidTouchSignalStack()
 				xidHoldWindowMemory()
+				diagHeld = slices.Clone(xidDiagHeld)
+				diagPopulate = slices.Clone(xidDiagPopulate)
+				diagAbsentHeld = xidAbsentPages(diagHeld)
 				mapped, named = xidTracerMappings(t)
 				absent = xidAbsentPages(mapped)
 				runtime.Gosched()
@@ -129,6 +135,10 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 	// By name, a mapping added for the burst is the tracer's. Found as what was mapped since the
 	// trace started, it may be anything another thread mapped meanwhile, so there a buffer mapped
 	// for the burst shows as the fault its header's first write is.
+	// DIAGNOSTIC BRANCH, not for the pull request: every run says what the hold found and
+	// populated, and whether a later read of the mappings says something else.
+	t.Logf("DIAG: hold found %v, populate answered %v, absent of the hold's own ranges %d %v; the later read found %v, absent %d; same ranges %v",
+		diagHeld, diagPopulate, len(diagAbsentHeld), diagAbsentHeld, mapped, len(absent), slices.Equal(diagHeld, mapped))
 	if len(absent) > 0 || faults != 0 || (named && !slices.Equal(grown, mapped)) {
 		t.Fatalf("after the hold %d pages of the tracer's memory were not present (%v); the thread took %d page faults writing %d trace events; the tracer's mappings (%s) were %v before the events and %v after",
 			len(absent), absent, faults, xidBurstLogs, xidTracerFound(named), mapped, grown)
