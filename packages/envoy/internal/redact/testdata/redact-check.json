@@ -3004,67 +3004,100 @@
       {
         "row": "leakguard-tar-member-whole",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
+          "packages/daemon/internal/leakguard/source_test.go"
+        ],
         "capture": "leakguard.tar-member/whole"
       },
       {
         "row": "leakguard-tar-member-run",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
+          "packages/daemon/internal/leakguard/source_test.go"
+        ],
         "capture": "leakguard.tar-member/run"
       },
       {
         "row": "leakguard-tar-member-escape",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
+          "packages/daemon/internal/leakguard/source_test.go"
+        ],
         "capture": "leakguard.tar-member/escape"
       },
       {
         "row": "leakguard-served-body-below",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
+          "packages/daemon/internal/leakguard/source_test.go"
+        ],
         "capture": "leakguard.served-body/below"
       },
       {
         "row": "leakguard-served-body-twice",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
+          "packages/daemon/internal/leakguard/source_test.go"
+        ],
         "capture": "leakguard.served-body/twice"
       },
       {
         "row": "leakguard-served-unpack-below",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
+          "packages/daemon/internal/leakguard/source_test.go"
+        ],
         "capture": "leakguard.served-unpack/below"
       },
       {
         "row": "leakguard-served-unpack-escape",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
+          "packages/daemon/internal/leakguard/source_test.go"
+        ],
         "capture": "leakguard.served-unpack/escape"
       },
       {
         "row": "leakguard-served-unpack-link",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/leakguard/tar_member_echo_test.go",
+          "packages/daemon/internal/leakguard/source_test.go"
+        ],
         "capture": "leakguard.served-unpack/link"
       },
       {
         "row": "repocache-tar-echo-stream",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/repocache/tar_echo_test.go",
+          "packages/daemon/internal/repocache/server_test.go"
+        ],
         "capture": "repocache.tar-echo/stream"
       },
       {
         "row": "repocache-tar-echo-ref-file",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/repocache/tar_echo_test.go",
+          "packages/daemon/internal/repocache/server_test.go"
+        ],
         "capture": "repocache.tar-echo/ref-file"
       },
       {
         "row": "repocache-tar-echo-ref-dir",
         "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
-        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "files": [
+          "packages/daemon/internal/repocache/tar_echo_test.go",
+          "packages/daemon/internal/repocache/server_test.go"
+        ],
         "capture": "repocache.tar-echo/ref-dir"
       },
       {

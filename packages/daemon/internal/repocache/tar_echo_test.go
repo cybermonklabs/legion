@@ -14,10 +14,10 @@ import (
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
-// echoedProvisioningToken is the token testOptions' token file holds, which the cache's fetch from
-// GitHub carries: the credential whatever answers that fetch in GitHub's place holds, and can name
-// a branch with.
-const echoedProvisioningToken = "ghs_first"
+// echoedProvisioningToken is the token testOptions' token file holds (testProvisioningToken),
+// which the cache's fetch from GitHub carries: the credential whatever answers that fetch in
+// GitHub's place holds, and can name a branch with.
+const echoedProvisioningToken = testProvisioningToken
 
 // TestTheTarStreamNamesNoRefOfTheClone: whatever answers the cache's fetch in GitHub's place names
 // a branch with the provisioning token the fetch carried, and the fetch writes it into the clone as

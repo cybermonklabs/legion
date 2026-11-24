@@ -243,8 +243,13 @@ type running struct {
 // testCacheToken is the bearer a test cache of acme/widgets takes.
 const testCacheToken = "cache-token-of-acme-widgets"
 
+// testProvisioningToken is the provisioning token a test cache's token file holds first. It holds
+// the redaction gate's marker not-a-secret-token, so a row whose stand-in echoes it into what the
+// cache prints shows the gate that echo.
+const testProvisioningToken = "ghs_first-not-a-secret-token"
+
 // testOptions are a cache of acme/widgets's options on a fresh volume: its provisioning token file
-// holding ghs_first, and its bearer token file testCacheToken.
+// holding testProvisioningToken, and its bearer token file testCacheToken.
 func testOptions(t *testing.T, run *testRunner) Options {
 	t.Helper()
 	return repoOptions(t, run, "acme/widgets", testCacheToken)
@@ -255,7 +260,7 @@ func repoOptions(t *testing.T, run *testRunner, repo, bearer string) Options {
 	t.Helper()
 	dir := t.TempDir()
 	tokenFile, bearerFile := filepath.Join(dir, "token"), filepath.Join(dir, "cache-token")
-	if err := os.WriteFile(tokenFile, []byte("ghs_first"), 0o600); err != nil {
+	if err := os.WriteFile(tokenFile, []byte(testProvisioningToken), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(bearerFile, []byte(bearer+"\n"), 0o600); err != nil {
@@ -720,8 +725,8 @@ func TestEachTickFetchesWithTheTokenFileAsItIsThen(t *testing.T) {
 		t.Errorf("lastFetchAt stayed %s after a fetch that moved the head", health.LastFetchAt)
 	}
 	tokens := run.seenTokens()
-	if tokens[0] != "ghs_first" || tokens[len(tokens)-1] != "ghs_rotated" {
-		t.Errorf("the transfers presented %q, want ghs_first first and the rotated ghs_rotated last", tokens)
+	if tokens[0] != testProvisioningToken || tokens[len(tokens)-1] != "ghs_rotated" {
+		t.Errorf("the transfers presented %q, want %s first and the rotated ghs_rotated last", tokens, testProvisioningToken)
 	}
 	for i, transfer := range run.transfers()[1:] {
 		want := "--git-dir=" + c.dir() + " fetch"

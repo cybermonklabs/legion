@@ -24,8 +24,9 @@ import (
 )
 
 // sourceToken is the read-only token the tests' Source mints, and the bearer the fake GitHub
-// requires of every read.
-const sourceToken = "ghs_leak_check_read"
+// requires of every read. It holds the redaction gate's marker not-a-secret-token, so a row whose
+// stand-in echoes it into what the daemon prints shows the gate that echo.
+const sourceToken = "ghs_leak_check_read-not-a-secret-token"
 
 // checkRepository is the repository these tests' Source reads the check from, a stand-in for the
 // one a deployment names (Setting.Repository): every cause sentence names it.
