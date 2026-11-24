@@ -35,7 +35,8 @@ import (
 // observe — Dispatch writes, publishes, Spawn calls, the rows left, the log — never on time.
 
 // runLanes starts runner.Run on clock and waits for its boot sweep to arm the first sweep timer,
-// so every row a test writes after it is one the boot sweep never saw. It returns the stop that
+// for the runner's own interval (sweepInterval), so every row a test writes after it is one the
+// boot sweep never saw. It returns the stop that
 // cancels Run and waits for it to return, run at cleanup too; the stop first runs every release
 // given, since a lane blocked in a gated call would hold Run's join forever.
 func runLanes(t *testing.T, runner *outbox, clock *heldClock, releases ...func()) func() {
@@ -59,7 +60,7 @@ func runLanes(t *testing.T, runner *outbox, clock *heldClock, releases ...func()
 	}
 	t.Cleanup(stop)
 	testwait.Eventually(t, "Run armed its sweep", func() bool {
-		live, _ := clock.armed(outboxLease)
+		live, _ := clock.armed(runner.sweepInterval())
 		return live == 1
 	})
 	return stop
@@ -1011,21 +1012,7 @@ func TestRunSweepsAtTheOutboxsOwnInterval(t *testing.T) {
 	clock := microClock()
 	client := &blockingDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}}
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger(), sweepEvery: every}
-	runner.now, runner.clock = clock.Now, clock
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		runner.Run(ctx)
-		close(done)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-	testwait.Eventually(t, "Run armed its sweep for the outbox's own interval", func() bool {
-		live, _ := clock.armed(every)
-		return live == 1
-	})
+	runLanes(t, runner, clock)
 	if _, armed := clock.armed(outboxLease); armed != 0 {
 		t.Fatalf("sweep timers armed for outboxLease = %d, want none: the outbox names an interval of its own", armed)
 	}

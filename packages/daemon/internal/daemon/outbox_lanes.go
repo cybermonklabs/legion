@@ -20,7 +20,7 @@ import (
 // in the order they are due, on a goroutine of its own that lives only while the issue has such
 // rows. A lane is woken by the write that commits one
 // of its rows (projectRecords, through store.OnCommit), by the timer it arms for its next row due
-// later, and by the sweep, which every outboxLease lists the lanes with a row still in the outbox
+// later, and by the sweep, which every sweepInterval lists the lanes with a row still in the outbox
 // (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its finish or retry
 // recorded — a lost database connection, a daemon that died mid-row — keeps its lease until it
 // lapses, and the sweep after the lapse wakes its lane, which lists it due again and runs it. The
@@ -89,8 +89,9 @@ func (r *outbox) Run(ctx context.Context) {
 }
 
 // sweepInterval is how often Run sweeps: the outbox's own sweepEvery, or outboxLease where it sets
-// none, which is every daemon's. A running row renews its lease every third of outboxLease, so any
-// sweep that interval or shorter finds a lapsed lease within one more lease, as outboxLease says.
+// none, which is every daemon's. An interval at most outboxLease finds a lapsed lease within one
+// interval of its lapse. A shorter one never finds a live row lapsed: a running row renews its
+// lease every third of outboxLease, whatever the sweep's interval.
 func (r *outbox) sweepInterval() time.Duration {
 	if r.sweepEvery > 0 {
 		return r.sweepEvery
@@ -168,7 +169,7 @@ func (r *outbox) wakeLane(key record.LaneKey) {
 // wait for a wake. It exits once nothing is due, nothing is due later and no wake is pending — a
 // lane whose only rows another runner holds exits too, and the sweep starts it again once that
 // lease lapses. A lane whose list failed, or that left a due row behind on a failed claim, does not
-// exit: it waits for a wake or the sweep, which comes within outboxLease.
+// exit: it waits for a wake or the sweep, which comes within sweepInterval.
 func (r *outbox) runLane(ctx context.Context, lane *outboxLane) {
 	defer r.wg.Done()
 	// Lanes run beside each other and beside the sweep, each opening transactions of its own, so

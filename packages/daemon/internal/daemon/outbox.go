@@ -42,9 +42,10 @@ const (
 	// id cannot collide with a minted one. What a delivery is for is its phase, not its id: the
 	// id is rotated by a prompt retry.
 	outboxDeliveryPrefix = "outbox:"
-	// outboxLease is how long a claim holds a row, and the sweep's interval (outbox_lanes.go): a
-	// running row renews its lease every third of it, so a lease lapses only on a run that ended
-	// without its finish or retry recorded, and the sweep finds the lapsed row within one more.
+	// outboxLease is how long a claim holds a row, and the sweep's default interval
+	// (sweepInterval, outbox_lanes.go): a running row renews its lease every third of it, so a
+	// lease lapses only on a run that ended without its finish or retry recorded, and a sweep at
+	// most this far apart finds the lapsed row within one more.
 	outboxLease = 30 * time.Second
 	// outboxSettleTimeout bounds a row's finish or retry once the daemon's stop has cancelled the
 	// lane's context: the row's effect ran, and a settle that waits for the stop's context would
@@ -142,7 +143,7 @@ type outbox struct {
 	// sweepEvery is how often Run sweeps the lanes (sweepInterval): zero is outboxLease, the
 	// daemon's. A whole-daemon test that changes a row behind the daemon — a lease it lets lapse, a
 	// backoff it makes due — sets it short through overrides.outboxSweep (attach), so the row runs
-	// at the next sweep rather than up to a lease of the wall clock later.
+	// at the next sweep rather than up to outboxLease of the wall clock later.
 	sweepEvery time.Duration
 	provision  func(context.Context, workspace.Request) (workspace.Workspace, error)
 	// remove removes a workspace from the daemon's host, handed its repository's store lock, which

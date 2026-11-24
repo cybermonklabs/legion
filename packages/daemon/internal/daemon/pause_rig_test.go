@@ -698,7 +698,7 @@ func (r *pauseDaemonRig) awaitPasses() {
 // awaitFullSweep waits until one whole pass of the daemon's sweep has run since the call
 // (supervision.reconcileOrphans, which decides the update rounds): two more passes have begun,
 // each with its runtime's ReconcileOrphans, and passes run one after another, so the first of them
-// read the clock and the claims after the call and has ended. A check that the sweep replaced
+// read the clock after the call and has ended. A check that the sweep replaced
 // nothing reads what that pass did not do.
 func (r *pauseDaemonRig) awaitFullSweep() {
 	r.t.Helper()
