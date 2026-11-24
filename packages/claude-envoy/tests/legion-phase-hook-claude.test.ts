@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -9,6 +9,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { loopbackHost } from "@legion/test-fixtures/loopback-host"
 import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { phaseStallFile } from "../src/legion-phase-hook"
+import { builtPlugin } from "./built-plugin"
 import { FakeNatsServer } from "./fake-nats-server"
 
 /** One scripted reply's blocks: the shape `Block` has in `@legion/pi-shared/test/omp-harness`. */
@@ -177,37 +178,8 @@ const CLAIM_TOKEN = `legion-legion-${ISSUE.toLowerCase()}-implementer`
 const REGISTRATION_SECRET = fixtureSecret("reg")
 const BOOT_TOKEN = fixtureSecret("boot")
 
-/** The package root, whose `scripts/build.ts` builds the plugin a worker loads. */
+/** The package root, whose daemon fixtures the stand-in answers with. */
 const PACKAGE = resolve(import.meta.dir, "..")
-
-/** The scratch directory of the plugin build, removed after the last case. */
-let pluginScratch: string | undefined
-let pluginBuild: Promise<string> | undefined
-
-/** The plugin a worker loads, built once by the first case that runs: a fresh `--out` build of
- * this tree, whose `legion/` is the generated plugin tree and whose `dist/` holds the built MCP
- * server. A pull request's tree carries main's last build of these, never its own, and a
- * hand-written copy of either would prove nothing. */
-function builtPlugin(): Promise<string> {
-  pluginBuild ??= (async () => {
-    pluginScratch = await mkdtemp(join(tmpdir(), "claude-envoy-phase-hook-plugin-"))
-    const out = join(pluginScratch, "plugin")
-    const script = join(PACKAGE, "scripts", "build.ts")
-    const build = Bun.spawn([process.execPath, script, "--out", out], {
-      cwd: tmpdir(),
-      stdout: "ignore",
-      stderr: "pipe",
-    })
-    const [exitCode, stderr] = await Promise.all([build.exited, new Response(build.stderr).text()])
-    if (exitCode !== 0) throw new Error(`scripts/build.ts --out exited ${exitCode}: ${stderr}`)
-    return out
-  })()
-  return pluginBuild
-}
-
-afterAll(async () => {
-  if (pluginScratch !== undefined) await rm(pluginScratch, { recursive: true, force: true })
-})
 
 /** The reminders stay far away: nothing in these cases waits for a timer, and the architect is
  * never told. The `Stop` continuation is immediate, so only the delays a case must not reach are
@@ -422,9 +394,15 @@ async function runWorker(options: {
       mcpServers: {
         legion: {
           command: "/bin/sh",
+          // The paths go as arguments, not into the command's text: a quote, a space or a `$` in
+          // TMPDIR reaches `exec` whole, where one written between single quotes ended them.
           args: [
             "-c",
-            `exec '${process.execPath}' '${join(plugin, "dist", "envoy-channel.js")}' 2>>'${paneLogFile}'`,
+            'exec "$1" "$2" 2>>"$3"',
+            "sh",
+            process.execPath,
+            join(plugin, "dist", "envoy-channel.js"),
+            paneLogFile,
           ],
           env: { CLAUDE_PLUGIN_DATA: join(configDir, "envoy-plugin-data") },
         },

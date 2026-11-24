@@ -10,6 +10,8 @@ import {
 } from "@legion/envoy-client/transport"
 import { captureEnvironment } from "@legion/test-fixtures/environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server } from "bun"
 import {
@@ -409,14 +411,16 @@ test("replies in a Slack thread with slack_post, with the token the broker grant
     )
     chmodSync(join(dir, "agent-secrets"), 0o755)
     const posts: unknown[] = []
+    // The stand-in refuses by name a POST body that is no JSON object (`readStandinBody`). It stays on
+    // 127.0.0.1 rather than an address of its own (`loopbackHost`): the Slack post takes plain
+    // http only from 127.0.0.1, localhost or [::1] (`allowedAPIURL` in envoy-client's slack-post.ts).
     slack = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
       async fetch(request) {
-        posts.push({
-          authorization: request.headers.get("authorization"),
-          body: await request.json(),
-        })
+        const { body, refusal } = await readStandinBody(request)
+        if (refusal !== undefined) return refusal
+        posts.push({ authorization: request.headers.get("authorization"), body })
         return Response.json({ ok: true, channel: "C00000000", ts: "1700000000.000200" })
       },
     })
@@ -459,14 +463,17 @@ test("a dispatch_* call is an unknown tool even with Dispatch configured, and re
   let server: Server<undefined> | undefined
   try {
     const requests: string[] = []
+    // An address of its own, out of reach on Linux of a client of another test that still dials
+    // its port at 127.0.0.1 (`loopbackHost`): `requests` must stay empty.
     server = Bun.serve({
       port: 0,
+      hostname: loopbackHost(),
       fetch: (request) => {
         requests.push(`${request.method} ${new URL(request.url).pathname}`)
         return Response.json({ error: "unexpected" }, { status: 500 })
       },
     })
-    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_URL"] = server.url.origin
     process.env["DISPATCH_TOKEN"] = fixtureSecret("dsp")
     const runtime: ChannelToolRuntime = {
       identity,

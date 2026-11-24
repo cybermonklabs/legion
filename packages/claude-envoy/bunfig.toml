@@ -1,3 +1,4 @@
 [test]
-# Each test starts with no secret held (`@legion/contracts/held-secrets`).
-preload = ["../contracts/src/held-secrets-test-preload.ts"]
+# Each test starts with no secret held (`@legion/contracts/held-secrets`), and the plugin build the
+# real-binary rows share goes once the run ends (`tests/built-plugin-preload.ts`).
+preload = ["../contracts/src/held-secrets-test-preload.ts", "./tests/built-plugin-preload.ts"]

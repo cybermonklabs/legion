@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { codexHomes, recordFor, startCodexServer, until } from "./codex-server-process"
 
@@ -32,8 +33,10 @@ describe("the Codex server's stderr", () => {
     const root = makeDirectory()
     const subject = fixtureSecret("pod")
     const shown = form === "whole" ? subject : subject.slice(4, 18)
+    // An address of its own, out of reach on Linux of a client of another test that still dials
+    // its port at 127.0.0.1 (`loopbackHost`).
     const broker = Bun.serve({
-      hostname: "127.0.0.1",
+      hostname: loopbackHost(),
       port: 0,
       fetch: () =>
         Response.json(
@@ -55,7 +58,7 @@ describe("the Codex server's stderr", () => {
       {
         HOME: homes.home,
         PLUGIN_DATA: homes.pluginData,
-        AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+        AGENT_SECRETS_URL: broker.url.origin,
         AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
         AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
         NATS_AUTH: "broker",

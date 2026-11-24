@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
 import { unresolvedNames } from "./unresolved-names"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
@@ -42,8 +43,12 @@ const hookInput = {
 test("summarises the session's open asks into context and records the session id for its Claude process", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-"))
   const requests: string[] = []
+  // Every stand-in Dispatch of this file listens at an address of its own, out of reach on Linux
+  // of a client of another test that still dials its port at 127.0.0.1 (`loopbackHost`), so what
+  // it records is what this case's hook sent. None reads a body.
   const server = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: (request) => {
       requests.push(
         `${request.headers.get("authorization")} ${new URL(request.url).pathname}?${new URL(request.url).searchParams}`,
@@ -78,7 +83,7 @@ test("summarises the session's open asks into context and records the session id
     const result = await runHook(hookInput, {
       HOME: scratch,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
-      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      DISPATCH_URL: server.url.origin,
       DISPATCH_TOKEN,
     })
 
@@ -102,14 +107,16 @@ test("summarises the session's open asks into context and records the session id
 
 test("reports an unreachable Dispatch as unavailable, still exits 0, and still records the session id", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-down-"))
-  const closed = Bun.serve({ port: 0, fetch: () => new Response() })
-  const port = closed.port
+  // A port freed at an address of its own (`loopbackHost`), which no other test's server is given
+  // in its stead, so the Dispatch the hook dials stays unreachable.
+  const closed = Bun.serve({ port: 0, hostname: loopbackHost(), fetch: () => new Response() })
+  const unreachable = closed.url.origin
   closed.stop(true)
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
-      DISPATCH_URL: `http://127.0.0.1:${port}`,
+      DISPATCH_URL: unreachable,
       DISPATCH_TOKEN,
     })
 
@@ -313,6 +320,7 @@ test("names a checkout's unread .opencode/envoy.json and still summarises the as
   const requests: string[] = []
   const server = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: (request) => {
       requests.push(`${request.headers.get("authorization")} ${new URL(request.url).pathname}`)
       return Response.json({
@@ -332,7 +340,7 @@ test("names a checkout's unread .opencode/envoy.json and still summarises the as
     JSON.stringify({
       dispatch: {
         enabled: true,
-        serverUrl: `http://127.0.0.1:${server.port}`,
+        serverUrl: server.url.origin,
         token: DISPATCH_TOKEN,
       },
     }),
@@ -439,6 +447,7 @@ test("reads and hands on Claude Code's own envoy.json, never the ENVOY_CONFIG_FI
   const requests: string[] = []
   const server = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: (request) => {
       const url = new URL(request.url)
       requests.push(`${request.headers.get("authorization")} ${url.pathname}?${url.searchParams}`)
@@ -460,7 +469,7 @@ test("reads and hands on Claude Code's own envoy.json, never the ENVOY_CONFIG_FI
     JSON.stringify({
       dispatch: {
         enabled: true,
-        serverUrl: `http://127.0.0.1:${server.port}`,
+        serverUrl: server.url.origin,
         token: DISPATCH_TOKEN,
       },
     }),
@@ -572,11 +581,25 @@ async function jjDirectory(scratch: string, body: string): Promise<string> {
   return bin
 }
 
+/** Whether process `pid` runs: its `/proc/<pid>/stat` is there and names no zombie, where the
+ *  host has `/proc`; else whether a signal 0 reaches it. */
+async function running(pid: number): Promise<boolean> {
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => undefined)
+  if (stat !== undefined) return stat[stat.lastIndexOf(")") + 2] !== "Z"
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** A Dispatch answering one empty open-asks snapshot, so a test can see the summary the hook
  * still prints beside whatever it wrote to the env file. */
 function openAsksServer() {
   return Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: () =>
       Response.json({
         session_id: "s-1",
@@ -778,7 +801,7 @@ test("writes no overlay and no JJ_CONFIG for a session that is no Legion pane", 
       PATH: `${bin}:${process.env["PATH"] ?? ""}`,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
       CLAUDE_ENV_FILE: envFile,
-      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      DISPATCH_URL: server.url.origin,
       DISPATCH_TOKEN,
     })
 
@@ -874,15 +897,23 @@ test("single-quotes the chain, so a shell sourcing the file reads a state direct
 })
 
 // Attribution is worth nothing the session's own start: a jj that never answers costs the pane the
-// export, and neither the two lines the `dispatch` command needs nor the summary.
+// export, and neither the two lines the `dispatch` command needs nor the summary. The jj here
+// writes its pid and then waits for ever, so what the row reads is what the hook's own bound did
+// to it (`JJ_BASE_CHAIN_TIMEOUT_MS`, which kills its process group): gone when the hook returned.
+// A hook that waited it out would not return, and the row's timeout would name it. That bound,
+// with the hook's other steps, ends inside the 20 s hooks.json gives the hook: hooks-timeout.test.ts
+// holds that, since a clock here would be read by how fast a loaded machine starts the hook.
 test("gives up on a jj that never answers, keeping the other exports and the summary", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
-  const bin = await jjDirectory(scratch, "exec sleep 30")
+  const jjPid = join(scratch, "jj.pid")
+  // The pid file's path reaches the stub through the environment the hook hands jj, never as
+  // script text: a quote in TMPDIR would end a quoted path there before the pid was written.
+  const bin = await jjDirectory(scratch, 'echo $$ > "$JJ_STUB_PID_FILE"\nexec sleep 86400')
   const envFile = join(scratch, "session-env.sh")
   const server = openAsksServer()
-  const started = Date.now()
+  let pid: number | undefined
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
@@ -891,12 +922,16 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
       CLAUDE_ENV_FILE: envFile,
       LEGION_STATE_DIR: stateDir,
       LEGION_ISSUE_TRAILER: "ACME-7",
-      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      DISPATCH_URL: server.url.origin,
       DISPATCH_TOKEN,
+      JJ_STUB_PID_FILE: jjPid,
     })
 
     expect(result.exitCode).toBe(0)
-    expect(Date.now() - started).toBeLessThan(15_000)
+    // The hook asked jj, and that jj was gone once the hook returned.
+    pid = Number((await readFile(jjPid, "utf8")).trim())
+    expect(pid).toBeGreaterThan(0)
+    expect(await running(pid)).toBe(false)
     expect(result.stdout).toStartWith("Dispatch authored-ask summary:\n")
     expect(await readFile(envFile, "utf8")).toBe(
       [
@@ -907,6 +942,9 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     )
     expect(await readdir(stateDir)).toEqual([])
   } finally {
+    // A hook that left its jj behind leaves a day's sleep: end it, whatever the row read.
+    pid ??= Number((await readFile(jjPid, "utf8").catch(() => "")).trim()) || undefined
+    if (pid !== undefined && (await running(pid))) process.kill(pid, "SIGKILL")
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })
   }

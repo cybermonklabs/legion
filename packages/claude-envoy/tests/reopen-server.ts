@@ -9,6 +9,8 @@ import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { DeliveryRequest } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import {
   codexSessionRecordFile,
   processStarted,
@@ -81,9 +83,12 @@ export interface SessionBroker {
  */
 export async function sessionBroker(): Promise<SessionBroker> {
   const minted: string[] = []
+  // An address of its own, out of reach on Linux of a client of another test that still dials its
+  // port at 127.0.0.1 (`loopbackHost`), so `minted` counts only this server's trades. It reads no
+  // body: a trade is a form POST, which `readStandinBody` would refuse.
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     fetch: () => {
       const token = fixtureSecret("channel")
       minted.push(token)
@@ -102,7 +107,7 @@ export async function sessionBroker(): Promise<SessionBroker> {
     minted,
     env: {
       NATS_AUTH: "broker",
-      AGENT_SECRETS_URL: `http://127.0.0.1:${server.port}`,
+      AGENT_SECRETS_URL: server.url.origin,
       AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
       AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
     },
@@ -199,14 +204,21 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
   const requests: string[] = []
   const sessions: string[] = []
   const deliveries: DeliveryRequest[] = []
+  // The stand-in listener listens at an address of its own, out of reach on Linux of a client of
+  // another test that still dials its port at 127.0.0.1, and refuses by name a POST body that is
+  // no JSON object before it records the request or hands it on (`loopbackHost`,
+  // `readStandinBody`).
   const listener = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: async (request) => {
+      const read = await readStandinBody(request)
+      if (read.refusal !== undefined) return read.refusal
       const url = new URL(request.url)
       requests.push(`${request.method} ${url.pathname}`)
       await options.onRequest?.(request.method, url.pathname, broker)
       if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-        const body = (await request.json()) as {
+        const body = read.body as {
           session_id: string
           topics: string[]
           delivery: DeliveryRequest
@@ -245,7 +257,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: gate.url,
-      ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+      ENVOY_URL: listener.url.origin,
       // Several heartbeats register while the connection is down, so "told once" is told once
       // over several refusals.
       ENVOY_HEARTBEAT_MS: "200",

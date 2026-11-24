@@ -5,6 +5,8 @@ import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { modSocketPath } from "../hooks/mod-protocol"
@@ -55,8 +57,13 @@ test("a session home's mod socket fits however deep TMPDIR is", async () => {
 test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, points at the dispatch command, and advertises nothing until its mod connects", async () => {
   const broker = new FakeNatsServer()
   const dispatchRequests: string[] = []
+  // Every stand-in of this file listens at an address of its own, out of reach on Linux of a client
+  // of another test that still dials its port at 127.0.0.1 (`loopbackHost`), so what each records
+  // is what this case's server sent; each that reads a JSON body refuses by name a POST body that
+  // is no JSON object (`readStandinBody`).
   const dispatch = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: (request) => {
       dispatchRequests.push(`${request.method} ${new URL(request.url).pathname}`)
       return Response.json({ error: "unexpected" }, { status: 500 })
@@ -65,10 +72,13 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
   const advertised: unknown[] = []
   const listener = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: async (request) => {
       const url = new URL(request.url)
       if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-        const body = (await request.json()) as {
+        const read = await readStandinBody(request)
+        if (read.refusal !== undefined) return read.refusal
+        const body = read.body as {
           session_id: string
           topics: string[]
           capabilities?: unknown
@@ -99,13 +109,13 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: broker.url,
-      ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+      ENVOY_URL: listener.url.origin,
       CLAUDE_CODE_SESSION_ID: "ses_mcp",
       CLAUDE_PLUGIN_DATA: stateDirectory,
       // The socket the server binds for its mod, and the one the fake mod below connects to,
       // are both resolved from this base (`resolveModSocketPath`).
       XDG_RUNTIME_DIR: stateDirectory,
-      DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
+      DISPATCH_URL: dispatch.url.origin,
       DISPATCH_TOKEN: dispatchToken,
     },
     stderr: "pipe",
@@ -172,10 +182,13 @@ test("the session advertises its delivery modes for a mod that polls and never s
   const advertised: unknown[] = []
   const listener = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: async (request) => {
       const url = new URL(request.url)
       if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-        const body = (await request.json()) as {
+        const read = await readStandinBody(request)
+        if (read.refusal !== undefined) return read.refusal
+        const body = read.body as {
           session_id: string
           topics: string[]
           capabilities?: unknown
@@ -203,7 +216,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: broker.url,
-      ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+      ENVOY_URL: listener.url.origin,
       CLAUDE_CODE_SESSION_ID: "ses_quiet",
       CLAUDE_PLUGIN_DATA: stateDirectory,
       XDG_RUNTIME_DIR: stateDirectory,
@@ -261,7 +274,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
 test("a tool call while the start waits for its broker token says what the start waits on", async () => {
   const broker = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     fetch: async (request) => {
       await request.text()
       return new Response("the broker is away", { status: 503 })
@@ -284,7 +297,7 @@ test("a tool call while the start waits for its broker token says what the start
       CLAUDE_PLUGIN_DATA: stateDirectory,
       XDG_RUNTIME_DIR: stateDirectory,
       NATS_AUTH: "broker",
-      AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
+      AGENT_SECRETS_URL: broker.url.origin,
       AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
       AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
     },
@@ -343,10 +356,13 @@ test(
     const held = Promise.withResolvers<void>()
     const listener = Bun.serve({
       port: 0,
+      hostname: loopbackHost(),
       fetch: async (request) => {
         const url = new URL(request.url)
         if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-          const body = (await request.json()) as { session_id: string; topics: string[] }
+          const read = await readStandinBody(request)
+          if (read.refusal !== undefined) return read.refusal
+          const body = read.body as { session_id: string; topics: string[] }
           await held.promise
           return Response.json({
             session_id: body.session_id,
@@ -370,7 +386,7 @@ test(
         PATH: process.env["PATH"] ?? "",
         HOME: stateDirectory,
         ENVOY_NATS_URL: gate.url,
-        ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+        ENVOY_URL: listener.url.origin,
         CLAUDE_CODE_SESSION_ID: "ses_dialing",
         CLAUDE_PLUGIN_DATA: stateDirectory,
         XDG_RUNTIME_DIR: stateDirectory,
@@ -436,7 +452,7 @@ test("a broker token keeper's warning while the start registers leaves the tool 
   let trades = 0
   const tokens = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     fetch: async (request) => {
       await request.text()
       trades += 1
@@ -453,10 +469,13 @@ test("a broker token keeper's warning while the start registers leaves the tool 
   const held = Promise.withResolvers<void>()
   const listener = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: async (request) => {
       const url = new URL(request.url)
       if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-        const body = (await request.json()) as { session_id: string; topics: string[] }
+        const read = await readStandinBody(request)
+        if (read.refusal !== undefined) return read.refusal
+        const body = read.body as { session_id: string; topics: string[] }
         await held.promise
         return Response.json({
           session_id: body.session_id,
@@ -482,12 +501,12 @@ test("a broker token keeper's warning while the start registers leaves the tool 
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: broker.url,
-      ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+      ENVOY_URL: listener.url.origin,
       CLAUDE_CODE_SESSION_ID: "ses_keeper_warns",
       CLAUDE_PLUGIN_DATA: stateDirectory,
       XDG_RUNTIME_DIR: stateDirectory,
       NATS_AUTH: "broker",
-      AGENT_SECRETS_URL: `http://127.0.0.1:${tokens.port}`,
+      AGENT_SECRETS_URL: tokens.url.origin,
       AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
       AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
     },

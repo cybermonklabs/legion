@@ -12,6 +12,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { unresolvedNames } from "./unresolved-names"
 
@@ -53,8 +54,10 @@ describe("envoy-send's failure line names no part of the listener URL's user inf
     const user = `u${randomBytes(6).toString("hex")}`
     const password = `p${randomBytes(8).toString("hex")}`
     const seen: string[] = []
+    // An address of its own, out of reach on Linux of a client of another test that still dials
+    // its port at 127.0.0.1 (`loopbackHost`): `seen` must hold this case's send alone.
     const server = Bun.serve({
-      hostname: "127.0.0.1",
+      hostname: loopbackHost(),
       port: 0,
       fetch: (request) => {
         seen.push(request.headers.get("authorization") ?? "")
@@ -62,7 +65,7 @@ describe("envoy-send's failure line names no part of the listener URL's user inf
       },
     })
     servers.push(server)
-    const { exitCode, stderr } = await send(`http://${user}:${password}@127.0.0.1:${server.port}`)
+    const { exitCode, stderr } = await send(`http://${user}:${password}@${server.url.host}`)
     // The row can fail for the leak: the send reached the listener and failed.
     expect(seen.length).toBeGreaterThan(0)
     expect(exitCode).toBe(1)

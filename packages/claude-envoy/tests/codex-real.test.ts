@@ -12,6 +12,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { Server } from "bun"
 import { askSideQuestion } from "../src/codex/codex-cli"
@@ -62,9 +64,17 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
   }
 
   beforeAll(async () => {
+    // The stand-in listens at an address of its own, out of reach on Linux of a client of another
+    // test that still dials its port at 127.0.0.1, and refuses by name a POST body that is no JSON
+    // object before it records the request (`loopbackHost`, `readStandinBody`).
     model = Bun.serve({
+      hostname: loopbackHost(),
       async fetch(request) {
-        const body = (await request.json()) as ModelRequest
+        const read = await readStandinBody(request)
+        if (read.refusal !== undefined) return read.refusal
+        // Of the Responses request, the stand-in reads its `input` alone.
+        const input = read.body["input"]
+        const body: ModelRequest = { input: Array.isArray(input) ? input : [] }
         requests.push(body)
         const id = `resp_${requests.length}`
         const events: Record<string, unknown>[] = [{ response: { id }, type: "response.created" }]
@@ -111,7 +121,7 @@ describe.skipIf(codex === undefined)("the Codex plugin on the real Codex binary"
         'sandbox_mode = "danger-full-access"',
         "[model_providers.standin]",
         'name = "standin"',
-        `base_url = "http://127.0.0.1:${model.port}/v1"`,
+        `base_url = "${model.url.origin}/v1"`,
         'wire_api = "responses"',
         "requires_openai_auth = false",
         `[projects."${work}"]`,

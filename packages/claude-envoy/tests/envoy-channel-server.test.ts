@@ -8,6 +8,8 @@ import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
@@ -651,18 +653,25 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       readonly auth: string | null
       readonly body: unknown
     }> = []
+    // Each stand-in of this file listens at an address of its own, out of reach on Linux of a
+    // client of another test that still dials its port at 127.0.0.1 (`loopbackHost`), so what it
+    // records is what this case's server sent; each that reads a JSON body refuses by name a POST
+    // body that is no JSON object before it records the request (`readStandinBody`).
     server = Bun.serve({
       port: 0,
+      hostname: loopbackHost(),
       fetch: async (request) => {
+        const { body, refusal } = await readStandinBody(request)
+        if (refusal !== undefined) return refusal
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
-          body: await request.json(),
+          body,
         })
         return Response.json({})
       },
     })
-    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_URL"] = server.url.origin
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const notifier = new FakeNotifier()
     const delivery = createChannelDelivery({
@@ -709,6 +718,7 @@ test("a Dispatch frame the channel answered with an error is answered again when
     const controlAnswered = Promise.withResolvers<void>()
     server = Bun.serve({
       port: 0,
+      hostname: loopbackHost(),
       fetch: (request) => {
         const path = new URL(request.url).pathname
         replied.push(path)
@@ -716,7 +726,7 @@ test("a Dispatch frame the channel answered with an error is answered again when
         return Response.json({})
       },
     })
-    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_URL"] = server.url.origin
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const nats = new FakeNats()
     const notifier = new FakeNotifier()
@@ -763,16 +773,19 @@ test("answers a malformed targeted comment through its supplied comment reply ad
     }> = []
     server = Bun.serve({
       port: 0,
+      hostname: loopbackHost(),
       fetch: async (request) => {
+        const { body, refusal } = await readStandinBody(request)
+        if (refusal !== undefined) return refusal
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
-          body: await request.json(),
+          body,
         })
         return Response.json({})
       },
     })
-    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_URL"] = server.url.origin
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const notifier = new FakeNotifier()
     const delivery = createChannelDelivery({
@@ -964,6 +977,7 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
     const listenerCalls: string[] = []
     listener = Bun.serve({
       port: 0,
+      hostname: loopbackHost(),
       fetch: (request) => {
         listenerCalls.push(`${request.method} ${new URL(request.url).pathname}`)
         return Response.json({ error: "no call belongs here" }, { status: 500 })
@@ -974,7 +988,7 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
       CLAUDE_CONFIG_DIR: configDirectory,
       CLAUDE_CODE_SESSION_ID: "ses_off_file",
       CLAUDE_PLUGIN_DATA: home,
-      ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+      ENVOY_URL: listener.url.origin,
       ENVOY_NATS_URL: broker.url,
     })
 
@@ -1006,11 +1020,14 @@ test("the server calls the listener with the file's envoy.token and signs in to 
     const plugins: unknown[] = []
     listener = Bun.serve({
       port: 0,
+      hostname: loopbackHost(),
       fetch: async (request) => {
+        const read = await readStandinBody(request)
+        if (read.refusal !== undefined) return read.refusal
         auth.push(request.headers.get("Authorization"))
         const url = new URL(request.url)
         if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-          const body = (await request.json()) as {
+          const body = read.body as {
             session_id: string
             topics: string[]
             plugin: string
@@ -1040,7 +1057,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
       JSON.stringify({
         envoy: {
           enabled: true,
-          url: `http://127.0.0.1:${listener.port}`,
+          url: listener.url.origin,
           natsUrls: [broker.url],
           token: listenerToken,
           natsSeed: new TextDecoder().decode(user.getSeed()),
@@ -1079,6 +1096,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
 function recordingListener(calls: string[]) {
   return Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: (request) => {
       const path = new URL(request.url).pathname
       calls.push(`${request.method} ${path}`)
@@ -1100,7 +1118,7 @@ test("with Envoy on and no NATS server the server serves its listener tools with
     listener = recordingListener(calls)
     await writeFile(
       join(configDirectory, "envoy.json"),
-      JSON.stringify({ envoy: { url: `http://127.0.0.1:${listener.port}` } }),
+      JSON.stringify({ envoy: { url: listener.url.origin } }),
     )
     const { exitCode, responses, stderr } = await runChannelServer(
       {
@@ -1156,6 +1174,7 @@ test("a tool call the listener refused because its sender is rate limited answer
     // packages/envoy/cmd/listener/sender_limit.go), to every call.
     listener = Bun.serve({
       port: 0,
+      hostname: loopbackHost(),
       fetch: (request) => {
         calls.push(`${request.method} ${new URL(request.url).pathname}`)
         return Response.json(
@@ -1172,7 +1191,7 @@ test("a tool call the listener refused because its sender is rate limited answer
     })
     await writeFile(
       join(configDirectory, "envoy.json"),
-      JSON.stringify({ envoy: { url: `http://127.0.0.1:${listener.port}` } }),
+      JSON.stringify({ envoy: { url: listener.url.origin } }),
     )
     // No NATS server, so the server registers nothing and the tools' calls are the only ones.
     const { exitCode, responses } = await runChannelServer(
@@ -1221,7 +1240,7 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
       file,
       JSON.stringify({
         envoy: {
-          url: `http://127.0.0.1:${listener.port}`,
+          url: listener.url.origin,
           natsUrls: ["nats://file.internal.example:4222"],
           natsSeed: "SUFILESEED",
         },

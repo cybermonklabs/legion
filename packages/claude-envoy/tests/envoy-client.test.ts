@@ -6,6 +6,8 @@ import { SignInEndedError } from "@legion/cipher-client/token-errors"
 import type { RequestCredential } from "@legion/envoy-client/bearer"
 import { EnvoySendUnconfirmedError, type KeyTakenResult } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { type SentEnvoyMessage, sendEnvoyMessage } from "../src/envoy-client"
 
@@ -67,10 +69,16 @@ function storedSend(result: SentEnvoyMessage | KeyTakenResult): SentEnvoyMessage
 const requests: Sent[] = []
 /** What the stand-in listener answers each send, in order; past the end it stores the send. */
 const answers: (() => Response)[] = []
+// Every stand-in of this file listens at an address of its own, out of reach on Linux of a client
+// of another test that still dials its port at 127.0.0.1 (`loopbackHost`), and each URL a case
+// dials is built from the address its server reports. This one, the listener, refuses by name a
+// POST body that is no JSON object before it records the request (`readStandinBody`).
 const server = Bun.serve({
   port: 0,
+  hostname: loopbackHost(),
   fetch: async (request) => {
-    const body = JSON.parse(await request.text()) as Record<string, unknown>
+    const { body, refusal } = await readStandinBody(request)
+    if (refusal !== undefined) return refusal
     requests.push({
       path: new URL(request.url).pathname,
       authorization: request.headers.get("authorization"),
@@ -91,7 +99,7 @@ const MINTED_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 test("sends a direct message through Envoy's HTTP API under an idempotency key, with no bearer for a listener that asks for none", async () => {
   requests.length = 0
   await sendEnvoyMessage({
-    baseUrl: `http://127.0.0.1:${server.port}`,
+    baseUrl: server.url.origin,
     credential: undefined,
     targetSession: "ses_receiver",
     message: "adapter send proof",
@@ -116,7 +124,7 @@ test("a send whose first attempt got no answer is sent again under the same key"
   requests.length = 0
   answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
   await sendEnvoyMessage({
-    baseUrl: `http://127.0.0.1:${server.port}`,
+    baseUrl: server.url.origin,
     credential: undefined,
     targetSession: "ses_receiver",
     message: "sent once",
@@ -133,7 +141,7 @@ test("a send no attempt of which was answered says it may have arrived, naming t
     answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
   }
   const refused = await sendEnvoyMessage({
-    baseUrl: `http://127.0.0.1:${server.port}`,
+    baseUrl: server.url.origin,
     credential: undefined,
     targetSession: "ses_receiver",
     message: "maybe sent",
@@ -204,7 +212,7 @@ test("a send whose credential waits on a pod's missing registration goes without
     registered ? "registered-token" : undefined,
   )
   const options = {
-    baseUrl: `http://127.0.0.1:${server.port}`,
+    baseUrl: server.url.origin,
     credential,
     targetSession: "ses_receiver",
     message: "sent while the registration is pending",
@@ -226,7 +234,7 @@ test("a send whose credential's trade never answers goes without it, and a liste
   requests.length = 0
   const started = Date.now()
   await sendEnvoyMessage({
-    baseUrl: `http://127.0.0.1:${server.port}`,
+    baseUrl: server.url.origin,
     credential: waitingCredential("the secrets broker has not yet answered the trade").credential,
     targetSession: "ses_receiver",
     message: "sent without a credential",
@@ -241,18 +249,19 @@ test("a send whose credential's trade never answers goes without it, and a liste
 test("a listener that wants a credential answers 401, and the send's error names both halves and no resend", async () => {
   const wanting = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: () => Response.json({ error: "this listener wants a credential" }, { status: 401 }),
   })
   try {
     const refused = await sendEnvoyMessage({
-      baseUrl: `http://127.0.0.1:${wanting.port}`,
+      baseUrl: wanting.url.origin,
       credential: waitingCredential("the secrets broker has not yet answered the trade").credential,
       targetSession: "ses_receiver",
       message: "refused",
     }).catch((error: unknown) => error)
     expect(refused).not.toBeInstanceOf(EnvoySendUnconfirmedError)
     expect((refused as Error).message).toBe(
-      `POST http://127.0.0.1:${wanting.port}/v1/messages/send answered 401, and this machine's Envoy credential could not be minted: the secrets broker has not yet answered the trade`,
+      `POST ${wanting.url.origin}/v1/messages/send answered 401, and this machine's Envoy credential could not be minted: the secrets broker has not yet answered the trade`,
     )
   } finally {
     wanting.stop(true)
@@ -266,7 +275,7 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
   writeFileSync(
     file,
     JSON.stringify({
-      envoy: { enabled: true, url: `http://127.0.0.1:${server.port}`, token: listenerToken },
+      envoy: { enabled: true, url: server.url.origin, token: listenerToken },
     }),
   )
   const send = Bun.spawn(
@@ -290,12 +299,9 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
 })
 
 /** The envoy.json `runEnvoySend` writes, naming the stand-in listener and `token` as its bearer. */
-function envoyConfig(token: string, port = server.port): string {
-  const file = join(scratch, `envoy-${port}.json`)
-  writeFileSync(
-    file,
-    JSON.stringify({ envoy: { enabled: true, url: `http://127.0.0.1:${port}`, token } }),
-  )
+function envoyConfig(token: string): string {
+  const file = join(scratch, `envoy-${server.port}.json`)
+  writeFileSync(file, JSON.stringify({ envoy: { enabled: true, url: server.url.origin, token } }))
   return file
 }
 
@@ -358,7 +364,7 @@ function credentialOf(answer: () => Readonly<Record<string, string>>): RequestCr
 // error the credential threw for the attempt the listener stored, and nothing where that attempt
 // carried the credential, a credential that failed an earlier attempt included.
 test("a send says what credential it went without, and nothing where it carried one", async () => {
-  const baseUrl = `http://127.0.0.1:${server.port}`
+  const baseUrl = server.url.origin
   const base = { baseUrl, targetSession: "ses_receiver", message: "sent" }
   const ended = new SignInEndedError("https://issuer.test", "person@example.test")
   requests.length = 0
@@ -433,10 +439,7 @@ async function signedInEnvironment(
   const projected = join(home, "token")
   writeFileSync(projected, `${fixtureSecret("proj")}\n`, { mode: 0o600 })
   const config = join(home, "envoy.json")
-  writeFileSync(
-    config,
-    JSON.stringify({ envoy: { enabled: true, url: `http://127.0.0.1:${server.port}` } }),
-  )
+  writeFileSync(config, JSON.stringify({ envoy: { enabled: true, url: server.url.origin } }))
   return {
     PATH: process.env["PATH"] ?? "",
     HOME: home,
@@ -468,14 +471,14 @@ test("envoy-send whose sign-in the issuer ended says it sent, and on one stderr 
   let traded = 0
   const broker = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     fetch: () => {
       traded += 1
       return new Response("this row trades nothing", { status: 500 })
     },
   })
   try {
-    const env = await signedInEnvironment(issuer.url, `http://127.0.0.1:${broker.port}`)
+    const env = await signedInEnvironment(issuer.url, broker.url.origin)
     const sent = await runEnvoySend(["ses_receiver", "sent", "without"], { env })
     expect(sent.stdout).toBe("Sent Envoy message to ses_receiver.\n")
     expect(sent.stderr).toBe(
@@ -499,11 +502,11 @@ test("envoy-send whose broker is down says it sent, and on one stderr line that 
   requests.length = 0
   const broker = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     fetch: () => new Response("the broker is away", { status: 503 }),
   })
   try {
-    const env = await signedInEnvironment("http://127.0.0.1:9", `http://127.0.0.1:${broker.port}`)
+    const env = await signedInEnvironment("http://127.0.0.1:9", broker.url.origin)
     for (const name of Object.keys(env))
       if (name.startsWith("AGENT_SECRETS_SIGNIN_")) delete env[name]
     const sent = await runEnvoySend(["ses_receiver", "sent", "without"], { env })
@@ -570,11 +573,14 @@ test("the printed resend goes to the send's listener from a shell whose settings
   const other: Sent[] = []
   const elsewhere = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: async (request) => {
+      const { body, refusal } = await readStandinBody(request)
+      if (refusal !== undefined) return refusal
       other.push({
         path: new URL(request.url).pathname,
         authorization: request.headers.get("authorization"),
-        body: JSON.parse(await request.text()) as Record<string, unknown>,
+        body,
       })
       return Response.json(stored("ses_receiver"), { status: 202 })
     },
@@ -594,7 +600,7 @@ test("the printed resend goes to the send's listener from a shell whose settings
       JSON.stringify({
         envoy: {
           enabled: true,
-          url: `http://127.0.0.1:${elsewhere.port}`,
+          url: elsewhere.url.origin,
           token: fixtureSecret("other"),
         },
       }),
@@ -665,7 +671,7 @@ test("an unconfirmed send whose ENVOY_URL has short user info prints none of it"
       HOME: scratch,
       ENVOY_CONFIG_FILE: file,
       // Built from parts: the push's leak check refuses a literal URL with user info.
-      ENVOY_URL: `http://${["ab", "x7q"].join(":")}@127.0.0.1:${server.port}`,
+      ENVOY_URL: `http://${["ab", "x7q"].join(":")}@${server.url.host}`,
     },
   })
   expect(first.code).toBe(75)
@@ -682,7 +688,7 @@ test("a send whose only attempt was answered with an unreadable 2xx names that o
   requests.length = 0
   answers.push(() => new Response("stored, but not as JSON", { status: 202 }))
   const refused = await sendEnvoyMessage({
-    baseUrl: `http://127.0.0.1:${server.port}`,
+    baseUrl: server.url.origin,
     credential: undefined,
     targetSession: "ses_receiver",
     message: "one attempt",

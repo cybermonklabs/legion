@@ -14,6 +14,7 @@ import {
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
 import type { Subprocess } from "bun"
 import { buildBundles } from "../scripts/build"
 
@@ -171,9 +172,12 @@ function standinDispatch(): {
     requests: [] as string[],
     route: { kind: "list", items: [] } as Route,
   }
+  // An address of its own, out of reach on Linux of a client of another test that still dials its
+  // port at 127.0.0.1 (`loopbackHost`), so `requests` holds only what this case's hooks sent. It
+  // reads no body, so no body can fail it.
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     fetch: (request) => {
       const url = new URL(request.url)
       state.requests.push(`${request.headers.get("authorization")} ${url.pathname}`)
@@ -211,7 +215,7 @@ function standinDispatch(): {
   cleanup.push(async () => {
     await server.stop(true)
   })
-  state.base = `http://127.0.0.1:${server.port}`
+  state.base = server.url.origin
   return state
 }
 

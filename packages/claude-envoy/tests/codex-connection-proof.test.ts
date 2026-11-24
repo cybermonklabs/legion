@@ -10,6 +10,7 @@ import { createHash, createPublicKey, type JsonWebKeyInput, randomBytes, verify 
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { TCPSocketListener } from "bun"
 import {
@@ -43,11 +44,14 @@ function thumbprint(jwk: Record<string, unknown>): string {
 
 /** A broker whose token exchange mints a random DPoP-bound token, keeping the key each trade's
  *  DPoP proof named, as the broker binds the token it mints to that key, and the session the trade
- *  named (its `session` form parameter), which the token it mints is for. */
+ *  named (its `session` form parameter), which the token it mints is for. It listens at an address
+ *  of its own, out of reach on Linux of a client of another test that still dials its port at
+ *  127.0.0.1 (`loopbackHost`), so `minted` holds this case's trades alone; its body is a form, so
+ *  it keeps its own reader. */
 function broker() {
   const minted: { token: string; jkt: string; session: string | null }[] = []
   const server = Bun.serve({
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     port: 0,
     fetch: async (request) => {
       const proof = request.headers.get("dpop") ?? ""
@@ -64,7 +68,7 @@ function broker() {
     },
   })
   stops.push(() => server.stop(true))
-  return { minted, url: `http://127.0.0.1:${server.port}` }
+  return { minted, url: server.url.origin }
 }
 
 /** A hub that runs an auth service as far as a client can tell: its INFO names a nonce of this
