@@ -347,6 +347,7 @@ func currentPartOf(t *testing.T, database *store.Store, address string) graphsto
 // and for a revision test in refs.IndexOwedItemBlocks, which R23 reads as a writer outside the
 // fence.
 func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	document := createOwedDocument(t, database, service, "CORE-1", "", "race", raceVersion1, "")
@@ -491,6 +492,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 // commits on that row, one statement at a time; and only then does the pass queue its write
 // phase (store.RunWrite of refs.BlockIndexing.Queue) and commit.
 func TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
