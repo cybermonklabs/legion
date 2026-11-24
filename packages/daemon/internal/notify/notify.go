@@ -629,8 +629,10 @@ func unreadAnswer(what, status string, err error) error {
 // compares no instance for an empty value as for an absent one (session.InstanceMatches), so the
 // two are the same delete and the shorter query states only what the stop really holds. The id is
 // the listener's words, which the delete sends back only where the rule prints them as they came
-// (RemoteText.SendBack); an id the rule would change - one sharing a run of the request's bearer -
-// is left out as an empty one is, and the moment judges alone.
+// (RemoteText.SendBack). An id the rule would change - one sharing a run of the request's bearer -
+// is one the delete cannot name, and a delete that left it out would hold under the moment alone,
+// weaker than the two conditions this argues for, with no one told: so no delete is sent, and
+// DeleteSession answers an error, as the stop answers a read that failed.
 type DeleteConditions struct {
 	ClientInstanceID   oauth2call.RemoteText
 	NotRegisteredAfter time.Time
@@ -646,10 +648,16 @@ type DeleteConditions struct {
 // registry that holds no record for the session answers 404: it is already gone, which is the
 // outcome asked for, so that is no failure.
 //
-// The two conditions it carries, and why neither alone would do, are on DeleteConditions.
+// The two conditions it carries, and why neither alone would do, are on DeleteConditions. A
+// non-empty client instance id the rule would change sends no delete and answers an error that
+// names none of it.
 func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, conditions DeleteConditions) (SessionDeleted, error) {
 	target := fmt.Sprintf("/v1/sessions/%s?if_not_registered_after=%d", url.PathEscape(session), conditions.NotRegisteredAfter.UnixMilli())
-	if id, named := conditions.ClientInstanceID.SendBack(); named {
+	if !conditions.ClientInstanceID.IsEmpty() {
+		id, named := conditions.ClientInstanceID.SendBack()
+		if !named {
+			return SessionDeleted{}, fmt.Errorf("delete session %s: the registration names a client instance id the redaction rule would change, which the delete cannot send back, so no delete was sent (the id is not printed)", session)
+		}
 		target += "&client_instance_id=" + url.QueryEscape(id)
 	}
 	request, err := p.newRequest(ctx, http.MethodDelete, target, nil)
