@@ -3,9 +3,7 @@ package dispatchread_test
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
 
 // TestADispatchReadRedirectPrintsNoLocationOfIt: whatever answers at Dispatch's address answers
@@ -32,27 +31,17 @@ func TestADispatchReadRedirectPrintsNoLocationOfIt(t *testing.T) {
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dead := closed.Addr().String()
-	_ = closed.Close()
+	dead := redirectstest.Dead(t)
 	for _, c := range []struct {
 		name     string
 		location func(bearer string) string
 		answered bool
 	}{
-		{"unparsed", func(bearer string) string { return "/moved%zz" + bearer }, false},
-		{"elsewhere", func(bearer string) string { return "http://" + dead + "/moved?access_token=" + bearer }, true},
+		{"unparsed", redirectstest.Unparsed, false},
+		{"elsewhere", func(bearer string) string { return redirectstest.To(dead, bearer) }, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Location", c.location(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
-				w.WriteHeader(http.StatusFound)
-			}))
-			defer server.Close()
-			reader := dispatchread.New(server.URL, ciphertoken.NewAccountToken(file), nil, 10*time.Second, 1<<20)
+			reader := dispatchread.New(redirectstest.EchoBearer(t, c.location), ciphertoken.NewAccountToken(file), nil, 10*time.Second, 1<<20)
 			answer, err := reader.Get(t.Context(), "/api/v1/projects/PRIV/repositories", nil)
 			// What a caller of the read prints of it: the status it handed back, or its error.
 			printed := fmt.Sprintf("%d %v", answer.Status, err)

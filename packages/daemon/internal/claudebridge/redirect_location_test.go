@@ -50,14 +50,12 @@ func TestATurnReportRedirectSendsTheBootTokenNowhereAndLogsNoLocation(t *testing
 		t.Fatal(err)
 	}
 	t.Run("twin", func(t *testing.T) {
-		response, err := http.Post(echo(t, redirectstest.Unparsed)+"/legion/v1/claims/turn-outcome", "application/json", bytes.NewReader(report))
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
+		request, err := http.NewRequest(http.MethodPost, echo(t, redirectstest.Unparsed)+"/legion/v1/claims/turn-outcome", bytes.NewReader(report))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !strings.Contains(err.Error(), token) {
-			t.Fatalf("net/http's own error holds no echo of the boot token, so the rows cannot see a leak: %q", err)
-		}
+		request.Header.Set("Content-Type", "application/json")
+		redirectstest.RequireEcho(t, request, token)
 	})
 	t.Run("twin-followed", func(t *testing.T) {
 		response, err := http.Post(echo(t, followed)+"/legion/v1/claims/turn-outcome", "application/json", bytes.NewReader(report))
@@ -75,7 +73,7 @@ func TestATurnReportRedirectSendsTheBootTokenNowhereAndLogsNoLocation(t *testing
 		want     string
 	}{
 		{"unparsed", redirectstest.Unparsed, "could not report the outcome of turn 1 (clean)"},
-		{"elsewhere", func(bootToken string) string { return "http://" + dead + "/moved?access_token=" + bootToken }, "the daemon refused the outcome of turn 1 (clean): 307 Temporary Redirect"},
+		{"elsewhere", func(bootToken string) string { return redirectstest.To(dead, bootToken) }, "the daemon refused the outcome of turn 1 (clean): 307 Temporary Redirect"},
 		{"followed", followed, "the daemon refused the outcome of turn 1 (clean): 307 Temporary Redirect"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

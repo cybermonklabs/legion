@@ -41,14 +41,11 @@ func TestAnSSEConnectRedirectPrintsNoLocationOfIt(t *testing.T) {
 		return err
 	}
 	t.Run("twin", func(t *testing.T) {
-		response, err := http.Get(echo(redirectstest.Unparsed) + "/sse")
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
+		request, err := http.NewRequest(http.MethodGet, echo(redirectstest.Unparsed)+"/sse", nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !strings.Contains(err.Error(), redacttest.Password) {
-			t.Fatalf("net/http's own error holds no echo of the password, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, redacttest.Password)
 	})
 	for _, c := range []struct {
 		name     string

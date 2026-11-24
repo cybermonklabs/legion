@@ -32,10 +32,10 @@ func TestAMintCallFollowsNoRedirect(t *testing.T) {
 			mu   sync.Mutex
 			seen string
 		)
-		base = redirectstest.Echo(t, "Authorization", func(credential string) string {
+		base = redirectstest.EchoBearer(t, func(bearer string) string {
 			mu.Lock()
 			defer mu.Unlock()
-			seen = strings.TrimPrefix(credential, "Bearer ")
+			seen = bearer
 			return redirectstest.To(target, seen)
 		})
 		return base, func() string {
@@ -51,14 +51,7 @@ func TestAMintCallFollowsNoRedirect(t *testing.T) {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+brokerOwnToken)
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			t.Fatalf("a client that follows the redirect failed: %v", err)
-		}
-		_ = response.Body.Close()
-		if text := sent(); !strings.Contains(text, brokerOwnToken) {
-			t.Fatalf("a client that follows the redirect sent the stand-in no bearer, so the rows cannot see one sent on: %q", text)
-		}
+		redirectstest.RequireSentOn(t, request, brokerOwnToken, sent)
 	})
 	key, err := testAppKey()
 	if err != nil {

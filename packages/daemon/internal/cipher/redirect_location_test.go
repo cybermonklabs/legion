@@ -23,31 +23,22 @@ func TestABrokerRedirectNamesNoRunOfTheDaemonsBearer(t *testing.T) {
 	const bearer = "pw8mr-not-a-secret-RDX-c41f"
 	dead := redirectstest.Dead(t)
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodPost, redirectstest.Echo(t, "Authorization", redirectstest.Unparsed)+"/v1/oauth/exchange/pod-sessions", nil)
+		request, err := http.NewRequest(http.MethodPost, redirectstest.EchoBearer(t, redirectstest.Unparsed)+"/v1/oauth/exchange/pod-sessions", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+bearer)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-		}
-		if !strings.Contains(err.Error(), bearer) {
-			t.Fatalf("net/http's own error holds no echo of the bearer, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, bearer)
 	})
 	for _, c := range []struct {
 		name     string
-		location func(credential string) string
+		location func(carried string) string
 	}{
 		{"unparsed", redirectstest.Unparsed},
-		{"elsewhere", func(credential string) string {
-			return redirectstest.To(dead, strings.TrimPrefix(credential, "Bearer "))
-		}},
+		{"elsewhere", func(carried string) string { return redirectstest.To(dead, carried) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			client := &Client{URL: redirectstest.Echo(t, "Authorization", c.location), HTTP: &http.Client{}, TokenFile: tokenFile(t, bearer)}
+			client := &Client{URL: redirectstest.EchoBearer(t, c.location), HTTP: &http.Client{}, TokenFile: tokenFile(t, bearer)}
 			_, err := client.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint, 7)
 			if err == nil {
 				t.Fatal("the registration answered no error")

@@ -32,32 +32,24 @@ func TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError(t *testing.T) {
 	target, asked := redirectstest.Target(t)
 	dead := redirectstest.Dead(t)
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodGet, redirectstest.Echo(t, "Authorization", redirectstest.Unparsed)+"/pulls/7/reviews", nil)
+		request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, redirectstest.Unparsed)+"/pulls/7/reviews", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-		}
-		if !strings.Contains(err.Error(), token) {
-			t.Fatalf("net/http's own error holds no echo of the token, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, token)
 	})
-	bare := func(credential string) string { return strings.TrimPrefix(credential, "Bearer ") }
 	for _, c := range []struct {
 		name, shown string
-		location    func(credential string) string
+		location    func(carried string) string
 	}{
 		{"unparsed", "/pulls/7/reviews", redirectstest.Unparsed},
 		{"unparsed-unnamed", "", redirectstest.Unparsed},
-		{"unanswered", "", func(credential string) string { return redirectstest.To(dead, bare(credential)) }},
-		{"followed", "", func(credential string) string { return redirectstest.To(target, bare(credential)) }},
+		{"unanswered", "", func(carried string) string { return redirectstest.To(dead, carried) }},
+		{"followed", "", func(carried string) string { return redirectstest.To(target, carried) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			client := githubrest.Client{Token: token, API: redirectstest.Echo(t, "Authorization", c.location) + "/repos/acme/widgets"}
+			client := githubrest.Client{Token: token, API: redirectstest.EchoBearer(t, c.location) + "/repos/acme/widgets"}
 			var into []map[string]string
 			err := client.Get(context.Background(), "/pulls/7/reviews", c.shown, &into)
 			if err == nil {

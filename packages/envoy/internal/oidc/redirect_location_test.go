@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
 
 // TestCodeFlowRevokePrintsNoLocationOfARedirect: whatever answers at the issuer's revocation
@@ -16,7 +17,7 @@ import (
 // secret, none of the probe's words and no word of the Location. Captures oidc.revoke-redirect.
 func TestCodeFlowRevokePrintsNoLocationOfARedirect(t *testing.T) {
 	issuer, flow := newCodeFlowFor(t)
-	issuer.RedirectRevocation("/moved%zz" + flowClientSecret + " " + redacttest.Words)
+	issuer.RedirectRevocation(redirectstest.Unparsed(flowClientSecret + " " + redacttest.Words))
 	err := flow.Revoke(context.Background(), "plain-refresh-token")
 	if err == nil {
 		t.Fatal("Revoke answered no error for a Location that does not parse")

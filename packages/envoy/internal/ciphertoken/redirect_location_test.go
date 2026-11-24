@@ -2,8 +2,6 @@ package ciphertoken_test
 
 import (
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,20 +10,17 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
 
 // unparsedEcho serves, until t ends, a stand-in that answers every request 302 Found with a
-// Location net/http cannot parse, quoting the Authorization the request carried and the probe's
-// words (redacttest.Words): Go parses a Location before a client's CheckRedirect is asked, so its
-// error for the answer quotes the whole Location whatever the client's redirect policy.
+// Location net/http cannot parse (redirectstest.Unparsed), quoting the Authorization the request
+// carried and the probe's words (redacttest.Words).
 func unparsedEcho(t *testing.T) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", "/moved%zz"+r.Header.Get("Authorization")+" "+redacttest.Words)
-		w.WriteHeader(http.StatusFound)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	return redirectstest.Echo(t, "Authorization", func(authorization string) string {
+		return redirectstest.Unparsed(authorization + " " + redacttest.Words)
+	})
 }
 
 // TestARedirectOfAMintPrintsNoLocationOfIt: whatever answers in IAM Service Account Credentials'

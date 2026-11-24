@@ -64,9 +64,7 @@ const iamCredentialsHost = "iamcredentials.googleapis.com"
 // sent. The rows set environment variables, so they are not parallel.
 func TestAGoogleCallFollowsNoRedirect(t *testing.T) {
 	target, sent := redirectstest.Sent(t)
-	bearerEcho := redirectstest.Echo(t, "Authorization", func(credential string) string {
-		return redirectstest.To(target, strings.TrimPrefix(credential, "Bearer "))
-	})
+	bearerEcho := redirectstest.EchoBearer(t, func(bearer string) string { return redirectstest.To(target, bearer) })
 	toIAM := toIAMCredentials{echo: strings.TrimPrefix(bearerEcho, "http://")}
 	const account = "legion-sessions@example-project.iam.gserviceaccount.com"
 	writer := func(t *testing.T) Signer {
@@ -86,25 +84,16 @@ func TestAGoogleCallFollowsNoRedirect(t *testing.T) {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+redirectPodBearer)
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			t.Fatalf("a client that follows the redirect failed: %v", err)
-		}
-		_ = response.Body.Close()
-		if text := sent(); !strings.Contains(text, redirectPodBearer) {
-			t.Fatalf("a client that follows the redirect sent the stand-in no bearer, so the rows cannot see one sent on: %q", text)
-		}
+		redirectstest.RequireSentOn(t, request, redirectPodBearer, sent)
 	})
 	t.Run("twin-form", func(t *testing.T) {
 		echo, _ := formEcho(t, "subject_token", target)
-		response, err := http.DefaultClient.PostForm(standIn(t, echo)+"/v1/token", url.Values{"subject_token": {redirectWriterToken}})
+		request, err := http.NewRequest(http.MethodPost, standIn(t, echo)+"/v1/token", strings.NewReader(url.Values{"subject_token": {redirectWriterToken}}.Encode()))
 		if err != nil {
-			t.Fatalf("a client that follows the redirect failed: %v", err)
+			t.Fatal(err)
 		}
-		_ = response.Body.Close()
-		if text := sent(); !strings.Contains(text, redirectWriterToken) {
-			t.Fatalf("a client that follows the redirect sent the stand-in no subject token, so the rows cannot see one sent on: %q", text)
-		}
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		redirectstest.RequireSentOn(t, request, redirectWriterToken, sent)
 	})
 
 	for _, c := range []struct {

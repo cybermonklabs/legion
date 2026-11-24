@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
 
 // TestAnEmbeddingRedirectPrintsNoLocationOfIt: whatever answers in Azure's place answers the
@@ -23,20 +24,12 @@ import (
 func TestAnEmbeddingRedirectPrintsNoLocationOfIt(t *testing.T) {
 	const apiKey = "hc8pv-not-a-secret-RDX-3e7a"
 	const assertion = "nb5ys-not-a-secret-RDX-9f2c"
-	echo := func(credential func(r *http.Request) string) string {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Location", "/moved%zz"+credential(r))
-			w.WriteHeader(http.StatusFound)
-		}))
-		t.Cleanup(server.Close)
-		return server.URL
-	}
 	for _, c := range []struct {
 		name, credential string
 		call             func(t *testing.T, ctx context.Context) error
 	}{
 		{"azure", apiKey, func(t *testing.T, ctx context.Context) error {
-			base := echo(func(r *http.Request) string { return r.Header.Get("api-key") })
+			base := redirectstest.Echo(t, "api-key", redirectstest.Unparsed)
 			client, err := NewAzure(AzureConfig{Endpoint: base + "/models", Deployment: "embed-v-4-0", TokensPerMinute: 300_000, APIKey: apiKey})
 			if err != nil {
 				t.Fatalf("NewAzure: %v", err)
@@ -45,7 +38,13 @@ func TestAnEmbeddingRedirectPrintsNoLocationOfIt(t *testing.T) {
 			return err
 		}},
 		{"entra", assertion, func(t *testing.T, ctx context.Context) error {
-			base := echo(func(r *http.Request) string { _ = r.ParseForm(); return r.PostForm.Get("client_assertion") })
+			entra := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = r.ParseForm()
+				w.Header().Set("Location", redirectstest.Unparsed(r.PostForm.Get("client_assertion")))
+				w.WriteHeader(http.StatusFound)
+			}))
+			t.Cleanup(entra.Close)
+			base := entra.URL
 			tokenFile := filepath.Join(t.TempDir(), "token")
 			if err := os.WriteFile(tokenFile, []byte(assertion), 0o600); err != nil {
 				t.Fatalf("write token file: %v", err)

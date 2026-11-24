@@ -28,23 +28,14 @@ func TestAnIntrospectionFollowsNoRedirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, sent := redirectstest.Sent(t)
-	location := func(credential string) string {
-		return redirectstest.To(target, strings.TrimPrefix(credential, "Bearer "))
-	}
+	location := func(bearer string) string { return redirectstest.To(target, bearer) }
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodPost, redirectstest.Echo(t, "Authorization", location)+ciphertoken.IntrospectPath, nil)
+		request, err := http.NewRequest(http.MethodPost, redirectstest.EchoBearer(t, location)+ciphertoken.IntrospectPath, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+account)
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			t.Fatalf("a client that follows the redirect failed: %v", err)
-		}
-		_ = response.Body.Close()
-		if text := sent(); !strings.Contains(text, account) {
-			t.Fatalf("a client that follows the redirect sent the stand-in no token, so the row cannot see one sent on: %q", text)
-		}
+		redirectstest.RequireSentOn(t, request, account, sent)
 	})
 	for _, c := range []struct {
 		name   string
@@ -54,7 +45,7 @@ func TestAnIntrospectionFollowsNoRedirect(t *testing.T) {
 		{"given", &http.Client{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			broker := redirectstest.Echo(t, "Authorization", location)
+			broker := redirectstest.EchoBearer(t, location)
 			rig := newRig(t, func(o *ciphertoken.Options) {
 				o.BrokerURL = broker
 				o.Account = ciphertoken.NewAccountToken(file)

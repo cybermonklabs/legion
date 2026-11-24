@@ -24,19 +24,12 @@ func TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError(t *testing.T)
 	const token = "zq7wk-not-a-secret-RDX-41c7"
 	target, asked := redirectstest.Target(t)
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodGet, redirectstest.Echo(t, "Authorization", redirectstest.Unparsed)+"/v1/roles/architect", nil)
+		request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, redirectstest.Unparsed)+"/v1/roles/architect", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-		}
-		if !strings.Contains(err.Error(), token) {
-			t.Fatalf("net/http's own error holds no echo of the bearer, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, token)
 	})
 	calls := map[string]func(*HTTPPublisher) error{
 		"publish": func(p *HTTPPublisher) error {
@@ -58,15 +51,13 @@ func TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError(t *testing.T)
 	for call, do := range calls {
 		for _, c := range []struct {
 			name     string
-			location func(credential string) string
+			location func(carried string) string
 		}{
 			{"unparsed", redirectstest.Unparsed},
-			{"followed", func(credential string) string {
-				return redirectstest.To(target, strings.TrimPrefix(credential, "Bearer "))
-			}},
+			{"followed", func(carried string) string { return redirectstest.To(target, carried) }},
 		} {
 			t.Run(call+"-"+c.name, func(t *testing.T) {
-				err := do(New(redirectstest.Echo(t, "Authorization", c.location), token))
+				err := do(New(redirectstest.EchoBearer(t, c.location), token))
 				if err == nil {
 					t.Fatal("the call answered no error")
 				}

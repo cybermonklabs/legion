@@ -19,15 +19,6 @@ import (
 // redirectRowBearer is the bearer the redirect rows' requests carry, which their stand-ins echo.
 const redirectRowBearer = "not-a-secret-stack-RDX-3f58"
 
-// bearerEcho serves, until t ends, a stand-in that answers every request 302 Found with the
-// Location location makes of the bearer the request carried, and answers its base URL.
-func bearerEcho(t *testing.T, location func(bearer string) string) string {
-	t.Helper()
-	return redirectstest.Echo(t, "Authorization", func(authorization string) string {
-		return location(strings.TrimPrefix(authorization, "Bearer "))
-	})
-}
-
 // redirectCases are the two Locations a print row is answered with: one net/http cannot parse
 // (unparsed), which is net/http's error whatever the client's redirect policy, since Go parses a
 // Location before it asks CheckRedirect, and one naming an address on another host nothing
@@ -71,19 +62,12 @@ func rowTokenURL(t *testing.T) string {
 // TestARedirectEchoReachesNetHTTPsOwnError is the twin of every row here: the stand-in's echo of
 // the bearer reaches net/http's own error, so a row whose output holds none of it has kept it out.
 func TestARedirectEchoReachesNetHTTPsOwnError(t *testing.T) {
-	request, err := http.NewRequest(http.MethodGet, bearerEcho(t, redirectstest.Unparsed)+"/api/v1/projects", nil)
+	request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, redirectstest.Unparsed)+"/api/v1/projects", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+redirectRowBearer)
-	response, err := http.DefaultClient.Do(request)
-	if err == nil {
-		_ = response.Body.Close()
-		t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-	}
-	if !strings.Contains(err.Error(), redirectRowBearer) {
-		t.Fatalf("net/http's own error holds no echo of the bearer, so the rows cannot see a leak: %q", err)
-	}
+	redirectstest.RequireEcho(t, request, redirectRowBearer)
 }
 
 // TestADispatchCallRedirectPrintsNoLocationOfIt: whatever answers at Dispatch's address answers a
@@ -96,13 +80,13 @@ func TestARedirectEchoReachesNetHTTPsOwnError(t *testing.T) {
 func TestADispatchCallRedirectPrintsNoLocationOfIt(t *testing.T) {
 	for _, c := range redirectCases(t) {
 		t.Run(c.name, func(t *testing.T) {
-			res := newAPI(bearerEcho(t, c.location), redirectRowBearer, 1).call(context.Background(), http.MethodGet, "/api/v1/projects", who{}, nil)
+			res := newAPI(redirectstest.EchoBearer(t, c.location), redirectRowBearer, 1).call(context.Background(), http.MethodGet, "/api/v1/projects", who{}, nil)
 			if res.ok() {
 				t.Fatalf("the call answered %d; want a failure", res.status)
 			}
 			requireNoLocation(t, "loadtest.api-redirect/"+c.name, fmt.Sprintf("%d %s %v", res.status, res.text(), res.err))
 			if c.name == "unparsed" {
-				response, own := http.Get(bearerEcho(t, c.location))
+				response, own := http.Get(redirectstest.EchoBearer(t, c.location))
 				if own == nil {
 					_ = response.Body.Close()
 					t.Fatal("net/http answered the unparsed Location with no error")
@@ -115,7 +99,7 @@ func TestADispatchCallRedirectPrintsNoLocationOfIt(t *testing.T) {
 	}
 	t.Run("followed", func(t *testing.T) {
 		target, asked := redirectstest.Target(t)
-		res := newAPI(bearerEcho(t, func(bearer string) string { return redirectstest.To(target, bearer) }), redirectRowBearer, 1).
+		res := newAPI(redirectstest.EchoBearer(t, func(bearer string) string { return redirectstest.To(target, bearer) }), redirectRowBearer, 1).
 			call(context.Background(), http.MethodGet, "/api/v1/projects", who{}, nil)
 		if res.err != nil || res.status != http.StatusFound {
 			t.Errorf("the call answered %d, %v; want the redirect's own 302", res.status, res.err)
@@ -146,7 +130,7 @@ func TestADispatchCallRedirectPrintsNoLocationOfIt(t *testing.T) {
 			}
 		}
 		recs := newCollector[reqRec](4)
-		base := bearerEcho(t, func(bearer string) string { return redirectstest.To(target, bearer) })
+		base := redirectstest.EchoBearer(t, func(bearer string) string { return redirectstest.To(target, bearer) })
 		for _, a := range p.Actions {
 			rr.do(context.Background(), base, redirectRowBearer, a, time.Now(), recs)
 		}
@@ -167,7 +151,7 @@ func TestADispatchCallRedirectPrintsNoLocationOfIt(t *testing.T) {
 func TestAGuardCheckRedirectPrintsNoLocationOfIt(t *testing.T) {
 	for _, c := range redirectCases(t) {
 		t.Run(c.name, func(t *testing.T) {
-			err := checkStack(context.Background(), endpoints{dispatch: bearerEcho(t, c.location), token: redirectRowBearer})
+			err := checkStack(context.Background(), endpoints{dispatch: redirectstest.EchoBearer(t, c.location), token: redirectRowBearer})
 			if err == nil || !strings.HasPrefix(err.Error(), "guard: dispatch check failed: ") {
 				t.Fatalf("checkStack = %v; want the dispatch check refused", err)
 			}
@@ -176,7 +160,7 @@ func TestAGuardCheckRedirectPrintsNoLocationOfIt(t *testing.T) {
 	}
 	t.Run("followed", func(t *testing.T) {
 		target, asked := redirectstest.Target(t)
-		dispatch := bearerEcho(t, func(bearer string) string { return redirectstest.To(target, bearer) })
+		dispatch := redirectstest.EchoBearer(t, func(bearer string) string { return redirectstest.To(target, bearer) })
 		if err := checkStack(context.Background(), endpoints{dispatch: dispatch, token: redirectRowBearer}); err == nil || !strings.Contains(err.Error(), "answered 302") {
 			t.Errorf("checkStack = %v; want the dispatch check refused by the redirect's own 302", err)
 		}
@@ -195,7 +179,7 @@ func TestAGuardCheckRedirectPrintsNoLocationOfIt(t *testing.T) {
 func TestACloudSQLReadRedirectPrintsNoLocationOfIt(t *testing.T) {
 	for _, c := range redirectCases(t) {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, err := runCloudSQLCPUAgainst(t, bearerEcho(t, c.location), "-token-url", rowTokenURL(t))
+			_, _, err := runCloudSQLCPUAgainst(t, redirectstest.EchoBearer(t, c.location), "-token-url", rowTokenURL(t))
 			if err == nil {
 				t.Fatal("cloudsql-cpu succeeded against a server that answers a redirect")
 			}
@@ -204,7 +188,7 @@ func TestACloudSQLReadRedirectPrintsNoLocationOfIt(t *testing.T) {
 	}
 	t.Run("followed", func(t *testing.T) {
 		target, asked := redirectstest.Target(t)
-		_, _, err := runCloudSQLCPUAgainst(t, bearerEcho(t, func(token string) string { return redirectstest.To(target, token) }))
+		_, _, err := runCloudSQLCPUAgainst(t, redirectstest.EchoBearer(t, func(token string) string { return redirectstest.To(target, token) }))
 		if err == nil || !strings.Contains(err.Error(), "Cloud Monitoring answered 302") {
 			t.Errorf("cloudsql-cpu = %v; want the read refused by the redirect's own 302", err)
 		}
@@ -220,7 +204,7 @@ func TestACloudSQLReadRedirectPrintsNoLocationOfIt(t *testing.T) {
 func TestALoopListenerFollowsNoRedirect(t *testing.T) {
 	t.Run("followed", func(t *testing.T) {
 		target, asked := redirectstest.Target(t)
-		listener := newLoopListener(bearerEcho(t, func(bearer string) string { return redirectstest.To(target, bearer) }), redirectRowBearer)
+		listener := newLoopListener(redirectstest.EchoBearer(t, func(bearer string) string { return redirectstest.To(target, bearer) }), redirectRowBearer)
 		if err := listener.Publish(context.Background(), listenerwire.PublishRequest{Topic: "notifications.team.a"}); err == nil || !strings.Contains(err.Error(), ": 302 ") {
 			t.Errorf("Publish = %v; want the redirect's own 302", err)
 		}

@@ -2,9 +2,7 @@ package main
 
 import (
 	"errors"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -12,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
 
 // TestAnEdgeRepositoryReadPrintsNoLocationOfARedirect: whatever answers at the broker's address
@@ -24,45 +23,24 @@ import (
 // the stand-in's echo reaches net/http's own error. Captures listener.edge-redirect/<case>.
 func TestAnEdgeRepositoryReadPrintsNoLocationOfARedirect(t *testing.T) {
 	account := githubtest.InstallationToken(t.Name()) + "-RDX-"
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dead := closed.Addr().String()
-	_ = closed.Close()
-	echo := func(location func(bearer string) string) string {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Location", location(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
-			w.WriteHeader(http.StatusFound)
-		}))
-		t.Cleanup(server.Close)
-		return server.URL
-	}
-	unparsed := func(bearer string) string { return "/moved%zz" + bearer }
+	dead := redirectstest.Dead(t)
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodGet, echo(unparsed)+edgeRepositoriesPath, nil)
+		request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, redirectstest.Unparsed)+edgeRepositoriesPath, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+account)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-		}
-		if !strings.Contains(err.Error(), account) {
-			t.Fatalf("net/http's own error holds no echo of the bearer, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, account)
 	})
 	for _, c := range []struct {
 		name     string
 		location func(bearer string) string
 	}{
-		{"unparsed", unparsed},
-		{"elsewhere", func(bearer string) string { return "http://" + dead + "/moved?access_token=" + bearer }},
+		{"unparsed", redirectstest.Unparsed},
+		{"elsewhere", func(bearer string) string { return redirectstest.To(dead, bearer) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			reader := newEdgeRepositories(echo(c.location), listenerBrokerAccount(account), []string{"PRIV"},
+			reader := newEdgeRepositories(redirectstest.EchoBearer(t, c.location), listenerBrokerAccount(account), []string{"PRIV"},
 				newEdgeWithheldCounter(metrics.New()), logging.New("test"))
 			got, err := reader.read(t.Context(), "PRIV")
 			if err == nil || got != nil || !errors.Is(err, errRepositoriesUnknown) {

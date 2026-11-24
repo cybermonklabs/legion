@@ -26,9 +26,7 @@ import (
 func TestAListenerCallFollowsNoRedirect(t *testing.T) {
 	const token = "mh6tq-not-a-secret-RDX-c94a"
 	target, sent := redirectstest.Sent(t)
-	quoted := redirectstest.Echo(t, "Authorization", func(credential string) string {
-		return redirectstest.To(target, strings.TrimPrefix(credential, "Bearer "))
-	})
+	quoted := redirectstest.EchoBearer(t, func(bearer string) string { return redirectstest.To(target, bearer) })
 	moved := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "http://"+target+r.URL.RequestURI(), http.StatusFound)
 	}))
@@ -39,14 +37,7 @@ func TestAListenerCallFollowsNoRedirect(t *testing.T) {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			t.Fatalf("a client that follows the redirect failed: %v", err)
-		}
-		_ = response.Body.Close()
-		if text := sent(); !strings.Contains(text, token) {
-			t.Fatalf("a client that follows the redirect sent the stand-in no bearer, so the rows cannot see one sent on: %q", text)
-		}
+		redirectstest.RequireSentOn(t, request, token, sent)
 	})
 	sessions := func(c *Client) error { _, err := c.Sessions(context.Background()); return err }
 	send := func(c *Client) error {
