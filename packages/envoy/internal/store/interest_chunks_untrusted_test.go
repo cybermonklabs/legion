@@ -7,6 +7,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -325,11 +327,14 @@ func TestAWriteOverADamagedManifestDeletesNoChunkItNames(t *testing.T) {
 // A manifest copied or borrowed under another session's key names the owner's chunks, so neither
 // the write that replaces it, nor an unsubscribe of the copy's session, nor the deregistration that
 // deletes it deletes them: an exact copy, which the cache joins and keeps no row for, since the
-// record it joins names the owner's session (ErrInterestUnbound), and one with a forged SHA-256,
-// which no read joins. Each time the owner's record still reads whole and its chunks stay in the
-// bucket. The write of the copy's session lands under its own key (writeRowAt), and the cache
-// still holds the owner's row with the same generation, so the write deletes none of the chunks
-// the copy named (ownLayout). The control is the owner's own deregistration, which deletes them.
+// record it joins names the owner's session (ErrInterestUnbound); one with a forged SHA-256, which
+// no read joins; and one naming only the owner's first chunks, with their own length and SHA-256,
+// which every read joins into bytes that are no record (ErrMalformedInterest, with that layout).
+// Each time the owner's record still reads whole and its chunks stay in the bucket. The write of
+// the copy's session lands under its own key (writeRowAt). Over the third manifest it replaces a
+// record whose chunks joined, so its layout names the owner's generation, and only ownLayout, which
+// finds the owner's row of that generation in the cache, keeps the write from deleting the owner's
+// first chunks. The control is the owner's own deregistration, which deletes them.
 func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
@@ -352,7 +357,31 @@ func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the borrowed manifest: %v", err)
 	}
-	manifests := map[string][]byte{"an exact copy": head.Value(), "a forged SHA-256": append(append([]byte(`{"chunked":`), forged...), '}')}
+	if borrowed.Chunks < 2 {
+		t.Fatalf("the owner's record is in %d chunks, want 2 or more so a manifest can name some of them", borrowed.Chunks)
+	}
+	// The owner's first chunks alone, joined with their own length and SHA-256: a manifest any writer
+	// of the bucket can store, which passes every check a read makes (ReadLayout, join) and joins into
+	// a prefix of the owner's JSON.
+	var prefix []byte
+	for _, key := range borrowed.Keys()[:borrowed.Chunks-1] {
+		chunk, err := kv.Get(key)
+		if err != nil {
+			t.Fatalf("read the owner's chunk %s: %v", key, err)
+		}
+		prefix = append(prefix, chunk.Value()...)
+	}
+	sum := sha256.Sum256(prefix)
+	first := kvchunk.Layout{Generation: borrowed.Generation, Chunks: borrowed.Chunks - 1, Bytes: len(prefix), SHA256: hex.EncodeToString(sum[:])}
+	named, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("encode the manifest of the owner's first chunks: %v", err)
+	}
+	manifests := map[string][]byte{
+		"an exact copy":            head.Value(),
+		"a forged SHA-256":         append(append([]byte(`{"chunked":`), forged...), '}'),
+		"the owner's first chunks": append(append([]byte(`{"chunked":`), named...), '}'),
+	}
 	requireOwnerWhole := func(after string) {
 		t.Helper()
 		row, _, err := reg.RefreshAt(t.Context(), "ses_owner")
