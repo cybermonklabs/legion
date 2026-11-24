@@ -12,6 +12,7 @@ import {
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
+import * as ts from "typescript";
 
 import {
   correction,
@@ -331,19 +332,40 @@ interface KeySite {
   readonly families: readonly string[];
 }
 
-/** Each `queryKey:` of `sources`: C-Q1's literal families, and each computed key's (C-Q1's
- *  second command, `queryKey: *[^\[ ]`, and the keys neither of its commands reads: a literal
- *  spread from another key, `queryKey: [...myRepliesKey, "count"]`, or one whose array opens on
- *  the next line). A key in a comment is no key: a source's comments are taken out (`sourceOf`). */
+/** Where `source` keys a query: the start of each `queryKey` that names a property of an object
+ *  literal, written with its colon at once after it (`queryKey:`), as TypeScript parses the source,
+ *  so a `queryKey:` inside a string, a template or a type is no key. */
+function keyPositions({ path, text }: Source): number[] {
+  const file = ts.createSourceFile(path, text, {
+    jsDocParsingMode: ts.JSDocParsingMode.ParseNone,
+    languageVersion: ts.ScriptTarget.Latest,
+  });
+  const positions: number[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name)) {
+      const at = node.name.getStart(file);
+      if (text.startsWith("queryKey:", at)) positions.push(at);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return positions;
+}
+
+/** Each `queryKey:` of `sources` that keys a query (`keyPositions`): C-Q1's literal families, and
+ *  each computed key's (C-Q1's second command, `queryKey: *[^\[ ]`, and the keys neither of its
+ *  commands reads: a literal spread from another key, `queryKey: [...myRepliesKey, "count"]`, or
+ *  one whose array opens on the next line). A key in a comment is no key: a source's comments are
+ *  taken out (`sourceOf`). */
 function keySites(sources: readonly Source[]): {
   readonly sites: KeySite[];
   readonly unread: string[];
 } {
   const sites: KeySite[] = [];
   const unread: string[] = [];
-  for (const { path, text } of sources) {
-    for (const found of text.matchAll(/queryKey:/gu)) {
-      const at = found.index ?? 0;
+  for (const source of sources) {
+    const { path, text } = source;
+    for (const at of keyPositions(source)) {
       const line = text.slice(0, at).split("\n").length;
       const where = `${path}:${line}`;
       LITERAL_KEY.lastIndex = at;
@@ -352,7 +374,7 @@ function keySites(sources: readonly Source[]): {
         sites.push({ families: [familyName(literal[1] ?? "", literal[2])], where });
         continue;
       }
-      const expression = expressionAt(text, at + found[0].length);
+      const expression = expressionAt(text, at + "queryKey:".length);
       const resolved = keyFamilies(expression, path, at);
       if (resolved === undefined) unread.push(`${where}: queryKey: ${expression}`);
       else if (Array.isArray(resolved)) sites.push({ families: resolved, where });
@@ -390,6 +412,19 @@ test("a computed key after a string holding // on its line is a key site, and a 
   ].join("\n");
   expect(keySites([sourceOf("probe.ts", text)])).toEqual({
     sites: [{ families: ["probe open", "probe shut"], where: "probe.ts:1" }],
+    unread: [],
+  });
+});
+
+// A `queryKey:` that names no property of an object literal keys nothing: one inside a string was
+// read as a key, resolved to nothing and reported unread.
+test("a string holding queryKey: is no key site and nothing unread, and a key beside it still is one", () => {
+  const text = [
+    'const url = "https://dispatch.example/queryKey:sample";',
+    'useQuery({ url, queryKey: ["x", id] });',
+  ].join("\n");
+  expect(keySites([sourceOf("probe.ts", text)])).toEqual({
+    sites: [{ families: ["x"], where: "probe.ts:2" }],
     unread: [],
   });
 });
