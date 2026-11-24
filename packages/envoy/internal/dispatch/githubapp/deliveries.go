@@ -501,10 +501,10 @@ const shownBodyRunes = 512
 //   - A refusal's body is cut alone, with the body's size. Every error of this package whose text
 //     holds a body GitHub answered holds it as this shows it (withBody). A reader that finds the
 //     body at the end of such a text (api's gitHubErrorText) finds it as this shows it.
-//   - A value an answer could not decode, in a time parse error or a JSON type error, is cut
-//     alone, with the value's size. The error still names the layout, or the field and the type
-//     (ShownErr). The reason of a time parse error quotes the text after a valid time, and it is
-//     cut alone too, with the reason's size.
+//   - A value an answer could not decode is in no error: each answer decodes through
+//     redact.Answer.Decode, whose error names the member that did not decode and the types around
+//     it, quotes none of the value, whole or cut, and reaches none of the decoder's own errors,
+//     whose text quotes it.
 //   - A transport error of send names its target as ShownBody shows it, with the target's size,
 //     and its failure by redact.Unanswered: a transport failure's own words or a fixed class, so it
 //     quotes no line of an answer at all.
