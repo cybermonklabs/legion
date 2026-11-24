@@ -433,6 +433,34 @@
       {
         "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.failedAnswer",
         "test": "print-githubapp.failedAnswer"
+      },
+      {
+        "holder": "packages/envoy-client/src/transport.ts#EnvoyApiError",
+        "test": "print-envoy-client.EnvoyApiError"
+      },
+      {
+        "holder": "packages/envoy-client/src/transport.ts#EnvoyApiErrorDetails",
+        "test": "print-envoy-client.EnvoyApiErrorDetails"
+      },
+      {
+        "holder": "packages/envoy-client/src/dispatch-http.ts#DispatchServiceError",
+        "test": "print-envoy-client.DispatchServiceError"
+      },
+      {
+        "holder": "packages/envoy-client/src/dispatch-http.ts#DispatchGatewayError",
+        "test": "print-envoy-client.DispatchGatewayError"
+      },
+      {
+        "holder": "packages/envoy-client/src/dispatch-http.ts#DispatchNoRouteError",
+        "test": "print-envoy-client.DispatchNoRouteError"
+      },
+      {
+        "holder": "packages/pi-legion/src/stall-evidence.ts#NoticeRateLimited",
+        "test": "print-pi-legion.NoticeRateLimited"
+      },
+      {
+        "holder": "packages/pi-legion/src/stall-evidence.ts#NoticeAttempt",
+        "test": "print-pi-legion.NoticeAttempt"
       }
     ],
     "reflection": [
@@ -2361,6 +2389,48 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": ["packages/envoy/internal/oidc/redirect_location_test.go"],
         "capture": "oidc.revoke-redirect"
+      },
+      {
+        "row": "envoy-client-refusal-words",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
+        "capture": "envoy.refusal"
+      },
+      {
+        "row": "envoy-client-page-excerpt",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
+        "capture": "envoy.page"
+      },
+      {
+        "row": "envoy-client-echo-bearer",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
+        "capture": "envoy.echo"
+      },
+      {
+        "row": "dispatch-client-echo-bearer",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
+        "capture": "dispatch.echo"
+      },
+      {
+        "row": "dispatch-client-code-cli",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
+        "capture": "dispatch.code"
+      },
+      {
+        "row": "dispatch-client-words-cli",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
+        "capture": "dispatch.words"
+      },
+      {
+        "row": "dispatch-client-page-cli",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
+        "capture": "dispatch.page"
       }
     ],
     "boundary_fields": {
@@ -9751,6 +9821,153 @@
       "file": "packages/contracts/src/remote-text-print.test.ts",
       "test": "box print test: LibraryError prints no secret by any printer at any placement",
       "production": "packages/contracts/src/remote-text.ts#LibraryError: every printer at every placement"
+    },
+    {
+      "id": "envoy-client-refusal-words",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "an Envoy refusal the listener's schema reads prints none of the words it quotes",
+      "production": "EnvoyApiError.constructor",
+      "function": "EnvoyApiError.constructor",
+      "capture": "envoy.refusal",
+      "mutation": {
+        "file": "packages/envoy-client/src/transport.ts",
+        "preimage": "redactRemoteText(field, carried)",
+        "replacement": "field"
+      }
+    },
+    {
+      "id": "envoy-client-refusal-holder",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "an Envoy refusal the listener's schema reads prints none of the words it quotes",
+      "production": "refusalStateText",
+      "function": "refusalStateText",
+      "capture": "envoy.refusal",
+      "mutation": {
+        "file": "packages/envoy-client/src/transport.ts",
+        "preimage": "redactRemoteText(parsed.holder, carried)",
+        "replacement": "parsed.holder"
+      }
+    },
+    {
+      "id": "envoy-client-page-excerpt",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "an Envoy answer that is not the listener's error JSON prints none of the words it quotes",
+      "production": "excerpt",
+      "function": "excerpt",
+      "capture": "envoy.page",
+      "mutation": {
+        "file": "packages/envoy-client/src/excerpt.ts",
+        "preimage": "readRemoteText(scrubbed)",
+        "replacement": "scrubbed"
+      }
+    },
+    {
+      "id": "envoy-client-echo-bearer",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "an Envoy refusal that echoes the bearer its request carried prints none of it",
+      "production": "packages/envoy-client/src/transport.ts#EnvoyApiError: its words held and printed with the request's tokens redacted"
+    },
+    {
+      "id": "dispatch-client-echo-bearer",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "a Dispatch refusal that echoes the bearer its request carried prints none of it",
+      "production": "packages/envoy-client/src/dispatch-http.ts#DispatchServiceError: its code and words with the tokens the client presented redacted"
+    },
+    {
+      "id": "dispatch-client-code-cli",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "a Dispatch refusal whose code quotes a URL reaches the dispatch command's text with no secret",
+      "production": "packages/envoy-client/src/errors.ts#messageFor: Dispatch's code printed through its box in the dispatch command's text"
+    },
+    {
+      "id": "dispatch-client-words-cli",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "a Dispatch refusal whose words quote a URL reaches the dispatch command's text with no secret",
+      "production": "DispatchClient.#payloadOf",
+      "function": "DispatchClient.#payloadOf",
+      "capture": "dispatch.words",
+      "mutation": {
+        "file": "packages/envoy-client/src/dispatch-http.ts",
+        "preimage": "redactRemoteText(error.error, carried)",
+        "replacement": "error.error"
+      }
+    },
+    {
+      "id": "dispatch-client-page-cli",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "a page in Dispatch's place that quotes a URL reaches the dispatch command's text with no secret",
+      "production": "packages/envoy-client/src/excerpt.ts#excerpt through DispatchClient's gateway error, in the dispatch command's text"
+    },
+    {
+      "id": "envoy-client-soft-claim-holder",
+      "requirement": "r2-held",
+      "file": "packages/envoy-client/src/__tests__/transport.test.ts",
+      "test": "EnvoyClient > a 409 naming a holder the rule does not print as it came stays a typed API error",
+      "production": "packages/envoy-client/src/transport.ts#createEnvoyClient setRole: the holder a 409 names, sent back only where a print of it shows it whole"
+    },
+    {
+      "id": "ts-box-send-back",
+      "requirement": "r2-held",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "a RemoteText sends a field back only where the rule prints it as it came",
+      "production": "packages/contracts/src/remote-text.ts#RemoteText.sendBack"
+    },
+    {
+      "id": "print-envoy-client.EnvoyApiError",
+      "requirement": "r2-held",
+      "file": "packages/envoy-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: envoy-client.EnvoyApiError prints no secret by any printer at any placement",
+      "production": "packages/envoy-client/src/transport.ts#EnvoyApiError: every printer at every placement"
+    },
+    {
+      "id": "print-envoy-client.EnvoyApiErrorDetails",
+      "requirement": "r2-held",
+      "file": "packages/envoy-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: envoy-client.EnvoyApiErrorDetails prints no secret by any printer at any placement",
+      "production": "packages/envoy-client/src/transport.ts#EnvoyApiErrorDetails: every printer at every placement"
+    },
+    {
+      "id": "print-envoy-client.DispatchServiceError",
+      "requirement": "r2-held",
+      "file": "packages/envoy-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: envoy-client.DispatchServiceError prints no secret by any printer at any placement",
+      "production": "packages/envoy-client/src/dispatch-http.ts#DispatchServiceError: every printer at every placement"
+    },
+    {
+      "id": "print-envoy-client.DispatchGatewayError",
+      "requirement": "r2-held",
+      "file": "packages/envoy-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: envoy-client.DispatchGatewayError prints no secret by any printer at any placement",
+      "production": "packages/envoy-client/src/dispatch-http.ts#DispatchGatewayError: every printer at every placement"
+    },
+    {
+      "id": "print-envoy-client.DispatchNoRouteError",
+      "requirement": "r2-held",
+      "file": "packages/envoy-client/src/__tests__/holders-print.test.ts",
+      "test": "box print test: envoy-client.DispatchNoRouteError prints no secret by any printer at any placement",
+      "production": "packages/envoy-client/src/dispatch-http.ts#DispatchNoRouteError: every printer at every placement"
+    },
+    {
+      "id": "print-pi-legion.NoticeRateLimited",
+      "requirement": "r2-held",
+      "file": "packages/pi-legion/src/holders-print.test.ts",
+      "test": "box print test: pi-legion.NoticeRateLimited prints no secret by any printer at any placement",
+      "production": "packages/pi-legion/src/stall-evidence.ts#NoticeRateLimited: every printer at every placement"
+    },
+    {
+      "id": "print-pi-legion.NoticeAttempt",
+      "requirement": "r2-held",
+      "file": "packages/pi-legion/src/holders-print.test.ts",
+      "test": "box print test: pi-legion.NoticeAttempt prints no secret by any printer at any placement",
+      "production": "packages/pi-legion/src/stall-evidence.ts#NoticeAttempt: every printer at every placement"
     }
   ],
   "recall": [
@@ -11231,6 +11448,36 @@
       "site": "envoy's credential-carrying clients handed on net/http's error as it came, so a Location that did not parse (net/http quotes it before CheckRedirect is asked), or one a following client asked, put the request's credential into a log line or an error: the listener's broker read, Dispatch's agent-secrets client, the broker's wake notice, judge read and Dispatch read, the generateIdToken mint, Dispatch's introspection, the Azure embeddings call and Entra exchange, and the OIDC revocation",
       "source": "the class search of round 7's third must-fix over the envoy module",
       "guard": "listener-edge-redirect-unparsed"
+    },
+    {
+      "site": "envoy-client transport.ts EnvoyApiError: the body, code, reason, holder, expected and refused fields held as public strings",
+      "source": "the site census of the second pull request at 17c8ec356a, item 9",
+      "holder": "packages/envoy-client/src/transport.ts#EnvoyApiError"
+    },
+    {
+      "site": "envoy-client transport.ts EnvoyApiError's message and refusalStateText: the listener's error, reason, expected fields and holder printed as they came",
+      "source": "the site census of the second pull request at 17c8ec356a, item 9",
+      "guard": "envoy-client-refusal-words"
+    },
+    {
+      "site": "envoy-client transport.ts and excerpt.ts: a body that is not the listener's error JSON excerpted with the token scrub alone, never the fail-closed rule",
+      "source": "the site census of the second pull request at 17c8ec356a, item 9",
+      "guard": "envoy-client-page-excerpt"
+    },
+    {
+      "site": "envoy-client dispatch-http.ts DispatchServiceError: Dispatch's code held as a public string",
+      "source": "the site census of the second pull request at 17c8ec356a, item 9",
+      "holder": "packages/envoy-client/src/dispatch-http.ts#DispatchServiceError"
+    },
+    {
+      "site": "envoy-client dispatch-http.ts DispatchServiceError: Dispatch's words kept as the message as they came",
+      "source": "the site census of the second pull request at 17c8ec356a, item 9",
+      "guard": "dispatch-client-words-cli"
+    },
+    {
+      "site": "envoy-client errors.ts messageFor and dispatch-commands/failures.ts: Dispatch's code prefixed to the command's text as it came",
+      "source": "the site census of the second pull request at 17c8ec356a, item 9",
+      "guard": "dispatch-client-code-cli"
     }
   ]
 }
