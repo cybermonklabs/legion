@@ -287,7 +287,7 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 // LEGION_NOT_CONFIGURED. It names no issue in read.issues: no Dispatch event moves the body, which
 // only its project's notifications and its issue's runs move (dirtyLegionProject, dirtyLegionIssue).
 func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
-	answer, err := h.server.readLegionIssue(ctx, spec.issue)
+	answer, err := h.server.readLegionIssue(ctx, spec.reader, spec.issue)
 	if err != nil {
 		return nil, err
 	}

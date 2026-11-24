@@ -212,9 +212,8 @@ type Deps struct {
 	// the wait would never end: the send goes at once, as it does in every test of this package
 	// that runs no outbox.
 	OutboxPublishes bool
-	// Metrics is the process's registry: GET /metrics serves it (getMetrics), and register adds
-	// the gauges of the mention sends held behind an earlier event to it (registerHeldGauges). Nil,
-	// as this package's tests run, serves an empty one and adds none.
+	// Metrics is the process's registry, which register adds the gauges of the mention sends held
+	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
 	Metrics *metrics.Registry
 	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
 	// serves from the moment it enters the route's handler chain, as the access-log line times

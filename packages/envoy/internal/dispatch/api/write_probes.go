@@ -127,10 +127,13 @@ var writeProbes = map[string]writeProbe{
 	"POST /api/v1/comments/{id}/reply":                       {byComment, `{` + probeActor + `,"attempt":1,"body":"A walked reply."}`},
 	"POST /api/v1/comments/{id}/accept":                      {byComment, `{` + probeActor + `}`},
 	"PATCH /api/v1/comments/{id}":                            {byComment, `{"body":"A walked edit."}`},
+	"DELETE /api/v1/comments/{id}":                           {byComment, ""},
 	"POST /api/v1/comments/{id}/reject":                      {byComment, `{` + probeActor + `}`},
 	"POST /api/v1/messages/{id}/deliveries":                  {byMessage, `{` + probeActor + `,"delivery":"btw"}`},
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": {readProbe{"id": probeMessage, "attempt": probeAttempt}, `{` + probeActor + `}`},
 	"POST /api/v1/messages/{id}/reply":                       {byMessage, `{` + probeActor + `,"attempt":1,"body":"A walked reply."}`},
+	"PATCH /api/v1/messages/{id}":                            {byMessage, `{"body":"A walked edit."}`},
+	"DELETE /api/v1/messages/{id}":                           {byMessage, ""},
 
 	// An agent session.
 	"POST /api/v1/agents/{session_id}/messages":             {bySession, `{"body":"A walked message.","delivery":"btw"}`},
