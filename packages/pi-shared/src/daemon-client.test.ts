@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { daemonContract } from "@legion/contracts/daemon-contract";
+import { type AnswerRow, daemonApiRecords } from "@legion/contracts/daemon-api-records";
 import * as legionApi from "@legion/contracts/legion-api";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -1324,11 +1324,12 @@ function once<T>(compute: () => T): () => T {
 // ─────────────────────────────────────────────────────────────────────────────
 // The table census: the answers this client parses, held to the daemon's table.
 //
-// `packages/contracts/fixtures/daemon-api/answers.json` is the daemon's own table of the
-// answers a plugin parses (`packages/daemon/internal/api/answers.go`), one row per response
-// schema. This census reads the client's source and fails when either side names an answer the
-// other does not. The two sides are joined by route and by nothing else: no mapping of schema
-// to row id is written here, so neither side can be taught to agree with the other.
+// The daemon's own table of the answers a plugin parses (`packages/daemon/internal/api/answers.go`)
+// is the rows of `packages/contracts/fixtures/daemon-api/answers.json`, which are the numbered
+// entries' alone, with the rows each entry fixture adds over them (`daemonApiRecords`), one row
+// per response schema. This census reads the client's source and fails when either side names an
+// answer the other does not. The two sides are joined by route and by nothing else: no mapping of
+// schema to row id is written here, so neither side can be taught to agree with the other.
 //
 // What the join does not reach. A row carries its id, its routes, its `since` and its `noBody`
 // (the state's row its typed settings keys too, which the settings census below reads), and no
@@ -1514,28 +1515,8 @@ function answerKey(noBody: boolean, routes: readonly string[]): string {
   return `${noBody ? "no body" : "a body"} on ${named.length === 0 ? "no route" : named.join(", ")}`;
 }
 
-/** One row of `answers.json`. `typedSettings` is on the state's row alone: every top-level key of
- * `settings` a plugin's reader types, from the contract `since` to `until`, both included, or to
- * the daemon's own contract where `until` is absent. */
-interface AnswerRow {
-  readonly id: string;
-  readonly routes: readonly string[];
-  readonly noBody: boolean;
-  readonly typedSettings?: readonly {
-    readonly key: string;
-    readonly since: number;
-    readonly until?: number;
-  }[];
-}
-
 /** Where this checkout holds the daemon API fixtures. */
 const DAEMON_API_FIXTURES = path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api");
-
-/** The daemon's table of the answers a plugin parses, for the build whose daemon API fixtures are
- * `fixtureDir`: its `answers.json`. */
-function answerRows(fixtureDir: string): AnswerRow[] {
-  return JSON.parse(readFileSync(path.join(fixtureDir, "answers.json"), "utf8"));
-}
 
 /** The client's own source, parsed once. The table census reads its parse sites, and the
  * read-set census takes the schemas those sites name. */
@@ -1551,7 +1532,7 @@ const clientParseSites = once(() => parseSites(clientSource()));
  * API fixtures are `fixtureDir`: each answer the client parses that no row holds, and each row no
  * parse site of the client parses. */
 function tableMismatches(fixtureDir: string): string[] {
-  const rows = answerRows(fixtureDir);
+  const rows = daemonApiRecords(fixtureDir).answers;
   const unmatched = new Map<string, AnswerRow[]>();
   for (const row of rows) {
     const key = answerKey(row.noBody, row.routes);
@@ -1602,9 +1583,9 @@ function stateSettings(): z.ZodObject {
 /** The settings keys the table of the build whose daemon API fixtures are `fixtureDir` types at
  * that build's own contract, sorted. */
 function declaredSettings(fixtureDir: string): string[] {
-  // The daemon's own contract is the tree's: L plus its count of entry fixtures.
-  const contract = daemonContract({}, fixtureDir);
-  const declaring = answerRows(fixtureDir).filter((row) => row.typedSettings !== undefined);
+  // The build's own contract is the tree's: L plus its count of entry fixtures.
+  const { contract, answers } = daemonApiRecords(fixtureDir);
+  const declaring = answers.filter((row) => row.typedSettings !== undefined);
   expect(declaring.map((row) => row.id)).toEqual(["state"]);
   return (declaring[0]?.typedSettings ?? [])
     .filter((setting) => setting.since <= contract && (setting.until ?? contract) >= contract)
@@ -1614,7 +1595,7 @@ function declaredSettings(fixtureDir: string): string[] {
 
 // The settings census: the keys the daemon's table declares a reader types at its own contract
 // are the keys `legionSettings` types. The daemon's records of the state hold a settings key path
-// exactly where its table types the key (`typedSettings` in `answers.json`, answers.go's
+// exactly where its table types the key (the state row's `typedSettings`, answers.go's
 // `typedSettings`), so a key this schema types with no row there is a key whose removal a reader
 // refuses and no record catches, and a row typing a key this schema does not name holds every
 // later legion.yaml change to a record no reader needs.
@@ -1632,7 +1613,10 @@ test("the settings keys answers.json types at the daemon's own contract are the 
 // checkout's fixtures with one row the client parses and one key the state's row types taken out
 // of `answers.json`, and put back by one entry fixture that ranks after every other.
 test("a row and a settings key an entry fixture adds are in the daemon's table for both censuses", () => {
-  const rows = answerRows(DAEMON_API_FIXTURES);
+  // The frozen rows: the tree below holds them in its `answers.json`, less what its entry adds.
+  const rows: AnswerRow[] = JSON.parse(
+    readFileSync(path.join(DAEMON_API_FIXTURES, "answers.json"), "utf8")
+  );
   const moved = rows.find((row) => row.typedSettings === undefined);
   const state = rows.find((row) => row.id === "state");
   const key = state?.typedSettings?.find((setting) => setting.until === undefined)?.key;
