@@ -102,6 +102,7 @@ SHARED_FILE = {
     "tooling-checks": "test",
     "pi-legion-build": "pi-legion",
     "envoy-infra-build": "envoy-infra-go",
+    "step-models-chain": "plugin-pack",
 }
 
 

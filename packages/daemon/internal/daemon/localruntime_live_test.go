@@ -64,6 +64,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
@@ -93,10 +94,14 @@ type localPane struct {
 // runtime factory hands every runtime; a stop sends the shutdown frame over the claim's connection
 // before it signals anything, as the tmux runtime's stop does.
 type localRuntime struct {
-	t         *testing.T
-	stateDir  string
-	legion    string
-	omp       string
+	t        *testing.T
+	stateDir string
+	legion   string
+	omp      string
+	// claude is the Claude Code launch a spawn on runtime.BackendClaude runs, as the daemon's own
+	// boot resolves one (resolveClaude). A proof that drives no Claude Code pane leaves it zero,
+	// and such a spawn is refused, as a daemon that resolved no Claude Code launch refuses it.
+	claude    tmux.ClaudeLaunch
 	home      string
 	profile   string
 	daemonURL string
@@ -350,14 +355,9 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 
-	argv := []string{
-		r.legion, "worker-shim",
-		"--connect", r.stream,
-		"--boot-token-file", bootToken.Path,
-		"--", r.omp, "--mode", "rpc", "--append-system-prompt", promptFile,
-	}
-	if spec.ResumeSessionFile != "" {
-		argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
+	argv, pairs, err := r.agentCommand(spec, bootToken, promptFile)
+	if err != nil {
+		return runtime.Locator{}, err
 	}
 	logPath := filepath.Join(r.paneLogs, fmt.Sprintf("%s.%d.log", spec.Claim, seq))
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -366,7 +366,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
-	cmd.Env = r.paneEnvironment(variables, workDir)
+	cmd.Env = append(r.paneEnvironment(variables, workDir), pairs...)
 	// A resume is held to its session as every runtime holds it (runtime.SessionExclusiveVariable).
 	if spec.ResumeSessionFile != "" {
 		cmd.Env = append(cmd.Env, runtime.SessionExclusiveVariable+"="+runtime.SessionExclusiveValue)
@@ -407,6 +407,48 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 			Detail: "the worker's process group ended; its log is " + logPath})
 	}()
 	return pane.locator, nil
+}
+
+// agentCommand is the child one spawn runs, and the environment pairs that harness carries beyond
+// what a pane is told: the shim around the agent either way, as a pane runs it.
+//
+// On Oh My Pi the shim's argv names the Oh My Pi this runtime was given, which needs no shell. On
+// Claude Code the inner command is the one `internal/runtime/tmux`'s own launcher builds
+// (claudeLauncher.Launch: the claim's Claude Code directory made, its MCP configuration written
+// and its session started or continued), whose words are already quoted for a pane's shell, so it
+// is spliced after the shim's `--` unquoted and the whole is run by `sh -c`, as shimShellCommand
+// splices it into a pane's command. Launch's pairs are tmux's `-e NAME=VALUE` form, which this
+// runtime has no tmux for: each value is a pair of the child's own environment, after the ones a
+// pane is told, as tmux puts them after the operator's.
+func (r *localRuntime) agentCommand(spec runtime.SpawnSpec, bootToken runtime.SecretFile, promptFile string) (argv, pairs []string, err error) {
+	if runtime.Of(spec.Backend) != runtime.BackendClaude {
+		argv = []string{
+			r.legion, "worker-shim",
+			"--connect", r.stream,
+			"--boot-token-file", bootToken.Path,
+			"--", r.omp, "--mode", "rpc", "--append-system-prompt", promptFile,
+		}
+		if spec.ResumeSessionFile != "" {
+			argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
+		}
+		return argv, nil, nil
+	}
+	if r.claude.Binary == "" {
+		return nil, nil, fmt.Errorf("spawn %s: its role runs on claude, and this proof gave the runtime no Claude Code launch", spec.Claim)
+	}
+	inner, tmuxPairs, err := tmux.NewClaudeLauncher(r.claude).Launch(spec, tmux.Host{StateDir: r.stateDir, Legion: r.legion}, promptFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := 0; i < len(tmuxPairs); i += 2 {
+		if tmuxPairs[i] != "-e" || i+1 == len(tmuxPairs) {
+			return nil, nil, fmt.Errorf("spawn %s: the Claude Code launch gave the pairs %q, which are no `-e NAME=VALUE` run", spec.Claim, tmuxPairs)
+		}
+		pairs = append(pairs, tmuxPairs[i+1])
+	}
+	command := shellprefix.Word(r.legion) + " worker-shim --connect " + shellprefix.Word(r.stream) +
+		" --boot-token-file " + shellprefix.Word(bootToken.Path) + " -- " + inner
+	return []string{"sh", "-c", command}, pairs, nil
 }
 
 // workDir is the working directory of every pane of issue, which launch makes: the roles of one

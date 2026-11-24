@@ -1417,7 +1417,10 @@ its own: it is the one job of ci.yaml that runs the daemon's `e2e` build tag, an
 it runs install Oh My Pi and Claude Code, a Postgres service and a NATS image that no other
 daemon lane needs together. It is a slow suite
 (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request): the merge queue runs it
-on the tree the change lands as.
+on the tree the change lands as. Its steps are in .github/workflows/ci-job-plugin-pack.yaml,
+which it shares with plugin-pack: ci.yaml may call no more reusable workflows, and that is the
+nearest file, since both jobs run named tests of internal/daemon on the real Oh My Pi off the
+go-daemon cache family (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 
 Its step joins `-tags e2e` with `-run`, so it runs those two tests and none of
 internal/daemon's untagged tests. Its untagged companion is `daemon-go-race`, whose step "Test
@@ -1816,8 +1819,9 @@ typechecks that ran beside these tests are the tooling-checks job's, in the same
 ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
 allows it (its rule 5 keeps five below the 50 GitHub counts over every tree of nested calls),
 so a job split in two takes no file of its own for its new half. test and tooling-checks call
-ci-job-test.yaml, pi-legion and pi-legion-build call ci-job-pi-legion.yaml, and envoy-infra-go
-and envoy-infra-build call ci-job-envoy-infra-go.yaml. Such a file holds one job per caller and
+ci-job-test.yaml, pi-legion and pi-legion-build call ci-job-pi-legion.yaml, envoy-infra-go
+and envoy-infra-build call ci-job-envoy-infra-go.yaml, and plugin-pack and step-models-chain
+call ci-job-plugin-pack.yaml. Such a file holds one job per caller and
 takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each
 caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
 id. A call runs the one job named for its caller, and the other reads `skipped` under it.
@@ -2645,6 +2649,16 @@ from its run's creation, so the job concludes inside the queue's own 180-minute 
 It reads both refs with `git ls-remote` every 30 seconds, which spends none of the
 installation's REST API budget; its one REST read, the run's creation time, waits for no
 budget reset.
+
+Three numbers of the step carry that reasoning, and this is where they are derived.
+`CI_OK_HOLD_AGE_SECONDS` is 10,200 seconds, 170 minutes from the run's creation: main's
+merge_queue rule assumes a check failed 180 minutes into the group, and the last pause, the last
+read's ladder and the job's end fit in the 10 minutes left. `CI_OK_HOLD_RUN_SECONDS` is 3,330
+seconds, the longest merge-group run of 2026-11-22, 55.5 minutes (run 44966798236): it is taken
+off the age when the run's creation cannot be read and the hold counts from its own start. The
+step's `timeout-minutes`, 175, is that age, which a run created moments before the step could
+hold for nearly whole, plus the last pause and read's ladder: 30 s, then three attempts and their
+pauses, two minutes.
 
 It keys on the verdict step's own outcome (`steps.verdict.outcome`), not on `failure()`, so a
 passing verdict never waits whatever a later step does; `!cancelled()` lets it run after that

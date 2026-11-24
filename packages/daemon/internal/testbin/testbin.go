@@ -1,4 +1,4 @@
-// Package testbin names the pinned binaries the real-binary tests run (OMP, UV), readies the
+// Package testbin names the pinned binaries the real-binary tests run (OMP, Claude, UV), readies the
 // fresh HOME a test runs Oh My Pi under (OMPHome) with the profile and environment it runs with
 // (WriteOMPProfile, OMPEnviron), reads back what that run said - the frame shape (OMPFrame), the
 // model one answer names (StateModel) and the session files it left (SessionFiles) - answers a
@@ -21,6 +21,13 @@ import (
 func OMP(t *testing.T) string {
 	t.Helper()
 	return binary(t, "LEGION_TEST_OMP", "Oh My Pi")
+}
+
+// Claude is the pinned Claude Code binary LEGION_TEST_CLAUDE names
+// (.github/actions/install-claude-code).
+func Claude(t *testing.T) string {
+	t.Helper()
+	return binary(t, "LEGION_TEST_CLAUDE", "Claude Code")
 }
 
 // UV is the uv the worker image ships, which LEGION_TEST_UV names (.github/actions/install-uv,
