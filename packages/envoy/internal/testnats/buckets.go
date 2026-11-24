@@ -4,22 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// A cluster member answers a stream lookup out of the JetStream metadata it has applied itself.
-// nats-server 2.10.29 routes a KV create to the meta leader, which answers the client as soon as
-// the bucket's stream is made, while every member applies the meta entry that carries the new
-// assignment on its own clock; until a member has applied it, that member answers "stream not
-// found" for the bucket that was just created, the member the create was sent through included.
-// Measured here with three in-process members on two CPUs, 67 of 75 member reads taken the moment
-// a create was answered still said so, the slowest for 206 ms.
+// A lookup of a stream through a cluster member is answered by whichever server answers for the
+// stream, not by that member out of its own metadata: the meta leader, the stream's leader, or a
+// new group's preferred member, which answers "stream not found" until it has made the stream
+// (nats-server v2.15.1 server/jetstream_api.go:2051-2180). A clustered create is answered once the
+// meta group has committed it, while each member applies the new assignment on its own clock.
+// Measured here with three in-process members on two CPUs (nats-server 2.10.29), 67 of 75 lookups
+// through the members taken the moment a create was answered still said "stream not found", the
+// slowest for 206 ms, through the member the create was sent through too.
 //
 // Whatever reaches the bucket next reaches it through whichever member its own connection is on:
 // bus.EnsureKeyValue opens the jetstream handle its KeyValue carries, a rebuild calls
@@ -46,8 +49,9 @@ const (
 	// that stream and may update it (kv.go:432, 525, 535 and 542).
 	bucketSendWait = 4 * createSendWait
 
-	// bucketLookupWait bounds one member's lookup of a bucket's stream, which that member
-	// answers out of metadata it holds. A hang guard.
+	// bucketLookupWait bounds one lookup of a bucket's stream, or one probe of it (AwaitStream),
+	// and one the server leaves unanswered within it is asked again. It paces those asks and
+	// decides nothing: a wait's end is its own (waitEnd).
 	bucketLookupWait = 10 * time.Second
 
 	// noDeadline is the bound of a wait that ends only on its fact (sendCreate) in a test binary
@@ -175,52 +179,166 @@ func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo
 	return kv
 }
 
-// AwaitBucket waits, until testDeadline, each lookup cut to what is left (waitEnd), until every
-// running member of the cluster both answers for the stream of bucket and holds the interest a
-// write to the bucket is routed by. A member answers a lookup out of the metadata it has applied,
-// and routes a write by the subscription the bucket's stream holds on its subjects, which reaches
-// a member that does not host the stream over the cluster's routes; the two arrive on their own
-// clocks, and a write through a member that has neither yet is answered "no responders", which
-// nats.go gives a caller as `nats: no response from stream`.
+// AwaitBucket waits, until testDeadline, until every running member of the cluster answers a
+// lookup of the stream of bucket and serves a write to the bucket (AwaitStream). A member's
+// metadata and the routes a write takes to the bucket's stream arrive on their own clocks, and a
+// write through a member that has neither yet is answered "no responders", which nats.go gives a
+// caller as `nats: no response from stream`.
 func (c *Cluster) AwaitBucket(t testing.TB, bucket string) {
 	t.Helper()
-	stream := "KV_" + bucket
 	// A subject of the bucket, which the stream's own `$KV.<bucket>.>` subscription matches: the
-	// interest a put, a delete or a watch of any key is routed by.
-	subject := "$KV." + bucket + ".a"
-	for i, server := range c.Servers {
-		if !server.running() {
-			continue
-		}
-		c.awaitBucketOn(t, i, server, stream, subject)
-	}
+	// subject a put, a delete or a watch of any key is routed by.
+	c.AwaitStream(t, "KV_"+bucket, "$KV."+bucket+".a")
 }
 
-// awaitBucketOn waits for member i to answer for stream and to hold the interest subject is
-// routed by, the member's own account read in this process.
-func (c *Cluster) awaitBucketOn(t testing.TB, i int, server *Server, stream, subject string) {
+// AwaitStream waits, until testDeadline, each request cut to what is left (waitEnd), until one
+// pass over the running members finds every member serving stream: a lookup of stream through the
+// member is answered and names the leader every other lookup of the pass named, and a probe
+// publish to subject, one of the stream's subjects, through the member is answered by stream as
+// the stream that leads it (serves). A pass in which a member does not, or names another leader,
+// starts over, so a lead that moved during the wait is asked of every member again. Which server
+// answers a lookup is the server's choice, the stream's leader as a rule (nats-server v2.15.1
+// server/jetstream_api.go:2051-2133), so the lookup says the stream is there and who leads it, not
+// that this member has applied it. A pass that passes says every member reached a leading stream
+// at that moment. It says nothing of a quorum to store a write (a leader whose followers stopped
+// answers the probe until it steps down) or of a later election.
+//
+// The probe carries Nats-Expected-Stream naming another stream, and a leading stream refuses it
+// with JSStreamNotMatchErr and its own name before it proposes anything to its group
+// (jetstream_cluster.go:13190-13206, jetstream_batching.go:595-597; a stream of one copy at
+// stream.go:6750-6759, before it stores anything), while a stream that does not lead drops it
+// unanswered (jetstream_cluster.go:13119-13122). So the refusal is the fact a write needs, and no
+// subscription stands in for it:
+//   - a read of the stream names its leader before that member serves writes: the Raft group names
+//     it at once (raft.go:6307), it leads only once its first entries are processed
+//     (raft.go:1603-1613), and its stream subscribes to its subjects after that (stream.go:1479).
+//     A write sent between draws "no responders", which nats.go sends twice more 250 ms apart and
+//     gives its caller as `nats: no response from stream` (nats.go v1.55.0 js.go:597-623);
+//   - after a raise from one copy, the member that held the copy keeps its subscription while the
+//     new group elects, and drops what that subscription takes until it leads.
+//
+// A caller waits on a stream whose copies are not being changed under it: once a raise's leader
+// is named, as every caller here waits for first. A probe that lands while a one-copy stream takes
+// on its group can be taken by the old one-copy path and checked as a clustered stream's, which
+// skips the expected-stream check, and stored (stream.go:8674-8686, :6558-6559). A stream that
+// takes no probe at all is refused at once (unprobeable).
+//
+// The lookup and the probe go through connections of the cluster's no-auth user (Connect), so the
+// stream is read and probed in that user's account only, and no subscription of another account
+// answers a probe. A caller whose stream is in another account gets that account's answer for the
+// name, which is no stream (the wait fails by name) unless the no-auth account holds a stream of
+// the same name and subject too; no caller here makes one.
+func (c *Cluster) AwaitStream(t testing.TB, stream, subject string) {
 	t.Helper()
-	conn := Connect(t, server.URL())
-	defer conn.Close()
-	js, err := conn.JetStream(natsgo.MaxWait(bucketLookupWait))
-	if err != nil {
-		t.Fatalf("open JetStream on member %s: %v", c.Name(i), err)
-	}
 	bound := boundOf(t)
-	for {
-		ctx, cancel := bound.stepContext(bucketLookupWait)
-		_, err := js.StreamInfo(stream, natsgo.Context(ctx))
-		cancel()
-		routed := false
-		if srv := server.natsServer(); srv != nil {
-			routed = srv.GlobalAccount().SubscriptionInterest(subject)
+	conns := make([]*natsgo.Conn, len(c.Servers))
+	defer func() {
+		for _, conn := range conns {
+			if conn != nil {
+				conn.Close()
+			}
 		}
-		if err == nil && routed {
+	}()
+	for {
+		failed, leader := "", ""
+		for i, server := range c.Servers {
+			if !server.running() {
+				continue
+			}
+			if conns[i] == nil {
+				conns[i] = Connect(t, server.URL())
+			}
+			named, why, err := serves(bound, conns[i], stream, subject)
+			if err != nil {
+				t.Fatalf("await stream %s: %v", stream, err)
+			}
+			if why == "" && leader != "" && named != leader {
+				why = fmt.Sprintf("its lookup named leader %s, an earlier member's %s", named, leader)
+			}
+			if why != "" {
+				failed = fmt.Sprintf("member %s: %s", c.Name(i), why)
+				break
+			}
+			leader = named
+		}
+		if failed == "" {
 			return
 		}
 		if bound.over() {
-			t.Fatalf("member %s did not answer for stream %s and route %s by %s, short of the test's deadline: %v (routed %t)", c.Name(i), stream, subject, bound, err, routed)
+			t.Fatalf("not every running member served stream %s by %s, short of the test's deadline: %s", stream, bound, failed)
 		}
 		bound.pause()
 	}
+}
+
+// probeStream is the stream a probe publish names as expected (serves): no stream is named so,
+// since a stream name holds no space.
+const probeStream = "testnats probe"
+
+// probeHeaderBytes is the size of the probe's header as nats.go writes it ("NATS/1.0", one header
+// line and the blank line, nats.go v1.55.0 nats.go headerBytes), the whole of a probe, which has
+// no body.
+var probeHeaderBytes = len("NATS/1.0\r\n" + natsgo.ExpectedStreamHdr + ": " + probeStream + "\r\n\r\n")
+
+// serves asks, through conn, for a lookup of stream and a probe publish to subject (AwaitStream),
+// each cut to what is left of bound, and returns the leader the lookup named and why the stream is
+// not served through conn, "" when it is: the lookup was answered and stream refused the probe as
+// another stream's. Its error is a stream no probe can be answered by (unprobeable).
+func serves(bound waitEnd, conn *natsgo.Conn, stream, subject string) (leader, why string, err error) {
+	js, err := conn.JetStream()
+	if err != nil {
+		return "", fmt.Sprintf("open JetStream: %v", err), nil
+	}
+	ctx, cancel := bound.stepContext(bucketLookupWait)
+	info, err := js.StreamInfo(stream, natsgo.Context(ctx))
+	cancel()
+	if err != nil {
+		return "", fmt.Sprintf("a lookup of the stream: %v", err), nil
+	}
+	if err := unprobeable(info.Config); err != nil {
+		return "", "", err
+	}
+	if info.Cluster != nil {
+		leader = info.Cluster.Leader
+	}
+	if leader == "" {
+		return "", "its lookup named no leader", nil
+	}
+	ctx, cancel = bound.stepContext(bucketLookupWait)
+	defer cancel()
+	probe := &natsgo.Msg{Subject: subject, Header: natsgo.Header{natsgo.ExpectedStreamHdr: []string{probeStream}}}
+	answer, err := conn.RequestMsgWithContext(ctx, probe)
+	if err != nil {
+		return leader, fmt.Sprintf("a probe publish to %s: %v", subject, err), nil
+	}
+	var ack struct {
+		Stream string           `json:"stream"`
+		Error  *natsgo.APIError `json:"error"`
+	}
+	if json.Unmarshal(answer.Data, &ack) != nil || ack.Stream != stream || ack.Error == nil ||
+		ack.Error.ErrorCode != natsgo.ErrorCode(natsserver.JSStreamNotMatchErr) {
+		return leader, fmt.Sprintf("a probe publish to %s was answered %q, not refused by %s as another stream's", subject, answer.Data, stream), nil
+	}
+	return leader, "", nil
+}
+
+// unprobeable is why a stream with config takes no probe, nil when it takes one:
+//   - a stream that sends no acknowledgement answers nothing (jetstream_cluster.go:13081);
+//   - a mirror takes no publish, since it subscribes to no subject of its own;
+//   - a sealed stream refuses every publish before it reads the expected stream
+//     (jetstream_cluster.go:13125-13130);
+//   - one whose largest message is smaller than the probe refuses it for its size before it reads
+//     the expected stream (jetstream_cluster.go:13163-13173, stream.go:6666-6676).
+func unprobeable(config natsgo.StreamConfig) error {
+	switch {
+	case config.NoAck:
+		return errors.New("the stream sends no acknowledgement, so no probe of it is answered")
+	case config.Mirror != nil:
+		return errors.New("the stream is a mirror, which takes no publish, so no probe of it is answered")
+	case config.Sealed:
+		return errors.New("the stream is sealed, which refuses every publish before the probe's expected stream is read")
+	case config.MaxMsgSize > 0 && int(config.MaxMsgSize) < probeHeaderBytes:
+		return fmt.Errorf("the stream's largest message, %d bytes, is smaller than the %d-byte probe", config.MaxMsgSize, probeHeaderBytes)
+	}
+	return nil
 }

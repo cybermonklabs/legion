@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,7 +25,8 @@ var wrongLastSequenceReplicated = &natsgo.APIError{Code: 400, ErrorCode: natsgo.
 // placement), and asks again while another member leads: the stream's group elects the preferred
 // member when it can, and an election lost to another member is asked again. A test moves a
 // stream's leader to the member its client is connected to, so a write that client sends reaches
-// the leader without a route (HoldReplicatingWrite).
+// the leader without a route (HoldReplicatingWrite). Each read of the stream and each step-down
+// request takes the wait's own context (awaitInfo), so none runs past connectTimeout.
 func (c *Cluster) MoveStreamLeader(t testing.TB, stream string, i int) {
 	t.Helper()
 	conn := Connect(t, c.URL())
@@ -39,12 +41,12 @@ func (c *Cluster) MoveStreamLeader(t testing.TB, stream string, i int) {
 		t.Fatalf("encode the step-down request: %v", err)
 	}
 	awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s was not led by %s", stream, want),
-		func() (*natsgo.StreamInfo, error) {
-			info, err := js.StreamInfo(stream)
+		func(ctx context.Context) (*natsgo.StreamInfo, error) {
+			info, err := js.StreamInfo(stream, natsgo.Context(ctx))
 			if err != nil || info.Cluster == nil || info.Cluster.Leader == want || info.Cluster.Leader == "" {
 				return info, err
 			}
-			if _, err := conn.Request("$JS.API.STREAM.LEADER.STEPDOWN."+stream, request, jetStreamWait); err != nil {
+			if _, err := conn.RequestWithContext(ctx, "$JS.API.STREAM.LEADER.STEPDOWN."+stream, request); err != nil {
 				return info, fmt.Errorf("ask %s to step down: %w", info.Cluster.Leader, err)
 			}
 			return info, nil

@@ -2,6 +2,7 @@ package testnats
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,7 +171,9 @@ func settled(cluster *natsgo.ClusterInfo, n int) bool {
 func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s did not settle", stream),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+		func(ctx context.Context) (*natsgo.StreamInfo, error) {
+			return js.StreamInfo(stream, natsgo.Context(ctx))
+		},
 		func(info *natsgo.StreamInfo) bool { return settled(info.Cluster, info.Config.Replicas) },
 		describeStream)
 }
@@ -189,7 +192,9 @@ func AwaitStreamCopies(t testing.TB, js natsgo.JetStreamContext, stream string, 
 func AwaitStreamCopiesWithin(t testing.TB, js natsgo.JetStreamContext, stream string, n int, within time.Duration) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, within, fmt.Sprintf("stream %s did not hold %d settled copies", stream, n),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+		func(ctx context.Context) (*natsgo.StreamInfo, error) {
+			return js.StreamInfo(stream, natsgo.Context(ctx))
+		},
 		func(info *natsgo.StreamInfo) bool { return info.Config.Replicas == n && settled(info.Cluster, n) },
 		describeStream)
 }
@@ -200,7 +205,9 @@ func AwaitStreamCopiesWithin(t testing.TB, js natsgo.JetStreamContext, stream st
 func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consumer string, n int) *natsgo.ConsumerInfo {
 	t.Helper()
 	return awaitInfo(t, connectTimeout, fmt.Sprintf("consumer %s of %s did not hold %d settled copies", consumer, stream, n),
-		func() (*natsgo.ConsumerInfo, error) { return js.ConsumerInfo(stream, consumer) },
+		func(ctx context.Context) (*natsgo.ConsumerInfo, error) {
+			return js.ConsumerInfo(stream, consumer, natsgo.Context(ctx))
+		},
 		func(info *natsgo.ConsumerInfo) bool { return settled(info.Cluster, n) },
 		describeConsumer)
 }
@@ -210,7 +217,9 @@ func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consu
 func AwaitStreamLeader(t testing.TB, js natsgo.JetStreamContext, stream, not string) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s had no leader other than %q", stream, not),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+		func(ctx context.Context) (*natsgo.StreamInfo, error) {
+			return js.StreamInfo(stream, natsgo.Context(ctx))
+		},
 		func(info *natsgo.StreamInfo) bool {
 			return info.Cluster != nil && info.Cluster.Leader != "" && info.Cluster.Leader != not
 		},
@@ -265,18 +274,29 @@ func describeCluster(cluster *natsgo.ClusterInfo) string {
 }
 
 // awaitInfo reads an info every retryInterval until a read succeeds and done holds for it, and
-// returns that info; after within it fails the test with failure, what describe says of the info
-// it read last, and the last error.
-func awaitInfo[T any](t testing.TB, within time.Duration, failure string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
+// returns that info; after within it fails the test with failure, what describe says of the last
+// info a read returned, and the last error. Each read is cut to the wait's end, so none runs past
+// within, and one the server leaves unanswered is asked again after jetStreamWait, as a read on
+// Cluster.JetStream's context would be: a member answers some reads with nothing at all (the paths
+// internal/bus's sentAgain lists), and a read given the whole wait would wait that whole wait out.
+func awaitInfo[T any](t testing.TB, within time.Duration, failure string, read func(context.Context) (*T, error), done func(*T) bool, describe func(*T) string) *T {
 	t.Helper()
 	deadline := time.Now().Add(within)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	var last *T
 	for {
-		info, err := read()
-		if err == nil && done(info) {
-			return info
+		step, cancelStep := context.WithTimeout(ctx, jetStreamWait)
+		info, err := read(step)
+		cancelStep()
+		if err == nil {
+			last = info
+			if done(info) {
+				return info
+			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s within %s: %s (%v)", failure, within, describe(info), err)
+		if !time.Now().Before(deadline) {
+			t.Fatalf("%s within %s: %s (%v)", failure, within, describe(last), err)
 		}
 		time.Sleep(retryInterval)
 	}

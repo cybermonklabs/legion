@@ -44,16 +44,18 @@ func (f *forger) publish(t *testing.T, ctx context.Context, inbox, reply, data s
 	}
 }
 
-// forgedWaitMargin is what forgedWait leaves of the test binary's deadline for a failed test's
-// cleanups and the package's later tests to report.
-const forgedWaitMargin = 30 * time.Second
+// rowWaitMargin is what rowWait leaves of the test binary's deadline for a failed test's cleanups
+// and the package's later tests to report.
+const rowWaitMargin = 30 * time.Second
 
-// forgedWait is a context that ends forgedWaitMargin before the test binary's deadline: the
-// bound of a wait for something that comes, so a loaded machine only makes it come later, and
-// one that never comes fails the test by name. With no deadline (-timeout 0) it ends a day from
-// now, which stands for none: nats.go's FlushWithContext refuses a context without a deadline
-// ("nats: context requires a deadline").
-func forgedWait(t *testing.T) context.Context {
+// rowWait is a context that ends rowWaitMargin before the test binary's deadline: the bound of a
+// row's wait for something that comes, so a loaded machine only makes it come later, and one that
+// never comes fails the row by name. The forged-pull rows here and the stream-leader rows
+// (stream_leader_test.go) wait under it. With no deadline (-timeout 0) it ends a day from now,
+// which stands for none: nats.go's FlushWithContext refuses a context without a deadline ("nats:
+// context requires a deadline"), and its jetstream package gives one without a deadline its own
+// five seconds.
+func rowWait(t *testing.T) context.Context {
 	t.Helper()
 	deadline, bounded := t.Deadline()
 	if !bounded {
@@ -61,11 +63,11 @@ func forgedWait(t *testing.T) context.Context {
 		t.Cleanup(cancel)
 		return ctx
 	}
-	if time.Until(deadline) <= forgedWaitMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than forgedWaitMargin (%s): raise -timeout",
-			time.Until(deadline).Round(time.Millisecond), forgedWaitMargin)
+	if time.Until(deadline) <= rowWaitMargin {
+		t.Fatalf("the test binary's deadline leaves %s, not more than rowWaitMargin (%s): raise -timeout",
+			time.Until(deadline).Round(time.Millisecond), rowWaitMargin)
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), deadline.Add(-forgedWaitMargin))
+	ctx, cancel := context.WithDeadline(context.Background(), deadline.Add(-rowWaitMargin))
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -110,7 +112,7 @@ func TestAPullDropsAMessageItsConsumerDidNotDeliver(t *testing.T) {
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	wait := forgedWait(t)
+	wait := rowWait(t)
 	pull := pullSession(t, consumers, session)
 	requireSubscribed(t, wait, pull)
 	forger := newForger(t)
@@ -219,7 +221,7 @@ func TestAMessageInAPullsInboxNamingAnotherConsumersAckIsNotDeliveredAndAcksNoth
 	// The server holds the pull's inbox subscription before the forger publishes, so a publish it
 	// let through would reach the pull, and the over-the-wire half below reads a pull that could
 	// have received it.
-	wait := forgedWait(t)
+	wait := rowWait(t)
 	requireSubscribed(t, wait, pull)
 	// deliveredWithin answers the forged message if Next hands it over within window, after
 	// acknowledging it as session one's relay does on session one's done, and nil if the window
