@@ -83,6 +83,7 @@ Reads at a cut stay correct until then, and slower.
 - `20261120004315_events_issue_state`, `(issue_key, seq desc) include (created_at)` over `asof.IssueStateTypes`: the newest state of each issue at the cut (the `issues` shadow).
 
 - `20261120004316_events_ask_state`, `((payload->>'id'), id desc) include (created_at)` over `asof.AskStateTypes`: the newest state of each ask at the cut (the `asks` shadow).
+  Its predicate also holds `created_at is not null`, which each of its reads implies by comparing `created_at` with a cut and a present read of an ask's events does not, so no present read takes it in place of `events_ask_payload_id` (the migration's comment gives the measurement).
 
 - `20261120004317_events_created_at`, `(created_at, id)`: the largest id of the events at the cut, at which a page of `GET /api/v1/events/log` at the cut ends (`asof.NewestEventIDStatement`).
 

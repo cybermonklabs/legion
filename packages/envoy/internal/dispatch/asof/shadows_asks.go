@@ -13,7 +13,8 @@ var askStateTypes = []string{
 // AskStateTypes are the event types the asks shadow reads an ask's state from. The predicate of
 // the partial index events_ask_state (migration 20261120004316) names exactly these types, in
 // this order, so that the planner can prove that the index serves that read: a change here needs
-// a new index.
+// a new index. That predicate also holds created_at is not null, so each read of the index
+// compares created_at with the cut, as asksShadow and AsksChangedAfterStatement do.
 func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 
 // AsksChangedAfterStatement reads which asks changed after a cut: of the asks whose ids $1 holds
