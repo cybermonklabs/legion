@@ -9,15 +9,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// revisionOf is the revision DeleteAtRead's entry was deleted at, 0 for no entry: a key the read
-// found absent.
-func revisionOf(deleted nats.KeyValueEntry) uint64 {
-	if deleted == nil {
-		return 0
-	}
-	return deleted.Revision()
-}
-
 // writingOnDelete stores value under the key as the first delete of it reaches the bucket, and
 // then sends that delete: what a registration landing between DeleteAtRead's read and its delete
 // does. It writes once, and counts the deletes it was handed.
@@ -62,7 +53,7 @@ func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
 	const key = "ses_raced"
 	racing := &writingOnDelete{KeyValue: kv.Legacy(), value: []byte("registered")}
 	deleted, err := NewKeyValue(racing, kv.WatchHandle(), kv.Streams()).DeleteAtRead(t.Context(), key)
-	revision := revisionOf(deleted)
+	revision := deleted.Revision
 	if err != nil {
 		t.Fatalf("delete %s at the revision its read answered: %v", key, err)
 	}
@@ -132,13 +123,17 @@ func TestADeleteAtReadTakesTheRecordACopyBehindAnswersAbsent(t *testing.T) {
 				t.Fatalf("a direct get of %s through the copy behind = %v after %d reads, want %v: the copy answers nothing to correct", key, err, behind.reads, nats.ErrKeyNotFound)
 			}
 			deleted, err := NewKeyValue(behind, kv.WatchHandle(), kv.Streams()).DeleteAtRead(t.Context(), key)
-			if revision := revisionOf(deleted); err != nil || revision != stored {
-				t.Fatalf("DeleteAtRead(%s) = revision %d, %v; want revision %d", key, revision, err, stored)
+			if err != nil || deleted.Revision != stored {
+				t.Fatalf("DeleteAtRead(%s) = revision %d, %v; want revision %d", key, deleted.Revision, err, stored)
 			}
-			// The entry of a writer's record carries its value, which a caller reads to remove what
-			// it names; none is answered for a key the bucket holds no record for.
-			if want := map[bool]string{true: "registered", false: ""}[tc.held]; (deleted == nil) == tc.held || (deleted != nil && string(deleted.Value()) != want) {
-				t.Fatalf("DeleteAtRead(%s) answered the entry %v, want one holding %q", key, deleted, want)
+			// A writer's record is answered as a put with its value, which a caller reads to remove
+			// what it names; a key the bucket holds no record for, as the zero entry.
+			want := LeaderEntry{}
+			if tc.held {
+				want = LeaderEntry{Kind: LeaderPut, Revision: stored, Value: []byte("registered")}
+			}
+			if deleted.Kind != want.Kind || string(deleted.Value) != string(want.Value) {
+				t.Fatalf("DeleteAtRead(%s) answered %+v, want %+v", key, deleted, want)
 			}
 			if _, err := kv.Get(key); !errors.Is(err, nats.ErrKeyNotFound) {
 				t.Fatalf("Get(%s) after the delete = %v, want %v: the record the copy behind answered absent was kept", key, err, nats.ErrKeyNotFound)
@@ -180,12 +175,13 @@ func TestADeleteAtReadDeletesACopyAtItsTrueSequence(t *testing.T) {
 			copied = testnats.ServerCopiesKey(t, conn, bucket, key, bucket, "ses_source")
 		}
 		deleted, err := kv.DeleteAtRead(t.Context(), key)
-		if revision := revisionOf(deleted); err != nil || revision != copied {
-			t.Fatalf("DeleteAtRead(%s) = revision %d, %v; want the copy deleted at %d, the sequence it is stored at", key, revision, err, copied)
+		if err != nil || deleted.Revision != copied {
+			t.Fatalf("DeleteAtRead(%s) = revision %d, %v; want the copy deleted at %d, the sequence it is stored at", key, deleted.Revision, err, copied)
 		}
-		// A message the server wrote names nothing a caller removes, so its entry carries no value.
-		if deleted.Value() != nil {
-			t.Fatalf("DeleteAtRead(%s) answered the value %q of the message the server wrote, want none", key, deleted.Value())
+		// A message the server wrote names nothing a caller removes: it is answered as such, with no
+		// value.
+		if deleted.Kind != LeaderServerWritten || deleted.Value != nil {
+			t.Fatalf("DeleteAtRead(%s) answered %+v, want a message the server wrote with no value", key, deleted)
 		}
 		if _, err := kv.Get(key); !errors.Is(err, nats.ErrKeyNotFound) {
 			t.Fatalf("Get(%s) after the delete = %v, want %v", key, err, nats.ErrKeyNotFound)

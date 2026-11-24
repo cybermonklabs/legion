@@ -34,20 +34,17 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	revision := r.cache.FenceFor(epoch, sessionID)
 	held, _ := r.cache.Get(sessionID)
 	r.mu.RUnlock()
-	deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
+	read, answered, err := bus.Bounded(ctx, func() (bus.LeaderEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
 	if err != nil {
 		return err
 	}
-	if deleted != nil {
-		revision = max(revision, deleted.Revision())
-		if layout, err := kvchunk.ReadLayout(deleted.Value()); err == nil && layout.Chunked() && layout.Generation == held.layout.Generation {
-			r.deleteChunks(ctx, kv, sessionID, held.layout)
-		}
+	if layout, err := kvchunk.ReadLayout(read.Value); err == nil && layout.Chunked() && layout.Generation == held.layout.Generation {
+		r.deleteChunks(ctx, kv, sessionID, held.layout)
 	}
-	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision, deleted != nil)
+	r.reconcileDeleted(ctx, kv, epoch, sessionID, max(revision, read.Revision), read.Kind != bus.LeaderAbsent)
 	return nil
 }
 
