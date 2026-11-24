@@ -493,14 +493,16 @@ func requireReadEndedAtItsBudget(t *testing.T, span *requestSpan, what string) {
 // is a hold the test releases: load only delays the release, and a release after the budget is
 // spent makes the out statement the one the bound cuts, on the same statement timeout, which a
 // correct read still answers. The read gives its connection back: the pool then holds exactly the
-// connections it held with events locked, the lock's own among them. The control is the first
-// read, before the locks: the same request answers 200.
+// connections it held with events locked, the lock's own among them. That count is taken after
+// the server's background writes have ended (awaitBackgroundWrites), so no connection of the pool
+// is held by work that could give it back during the read. The control is the first read, before
+// the locks: the same request answers 200.
 func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
 	t.Parallel()
 	// No document settles during the test, so no write of the server's own waits on events with a
 	// connection of the pool (blockIndexHandler's server, here with requestSpan on its pool).
 	span := &requestSpan{}
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, tracer: span})
+	handler, database, _, srv := newRegisteredTestServer(t, testServerOptions{settle: time.Hour, tracer: span})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	linked := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -511,6 +513,11 @@ func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
 	if response := issueReferencesRequest(t, handler, issue.Key, ""); response.Code != http.StatusOK {
 		t.Fatalf("references before the locks: status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
+	// The creates' related-item checks start the refresh of CORE's term statistics on the server's
+	// lifetime (ensureSearchTermStats), and it holds a connection of the pool until it commits. One
+	// still running at the count below gives that connection back during the read, and the pool
+	// then never comes back to the count.
+	awaitBackgroundWrites(t, srv)
 
 	// holdLock's cleanup releases events at the end, whatever the test found.
 	holdLock(t, database, "lock table events in access exclusive mode")
