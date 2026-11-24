@@ -383,13 +383,7 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(c *Client) { c.logger = logger }
 }
 
-// New returns a client for an Envoy listener's HTTP control API. Its client follows no redirect
-// (redirects.Refused): every call carries Dispatch's identity token or the shared bearer, which a
-// followed Location on the same host name (another port of it) would carry on in its
-// Authorization, and the listener answers no redirect a call must follow: it serves each route
-// this client asks at the path it asks (cmd/listener/api.go, registerV1Routes), and the only 3xx
-// its mux writes is a path cleaned to another route. A 3xx is the listener's answer, refused by
-// its status.
+// New returns a client for an Envoy listener's HTTP control API.
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{
 		baseURL:    strings.TrimSuffix(baseURL, "/"),

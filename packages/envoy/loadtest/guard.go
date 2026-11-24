@@ -712,9 +712,7 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 // /varz names the stack, Dispatch answers an authenticated read with the stack's agent token, and
 // the listener answers /v1/sessions with the stack's API token and refuses any other token (a
 // listener with no token configured would answer every caller). The pod's live listener and
-// production Dispatch hold other tokens, so a mistaken target fails here. The reads carry those
-// tokens, so the client follows no redirect (redirects.Refused): none of the three answers one,
-// and a Location is the answering party's words.
+// production Dispatch hold other tokens, so a mistaken target fails here.
 func checkStack(ctx context.Context, e endpoints) error {
 	client := redirects.Refused(shortClient)
 	if err := checkNATSServerName(ctx, client, e.natsMon, e.natsServerName); err != nil {

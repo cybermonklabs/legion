@@ -33,8 +33,7 @@ import (
 type Envoy struct {
 	url     string
 	account ciphertoken.Account
-	// http sends the notice: the client NewEnvoy is given, as a copy that follows no redirect.
-	http *http.Client
+	http    *http.Client
 }
 
 // NewEnvoy is the notice to the listener at url (BROKER_ENVOY_URL), presenting the token account

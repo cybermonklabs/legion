@@ -376,11 +376,7 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 		key:  key,
 		base: strings.TrimSuffix(base, "/"),
 		// No Timeout here: request applies RequestTimeout to each call's own context instead,
-		// so a caller that needs a shorter one sets it on the context it passes. Every call
-		// carries the App's JWT or an installation token, so a redirect is followed only on the
-		// API origin (redirects.SameOrigin): GitHub answers a renamed repository's path with a
-		// 301 there, and a Location on any other host is the answering party's own words, never
-		// asked, so the credential goes to no other host.
+		// so a caller that needs a shorter one sets it on the context it passes.
 		http:           redirects.SameOrigin(&http.Client{}),
 		now:            time.Now,
 		tokens:         map[int64]cachedToken{},

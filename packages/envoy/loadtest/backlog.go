@@ -130,8 +130,6 @@ func runBacklog(args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	// The monitor answers /varz itself, so its client follows no redirect (redirects.Refused), as
-	// checkStack's does: a Location is the answering party's words.
 	if err := checkNATSServerName(ctx, redirects.Refused(shortClient), monURL, name); err != nil {
 		return err
 	}

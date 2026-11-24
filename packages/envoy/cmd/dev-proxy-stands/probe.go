@@ -82,8 +82,6 @@ func runProbeBound(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	request.Header.Set("Authorization", "Bearer "+os.Getenv("AIRLOCK_DEMO_TOKEN"))
-	// The request carries the bearer, so its client follows no redirect (redirects.Refused): a
-	// Location is the answering party's words, and a 3xx prints as its status like any answer.
 	answer, err := redirects.Refused(http.DefaultClient).Do(request)
 	if err != nil {
 		fmt.Fprintln(stdout, "error", redact.Cause(err, address))

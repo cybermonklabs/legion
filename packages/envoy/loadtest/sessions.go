@@ -213,8 +213,7 @@ func registrationBody(id string, topics []string, mentions bool) []byte {
 
 // registerSessions registers every session, 16 at a time. Each body asks for consumer delivery
 // with the epoch of the session's NATS connection and, once the session has one, its resume point
-// (relaySessions.delivery). The registrations carry the listener's bearer, so their client follows
-// no redirect (redirects.Refused), as listenerclient.Client asks.
+// (relaySessions.delivery).
 func (st *step) registerSessions(ctx context.Context, ns *natsSessions) *registrar {
 	reg := &registrar{listener: &listenerclient.Client{URL: st.cfg.ep.listener, Token: st.cfg.ep.listenerToken, HTTP: redirects.Refused(shortClient)},
 		bodies: make([]listenerwire.SubscribeRequest, len(st.ids)), relay: ns.relay}

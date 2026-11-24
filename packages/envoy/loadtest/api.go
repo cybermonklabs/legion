@@ -19,9 +19,7 @@ import (
 
 // api is a Dispatch HTTP client: agent requests use the stack's shared bearer and name a session
 // actor in a write's body; a person's request names the person in the trusted identity header
-// (DISPATCH_IDENTITY=header:X-Dispatch-User). Since every request carries one of the two, its
-// client follows no redirect (redirects.Refused): Dispatch's API answers none, and a Location is
-// the answering party's words.
+// (DISPATCH_IDENTITY=header:X-Dispatch-User).
 type api struct {
 	base   string
 	token  string

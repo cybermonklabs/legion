@@ -179,13 +179,6 @@ func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Durat
 // does, gives back what that answer made, which the next attempt's answer would otherwise leave
 // behind (GitHubApp.giveBackHook). The error of a failed call is its last attempt's, and carries
 // the number of attempts made (MintAttempts).
-//
-// The call goes out on a copy of that client that follows no redirect (redirects.Refused): every
-// minter call carries a credential (the App's JWT or an installation token, a refresh token and
-// client secret, the broker's own bearer, an identity token), and none of the endpoints the minters
-// ask answers a redirect its client must follow, so a 3xx is the call's answer, a *mintStatusError
-// by its status that classify does not retry, and its Location is never asked. The copy shares
-// client's transport, so a call through ownTransport is still traced (tracesConnections).
 func mintCall(mint *mintRetry, client *http.Client, request *http.Request, what, who string, want int, limit int64, resendLost bool, answered func([]byte, error)) ([]byte, error) {
 	client = redirects.Refused(cmp.Or(client, ownClient))
 	ctx := request.Context()
@@ -270,7 +263,7 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 // itself, a connection it already holds included.
 var ownTransport = newOwnTransport()
 
-// ownClient sends through ownTransport; mintCall sends on a copy of it that follows no redirect.
+// ownClient sends through ownTransport.
 var ownClient = &http.Client{Transport: ownTransport}
 
 // newOwnTransport builds a transport with the settings net/http documents for
