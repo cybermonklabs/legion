@@ -2976,6 +2976,473 @@
           "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "cipherd.rds-mint-echo"
+      },
+      {
+        "row": "appauth-followed-path-app-slug",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/appauth/followed_path_test.go"],
+        "capture": "appauth.followed-path/app-slug"
+      },
+      {
+        "row": "appauth-followed-path-exchange",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/appauth/followed_path_test.go"],
+        "capture": "appauth.followed-path/exchange"
+      },
+      {
+        "row": "appauth-followed-path-viewer",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/appauth/followed_path_test.go"],
+        "capture": "appauth.followed-path/viewer"
+      },
+      {
+        "row": "daemon-followed-path-followed",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/daemon/app_followed_path_test.go"],
+        "capture": "daemon.followed-path/followed"
+      },
+      {
+        "row": "leakguard-tar-member-whole",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "capture": "leakguard.tar-member/whole"
+      },
+      {
+        "row": "leakguard-tar-member-run",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "capture": "leakguard.tar-member/run"
+      },
+      {
+        "row": "leakguard-tar-member-escape",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "capture": "leakguard.tar-member/escape"
+      },
+      {
+        "row": "leakguard-served-body-below",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "capture": "leakguard.served-body/below"
+      },
+      {
+        "row": "leakguard-served-body-twice",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "capture": "leakguard.served-body/twice"
+      },
+      {
+        "row": "leakguard-served-unpack-below",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "capture": "leakguard.served-unpack/below"
+      },
+      {
+        "row": "leakguard-served-unpack-escape",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "capture": "leakguard.served-unpack/escape"
+      },
+      {
+        "row": "leakguard-served-unpack-link",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/leakguard/tar_member_echo_test.go"],
+        "capture": "leakguard.served-unpack/link"
+      },
+      {
+        "row": "repocache-tar-echo-stream",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "capture": "repocache.tar-echo/stream"
+      },
+      {
+        "row": "repocache-tar-echo-ref-file",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "capture": "repocache.tar-echo/ref-file"
+      },
+      {
+        "row": "repocache-tar-echo-ref-dir",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/repocache/tar_echo_test.go"],
+        "capture": "repocache.tar-echo/ref-dir"
+      },
+      {
+        "row": "api-plan-route-id-bearer",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/api/plan_block_words_test.go"],
+        "capture": "api.plan-route-words/id-bearer"
+      },
+      {
+        "row": "api-plan-route-id-run",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/api/plan_block_words_test.go"],
+        "capture": "api.plan-route-words/id-run"
+      },
+      {
+        "row": "api-plan-route-id-grammar",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/api/plan_block_words_test.go"],
+        "capture": "api.plan-route-words/id-grammar"
+      },
+      {
+        "row": "api-plan-route-steps-bearer",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/api/plan_block_words_test.go"],
+        "capture": "api.plan-route-words/steps-bearer"
+      },
+      {
+        "row": "api-plan-route-steps-grammar",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/api/plan_block_words_test.go"],
+        "capture": "api.plan-route-words/steps-grammar"
+      },
+      {
+        "row": "api-plan-route-needs-bearer",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/api/plan_block_words_test.go"],
+        "capture": "api.plan-route-words/needs-bearer"
+      },
+      {
+        "row": "api-plan-route-needs-url",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/api/plan_block_words_test.go"],
+        "capture": "api.plan-route-words/needs-url"
+      },
+      {
+        "row": "dispatch-plan-block-needs",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/dispatch/plan_block_needs_test.go"],
+        "capture": "dispatch.answer-words/plan-block-needs"
+      },
+      {
+        "row": "workspace-cache-echo-bare-encoded",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/workspace/cache_echo_test.go"],
+        "capture": "workspace.cache-echo/bare-encoded"
+      },
+      {
+        "row": "workspace-cache-echo-cut-encoded",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/workspace/cache_echo_test.go"],
+        "capture": "workspace.cache-echo/cut-encoded"
+      },
+      {
+        "row": "workspace-cache-echo-fsck-encoded",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/workspace/cache_echo_test.go"],
+        "capture": "workspace.cache-echo/fsck-encoded"
+      },
+      {
+        "row": "workspace-cache-echo-log-encoded",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": ["packages/daemon/internal/workspace/cache_echo_test.go"],
+        "capture": "workspace.cache-echo/log-encoded"
+      },
+      {
+        "row": "envoy-redirect-followed-sessions",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/envoy/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "envoy.redirect-followed/sessions"
+      },
+      {
+        "row": "envoy-redirect-followed-send",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/envoy/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "envoy.redirect-followed/send"
+      },
+      {
+        "row": "envoy-redirect-followed-moved",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/envoy/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "envoy.redirect-followed/moved"
+      },
+      {
+        "row": "mcpbridge-post-redirect-followed-session",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/mcpbridge/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "mcpbridge.redirect-followed/session"
+      },
+      {
+        "row": "mcpbridge-post-redirect-followed-basic",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/mcpbridge/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "mcpbridge.redirect-followed/basic"
+      },
+      {
+        "row": "secrets-redirect-followed-serviceaccount-default",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/secrets/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "secrets.redirect-followed/serviceaccount-default"
+      },
+      {
+        "row": "secrets-redirect-followed-serviceaccount-given",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/secrets/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "secrets.redirect-followed/serviceaccount-given"
+      },
+      {
+        "row": "secrets-redirect-followed-githubapp-default",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/secrets/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "secrets.redirect-followed/githubapp-default"
+      },
+      {
+        "row": "launcher-redirect-followed-302",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/daemon/internal/launcher/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "launcher.redirect-followed/302"
+      },
+      {
+        "row": "launcher-redirect-followed-307",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/daemon/internal/launcher/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "launcher.redirect-followed/307"
+      },
+      {
+        "row": "sessionproxy-redirect-followed-admin-api",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/daemon/internal/sessionproxy/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "sessionproxy.redirect-followed/admin-api"
+      },
+      {
+        "row": "sessionproxy-redirect-followed-token-endpoint",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/daemon/internal/sessionproxy/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "sessionproxy.redirect-followed/token-endpoint"
+      },
+      {
+        "row": "sessionproxy-redirect-followed-iam-pod",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/daemon/internal/sessionproxy/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "sessionproxy.redirect-followed/iam-pod"
+      },
+      {
+        "row": "sessionproxy-redirect-followed-sts-exchange",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/daemon/internal/sessionproxy/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "sessionproxy.redirect-followed/sts-exchange"
+      },
+      {
+        "row": "sessionproxy-redirect-followed-iam-federated",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/daemon/internal/sessionproxy/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "sessionproxy.redirect-followed/iam-federated"
+      },
+      {
+        "row": "cipherclient-redirect-followed-pool-sts",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipherclient/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "cipherclient.redirect-followed/pool-sts"
+      },
+      {
+        "row": "cipherclient-redirect-followed-pool-iam",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipherclient/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "cipherclient.redirect-followed/pool-iam"
+      },
+      {
+        "row": "cipherclient-redirect-followed-device",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipherclient/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "cipherclient.redirect-followed/device"
+      },
+      {
+        "row": "cipherclient-redirect-followed-refresh",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipherclient/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "cipherclient.redirect-followed/refresh"
+      },
+      {
+        "row": "cipherclient-redirect-followed-external-account",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipherclient/follows_no_redirect_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "cipherclient.redirect-followed/external-account"
+      },
+      {
+        "row": "redact-certificate-names-cause-wrong-host-untrusted",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/cause-wrong-host-untrusted"
+      },
+      {
+        "row": "redact-certificate-names-cause-wrong-host-trusted",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/cause-wrong-host-trusted"
+      },
+      {
+        "row": "redact-certificate-names-cause-forged-issuer",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/cause-forged-issuer"
+      },
+      {
+        "row": "redact-certificate-names-cause-constraint",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/cause-constraint"
+      },
+      {
+        "row": "redact-certificate-names-cause-under-a-net-error",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/cause-under-a-net-error"
+      },
+      {
+        "row": "redact-certificate-names-unanswered-wrong-host-untrusted",
+        "base": "9172f2f51496432b7dfa27116a390a4ba99a0875",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/unanswered_certificate_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/unanswered-wrong-host-untrusted"
+      },
+      {
+        "row": "redact-certificate-names-unanswered-wrong-host-trusted",
+        "base": "9172f2f51496432b7dfa27116a390a4ba99a0875",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/unanswered_certificate_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/unanswered-wrong-host-trusted"
+      },
+      {
+        "row": "redact-certificate-names-unanswered-forged-issuer",
+        "base": "9172f2f51496432b7dfa27116a390a4ba99a0875",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/unanswered_certificate_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/unanswered-forged-issuer"
+      },
+      {
+        "row": "redact-certificate-names-unanswered-constraint",
+        "base": "9172f2f51496432b7dfa27116a390a4ba99a0875",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/unanswered_certificate_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/unanswered-constraint"
+      },
+      {
+        "row": "redact-certificate-names-unanswered-under-a-net-error",
+        "base": "9172f2f51496432b7dfa27116a390a4ba99a0875",
+        "files": [
+          "packages/envoy/internal/redact/certificate_names_test.go",
+          "packages/envoy/internal/redact/unanswered_certificate_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go"
+        ],
+        "capture": "redact.certificate-names/unanswered-under-a-net-error"
+      },
+      {
+        "row": "dispatch-certificate-names-wrong-host-untrusted",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": [
+          "packages/daemon/internal/dispatch/certificate_names_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go",
+          "packages/envoy/oauth2call/oauth2calltest/oauth2calltest.go"
+        ],
+        "capture": "dispatch.certificate-names/wrong-host-untrusted"
+      },
+      {
+        "row": "dispatch-certificate-names-wrong-host-trusted",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": [
+          "packages/daemon/internal/dispatch/certificate_names_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go",
+          "packages/envoy/oauth2call/oauth2calltest/oauth2calltest.go"
+        ],
+        "capture": "dispatch.certificate-names/wrong-host-trusted"
+      },
+      {
+        "row": "dispatch-certificate-names-forged-issuer",
+        "base": "776ce0f9bdc233c470da6dcc57a87a22a0485099",
+        "files": [
+          "packages/daemon/internal/dispatch/certificate_names_test.go",
+          "packages/envoy/internal/redact/redacttest/certificate.go",
+          "packages/envoy/oauth2call/oauth2calltest/oauth2calltest.go"
+        ],
+        "capture": "dispatch.certificate-names/forged-issuer"
       }
     ],
     "boundary_fields": {
@@ -5722,12 +6189,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/unanswered",
-      "production": "githubrest call and getPages: a later page's read that got no answer names the page by its number after the read's name (redact.Unanswered), never the URL GitHub's Link header wrote",
+      "production": "githubrest call and getPages: a later page's read that got no answer names the page by its number after the read's name (oauth2call.Unanswered), never the URL GitHub's Link header wrote",
       "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
       "capture": "githubrest.answer-words/next-page-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
-        "preimage": "redact.Unanswered(err, request, shown)",
+        "preimage": "oauth2call.Unanswered(err, request, shown)",
         "replacement": "err"
       }
     },
@@ -7143,12 +7610,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/outside",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry: an entry that leaves the feed, named as another party's words with the /tar request's record (oauth2call.StreamedWords)",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry: an entry that leaves the feed, named as another party's words with the /tar request's record and the cache's bearer taken out (entryWords)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry",
       "capture": "workspace.cache-echo/outside",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "which is not a path inside the feed\", oauth2call.StreamedWords(response, name)",
+        "preimage": "which is not a path inside the feed\", entryWords(response, token, name)",
         "replacement": "which is not a path inside the feed\", name"
       }
     },
@@ -7157,12 +7624,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/link",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry: an entry that is neither a regular file nor a directory, named as another party's words with the /tar request's record (oauth2call.StreamedWords)",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry: an entry that is neither a regular file nor a directory, named as another party's words with the /tar request's record and the cache's bearer taken out (entryWords)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry",
       "capture": "workspace.cache-echo/link",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "nor a directory\", oauth2call.StreamedWords(response, name)",
+        "preimage": "nor a directory\", entryWords(response, token, name)",
         "replacement": "nor a directory\", name"
       }
     },
@@ -7171,12 +7638,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/bearer",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry: an entry that is no ref or pack, named as another party's words with the /tar request's record (oauth2call.StreamedWords)",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry: an entry that is no ref or pack, named as another party's words with the /tar request's record and the cache's bearer taken out (entryWords)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry",
       "capture": "workspace.cache-echo/bearer",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "refs or packs\", oauth2call.StreamedWords(response, name)",
+        "preimage": "refs or packs\", entryWords(response, token, name)",
         "replacement": "refs or packs\", name"
       }
     },
@@ -7185,12 +7652,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/cut",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.entryFailure: a read or a write of an entry that failed, naming the entry as another party's words with the /tar request's record and no path",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.entryFailure: a read or a write of an entry that failed, naming the entry as unpackEntry prints it (entryWords) and no path",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.entryFailure",
       "capture": "workspace.cache-echo/cut",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "oauth2call.StreamedWords(response, name), err)",
+        "preimage": "entryWords(response, token, name), err)",
         "replacement": "name, err)"
       }
     },
@@ -7206,12 +7673,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/fsck",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck's stderr, which names the refs the cache streamed, with each run of the cache token redacted",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck's stderr, which names the refs the cache streamed, goes through the filter of every token the fetch holds (fetchCredential.withoutTokens)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache",
       "capture": "workspace.cache-echo/fsck",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "oauth2call.Tokens(result.Stderr, -1, request.CacheToken)",
+        "preimage": "held.withoutTokens(result.Stderr)",
         "replacement": "result.Stderr"
       }
     },
@@ -7220,12 +7687,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/log",
-      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: every line it logs with a cache has each run of the cache token redacted, a ref the feed drops among them (pruneToGitHub)",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: every line it logs goes through the filter of every token the fetch holds, a ref the feed drops among them (pruneToGitHub)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch",
       "capture": "workspace.cache-echo/log",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "log(oauth2call.Tokens(line, -1, request.CacheToken))",
+        "preimage": "log(held.withoutTokens(line))",
         "replacement": "log(line)"
       }
     },
@@ -8417,12 +8884,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/app-unanswered",
-      "production": "appauth Manager.checkAppID: a GET /apps/<slug> that got no answer is named by the shown slug (redact.Unanswered), never by the URL it asked, which holds the slug as it came",
+      "production": "appauth Manager.checkAppID: a GET /apps/<slug> that got no answer is named by the shown slug (oauth2call.Unanswered), never by the URL it asked, which holds the slug as it came",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).checkAppID",
       "capture": "appauth.answer-words/viewer-app-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/appauth/tokencommand.go",
-        "preimage": "redact.Unanswered(err, request, \"/apps/\"+shown)",
+        "preimage": "oauth2call.Unanswered(err, request, \"/apps/\"+shown)",
         "replacement": "err"
       }
     },
@@ -8473,12 +8940,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/user-unanswered",
-      "production": "appauth Manager.botIdentity: a GET /users/<login> that got no answer is named by the shown login (redact.Unanswered), never by the URL it asked, which holds the login as it came",
+      "production": "appauth Manager.botIdentity: a GET /users/<login> that got no answer is named by the shown login (oauth2call.Unanswered), never by the URL it asked, which holds the login as it came",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).botIdentity",
       "capture": "appauth.answer-words/viewer-user-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/appauth/appauth.go",
-        "preimage": "redact.Unanswered(err, request, shown)",
+        "preimage": "oauth2call.Unanswered(err, request, shown)",
         "replacement": "err"
       }
     },
@@ -8989,9 +9456,9 @@
     {
       "id": "daemon-redact-unanswered",
       "requirement": "r1-fail-closed",
-      "package": "github.com/sjawhar/legion/daemon/internal/redact",
+      "package": "./oauth2call",
       "test": "TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords",
-      "production": "daemon redact.Unanswered: a request that got no answer prints net/http's operation, the call's name or its URL through the URL rule, and the failure's class: a Location or a status line net/http quotes, and the target of a redirect followed to another host, print as their class; a transport failure on the request's own host prints its own text; errors.Is and errors.As find what they found"
+      "production": "oauth2call.Unanswered, the daemon's printer of a request that got no answer (envoy's redact.Unanswered, forwarded; the daemon's own copy is gone): a request that got no answer prints net/http's operation, the call's name or its URL as redact.URL prints it, and the failure's class: a Location or a status line net/http quotes, and the target of a redirect followed to another host, print as their class; a transport failure on the request's own host prints its own text; errors.Is and errors.As find what they found"
     },
     {
       "id": "redirects-refused",
@@ -9019,12 +9486,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/unparsed",
-      "production": "githubrest Client.call: a redirect whose Location does not parse, which net/http's error quotes whatever the client's redirect policy, names the read shown and the failure by its class (redact.Unanswered)",
+      "production": "githubrest Client.call: a redirect whose Location does not parse, which net/http's error quotes whatever the client's redirect policy, names the read shown and the failure by its class (oauth2call.Unanswered)",
       "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
       "capture": "githubrest.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
-        "preimage": "redact.Unanswered(err, request, shown)",
+        "preimage": "oauth2call.Unanswered(err, request, shown)",
         "replacement": "err"
       }
     },
@@ -9033,7 +9500,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/unparsed-unnamed",
-      "production": "githubrest Client.call: a read given no name, whose Location does not parse, names the URL it asked through the URL rule and the failure by its class (redact.Unanswered)"
+      "production": "githubrest Client.call: a read given no name, whose Location does not parse, names the URL it asked as redact.URL prints it and the failure by its class (oauth2call.Unanswered)"
     },
     {
       "id": "githubrest-redirect-unanswered",
@@ -9075,12 +9542,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError/unparsed",
-      "production": "daemon dispatch HTTPClient.answer: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "production": "daemon dispatch HTTPClient.answer: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
       "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).answer",
       "capture": "dispatch.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/dispatch/client.go",
-        "preimage": "transportFailure(redact.Unanswered(err, request, \"\"))",
+        "preimage": "transportFailure(oauth2call.Unanswered(err, request, \"\"))",
         "replacement": "transportFailure(err)"
       }
     },
@@ -9117,12 +9584,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/publish-unparsed",
-      "production": "notify HTTPPublisher.publish: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "production": "notify HTTPPublisher.publish: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
       "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).publish",
       "capture": "notify.redirect/publish-unparsed",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "redact.Unanswered(err, request, \"\")",
+        "preimage": "oauth2call.Unanswered(err, request, \"\")",
         "replacement": "err"
       }
     },
@@ -9131,12 +9598,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/registration-unparsed",
-      "production": "notify HTTPPublisher.ReadSessionRegistration: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "production": "notify HTTPPublisher.ReadSessionRegistration: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
       "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).ReadSessionRegistration",
       "capture": "notify.redirect/registration-unparsed",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "redact.Unanswered(err, request, \"\")",
+        "preimage": "oauth2call.Unanswered(err, request, \"\")",
         "replacement": "err"
       }
     },
@@ -9145,12 +9612,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/role-unparsed",
-      "production": "notify HTTPPublisher.RoleHolder: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "production": "notify HTTPPublisher.RoleHolder: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
       "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).RoleHolder",
       "capture": "notify.redirect/role-unparsed",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "redact.Unanswered(err, request, \"\")",
+        "preimage": "oauth2call.Unanswered(err, request, \"\")",
         "replacement": "err"
       }
     },
@@ -9159,12 +9626,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
       "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/delete-unparsed",
-      "production": "notify HTTPPublisher.DeleteSession: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "production": "notify HTTPPublisher.DeleteSession: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
       "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).DeleteSession",
       "capture": "notify.redirect/delete-unparsed",
       "mutation": {
         "file": "packages/daemon/internal/notify/notify.go",
-        "preimage": "redact.Unanswered(err, request, \"\")",
+        "preimage": "oauth2call.Unanswered(err, request, \"\")",
         "replacement": "err"
       }
     },
@@ -9215,12 +9682,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/operator-unparsed",
-      "production": "legion operator.do: an operator request whose redirect's Location does not parse names the request's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "production": "legion operator.do: an operator request whose redirect's Location does not parse names the request's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
       "function": "(github.com/sjawhar/legion/daemon/cmd/legion.operator).do",
       "capture": "legion.redirect/operator-unparsed",
       "mutation": {
         "file": "packages/daemon/cmd/legion/operator.go",
-        "preimage": "redact.Unanswered(err, request, \"\")",
+        "preimage": "oauth2call.Unanswered(err, request, \"\")",
         "replacement": "err"
       }
     },
@@ -9236,12 +9703,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/state-unparsed",
-      "production": "legion get: a read whose redirect's Location does not parse names the URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "production": "legion get: a read whose redirect's Location does not parse names the URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered)",
       "function": "github.com/sjawhar/legion/daemon/cmd/legion.get",
       "capture": "legion.redirect/state-unparsed",
       "mutation": {
         "file": "packages/daemon/cmd/legion/main.go",
-        "preimage": "refuse(redact.Unanswered(err, request, \"\"))",
+        "preimage": "refuse(oauth2call.Unanswered(err, request, \"\"))",
         "replacement": "refuse(err)"
       }
     },
@@ -9271,12 +9738,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheLocationThatDoesNotParseNamesNoRunOfTheCacheToken/tar-unparsed",
-      "production": "workspace askCache: the tar's ask, which carries the cache token, answered with a redirect whose Location does not parse names the ask's URL through the URL rule and the failure by its class (redact.Unanswered) in unpackCache's error, never net/http's text, which quotes the Location",
+      "production": "workspace askCache: the tar's ask, which carries the cache token, answered with a redirect whose Location does not parse names the ask's URL through the URL rule (the name it passes oauth2call.Unanswered) and the failure by its class (oauth2call.Unanswered) in unpackCache's error, never net/http's text, which quotes the Location",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.askCache",
       "capture": "workspace.redirect/tar-unparsed",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "redact.Unanswered(err, ask, \"\")",
+        "preimage": "oauth2call.Unanswered(err, ask, redact.URLCredentials(ask.URL.String()))",
         "replacement": "err"
       }
     },
@@ -9299,13 +9766,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokenExchangeRedirectNamesNoRunOfTheAppsJWT/unparsed",
-      "production": "appauth Manager.exchange: a redirect whose Location does not parse names the exchange's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "production": "appauth Manager.exchange: a redirect whose Location does not parse names the exchange's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).exchange",
       "capture": "appauth.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/appauth/exchange.go",
-        "preimage": "redact.Unanswered(err, request, \"\")",
-        "replacement": "func() error { _ = redact.Unanswered; return err }()"
+        "preimage": "oauth2call.Unanswered(err, request, \"\")",
+        "replacement": "func() error { _ = oauth2call.Unanswered; return err }()"
       }
     },
     {
@@ -9341,12 +9808,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
       "test": "TestABrokerRedirectNamesNoRunOfTheDaemonsBearer/unparsed",
-      "production": "daemon cipher Client.do: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "production": "daemon cipher Client.do: a redirect whose Location does not parse names the call's URL as redact.URL prints it and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
       "function": "(*github.com/sjawhar/legion/daemon/internal/cipher.Client).do",
       "capture": "cipher.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/cipher/client.go",
-        "preimage": "redact.Unanswered(err, req, \"\")",
+        "preimage": "oauth2call.Unanswered(err, req, \"\")",
         "replacement": "err"
       }
     },
@@ -9355,7 +9822,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
       "test": "TestABrokerRedirectNamesNoRunOfTheDaemonsBearer/elsewhere",
-      "production": "daemon cipher Client.do: a redirect a following client takes to another host that does not answer is named by its class (redact.Unanswered), never by the Location net/http's error names"
+      "production": "daemon cipher Client.do: a redirect a following client takes to another host that does not answer is named by its class (oauth2call.Unanswered), never by the Location net/http's error names"
     },
     {
       "id": "controller-redirect-twin",
@@ -9369,12 +9836,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/controller",
       "test": "TestALivenessRedirectIsUnknownAndItsLogNamesNoRunOfTheBearer/unparsed",
-      "production": "controller Prober.Probe: a lookup whose redirect's Location does not parse logs the URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "production": "controller Prober.Probe: a lookup whose redirect's Location does not parse logs the URL through the URL rule and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location",
       "function": "(*github.com/sjawhar/legion/daemon/internal/controller.Prober).Probe",
       "capture": "controller.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/controller/liveness.go",
-        "preimage": "redact.Unanswered(err, request, \"\")",
+        "preimage": "oauth2call.Unanswered(err, request, \"\")",
         "replacement": "err"
       }
     },
@@ -9803,13 +10270,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
       "test": "TestATurnReportRedirectSendsTheBootTokenNowhereAndLogsNoLocation/unparsed",
-      "production": "claudebridge turnReports.post: a turn report whose redirect's Location does not parse logs the report's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location and the boot token a stand-in echoed",
+      "production": "claudebridge turnReports.post: a turn report whose redirect's Location does not parse logs the report's URL through the URL rule (the name it passes oauth2call.Unanswered) and the failure by its class (oauth2call.Unanswered), never net/http's text, which quotes the Location and the boot token a stand-in echoed",
       "function": "(*github.com/sjawhar/legion/daemon/internal/claudebridge.turnReports).post",
       "capture": "claudebridge.redirect/unparsed",
       "mutation": {
         "file": "packages/daemon/internal/claudebridge/turnoutcome.go",
-        "preimage": "redact.Unanswered(err, post, \"\")",
-        "replacement": "err"
+        "preimage": "oauth2call.Unanswered(err, post, redact.URLCredentials(post.URL.String()))",
+        "replacement": "func() error { _ = redact.URLCredentials; return err }()"
       }
     },
     {
@@ -10483,6 +10950,863 @@
         "preimage": "return token, redact.AWS(err)",
         "replacement": "return token, func() error { _ = redact.AWS; return err }()"
       }
+    },
+    {
+      "id": "appauth-followed-path-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestARefusalAfterAFollowedRedirectNamesNoRunOfTheCredential/twin",
+      "production": "the stand-in of the followed-path rows: the Manager's client follows its same-origin 302, and the followed response's own request (response.Request.URL) holds the App's JWT, so the rows can see a leak"
+    },
+    {
+      "id": "appauth-followed-path-app-slug",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestARefusalAfterAFollowedRedirectNamesNoRunOfTheCredential/app-slug",
+      "production": "appauth Manager.appSlug through answeredAs: GitHub's answer after a followed same-origin redirect names the request the Manager sent (GET /app, githubrest.PathUnder of request.URL), never response.Request.URL, the Location the answering party wrote with the App's JWT in it",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answeredAs",
+      "capture": "appauth.followed-path/app-slug",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "githubrest.PathUnder(m.baseURL, request.URL)",
+        "replacement": "githubrest.PathUnder(m.baseURL, response.Request.URL)"
+      }
+    },
+    {
+      "id": "appauth-followed-path-exchange",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestARefusalAfterAFollowedRedirectNamesNoRunOfTheCredential/exchange",
+      "production": "appauth Manager.exchange through transient and answeredAs: the token exchange's refusal after a followed same-origin redirect names POST /app/installations/<id>/access_tokens, the request the Manager sent, never the Location holding the App's JWT",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answeredAs",
+      "capture": "appauth.followed-path/exchange",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "githubrest.PathUnder(m.baseURL, request.URL)",
+        "replacement": "githubrest.PathUnder(m.baseURL, response.Request.URL)"
+      }
+    },
+    {
+      "id": "appauth-followed-path-viewer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestARefusalAfterAFollowedRedirectNamesNoRunOfTheCredential/viewer",
+      "production": "appauth Manager.viewerLogin through transient and answeredAs: token mode's viewer read refused after a followed same-origin redirect names POST /graphql, the request the Manager sent, never the Location holding the released installation token",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answeredAs",
+      "capture": "appauth.followed-path/viewer",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "githubrest.PathUnder(m.baseURL, request.URL)",
+        "replacement": "githubrest.PathUnder(m.baseURL, response.Request.URL)"
+      }
+    },
+    {
+      "id": "daemon-followed-path-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheStartsRateLimitRefusalNamesNoPathARedirectWrote/twin",
+      "production": "the stand-in of the start's followed-path row: a following client's response to GET /app names the Location, which holds the App's JWT, in its own request (response.Request.URL), so the row can see a leak"
+    },
+    {
+      "id": "daemon-followed-path-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheStartsRateLimitRefusalNamesNoPathARedirectWrote/control",
+      "production": "daemon limitOutcome: GitHub's rate limit on GET /app with no redirect still ends the start's waits in a refusal naming GET /app with 429"
+    },
+    {
+      "id": "daemon-followed-path-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheStartsRateLimitRefusalNamesNoPathARedirectWrote/followed",
+      "production": "daemon limitOutcome: the start's rate-limit refusal prints the path of appauth's answer, which after a followed same-origin redirect is GET /app, the read the daemon sent, never the Location holding the App's JWT (appauth answeredAs)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answeredAs",
+      "capture": "daemon.followed-path/followed",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "githubrest.PathUnder(m.baseURL, request.URL)",
+        "replacement": "githubrest.PathUnder(m.baseURL, response.Request.URL)"
+      }
+    },
+    {
+      "id": "leakguard-tar-member-whole",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestATarballMemberNamedWithTheReadsTokenPrintsNoneOfIt/whole",
+      "production": "github.com/sjawhar/legion/daemon/internal/leakguard.pack: a member of the check's tarball that is neither a directory nor a regular file, named as another party's words with the tarball read's record (oauth2call.StreamedWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.pack",
+      "capture": "leakguard.tar-member/whole",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/install.go",
+        "preimage": "nor a regular file\", oauth2call.StreamedWords(answer, header.Name))",
+        "replacement": "nor a regular file\", header.Name)"
+      }
+    },
+    {
+      "id": "leakguard-tar-member-run",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestATarballMemberNamedWithTheReadsTokenPrintsNoneOfIt/run",
+      "production": "github.com/sjawhar/legion/daemon/internal/leakguard.pack: a member named with the token less its first byte, which is neither a directory nor a regular file, named as another party's words with the tarball read's record (oauth2call.StreamedWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.pack",
+      "capture": "leakguard.tar-member/run",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/install.go",
+        "preimage": "nor a regular file\", oauth2call.StreamedWords(answer, header.Name))",
+        "replacement": "nor a regular file\", header.Name)"
+      }
+    },
+    {
+      "id": "leakguard-tar-member-escape",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestATarballMemberNamedWithTheReadsTokenPrintsNoneOfIt/escape",
+      "production": "github.com/sjawhar/legion/daemon/internal/leakguard.pack: a member whose path is no clean path inside leak-check/, named as another party's words with the tarball read's record (oauth2call.StreamedWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.pack",
+      "capture": "leakguard.tar-member/escape",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/install.go",
+        "preimage": "which is no path inside %s/\", oauth2call.StreamedWords(answer, header.Name), checkDirectory)",
+        "replacement": "which is no path inside %s/\", header.Name, checkDirectory)"
+      }
+    },
+    {
+      "id": "leakguard-served-body-below",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestAServedBodyBuiltOfTheReadsTokenPrintsNoneOfIt/below",
+      "production": "github.com/sjawhar/legion/daemon/internal/leakguard.pack: a regular file below another (place), which the pod's unpack cannot write, refused in the daemon and named as another party's words with the tarball read's record (oauth2call.StreamedWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.pack",
+      "capture": "leakguard.served-body/below",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/install.go",
+        "preimage": "which %s\", oauth2call.StreamedWords(answer, header.Name), refusal)",
+        "replacement": "which %s\", header.Name, refusal)"
+      }
+    },
+    {
+      "id": "leakguard-served-body-twice",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestAServedBodyBuiltOfTheReadsTokenPrintsNoneOfIt/twice",
+      "production": "github.com/sjawhar/legion/daemon/internal/leakguard.pack: a regular file at a path another member took (place), which the pod's unpack cannot write, refused in the daemon and named as another party's words with the tarball read's record (oauth2call.StreamedWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.pack",
+      "capture": "leakguard.served-body/twice",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/install.go",
+        "preimage": "which %s\", oauth2call.StreamedWords(answer, header.Name), refusal)",
+        "replacement": "which %s\", header.Name, refusal)"
+      }
+    },
+    {
+      "id": "leakguard-served-unpack-below",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestThePodsUnpackNamesNoMemberOfTheBodyItWasServed/below",
+      "production": "github.com/sjawhar/legion/daemon/internal/leakguard.servedFailure: the pod's unpack of a member it could not write, named by its place and kind, and the failed file call by its operation and the system's reason (no os.PathError path)",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.servedFailure",
+      "capture": "leakguard.served-unpack/below",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/install.go",
+        "preimage": "err = fmt.Errorf(\"%s: %w\", onPath.Op, onPath.Err)",
+        "replacement": "err = onPath"
+      }
+    },
+    {
+      "id": "leakguard-served-unpack-escape",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestThePodsUnpackNamesNoMemberOfTheBodyItWasServed/escape",
+      "production": "github.com/sjawhar/legion/daemon/internal/leakguard.unpackServed: a member of the served body whose path leaves the check's directory, named by its place and kind",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.unpackServed",
+      "capture": "leakguard.served-unpack/escape",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/install.go",
+        "preimage": "fmt.Errorf(\"member %d, %s, is no path inside the check's directory\", member, memberKind(header.Typeflag))",
+        "replacement": "fmt.Errorf(\"the member %q is no path inside the check's directory\", header.Name)"
+      }
+    },
+    {
+      "id": "leakguard-served-unpack-link",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestThePodsUnpackNamesNoMemberOfTheBodyItWasServed/link",
+      "production": "github.com/sjawhar/legion/daemon/internal/leakguard.unpackServed: a member of the served body that is neither a directory nor a regular file, named by its place and kind",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.unpackServed",
+      "capture": "leakguard.served-unpack/link",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/install.go",
+        "preimage": "fmt.Errorf(\"member %d, %s, is neither a directory nor a regular file\", member, memberKind(header.Typeflag))",
+        "replacement": "fmt.Errorf(\"the member %q is neither a directory nor a regular file\", header.Name)"
+      }
+    },
+    {
+      "id": "repocache-tar-echo-stream",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/repocache",
+      "test": "TestTheTarStreamNamesNoRefOfTheClone/stream",
+      "production": "repocache serveTar: a stream that failed on an entry names it by its place in the stream and its kind, never the clone's path, which under refs/ is a branch the answering party of the cache's fetch named",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/repocache.cache).serveTar",
+      "capture": "repocache.tar-echo/stream",
+      "mutation": {
+        "file": "packages/daemon/internal/repocache/server.go",
+        "preimage": "err = fmt.Errorf(\"stream entry %d of %d, %s: %w\", i+1, len(entries), entry.kind(), unpathed(err))",
+        "replacement": "err = fmt.Errorf(\"stream %s, entry %d: %w\", entry.header.Name, i+1, err)"
+      }
+    },
+    {
+      "id": "repocache-tar-echo-ref-file",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/repocache",
+      "test": "TestTheTarStreamNamesNoRefOfTheClone/ref-file",
+      "production": "repocache snapshotOnce: a ref file the snapshot cannot read fails with the operation and the system's reason (unpathed), never the ref's path",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/repocache.cache).snapshotOnce",
+      "capture": "repocache.tar-echo/ref-file",
+      "mutation": {
+        "file": "packages/daemon/internal/repocache/server.go",
+        "preimage": "os.ReadFile(path); err != nil {\n\t\t\t\treturn unpathed(err)",
+        "replacement": "os.ReadFile(path); err != nil {\n\t\t\t\treturn err"
+      }
+    },
+    {
+      "id": "repocache-tar-echo-ref-dir",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/repocache",
+      "test": "TestTheTarStreamNamesNoRefOfTheClone/ref-dir",
+      "production": "repocache walk: a directory under refs/ the walk cannot list fails with the operation and the system's reason (unpathed), never the ref's path",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/repocache.cache).walk",
+      "capture": "repocache.tar-echo/ref-dir",
+      "mutation": {
+        "file": "packages/daemon/internal/repocache/server.go",
+        "preimage": "if err != nil {\n\t\t\treturn unpathed(err)\n\t\t}\n\t\tif path == c.dir {",
+        "replacement": "if err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif path == c.dir {"
+      }
+    },
+    {
+      "id": "api-plan-route-id-bearer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses/id-bearer",
+      "production": "daemon dispatch HTTPClient.PlanDocument: a plan block whose id holds a run of the bearer the read carried (carries, through oauth2call.Tokens) is refused naming its place, its type and the rule, so register_plan answers a refused plan and never the id",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).carries",
+      "capture": "api.plan-route-words/id-bearer",
+      "mutation": {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "preimage": "return oauth2call.Tokens(text, -1, c.token) != text",
+        "replacement": "return false"
+      }
+    },
+    {
+      "id": "api-plan-route-id-run",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses/id-run",
+      "production": "daemon dispatch HTTPClient.PlanDocument: a plan block whose id is a run of the bearer, not the bearer whole, is refused by the same check, so register_plan answers no run of it"
+    },
+    {
+      "id": "api-plan-route-id-grammar",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses/id-grammar",
+      "production": "daemon dispatch HTTPClient.planBlockRule: a plan block whose id is outside plan.TaskIDGrammar, which Dispatch stores, is refused naming its place and the grammar, so register_plan answers no id it cannot hold to the grammar",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).planBlockRule",
+      "capture": "api.plan-route-words/id-grammar",
+      "mutation": {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "preimage": "case !plan.IsTaskID(id):",
+        "replacement": "case false:"
+      }
+    },
+    {
+      "id": "api-plan-route-steps-bearer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses/steps-bearer",
+      "production": "daemon dispatch HTTPClient.planBlockRule: a plan block whose steps hold a run of the bearer is refused, so Validate never names a role that echoes it in register_plan's answer"
+    },
+    {
+      "id": "api-plan-route-steps-grammar",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses/steps-grammar",
+      "production": "daemon plan ParseSteps: a word of steps outside the step grammar is named by its place among the words, never quoted, so register_plan's refusal holds none of a URL a word quotes",
+      "function": "github.com/sjawhar/legion/daemon/internal/plan.ParseSteps",
+      "capture": "api.plan-route-words/steps-grammar",
+      "mutation": {
+        "file": "packages/daemon/internal/plan/plan.go",
+        "preimage": "\"the %s word of steps is neither a role nor a role:key, where each matches %s\", ordinal(i+1), TaskIDGrammar)",
+        "replacement": "\"the %s word %q of steps is neither a role nor a role:key, where each matches %s\", ordinal(i+1), word, TaskIDGrammar)"
+      }
+    },
+    {
+      "id": "api-plan-route-needs-bearer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses/needs-bearer",
+      "production": "daemon dispatch HTTPClient.planBlockRule and plan Supported: a needs value holding a run of the bearer is refused naming the value's place, and Supported names needs without its values, so register_plan answers no run of it"
+    },
+    {
+      "id": "api-plan-route-needs-url",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestThePlanRouteAnswersNoWordOfAPlanBlockItRefuses/needs-url",
+      "production": "daemon plan taskReasons (Supported): a task with needs is refused as `task a names needs.`, no value printed, so a needs value quoting a URL with credentials the read did not carry reaches no answer",
+      "function": "github.com/sjawhar/legion/daemon/internal/plan.taskReasons",
+      "capture": "api.plan-route-words/needs-url",
+      "mutation": {
+        "file": "packages/daemon/internal/plan/validate.go",
+        "preimage": "fmt.Sprintf(\"task %s names needs.\", t.ID)",
+        "replacement": "fmt.Sprintf(\"task %s needs %s.\", t.ID, strings.Join(t.Needs, \", \"))"
+      }
+    },
+    {
+      "id": "dispatch-plan-block-needs",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestAPlanDocumentHandsOnNoNeedsValueThatEchoesTheBearer",
+      "production": "daemon dispatch HTTPClient.planBlockRule: a needs value holding a run of the bearer the read carried is refused naming the block's place and the value's, where PlanDocument handed it on in the block's attributes to any caller that prints them",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).planBlockRule",
+      "capture": "dispatch.answer-words/plan-block-needs",
+      "mutation": {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "preimage": "if c.carries(value) {",
+        "replacement": "if false && c.carries(value) {"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-bare-encoded",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/bare-encoded",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.entryWords: a tar entry's name, which unpackEntry's refusals and entryFailure print, has the cache's bearer taken out by every reading of the git filter (scrubTokens) before it is held as another party's words (oauth2call.StreamedWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.entryWords",
+      "capture": "workspace.cache-echo/bare-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "oauth2call.StreamedWords(response, scrubTokens(name, token))",
+        "replacement": "oauth2call.StreamedWords(response, name)"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-cut-encoded",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/cut-encoded",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.entryFailure: a read of an entry that failed names the entry as unpackEntry prints it (entryWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.entryFailure",
+      "capture": "workspace.cache-echo/cut-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "entryWords(response, token, name), err)",
+        "replacement": "oauth2call.StreamedWords(response, name), err)"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-fsck-encoded",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/fsck-encoded",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck's stderr, which names the refs the cache streamed, goes through the filter of every token the fetch holds, the provisioning token and the cache's bearer, as written and percent-decoded (fetchCredential.withoutTokens)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache",
+      "capture": "workspace.cache-echo/fsck-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "held.withoutTokens(result.Stderr)",
+        "replacement": "oauth2call.Tokens(result.Stderr, -1, request.CacheToken)"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-log-encoded",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/log-encoded",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: every line it logs, a ref the feed drops (pruneToGitHub) and the branch HEAD follows (followHead) among them, goes through the filter of every token the fetch holds, as written and percent-decoded (fetchCredential.withoutTokens)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch",
+      "capture": "workspace.cache-echo/log-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "log(held.withoutTokens(line))",
+        "replacement": "log(oauth2call.Tokens(line, -1, request.CacheToken))"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-held",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/fsck",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: the fetch's credential holds the cache's bearer beside the provisioning tokens, so the one filter takes it out",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch",
+      "capture": "workspace.cache-echo/fsck",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "held.held = append(held.held, request.CacheToken)",
+        "replacement": "_ = request.CacheToken"
+      }
+    },
+    {
+      "id": "workspace-fetch-one-filter",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/log-encoded",
+      "production": "(github.com/sjawhar/legion/daemon/internal/workspace.fetchCredential).withoutTokens: the one filter of every token the fetch holds (scrubTokens)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/workspace.fetchCredential).withoutTokens",
+      "capture": "workspace.cache-echo/log-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "return scrubTokens(text, c.held...)",
+        "replacement": "return text"
+      }
+    },
+    {
+      "id": "envoy-redirect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerCallFollowsNoRedirect/twin",
+      "production": "the stand-in of the listener client's followed-redirect rows: a client that follows a 302 to the same host name on another port sends the stand-in the shared bearer in the Authorization net/http copies (redirectstest.Sent), so the rows can see a bearer sent on"
+    },
+    {
+      "id": "envoy-redirect-followed-sessions",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerCallFollowsNoRedirect/sessions",
+      "production": "dispatch/envoy New: the listener client follows no redirect (redirects.Refused), so a sessions read's 302 to another port of the same host is ErrUnavailable by its status and that host is sent nothing, neither the Location's query nor the Authorization",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/envoy.New",
+      "capture": "envoy.redirect-followed/sessions",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "redirects.Refused(&http.Client{Timeout: defaultTimeout})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: defaultTimeout} }()"
+      }
+    },
+    {
+      "id": "envoy-redirect-followed-send",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerCallFollowsNoRedirect/send",
+      "production": "dispatch/envoy New: a send's 302 to another port of the same host is ErrUnavailable by its status and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/envoy.New",
+      "capture": "envoy.redirect-followed/send",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "redirects.Refused(&http.Client{Timeout: defaultTimeout})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: defaultTimeout} }()"
+      }
+    },
+    {
+      "id": "envoy-redirect-followed-moved",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenerCallFollowsNoRedirect/moved",
+      "production": "dispatch/envoy New: a 302 naming another port of the same host with the call's own path (the red team's round-8 probe), which carries the bearer only in the Authorization net/http copies, sends that host nothing",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/envoy.New",
+      "capture": "envoy.redirect-followed/moved",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/envoy/client.go",
+        "preimage": "redirects.Refused(&http.Client{Timeout: defaultTimeout})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: defaultTimeout} }()"
+      }
+    },
+    {
+      "id": "mcpbridge-post-redirect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAPostFollowsNoRedirectOffItsEndpointsOrigin/twin",
+      "production": "the stand-in of the message POST's followed-redirect rows: a client that follows its 307 sends the host the Location names (redirectstest.Sent) the session id the endpoint carried, in the Location's query and in the Referer, so the rows can see one sent on"
+    },
+    {
+      "id": "mcpbridge-post-redirect-followed-session",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAPostFollowsNoRedirectOffItsEndpointsOrigin/session",
+      "production": "mcpbridge HTTPServer.Start: the message POST follows a redirect only on the endpoint's own origin (redirects.SameOrigin), so a 307 to another host is the POST's error by its status and that host is sent nothing, neither the session id in the endpoint's query (Location, Referer) nor the message",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.redirect-followed/session",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "redirects.SameOrigin(http.DefaultClient).Post",
+        "replacement": "func() *http.Client { _ = redirects.SameOrigin; return http.DefaultClient }().Post"
+      }
+    },
+    {
+      "id": "mcpbridge-post-redirect-followed-basic",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAPostFollowsNoRedirectOffItsEndpointsOrigin/basic",
+      "production": "mcpbridge HTTPServer.Start: the message POST follows a redirect only on the endpoint's own origin (redirects.SameOrigin), so a 307 whose Location quotes the password of the endpoint's user information (the POST's Basic Authorization) is the POST's error by its status and the host it names is sent nothing",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.redirect-followed/basic",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "redirects.SameOrigin(http.DefaultClient).Post",
+        "replacement": "func() *http.Client { _ = redirects.SameOrigin; return http.DefaultClient }().Post"
+      }
+    },
+    {
+      "id": "secrets-redirect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAMintCallFollowsNoRedirect/twin",
+      "production": "the stand-in of the minters' followed-redirect rows: a client that follows its 302 sends the bearer the call carried to the host the Location names (redirectstest.Sent), so the rows can see a credential sent on"
+    },
+    {
+      "id": "secrets-redirect-followed-serviceaccount-default",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAMintCallFollowsNoRedirect/serviceaccount-default",
+      "production": "secrets mintCall: with a nil HTTP, as cmd/cipherd builds every minter, IAM's generateAccessToken call goes out on a copy of ownClient that follows no redirect (redirects.Refused), so a 302 to another port of the same host is the mint's ErrMintUpstream by its status at one attempt and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/secrets.mintCall",
+      "capture": "secrets.redirect-followed/serviceaccount-default",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/secrets/mintcall.go",
+        "preimage": "redirects.Refused(cmp.Or(client, ownClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, ownClient) }()"
+      }
+    },
+    {
+      "id": "secrets-redirect-followed-serviceaccount-given",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAMintCallFollowsNoRedirect/serviceaccount-given",
+      "production": "secrets mintCall: IAM's generateAccessToken call goes out on a copy of the client the minter is given that follows no redirect (redirects.Refused), so a 302 to another port of the same host is the mint's ErrMintUpstream by its status at one attempt and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/secrets.mintCall",
+      "capture": "secrets.redirect-followed/serviceaccount-given",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/secrets/mintcall.go",
+        "preimage": "redirects.Refused(cmp.Or(client, ownClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, ownClient) }()"
+      }
+    },
+    {
+      "id": "secrets-redirect-followed-githubapp-default",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAMintCallFollowsNoRedirect/githubapp-default",
+      "production": "secrets mintCall: with a nil HTTP, as cmd/cipherd builds the GitHub App minter, the installation list carrying the App's JWT goes out on a copy of ownClient that follows no redirect (redirects.Refused), so a 302 to another port of the same host is the mint's ErrMintUpstream by its status at one attempt and that host is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipher/secrets.mintCall",
+      "capture": "secrets.redirect-followed/githubapp-default",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/secrets/mintcall.go",
+        "preimage": "redirects.Refused(cmp.Or(client, ownClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, ownClient) }()"
+      }
+    },
+    {
+      "id": "launcher-redirect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/launcher",
+      "test": "TestATokenExchangeFollowsNoRedirect/twin",
+      "production": "the stand-in of the launcher's followed-redirect rows: a client that follows the security token service stand-in's 302 or 307 sends the subject token to the host the Location names (redirectstest.Sent), so the rows can see a token sent on"
+    },
+    {
+      "id": "launcher-redirect-followed-302",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/launcher",
+      "test": "TestATokenExchangeFollowsNoRedirect/302",
+      "production": "launcher newMetadataServer: the token exchange's client follows no redirect (redirects.Refused beneath oauth2call.RefusalClient), so the service's 302 is the exchange's failure by its status (`status code 302`), the endpoint answers 500, and the host the Location names is sent nothing, the pod's token in its query among it",
+      "function": "github.com/sjawhar/legion/daemon/internal/launcher.newMetadataServer",
+      "capture": "launcher.redirect-followed/302",
+      "mutation": {
+        "file": "packages/daemon/internal/launcher/metadata.go",
+        "preimage": "redirects.Refused(&http.Client{Timeout: exchangeTimeout})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: exchangeTimeout} }()"
+      }
+    },
+    {
+      "id": "launcher-redirect-followed-307",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/launcher",
+      "test": "TestATokenExchangeFollowsNoRedirect/307",
+      "production": "launcher newMetadataServer: the token exchange's client follows no redirect (redirects.Refused beneath oauth2call.RefusalClient), so the service's 307 is the exchange's failure by its status (`status code 307`), the endpoint answers 500, and the host the Location names is sent nothing, neither the form with the pod's token nor the query quoting it",
+      "function": "github.com/sjawhar/legion/daemon/internal/launcher.newMetadataServer",
+      "capture": "launcher.redirect-followed/307",
+      "mutation": {
+        "file": "packages/daemon/internal/launcher/metadata.go",
+        "preimage": "redirects.Refused(&http.Client{Timeout: exchangeTimeout})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: exchangeTimeout} }()"
+      }
+    },
+    {
+      "id": "sessionproxy-redirect-followed-twin-bearer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
+      "test": "TestAGoogleCallFollowsNoRedirect/twin-bearer",
+      "production": "the bearer stand-in of the sessionproxy redirect rows: a client that follows its 302 sends the stand-in the bearer, in the Location's query and the Authorization net/http copies to the same host name, so the rows can see one sent on"
+    },
+    {
+      "id": "sessionproxy-redirect-followed-twin-form",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
+      "test": "TestAGoogleCallFollowsNoRedirect/twin-form",
+      "production": "the form stand-in of the sessionproxy redirect rows: a client that follows its 307 sends the stand-in the form again and the subject token in the Location's query, so the rows can see one sent on"
+    },
+    {
+      "id": "sessionproxy-redirect-followed-admin-api",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
+      "test": "TestAGoogleCallFollowsNoRedirect/admin-api",
+      "production": "sessionproxy connectorOptions: the Admin API client (oauth2.NewClient over a RefusalClient, handed to the connector) follows no redirect (redirects.Refused), so the Admin API's 302 is googleapi's refusal by its status, which the dial names, and the host its Location names is sent nothing, neither the pod's bearer oauth2.Transport sets nor the Location's query",
+      "function": "github.com/sjawhar/legion/daemon/internal/sessionproxy.connectorOptions",
+      "capture": "sessionproxy.redirect-followed/admin-api",
+      "mutation": {
+        "file": "packages/daemon/internal/sessionproxy/sessionproxy.go",
+        "preimage": "oauth2call.RefusalClient(redirects.Refused(&http.Client{Timeout: endpoints.timeout()}))",
+        "replacement": "oauth2call.RefusalClient(func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: endpoints.timeout()} }())"
+      }
+    },
+    {
+      "id": "sessionproxy-redirect-followed-token-endpoint",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
+      "test": "TestAGoogleCallFollowsNoRedirect/token-endpoint",
+      "production": "sessionproxy podTokenSource: the client a credential file's token read takes from the context follows no redirect (redirects.Refused), so the token endpoint's 307 is x/oauth2's refusal by its status, which the dial names, and the host its Location names is sent nothing, neither the form with the signed assertion nor the Location's query",
+      "function": "github.com/sjawhar/legion/daemon/internal/sessionproxy.podTokenSource",
+      "capture": "sessionproxy.redirect-followed/token-endpoint",
+      "mutation": {
+        "file": "packages/daemon/internal/sessionproxy/sessionproxy.go",
+        "preimage": "redirects.Refused(&http.Client{Timeout: timeout})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: timeout} }()"
+      }
+    },
+    {
+      "id": "sessionproxy-redirect-followed-iam-pod",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
+      "test": "TestAGoogleCallFollowsNoRedirect/iam-pod",
+      "production": "sessionproxy impersonationClient without a writer token: the IAM Credentials client signed with the pod's own credentials follows no redirect (redirects.Refused, kept by oauth2.NewClient), so generateAccessToken's 302 is impersonate's refusal by its status and the host its Location names is sent nothing, neither the pod's bearer nor the Location's query",
+      "function": "github.com/sjawhar/legion/daemon/internal/sessionproxy.impersonationClient",
+      "capture": "sessionproxy.redirect-followed/iam-pod",
+      "mutation": {
+        "file": "packages/daemon/internal/sessionproxy/sessionproxy.go",
+        "preimage": "redirects.Refused(&http.Client{Timeout: endpoints.timeout(), Transport: endpoints.iam})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: endpoints.timeout(), Transport: endpoints.iam} }()"
+      }
+    },
+    {
+      "id": "sessionproxy-redirect-followed-sts-exchange",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
+      "test": "TestAGoogleCallFollowsNoRedirect/sts-exchange",
+      "production": "sessionproxy impersonationClient with a writer token: the exchange's client follows no redirect (redirects.Refused), so the security token service's 307 is the exchange's refusal by its status and the host its Location names is sent nothing, neither the form with the writer token nor the Location's query",
+      "function": "github.com/sjawhar/legion/daemon/internal/sessionproxy.impersonationClient",
+      "capture": "sessionproxy.redirect-followed/sts-exchange",
+      "mutation": {
+        "file": "packages/daemon/internal/sessionproxy/sessionproxy.go",
+        "preimage": "s.Client(redirects.Refused(&http.Client{Timeout: endpoints.timeout()}))",
+        "replacement": "s.Client(func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: endpoints.timeout()} }())"
+      }
+    },
+    {
+      "id": "sessionproxy-redirect-followed-iam-federated",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
+      "test": "TestAGoogleCallFollowsNoRedirect/iam-federated",
+      "production": "sessionproxy impersonationClient with a writer token: the IAM Credentials client above the federated token's oauth2.Transport follows no redirect (redirects.Refused), so generateAccessToken's 302 is impersonate's refusal by its status and the host its Location names is sent nothing, neither the federated bearer nor the Location's query",
+      "function": "github.com/sjawhar/legion/daemon/internal/sessionproxy.impersonationClient",
+      "capture": "sessionproxy.redirect-followed/iam-federated",
+      "mutation": {
+        "file": "packages/daemon/internal/sessionproxy/sessionproxy.go",
+        "preimage": "redirects.Refused(&http.Client{Timeout: endpoints.timeout(), Transport: signed})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: endpoints.timeout(), Transport: signed} }()"
+      }
+    },
+    {
+      "id": "cipherclient-redirect-followed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAGoogleOrIssuerCallFollowsNoRedirect/twin",
+      "production": "the stand-ins of the Google and sign-in issuer followed-redirect rows: a client that follows a JSON body's 307, a bearer's 302 or a form's 302 sends the credential to the host the Location names (redirectstest.Sent), so the rows can see one sent on"
+    },
+    {
+      "id": "cipherclient-redirect-followed-pool-sts",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAGoogleOrIssuerCallFollowsNoRedirect/pool-sts",
+      "production": "cipherclient postGoogle: a workload identity pool's security token service exchange (PoolIdentity.federate, HTTP from HTTPClient) goes out on a copy of its client that follows no redirect (redirects.Refused), so a 307 is the exchange's failure by its status and the host its Location names is sent nothing, neither the subject token in the query nor the JSON body again",
+      "function": "github.com/sjawhar/envoy/internal/cipherclient.postGoogle",
+      "capture": "cipherclient.redirect-followed/pool-sts",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/pool.go",
+        "preimage": "redirects.Refused(cmp.Or(client, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "cipherclient-redirect-followed-pool-iam",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAGoogleOrIssuerCallFollowsNoRedirect/pool-iam",
+      "production": "cipherclient postGoogle: IAM Credentials' generateIdToken (generateIDToken, with the federated access token as its bearer) goes out on a copy of its client that follows no redirect (redirects.Refused), so a 302 is the mint's failure by its status and the host its Location names is sent nothing, neither the query nor the Authorization net/http copies to the same host name",
+      "function": "github.com/sjawhar/envoy/internal/cipherclient.postGoogle",
+      "capture": "cipherclient.redirect-followed/pool-iam",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/pool.go",
+        "preimage": "redirects.Refused(cmp.Or(client, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(client, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "cipherclient-redirect-followed-device",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAGoogleOrIssuerCallFollowsNoRedirect/device",
+      "production": "cipherclient clientOf: a sign-in's device code poll (DeviceFlow.Wait, HTTP from HTTPClient) goes out on a copy of its client that follows no redirect (redirects.Refused), so the token endpoint's 302 is the wait's failure by its status (redact.Class) and the host its Location names is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipherclient.clientOf",
+      "capture": "cipherclient.redirect-followed/device",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/device.go",
+        "preimage": "redirects.Refused(cmp.Or(explicit, carried, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(explicit, carried, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "cipherclient-redirect-followed-refresh",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAGoogleOrIssuerCallFollowsNoRedirect/refresh",
+      "production": "cipherclient clientOf: a sign-in's renewal (DeviceFlow.Refresh, HTTP from HTTPClient) goes out on a copy of its client that follows no redirect (redirects.Refused), so the token endpoint's 302 is the renewal's failure by its status (redact.Class), not an ended sign-in, and the host its Location names is sent nothing",
+      "function": "github.com/sjawhar/envoy/internal/cipherclient.clientOf",
+      "capture": "cipherclient.redirect-followed/refresh",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/device.go",
+        "preimage": "redirects.Refused(cmp.Or(explicit, carried, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(explicit, carried, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "cipherclient-redirect-followed-external-account",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAGoogleOrIssuerCallFollowsNoRedirect/external-account",
+      "production": "cipherclient clientOf: an external_account credential's own exchange (ExternalAccountIdentity.Token, HTTP from HTTPClient) goes out on a copy of its client that follows no redirect (redirects.Refused), so the token service's 302 is the mint's failure by its status (externalAccountFailure) and the host its Location names is sent nothing, neither the subject token in the query nor the client's Basic pair",
+      "function": "github.com/sjawhar/envoy/internal/cipherclient.clientOf",
+      "capture": "cipherclient.redirect-followed/external-account",
+      "mutation": {
+        "file": "packages/envoy/internal/cipherclient/device.go",
+        "preimage": "redirects.Refused(cmp.Or(explicit, carried, http.DefaultClient))",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return cmp.Or(explicit, carried, http.DefaultClient) }()"
+      }
+    },
+    {
+      "id": "redact-certificate-names-cause-wrong-host-untrusted",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestCausePrintsACertificateFailureByItsWords/wrong-host-untrusted",
+      "production": "redact.Cause and redact.Error (checked, transportWords): a TLS handshake that failed on a self-signed certificate valid for another name alone, which the client does not trust (x509.HostnameError names every name it is valid for) prints by the fixed words for its type (tlsErrorWords), never x509's text, unwrapping so errors.As finds the certificate failure and its x509 type",
+      "capture": "redact.certificate-names/cause-wrong-host-untrusted"
+    },
+    {
+      "id": "redact-certificate-names-cause-wrong-host-trusted",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestCausePrintsACertificateFailureByItsWords/wrong-host-trusted",
+      "production": "redact.Cause and redact.Error (checked, transportWords): a TLS handshake that failed on a self-signed certificate valid for another name alone, which the client trusts (x509.HostnameError names every name it is valid for) prints by the fixed words for its type (tlsErrorWords), never x509's text, unwrapping so errors.As finds the certificate failure and its x509 type",
+      "capture": "redact.certificate-names/cause-wrong-host-trusted",
+      "function": "github.com/sjawhar/envoy/internal/redact.transportWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "\tif words, ok := tlsWords(err); ok {\n\t\treturn words\n\t}\n\treturn err.Error()",
+        "replacement": "\treturn err.Error()"
+      }
+    },
+    {
+      "id": "redact-certificate-names-cause-forged-issuer",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestCausePrintsACertificateFailureByItsWords/forged-issuer",
+      "production": "redact.Cause and redact.Error (checked, transportWords): a TLS handshake that failed on a certificate for the host sent with a forged authority (x509.UnknownAuthorityError names the candidate authority's common name) prints by the fixed words for its type (tlsErrorWords), never x509's text, unwrapping so errors.As finds the certificate failure and its x509 type",
+      "capture": "redact.certificate-names/cause-forged-issuer"
+    },
+    {
+      "id": "redact-certificate-names-cause-constraint",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestCausePrintsACertificateFailureByItsWords/constraint",
+      "production": "redact.Cause and redact.Error (checked, transportWords): a TLS handshake that failed on an authority's name constraint that excludes a name the certificate holds (x509.CertificateInvalidError quotes the name), built prints by the fixed words for its type (tlsErrorWords), never x509's text, unwrapping so errors.As finds the certificate failure and its x509 type",
+      "capture": "redact.certificate-names/cause-constraint"
+    },
+    {
+      "id": "redact-certificate-names-cause-under-a-net-error",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestCausePrintsACertificateFailureByItsWords/under-a-net-error",
+      "production": "redact.Cause and redact.Error (checked, transportWords): a TLS handshake that failed on a certificate failure under a *net.OpError, whose text quotes it, built prints by the fixed words for its type (tlsErrorWords), never x509's text, unwrapping so errors.As finds the certificate failure and its x509 type",
+      "capture": "redact.certificate-names/cause-under-a-net-error"
+    },
+    {
+      "id": "redact-certificate-names-unanswered-wrong-host-untrusted",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredPrintsACertificateFailureByItsWords/wrong-host-untrusted",
+      "production": "redact.Unanswered and oauth2call.Unanswered (unansweredFailure, transportWords): a request whose TLS handshake failed on a self-signed certificate valid for another name alone, which the client does not trust (x509.HostnameError names every name it is valid for) is named and its failure printed by the fixed words for its type, never x509's text, unwrapping to net/http's error",
+      "capture": "redact.certificate-names/unanswered-wrong-host-untrusted"
+    },
+    {
+      "id": "redact-certificate-names-unanswered-wrong-host-trusted",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredPrintsACertificateFailureByItsWords/wrong-host-trusted",
+      "production": "redact.Unanswered and oauth2call.Unanswered (unansweredFailure, transportWords): a request whose TLS handshake failed on a self-signed certificate valid for another name alone, which the client trusts (x509.HostnameError names every name it is valid for) is named and its failure printed by the fixed words for its type, never x509's text, unwrapping to net/http's error",
+      "capture": "redact.certificate-names/unanswered-wrong-host-trusted",
+      "function": "github.com/sjawhar/envoy/internal/redact.transportWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "\tif words, ok := tlsWords(err); ok {\n\t\treturn words\n\t}\n\treturn err.Error()",
+        "replacement": "\treturn err.Error()"
+      }
+    },
+    {
+      "id": "redact-certificate-names-unanswered-forged-issuer",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredPrintsACertificateFailureByItsWords/forged-issuer",
+      "production": "redact.Unanswered and oauth2call.Unanswered (unansweredFailure, transportWords): a request whose TLS handshake failed on a certificate for the host sent with a forged authority (x509.UnknownAuthorityError names the candidate authority's common name) is named and its failure printed by the fixed words for its type, never x509's text, unwrapping to net/http's error",
+      "capture": "redact.certificate-names/unanswered-forged-issuer"
+    },
+    {
+      "id": "redact-certificate-names-unanswered-constraint",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredPrintsACertificateFailureByItsWords/constraint",
+      "production": "redact.Unanswered and oauth2call.Unanswered (unansweredFailure, transportWords): a request whose TLS handshake failed on an authority's name constraint that excludes a name the certificate holds (x509.CertificateInvalidError quotes the name), built is named and its failure printed by the fixed words for its type, never x509's text, unwrapping to net/http's error",
+      "capture": "redact.certificate-names/unanswered-constraint"
+    },
+    {
+      "id": "redact-certificate-names-unanswered-under-a-net-error",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnansweredPrintsACertificateFailureByItsWords/under-a-net-error",
+      "production": "redact.Unanswered and oauth2call.Unanswered (unansweredFailure, transportWords): a request whose TLS handshake failed on a certificate failure under a *net.OpError, whose text quotes it, built is named and its failure printed by the fixed words for its type, never x509's text, unwrapping to net/http's error",
+      "capture": "redact.certificate-names/unanswered-under-a-net-error"
+    },
+    {
+      "id": "dispatch-certificate-names-wrong-host-untrusted",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestACertificateFailureOfADispatchReadPrintsNoNameTheCertificateHolds/wrong-host-untrusted",
+      "production": "daemon dispatch HTTPClient.answer: a Dispatch read whose TLS handshake failed on a self-signed certificate valid for another name alone, which the client does not trust (x509.HostnameError names every name it is valid for) prints the failure through oauth2call.Unanswered by fixed words, never x509's text, and is still a refusal of the transport (TransportRefusal reads its type through errors.As), never a TransientError",
+      "capture": "dispatch.certificate-names/wrong-host-untrusted",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).answer",
+      "mutation": {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "preimage": "transportFailure(oauth2call.Unanswered(err, request, \"\"))",
+        "replacement": "transportFailure(err)"
+      }
+    },
+    {
+      "id": "dispatch-certificate-names-wrong-host-trusted",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestACertificateFailureOfADispatchReadPrintsNoNameTheCertificateHolds/wrong-host-trusted",
+      "production": "daemon dispatch HTTPClient.answer: a Dispatch read whose TLS handshake failed on a self-signed certificate valid for another name alone, which the client trusts (x509.HostnameError names every name it is valid for) prints the failure through oauth2call.Unanswered by fixed words, never x509's text, and is still a refusal of the transport (TransportRefusal reads its type through errors.As), never a TransientError",
+      "capture": "dispatch.certificate-names/wrong-host-trusted"
+    },
+    {
+      "id": "dispatch-certificate-names-forged-issuer",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestACertificateFailureOfADispatchReadPrintsNoNameTheCertificateHolds/forged-issuer",
+      "production": "daemon dispatch HTTPClient.answer: a Dispatch read whose TLS handshake failed on a certificate for the host sent with a forged authority (x509.UnknownAuthorityError names the candidate authority's common name) prints the failure through oauth2call.Unanswered by fixed words, never x509's text, and is still a refusal of the transport (TransportRefusal reads its type through errors.As), never a TransientError",
+      "capture": "dispatch.certificate-names/forged-issuer"
     }
   ],
   "bun": [
@@ -12825,6 +14149,66 @@
       "site": "envoy's AWS and Google Cloud SDK calls handed the SDK's error on as it came, which quotes net/http's error (a Location that does not parse, or one the client followed) and the answer's request id, host id, message or body, so whatever answers at the service's address could put the call's X-Amz-Security-Token, bearer or web identity token into a log line or printed error: the S3 and GCS file stores, the Bedrock embedder, the broker's Secrets Manager and KMS store, and the RDS IAM token mint",
       "source": "the class search of round 8 over the envoy module",
       "guard": "files-s3-echo-head-bucket-unparsed"
+    },
+    {
+      "site": "appauth Manager.answeredAs: named GitHub's answer by githubrest.PathUnder of response.Request.URL (and response.Request.Method), which the Manager's client, following a redirect on its own origin (redirects.SameOrigin), made the Location the answering party wrote; the daemon's start printed that path in its rate-limit refusal, the App's JWT or a released installation token whole",
+      "source": "the red team of round 8",
+      "guard": "appauth-followed-path-app-slug"
+    },
+    {
+      "site": "leakguard pack and unpackServed: a member name of the check's tarball, written by GitHub's answer to a read that carried the installation token, printed with %q in the pack's refusal (the start's refusal, the claim's cause, `legion claims list`), and names the pack took served on to the pod, whose unpack printed them in os.PathError's path",
+      "source": "the red team of round 8",
+      "guard": "leakguard-tar-member-whole"
+    },
+    {
+      "site": "repocache serveTar, snapshotOnce and walk: the cache's tar stream and snapshot logged a ref's path in the clone (\"stream refs/heads/<name>: ...\", os.PathError), a branch name the answering party of the cache's fetch, which holds the provisioning token, can write",
+      "source": "the class search of the red team of round 8's tar-member finding",
+      "guard": "repocache-tar-echo-stream"
+    },
+    {
+      "site": "daemon dispatch PlanDocument and the plan route: a plan_task or plan_role block's id and attributes were handed on as Dispatch wrote them, and register_plan answered them back - FromBlocks named a block by its id, ParseSteps quoted a step with %q, Validate named an unknown role, Supported quoted each needs value, and a taken plan answered its task ids - so an answer that echoed the read's bearer into any of them put it in the route's answer",
+      "source": "the quality review of round 8",
+      "guard": "api-plan-route-id-bearer"
+    },
+    {
+      "site": "workspace Fetch: what the repository cache streamed and what GitHub answered - a tar entry's name, fsck's stderr naming a ref, the line naming a ref the feed drops, the line naming the branch GitHub's HEAD names - had the cache token redacted only as written, and the provisioning token not at all, so a stand-in at either address that wrote the cache's bearer percent-encoded, or the provisioning token in any form, into an entry, a ref or GitHub's HEAD had it printed in Fetch's error or its log",
+      "source": "the acceptance review of round 8",
+      "guard": "workspace-cache-echo-log-encoded"
+    },
+    {
+      "site": "dispatch/envoy Client.do: every listener call went out on New's &http.Client{Timeout: defaultTimeout}, which follows redirects, so a 302 to the same host name on another port (or a name under it) got Dispatch's identity token or the shared bearer in the Authorization net/http copies",
+      "source": "the red team of #4368 at round 8",
+      "guard": "envoy-redirect-followed-moved"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: the message POST went out with http.Post on http.DefaultClient, which follows redirects, so a 307 from whatever answered at the server's endpoint sent the JSON-RPC message again, the Location's query and the endpoint (its session id in the query) as Referer to any host; a 3xx passed as success and the message was lost until the call timed out",
+      "source": "the class search of round 9 over the envoy and daemon modules",
+      "guard": "mcpbridge-post-redirect-followed-session"
+    },
+    {
+      "site": "secrets mintCall: every minter call (GitHub's App calls with the App's JWT or an installation token, Google's login refresh with its refresh token and client secret, IAM's generateAccessToken with the broker's own bearer) went out on ownClient or the client the minter was given, both following redirects, so a 302 to another port of the same host sent the credential on, in the Location's query and in the Authorization net/http copies to the same host name, and a 307 or 308 sent the form's refresh token again",
+      "source": "the class search of round 9 over the envoy and daemon modules",
+      "guard": "secrets-redirect-followed-serviceaccount-default"
+    },
+    {
+      "site": "launcher newMetadataServer: the security token service exchange went out on oauth2call.RefusalClient over an http.Client that followed redirects, so a 302 or 307 from whatever answered at the service's address sent the pod's projected token on to the host the Location named, in its query and, on a 307 or 308, in the form sent again",
+      "source": "the class search of round 9 over the envoy and daemon modules",
+      "guard": "launcher-redirect-followed-302"
+    },
+    {
+      "site": "sessionproxy's clients of Google followed redirects while they carried a credential: the Admin API client and the IAM Credentials client, whose oauth2.Transport sets the bearer on every request, a redirect's to any host among them, and the pod's credential-file token read and the writer token's exchange, whose form (a signed assertion, the subject token) a 307 sends again; so whatever answered in Google's place with a redirect got the credential sent to the host its Location named, in the Location's query too",
+      "source": "the class search of round 9 over the envoy and daemon modules",
+      "guard": "sessionproxy-redirect-followed-iam-pod"
+    },
+    {
+      "site": "cipherclient clientOf and postGoogle: the client of DeviceFlow (discovery, the device code's poll, the renewal) and of ExternalAccountIdentity's own exchange, and the client of PoolIdentity's security token service exchange and of IAM Credentials' generateIdToken, were the given client, the context's or http.DefaultClient, all following redirects, so a 302 to the same host name on another port sent on the client secret, device code, refresh token, subject token or access token the call carried, in the Location's query and in the Authorization net/http copies, and a 307 sent the body again",
+      "source": "the class search of round 9 over the envoy and daemon modules",
+      "guard": "cipherclient-redirect-followed-device"
+    },
+    {
+      "site": "envoy's redact.Cause, redact.Error and redact.Unanswered (url.go's transport and tlsError, printed by checked and unansweredFailure) and the daemon's redact.Unanswered (its failure and transport) printed a TLS record or certificate failure by its own text, which they called the transport's fixed words: x509's text names every name the answering party's certificate is valid for (HostnameError) and a candidate authority's common name (UnknownAuthorityError), so whatever answered in a server's place could put the request's credential into a printed error or log line, whether the client trusted its certificate or not; round 8 had routed new sites through Cause (the listener's edge repository read, the wake notice, Dispatch's agent-secrets client, the introspection)",
+      "source": "the quality review of round 8",
+      "guard": "redact-certificate-names-cause-wrong-host-trusted"
     }
   ]
 }
