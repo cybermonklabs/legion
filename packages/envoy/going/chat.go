@@ -158,7 +158,10 @@ var _ Client = (*HTTPClient)(nil)
 func NewHTTPClient(cfg HTTPConfig) (*HTTPClient, error) {
 	endpoint, err := url.Parse(cfg.Endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("going: chat endpoint: %w", err)
+		// net/url's error quotes the endpoint whole, user information and query included, so the
+		// endpoint is named only as redact.URL reads it and the failure by its class
+		// (redact.Cause).
+		return nil, fmt.Errorf("going: chat endpoint %s: %w", redact.URL(cfg.Endpoint), redact.Cause(err, cfg.Endpoint))
 	}
 	if !endpoint.IsAbs() || endpoint.Host == "" {
 		return nil, errors.New("going: chat endpoint must be an absolute URL with a host")
