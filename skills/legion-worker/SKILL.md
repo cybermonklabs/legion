@@ -9,7 +9,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 ## Every phase
 
-1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
+1. Consult the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
    Your architect's decisions for you come in your task, and in a reply in the thread of the plan task they concern, which its message links.
    A record beats your memory.
 
