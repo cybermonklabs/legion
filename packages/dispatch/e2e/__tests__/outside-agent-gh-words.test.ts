@@ -44,10 +44,18 @@ afterEach(() => {
   for (const each of ghKept.splice(0)) rmSync(each, { recursive: true, force: true });
 });
 
-/** Each line of `text` that holds a run of eight characters of the marker. */
+/** Each line of `text` that holds a run of eight characters of the marker, as its first field (a
+ *  TSV row's name) and the words around the first such run, so that a failure names the row and
+ *  shows the run however long the row is. */
 function markerLines(text: string): string[] {
   const pieces = Array.from({ length: marker.length - 7 }, (_, at) => marker.slice(at, at + 8));
-  return text.split("\n").filter((line) => pieces.some((piece) => line.includes(piece)));
+  return text.split("\n").flatMap((line) => {
+    const at = Math.min(
+      ...pieces.map((piece) => line.indexOf(piece)).filter((found) => found >= 0)
+    );
+    if (!Number.isFinite(at)) return [];
+    return [`${line.split("\t")[0]}: ...${line.slice(Math.max(0, at - 100), at + 40)}...`];
+  });
 }
 
 /** What the `gh` first on PATH plants. */
