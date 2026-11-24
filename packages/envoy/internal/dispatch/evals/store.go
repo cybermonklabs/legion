@@ -323,12 +323,26 @@ func scanDay(row pgx.Row) (DayRow, error) {
 // compare range, then its eval, series and day, its parts, its updated_at and the owner it is
 // stored under (owners.go).
 func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
+	return scanWindowRowOf(row, false)
+}
+
+// scanStoredWindowRow is scanWindowRow of a read that answers each row's repository after its
+// owner (dayWindowIn's stored).
+func scanStoredWindowRow(row pgx.CollectableRow) (WindowRow, error) {
+	return scanWindowRowOf(row, true)
+}
+
+func scanWindowRowOf(row pgx.CollectableRow, stored bool) (WindowRow, error) {
 	var inWindow bool
 	var day WindowRow
 	part := &day.Part
-	if err := row.Scan(&inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
+	fields := append(make([]any, 0, 19), &inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
 		&part.Samples, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
-		&day.UpdatedAt, &day.owner); err != nil {
+		&day.UpdatedAt, &day.owner)
+	if stored {
+		fields = append(fields, &day.repo)
+	}
+	if err := row.Scan(fields...); err != nil {
 		return WindowRow{}, err
 	}
 	day.Range = RangeCompare

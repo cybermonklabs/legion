@@ -404,11 +404,24 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 // read, every run reads the one moment the answer's other reads read, as one statement would; on
 // the pool, or in a transaction at read committed, each reads the rows that stand when it runs.
 func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
+	return dayWindowIn(ctx, q, projects, entries, deployRepo, repos, window, compare, false)
+}
+
+// dayWindowIn is DayWindowIn, each row answering the repository it is stored under too
+// (WindowRow.repo) where stored is set: the read of a rebuild's overlay (readOverlayGroups), whose
+// staged row stands for one stored row, where a cut of a project's default repository holds two of
+// its own rows of one series and day, one of the repository and one stored under
+// legionfacts.DefaultRepo. The list's read sends no repository.
+func dayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range, stored bool) ([]WindowRow, error) {
 	cut := `d.repo = any($2)`
 	if len(repos) == 0 {
 		repos = []string{""}
 	} else {
 		cut = repoCut("d", "$2", "o.project_key")
+	}
+	storedRepo, ownedRepo, scan := "", "", scanWindowRow
+	if stored {
+		storedRepo, ownedRepo, scan = ", repo", ", d.repo", scanStoredWindowRow
 	}
 	ranged := func(inWindow string, from, to int) string {
 		return `select ` + inWindow + `, eval_id, series, day, n, sum, num, den, max,
@@ -416,11 +429,11 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 				last_value, last_at,
 				case when (eval_id, series) in (select * from unnest($7::text[], $8::text[])) then last_recorded_at end,
 				case when (eval_id, series) in (select * from unnest($7::text[], $8::text[])) then coalesce(last_reading::text, '') else '' end,
-				nullif(counts, '{}'), via_repository, updated_at, owner
+				nullif(counts, '{}'), via_repository, updated_at, owner` + storedRepo + `
 			from (
 				select o.owner, o.project_key || substr(d.eval_id, length(o.owner) + 1) as eval_id, d.writer, d.deploy_repo, d.series, d.day,
 					d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at, d.last_reading, d.counts,
-					` + viaAsRead("d.via_repository") + ` as via_repository, d.updated_at
+					` + viaAsRead("d.via_repository") + ` as via_repository, d.updated_at` + ownedRepo + `
 				from eval_project_owners o join eval_days d on d.project_key = o.owner
 				where o.project_key = any($1::text[]) and ` + ownedKeys("d", "= any($1::text[])") + ` and d.listed
 				  and ` + cut + `
@@ -471,7 +484,7 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 		if err != nil {
 			return nil, fmt.Errorf("read the day rows of %v: %w", projects, err)
 		}
-		if days, err = pgx.AppendRows(days, rows, scanWindowRow); err != nil {
+		if days, err = pgx.AppendRows(days, rows, scan); err != nil {
 			return nil, fmt.Errorf("read the day rows of %v: %w", projects, err)
 		}
 	}

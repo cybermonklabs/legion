@@ -3,19 +3,26 @@ body: |-
   The evals list reads a range the Evals tab offers from stored figures rather than folding every
   day row of the range again: `GET /api/v1/projects/{key}/evals`, `GET /api/v1/evals` and the
   live `evals` view answer a window and a compare range of 7, 14, 28 or 84 days (or one day
-  longer, as the live view reads a preset), of a project's own rows, by key from
-  `eval_range_figures` and `eval_day_figures` (migration `20261120072042_eval_figures`), with the
-  same bytes the fold of the day rows answers. Any other length, a read that names a repository,
-  an eval whose stored figures were folded under another definition, and a project whose figures
-  are not built yet fold the day rows: the figures are kept for a project's own rows alone, so a
-  move of a project's default repository folds again only those. Every write of day rows folds
-  again, in its own transaction, the figures of the days it moved; the day-row refresher's pass
-  builds each build's whole set of figures once, and then each new day's ranges, and marks a
-  project built once the first whole walk of its figures is done (`eval_figures_built`). A
-  register write that moves what an eval folds by is folded by the refresher's next pass, which
-  reads the change log from a cursor of its own. Both reads fold each eval's rows in day order,
-  so a sum of floats answers the same bits whatever order the rows come back in. The bench waits
-  for every project's figures to be built before it measures a first paint.
+  longer, as the live view reads a preset), of a project's own rows or of one repository's, by
+  key from `eval_range_figures` and `eval_day_figures` (migration `20261120072042_eval_figures`),
+  with the same bytes the fold of the day rows answers. A repository's stored figures fold what a
+  read of that one repository folds: its rows the project reads, and, of the repository the
+  project publishes as its default, its Legion rows of issues that name no repository
+  (`:default`). Any other length, two or more repositories, an eval whose stored figures were
+  folded under another definition, and a project whose figures are not built yet fold the day
+  rows. Every write of day rows folds again, in its own transaction, the figures of the days it
+  moved, in each repository's figures its rows reach; the day-row refresher's pass builds each
+  build's whole set of figures once, and then each new day's ranges, and marks a project built
+  once the first whole walk of its figures is done (`eval_figures_built`). A move of a project's
+  default repository folds the figures of the projects' own rows again in the commit that
+  publishes it, and marks stale the figures of each repository it moves, the old and the new
+  default's and those of the repositories of the owner keys a project gains or loses
+  (`eval_figure_cuts_stale`); the refresher's next passes fold those again, a batch of end days
+  a pass, and until they are done a read of such a repository folds the day rows. A register
+  write that moves what an eval folds by is folded by the refresher's next pass, which reads the
+  change log from a cursor of its own. Both reads fold each eval's rows in day order, so a sum of
+  floats answers the same bits whatever order the rows come back in. The bench waits for every
+  project's figures to be built before it measures a first paint.
   A change of the delivery settings reaches an open evals page in one pass of the refresher, as
   one delta: the pass rewrites, in one transaction, every day of the delivery and CI evals the
   change moves (their day rows, the rows' stored figures and the members that moved). It compares

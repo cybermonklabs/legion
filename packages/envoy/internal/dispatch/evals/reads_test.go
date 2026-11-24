@@ -238,7 +238,7 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 	if err != nil {
 		t.Fatalf("read the first days of %d evals: %v", page, err)
 	}
-	if _, err := ReadStoredFiguresIn(t.Context(), traced.database.Pool, []string{r.project}, entries, "", window, &compare); err != nil {
+	if _, err := ReadStoredFiguresIn(t.Context(), traced.database.Pool, []string{r.project}, entries, "", "", window, &compare); err != nil {
 		t.Fatalf("read the stored figures of %d evals: %v", page, err)
 	}
 	sent := r.measured(t, statements.take())

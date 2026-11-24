@@ -86,7 +86,7 @@ var BaseLacks = []string{
 	"eval_days_cursor", "eval_days_walks", "eval_days_serving", "eval_days_settings",
 	"eval_rebuilds", "eval_rebuild_walks", "eval_rebuild_firsts", "eval_rebuild_days", "eval_rebuild_members",
 	"eval_rebuild_range_figures", "eval_rebuild_day_figures", "eval_rebuild_reverify",
-	"eval_range_figures", "eval_day_figures", "eval_figures_built",
+	"eval_range_figures", "eval_day_figures", "eval_figures_built", "eval_figure_cuts_stale",
 }
 
 // LegionSpec is the Legion history of project the Legion mode writes: enough trees for at least

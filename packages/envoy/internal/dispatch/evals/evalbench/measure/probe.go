@@ -14,16 +14,16 @@ import (
 // The probe, after the first paint: where the 84-day compare read's stored-figures statements
 // (evals.ReadStoredFiguresIn, as the server ran them) spend their time on the loaded database,
 // so the next change to them is chosen from a measurement. The list answers an offered range of the
-// project's own rows with two of them: the range-figures read, the `union all` of the window's and
-// the compare range's rows of eval_range_figures, one row an eval each, and the day-figures read,
-// the window's rows of eval_day_figures of the evals with a headline series. The probe finds each
-// among the read's captured statements by the text the statement log holds of it, `from
-// eval_range_figures` and `from eval_day_figures`. A read that ran neither fails the probe: its
-// list no longer reads the stored figures, and the probe would measure nothing. A read that ran one
-// of them has the other printed as skipped (the server skips the day-figures read where no eval has
-// a headline series). The reads that name a repository (list-84d-compare-repo, list-28d-repo) run
-// neither: the stored figures fold the project's own rows alone, and a repository's read folds the
-// day rows (evals.FiguresOffered), so the probe measures list-84d-compare, which names none.
+// project's own rows, or of one repository's, with two of them: the range-figures read, the `union
+// all` of the window's and the compare range's rows of eval_range_figures of the read's cut, one
+// row an eval each, and the day-figures read, the window's rows of eval_day_figures of the evals
+// with a headline series. The probe finds each among the read's captured statements by the text
+// the statement log holds of it, `from eval_range_figures` and `from eval_day_figures`. A read that
+// ran neither fails the probe: its list no longer reads the stored figures, and the probe would
+// measure nothing. A read that ran one of them has the other printed as skipped (the server skips
+// the day-figures read where no eval has a headline series). The reads that name a repository
+// (list-84d-compare-repo, list-28d-repo) run the same two statements over the cut of that
+// repository (evals.FiguresOffered), so the probe measures list-84d-compare, which names none.
 //
 // Each variant of a statement is run probeRuns times under `explain (analyze, buffers, serialize
 // binary)`, which executes it and serialises its rows as the server sends them without sending

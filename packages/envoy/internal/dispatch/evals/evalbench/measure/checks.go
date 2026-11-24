@@ -489,3 +489,66 @@ func (c *headChecks) insertRolledBack(ctx context.Context, index, text string, a
 	}
 	return "", "", err
 }
+
+// fallback measures, for k16, the read of a repository whose cut a default move has marked stale
+// and the refresher has not folded again yet (dispatch://INFRA-2916/artifact/decisions-md, "A
+// repository's cut is stored again"): it marks the project's cut of the deploy repository stale as
+// a move's commit marks it (eval_figure_cuts_stale), reads the paint's 84-day read with a compare
+// range and its 28-day read of that repository once more, as the paint measures each (measure),
+// which fold the day rows while the mark stands (figuresThrough), and takes the mark away again
+// where it made it. Each RESULT line names the read, its database and server time, its body, the
+// same read's database time from the stored figures in the paint, and whether the two answers'
+// items are equal. It judges no budget: the architect reads the fallback's time.
+func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
+	ctx := context.Background()
+	repo := evalbench.Repos[0]
+	tag, err := c.pool.Exec(ctx, `
+		insert into eval_figure_cuts_stale (project_key, repo, generation, next_day) values ($1, $2, 1, null)
+		on conflict (project_key, repo) do nothing
+	`, c.o.project, repo)
+	if err != nil {
+		c.r.fail("k16 fallback: mark %s's cut of %s stale: %v", c.o.project, repo, err)
+		return
+	}
+	if tag.RowsAffected() == 1 {
+		defer func() {
+			if _, err := c.pool.Exec(ctx, `delete from eval_figure_cuts_stale where project_key = $1 and repo = $2 and generation = 1 and next_day is null`,
+				c.o.project, repo); err != nil {
+				c.r.fail("k16 fallback: take back the mark of %s's cut of %s: %v", c.o.project, repo, err)
+			}
+		}()
+	}
+	for _, name := range []string{"list-84d-compare-repo", "list-28d-repo"} {
+		var stored *measuredCase
+		for index := range measured {
+			if measured[index].name == name {
+				stored = &measured[index]
+			}
+		}
+		if stored == nil {
+			c.r.fail("k16 fallback: the paint has no case %s", name)
+			continue
+		}
+		one := stored.paintCase
+		one.name += "-stale"
+		got, err := measure(ctx, c.pool, c.client, c.o, one, catalog)
+		if err != nil {
+			c.r.fail("k16 fallback: %s: %v", one.name, err)
+			continue
+		}
+		c.r.result("k16 fallback case=%s status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d stored_db_ms=%.2f items_equal=%t",
+			one.name, got.status, dbMs(got.own), len(got.own), got.serverMs, len(got.body), gzipSize(got.body), dbMs(stored.own), sameItems(got.body, stored.body))
+	}
+}
+
+// sameItems reports whether two answers of the eval list hold the same items, byte for byte as
+// JSON: the stored figures and the day rows answer the same values (evals.StoredFigures.SeriesValues).
+func sameItems(a, b []byte) bool {
+	var one, other struct {
+		Items json.RawMessage `json:"items"`
+	}
+	if json.Unmarshal(a, &one) != nil || json.Unmarshal(b, &other) != nil {
+		return false
+	}
+	return len(one.Items) > 0 && string(one.Items) == string(other.Items)
+}

@@ -253,6 +253,7 @@ create table eval_rebuild_range_figures (
     rebuild_id bigint not null,
     op text not null check (op in ('u', 'd')),
     project_key text not null,
+    repo text not null,
     days integer not null,
     end_day date not null,
     eval_id text not null,
@@ -264,13 +265,14 @@ create table eval_rebuild_range_figures (
     was_fold_key bigint,
     was_figures bytea,
     was_oldest_updated_at timestamptz,
-    primary key (rebuild_id, project_key, days, end_day, eval_id, deploy_repo)
+    primary key (rebuild_id, project_key, repo, days, end_day, eval_id, deploy_repo)
 );
 
 create table eval_rebuild_day_figures (
     rebuild_id bigint not null,
     op text not null check (op in ('u', 'd')),
     project_key text not null,
+    repo text not null,
     day date not null,
     eval_id text not null,
     deploy_repo text not null,
@@ -281,7 +283,7 @@ create table eval_rebuild_day_figures (
     was_fold_key bigint,
     was_figures bytea,
     was_rows_stamp bigint,
-    primary key (rebuild_id, project_key, day, eval_id, deploy_repo)
+    primary key (rebuild_id, project_key, repo, day, eval_id, deploy_repo)
 );
 
 create table eval_rebuild_reverify (

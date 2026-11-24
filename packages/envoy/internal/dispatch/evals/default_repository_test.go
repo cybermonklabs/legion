@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -153,25 +154,19 @@ func TestADeployCountsOnceInEachProjectWhoseIssueOrDefaultRepositoryItReaches(t 
 	}
 }
 
-// A pull request whose issue is held only through its project's default repository counts by a
-// read-time selection, which a move of that default makes within the page that publishes it and
-// with no day row written (dispatch://INFRA-2916, R15 and R14):
-// acme/quay is QUAY's default repository and the deploy repository, and acme/quay#1, merged
-// yesterday, names PIER-1 alone, an issue of PIER that owns no repository and has no parent, while
-// PIER's default is acme/pier. So no issue is held for the pull request, and QUAY counts it, the
-// deploy run that ships it and its PR-checks run through the repository, and PIER counts none of
-// them. Once PIER's default moves to acme/quay and a page publishes it, PIER-1 resolves to
-// acme/quay: PIER counts all three through its issue (via 0) and QUAY none, no day row or member
-// is written by the move, and each project's eval list read of every offered range answers the
-// fold of its day rows, as do the stored figures. The move back restores the first answer the same
-// way. Red where the day rows follow delivery_pull_requests.issue_key alone, which the move leaves
-// null: PIER then reads the repository's rows as QUAY does, through the repository.
-func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t *testing.T) {
-	r := newRefresherRig(t)
+// pierRepo and quayRepo are the default repositories of PIER and QUAY (seedPierAndQuay).
+const pierRepo, quayRepo = "acme/pier", "acme/quay"
+
+// seedPierAndQuay writes the history of a pull request held only through its project's default
+// repository, and answers its day, yesterday: acme/quay is QUAY's default repository and the
+// deploy repository, and acme/quay#1, merged yesterday, names PIER-1 alone, an issue of PIER that
+// owns no repository and has no parent, while PIER's default is acme/pier; a deploy run ships it
+// and a PR-checks run checks it, each with one job.
+func seedPierAndQuay(t *testing.T, r *refresherRig) time.Time {
+	t.Helper()
 	ctx, pool := t.Context(), r.database.Pool
 	day := refresherToday.AddDate(0, 0, -1)
 	at := func(hour int) time.Time { return day.Add(time.Duration(hour) * time.Hour) }
-	const pierRepo, quayRepo = "acme/pier", "acme/quay"
 	actor := model.Actor{Kind: "system", ID: "default-repository-test"}
 	r.exec(t, "the projects", `insert into projects (key, name, default_assignee, next_number, default_repo)
 		values ('PIER', 'Pier', 'alice', 2, $1), ('QUAY', 'Quay', 'alice', 1, $2)`, pierRepo, quayRepo)
@@ -221,6 +216,24 @@ func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t 
 			t.Fatalf("write the job of run %d: %v", run.id, err)
 		}
 	}
+	return day
+}
+
+// A pull request whose issue is held only through its project's default repository counts by a
+// read-time selection, which a move of that default makes within the page that publishes it and
+// with no day row written (dispatch://INFRA-2916, R15 and R14), over seedPierAndQuay's history:
+// no issue is held for the pull request, and QUAY counts it, the deploy run that ships it and its
+// PR-checks run through the repository, and PIER counts none of them. Once PIER's default moves to
+// acme/quay and a page publishes it, PIER-1 resolves to acme/quay: PIER counts all three through
+// its issue (via 0) and QUAY none, no day row or member is written by the move, and each project's
+// eval list read of every offered range answers the fold of its day rows, as do the stored
+// figures. The move back restores the first answer the same way. Red where the day rows follow
+// delivery_pull_requests.issue_key alone, which the move leaves null: PIER then reads the
+// repository's rows as QUAY does, through the repository.
+func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	day := seedPierAndQuay(t, r)
 	r.settle(t)
 	r.expectBuilt(t, "the first whole build", refresherToday)
 
@@ -296,6 +309,259 @@ func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t 
 		}
 		check(move.name, move.counting, move.via)
 	}
+}
+
+// webRepo is the repository the logged readings of logAcmeWeb name: no default of these histories
+// is it, so no move of one moves its cuts.
+const webRepo = "acme/web"
+
+// logAcmeWeb registers project's logged eval review-latency, whose one series folds its readings'
+// minutes as a quantile, and logs three readings of it on day, two of them of acme/web: rows of the
+// project's cut of acme/web beside its own.
+func (r *refresherRig) logAcmeWeb(t *testing.T, project string, day time.Time) {
+	t.Helper()
+	if _, err := r.registry.Register(t.Context(), Registration{
+		Project: project, Slug: "review-latency", Caller: alice, Kind: Set(KindExperiment),
+		Series: []SeriesChange{{Series: "minutes", SeriesComputationChange: SeriesComputationChange{Agg: Set(AggQuantile)}}},
+	}); err != nil {
+		t.Fatalf("register %s's review-latency: %v", project, err)
+	}
+	var rows []json.RawMessage
+	for index, minutes := range []float64{12, 30, 7.5} {
+		fields := map[string]any{"series": "minutes", "row_kind": "review", "row_key": fmt.Sprint(index), "value": minutes,
+			"measured_at": day.Add(time.Duration(9+index) * time.Hour)}
+		if index < 2 {
+			fields["attributes"] = map[string]any{"repo": webRepo}
+		}
+		rows = append(rows, row(t, fields))
+	}
+	if _, err := r.registry.WriteReadings(t.Context(), Batch{Project: project, Slug: "review-latency", Rows: rows, Caller: alice, BuiltBy: r.build}); err != nil {
+		t.Fatalf("log %s's review-latency: %v", project, err)
+	}
+}
+
+// wokenPass makes one refresher pass as of the rig's clock with no batch of the walks, as the pass
+// a wake runs inside a RefresherGap does (refresh): its pages publish what they read, a move of a
+// default repository among it, and it makes none of the background work, the refold of the cuts a
+// move marked stale among it.
+func (r *refresherRig) wokenPass(t *testing.T) {
+	t.Helper()
+	if _, err := r.horizon.Await(t.Context()); err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+	if _, _, err := r.registry.refresh(t.Context(), RefresherDeps{Horizon: r.horizon, Build: r.build},
+		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, nil); err != nil {
+		t.Fatalf("the refresher's woken pass failed: %v", err)
+	}
+}
+
+// staleMark is a stale cut's mark as eval_figure_cuts_stale holds it: its generation, and the
+// first end day its refold has not folded (nil while the refold is to begin).
+type staleMark struct {
+	generation int64
+	next       *time.Time
+}
+
+// staleMarks is every stale cut's mark, by cut.
+func (r *refresherRig) staleMarks(t *testing.T) map[staleCut]staleMark {
+	t.Helper()
+	rows, err := r.database.Pool.Query(t.Context(), `select project_key, repo, generation, next_day from eval_figure_cuts_stale`)
+	if err != nil {
+		t.Fatalf("read the stale cuts: %v", err)
+	}
+	marks := map[staleCut]staleMark{}
+	var cut staleCut
+	var mark staleMark
+	if _, err := pgx.ForEachRow(rows, []any{&cut.project, &cut.repo, &mark.generation, &mark.next}, func() error {
+		kept := mark
+		if mark.next != nil {
+			kept.next = new(measures.Midnight(*mark.next))
+		}
+		marks[cut] = kept
+		return nil
+	}); err != nil {
+		t.Fatalf("read the stale cuts: %v", err)
+	}
+	return marks
+}
+
+// moveShapes is two offered reads of a cut: 28 days with a compare range as a GET, and the live 7
+// days with a compare range.
+func moveShapes() []struct {
+	name            string
+	window, compare Range
+} {
+	return []struct {
+		name            string
+		window, compare Range
+	}{
+		{"28 days", rangeOf(28, refresherToday), rangeOf(28, refresherToday.AddDate(0, 0, -28))},
+		{"the live 7 days", rangeOf(8, refresherToday.AddDate(0, 0, 1)), rangeOf(7, refresherToday.AddDate(0, 0, -7))},
+	}
+}
+
+// TestADefaultMoveMarksOnlyTheCutsItTouches: over seedPierAndQuay's history, with a logged eval of
+// PIER and one of QUAY whose readings of acme/web are rows of each project's cut of it, PIER's
+// default moves to acme/quay and the pass a wake runs publishes it, with no background work
+// (wokenPass). Its commit marks stale the cuts the move moves and no other: PIER's old and new
+// default's (acme/pier, acme/quay), and QUAY's acme/quay, whose owner keys of acme/quay#1 and the
+// runs of it PIER gains and QUAY loses. Right after it, a read of a touched cut (PIER's and QUAY's
+// acme/quay) answers the fold of its day rows and is stated from no stored figure, while a read of
+// an untouched cut of the same project and of the other (each one's acme/web), and of each
+// project's own rows, which the move's commit folded, is stated from the stored figures, each
+// answering the fold of its rows. Once the refresher settles no cut is marked, each touched cut is
+// stated from the stored figures again, with the bytes the fold of its day rows answered while it
+// was stale, and the stored figures are the fold of the rows that stand. Red where a move marks
+// every cut of the projects it moves, or none of them, or where a read of a stale cut reads its
+// stored figures.
+func TestADefaultMoveMarksOnlyTheCutsItTouches(t *testing.T) {
+	r := newRefresherRig(t)
+	day := seedPierAndQuay(t, r)
+	for _, project := range []string{"PIER", "QUAY"} {
+		r.logAcmeWeb(t, project, day)
+	}
+	r.settle(t)
+	r.expectBuilt(t, "the first whole build", refresherToday)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Fatalf("the first whole build left the cuts %v stale", marks)
+	}
+	r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, quayRepo)
+	r.wokenPass(t)
+	want := []staleCut{{project: "PIER", repo: pierRepo}, {project: "PIER", repo: quayRepo}, {project: "QUAY", repo: quayRepo}}
+	if marked := slices.SortedFunc(maps.Keys(r.staleMarks(t)), compareStaleCuts); !slices.Equal(marked, want) {
+		t.Fatalf("the pass that published PIER's move to %s marked the cuts %v stale, want %v", quayRepo, marked, want)
+	}
+	reads := []struct {
+		project, repo string
+		touched       bool
+	}{
+		{"PIER", quayRepo, true}, {"QUAY", quayRepo, true},
+		{"PIER", webRepo, false}, {"QUAY", webRepo, false}, {"PIER", "", false}, {"QUAY", "", false},
+	}
+	// whileStale is what the fold of each touched cut's day rows answered while it was stale, by
+	// project, repository, shape and eval.
+	whileStale := map[string]string{}
+	check := func(what string, stale bool) {
+		t.Helper()
+		for _, read := range reads {
+			var filter []string
+			if read.repo != "" {
+				filter = []string{read.repo}
+			}
+			for _, one := range moveShapes() {
+				stated, folded, fromFigures := r.listValues(t, read.project, filter, one.window, &one.compare)
+				fromStale := stale && read.touched
+				if fromStale && fromFigures != 0 || !fromStale && fromFigures == 0 {
+					t.Errorf("%s: the read of %s's %q over %s stated %d evals from the stored figures, want them stated from them %t",
+						what, read.project, read.repo, one.name, fromFigures, !fromStale)
+				}
+				for _, id := range slices.Sorted(maps.Keys(folded)) {
+					if stated[id] != folded[id] {
+						t.Errorf("%s: the read of %s's %q over %s states %s's values in %d bytes that differ from the fold of its day rows' %d at byte %d",
+							what, read.project, read.repo, one.name, id, len(stated[id]), len(folded[id]), firstDiffering(stated[id], folded[id]))
+					}
+					key := read.project + " " + read.repo + " " + one.name + " " + id
+					switch {
+					case !read.touched:
+					case stale:
+						whileStale[key] = folded[id]
+					case stated[id] != whileStale[key]:
+						t.Errorf("%s: the read of %s's %q over %s states %s's values in %d bytes that differ from the %d the fold of its day rows answered while it was stale, at byte %d",
+							what, read.project, read.repo, one.name, id, len(stated[id]), len(whileStale[key]), firstDiffering(stated[id], whileStale[key]))
+					}
+				}
+			}
+		}
+	}
+	check("right after the pass that published the move", true)
+
+	r.settle(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the passes after the move settled with the cuts %v stale", marks)
+	}
+	check("once the refresher settled", false)
+	expectTruth(t, "once the refresher settled", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded: over seedPierAndQuay's
+// history, with batches of one end day (refresherRig.batch), PIER's default moves to acme/quay and
+// the pass a wake runs publishes it, which marks PIER's cut of acme/quay stale; one pass folds the
+// first end day of the cut again and leaves the rest marked, its refold begun. PIER's default then
+// moves back, and the pass that publishes it marks the cut again, at the next generation, its
+// refold to begin again. The mark then stands at every pass until the refold of the new generation
+// has folded every end day of the cut from its first, the passes the whole cut takes and not the
+// fewer the first generation's refold had left, a read of the cut folding the day rows meanwhile
+// and answering what they fold; once it is cleared, the read is stated from the stored figures,
+// and they are the fold of the rows that stand. Red where a move keeps the progress or the
+// generation of a refold begun: the refold then goes on from where the first generation stood,
+// clears the mark a pass early, and leaves the stored figures of the cut's first end day folded
+// under the default the second move left.
+func TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded(t *testing.T) {
+	r := newRefresherRig(t)
+	seedPierAndQuay(t, r)
+	r.settle(t)
+	r.expectBuilt(t, "the first whole build", refresherToday)
+	r.batch = 1
+	cut := staleCut{project: "PIER", repo: quayRepo}
+	r.exec(t, "move PIER's default repository", `update projects set default_repo = $1 where key = 'PIER'`, quayRepo)
+	r.wokenPass(t)
+	first, held := r.staleMarks(t)[cut]
+	if !held || first.next != nil {
+		t.Fatalf("the pass that published PIER's move to %s left its cut of it marked %t at %+v, want marked with its refold to begin", quayRepo, held, first)
+	}
+	r.pass(t)
+	begun, held := r.staleMarks(t)[cut]
+	if !held || begun.next == nil || begun.generation != first.generation {
+		t.Fatalf("a pass of one end day left PIER's cut of %s marked %t at %+v, want its refold begun and not done, at generation %d", quayRepo, held, begun, first.generation)
+	}
+	// whole is how many end days the refold of the cut folds: from the first one the begun refold
+	// folded through the last end day the figures are built through.
+	whole := int(refresherToday.AddDate(0, 0, FigureLead).Sub(begun.next.AddDate(0, 0, -1))/(24*time.Hour)) + 1
+	if whole < 2 {
+		t.Fatalf("the refold of PIER's cut of %s folds %d end days, and the check needs more than the one its first batch folded", quayRepo, whole)
+	}
+	r.exec(t, "move PIER's default repository back", `update projects set default_repo = $1 where key = 'PIER'`, pierRepo)
+	r.wokenPass(t)
+	if again, held := r.staleMarks(t)[cut]; !held || again.generation != begun.generation+1 || again.next != nil {
+		t.Fatalf("the pass that published PIER's move back to %s left its cut of %s marked %t at %+v, want generation %d with its refold to begin again",
+			pierRepo, quayRepo, held, again, begun.generation+1)
+	}
+	shape := moveShapes()[0]
+	passes := 0
+	for {
+		if _, held := r.staleMarks(t)[cut]; !held {
+			break
+		}
+		if passes > 3*whole {
+			t.Fatalf("%d passes after the move back left PIER's cut of %s stale", passes, quayRepo)
+		}
+		stated, folded, fromFigures := r.listValues(t, "PIER", []string{quayRepo}, shape.window, &shape.compare)
+		if fromFigures != 0 {
+			t.Errorf("%d passes after the move back, with the cut stale, the read of PIER's %s stated %d evals from the stored figures", passes, quayRepo, fromFigures)
+		}
+		for _, id := range slices.Sorted(maps.Keys(folded)) {
+			if stated[id] != folded[id] {
+				t.Errorf("%d passes after the move back, the read of PIER's %s states %s's values otherwise than the fold of its day rows", passes, quayRepo, id)
+			}
+		}
+		r.pass(t)
+		passes++
+	}
+	if passes < whole {
+		t.Errorf("the mark of PIER's cut of %s was cleared %d passes after the move back, where the refold of its whole %d end days takes %d",
+			quayRepo, passes, whole, whole)
+	}
+	stated, folded, fromFigures := r.listValues(t, "PIER", []string{quayRepo}, shape.window, &shape.compare)
+	if fromFigures == 0 {
+		t.Errorf("once the mark was cleared the read of PIER's %s stated no eval from the stored figures", quayRepo)
+	}
+	for _, id := range slices.Sorted(maps.Keys(folded)) {
+		if stated[id] != folded[id] {
+			t.Errorf("once the mark was cleared the read of PIER's %s states %s's values otherwise than the fold of its day rows", quayRepo, id)
+		}
+	}
+	expectTruth(t, "once the refold of the new generation was done", r.storedFigures(t), r.truthFigures(t))
+	t.Logf("the refold of PIER's cut of %s, begun again at generation %d, took %d passes of one end day", quayRepo, begun.generation+1, passes)
 }
 
 // Clearing the last default repository a project holds (PUT /api/v1/projects/{key}/default-repository

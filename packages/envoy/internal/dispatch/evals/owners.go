@@ -25,7 +25,10 @@ import (
 // key as one more project, its walks, pages, spans, settings rewrites and rebuilds alike, and every
 // read of a project folds its own rows with those of the owner keys it reads under the published
 // defaults (eval_project_owners, which eval_owner_readers decides for a key that carries lists), so
-// a move of a default repository moves what each project reads and rewrites no row.
+// a move of a default repository moves what each project reads and rewrites no row: the commit that
+// publishes it folds the stored figures of each moved project's own rows again, and marks the
+// stored cut of each repository whose owner keys the project gains or loses stale until the
+// refresher folds it again (publishDefaults, figures.go).
 //
 // An owner key carries what decides its readers. Its sharers: a deploy run that ships pull
 // requests that count for projects whatever the defaults are (a constant list's terminal) counts
@@ -225,8 +228,10 @@ func ownedKeys(alias, projects string) string {
 // own stored under legionfacts.DefaultRepo (a Legion row of an issue whose own chain names no
 // repository) where project (an expression of its key) publishes one of them as its default
 // (eval_project_repos), since such a row is one of that repository: a move of the default moves the
-// cut and rewrites no row (dispatch://INFRA-2916, plan D1 (vi)). A read that names no repository
-// adds none of it.
+// cut and rewrites no row (dispatch://INFRA-2916, plan D1 (vi)), and marks the stored figures of
+// the two defaults' cuts stale until they are folded again (publishDefaults). The stored figures
+// keep the fold of each cut a read of one repository reads by cutOf, the same rule read the other
+// way. A read that names no repository adds none of it.
 func repoCut(alias, repos, project string) string {
 	return `(` + alias + `.repo = any(` + repos + `) or (` + alias + `.repo = '` + legionfacts.DefaultRepo + `' and ` + alias + `.project_key = o.project_key and exists (
 		select 1 from eval_project_repos p where p.project_key = ` + project + ` and p.repo = any(` + repos + `))))`

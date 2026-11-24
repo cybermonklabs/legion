@@ -190,13 +190,14 @@ var serverRefresherSchedule = refresherSchedule{
 // RunRefresher keeps every project's day rows true to their inputs (the refresher's rules above)
 // until ctx is done: one pass at start; a pass on each wake, which starts as soon as the pass
 // running when it came ends; a pass RefresherGap after the last pass that began a batch of the
-// walks, where the walks had days left after it or a pass since then began none (RefresherGap); a
-// pass horizonRetry after one that left an event above the safe horizon it read, the wait doubling
-// with each such pass in a row up to RefresherGap; a pass RefresherGap after one that failed; and
-// a pass at the earliest of the next UTC midnight, which begins a day every walk builds, and
-// pruneSlack after the oldest delivery change passes delivery.ChangeRetention, which the pass then
-// prunes (delivery.PruneChanges), so the change log keeps its retention where no GitHub App runs
-// the reconcile that prunes it too.
+// walks, where the walks or the refold of a cut a default move marked stale had work left after it
+// (refreshed.walksLeft), or a pass since then began none (RefresherGap), as the one a move's wake
+// runs; a pass horizonRetry after one that left an event above the safe horizon it read, the wait
+// doubling with each such pass in a row up to RefresherGap; a pass RefresherGap after one that
+// failed; and a pass at the earliest of the next UTC midnight, which begins a day every walk
+// builds, and pruneSlack after the oldest delivery change passes delivery.ChangeRetention, which
+// the pass then prunes (delivery.PruneChanges), so the change log keeps its retention where no
+// GitHub App runs the reconcile that prunes it too.
 func (s *Store) RunRefresher(ctx context.Context, deps RefresherDeps) {
 	s.runRefresher(ctx, deps, serverRefresherSchedule)
 }
@@ -268,14 +269,16 @@ func earlier(a, b time.Time) time.Time {
 }
 
 // gapBatch is the walks' batch of one RefresherGap: how many of the batch days the gap gives each
-// walk (refresherSchedule.batch) it has built, by walk, and of each project's figures walk how
-// many end days. A pass whose walks stopped for an owed wake (refresh.yields) leaves the rest to
-// the next pass, which the loop starts at once and which builds them after its changes' work, so
-// each walk builds up to a whole batch per gap however many passes the wakes cut it into. The
-// loop keeps one across its passes and begins a new one each RefresherGap; RefreshThrough and a
-// test's pass give each pass a new one, which builds a whole batch.
+// walk (refresherSchedule.batch) it has built, by walk, of each project's figures walk how many
+// end days, and of each stale cut's refold (refoldStaleCuts) how many end days. A pass whose walks
+// stopped for an owed wake (refresh.yields) leaves the rest to the next pass, which the loop starts
+// at once and which builds them after its changes' work, so each walk builds up to a whole batch
+// per gap however many passes the wakes cut it into. The loop keeps one across its passes and
+// begins a new one each RefresherGap; RefreshThrough and a test's pass give each pass a new one,
+// which builds a whole batch.
 type gapBatch struct {
 	built map[walkKey]int
+	cuts  map[staleCut]int
 }
 
 // through is the last day of the days the batch has left key's walk of size days to build from
@@ -298,6 +301,20 @@ func (b *gapBatch) spend(key walkKey, n int) {
 		b.built = map[walkKey]int{}
 	}
 	b.built[key] += n
+}
+
+// cutDays is how many end days of a batch of size the batch has left the refold of the stale cut
+// cut, none or fewer.
+func (b *gapBatch) cutDays(cut staleCut, size int) int {
+	return max(size, 1) - b.cuts[cut]
+}
+
+// spendCut records that the refold of the stale cut cut spent n more end days of the batch.
+func (b *gapBatch) spendCut(cut staleCut, n int) {
+	if b.cuts == nil {
+		b.cuts = map[staleCut]int{}
+	}
+	b.cuts[cut] += n
 }
 
 // refreshThroughPasses bounds RefreshThrough: a pass builds walkBatch days of each walk, so this
@@ -339,8 +356,9 @@ func (s *Store) RefreshThrough(ctx context.Context, deps RefresherDeps, now time
 // what a check of which days a change touches reads, and each project whose seed it ran, in the
 // order it ran them. The unowned-p0 row of today is recorded under its slug, and a logged eval's
 // zero fill under walkLogged and the day it filled through. walksLeft is whether a walk of the day
-// rows or a figures walk has days left after the pass's batch, or the rebuild or its cleanup has
-// work left (finishRebuild), yielded whether its walks stopped for an owed wake with days of their
+// rows or a figures walk has days left after the pass's batch, a cut a default move marked stale
+// is not folded again yet (refoldStaleCuts), or the rebuild or its cleanup has work left
+// (finishRebuild), yielded whether its walks stopped for an owed wake with days of their
 // batch left (refresh.yields), and heldBack whether its safe horizon held an event back (refresh).
 type refreshed struct {
 	days      map[builtDay]bool

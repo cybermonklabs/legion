@@ -11,19 +11,22 @@ import (
 // read before the stored figures.
 const (
 	rangeFiguresRead = `select days, end_day, eval_id, fold_key, figures, oldest_updated_at from eval_range_figures
-		where project_key = any($1::text[]) and eval_id = any($2::text[]) and days = $5 and end_day = $6::date
-			and deploy_repo = case when eval_id = any($3::text[]) then $4::text else '' end
+		where project_key = any($1::text[]) and repo = $2 and eval_id = any($3::text[]) and days = $6 and end_day = $7::date
+			and deploy_repo = case when eval_id = any($4::text[]) then $5::text else '' end
 		union all
 		select days, end_day, eval_id, fold_key, figures, oldest_updated_at from eval_range_figures
-		where project_key = any($1::text[]) and eval_id = any($2::text[]) and days = $7 and end_day = $8::date
-			and deploy_repo = case when eval_id = any($3::text[]) then $4::text else '' end`
+		where project_key = any($1::text[]) and repo = $2 and eval_id = any($3::text[]) and days = $8 and end_day = $9::date
+			and deploy_repo = case when eval_id = any($4::text[]) then $5::text else '' end`
 	dayFiguresRead = `
 				select eval_id, day, fold_key, figures from eval_day_figures
-				where project_key = any($1::text[]) and day >= $2::date and day < $3::date and eval_id = any($4::text[])
-					and deploy_repo = case when eval_id = any($5::text[]) then $6::text else '' end
+				where project_key = any($1::text[]) and repo = $2 and day >= $3::date and day < $4::date and eval_id = any($5::text[])
+					and deploy_repo = case when eval_id = any($6::text[]) then $7::text else '' end
 			`
-	figuresBuiltRead = `select project_key, through from eval_figures_built where project_key = any($1)`
-	dayRowsUnion     = `select true, eval_id, series, day, n, sum, num, den, max
+	figuresBuiltRead = `
+		select b.project_key, b.through from eval_figures_built b
+		where b.project_key = any($1) and not exists (select 1 from eval_figure_cuts_stale s where s.project_key = b.project_key and s.repo = $2)
+	`
+	dayRowsUnion = `select true, eval_id, series, day, n, sum, num, den, max
 			from eval_days
 			where project_key = any($1::text[]) and repo = any($2) and listed and eval_id = any($3)
 			  and day >= $4::date and day < $5::date
@@ -50,12 +53,12 @@ func listRead(statements map[int64]string, params map[int64][]string) measuredCa
 func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 	window, compare := "'2026-11-22 00:00:00+00'", "'2026-08-30 00:00:00+00'"
 	read := listRead(map[int64]string{11: rangeFiguresRead, 12: figuresBuiltRead, 13: dayFiguresRead}, map[int64][]string{
-		11: {"'{INFRA}'", "'{INFRA/a,INFRA/b}'", "'{INFRA/b}'", "'owner/deploy'", "'84'", window, "'84'", compare},
-		12: {"'{INFRA}'"},
-		13: {"'{INFRA}'", compare, window, "'{INFRA/a}'", "'{INFRA/b}'", "'owner/deploy'"},
+		11: {"'{INFRA}'", "''", "'{INFRA/a,INFRA/b}'", "'{INFRA/b}'", "'owner/deploy'", "'84'", window, "'84'", compare},
+		12: {"'{INFRA}'", "''"},
+		13: {"'{INFRA}'", "''", compare, window, "'{INFRA/a}'", "'{INFRA/b}'", "'owner/deploy'"},
 	})
 	rangeBranch := func(columns, end string) string {
-		return "select " + columns + " from eval_range_figures where project_key = any('{INFRA}'::text[]) " +
+		return "select " + columns + " from eval_range_figures where project_key = any('{INFRA}'::text[]) and repo = '' " +
 			"and eval_id = any('{INFRA/a,INFRA/b}'::text[]) and days = '84' and end_day = " + end + "::date " +
 			"and deploy_repo = case when eval_id = any('{INFRA/b}'::text[]) then 'owner/deploy'::text else '' end"
 	}
@@ -63,7 +66,7 @@ func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 		return rangeBranch(columns, window) + " union all " + rangeBranch(columns, compare)
 	}
 	dayRead := func(columns string) string {
-		return "select " + columns + " from eval_day_figures where project_key = any('{INFRA}'::text[]) " +
+		return "select " + columns + " from eval_day_figures where project_key = any('{INFRA}'::text[]) and repo = '' " +
 			"and day >= " + compare + "::date and day < " + window + "::date and eval_id = any('{INFRA/a}'::text[]) " +
 			"and deploy_repo = case when eval_id = any('{INFRA/b}'::text[]) then 'owner/deploy'::text else '' end"
 	}
@@ -103,7 +106,7 @@ func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 
 	dayRows := listRead(map[int64]string{21: dayRowsUnion, 22: figuresBuiltRead}, map[int64][]string{
 		21: {"'{INFRA}'", `'{""}'`, "'{INFRA/a,INFRA/b}'", compare, window, "'2026-06-07 00:00:00+00'", compare},
-		22: {"'{INFRA}'"},
+		22: {"'{INFRA}'", "''"},
 	})
 	found, _, err = storedFiguresReads(dayRows)
 	if err == nil {

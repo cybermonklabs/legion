@@ -74,9 +74,9 @@ const writtenQuery = `
 	union all
 	select 'member ' || project_key || ' ' || family || ' ' || deploy_repo || ' ' || row_key, xmin::text from eval_day_members
 	union all
-	select 'range ' || project_key || ' ' || deploy_repo || ' ' || days || ' ' || end_day || ' ' || eval_id, xmin::text from eval_range_figures
+	select 'range ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || days || ' ' || end_day || ' ' || eval_id, xmin::text from eval_range_figures
 	union all
-	select 'figure ' || project_key || ' ' || deploy_repo || ' ' || day || ' ' || eval_id, xmin::text from eval_day_figures`
+	select 'figure ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || day || ' ' || eval_id, xmin::text from eval_day_figures`
 
 // movedKeys is the keys of before and after whose rows a write made, deleted or moved, the first
 // ten, sorted, and how many there are.

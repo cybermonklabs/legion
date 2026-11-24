@@ -36,12 +36,12 @@ func evalDaysEnding(n int, end time.Time) evals.Range {
 	return evals.Range{From: end.AddDate(0, 0, -n), To: end}
 }
 
-// storedEvalShapes is every shape of the list read a page asks for as of today, and the shapes the
-// stored figures do not answer: each preset of the Evals tab as a GET from midnight to midnight (L
-// days ending today), with and without the compare range before it; each as the live view reads it
-// at a moment of today (L+1 days ending tomorrow), with the compare range its query names and
-// without; and, read from the day rows, a repository's rows (the stored figures fold the project's
-// own rows alone), a range of a length the tab does not offer and two repositories.
+// storedEvalShapes is every shape of the list read a page asks for as of today, and two the stored
+// figures do not answer: each preset of the Evals tab as a GET from midnight to midnight (L days
+// ending today), with and without the compare range before it; each as the live view reads it at
+// a moment of today (L+1 days ending tomorrow), with the compare range its query names and
+// without; a repository's rows, which the stored figures of its cut answer; and, read from the day
+// rows, a range of a length the tab does not offer and two repositories.
 func storedEvalShapes(today time.Time, repo, other string) []evalShape {
 	var shapes []evalShape
 	for _, n := range []int{7, 14, 28, 84} {
@@ -54,8 +54,8 @@ func storedEvalShapes(today time.Time, repo, other string) []evalShape {
 	}
 	repoCompare, custom, customCompare := evalDaysEnding(28, today.AddDate(0, 0, -28)), evalDaysEnding(10, today), evalDaysEnding(10, today.AddDate(0, 0, -10))
 	return append(shapes,
-		evalShape{name: "28 days of " + repo + " with a compare range", window: evalDaysEnding(28, today), compare: &repoCompare, repos: []string{repo}},
-		evalShape{name: "the live 14 days of " + repo, window: evalDaysEnding(15, today.AddDate(0, 0, 1)), repos: []string{repo}},
+		evalShape{name: "28 days of " + repo + " with a compare range", window: evalDaysEnding(28, today), compare: &repoCompare, repos: []string{repo}, offered: true},
+		evalShape{name: "the live 14 days of " + repo, window: evalDaysEnding(15, today.AddDate(0, 0, 1)), repos: []string{repo}, offered: true},
 		evalShape{name: "10 days with a compare range", window: custom, compare: &customCompare},
 		evalShape{name: "28 days of two repositories", window: evalDaysEnding(28, today), compare: &repoCompare, repos: []string{repo, other}})
 }
@@ -175,11 +175,12 @@ func readEvalShape(t *testing.T, served *server, projects []string, now time.Tim
 // with every eval of each computed source and a logged eval of each agg (the quantile among
 // them), the list read of every shape a page asks for answers byte for byte what the read of the
 // day rows answers, folded in day order: each preset with and without its compare range, as a GET
-// and as the live view's L+1 days, and ranges that start before a series' first day. The read of
-// the day rows is the same server's once no project's figures stand built (eval_figures_built),
-// which a read of a repository's rows, a range of a length the tab does not offer and a read of
-// two repositories read anyway. The negative control breaks the stored figures of one eval: every
-// shape the stored figures answer then answers otherwise, and those the day rows answer do not.
+// and as the live view's L+1 days, a repository's rows, and ranges that start before a series'
+// first day. The read of the day rows is the same server's once no project's figures stand built
+// (eval_figures_built), which a range of a length the tab does not offer and a read of two
+// repositories read anyway. The negative control breaks the stored figures of one eval, every cut
+// of them: every shape the stored figures answer then answers otherwise, and the two the day rows
+// answer do not.
 func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 	r, exec := newStoredEvalsRig(t)
 	shapes := storedEvalShapes(r.today, r.repos[0], r.repos[1])

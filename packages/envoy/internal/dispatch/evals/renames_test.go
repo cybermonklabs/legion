@@ -22,8 +22,8 @@ var renamedRowsStatements = []string{
 	`select concat_ws(' ', 'day', project_key, eval_id, writer, deploy_repo, series, repo, day, listed, n, sum, num, den, max,
 		samples::text, counts::text, via_repository) from eval_days`,
 	`select concat_ws(' ', 'member', project_key, family, deploy_repo, row_key, day, repo, shipped_by) from eval_day_members`,
-	`select concat_ws(' ', 'range', project_key, days, end_day, eval_id, deploy_repo, encode(figures, 'hex')) from eval_range_figures`,
-	`select concat_ws(' ', 'day figures', project_key, day, eval_id, deploy_repo, encode(figures, 'hex')) from eval_day_figures`,
+	`select concat_ws(' ', 'range', project_key, repo, days, end_day, eval_id, deploy_repo, encode(figures, 'hex')) from eval_range_figures`,
+	`select concat_ws(' ', 'day figures', project_key, repo, day, eval_id, deploy_repo, encode(figures, 'hex')) from eval_day_figures`,
 	`select concat_ws(' ', 'facts', project_key, issue_key, coalesce(repo, '-')) from issue_facts`,
 }
 

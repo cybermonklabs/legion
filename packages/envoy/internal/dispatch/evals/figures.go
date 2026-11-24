@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 )
 
 // The stored figures (dispatch://INFRA-2916, k8; migration 20261120072042) are the eval list's
@@ -31,39 +32,59 @@ import (
 // (DayWindowIn, SeriesValuesOf). k8 measured the first paint at 84 days with a compare range on the
 // farm's slowest node: 95.6 ms of database time over the day rows, 12.2 ms over the stored rows.
 //
-//   - eval_range_figures holds, for each project, range (one of FigureLengths and its end day,
-//     exclusive) and eval, the statistics FoldStatistics answers for the eval's listed series over
-//     the range's rows, those rows in day order, each series' via-repository count, and the oldest
-//     updated_at of the rows (the read's freshness). A range that holds no listed row of the eval
-//     has no row: its fold is the fold of no parts.
-//   - eval_day_figures holds, for each project, day and eval that holds a listed row of the eval,
-//     the day's figures of each headline series that holds a row that day (the per-day array
-//     SeriesValuesOf answers), and the stamp of the rows it folded (rowsStamp).
+//   - eval_range_figures holds, for each project, cut (figureCut: '' for the project's own rows, or
+//     a repository), range (one of FigureLengths and its end day, exclusive) and eval, the
+//     statistics FoldStatistics answers for the eval's listed series over the range's rows of the
+//     cut, those rows in day order, each series' via-repository count, and the oldest updated_at of
+//     the rows (the read's freshness). A range that holds no listed row of the eval in the cut has
+//     no row: its fold is the fold of no parts.
+//   - eval_day_figures holds, for each project, cut, day and eval that holds a listed row of the
+//     eval in the cut, the day's figures of each headline series that holds a row that day (the
+//     per-day array SeriesValuesOf answers), and the stamp of the rows it folded (rowsStamp).
 //
-// Each is a fold of the project's own rows alone (repo '', the all-repositories day rows: its own
-// and those of the owner keys it reads under the published defaults, owners.go), which a
-// read that names no repository folds, the first paint of the Evals tab k8 measured. A read that
-// names a repository folds the day rows instead (FiguresOffered), about 5 ms of them at 84 days
-// with a compare range (the plan's measure): a repository's cut folds the Legion rows stored under
-// legionfacts.DefaultRepo and the owner keys' rows where it is the published default, so a move of
-// the default would fold every stored figure of the old and the new default's cuts again, about
-// 290,000 rows at INFRA's size, where the move must reach every view within 2 s (R14). Each is kept
-// for the rows of each deploy repository apart, as the day rows are (deploy_repos.go): a fold of
-// the evals that read the deploy repository for each repository whose rows of them are kept, and a
-// read looks up the fold of the repository recorded with the rows (DeployRepoIn).
+// Each is kept for every cut a read folds: the project's own rows (repo '', the all-repositories
+// day rows: its own and those of the owner keys it reads under the published defaults, owners.go),
+// which a read that names no repository folds, the first paint of the Evals tab k8 measured; and
+// each repository's, which a read that names that one repository folds (DayWindowIn with it, R16's
+// header filter): the rows of the repository the project reads, its own and its owner keys', and,
+// of the repository it publishes as its default, its own rows stored under
+// legionfacts.DefaultRepo (repoCut), which belong to that cut alone and to none where the project
+// publishes no default (cutOf). No cut of legionfacts.DefaultRepo itself is stored: no read names
+// it. At INFRA's size the fold of the day rows of one repository read 35,297 rows at 84 days with a
+// compare range, 75 to 175 ms on the farm, past R14's 150 ms, where its stored cut answered in at
+// most 17 ms at 04de13fa. Each is kept for the rows of each deploy repository apart, as the day
+// rows are (deploy_repos.go): a fold of the evals that read the deploy repository for each
+// repository whose rows of them are kept, and a read looks up the fold of the repository recorded
+// with the rows (DeployRepoIn).
 //
 // A range exists for every length of FigureLengths and every end day from the day after the
 // eval's first row through FigureLead days after today: a compare range ends on any day before the
 // window's, and a page held open keeps its compare range while its window rolls on.
 //
 // Every write keeps one rule: a stored figure is a fold of day rows, so it moves only with them.
-// Each write of day rows folds again, in its own transaction, the figures of every day whose own
-// rows (repo '') it moved (refoldFigures): the day's own row and every range whose span holds the
-// day (D < E <= D+n), up to the last end day the project's figures are built through
-// (figureScope), each upserted only where its figures moved and deleted where it holds no row any
-// more. A day's rows moved where their stamp is not the one its stored day row recorded, or that
-// row was folded under another fold key (foldKeyOf). So a write that moved nothing, such as a new
-// build's rebuild of rows whose values stood, reads two short index ranges and writes nothing.
+// Each write of day rows folds again, in its own transaction, the figures of every day whose rows
+// it moved in each cut they reach (refoldFigures): a row of a repository the cut of that
+// repository of every project that reads its key, a row stored under legionfacts.DefaultRepo the
+// cut of its project's published default, and a row of repo '' the project's own; in each, the
+// day's own row and every range whose span holds the day (D < E <= D+n), up to the last end day
+// the project's figures are built through (figureScope), each upserted only where its figures
+// moved and deleted where it holds no row any more. A day's rows moved where their stamp is not
+// the one its stored day row recorded, or that row was folded under another fold key (foldKeyOf).
+// So a write that moved nothing, such as a new build's rebuild of rows whose values stood, reads
+// two short index ranges and writes nothing.
+//
+// A move of a project's default repository moves no day row, and moves what some of its cuts
+// fold: the old and the new default's (the rows stored under legionfacts.DefaultRepo), and the
+// cut of the repository of each owner key whose reading by the project it gains, loses or
+// reads otherwise through the repository. At INFRA's size the two defaults' cuts hold about
+// 290,000 range rows, which no write folds again inside R14's 2 s for a move to reach every view.
+// So the move's own commit (publishDefaults) folds again the project's own rows alone, and marks
+// each cut it moves stale (eval_figure_cuts_stale, with a generation each mark moves); the
+// refresher's background work folds each stale cut again, every range and day of it, a batch of
+// end days a pass (refoldStaleCut, one function a transaction calls), and clears its mark in the
+// transaction that finishes it unless a later move marked it again. Until then a read of the
+// stale cut folds the day rows, which answer the same bytes (figuresThrough), and every other cut
+// stays served.
 //
 // The writers are the refresher's writes of a project's day (writeProjectDay), its unowned-p0 row
 // (WriteUnownedP0Day), its logged zero fill (fillLoggedZeros) and its rewrite of a settings change
@@ -298,18 +319,20 @@ type stampedRow struct {
 	via       int
 }
 
-// rowsStamp is the fingerprint of one eval's own listed rows of one deploy repository and day
+// rowsStamp is the fingerprint of one eval's listed rows of one cut, deploy repository and day
 // (eval_day_figures.rows_stamp): each row's series, its updated_at to the microsecond Postgres
 // keeps and its via_repository as the project reads it, in series order and then in that of the
 // moments and of the counts, which it sorts rows into: a project's day can hold a row of one
-// series of its own and one of an owner key's (owners.go), and two rows one transaction wrote
+// series of its own and one of an owner key's (owners.go), a cut of its default repository one of
+// that repository and one stored under legionfacts.DefaultRepo, and two rows one transaction wrote
 // share a moment. Every write that moves a row's value moves its updated_at (upsertDays,
 // writeDays, relistDays), a row deleteStaleDays deletes leaves the day's rows, and one that moves
 // nothing, such as a new build's rebuild of rows whose values stood, leaves it; and a publishing
 // of the default repositories that moves which project reads an owner key's rows, or whether it
 // reads them through the repository, moves the rows a project's day holds or the via_repository
-// it reads of them (publishDefaults). So the stamp moves exactly when what the day folds does,
-// whichever build wrote the rows.
+// it reads of them (publishDefaults, which folds the project's own rows again and marks each other
+// cut it moves stale). So the stamp moves exactly when what the day folds does, whichever build
+// wrote the rows.
 func rowsStamp(rows []stampedRow) int64 {
 	slices.SortFunc(rows, func(a, b stampedRow) int {
 		return cmp.Or(strings.Compare(a.series, b.series), a.updatedAt.Compare(b.updatedAt), cmp.Compare(a.via, b.via))
@@ -325,8 +348,8 @@ func rowsStamp(rows []stampedRow) int64 {
 	return int64(hash.Sum64())
 }
 
-// figureGroup is one eval's own listed day rows of one deploy repository, in day order, and what
-// folds them: the stored figures of every range and day of the rows are folded from it.
+// figureGroup is one eval's listed day rows of one cut and deploy repository, in day order, and
+// what folds them: the stored figures of every range and day of the rows are folded from it.
 type figureGroup struct {
 	entry            Entry
 	listed, headline []Series
@@ -335,7 +358,7 @@ type figureGroup struct {
 	parts            []measures.DayPart
 }
 
-// newFigureGroup is the group of rows, one eval's own listed rows of one deploy repository as
+// newFigureGroup is the group of rows, one eval's listed rows of one cut and deploy repository as
 // DayWindowIn reads them, whose figures fold under key. It sorts rows by day, keeping the read's
 // order within a day, the order SeriesValuesOf's inputs are folded in too, so a range's figures are
 // the bits a read folds. Each series whose every row holds samples a sort keeps bit for bit
@@ -408,17 +431,18 @@ func (g *figureGroup) dayFigure(day time.Time) ([]byte, int64, bool) {
 	return encodeFigures(foldDay(g.entry.Definition, g.headline, g.parts[first:last], day), nil), rowsStamp(stamped), true
 }
 
-// foldEnds folds the group's stored figures of each end day from first through last, of evalID
-// and deployRepo, as the figures walk folds them: the range of each of FigureLengths that ends on
-// it, each into ranged, and the day before it, into daily, each where it holds a row of the group.
-func (g *figureGroup) foldEnds(evalID, deployRepo string, first, last time.Time, ranged func(rangeFigureRow), daily func(dayFigureRow)) {
+// foldEnds folds the group's stored figures of each end day from first through last, of evalID in
+// cut, as the figures walk folds them: the range of each of FigureLengths that ends on it, each
+// into ranged, and the day before it, into daily, each where it holds a row of the group.
+func (g *figureGroup) foldEnds(evalID string, cut figureCut, first, last time.Time, ranged func(rangeFigureRow), daily func(dayFigureRow)) {
 	for end := first; !end.After(last); end = end.AddDate(0, 0, 1) {
 		for _, n := range FigureLengths {
 			if figures, oldest, held := g.rangeFigure(n, end); held {
-				ranged(rangeFigureRow{rangeFigureKey: rangeFigureKey{days: n, end: end, eval: evalID, deployRepo: deployRepo}, key: g.key, figures: figures, oldest: oldest})
+				key := rangeFigureKey{repo: cut.repo, days: n, end: end, eval: evalID, deployRepo: cut.deployRepo}
+				ranged(rangeFigureRow{rangeFigureKey: key, key: g.key, figures: figures, oldest: oldest})
 			}
 		}
-		day := dayFigureKey{day: end.AddDate(0, 0, -1), eval: evalID, deployRepo: deployRepo}
+		day := dayFigureKey{repo: cut.repo, day: end.AddDate(0, 0, -1), eval: evalID, deployRepo: cut.deployRepo}
 		if figures, stamp, held := g.dayFigure(day.day); held {
 			daily(dayFigureRow{dayFigureKey: day, key: g.key, figures: figures, stamp: stamp})
 		}
@@ -432,10 +456,15 @@ func (g *figureGroup) foldEnds(evalID, deployRepo string, first, last time.Time,
 // later. Every range ending on or before it may be stored, whichever build folded it, so every
 // write keeps each of them true to its rows; no range ending after it is written, nor the day row
 // of a day on or after it: those are the walks' to fold, from the rows that stand when they do.
+// own is whether the write folds the figures of the project's own rows alone (the cut of repo
+// ”), as the commit that publishes a move of the default repositories does, which marks the cuts
+// it moves stale for their refold instead (publishDefaults); every other write folds each cut its
+// rows reach.
 type figureScope struct {
 	build   string
 	project string
 	through time.Time
+	own     bool
 }
 
 // readFigureScope reads, in q, how far project's stored figures are folded (figureScope), for a
@@ -492,24 +521,61 @@ func (s daySpan) widen(day time.Time) daySpan {
 	return s
 }
 
-// figureGroupKey is one eval's own rows of one deploy repository ("" for an eval no deploy
+// figureCut is one fold a read of a project's stored figures looks up: its rows of repo, the empty
+// string for the project's own rows (repo ”) and a repository's name for the rows a read that
+// names that one repository folds (cutOf), of one deploy repository ("" for the evals no deploy
 // repository moves; deploy_repos.go).
+type figureCut struct {
+	repo, deployRepo string
+}
+
+// compareFigureCuts orders cuts by repository and then by deploy repository, each by its bytes.
+func compareFigureCuts(a, b figureCut) int {
+	return cmp.Or(strings.Compare(a.repo, b.repo), strings.Compare(a.deployRepo, b.deployRepo))
+}
+
+// repos is the repositories a read of the cut names (DayWindowIn's repos): none for the project's
+// own rows, else the cut's one.
+func (c figureCut) repos() []string {
+	if c.repo == "" {
+		return nil
+	}
+	return []string{c.repo}
+}
+
+// cutOf is, in SQL, the repository of the cut whose stored figures fold a day row (alias) of an
+// owner key or of the project the expression project names, as that project reads it: the row's
+// repo, the empty string for its all-repositories rows and a repository's name for that
+// repository's; and for a row stored under legionfacts.DefaultRepo (a Legion row of an issue whose
+// chain names no repository) the repository the project publishes as its default
+// (eval_project_repos) where the row is the project's own, and null for an owner key's such row and
+// where the project publishes none, which no cut folds. It is repoCut's rule read the other way: a
+// read that names the one repository R folds exactly the rows whose cut is R, so no cut of
+// legionfacts.DefaultRepo itself is stored, and a move of the default moves those rows' cut.
+func cutOf(alias, project string) string {
+	return `case when ` + alias + `.repo <> '` + legionfacts.DefaultRepo + `' then ` + alias + `.repo when ` + alias + `.project_key = ` + project +
+		` then (select p.repo from eval_project_repos p where p.project_key = ` + project + `) end`
+}
+
+// figureGroupKey is one eval's rows of one cut.
 type figureGroupKey struct {
-	eval, deployRepo string
+	eval string
+	figureCut
 }
 
 // movedFigureDays reads, in q, which days of spans (each by eval id, each eval one of entries)
-// hold figures that no longer fold their rows: each eval, deploy repository and day whose own
-// listed rows' stamp (rowsStamp, of its rows of repo "", the project's and its owner keys', each
-// with its via_repository as the project reads it) is not the one the day's stored row recorded,
-// which holds rows and no stored row or a stored row and no rows, or whose stored row was folded
-// under another fold key than the eval's definition now has (a register write). A repository's
-// rows are no part of it: no stored figure folds them. Which build folded a stored row is no part
-// of the test either: a figure whose rows stand is the fold every build of these folds answers. A
-// day on or after scope.through is the figures walks', and none of it is read. The days of an eval
-// are those any of spans names, each read once (spansOf), and none between two spans of it that
-// none names. Each of its two reads is one range of an index for each of those spans:
-// eval_days_stamps of the rows' stamps, and eval_day_figures_eval_day of the stored day rows.
+// hold figures that no longer fold their rows: each eval, cut and day whose listed rows' stamp
+// (rowsStamp, of the rows of the cut, the project's and its owner keys', each with its
+// via_repository as the project reads it, and each row in the cut cutOf names) is not the one the
+// day's stored row of the cut recorded, which holds rows and no stored row or a stored row and no
+// rows, or whose stored row was folded under another fold key than the eval's definition now has
+// (a register write). A scope of the project's own rows alone (figureScope.own) reads the cut of
+// repo ” alone. Which build folded a stored row is no part of the test: a figure whose rows stand
+// is the fold every build of these folds answers. A day on or after scope.through is the figures
+// walks', and none of it is read. The days of an eval are those any of spans names, each read once
+// (spansOf), and none between two spans of it that none names. Each of its two reads is one range
+// of an index for each of those spans, every cut's rows in it: eval_days_stamps of the rows'
+// stamps, and eval_day_figures_eval_day of the stored day rows.
 func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, spans ...map[string]daySpan) (map[figureGroupKey]map[time.Time]bool, error) {
 	var evalIDs, writers []string
 	var firsts, lasts []time.Time
@@ -531,13 +597,18 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		group figureGroupKey
 		day   time.Time
 	}
+	ownRows, ownFigures := "", ""
+	if scope.own {
+		ownRows, ownFigures = ` and d.repo = ''`, ` and f.repo = ''`
+	}
 	rows, err := q.Query(ctx, `
-		select given.eval_id, d.deploy_repo, d.day, d.series, d.updated_at, `+viaAsRead("d.via_repository")+`
+		select given.eval_id, d.deploy_repo, cut.repo, d.day, d.series, d.updated_at, `+viaAsRead("d.via_repository")+`
 		from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
 		cross join eval_project_owners o
 		join eval_days d on d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "$1")+`
-			and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and d.listed and d.repo = ''
-		where o.project_key = $1
+			and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and d.listed`+ownRows+`
+		cross join lateral (select `+cutOf("d", "$1")+` as repo) cut
+		where o.project_key = $1 and cut.repo is not null
 	`, scope.project, evalIDs, writers, firsts, lasts)
 	if err != nil {
 		return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
@@ -545,7 +616,7 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 	stamped := map[dayKey][]stampedRow{}
 	var key dayKey
 	var row stampedRow
-	if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.day, &row.series, &row.updatedAt, &row.via}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.group.repo, &key.day, &row.series, &row.updatedAt, &row.via}, func() error {
 		key.day = key.day.UTC()
 		stamped[key] = append(stamped[key], row)
 		return nil
@@ -553,10 +624,10 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
 	}
 	rows, err = q.Query(ctx, `
-		select f.eval_id, f.deploy_repo, f.day, f.fold_key, f.rows_stamp
+		select f.eval_id, f.deploy_repo, f.repo, f.day, f.fold_key, f.rows_stamp
 		from unnest($2::text[], $3::date[], $4::date[]) as given(eval_id, first_day, last_day)
 		join eval_day_figures f on f.project_key = $1 and f.eval_id = given.eval_id
-			and f.day >= given.first_day and f.day <= given.last_day
+			and f.day >= given.first_day and f.day <= given.last_day`+ownFigures+`
 	`, scope.project, evalIDs, firsts, lasts)
 	if err != nil {
 		return nil, fmt.Errorf("read the stored day figures of %s: %w", scope.project, err)
@@ -564,7 +635,7 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 	type storedDay struct{ key, stamp int64 }
 	stored := map[dayKey]storedDay{}
 	var day storedDay
-	if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.day, &day.key, &day.stamp}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.group.repo, &key.day, &day.key, &day.stamp}, func() error {
 		key.day = key.day.UTC()
 		stored[key] = day
 		return nil
@@ -648,6 +719,7 @@ type figureWrites struct {
 
 // rangeFigureKey is one range row's key within its project; rangeFigureRow the row.
 type rangeFigureKey struct {
+	repo       string
 	days       int
 	end        time.Time
 	eval       string
@@ -663,6 +735,7 @@ type rangeFigureRow struct {
 
 // dayFigureKey is one day row's key within its project; dayFigureRow the row.
 type dayFigureKey struct {
+	repo       string
 	day        time.Time
 	eval       string
 	deployRepo string
@@ -675,14 +748,14 @@ type dayFigureRow struct {
 	stamp   int64
 }
 
-// movedDeployRepos is the deploy repositories of moved's groups, in byte order: a write reads the
-// moved evals' own rows of each in one read (readFigureGroups).
-func movedDeployRepos(moved map[figureGroupKey]map[time.Time]bool) []string {
-	repos := map[string]bool{}
+// movedCuts is the cuts of moved's groups, in their order (compareFigureCuts): a write reads the
+// moved evals' rows of each in one read (readFigureGroups).
+func movedCuts(moved map[figureGroupKey]map[time.Time]bool) []figureCut {
+	cuts := map[figureCut]bool{}
 	for group := range moved {
-		repos[group.deployRepo] = true
+		cuts[group.figureCut] = true
 	}
-	return slices.Sorted(maps.Keys(repos))
+	return slices.SortedFunc(maps.Keys(cuts), compareFigureCuts)
 }
 
 // figureFoldWorkers is the most goroutines one write of stored figures folds its ranges and days
@@ -720,16 +793,16 @@ type dayTarget struct {
 }
 
 // readFigurePlan reads, in q, what a write of the stored figures of each day moved names (by eval
-// and deploy repository) folds, with every range whose span holds one, up to scope.through: one
-// read of the moved evals' own rows of each deploy repository over every day those ranges span
-// (readFigureGroups), and each range and day to fold once, however many moved days it holds (add).
+// and cut) folds, with every range whose span holds one, up to scope.through: one read of the
+// moved evals' rows of each cut over every day those ranges span (readFigureGroups), and each range
+// and day to fold once, however many moved days it holds (add).
 func readFigurePlan(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, moved map[figureGroupKey]map[time.Time]bool) (figurePlan, error) {
 	var plan figurePlan
-	for _, deployRepo := range movedDeployRepos(moved) {
+	for _, cut := range movedCuts(moved) {
 		var evalIDs []string
 		var span daySpan
 		for group, days := range moved {
-			if group.deployRepo != deployRepo {
+			if group.figureCut != cut {
 				continue
 			}
 			evalIDs = append(evalIDs, group.eval)
@@ -742,12 +815,12 @@ func readFigurePlan(ctx context.Context, q delivery.Querier, scope figureScope, 
 		if read.To.After(scope.through) {
 			read.To = scope.through
 		}
-		groups, err := readFigureGroups(ctx, q, scope, entries, evalIDs, deployRepo, read)
+		groups, err := readFigureGroups(ctx, q, scope, entries, evalIDs, cut, read)
 		if err != nil {
 			return figurePlan{}, err
 		}
 		for _, evalID := range evalIDs {
-			key := figureGroupKey{eval: evalID, deployRepo: deployRepo}
+			key := figureGroupKey{eval: evalID, figureCut: cut}
 			plan.add(groups[evalID], key, slices.SortedFunc(maps.Keys(moved[key]), time.Time.Compare), scope.through)
 		}
 	}
@@ -763,7 +836,7 @@ func (p *figurePlan) add(group *figureGroup, key figureGroupKey, days []time.Tim
 	for _, day := range days {
 		for _, n := range FigureLengths {
 			for end := day.AddDate(0, 0, 1); !end.After(day.AddDate(0, 0, n)) && !end.After(through); end = end.AddDate(0, 0, 1) {
-				ranges[rangeFigureKey{days: n, end: end, eval: key.eval, deployRepo: key.deployRepo}] = true
+				ranges[rangeFigureKey{repo: key.repo, days: n, end: end, eval: key.eval, deployRepo: key.deployRepo}] = true
 			}
 		}
 	}
@@ -775,7 +848,7 @@ func (p *figurePlan) add(group *figureGroup, key figureGroupKey, days []time.Tim
 		}
 	}
 	for _, day := range days {
-		target := dayFigureKey{day: day, eval: key.eval, deployRepo: key.deployRepo}
+		target := dayFigureKey{repo: key.repo, day: day, eval: key.eval, deployRepo: key.deployRepo}
 		if group == nil {
 			p.goneDays = append(p.goneDays, target)
 		} else {
@@ -809,25 +882,25 @@ func (p *figurePlan) fold(index int) {
 	target.figures, target.stamp, target.held = target.group.dayFigure(target.day)
 }
 
-// rangeChunkLeast is the fewest ranges a chunk of a write's ranges holds before the end of a length
-// prefix of their keys closes it (rangeChunks); statementRows still closes a chunk, and
-// statementBytes still cuts the statements its upsert sends (rangeUpserts). A write of a few
-// ranges, a reading's or the refresher's day, so folds them in one chunk and upserts them in one
-// statement, rather than in a statement a prefix of a few rows each, each its own round trip in the
-// write's transaction with no fold of a later chunk to overlap. A production rule's rewrite, about
-// 1,200-1,700 ranges a length, still closes one chunk a length, so its upserts overlap its folds as
-// phase I measures them (dispatch://INFRA-2916).
+// rangeChunkLeast is the fewest ranges a chunk of a write's ranges holds before the end of a
+// (repository, length) prefix of their keys closes it (rangeChunks); statementRows still closes a
+// chunk, and statementBytes still cuts the statements its upsert sends (rangeUpserts). A write of
+// a few ranges, a reading's or the refresher's day, so folds them in one chunk and upserts them in
+// one statement, rather than in a statement a prefix of a few rows each, each its own round trip in
+// the write's transaction with no fold of a later chunk to overlap. A production rule's rewrite,
+// about 1,200-1,700 ranges a prefix, still closes one chunk a prefix, so its upserts overlap its
+// folds as phase I measures them (dispatch://INFRA-2916).
 const rangeChunkLeast = 1024
 
 // rangeChunks is where each chunk of ranges, in the byte order of their keys, ends that a write
 // folds and then upserts while it folds the chunks after it (figurePlan.foldAndWrite): each chunk
-// closed at the end of a length prefix of the keys once it holds at least least ranges, or at limit
-// ranges.
+// closed at the end of a (repository, length) prefix of the keys once it holds at least least
+// ranges, or at limit ranges.
 func rangeChunks(ranges []rangeTarget, least, limit int) []int {
 	var ends []int
 	for from, index := 0, 1; index <= len(ranges); index++ {
 		if index == len(ranges) || index-from == limit ||
-			index-from >= least && ranges[index].days != ranges[index-1].days {
+			index-from >= least && (ranges[index].repo != ranges[index-1].repo || ranges[index].days != ranges[index-1].days) {
 			ends = append(ends, index)
 			from = index
 		}
@@ -918,26 +991,27 @@ func foldInChunks(n, workers int, fold func(index int), ends []int, send func(ch
 	return err
 }
 
-// readFigureGroups reads, in q, the project's own listed rows recorded under deployRepo (the empty
-// string for the evals no deploy repository moves) of each eval of evalIDs over r, as DayWindowIn
-// reads them with no repository named, and answers each eval's group, none for an eval with no row
-// there. An eval whose rows deployRepo does not key (KeyedByDeployRepo) is none of its evals. An
-// eval none of whose series is listed any more, whose rows a register write has not relisted yet,
-// still has a group of the rows DayWindowIn reads, whose figures fold no series: so a day that holds
-// a listed row always holds its stored row, the one a read of the stamps compares
-// (movedFigureDays).
-func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, evalIDs []string, deployRepo string, r Range) (map[string]*figureGroup, error) {
+// readFigureGroups reads, in q, the listed rows of cut (its repository the empty string for the
+// project's own rows, its deploy repository the empty string for the evals no deploy repository
+// moves) of each eval of evalIDs over r, as DayWindowIn reads them with no repository named, or
+// with the cut's one repository, and answers each eval's group, none for an eval with no row
+// there. An eval whose rows the cut's deploy repository does not key (KeyedByDeployRepo) is none
+// of its evals. An eval none of whose series is listed any more, whose rows a register write has
+// not relisted yet, still has a group of the rows DayWindowIn reads, whose figures fold no series:
+// so a day that holds a listed row always holds its stored row, the one a read of the stamps
+// compares (movedFigureDays).
+func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, evalIDs []string, cut figureCut, r Range) (map[string]*figureGroup, error) {
 	groups := map[string]*figureGroup{}
 	var read []Entry
 	for _, evalID := range evalIDs {
-		if entry, held := entries[evalID]; held && KeyedByDeployRepo(entry.Definition) == (deployRepo != "") {
+		if entry, held := entries[evalID]; held && KeyedByDeployRepo(entry.Definition) == (cut.deployRepo != "") {
 			read = append(read, entry)
 		}
 	}
 	if len(read) == 0 || !r.From.Before(r.To) {
 		return groups, nil
 	}
-	rows, err := DayWindowIn(ctx, q, []string{scope.project}, read, deployRepo, nil, r, nil)
+	rows, err := DayWindowIn(ctx, q, []string{scope.project}, read, cut.deployRepo, cut.repos(), r, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1032,7 +1106,7 @@ func foldFiguresInTx(ctx context.Context, tx pgx.Tx, build string, written map[s
 		}
 	}
 	for _, project := range slices.Sorted(maps.Keys(folds)) {
-		if _, _, err := refoldProject(ctx, tx, build, project, folds[project]...); err != nil {
+		if _, _, err := refoldProject(ctx, tx, build, project, false, folds[project]...); err != nil {
 			return err
 		}
 	}
@@ -1041,14 +1115,16 @@ func foldFiguresInTx(ctx context.Context, tx pgx.Tx, build string, written map[s
 
 // refoldProject folds again, in tx, by build, project's stored figures of the days of spans (each
 // by eval id) whose rows moved, where any of its figures are folded (readFigureScope), over its
-// evals that spans name (readEntries), and of every range that holds one (refoldMoved): folded is,
-// by eval, the span of the days whose figures it folded again, and ok is false where none of the
-// project's figures are folded, which it then folds none of.
-func refoldProject(ctx context.Context, tx pgx.Tx, build, project string, spans ...map[string]daySpan) (map[string]daySpan, bool, error) {
+// evals that spans name (readEntries), and of every range that holds one (refoldMoved), in every
+// cut the rows reach, or in the project's own rows alone where own is set (figureScope.own):
+// folded is, by eval, the span of the days whose figures it folded again, and ok is false where
+// none of the project's figures are folded, which it then folds none of.
+func refoldProject(ctx context.Context, tx pgx.Tx, build, project string, own bool, spans ...map[string]daySpan) (map[string]daySpan, bool, error) {
 	scope, ok, err := readFigureScope(ctx, tx, build, project)
 	if err != nil || !ok {
 		return nil, false, err
 	}
+	scope.own = own
 	entries, err := readEntries(ctx, tx, project, spannedEvals(spans))
 	if err != nil {
 		return nil, false, err
@@ -1087,15 +1163,15 @@ const statementBytes = 256 << 10
 // entry. A register write or a readings write that would leave a logged eval holding more is
 // refused (Register, registerMissing), so no statement that writes a stored row of the eval passes
 // the bound. It is the bound less what the statement holds besides its series' entries
-// (figureRowReserve), over the most one series adds (seriesFigureBytes): (262,144 - 1,797) / 1,106
-// = 235; with 236 series the statement would take 262,813 bytes.
+// (figureRowReserve), over the most one series adds (seriesFigureBytes): (262,144 - 2,337) / 1,106
+// = 234; with 235 series the statement would take 262,247 bytes.
 //
 // The entries count each series' via-repository entry, which a logged eval's rows never carry
-// (writeDays sets none), and without which the bound would admit 447 series. A figures write reads
+// (writeDays sets none), and without which the bound would admit 446 series. A figures write reads
 // the rows it folds (readFigureGroups, through DayWindowIn) with one pair (eval, series) for each
 // series whose fold reads its samples, 1,043 bytes at the largest keys, fewer than a series' 1,106
-// here, so that read's statement stays within the bound at this count too (245,105 bytes of pairs
-// for one eval), where at 447 series it would not.
+// here, so that read's statement stays within the bound at this count too (244,062 bytes of pairs
+// for one eval, beside the one repository of a cut's read), where at 446 series it would not.
 const MaxEvalSeries = (statementBytes - figureRowReserve) / seriesFigureBytes
 
 // seriesFigureBytes is the most bytes one series adds to a figures column (encodeFigures): its name
@@ -1107,16 +1183,16 @@ const MaxEvalSeries = (statementBytes - figureRowReserve) / seriesFigureBytes
 const seriesFigureBytes = (2 + maxKeyBytes + 1 + 1 + 66) + (2 + maxKeyBytes + binary.MaxVarintLen64)
 
 // figureRowReserve is the most bytes the range upsert of one stored range row takes besides its
-// series' entries (rangeUpserts): the statement's own, paramBytes(7, project, build), 4 bytes of
-// length before each of its 9 parameters, an array header for each of its 7 arrays, a project key
+// series' entries (rangeUpserts): the statement's own, paramBytes(8, project, build), 4 bytes of
+// length before each of its 10 parameters, an array header for each of its 8 arrays, a project key
 // (maxProjectKeyBytes) and a build of at most maxKeyBytes (a 40-character commit, or a shorter name
 // the process draws: cmd/dispatch's processBuild); the row's, upsertBytes less its figures, 4 bytes
-// of length in each of the 7 arrays, 4 numbers, dates and times of at most 8 bytes, an eval id
-// (maxEvalIDBytes) and a deploy repository of at most maxKeyBytes; and the figures' two counts, of
-// the series and of their via-repository entries, 2 bytes each at this many series. 698 + 1,095 +
-// 4 = 1,797.
-const figureRowReserve = 4*(7+2) + arrayHeaderBytes*7 + maxProjectKeyBytes + maxKeyBytes +
-	7*4 + 4*8 + maxEvalIDBytes + maxKeyBytes + 2*2
+// of length in each of the 8 arrays, 4 numbers, dates and times of at most 8 bytes, an eval id
+// (maxEvalIDBytes), and a repository and a deploy repository of at most maxKeyBytes each; and the
+// figures' two counts, of the series and of their via-repository entries, 2 bytes each at this
+// many series. 722 + 1,611 + 4 = 2,337.
+const figureRowReserve = 4*(8+2) + arrayHeaderBytes*8 + maxProjectKeyBytes + maxKeyBytes +
+	8*4 + 4*8 + maxEvalIDBytes + 2*maxKeyBytes + 2*2
 
 // statementChunks is rows cut into the chunks one statement each sends, in their order: each chunk
 // closed before the row that would make it hold more than statementRows rows, or parameters of
@@ -1162,33 +1238,33 @@ func paramBytes(arrays int, scalars ...string) int {
 // that upserts it or deletes its key, as pgx encodes them in binary: in each array, 4 bytes of
 // length and the element, each string and figures their bytes and each number and date at most 8.
 func (r *rangeFigureRow) upsertBytes() int {
-	return 7*4 + len(r.eval) + len(r.deployRepo) + len(r.figures) + 4*8
+	return 8*4 + len(r.repo) + len(r.eval) + len(r.deployRepo) + len(r.figures) + 4*8
 }
 
 func (k *rangeFigureKey) deleteBytes() int {
-	return 4*4 + len(k.eval) + len(k.deployRepo) + 2*8
+	return 5*4 + len(k.repo) + len(k.eval) + len(k.deployRepo) + 2*8
 }
 
 func (r *dayFigureRow) upsertBytes() int {
-	return 6*4 + len(r.eval) + len(r.deployRepo) + len(r.figures) + 3*8
+	return 7*4 + len(r.repo) + len(r.eval) + len(r.deployRepo) + len(r.figures) + 3*8
 }
 
 func (k *dayFigureKey) deleteBytes() int {
-	return 3*4 + len(k.eval) + len(k.deployRepo) + 8
+	return 4*4 + len(k.repo) + len(k.eval) + len(k.deployRepo) + 8
 }
 
 // rangeUpserts is the arguments of each statement upsertRangeFigures sends of rows, each of a chunk
 // of them (statementChunks).
 func rangeUpserts(scope figureScope, rows []rangeFigureRow) iter.Seq[[]any] {
 	return func(yield func([]any) bool) {
-		for chunk := range statementChunks(rows, paramBytes(7, scope.project, scope.build), (*rangeFigureRow).upsertBytes) {
-			ns, ends, evalIDs := make([]int32, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk))
+		for chunk := range statementChunks(rows, paramBytes(8, scope.project, scope.build), (*rangeFigureRow).upsertBytes) {
+			repos, ns, ends, evalIDs := make([]string, len(chunk)), make([]int32, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk))
 			deployRepos, keys, figures, oldest := make([]string, len(chunk)), make([]int64, len(chunk)), make([][]byte, len(chunk)), make([]time.Time, len(chunk))
 			for index, row := range chunk {
-				ns[index], ends[index], evalIDs[index], deployRepos[index] = int32(row.days), row.end, row.eval, row.deployRepo
+				repos[index], ns[index], ends[index], evalIDs[index], deployRepos[index] = row.repo, int32(row.days), row.end, row.eval, row.deployRepo
 				keys[index], figures[index], oldest[index] = row.key, row.figures, row.oldest
 			}
-			if !yield([]any{scope.project, ns, ends, evalIDs, keys, figures, oldest, scope.build, deployRepos}) {
+			if !yield([]any{scope.project, repos, ns, ends, evalIDs, keys, figures, oldest, scope.build, deployRepos}) {
 				return
 			}
 		}
@@ -1199,12 +1275,13 @@ func rangeUpserts(scope figureScope, rows []rangeFigureRow) iter.Seq[[]any] {
 // range rows of project, each of a chunk of them (statementChunks).
 func rangeDeletes(project string, gone []rangeFigureKey) iter.Seq[[]any] {
 	return func(yield func([]any) bool) {
-		for chunk := range statementChunks(gone, paramBytes(4, project), (*rangeFigureKey).deleteBytes) {
-			ns, ends, evalIDs, deployRepos := make([]int32, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
+		for chunk := range statementChunks(gone, paramBytes(5, project), (*rangeFigureKey).deleteBytes) {
+			repos, ns, ends, evalIDs := make([]string, len(chunk)), make([]int32, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk))
+			deployRepos := make([]string, len(chunk))
 			for index, row := range chunk {
-				ns[index], ends[index], evalIDs[index], deployRepos[index] = int32(row.days), row.end, row.eval, row.deployRepo
+				repos[index], ns[index], ends[index], evalIDs[index], deployRepos[index] = row.repo, int32(row.days), row.end, row.eval, row.deployRepo
 			}
-			if !yield([]any{project, ns, ends, evalIDs, deployRepos}) {
+			if !yield([]any{project, repos, ns, ends, evalIDs, deployRepos}) {
 				return
 			}
 		}
@@ -1215,14 +1292,14 @@ func rangeDeletes(project string, gone []rangeFigureKey) iter.Seq[[]any] {
 // them (statementChunks).
 func dayUpserts(scope figureScope, rows []dayFigureRow) iter.Seq[[]any] {
 	return func(yield func([]any) bool) {
-		for chunk := range statementChunks(rows, paramBytes(6, scope.project, scope.build), (*dayFigureRow).upsertBytes) {
-			days, evalIDs, deployRepos := make([]time.Time, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
+		for chunk := range statementChunks(rows, paramBytes(7, scope.project, scope.build), (*dayFigureRow).upsertBytes) {
+			repos, days, evalIDs, deployRepos := make([]string, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
 			keys, figures, stamps := make([]int64, len(chunk)), make([][]byte, len(chunk)), make([]int64, len(chunk))
 			for index, row := range chunk {
-				days[index], evalIDs[index], deployRepos[index] = row.day, row.eval, row.deployRepo
+				repos[index], days[index], evalIDs[index], deployRepos[index] = row.repo, row.day, row.eval, row.deployRepo
 				keys[index], figures[index], stamps[index] = row.key, row.figures, row.stamp
 			}
-			if !yield([]any{scope.project, days, evalIDs, keys, figures, stamps, scope.build, deployRepos}) {
+			if !yield([]any{scope.project, repos, days, evalIDs, keys, figures, stamps, scope.build, deployRepos}) {
 				return
 			}
 		}
@@ -1233,12 +1310,12 @@ func dayUpserts(scope figureScope, rows []dayFigureRow) iter.Seq[[]any] {
 // rows of project, each of a chunk of them (statementChunks).
 func dayDeletes(project string, gone []dayFigureKey) iter.Seq[[]any] {
 	return func(yield func([]any) bool) {
-		for chunk := range statementChunks(gone, paramBytes(3, project), (*dayFigureKey).deleteBytes) {
-			days, evalIDs, deployRepos := make([]time.Time, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
+		for chunk := range statementChunks(gone, paramBytes(4, project), (*dayFigureKey).deleteBytes) {
+			repos, days, evalIDs, deployRepos := make([]string, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
 			for index, row := range chunk {
-				days[index], evalIDs[index], deployRepos[index] = row.day, row.eval, row.deployRepo
+				repos[index], days[index], evalIDs[index], deployRepos[index] = row.repo, row.day, row.eval, row.deployRepo
 			}
-			if !yield([]any{project, days, evalIDs, deployRepos}) {
+			if !yield([]any{project, repos, days, evalIDs, deployRepos}) {
 				return
 			}
 		}
@@ -1279,12 +1356,12 @@ func writeFigures(ctx context.Context, tx pgx.Tx, scope figureScope, w figureWri
 func upsertRangeFigures(ctx context.Context, tx pgx.Tx, scope figureScope, rows []rangeFigureRow) error {
 	for args := range rangeUpserts(scope, rows) {
 		if _, err := tx.Exec(ctx, `
-			insert into eval_range_figures (project_key, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at, built_by)
-			select $1, given.days, given.end_day, given.eval_id, given.deploy_repo, given.fold_key, given.figures, given.oldest, $8
-			from unnest($2::int[], $3::date[], $4::text[], $9::text[], $5::bigint[], $6::bytea[], $7::timestamptz[]) with ordinality
-				as given(days, end_day, eval_id, deploy_repo, fold_key, figures, oldest, sent)
+			insert into eval_range_figures (project_key, repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at, built_by)
+			select $1, given.repo, given.days, given.end_day, given.eval_id, given.deploy_repo, given.fold_key, given.figures, given.oldest, $9
+			from unnest($2::text[], $3::int[], $4::date[], $5::text[], $10::text[], $6::bigint[], $7::bytea[], $8::timestamptz[]) with ordinality
+				as given(repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest, sent)
 			order by given.sent
-			on conflict (project_key, days, end_day, eval_id, deploy_repo) do update
+			on conflict (project_key, repo, days, end_day, eval_id, deploy_repo) do update
 			set fold_key = excluded.fold_key, figures = excluded.figures, oldest_updated_at = excluded.oldest_updated_at,
 				built_by = excluded.built_by
 			where (eval_range_figures.fold_key, eval_range_figures.figures, eval_range_figures.oldest_updated_at)
@@ -1307,8 +1384,8 @@ func writeAfterRanges(ctx context.Context, tx pgx.Tx, scope figureScope, w figur
 	for args := range rangeDeletes(project, w.goneRanges) {
 		if _, err := tx.Exec(ctx, `
 			delete from eval_range_figures f
-			using unnest($2::int[], $3::date[], $4::text[], $5::text[]) as gone(days, end_day, eval_id, deploy_repo)
-			where f.project_key = $1 and f.days = gone.days and f.end_day = gone.end_day
+			using unnest($2::text[], $3::int[], $4::date[], $5::text[], $6::text[]) as gone(repo, days, end_day, eval_id, deploy_repo)
+			where f.project_key = $1 and f.repo = gone.repo and f.days = gone.days and f.end_day = gone.end_day
 				and f.eval_id = gone.eval_id and f.deploy_repo = gone.deploy_repo
 		`, args...); err != nil {
 			return fmt.Errorf("delete the stored range figures of %s that hold no row: %w", project, err)
@@ -1316,12 +1393,12 @@ func writeAfterRanges(ctx context.Context, tx pgx.Tx, scope figureScope, w figur
 	}
 	for args := range dayUpserts(scope, w.days) {
 		if _, err := tx.Exec(ctx, `
-			insert into eval_day_figures (project_key, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by)
-			select $1, given.day, given.eval_id, given.deploy_repo, given.fold_key, given.figures, given.rows_stamp, $7
-			from unnest($2::date[], $3::text[], $8::text[], $4::bigint[], $5::bytea[], $6::bigint[]) with ordinality
-				as given(day, eval_id, deploy_repo, fold_key, figures, rows_stamp, sent)
+			insert into eval_day_figures (project_key, repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by)
+			select $1, given.repo, given.day, given.eval_id, given.deploy_repo, given.fold_key, given.figures, given.rows_stamp, $8
+			from unnest($2::text[], $3::date[], $4::text[], $9::text[], $5::bigint[], $6::bytea[], $7::bigint[]) with ordinality
+				as given(repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, sent)
 			order by given.sent
-			on conflict (project_key, day, eval_id, deploy_repo) do update
+			on conflict (project_key, repo, day, eval_id, deploy_repo) do update
 			set fold_key = excluded.fold_key, figures = excluded.figures, rows_stamp = excluded.rows_stamp, built_by = excluded.built_by
 			where (eval_day_figures.fold_key, eval_day_figures.figures, eval_day_figures.rows_stamp)
 				is distinct from (excluded.fold_key, excluded.figures, excluded.rows_stamp)
@@ -1332,8 +1409,8 @@ func writeAfterRanges(ctx context.Context, tx pgx.Tx, scope figureScope, w figur
 	for args := range dayDeletes(project, w.goneDays) {
 		if _, err := tx.Exec(ctx, `
 			delete from eval_day_figures f
-			using unnest($2::date[], $3::text[], $4::text[]) as gone(day, eval_id, deploy_repo)
-			where f.project_key = $1 and f.day = gone.day and f.eval_id = gone.eval_id
+			using unnest($2::text[], $3::date[], $4::text[], $5::text[]) as gone(repo, day, eval_id, deploy_repo)
+			where f.project_key = $1 and f.repo = gone.repo and f.day = gone.day and f.eval_id = gone.eval_id
 				and f.deploy_repo = gone.deploy_repo
 		`, args...); err != nil {
 			return fmt.Errorf("delete the stored day figures of %s that hold no row: %w", project, err)
@@ -1346,32 +1423,35 @@ func writeAfterRanges(ctx context.Context, tx pgx.Tx, scope figureScope, w figur
 // each string by its bytes: the order upsertRangeFigures' statement takes them in, as it is sent
 // them.
 func compareRangeKeys(a, b rangeFigureKey) int {
-	return cmp.Or(cmp.Compare(a.days, b.days), a.end.Compare(b.end), strings.Compare(a.eval, b.eval),
-		strings.Compare(a.deployRepo, b.deployRepo))
+	return cmp.Or(strings.Compare(a.repo, b.repo), cmp.Compare(a.days, b.days), a.end.Compare(b.end),
+		strings.Compare(a.eval, b.eval), strings.Compare(a.deployRepo, b.deployRepo))
 }
 
 // compareDayFigureKeys orders day rows as eval_day_figures' primary key does within a project,
 // each string by its bytes: the order writeAfterRanges' day upsert takes them in, as it is sent
 // them.
 func compareDayFigureKeys(a, b dayFigureKey) int {
-	return cmp.Or(a.day.Compare(b.day), strings.Compare(a.eval, b.eval), strings.Compare(a.deployRepo, b.deployRepo))
+	return cmp.Or(strings.Compare(a.repo, b.repo), a.day.Compare(b.day), strings.Compare(a.eval, b.eval),
+		strings.Compare(a.deployRepo, b.deployRepo))
 }
 
 // buildFigureEnds folds, in tx, every stored figure of project whose range ends on a day from
 // first through last, and the day row of every day before one of those end days, of each eval of
-// entries over the project's own rows of every deploy repository they are recorded under, and
-// writes them where they moved (writeFigures): one read of the own rows of each deploy repository
-// over the days those ranges span. Every stored row of those end days and days that no row holds
-// any more (one an earlier build folded, of an eval or a deploy repository that holds none now) is
-// deleted. It is a batch of the figures walk, and the whole of a new end day's ranges once the walk
-// stands at today.
+// entries in each cut the project's rows of the days those ranges span hold (readFigureCuts), or in
+// the one cut of repo where repo is not nil (a stale cut's refold, refoldStaleCut), and writes them
+// where they moved (writeFigures): one read of the rows of each cut over those days. Every stored
+// row of those end days and days, of the cuts it folds, that no row holds any more is deleted: one
+// an earlier build folded, of an eval, a cut or a deploy repository that holds none now, or one a
+// move of a default repository left in a cut that no longer holds its rows. It is a batch of the
+// figures walk, the whole of a new end day's ranges once the walk stands at today, and a batch of
+// a stale cut's refold.
 //
-// The deploy repositories are read by readFigureDeployRepos. The stored day rows are read through
-// eval_day_figures_eval_day, one range of the days for each eval, the project's evals in
-// statements of at most statementBytes: no route bounds how many evals a project holds.
-func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, first, last time.Time) error {
+// The stored day rows are read through eval_day_figures_eval_day, one range of the days for each
+// eval, the project's evals in statements of at most statementBytes: no route bounds how many
+// evals a project holds.
+func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, repo *string, first, last time.Time) error {
 	read := Range{From: first.AddDate(0, 0, -figureSpan), To: last}
-	deployRepos, err := readFigureDeployRepos(ctx, tx, scope.project, read)
+	cuts, err := readFigureCuts(ctx, tx, scope.project, read, repo)
 	if err != nil {
 		return err
 	}
@@ -1379,13 +1459,13 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 	var writes figureWrites
 	built := map[rangeFigureKey]bool{}
 	builtDays := map[dayFigureKey]bool{}
-	for _, deployRepo := range deployRepos {
-		groups, err := readFigureGroups(ctx, tx, scope, entries, evalIDs, deployRepo, read)
+	for _, cut := range cuts {
+		groups, err := readFigureGroups(ctx, tx, scope, entries, evalIDs, cut, read)
 		if err != nil {
 			return err
 		}
 		for _, evalID := range slices.Sorted(maps.Keys(groups)) {
-			groups[evalID].foldEnds(evalID, deployRepo, first, last, func(row rangeFigureRow) {
+			groups[evalID].foldEnds(evalID, cut, first, last, func(row rangeFigureRow) {
 				writes.ranges = append(writes.ranges, row)
 				built[row.rangeFigureKey] = true
 			}, func(row dayFigureRow) {
@@ -1394,15 +1474,19 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 			})
 		}
 	}
+	ofCut, rangeArgs, dayBase := "", []any{scope.project, first, last}, paramBytes(1, scope.project)+2*(4+8)
+	if repo != nil {
+		ofCut, rangeArgs, dayBase = ` and repo = $4`, append(rangeArgs, *repo), dayBase+4+len(*repo)
+	}
 	rows, err := tx.Query(ctx, `
-		select days, end_day, eval_id, deploy_repo from eval_range_figures where project_key = $1 and end_day >= $2 and end_day <= $3
-	`, scope.project, first, last)
+		select repo, days, end_day, eval_id, deploy_repo from eval_range_figures where project_key = $1 and end_day >= $2 and end_day <= $3`+ofCut,
+		rangeArgs...)
 	if err != nil {
 		return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, first.Format(time.DateOnly), last.Format(time.DateOnly), err)
 	}
 	var stored rangeFigureKey
 	var n int32
-	if _, err := pgx.ForEachRow(rows, []any{&n, &stored.end, &stored.eval, &stored.deployRepo}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&stored.repo, &n, &stored.end, &stored.eval, &stored.deployRepo}, func() error {
 		stored.days, stored.end = int(n), stored.end.UTC()
 		if !built[stored] {
 			writes.goneRanges = append(writes.goneRanges, stored)
@@ -1411,15 +1495,20 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 	}); err != nil {
 		return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, first.Format(time.DateOnly), last.Format(time.DateOnly), err)
 	}
-	for chunk := range statementChunks(evalIDs, paramBytes(1, scope.project)+2*(4+8), textBytes) {
+	for chunk := range statementChunks(evalIDs, dayBase, textBytes) {
+		dayArgs := []any{scope.project, first.AddDate(0, 0, -1), last, chunk}
+		ofDayCut := ""
+		if repo != nil {
+			ofDayCut, dayArgs = ` and repo = $5`, append(dayArgs, *repo)
+		}
 		rows, err = tx.Query(ctx, `
-			select day, eval_id, deploy_repo from eval_day_figures where project_key = $1 and eval_id = any($4) and day >= $2 and day < $3
-		`, scope.project, first.AddDate(0, 0, -1), last, chunk)
+			select repo, day, eval_id, deploy_repo from eval_day_figures where project_key = $1 and eval_id = any($4) and day >= $2 and day < $3`+ofDayCut,
+			dayArgs...)
 		if err != nil {
 			return fmt.Errorf("read %s's stored day figures: %w", scope.project, err)
 		}
 		var storedDay dayFigureKey
-		if _, err := pgx.ForEachRow(rows, []any{&storedDay.day, &storedDay.eval, &storedDay.deployRepo}, func() error {
+		if _, err := pgx.ForEachRow(rows, []any{&storedDay.repo, &storedDay.day, &storedDay.eval, &storedDay.deployRepo}, func() error {
 			storedDay.day = storedDay.day.UTC()
 			if !builtDays[storedDay] {
 				writes.goneDays = append(writes.goneDays, storedDay)
@@ -1432,24 +1521,55 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 	return writeFigures(ctx, tx, scope, writes)
 }
 
-// readFigureDeployRepos reads, in q, each deploy repository project's own listed day rows (repo "")
-// of the days of r are recorded under, its own and those of the owner keys it reads under the
-// published defaults (eval_project_owners, owners.go), in byte order: one statement, one range of
-// eval_days_window for each owner, rather than every listed row of the project.
-func readFigureDeployRepos(ctx context.Context, q delivery.Querier, project string, r Range) ([]string, error) {
-	rows, err := q.Query(ctx, `
-		select distinct d.deploy_repo
-		from eval_project_owners o
-		join eval_days d on d.project_key = o.owner and d.listed and d.repo = '' and d.day >= $2 and d.day < $3
-		where o.project_key = $1
-	`, project, r.From, r.To)
-	if err != nil {
-		return nil, fmt.Errorf("read the deploy repositories of %s's day rows: %w", project, err)
+// readFigureCuts reads, in q, each cut project's listed day rows of the days of r hold, its own and
+// those of the owner keys it reads under the published defaults (eval_project_owners, owners.go),
+// each row in the cut cutOf names, in their order (compareFigureCuts); or, where repo is not nil,
+// those of the one cut of repo. The published default's cut is among them wherever a row stored
+// under legionfacts.DefaultRepo is. One statement: for every cut, a walk of each owner's
+// repositories through eval_days_window, one probe each, and the read of each one's deploy
+// repositories from its rows of the days of r, one range of the index each, rather than every
+// listed row of the project; for one cut, the ranges of its repository and of
+// legionfacts.DefaultRepo alone.
+func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r Range, repo *string) ([]figureCut, error) {
+	var rows pgx.Rows
+	var err error
+	if repo == nil {
+		rows, err = q.Query(ctx, `
+			select distinct cut.repo, d.deploy_repo
+			from eval_project_owners o
+			cross join lateral (
+				with recursive held(repo) as (
+					(select e.repo from eval_days e where e.project_key = o.owner and e.listed order by e.repo limit 1)
+					union all
+					select (select e.repo from eval_days e where e.project_key = o.owner and e.listed and e.repo > held.repo order by e.repo limit 1)
+					from held where held.repo is not null
+				)
+				select repo from held where repo is not null
+			) owned
+			join eval_days d on d.project_key = o.owner and d.listed and d.repo = owned.repo and d.day >= $2 and d.day < $3
+			cross join lateral (select `+cutOf("d", "$1")+` as repo) cut
+			where o.project_key = $1 and cut.repo is not null
+		`, project, r.From, r.To)
+	} else {
+		rows, err = q.Query(ctx, `
+			select distinct cut.repo, d.deploy_repo
+			from eval_project_owners o
+			join eval_days d on d.project_key = o.owner and d.listed and d.day >= $2 and d.day < $3
+				and (d.repo = $4 or d.repo = '`+legionfacts.DefaultRepo+`')
+			cross join lateral (select `+cutOf("d", "$1")+` as repo) cut
+			where o.project_key = $1 and `+ownedKeys("d", "= $1")+` and cut.repo = $4
+		`, project, r.From, r.To, *repo)
 	}
-	deployRepos, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("read the deploy repositories of %s's day rows: %w", project, err)
+		return nil, fmt.Errorf("read the cuts of %s's day rows: %w", project, err)
 	}
-	slices.Sort(deployRepos)
-	return deployRepos, nil
+	cuts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (figureCut, error) {
+		var cut figureCut
+		return cut, row.Scan(&cut.repo, &cut.deployRepo)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the cuts of %s's day rows: %w", project, err)
+	}
+	slices.SortFunc(cuts, compareFigureCuts)
+	return cuts, nil
 }

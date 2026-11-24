@@ -152,9 +152,9 @@ func (r *deployRepoRig) written(t *testing.T) map[string]string {
 		union all
 		select 'member ' || project_key || ' ' || family || ' ' || deploy_repo || ' ' || row_key, xmin::text from eval_day_members
 		union all
-		select 'range ' || project_key || ' ' || deploy_repo || ' ' || days || ' ' || end_day || ' ' || eval_id, xmin::text from eval_range_figures
+		select 'range ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || days || ' ' || end_day || ' ' || eval_id, xmin::text from eval_range_figures
 		union all
-		select 'figure ' || project_key || ' ' || deploy_repo || ' ' || day || ' ' || eval_id, xmin::text from eval_day_figures
+		select 'figure ' || project_key || ' ' || repo || ' ' || deploy_repo || ' ' || day || ' ' || eval_id, xmin::text from eval_day_figures
 		union all
 		select 'walk ' || family || ' ' || project_key || ' ' || built_by, xmin::text from eval_days_walks`)
 	if err != nil {
