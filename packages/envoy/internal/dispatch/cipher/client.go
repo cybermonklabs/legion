@@ -30,7 +30,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +37,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -53,6 +53,7 @@ const maxAnswerBytes = 16 << 20
 // feature is off; the api's pending list answers null then, and every other api handler 404
 // FEATURE_OFF.
 type Client struct {
+	// URL is the broker's URL as configured; do joins each route onto it (urljoin.Join).
 	URL string
 	// Account reads Dispatch's own projected Kubernetes ServiceAccount token
 	// (DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE), the credential the broker resolves its caller
@@ -82,7 +83,7 @@ func WithTimeout(timeout time.Duration) Option {
 // Dispatch's own session, not read from an env var here.
 func New(baseURL, tokenFile string, options ...Option) *Client {
 	client := &Client{
-		URL:     strings.TrimSuffix(baseURL, "/"),
+		URL:     baseURL,
 		Account: ciphertoken.NewAccountToken(tokenFile),
 		// The client follows no redirect: every call carries Dispatch's own token, and a Location
 		// is the answering party's words (redirects.Refused).
@@ -116,10 +117,11 @@ func (e *Error) Error() string {
 // send the operator to a broker that was never asked.
 type AccountTokenError = ciphertoken.AccountTokenError
 
-// do sends a request relaying body (nil for a bodyless GET) and returns the broker's response
-// body with no run of Dispatch's account token in it, or *Error for a non-2xx response, an
-// *AccountTokenError for a token it could not read, which stops the call before it is built, or a
-// plain wrapped error for a transport failure.
+// do sends a request relaying body (nil for a bodyless GET) to path, with its own query, joined
+// onto the broker URL's path with that URL's query kept ahead of its own (urljoin.Join), and
+// returns the broker's response body with no run of Dispatch's account token in it, or *Error for
+// a non-2xx response, an *AccountTokenError for a token it could not read, which stops the call
+// before it is built, or a plain wrapped error for a transport failure.
 func (c *Client) do(ctx context.Context, method, path string, body json.RawMessage) (json.RawMessage, error) {
 	token, err := c.Account.Read()
 	if err != nil {
@@ -129,9 +131,15 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, c.URL+path, reader)
+	var request *http.Request
+	endpoint, err := urljoin.Join(c.URL, path)
+	if err == nil {
+		request, err = http.NewRequestWithContext(ctx, method, endpoint.String(), reader)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("agent-secrets: build %s %s request: %w", method, path, err)
+		// url.Parse's error quotes the URL whole, its user information and query included, so a
+		// broker URL that does not parse, or a URL joined from it that does not, prints its class.
+		return nil, fmt.Errorf("agent-secrets: build %s %s request: %w", method, path, redact.Masked(err, redact.ClassNotAURL))
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
