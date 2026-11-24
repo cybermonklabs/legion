@@ -239,6 +239,7 @@ func TestAResultBeforeTheLinkedMergeDoesNotCount(t *testing.T) {
 	linked.mu.Unlock()
 	both := issueOfProject(t, handler, afterMergeProject, "Work merged in both repositories", afterMergeAndDefaultChecks)
 	linkPullRequests(t, handler, both, "https://github.com/acme/tools/pull/10")
+	writeHeadOnBase(t, database, "acme/tools", 10, toolsHead, "merged", "", "main")
 	linked.mu.Lock()
 	linked.merged["acme/widgets#3"] = linkedMerge{title: both + ": the work", headRef: "legion/" + both, headSHA: widgetsHead,
 		base: "main", mergeCommit: widgetsMerge, mergedAt: "2026-11-21T12:00:00Z"}
