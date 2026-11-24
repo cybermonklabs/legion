@@ -34,12 +34,13 @@ func (g *gate) boundary(dir string) census {
 	}
 	roots, _ := workRoots(dir)
 	for _, mod := range mods {
-		tagSets, err := ciTagSets(dir, mod)
+		builds, err := g.ciBuilds(dir, mod)
 		if err != nil {
 			c.Unknown = append(c.Unknown, fmt.Sprintf("boundary census: the build tags of %s cannot be read: %v", mod, err))
 			continue
 		}
-		list := exec.Command(bin, "-dir", ".", "-targets", strings.Join(ciTargets, ","), "-tags", strings.Join(tagSets, ";"), "./...")
+		targets, tags := builds.flags()
+		list := exec.Command(bin, "-dir", ".", "-targets", targets, "-tags", tags, "./...")
 		list.Dir = filepath.Join(dir, mod)
 		// Each module loads as its own build loads it (moduleWork).
 		list.Env = append(os.Environ(), "GOWORK="+moduleWork(dir, mod, roots))
@@ -51,41 +52,6 @@ func (g *gate) boundary(dir string) census {
 	out, _ := ts.CombinedOutput()
 	c.addBoundary(out, "", "the TypeScript workspace", true)
 	return c
-}
-
-// ciTargets is each GOOS/GOARCH CI builds the modules for, each of which the Go and boundary
-// censuses load a module for: linux/amd64, the host, which every job builds and tests on;
-// darwin/arm64, which the Go checks vet every module for (ci-job-envoy-go-checks.yaml,
-// ci-job-typecheck.yaml, ci-job-envoy-infra-go.yaml); and linux/arm64 and darwin/amd64, which
-// the listener's archives, the legion and agent-secrets releases and their notices build
-// (.github/go-release-targets.json, envoy-infra-targets.json, agent-secrets-client-targets.json,
-// .github/scripts/go-release-notices.sh). The host's comes first, so its build is the one each
-// other's file sets are compared with.
-var ciTargets = []string{"linux/amd64", "darwin/arm64", "linux/arm64", "darwin/amd64"}
-
-// ciTagSets is every build tag list the CI's vet passes for mod on any of ciTargets, as
-// .github/scripts/go_build_tags.py reads them off the module, and the empty list, which is a build
-// with no tags.
-func ciTagSets(dir, mod string) ([]string, error) {
-	sets := []string{""}
-	seen := map[string]bool{"": true}
-	for _, target := range ciTargets {
-		goos, goarch, _ := strings.Cut(target, "/")
-		cmd := exec.Command("python3", filepath.Join(dir, ".github/scripts/go_build_tags.py"), ".", goos, goarch)
-		cmd.Dir = filepath.Join(dir, mod)
-		out, err := cmd.Output()
-		if err != nil {
-			return nil, err
-		}
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			tags := strings.TrimPrefix(strings.TrimSpace(line), "-tags=")
-			if !seen[tags] {
-				seen[tags] = true
-				sets = append(sets, tags)
-			}
-		}
-	}
-	return sets, nil
 }
 
 // addBoundary reads one boundary census's output. A Go module that imports no x/oauth2 package

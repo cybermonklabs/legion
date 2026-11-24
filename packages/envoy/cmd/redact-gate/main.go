@@ -283,6 +283,7 @@ type gate struct {
 	longest                   time.Duration // the longest correct run of stage 4
 	longestRow                string
 	valueOf                   map[string][]valueOfSite   // reflect.ValueOf sites by package
+	builds                    map[string]ciBuilds        // every build CI makes of a module, by snapshot and module (gate.ciBuilds)
 	imports                   map[string]map[string]bool // each listed package's import closure, itself included (recordImports)
 	declared                  map[string]*checkedSource  // guarded packages type-checked from source, by package and build (sourceChecked)
 	failures                  int
