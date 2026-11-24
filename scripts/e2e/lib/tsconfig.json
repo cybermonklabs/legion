@@ -12,5 +12,5 @@
     "types": ["bun"],
     "skipLibCheck": true
   },
-  "include": ["plan-ratings-read.test.ts"]
+  "include": ["plan-ratings-read.test.ts", "step-models-check.ts", "step-models-check.test.ts"]
 }

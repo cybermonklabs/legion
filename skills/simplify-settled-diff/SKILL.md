@@ -14,7 +14,7 @@ Simplify recently changed code for clarity, reuse, quality and efficiency while 
 
 If none of these gives a non-empty scope, ask the user what to simplify, with the host's question tool where it has one, else as numbered options in chat. Where the host lists a question tool that is not loaded, load it with the host's tool-discovery primitive before you fall back to chat. Never skip the question.
 
-Every file of the scope is in the pass: documentation, workflow and configuration files as much as code, and a scope that holds no code at all still runs. Read generated, vendored and lockfile content for what it shows, and edit none of it. Size is no gate: callers own any size or cost threshold.
+Every file of the scope is in the pass: documentation, workflow and configuration files as much as code. Read generated, vendored and lockfile content for what it shows, and edit none of it. Size is no gate: callers own any size or cost threshold.
 
 ## Step 2: Three reviewers in parallel
 

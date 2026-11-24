@@ -1,4 +1,9 @@
-import { type Actor, type ActorAct, serviceSubjectLabel } from "./dispatch-api";
+import {
+  type Actor,
+  type ActorAct,
+  serviceSubjectLabel,
+  type WrittenActorAct,
+} from "./dispatch-api";
 
 /**
  * The one way an actor is named, shared by every surface that names one: the Dashboard's
@@ -19,8 +24,9 @@ import { type Actor, type ActorAct, serviceSubjectLabel } from "./dispatch-api";
  *  Every surface that shows who acted or who answered renders it through here, the dashboard's
  *  and the agent tools' alike, so no reader takes an agent's act for the person's own words. An
  *  act that names neither a session nor a token names no agent to show, so it reads as the
- *  person alone. */
-export function actorActText(person: string, act: ActorAct | undefined): string {
+ *  person alone. The act is taken in either reading, the served row's (`ActorAct`) and the one
+ *  a `DispatchEvent` payload carries (`WrittenActorAct`), since the two name the same fields. */
+export function actorActText(person: string, act: ActorAct | WrittenActorAct | undefined): string {
   if (act === undefined) {
     return person;
   }

@@ -17,7 +17,8 @@
 // The read of an issue (IssueSteps) answers each run with its attempt, which no write stores, and
 // the read of a project (ProjectPlans) answers each of its finished issues with its plan, its
 // ratings, its time and its count of failed steps. That read also counts each issue's runs on their
-// set model.
+// set model. A run's write that appends a tuple signals its issue on RunsChannel at its commit, and
+// IssueRunsRevision counts the tuples of an issue's runs, which each such commit raises.
 //
 // The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
 // internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column

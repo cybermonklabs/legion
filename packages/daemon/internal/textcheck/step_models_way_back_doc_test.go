@@ -1,5 +1,11 @@
 package textcheck
 
+// This test reads the launch totals' migration through migrations.WayBack, whose embed is in the
+// go list closure of the text-check run. internal/store's migration_20261124012813_test.go, which
+// runs that migration's way back, reads no text outside its package. So the guide is this one's
+// one row.
+//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for TestTheStepModelsWayBackIsTheDocsBlock (assertIsTheGuidesBlock, way_back_doc_test.go:174, through wayBackBlockOfTheGuide, :190)
+
 import "testing"
 
 // The way back of the release that counts each step's models stands in two files. The header of

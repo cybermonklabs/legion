@@ -328,6 +328,10 @@
       "needs": "the production cluster from the devbox, against production Dispatch, the production Envoy listener and production NATS, with real agents in the smoke repository"
     },
     {
+      "script": "step-models-check.sh",
+      "needs": "a deployed Dispatch and the operator's own credential. It runs the dispatch command on PATH in the operator's own shell. That shell names the session (DISPATCH_HOST, DISPATCH_SESSION_ID) and the Dispatch and token (envoy.json, or DISPATCH_URL and DISPATCH_TOKEN). It also needs bun on PATH and the keys of issues a deployed Legion ran after this release. It needs the daemon's JSON log of those runs, and each agent's transcript and set model. It reads those issues' step records and starts nothing"
+    },
+    {
       "script": "step-records-read.sh",
       "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and its project's plans, and starts nothing"
     },

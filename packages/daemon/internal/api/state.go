@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -130,6 +131,13 @@ type State struct {
 	// locator up with its process and lowers it by nothing, however old the plugin it last
 	// recorded (contract 193).
 	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
+	// IntakeGiveUps is the intake's open give-ups: the messages it gave up on that no replay or
+	// discard has closed, counted per consumer with the newest stream sequence among each
+	// consumer's (the `throughSeq` a bulk replay or discard of them all names), and the newest of
+	// them listed (IntakeGiveUpsView). Always written, its lists empty rather than null; a daemon
+	// with no workflow has none, and a body served a caller below intakeGiveUpsContract carries no
+	// such key (shaping.go's withoutIntakeGiveUps, contract 228).
+	IntakeGiveUps IntakeGiveUpsView `json:"intakeGiveUps"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely
@@ -143,6 +151,9 @@ type State struct {
 	// leaves it off that one body. The two flags compose on one body: a caller below
 	// wakesWaitingContract is below this contract too, and is served neither key.
 	claimsToRefreshHidden bool
+	// intakeGiveUpsHidden is the same for IntakeGiveUps, set on the copy the route serves a caller
+	// below shaping.go's intakeGiveUpsContract (api's withoutIntakeGiveUps).
+	intakeGiveUpsHidden bool
 }
 
 // ClaimsToRefreshField is the name ClaimsToRefresh carries on the wire, read from here by the
@@ -184,6 +195,58 @@ func ConsumerLagViewsOf(lags []intake.ConsumerLag) []ConsumerLagView {
 		views[i] = view
 	}
 	return views
+}
+
+// IntakeGiveUpsView is the intake's open give-ups as the state shows them (record.IntakeGiveUps):
+// Consumers, each consumer with an open give-up, by name, with how many it has and the newest
+// stream sequence among them; and Newest, the newest open give-ups, latest given up first, as many
+// as the projection lists (projection's stateNewestGiveUps), so a reader of the state finds the id
+// of a record to replay or discard and the consumer and sequence of a bulk one.
+type IntakeGiveUpsView struct {
+	Consumers []IntakeGiveUpCountView `json:"consumers"`
+	Newest    []IntakeGiveUpView      `json:"newest"`
+}
+
+// IntakeGiveUpCountView is one consumer's open give-ups: how many, and the newest stream sequence
+// among them, which a bulk replay or discard of all of them names as its `throughSeq`.
+type IntakeGiveUpCountView struct {
+	Name      string `json:"name"`
+	Open      int    `json:"open"`
+	NewestSeq uint64 `json:"newestSeq"`
+}
+
+// IntakeGiveUpView is one open give-up as the state lists it, without the message's headers and
+// payload, which the record keeps whole: its record id, the consumer that delivered it, its
+// subject as the store keeps text (storetext.Text: each NUL and each run of bytes that is no UTF-8
+// shown as U+FFFD, where the record keeps the publisher's bytes), stream sequence and stored
+// time, the fact's event id (null for a message that did not decode), how many deliveries
+// JetStream made of it, when the intake gave it up and why (record.IntakeGiveUpReason), and the
+// start of its last error, cut where the projection cuts it (projection's stateGiveUpErrorRunes).
+type IntakeGiveUpView struct {
+	ID         int64                     `json:"id"`
+	Consumer   string                    `json:"consumer"`
+	Subject    string                    `json:"subject"`
+	StreamSeq  uint64                    `json:"streamSeq"`
+	StoredAt   time.Time                 `json:"storedAt"`
+	EventID    *string                   `json:"eventId"`
+	Deliveries int                       `json:"deliveries"`
+	GaveUpAt   time.Time                 `json:"gaveUpAt"`
+	Reason     record.IntakeGiveUpReason `json:"reason"`
+	LastError  string                    `json:"lastError"`
+}
+
+// MarshalJSON keeps `consumers` and `newest` arrays on the wire: a nil Go slice is `null`, which
+// the plugin's reader refuses, and a daemon with no give-up open writes both empty.
+func (v IntakeGiveUpsView) MarshalJSON() ([]byte, error) {
+	type wire IntakeGiveUpsView
+	out := wire(v)
+	if out.Consumers == nil {
+		out.Consumers = []IntakeGiveUpCountView{}
+	}
+	if out.Newest == nil {
+		out.Newest = []IntakeGiveUpView{}
+	}
+	return json.Marshal(out)
 }
 
 // RepositoriesView is the repositories the daemon works in, as legion state reports them
@@ -468,29 +531,29 @@ type AgentSecretsLoginView struct {
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
 // `strandedClaims`, `wakesWaiting`, `capabilities` and `consumers` arrays on the wire: a nil Go map
-// or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
-// contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
-// carries no key of that name at all, and is marshaled through a value whose own field of that
-// name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
-// its own block a downgrade hides, with `omitzero` on those fields instead. The optional keys need
-// none of this: `controllerLocator`, `agentSecretsLogin`, `paused` and `lastPause` are pointers
-// with `omitempty`, absent wherever the state holds none, which is how a band hides them too
-// (withoutPause).
+// or slice is `null`, which the plugin's reader refuses. The exceptions are the three keys a
+// contract band hides from a caller below it, `wakesWaiting`, `claimsToRefresh` and
+// `intakeGiveUps`: such a body carries no key of that name at all, and is marshaled through a
+// value whose own field of that name shadows the embedded one. Admission.MarshalJSON hides `trees`
+// and `held`, the two keys of its own block a downgrade hides, with `omitzero` on those fields
+// instead. The optional keys need none of this: `controllerLocator`, `agentSecretsLogin`, `paused`
+// and `lastPause` are pointers with `omitempty`, absent wherever the state holds none, which is
+// how a band hides them too (withoutPause).
 //
-// One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
+// One shadow type carries the three keys, and its fields are pointers. `omitempty` leaves out a
 // nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
-// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane. A
-// `[]WakeWaiting` field could not write the empty array, since an empty slice is what
-// `omitempty` drops, so the pointer is what lets one type serve both keys — each field set when
-// its key is not hidden and left nil when it is — rather than a struct per pair of flags. The
-// two bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
-// (73) as well and is served neither key; a third banded key is one more field here, not four
-// more shapes.
+// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane, two
+// empty lists for the `intakeGiveUps` of an intake with none open. A `[]WakeWaiting` field could
+// not write the empty array, since an empty slice is what `omitempty` drops, so the pointer is
+// what lets one type serve every key — each field set when its key is not hidden and left nil
+// when it is — rather than a struct per set of flags. The bands compose, so a caller below
+// wakesWaitingContract (53) is below claimsToRefreshContract (73) and intakeGiveUpsContract (228)
+// as well and is served none of the three.
 //
-// A body that hides neither key is marshaled through the embedded value alone. The shadow's own
+// A body that hides none of them is marshaled through the embedded value alone. The shadow's own
 // fields are declared after the embedded one, so encoding/json writes a key that comes from them
 // after every other key of the body, and the fixtures under `packages/contracts/fixtures/daemon-api`
-// pin bodies that hide nothing: marshaling those through the shadow would move both keys to the
+// pin bodies that hide nothing: marshaling those through the shadow would move those keys to the
 // end of each pinned body.
 func (s State) MarshalJSON() ([]byte, error) {
 	type wire State
@@ -516,19 +579,23 @@ func (s State) MarshalJSON() ([]byte, error) {
 	if out.WakesWaiting == nil {
 		out.WakesWaiting = []WakeWaiting{}
 	}
-	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden {
+	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden && !s.intakeGiveUpsHidden {
 		return json.Marshal(out)
 	}
 	shadow := struct {
 		wire
-		WakesWaiting    *[]WakeWaiting `json:"wakesWaiting,omitempty"`
-		ClaimsToRefresh *int           `json:"claimsToRefresh,omitempty"`
+		WakesWaiting    *[]WakeWaiting     `json:"wakesWaiting,omitempty"`
+		ClaimsToRefresh *int               `json:"claimsToRefresh,omitempty"`
+		IntakeGiveUps   *IntakeGiveUpsView `json:"intakeGiveUps,omitempty"`
 	}{wire: out}
 	if !s.wakesWaitingHidden {
 		shadow.WakesWaiting = &shadow.wire.WakesWaiting
 	}
 	if !s.claimsToRefreshHidden {
 		shadow.ClaimsToRefresh = &shadow.wire.ClaimsToRefresh
+	}
+	if !s.intakeGiveUpsHidden {
+		shadow.IntakeGiveUps = &shadow.wire.IntakeGiveUps
 	}
 	return json.Marshal(shadow)
 }
@@ -867,6 +934,46 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// PodHold is the standing hold of the issue's pod: why the idle rule keeps that pod running
+	// past the idle period, from when, until which pass, and what holds it (PodHoldView). It is
+	// the streak of store's pod_holds that no pass has ended, read in this state's own snapshot
+	// (store.StandingPodHoldsTx). Absent for an issue whose pod no hold stands on: a pod the rule
+	// has not held, one it released, and one whose streak a later pass ended. Absent from every
+	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
+	// withoutPodHold).
+	PodHold *PodHoldView `json:"podHold,omitempty"`
+}
+
+// PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
+// rule's own name for what holds the pod (workflow.IdleHold's String, as the daemon's hold
+// records and its per-pass log line spell it); FirstAt, the first pass of the streak; At, its
+// newest pass, so a reader tells a streak the passes still read from one whose passes stopped,
+// since a streak stays standing until the next pass of its pod ends it; and Detail, what that one
+// word leaves out (the kinds a background-work hold's session reported), cut to its first
+// podHoldDetailChars characters, and absent where the record holds none.
+type PodHoldView struct {
+	Reason  string    `json:"reason"`
+	FirstAt time.Time `json:"firstAt"`
+	At      time.Time `json:"at"`
+	Detail  string    `json:"detail,omitempty"`
+}
+
+// podHoldDetailChars is how many characters of a hold's detail the state shows: enough to name
+// every kind a session reports, and a bound on what one row adds to a body every issue carries.
+const podHoldDetailChars = 200
+
+// PodHoldViewOf is hold as the state shows it, its detail cut to its first podHoldDetailChars
+// characters. A character is a rune, so a cut never splits one.
+func PodHoldViewOf(hold store.PodHold) *PodHoldView {
+	detail, chars := hold.Detail, 0
+	for at := range detail {
+		if chars == podHoldDetailChars {
+			detail = detail[:at]
+			break
+		}
+		chars++
+	}
+	return &PodHoldView{Reason: hold.Reason, FirstAt: hold.FirstAt, At: hold.At, Detail: detail}
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it

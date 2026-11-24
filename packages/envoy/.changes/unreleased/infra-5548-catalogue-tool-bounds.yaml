@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `GET /api/v1/going/catalogue` serves each argument's bounds as its tool's spec states them,
+  `min` and `max`: a text's length in UTF-16 units, a list's count of items, or a number's value.
+  An argument with no bound leaves both out.

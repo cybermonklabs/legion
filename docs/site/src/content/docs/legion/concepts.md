@@ -160,14 +160,16 @@ below lists them in the order of the default steps. A role keeps
 its session between its assignments until its issue leaves the workflow, so its next task reaches
 the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
-minutes, after saving the workspace's unpushed work, and the next wake for one of its roles — a
+minutes and no working copy or bookmark of its workspace holds a commit that origin does not hold,
+nor the working copy a change, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
-head — brings the pod back and resumes the same sessions where they stopped.
+head — brings the pod back and resumes the same sessions where they stopped. A commit that no
+working copy and no bookmark reaches, such as a side head, is not kept.
 
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
-| `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
+| `planning` | planner | Writes the implementation plan into the issue's `plan.md` document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
@@ -423,6 +425,13 @@ task names the version the daemon accepted, which it reads with
 comes back after a restart, or a memory disagrees with a record, the record wins. The issue's
 Conversation in Dispatch lists every version, and opens each to its fields. The merger writes
 none, and nor does the architect.
+
+A handoff's body is `head`, the commit the phase ended at, and, where the role has one, a `note`
+of at most 1,000 characters that tells the next role how to run the issue's checks in the worker
+pod or an order of work it must keep. The tester's body also keeps `implementerProof`, `failures`
+and `failed`. A worker writes its handoff once, when it completes its phase. What other records
+hold stays out of it: the diff, the pull request body, each check's result, the GitHub review,
+and `plan.md` with its plan checks and its departures from the spec.
 
 A worker's completion names its record, and the daemon reads that record back from Dispatch before
 it moves the issue: it refuses a record another session wrote, one of another issue, phase or
@@ -730,9 +739,9 @@ still moving, and a call that carries a start and no end is the shape a turn tha
 leaves behind. The daemon's own backstop reads that record and nothing else before it ends such a
 turn (`worker_stall_backstop_hours` in
 [legion.yaml](/legion/legion/running-legion/#legionyaml)), and a person reads the same record
-three ways: `legion state`'s `agents in a tool call` line, which names each claim in an open call
-by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims list`, whose
-last column is that call for each claim, the project controller's — which is on no issue, and so
-on no part of the `legion state` line — included; and `GET /legion/v1/state`, the bytes
-`legion state --json` prints, under `issues.<KEY>.architect.step` and
+three ways: `legion state`'s `agents in a tool call` line, which names each working claim in an
+open call by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims
+list`, whose last column is that call for each claim, the project controller's — which is on no
+issue, and so on no part of the `legion state` line — included; and `GET /legion/v1/state`, the
+bytes `legion state --json` prints, under `issues.<KEY>.architect.step` and
 `issues.<KEY>.workers.<role>.claim.step`.
