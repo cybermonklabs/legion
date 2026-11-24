@@ -358,6 +358,9 @@ daemon_go_tests:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-daemon-go.yaml'
+  - '.github/scripts/pg-connection-ceiling.sh'
+  - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
+  - 'packages/envoy/internal/dispatch/testlimits/*'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
