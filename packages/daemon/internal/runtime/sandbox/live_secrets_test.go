@@ -277,7 +277,7 @@ func (r *liveRig) checkSecretsCopiedTokenNegative() error {
 		PodUID: "another-pod-uid", Slot: agentSecretsSlot(worker), Thumbprint: workerID.Thumbprint, PodToken: rootID.PodToken, Session: "s4a-copied",
 	})
 	var api *cipher.APIError
-	if !errors.As(err, &api) || api.Status != 403 || api.Code != "POD_IDENTITY_MISMATCH" {
+	if !errors.As(err, &api) || api.Status != 403 || !api.HasCode("POD_IDENTITY_MISMATCH") {
 		return fmt.Errorf("enrolling another pod uid with the root's token: %v, want 403 POD_IDENTITY_MISMATCH", err)
 	}
 	note("harness", "POST /v1/enrollments (another pod uid, root token) → 403 POD_IDENTITY_MISMATCH")
@@ -466,7 +466,7 @@ func (r *liveRig) checkSecretsOldUIDAndRevocation() error {
 		PodUID: oldUID, Slot: agentSecretsSlot(worker), Thumbprint: reg.identity.Thumbprint, PodToken: reg.identity.PodToken, Session: "s4a-old-uid",
 	})
 	var api *cipher.APIError
-	if !errors.As(err, &api) || api.Status != 403 || api.Code != "POD_IDENTITY_MISMATCH" {
+	if !errors.As(err, &api) || api.Status != 403 || !api.HasCode("POD_IDENTITY_MISMATCH") {
 		return fmt.Errorf("enrolling the replacement pod's key under the old uid %s: %v, want 403 POD_IDENTITY_MISMATCH", short(oldUID), err)
 	}
 	note("harness", "POST /v1/enrollments (old pod uid %s, replacement pod token) → 403 POD_IDENTITY_MISMATCH", short(oldUID))
