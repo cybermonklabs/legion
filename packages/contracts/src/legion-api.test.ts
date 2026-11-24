@@ -785,6 +785,33 @@ test("the example entry fixtures compose the one record expected of them", () =>
   );
 });
 
+// A row an entry adds to `enumerated-fields.json` names each of its values once. The daemon's gate
+// grows the row value by value (`withEnumeratedRows` in `internal/api`), so it refuses a value the
+// added row names twice as surely as one the row before it holds, naming the entry; the
+// composition here must refuse it too, or the two would compose different records from one
+// fixture.
+test("an entry row that adds one enumerated value twice is refused, naming the entry", () => {
+  const examples = path.join(import.meta.dir, "..", "testdata", "entry-fixture-examples");
+  const base: ContractRecords = JSON.parse(readFileSync(path.join(examples, "base.json"), "utf8"));
+  expect(base.enumeratedFields.map((row) => row.keyPath)).toEqual(["issues.*.phase"]);
+  // A row the base holds, and a row no record before it declares.
+  for (const keyPath of ["issues.*.phase", "issues.*.kind"]) {
+    const entry = {
+      name: "20261126000000_twice",
+      number: base.contract + 1,
+      fixture: {
+        answers: [],
+        routes: [],
+        answerRows: [],
+        enumeratedRows: [{ answer: "state", keyPath, values: ["merging", "merging"] }],
+      },
+    };
+    expect(() => composeEntries(base, [entry])).toThrow(
+      `entry 20261126000000_twice (contract ${base.contract + 1}) adds \`merging\` to \`${keyPath}\` of the state answer in enumerated-fields.json, and that row holds it already`
+    );
+  }
+});
+
 // What that equality catches, and the one place it is blind. A key no schema names is dropped
 // wherever an object names its keys, at the top level and at the depth INFRA-1048's incident
 // took, and the gate names its path. Under `settings` (a `z.looseObject`) and under a pending
