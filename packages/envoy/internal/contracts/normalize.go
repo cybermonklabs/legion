@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type GithubEnvelopeInput struct {
@@ -211,7 +213,8 @@ func GithubCIObservation(event string, object map[string]any, owner, repo, numbe
 	if event == "check_run" {
 		checkRunID := githubPositiveUint64(object["id"])
 		if checkRunID == 0 {
-			log.Printf("github ci check run skipped: invalid id=%v", object["id"])
+			// The id is GitHub's words, or a stand-in's, and no positive id: it prints only as an id.
+			log.Printf("github ci check run skipped: invalid id=%s", redact.ShapedID("check run id", fmt.Sprint(object["id"])))
 			return CIObservation{}, false
 		}
 		obs.CheckName = checkName(stringValue(object["name"]))

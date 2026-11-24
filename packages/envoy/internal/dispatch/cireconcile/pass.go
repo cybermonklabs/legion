@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // cursor is one place in the order a pass walks: a covered repository, one page of its open pull
@@ -573,7 +574,7 @@ func (w *walk) visitHeadOverREST(ctx context.Context, pull pullHead, why string)
 		return w.stopped(at)
 	}
 	r.Logger.Info("ci reconcile reads a head over REST",
-		"repository", pull.repository(), "pr", pull.number, "sha", pull.sha, "why", why)
+		"repository", pull.repository(), "pr", pull.number, "sha", redact.ShapedSHA("head", pull.sha), "why", why)
 	see(&r.seenHeads, pull.key())
 	if at := r.readHead(ctx, w.writer, pull, c); at != nil {
 		return w.stopped(at)

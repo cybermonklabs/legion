@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // maxPages bounds one listing's pages, so a pass can never read on for ever: an answer GitHub
@@ -44,7 +45,9 @@ type object = map[string]any
 // shared scope its reads are budgeted under, the owner and name GitHub itself gives the
 // repository, and the pull request's number and head commit. statuses says the pass reads the
 // head's commit statuses, which it does where the token holds Commit statuses
-// (reconciled.statuses).
+// (reconciled.statuses). The head commit's sha is the one GitHub's answer gave (a query's commit
+// oid, a listing's head sha), so every line prints it through redact.ShapedSHA, and the App
+// client refuses a read of one that is no sha (githubapp.ErrNotASHA).
 type pullHead struct {
 	token    string
 	scope    string
@@ -285,9 +288,10 @@ func (r *Reconciler) holdStatuses(head pullHead, pages []pageOf[object], wanted 
 // (githubreads), whatever failed, as headFailed does: the statuses of a head whose token holds
 // Commit statuses are part of the read the deployment configured, and the pass gave them up.
 func (r *Reconciler) statusesUnread(ctx context.Context, head pullHead, cause error) {
+	sha := redact.ShapedSHA("head", head.sha)
 	r.Logger.Warn("ci reconcile read no commit status of a head",
-		"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", cause)
-	githubreads.NoteFailuref(ctx, "ci reconcile read no commit status of %s#%s at %s: %w", head.repository(), head.number, head.sha, cause)
+		"repository", head.repository(), "pr", head.number, "sha", sha, "error", cause)
+	githubreads.NoteFailuref(ctx, "ci reconcile read no commit status of %s#%s at %s: %w", head.repository(), head.number, sha, cause)
 }
 
 // kept is what the pass remembers of one head -- the ETags of a head read over REST, the
@@ -307,7 +311,7 @@ func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 	has, err := writer.HasRecord(head.owner, head.repo, head.number, head.sha)
 	if err != nil {
 		r.Logger.Warn("ci reconcile did not read whether a head still has its CI record",
-			"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", err)
+			"repository", head.repository(), "pr", head.number, "sha", redact.ShapedSHA("head", head.sha), "error", err)
 		return headState{}
 	}
 	if !has {
@@ -342,17 +346,18 @@ func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c
 	c.heads++
 	delete(r.heads, head.key())
 	githubreads.NoteFailure(ctx, err)
+	sha := redact.ShapedSHA("head", head.sha)
 	var tooLarge *githubapp.ResponseTooLargeError
 	if errors.As(err, &tooLarge) {
 		// GitHub's answer is past what githubapp reads at all, so this head cannot be read: it is
 		// counted and named, and the pass goes on rather than failing every head behind it.
 		c.tooLarge++
 		r.Logger.Warn("ci reconcile skipped a head whose answer from GitHub was too large",
-			"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", err)
+			"repository", head.repository(), "pr", head.number, "sha", sha, "error", err)
 		return nil
 	}
 	r.Logger.Warn("ci reconcile did not read a head",
-		"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", err)
+		"repository", head.repository(), "pr", head.number, "sha", sha, "error", err)
 	return nil
 }
 
@@ -435,8 +440,8 @@ func (r *Reconciler) recordStatuses(ctx context.Context, writer Writer, head pul
 			if err != nil {
 				ok = false
 				r.Logger.Warn("ci reconcile did not record a commit status",
-					"context", observation.Context, "repository", head.repository(),
-					"pr", head.number, "sha", head.sha, "error", err)
+					"context", redact.Field(observation.Context), "repository", head.repository(),
+					"pr", head.number, "sha", redact.ShapedSHA("head", head.sha), "error", err)
 				continue
 			}
 			if changed {
@@ -495,7 +500,7 @@ func (r *Reconciler) recordRuns(ctx context.Context, writer Writer, head pullHea
 	if err != nil {
 		r.Logger.Warn("ci reconcile did not record the check runs of a head",
 			"runs", len(runs), "repository", head.repository(),
-			"pr", head.number, "sha", head.sha, "error", err)
+			"pr", head.number, "sha", redact.ShapedSHA("head", head.sha), "error", err)
 		return len(runs), false, refused(err)
 	}
 	return len(runs), changed, true
@@ -526,8 +531,8 @@ func (r *Reconciler) recordSuites(ctx context.Context, writer Writer, head pullH
 					ok = false
 				}
 				r.Logger.Warn("ci reconcile did not record a check suite",
-					"suite", observation.SuiteID, "repository", head.repository(),
-					"pr", head.number, "sha", head.sha, "error", err)
+					"suite", redact.ShapedID("suite id", observation.SuiteID), "repository", head.repository(),
+					"pr", head.number, "sha", redact.ShapedSHA("head", head.sha), "error", err)
 				continue
 			}
 			if changed {
@@ -547,16 +552,21 @@ func (r *Reconciler) recordVerdict(observation contracts.CIObservation, head pul
 	switch contracts.ReviewerVerdictDecision(observation.CheckName, observation.AppID, r.ReviewerAppID) {
 	case contracts.VerdictNoReviewerApp:
 		r.Logger.Warn("ci reconcile dropped a verdict check: DISPATCH_REVIEWER_APP_ID is not set",
-			"check", observation.CheckName, "app_id", observation.AppID,
-			"repository", head.repository(), "pr", head.number)
+			append(verdictCheck(observation), "repository", head.repository(), "pr", head.number)...)
 		return false
 	case contracts.VerdictUntrusted:
 		r.Logger.Warn("ci reconcile ignored a verdict check another App created",
-			"check", observation.CheckName, "app_id", observation.AppID,
-			"expected_app_id", r.ReviewerAppID, "repository", head.repository(), "pr", head.number)
+			append(verdictCheck(observation), "expected_app_id", r.ReviewerAppID, "repository", head.repository(), "pr", head.number)...)
 		return false
 	}
 	return true
+}
+
+// verdictCheck is the fields a line about a verdict check the review App's rule dropped names it
+// by: its name, which the rule matched to one of the two verdict names, and the id of the App
+// GitHub says created it, GitHub's words, which prints only as an id.
+func verdictCheck(observation contracts.CIObservation) []any {
+	return []any{"check", observation.CheckName, "app_id", redact.ShapedID("app id", observation.AppID)}
 }
 
 // refused reports whether a failed write is one every later pass would meet again: cistore
