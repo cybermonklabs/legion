@@ -99,12 +99,6 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
   Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
-- Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
-  a set variable outranks the gh directory the daemon refreshes.
-
-- Before you report a resource unreachable, or read a GitHub `404` as no access, try the call through `skill://agent-secrets` and read the profiles in `AWS_CONFIG_FILE`.
-  Request a secret only for your issue's work.
-
 ## Deployment instructions
 
 They override this skill, except: no deferrals;
@@ -131,6 +125,8 @@ and the production check after the close (`skill://legion-worker/references/merg
 
 - Builds, tests, tools or a database in the pod:
   `skill://legion-worker/references/tools.md`; before you unpack or install what the image lacks: `skill://legion-worker/references/withheld-capability.md`.
+
+- gh's variables, a credential, a resource that looks unreachable: `skill://legion-worker/references/gh-and-credentials.md`.
 
 - A problem outside your issue, or a failed production check: `skill://legion-worker/references/findings.md`.
 
