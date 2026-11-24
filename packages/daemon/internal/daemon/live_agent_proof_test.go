@@ -152,8 +152,8 @@ func (r *liveAgentProof) awaitReady(token claim.Token) {
 		token, held.State, held.Session, held.PluginContract, held.Locator.Label())
 }
 
-// await polls until want holds, failing with what it waited for. testwait.Eventually bounds its
-// own wait at a minute, which is shorter than the ladder's own gaps.
+// await polls until want holds, failing with what it waited for once within has passed: the
+// ladder's waits each name the span they may take.
 func (r *liveAgentProof) await(what string, within time.Duration, want func() bool) {
 	r.t.Helper()
 	deadline := time.Now().Add(within)
