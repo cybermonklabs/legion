@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectPeer connects login's browser to artifactID's room through the document server at
@@ -33,6 +34,27 @@ func connectPeer(t *testing.T, serverURL, artifactID, login string) *docstest.Pe
 		"?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 	return docstest.Dial(t, url, http.Header{"X-Dispatch-User": []string{login}}, artifactID, crdt.New())
 }
+
+// socketDeadline is the deadline a test's socket read takes: what the test binary's own deadline
+// leaves after the margin a failing test needs to report (testwait.Left), and never a span of
+// its own, so a frame that is merely late on a loaded machine is not read as one that never
+// came. A gorilla connection is corrupt after a read timeout, so this deadline ends the read
+// rather than polling it. It is safe on a goroutine other than the test's: a deadline already
+// used up is reported with t.Error, and the read then fails at once, as every wait of testwait
+// does. Under -timeout 0 testwait answers a span no read reaches.
+func socketDeadline(t *testing.T) time.Time {
+	t.Helper()
+	left, err := testwait.Left(t, socketDeadlineMargin)
+	if err != nil {
+		t.Error(err.Error())
+		return time.Now()
+	}
+	return time.Now().Add(left)
+}
+
+// socketDeadlineMargin is what socketDeadline leaves of the test binary's deadline for the
+// failing test to report in and run its cleanups, the margin testwait's own waits leave.
+const socketDeadlineMargin = 30 * time.Second
 
 func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	t.Parallel()
@@ -53,7 +75,7 @@ func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	}
 	service.issueOpenChanged(context.Background(), "DOC-1")
 	waitForNoLiveDocument(t, service, artifactID)
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	connection.SetReadDeadline(socketDeadline(t))
 	for {
 		if _, _, err := connection.ReadMessage(); err != nil {
 			break
@@ -260,7 +282,7 @@ func TestHocuspocusAuthenticationCommunicatesSchemaReadOnly(t *testing.T) {
 		t.Fatalf("send schema authentication: %v", err)
 	}
 
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	connection.SetReadDeadline(socketDeadline(t))
 	for {
 		_, message, err := connection.ReadMessage()
 		if err != nil {
@@ -662,7 +684,7 @@ func TestDocumentSocketRefusesARoomOutsideTheSchema(t *testing.T) {
 				t.Fatalf("connect outside-schema document: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
 			testcleanup.Add(t, func() { _ = connection.Close() })
-			connection.SetReadDeadline(time.Now().Add(time.Second))
+			connection.SetReadDeadline(socketDeadline(t))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError
 			if !errors.As(err, &closed) || closed.Code != documentSchemaCloseCode {
@@ -694,15 +716,18 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	defer connection.Close()
-	waitFor(t, time.Second, "document peer connection", func() bool {
+	// The socket's room loads the document before the room counts the browser, which takes as
+	// long as the store and the machine take: the wait ends on the room's record of the
+	// connection, bounded by the test binary's deadline alone.
+	testwait.Until(t, "the document's room to count the browser's connection", func() (string, bool) {
 		state := service.room(artifactID)
 		state.mu.Lock()
 		defer state.mu.Unlock()
-		return len(state.connected) == 1
+		return fmt.Sprintf("%d connections", len(state.connected)), len(state.connected) == 1
 	})
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(context.Background()) }()
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	connection.SetReadDeadline(socketDeadline(t))
 	for {
 		if _, _, err := connection.ReadMessage(); err != nil {
 			break
@@ -799,7 +824,7 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 	testcleanup.Add(t, func() { _ = connection.Close() })
 
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	connection.SetReadDeadline(socketDeadline(t))
 	for {
 		if _, _, err := connection.ReadMessage(); err != nil {
 			break
