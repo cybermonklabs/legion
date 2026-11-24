@@ -19,6 +19,10 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 :::
 ```
 
+- The block's id, `a` above, is the task's id.
+  Write it as a lower-case letter, then lower-case letters, digits and hyphens (`[a-z][a-z0-9-]*`).
+  Dispatch stores a block of any id, but `register_plan` refuses a plan whose task id is outside that grammar, and names the block by its place among the document's typed blocks.
+
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
