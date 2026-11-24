@@ -4681,7 +4681,7 @@ one on an open pull request GitHub answers `blocked` for, which is the issue the
 one on an open pull request whose reviewer requests changes in step 5;
 and one whose pull request the record holds closed, its reviewer's approval standing at the head it was closed at.
 Facts enter only as production's do, as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream:
-CI's settlements, the reviews, the branch push, the synchronize, and the pushes onto the base that ask the daemon to read every open pull request recorded there again (`basePush`, `askMergeStateFor`), which is how a step asks for a read of GitHub without changing anything the round is judged by.
+CI's settlements, the reviews, the branch push, the synchronize, and the pushes onto the base that ask the daemon to read every open pull request recorded there again (`basePush`, `mergeStateOwed`), which is how a step asks for a read of GitHub without changing anything the round is judged by.
 Every assertion is a read of `GET /legion/v1/state`:
 of the `mergeWait` object it decodes to for what the wait says, and of the body's own keys for what the daemon leaves off, since a key written empty and a key left off decode to one Go value and only one of them is what the daemon writes.
 

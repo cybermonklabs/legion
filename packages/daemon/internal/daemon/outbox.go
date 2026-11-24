@@ -107,9 +107,10 @@ type outbox struct {
 	// answer, under the event id it is handed; and mergeStateWait is how long a read row waits
 	// before it reads again. The two rows that read a pull request use them: the merge-queue read
 	// (mergeQueueRead) and the second read of a conflicting head (conflictConfirm), whose every
-	// read is bounded by issueRead. queueMergeStateFollow hands an issue's head to the merge-state
-	// reader to follow GitHub's merge state for, which the second read does when its last attempt
-	// read no answer. All four are the workflow runtime's own
+	// read is bounded by issueRead. queueMergeStateFollow hands an issue's pull request, as the
+	// row's own read of the record held it, to the merge-state reader to follow GitHub's merge
+	// state for, which the second read does when its last attempt read no answer. All four are the
+	// workflow runtime's own
 	// (workflowRuntime.readPullRequest, workflowRuntime.applyMergeability,
 	// workflowRuntime.mergeStateWait, workflowRuntime.queueMergeStateFollow), set by attach after
 	// newOutbox, so the outbox reads GitHub and applies its answer as the per-issue read does, a
@@ -120,7 +121,7 @@ type outbox struct {
 	readPullRequest       func(context.Context, record.PullRequest) (githubrest.Client, githubPullRequest, error)
 	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error
 	mergeStateWait        func() time.Duration
-	queueMergeStateFollow func(issue, head string)
+	queueMergeStateFollow func(issue string, follow *record.PullRequest)
 	// podEnded is what the end of an issue's pod runs, for the issues whose pod ended: the drop of
 	// a repository kept for each (workflowRuntime.dropLaunchedRepository) and this release's
 	// one-time rename pass over them (workflowRuntime.podEndsOn, renamePass). It runs at three

@@ -459,7 +459,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// App's JWT mints no token for an owner (proveAppKeys); every other step of the boot that reads
 	// GitHub or writes a cache's credential mints the token that step needs. The fill of a record
 	// that lacks its repository columns (backfillRepositories) makes one read per such record,
-	// bounded by installReadAttempt, and a read that fails leaves the record for the refresher
+	// bounded by the read attempt bound (repositoryReadBounds.attempt), and a read that fails leaves the record for the refresher
 	// rather than refusing the boot. The one-time rename pass (renameAtBoot, below) reads GitHub for
 	// a configured pair only while a stored row still names the pair's `from` (renamePass.run). The
 	// refresher prepares the records' repositories once the API serves (prepareAtStart), beside
