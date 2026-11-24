@@ -21,8 +21,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // The placeholders the recording carries (testdata/gke-metadata.json): the pool of a project named

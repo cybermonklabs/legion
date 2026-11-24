@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // anthropicTokenURL is Anthropic's token exchange, which takes a jwt-bearer grant of a federation

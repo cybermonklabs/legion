@@ -7,9 +7,9 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/redact"
-	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // Installations answers whether a GitHub App is installed on a repository. The daemon records an

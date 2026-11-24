@@ -32,8 +32,8 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // maxResponseBytes caps one Cognito response: both answers fit in a few KiB, so a longer one is a

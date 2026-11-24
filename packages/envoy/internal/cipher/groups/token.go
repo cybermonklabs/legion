@@ -16,7 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // tokenCallTimeout bounds the mint: oauth2.TokenSource's Token takes no context, so a client with

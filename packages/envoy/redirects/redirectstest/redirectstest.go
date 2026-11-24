@@ -1,7 +1,7 @@
-// Package redirectstest is the stand-ins the daemon's redirect rows answer with: a server in a
-// client's server's place that answers every request with a redirect whose Location quotes the
-// credential the request carried, as whoever answers there can, and a target that counts what it
-// is asked, which a client that follows no redirect never asks.
+// Package redirectstest is the stand-ins the redirect rows of the envoy and daemon modules answer
+// with: a server in a client's server's place that answers every request with a redirect whose
+// Location quotes the credential the request carried, as whoever answers there can, and a target
+// that counts what it is asked, which a client that follows no redirect never asks.
 package redirectstest
 
 import (

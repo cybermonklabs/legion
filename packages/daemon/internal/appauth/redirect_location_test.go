@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/redirects/redirectstest"
 )
 
 // TestATokenExchangeRedirectNamesNoRunOfTheAppsJWT: whatever answers in GitHub's place answers the

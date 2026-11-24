@@ -594,7 +594,7 @@
         "files": [
           "packages/daemon/internal/launcher/metadata_redact_test.go",
           "packages/daemon/internal/launcher/metadata_test.go",
-          "packages/daemon/internal/redirects/redirects.go",
+          "packages/envoy/redirects/redirects.go",
           "packages/daemon/internal/launcher/metadata_launcher_test.go"
         ],
         "capture": "launcher.exchange-failed"
@@ -1780,7 +1780,7 @@
         "files": [
           "packages/daemon/internal/launcher/metadata_redact_test.go",
           "packages/daemon/internal/launcher/metadata_test.go",
-          "packages/daemon/internal/redirects/redirects.go",
+          "packages/envoy/redirects/redirects.go",
           "packages/daemon/internal/launcher/metadata_launcher_test.go"
         ],
         "capture": "launcher.exchange-echo"
@@ -2113,7 +2113,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/githubrest/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "githubrest.redirect/unparsed"
       },
@@ -2122,7 +2122,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/githubrest/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "githubrest.redirect/unparsed-unnamed"
       },
@@ -2131,7 +2131,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/githubrest/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "githubrest.redirect/unanswered"
       },
@@ -2140,7 +2140,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/dispatch/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "dispatch.redirect/unparsed"
       },
@@ -2149,7 +2149,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/dispatch/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "dispatch.redirect/unanswered"
       },
@@ -2158,7 +2158,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/notify/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "notify.redirect/publish-unparsed"
       },
@@ -2167,7 +2167,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/notify/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "notify.redirect/registration-unparsed"
       },
@@ -2176,7 +2176,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/notify/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "notify.redirect/role-unparsed"
       },
@@ -2185,7 +2185,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/notify/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "notify.redirect/delete-unparsed"
       },
@@ -2194,7 +2194,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/cmd/legion/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "legion.redirect/operator-unparsed"
       },
@@ -2203,7 +2203,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/cmd/legion/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "legion.redirect/state-unparsed"
       },
@@ -2212,7 +2212,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/workspace/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "workspace.redirect/tar-unparsed"
       },
@@ -2221,7 +2221,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/appauth/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "appauth.redirect/unparsed"
       },
@@ -2230,7 +2230,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/appauth/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "appauth.redirect/elsewhere"
       },
@@ -2239,7 +2239,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/cipher/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "cipher.redirect/unparsed"
       },
@@ -2248,7 +2248,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/cipher/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "cipher.redirect/elsewhere"
       },
@@ -2257,7 +2257,7 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
           "packages/daemon/internal/controller/redirect_location_test.go",
-          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "controller.redirect/unparsed"
       },
@@ -7969,18 +7969,18 @@
       "production": "daemon redact.Unanswered: a request that got no answer prints net/http's operation, the call's name or its URL through the URL rule, and the failure's class: a Location or a status line net/http quotes, and the target of a redirect followed to another host, print as their class; a transport failure on the request's own host prints its own text; errors.Is and errors.As find what they found"
     },
     {
-      "id": "daemon-redirects-refused",
+      "id": "redirects-refused",
       "requirement": "r4-unchanged",
-      "package": "github.com/sjawhar/legion/daemon/internal/redirects",
+      "package": "./redirects",
       "test": "TestARefusedClientAnswersTheRedirectAndLeavesTheCallersClientAsItWas",
-      "production": "daemon redirects.Refused: a copy of the caller's client that answers a 3xx itself and asks its target nothing, the caller's client unchanged and the transport shared"
+      "production": "redirects.Refused: a copy of the caller's client that answers a 3xx itself and asks its target nothing, the caller's client unchanged and the transport shared"
     },
     {
-      "id": "daemon-redirects-same-origin",
+      "id": "redirects-same-origin",
       "requirement": "r4-unchanged",
-      "package": "github.com/sjawhar/legion/daemon/internal/redirects",
+      "package": "./redirects",
       "test": "TestASameOriginClientFollowsARedirectOnlyOnItsOwnOrigin",
-      "production": "daemon redirects.SameOrigin: a copy of the caller's client that follows a redirect on the origin its request was sent to and answers one naming another host itself, asking that host nothing"
+      "production": "redirects.SameOrigin: a copy of the caller's client that follows a redirect on the origin its request was sent to and answers one naming another host itself, asking that host nothing"
     },
     {
       "id": "githubrest-redirect-twin",

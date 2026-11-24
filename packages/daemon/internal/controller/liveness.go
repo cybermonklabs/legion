@@ -10,10 +10,10 @@ import (
 
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/redact"
-	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // probeTimeout bounds one role lookup, so a hung listener answers Unknown rather than holding the

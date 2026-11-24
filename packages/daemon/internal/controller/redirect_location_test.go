@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
-	"github.com/sjawhar/legion/daemon/internal/redirects/redirectstest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
 
 // TestALivenessRedirectIsUnknownAndItsLogNamesNoRunOfTheBearer: whatever answers at the Envoy

@@ -93,7 +93,8 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/redact/redacttest/*'
   - 'packages/envoy/internal/tlsalert/*'
-  - 'packages/envoy/internal/redirects/*'
+  - 'packages/envoy/redirects/*'
+  - 'packages/envoy/redirects/redirectstest/*'
   - 'packages/envoy/internal/serverwait/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/testdb/*'
@@ -194,7 +195,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
-  - 'packages/envoy/internal/redirects/*'
+  - 'packages/envoy/redirects/*'
   - 'packages/envoy/internal/roles/*'
   - 'packages/envoy/internal/routing/*'
   - 'packages/envoy/internal/serverwait/*'
@@ -252,7 +253,6 @@ legion_command: &legion_command
   - 'packages/daemon/internal/prompts/**'
   - 'packages/daemon/internal/record/*'
   - 'packages/daemon/internal/redact/*'
-  - 'packages/daemon/internal/redirects/*'
   - 'packages/daemon/internal/registry/*'
   - 'packages/daemon/internal/repocache/*'
   - 'packages/daemon/internal/reviewround/*'
@@ -295,7 +295,7 @@ legion_command: &legion_command
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/oauth2call/*'
   - 'packages/envoy/internal/tlsalert/*'
-  - 'packages/envoy/internal/redirects/*'
+  - 'packages/envoy/redirects/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/listenfd/*'
   # why: .github/ci-notes/ci.md#legion_command-packagesenvoymigrationid-is-the-identifier-rule-the-daemons-embedded
@@ -318,7 +318,7 @@ listener_command: &listener_command
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
-  - 'packages/envoy/internal/redirects/*'
+  - 'packages/envoy/redirects/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/natsgrant/*'
@@ -559,7 +559,6 @@ plugin_pack:
   - '!packages/daemon/internal/prompts/**/*_test.go'
   - '!packages/daemon/internal/record/**/*_test.go'
   - '!packages/daemon/internal/redact/**/*_test.go'
-  - '!packages/daemon/internal/redirects/**/*_test.go'
   - '!packages/daemon/internal/registry/**/*_test.go'
   - '!packages/daemon/internal/repocache/**/*_test.go'
   - '!packages/daemon/internal/reviewround/**/*_test.go'
@@ -1162,6 +1161,7 @@ test:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#guide_layout-the-guides-layout-step-of-the-test-job-ci-job-testyamls
@@ -1320,7 +1320,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
-  - 'packages/envoy/internal/redirects/*'
+  - 'packages/envoy/redirects/*'
   - 'packages/envoy/internal/roles/*'
   - 'packages/envoy/internal/routing/*'
   - 'packages/envoy/internal/serverwait/*'
@@ -1463,6 +1463,7 @@ pi_legion:
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
   - 'packages/envoy/oauth2call/*'
+  - 'packages/envoy/redirects/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/sessiontiming/*'
@@ -1742,6 +1743,7 @@ envoy_infra_go:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 envoy_go:
@@ -1801,7 +1803,6 @@ envoy_go_checks:
   - 'packages/daemon/internal/controller/*'
   - 'packages/daemon/internal/notify/*'
   - 'packages/daemon/internal/redact/*'
-  - 'packages/daemon/internal/redirects/*'
   - 'packages/contracts/scripts/gen-go.ts'
   - 'packages/contracts/schemas/**'
   - 'packages/contracts/src/**'
@@ -1908,6 +1909,7 @@ dispatch_memory:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 dispatch_multiprocess:
@@ -1950,6 +1952,7 @@ dispatch_multiprocess:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds_go-the-two-build-jobs-go-step-alone-behind-a-gate-of
@@ -2048,6 +2051,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds-the-two-build-job-its-go-steps-reads-named-again
@@ -2149,6 +2153,7 @@ dispatch_two_builds:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#listener_server_change-the-server-change-soak-listener-server-change-go
@@ -2261,6 +2266,7 @@ listener_server_change:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 broker_multiprocess:
@@ -2335,7 +2341,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
-  - 'packages/envoy/internal/redirects/*'
+  - 'packages/envoy/redirects/*'
   - 'packages/envoy/internal/serverwait/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/testport/*'
@@ -2358,6 +2364,7 @@ broker_multiprocess:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#airlock_lean-the-lean-model-of-the-airlock-and-the-go-code-it-covers
 airlock_lean:
@@ -2491,6 +2498,7 @@ envoy_smoke:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/oauth2call/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
@@ -2929,6 +2937,7 @@ envoy_go_race:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/oauth2call/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
@@ -3069,7 +3078,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/redact/redacttest/*'
   - 'packages/envoy/internal/tlsalert/*'
-  - 'packages/envoy/internal/redirects/*'
+  - 'packages/envoy/redirects/*'
   - 'packages/envoy/internal/roles/*'
   - 'packages/envoy/internal/routing/*'
   - 'packages/envoy/internal/serverwait/*'
@@ -3186,6 +3195,7 @@ envoy_go_race_api:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_claim_model-the-mention-senders-claim-models-own-job
@@ -3313,6 +3323,7 @@ envoy_go_claim_model:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/oauth2call/**/*_test.go'
+  - '!packages/envoy/redirects/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
