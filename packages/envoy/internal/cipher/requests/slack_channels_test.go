@@ -193,7 +193,7 @@ func TestAJobPodsSlackTokenIsLimitedByItsList(t *testing.T) {
 // no ten-minute bound, though every pod's entry names a project.
 func TestTheSlackTokenOfAPodOnABrokerWithNoProjectAccessIsServedAsBefore(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, bound(rule(slackToken, "slack")), publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, "")
+	set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

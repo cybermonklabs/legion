@@ -234,11 +234,11 @@ func SignInWaitEnded(person string, err error) string {
 }
 
 // SessionFor is the session name a person's trade on this box asks under. The exchange fixes
-// none for a sign-in and requires the request to name one (exchange.Set.Person,
-// ErrSessionRequired), and a session name belongs to one identity, so the name this machine
-// trades its own identity under (SessionVar) is one a person's trade is refused for: a trade
-// under it is refused permanently once the machine has claimed it, and claims it away from the
-// machine when the person trades first. This name is the person's own and the same on every
+// none for a sign-in and requires the request to name one (the google identity provider's person
+// decision, ErrSessionRequired), and a session name belongs to one identity, so the name this
+// machine trades its own identity under (SessionVar) is one a person's trade is refused for: a
+// trade under it is refused permanently once the machine has claimed it, and claims it away from
+// the machine when the person trades first. This name is the person's own and the same on every
 // trade of that sign-in: their address and the box key's thumbprint, which is what tells two
 // boxes of one person apart on the sign-ins page itself. It is never read back here — a caller
 // of this package wants the launcher credential, not the access token — but the broker records

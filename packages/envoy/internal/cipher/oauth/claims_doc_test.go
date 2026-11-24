@@ -12,8 +12,12 @@ import (
 	"authelia.com/provider/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // The claim list under "The Dispatch identity the broker can issue" in docs/kubernetes.md is what a
@@ -63,8 +67,8 @@ const claimsExtractFile = "claims_doc_extract.txt"
 
 // The listed identities and the subject tokens decide is asked to decide on here. The account
 // entry fixes no session, so the request names one, and the pod token carries the audience the
-// configured issuer accepts and the pod binding Set.Pod requires. The read entry fixes the very
-// session every request here names, so the one request form serves its pod too.
+// configured issuer accepts and the pod binding the kubernetes provider requires. The read entry
+// fixes the very session every request here names, so the one request form serves its pod too.
 const (
 	claimsPodAccount   = "system:serviceaccount:example-ns:example-worker"
 	claimsReadAccount  = "system:serviceaccount:example-ns:example-reader"
@@ -125,29 +129,32 @@ type claimsSubject struct {
 // entry names a service, and a person's own, with the machine's as the actor.
 func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 	t.Helper()
-	policy, err := exchange.NewSet([]exchange.AccountEntry{{
-		Account: claimsPodAccount,
-		Project: claimsProject,
-		Person:  claimsPerson,
-	}}, []exchange.ReadEntry{{
-		Account: claimsReadAccount,
-		Service: claimsReadService,
-		Session: claimsSessionName,
-	}}, nil, []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}}, claimsSignInDomain)
+	// The keys are never read: decide verifies no signature. It checks a token's audience against
+	// the configured issuer's (audience, hasAudience), and the library, which is what resolves a
+	// token's key, is not in this call at all.
+	unread := oidc.NewKeysAt("https://keys.example/unread")
+	pods, err := kubernetes.New(kubernetes.Config{
+		Issuer: claimsIssuer, Keys: unread, ExchangeAudience: claimsAudience,
+		Accounts: []exchange.AccountEntry{{Account: claimsPodAccount, Project: claimsProject, Person: claimsPerson}},
+		Reads:    []exchange.ReadEntry{{Account: claimsReadAccount, Service: claimsReadService, Session: claimsSessionName}},
+	})
 	if err != nil {
-		t.Fatalf("exchange.NewSet: %v", err)
+		t.Fatalf("kubernetes.New: %v", err)
 	}
-	// Keys is left nil: decide verifies no signature. It checks a pod token's audience against the
-	// configured issuer (audience, hasAudience) and the library, which is what resolves a token's
-	// key, is not in this call at all.
-	provider := &Provider{exchange: ExchangeConfig{
-		Policy:     policy,
-		Kubernetes: IssuerConfig{Issuer: claimsIssuer, Audience: claimsAudience},
-		Google:     IssuerConfig{Issuer: claimsGoogleIssuer, Audience: claimsGoogleAudience},
-		// The person's own token is checked against Google's issuer too, under the device-flow
-		// client's audience; the actor token below is the machine's, under Google's own.
-		PersonAudience: claimsDeviceAudience,
-	}}
+	// The person's own token is checked against Google's issuer too, under the device-flow
+	// client's audience; the actor token below is the machine's, under Google's own.
+	machines, err := google.New(google.Config{
+		Issuer: claimsGoogleIssuer, Keys: unread, Audience: claimsGoogleAudience, PersonAudience: claimsDeviceAudience,
+		SignInDomain: claimsSignInDomain, Machines: []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}},
+	})
+	if err != nil {
+		t.Fatalf("google.New: %v", err)
+	}
+	registry, err := identity.NewRegistry([]identity.Provider{pods, machines}, nil)
+	if err != nil {
+		t.Fatalf("identity.NewRegistry: %v", err)
+	}
+	provider := &Provider{exchange: ExchangeConfig{Registry: registry}}
 	return provider, []claimsSubject{{
 		tokenType: oauthwire.SubjectTokenTypeKubernetes,
 		token: map[string]any{

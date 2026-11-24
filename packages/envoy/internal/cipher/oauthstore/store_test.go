@@ -721,6 +721,12 @@ func TestTheProviderHasThreeClientsAndNoOther(t *testing.T) {
 func TestTheExchangeClientIsConfidentialAndNarrow(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newStore(t)
+	// What the provider sets from its identity registry (identity.Registry.TokenTypeNames), as
+	// oauth.New does before the exchange serves.
+	s.ExchangeTypes([]string{
+		oauthwire.SubjectTokenTypeKubernetes, oauthwire.SubjectTokenTypeGitHub,
+		oauthwire.SubjectTokenTypeGoogle, oauthwire.SubjectTokenTypePerson,
+	}, []string{oauthwire.ActorTokenTypeMachine})
 	client, err := s.GetClient(ctx, oauthwire.ExchangeClientID)
 	if err != nil {
 		t.Fatalf("GetClient: %v", err)

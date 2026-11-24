@@ -48,7 +48,7 @@ var _ identity.Provider = (*Provider)(nil)
 // that is not <owner>/<name>, an entry missing what it must name, a workflow listed twice, and two
 // workflows whose principals spell alike, since the two could not be told apart as holders of a
 // session name. A session name two entries fix is refused where the registry composes every
-// provider's listings (exchange.NewListingSet), with the same words.
+// provider's listings (exchange.NewSet), with the same words.
 func New(c Config) (*Provider, error) {
 	p := &Provider{config: c, workflows: make(map[workflowKey]exchange.WorkflowEntry, len(c.Workflows))}
 	spelledBy := map[string]string{}
@@ -63,7 +63,7 @@ func New(c Config) (*Provider, error) {
 		if strings.TrimSpace(entry.Ref) == "" {
 			return nil, fmt.Errorf("exchange: %s: the ref is required, since an entry with no ref matches no run", where)
 		}
-		if err := exchange.CheckGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
+		if err := exchange.CheckGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, false); err != nil {
 			return nil, err
 		}
 		key := workflowKey{entry.Repository, entry.Workflow, entry.Ref}
@@ -76,7 +76,10 @@ func New(c Config) (*Provider, error) {
 		}
 		spelledBy[principal] = where
 		p.workflows[key] = entry
-		p.listings = append(p.listings, exchange.Listing{Where: where, Principal: principal, Person: entry.Person, Project: entry.Project, Session: entry.Session})
+		p.listings = append(p.listings, exchange.Listing{
+			Where: where, Principal: principal, Person: entry.Person, Project: entry.Project,
+			Session: entry.Session, Job: entry.Job,
+		})
 	}
 	return p, nil
 }

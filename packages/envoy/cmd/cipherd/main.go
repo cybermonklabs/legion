@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/groups"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
+	identityboot "github.com/sjawhar/envoy/internal/cipher/identity/boot"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/logmask"
@@ -412,14 +413,15 @@ func main() {
 	//
 	// Discovery is bounded: an issuer that accepts the connection and never answers refuses the
 	// boot instead of hanging it with no health endpoint serving.
-	discovered, err := discoverVerifiers(ctx, cfg, issuerKeys)
+	keys := memoizedKeys(issuerKeys)
+	discovered, err := discoverVerifiers(ctx, cfg, keys)
 	fatal(err)
 	pod := discovered.Pod
 	// The verifiers of the NATS auth service's services' platform tokens, read at boot so an entry
 	// it could never admit refuses the start rather than every connection. config.Load parsed the
 	// list (cfg.NATS.Services); a broker that runs no auth service still answers its edge
 	// listeners' entries at GET /v1/project-repositories.
-	natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
+	natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, keys)
 	fatal(err)
 	edgeListeners := cfg.NATS.EdgeListeners()
 
@@ -526,15 +528,16 @@ func main() {
 	// A machine login the edge opened is signed for BROKER_EDGE_URL, and the launcher credential
 	// its approval mints authenticates through this chain as any other does.
 	enr.Chain.EdgeAudience = cfg.EdgeURL
-	// The exchange's listed identities, read here, before the request machine, which reads the
-	// project an operator's entry maps a pod's or a machine's account to from the same entries
-	// the exchange mints from (exchange.Set.MappedProjects), so a token and a release cannot
-	// disagree on a credential's project. A job's account and workflow entries are entries of the
-	// same kinds, each naming its projects in place of a person (exchange.JobProjects); Load has
-	// refused an identity a job setting and another setting both list, naming the two.
-	exchangePolicy, err := exchange.NewSet(slices.Concat(cfg.ExchangeAccounts, cfg.ExchangeJobAccounts), cfg.ExchangeReadAccounts,
-		slices.Concat(cfg.ExchangeWorkflows, cfg.ExchangeJobWorkflows), cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
+	// The broker's identity providers, built from the same key sources discoverVerifiers read: the
+	// RFC 8693 exchange's token types and decisions, and the listed identities the request machine
+	// reads the project an operator's entry maps a pod's or a machine's account to from, the same
+	// entries the exchange mints from (exchange.Set.MappedProjects), so a token and a release
+	// cannot disagree on a credential's project. It is opened after the bind, as the exchange's own
+	// issuers were read before: an exchange issuer that fails its discovery exits a broker that
+	// was listening and never served.
+	identities, err := identityboot.Open(ctx, cfg, identityboot.KeysFunc(keys))
 	fatal(err)
+	exchangePolicy := identities.Registry.Policy()
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
@@ -573,47 +576,13 @@ func main() {
 	oauthSecret, err := oauthStore.Secret(secretCtx)
 	cancelSecret()
 	fatal(err)
-	// The exchange's issuers whose tokens it accepts as a subject token, beside the listed
-	// identities read above. Both halves are optional and the grant is composed either way: a
-	// broker told about no issuer accepts no subject token at all, which the line below says once
-	// at boot rather than leaving an operator to read it out of a refusal.
-	exchangeConfig := oauth.ExchangeConfig{Policy: exchangePolicy}
-	if cfg.ExchangeK8sAudience != "" {
-		// The key source the account verifier already reads: a subject token is the same
-		// cluster's projected token, for an audience of its own (BROKER_EXCHANGE_K8S_AUDIENCE),
-		// and BROKER_EXCHANGE_K8S_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, so this is never nil.
-		exchangeConfig.Kubernetes = oauth.IssuerConfig{Issuer: cfg.K8sOIDCIssuer, Audience: cfg.ExchangeK8sAudience, Keys: discovered.K8sKeys}
-	}
-	if cfg.GoogleOIDCAudience != "" {
-		// The key set discoverVerifiers read for Google, for the same reason the cluster's is
-		// shared: BROKER_GOOGLE_OIDC_AUDIENCE is what made it read one, so this is never nil.
-		exchangeConfig.Google = oauth.IssuerConfig{Issuer: cfg.GoogleOIDCIssuer, Audience: cfg.GoogleOIDCAudience, Keys: discovered.GoogleKeys}
-		exchangeConfig.MachineCredentials = enr.MachineCredentials()
-	}
-	if cfg.SignInDeviceAudience != "" {
-		// A person signs in through Google, which is also the issuer of the machine's actor
-		// token, so BROKER_SIGNIN_DEVICE_AUDIENCE needs BROKER_GOOGLE_OIDC_AUDIENCE and the two
-		// share the key set read above. What a person may be is BROKER_SIGNIN_DOMAIN's to say,
-		// which the exchange's policy already holds. A trade ends a sign-in from before migration
-		// 0047, which records no account, only where BROKER_PROJECT_ACCESS_URL is set
-		// (store.SignInTrade.EndUnrecorded); unset, such a sign-in goes on as before.
-		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
-		exchangeConfig.PersonSignIns = enroll.PersonSignIns(endUnrecordedSignIns(projectAccess))
-		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
-	}
-	if cfg.ExchangeGitHubIssuer != "" {
-		// The GitHub issuer has no second reader, so it keeps a key source of its own, read here
-		// rather than at the boot's start: nothing before the bind needs it.
-		keys, err := issuerKeys(serving, cfg.ExchangeGitHubIssuer)
-		fatal(err)
-		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
-	}
-	// The hold of refused people (internal/cipher/hold) asks Dispatch through the exchange's own
-	// client, so the two share one cache of person answers and one call per person, and answers
-	// from what that client keeps in person_standing (projectClient.Keep, above) for when Dispatch
-	// cannot be asked. With no Dispatch to ask the broker builds no gate and holds nobody, as
-	// before the hold. An IAP deployment's broker sets BROKER_HOLD_REQUIRES_DEADLINE, so the gate
-	// serves a person only on an answer with a deadline (hold.Config.RequireDeadline).
+	// The exchange's identity providers, which hold the issuers whose tokens it accepts as a
+	// subject token and the listed identities read above. The grant is composed either way: a
+	// broker told about no issuer accepts no subject token at all, which boot.Open said once at
+	// boot rather than leaving an operator to read it out of a refusal. The launcher credential
+	// and the sign-in are minted and recorded only for a type whose provider names one.
+	exchangeConfig := oauth.ExchangeConfig{Registry: identities.Registry, MachineCredentials: enr.MachineCredentials(),
+		PersonSignIns: enroll.PersonSignIns(endUnrecordedSignIns(projectAccess))}
 	var holdGate *hold.Gate
 	if projectAccess != nil {
 		exchangeConfig.Projects = projectAccess
@@ -625,14 +594,6 @@ func main() {
 			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a restricted member's machine login as its person and held to no one project, a person's trade or session naming one is refused, a secret tagged with a project is refused project-unchecked, and no enrollment or secret request asks what kind of member its person is")
 		slog.Info("hold of refused people", "state", "off", "reason", "BROKER_PROJECT_ACCESS_URL is not set")
 	}
-	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
-		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
-	} else {
-		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
-			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "job_accounts", len(cfg.ExchangeJobAccounts),
-			"workflows", len(cfg.ExchangeWorkflows), "job_workflows", len(cfg.ExchangeJobWorkflows),
-			"machines", len(cfg.ExchangeGoogleAccounts), "job_machines", jobMachines(cfg.ExchangeGoogleAccounts))
-	}
 	logPodRegistrars(cfg)
 	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
 	// and it reads two things off the store: the pairs of BROKER_SESSION_ACCOUNT_PAIRS, either of
@@ -642,7 +603,7 @@ func main() {
 	// after, so the handlers read them with no lock.
 	paired := make([][2]string, len(cfg.SessionAccountPairs))
 	for i, pair := range cfg.SessionAccountPairs {
-		paired[i] = [2]string{exchange.AccountPrincipal(pair[0]), exchange.AccountPrincipal(pair[1])}
+		paired[i] = [2]string{identities.Registry.PodPrincipal(pair[0]), identities.Registry.PodPrincipal(pair[1])}
 	}
 	oauthStore.SetSessionPairs(paired)
 	if len(cfg.SessionAccountPairs) == 0 {
@@ -1790,6 +1751,25 @@ func serviceNames(cfg config.Config) []string {
 
 // keysFunc is issuerKeys' shape, a seam for a test that must not reach a real issuer.
 type keysFunc func(ctx context.Context, issuer string) (*oidc.Keys, error)
+
+// memoizedKeys is keysFor reading each issuer's keys once, however many readers ask: the
+// verifiers discoverVerifiers builds, the identity registry boot.Open builds, and the NATS auth
+// service's verifiers share one *oidc.Keys per issuer, so a rotation becomes visible to all of
+// them at the same moment. A failed read is not kept, so it fails the boot as it always has.
+func memoizedKeys(keysFor keysFunc) keysFunc {
+	read := map[string]*oidc.Keys{}
+	return func(ctx context.Context, issuer string) (*oidc.Keys, error) {
+		if keys, ok := read[issuer]; ok {
+			return keys, nil
+		}
+		keys, err := keysFor(ctx, issuer)
+		if err != nil {
+			return nil, err
+		}
+		read[issuer] = keys
+		return keys, nil
+	}
+}
 
 // verifiers are what one boot's discovery of the token issuers the broker trusts produced: a
 // verifier per issuer and the key set behind each, since the RFC 8693 exchange resolves a subject

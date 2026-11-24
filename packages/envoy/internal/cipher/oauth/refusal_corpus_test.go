@@ -110,6 +110,11 @@ const (
 	corpusWorkflow   = ".github/workflows/ci.yaml"
 	corpusRef        = "refs/heads/main"
 	policySource     = "../exchange/exchange.go"
+	// Each identity provider decides its own subject tokens, in its own package.
+	kubernetesSource    = "../identity/kubernetes/pods.go"
+	githubSource        = "../identity/github/workflow.go"
+	googleMachineSource = "../identity/google/machine.go"
+	googlePersonSource  = "../identity/google/person.go"
 )
 
 const corpusSessionRuleFormat = "a session name is printable, carries no whitespace, '*' or '>', and is at most %d bytes"
@@ -117,28 +122,28 @@ const corpusSessionRuleFormat = "a session name is printable, carries no whitesp
 var corpusSessionRule = fmt.Sprintf(corpusSessionRuleFormat, exchange.MaxSessionBytes)
 
 var policyRefusals = []policyRefusal{
-	{"%w: %s presented a token bound to no pod, which proves only that the account exists", []any{exchange.ErrNoPodBinding, corpusAccount}, policySource},
-	{"%w: no entry lists the service account %s", []any{exchange.ErrNoEntry, corpusAccount}, policySource},
-	{"%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, policySource},
-	{"%w: the registration of %s names a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusAccount, 230, corpusSessionRule}, policySource},
-	{"%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", []any{exchange.ErrNoEntry, corpusRepository, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, "cybermonklabs/actions/.github/workflows/build.yaml@refs/heads/main"}, policySource},
-	{"%w: the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s", []any{exchange.ErrClaimMissing, corpusRepository}, policySource},
-	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, policySource},
-	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
-	{"%w: no entry lists the Google account %s", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
-	{"%w: %s presented a token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, policySource},
-	{"%w: %s is the service %s and names no person, and the request named %s", []any{exchange.ErrProjectsNoPerson, corpusMachine, "builder", oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
-	{"%w: %s reads as the service %s and names no person, and the request named %s", []any{exchange.ErrProjectsNoPerson, corpusAccount, "builder", oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
-	{"%w: %s presented a token carrying no Compute Engine identity, and its entry takes machines of the project %s named %s", []any{exchange.ErrNoComputeEngine, corpusMachine, "legion-prod", "worker-*"}, policySource},
-	{"%w: %s presented a token minted in the project %s, and its entry takes machines of %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "other-project", "legion-prod"}, policySource},
-	{"%w: %s presented a token minted on the instance %s, and its entry takes the names %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "box-1", "worker-*"}, policySource},
-	{"%w: a person signs in on a machine, so the machine's own Google identity token is presented as the actor token (%s)", []any{exchange.ErrNoActorToken, oauthwire.ActorTokenTypeMachine}, policySource},
-	{"%w: the actor token carries no email claim, so it names no machine (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
-	{"%w: no entry lists the Google account %s, which the actor token names as the machine", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
-	{"%w: the machine %s presented an actor token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, policySource},
-	{"%w: the subject token carries no sub claim, so it names no person", []any{exchange.ErrClaimMissing}, policySource},
-	{"%w: the subject token carries no email claim of an address's shape, so it names no person", []any{exchange.ErrClaimMissing}, policySource},
-	{"%w: %s signed in, and this broker takes the Google Workspace domain BROKER_SIGNIN_DOMAIN names; sign in again with `agent-secrets login` as an account of that domain", []any{exchange.ErrNotInDomain, corpusPerson}, policySource},
+	{"%w: %s presented a token bound to no pod, which proves only that the account exists", []any{exchange.ErrNoPodBinding, corpusAccount}, kubernetesSource},
+	{"%w: no entry lists the service account %s", []any{exchange.ErrNoEntry, corpusAccount}, kubernetesSource},
+	{"%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, kubernetesSource},
+	{"%w: the registration of %s names a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusAccount, 230, corpusSessionRule}, kubernetesSource},
+	{"%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", []any{exchange.ErrNoEntry, corpusRepository, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, "cybermonklabs/actions/.github/workflows/build.yaml@refs/heads/main"}, githubSource},
+	{"%w: the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s", []any{exchange.ErrClaimMissing, corpusRepository}, githubSource},
+	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, githubSource},
+	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, googleMachineSource},
+	{"%w: no entry lists the Google account %s", []any{exchange.ErrNoEntry, corpusMachine}, googleMachineSource},
+	{"%w: %s presented a token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, googleMachineSource},
+	{"%w: %s is the service %s and names no person, and the request named %s", []any{exchange.ErrProjectsNoPerson, corpusMachine, "builder", oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, googleMachineSource},
+	{"%w: %s reads as the service %s and names no person, and the request named %s", []any{exchange.ErrProjectsNoPerson, corpusAccount, "builder", oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, kubernetesSource},
+	{"%w: %s presented a token carrying no Compute Engine identity, and its entry takes machines of the project %s named %s", []any{exchange.ErrNoComputeEngine, corpusMachine, "legion-prod", "worker-*"}, googleMachineSource},
+	{"%w: %s presented a token minted in the project %s, and its entry takes machines of %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "other-project", "legion-prod"}, googleMachineSource},
+	{"%w: %s presented a token minted on the instance %s, and its entry takes the names %s", []any{exchange.ErrMachineNotAllowed, corpusMachine, "box-1", "worker-*"}, googleMachineSource},
+	{"%w: a person signs in on a machine, so the machine's own Google identity token is presented as the actor token (%s)", []any{exchange.ErrNoActorToken, oauthwire.ActorTokenTypeMachine}, googlePersonSource},
+	{"%w: the actor token carries no email claim, so it names no machine (ask for it with format=full)", []any{exchange.ErrClaimMissing}, googlePersonSource},
+	{"%w: no entry lists the Google account %s, which the actor token names as the machine", []any{exchange.ErrNoEntry, corpusMachine}, googlePersonSource},
+	{"%w: the machine %s presented an actor token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, googlePersonSource},
+	{"%w: the subject token carries no sub claim, so it names no person", []any{exchange.ErrClaimMissing}, googlePersonSource},
+	{"%w: the subject token carries no email claim of an address's shape, so it names no person", []any{exchange.ErrClaimMissing}, googlePersonSource},
+	{"%w: %s signed in, and this broker takes the Google Workspace domain BROKER_SIGNIN_DOMAIN names; sign in again with `agent-secrets login` as an account of that domain", []any{exchange.ErrNotInDomain, corpusPerson}, googlePersonSource},
 	{"%w: the subject token names no machine credential id, so it is not a machine login's token", []any{exchange.ErrClaimMissing}, policySource},
 	{"%w: the machine credential records no approver to act for", []any{exchange.ErrClaimMissing}, policySource},
 	{"%w: %s's tokens name the session %s", []any{exchange.ErrSessionMismatch, corpusAccount, "legion-broker"}, policySource},

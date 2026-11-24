@@ -3,7 +3,7 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -13,11 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
-
-// accountPattern is a Kubernetes service account's subject, the one a pod's projected token
-// carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
-// subdomain. It is the grammar the broker's configuration states for the same accounts.
-var accountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // podVerifier verifies a projected service-account token with the shared internal/oidc verifier
 // (issuer, audience, signature, expiry, subject) and reads the pod UID claim from the payload that
@@ -119,11 +114,24 @@ func (v callerVerifier) VerifyCaller(ctx context.Context, raw string) (identity.
 // no Instance and needs no registration, because the name its tokens carry is the
 // configuration's, the same for every pod of the account.
 //
+// An account entry that names no person names no project either (exchange.CheckGrant), and its
+// token acts as the account itself: ProjectScopeNamed with no project and no person, and the
+// account as its Service, which a resource server reads in place of a person and Dispatch records
+// the token's writes under. A request of its pod naming a project is refused as under any entry
+// naming none (exchange.ErrProjectsFixed).
+//
 // A read entry always fixes its session, so its pods are answered the same way, with the claims
 // of a token that writes nothing: the entry's service and session, ProjectScopeNone, and no
 // person, no project and no Instance. Its token names no person, so a request of its pod naming
 // a project is refused (exchange.ErrProjectsNoPerson), as a machine's whose entry names no person
 // is.
+//
+// A job entry's pods are answered with a token that names the account as its service and no
+// person, with the entry's scope and whole list whatever the request names
+// (exchange.Claims.Grant), and Instance as any entry's: the pod uid where the entry fixes no
+// session, so a job pod registers as a person's pod does, and none where it fixes one.
+//
+// It answers LegionStatus for a Legion daemon's own entry alone (isLegionDaemon).
 func (p *Provider) pod(token map[string]any, session string, projects []string) (exchange.Claims, error) {
 	account, err := exchange.ClaimString(token, "sub")
 	if err != nil {
@@ -146,15 +154,25 @@ func (p *Provider) pod(token map[string]any, session string, projects []string) 
 		return exchange.Claims{Session: name, Service: listing.read.Service, Scope: exchange.ProjectScopeNone, Principal: Principal(account)}, nil
 	}
 	entry := listing.account
-	named, err := exchange.EntryProjects(account, entry.Project, projects)
-	if err != nil {
+	claims := exchange.Claims{Session: name, Principal: Principal(account)}
+	if err := claims.Grant(account, account, entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return exchange.Claims{}, err
 	}
-	claims := exchange.Claims{Session: name, Person: entry.Person, Scope: exchange.ProjectScopeNamed, Projects: named, Principal: Principal(account)}
+	claims.LegionStatus = isLegionDaemon(entry)
 	if entry.Session == "" {
 		claims.Instance = uid
 	}
 	return claims, nil
+}
+
+// isLegionDaemon reports whether entry is a Legion daemon's own entry
+// (exchange.Claims.LegionStatus): an account entry that names a project and fixes the session
+// oauthwire.LegionDaemonSessionPrefix + that project, compared exactly. It reads the session the
+// entry fixes, never the one a request names, and a job entry names no Project, so it is never
+// one.
+func isLegionDaemon(entry exchange.AccountEntry) bool {
+	project, fixesDaemonSession := strings.CutPrefix(entry.Session, oauthwire.LegionDaemonSessionPrefix)
+	return fixesDaemonSession && entry.Project != "" && project == entry.Project
 }
 
 // podListing is the entry that lists a pod's account: its AccountEntry, or, when readOnly is set,

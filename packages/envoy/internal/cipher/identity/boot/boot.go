@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
@@ -105,13 +106,28 @@ func Open(ctx context.Context, cfg config.Config, keysFor KeysFunc) (Boot, error
 	return b, nil
 }
 
-// logExchange says once at boot which subject token issuers the exchange accepts, rather than
-// leaving an operator to read it out of a refusal.
+// logExchange says once at boot which subject token issuers the exchange accepts, and how many
+// entries of each setting it lists, job entries apart, rather than leaving an operator to read it
+// out of a refusal.
 func logExchange(cfg config.Config) {
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
 		return
 	}
 	slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
-		"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
+		"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "job_accounts", len(cfg.ExchangeJobAccounts),
+		"workflows", len(cfg.ExchangeWorkflows), "job_workflows", len(cfg.ExchangeJobWorkflows),
+		"machines", len(cfg.ExchangeGoogleAccounts), "job_machines", jobMachines(cfg.ExchangeGoogleAccounts))
+}
+
+// jobMachines counts the BROKER_VM_EXCHANGE_JOB_ACCOUNTS entries among the Google entries: the
+// fleets whose machines write as a job, naming no person.
+func jobMachines(entries []exchange.GoogleEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.Job.Listed() {
+			n++
+		}
+	}
+	return n
 }

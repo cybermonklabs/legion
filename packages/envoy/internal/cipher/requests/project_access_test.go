@@ -91,7 +91,7 @@ func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecds
 	t.Helper()
 	subject := "system:serviceaccount:example:" + name
 	if project != "" {
-		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider}}, nil, nil, nil, "")
+		set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider}})
 		if err != nil {
 			t.Fatalf("exchange.NewSet: %v", err)
 		}
@@ -123,7 +123,7 @@ func jobPods(t *testing.T, m *Machine, lists ...string) []jobPod {
 		name := "job-" + strings.ToLower(strings.ReplaceAll(list, ",", "-"))
 		entries[i] = exchange.AccountEntry{Account: "system:serviceaccount:example:" + name, Job: job}
 	}
-	set, err := exchange.NewSet(entries, nil, nil, nil, "")
+	set, err := kubernetesPolicy(entries)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -240,10 +240,11 @@ func TestASessionNamingThePrivateProjectGetsItsSecret(t *testing.T) {
 func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	const otherSubject = "system:serviceaccount:example:other-sa"
-	set, err := exchange.NewSet([]exchange.AccountEntry{
+	set, err := kubernetesPolicy([]exchange.AccountEntry{
 		{Account: fixtureSubject, Project: privProject, Person: insider},
 		{Account: otherSubject, Project: teamProject, Person: insider},
-	}, nil, nil, nil, "")
+	})
+
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

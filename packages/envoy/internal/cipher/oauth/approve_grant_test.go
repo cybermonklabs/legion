@@ -196,10 +196,9 @@ func TestOnlyASignInIsTradedForTheApprovePlaceholder(t *testing.T) {
 	access := newFakeAccess()
 	access.sees[person] = []string{project}
 	fleet := newSignInFixtureWith(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicy(t, nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet, Project: project, Person: person})
 		c.Exchange.Projects = access
 		c.Approve = approveSettings()
-	})
+	}, listing(nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet, Project: project, Person: person}))
 	form = exchangeForm(fleet.machineToken(t, signInMachine, machineAudience, true), oauthwire.SubjectTokenTypeGoogle, "example-machine")
 	if traded := fleet.exchanged(t, form, key); traded == "" {
 		t.Fatal("the fleet's machine trade minted no token for its person; the row below would prove nothing")

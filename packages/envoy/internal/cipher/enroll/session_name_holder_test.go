@@ -423,8 +423,8 @@ func TestAnEnrollmentNamingNoSessionBindsNothing(t *testing.T) {
 // TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount is the one thing this refusal
 // may not break. A Legion role's pod trades a token under its session name before or after it
 // enrols under that same name: the exchange binds the name to exchange.AccountPrincipal of the
-// ServiceAccount subject the pod's projected token proved (exchange.Set.Pod), and the enrolment
-// binds it to exchange.AccountPrincipal of the subject the same kind of token proved
+// ServiceAccount subject the pod's projected token proved (the kubernetes provider's decision),
+// and the enrolment binds it to exchange.AccountPrincipal of the subject the same kind of token proved
 // (namePrincipal), even though the enrolment's grants follow the pair of that account and the
 // daemon's login (carryPrincipal). Those are one string, and this measures it both ways — by
 // comparing the principal the exchange decides with the one the enrolment bound the name to, and
@@ -437,7 +437,7 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 	const subject = "system:serviceaccount:legion:worker"
 	// The exchange as the cluster's deployment lists this account: the entry fixes no session
 	// name, so the name the pod asks under is the name it writes, which is the name it enrols.
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: "LEGION", Person: "ada@example.com"}}, nil, nil, nil, "")
+	set, err := kubernetesPods([]exchange.AccountEntry{{Account: subject, Project: "LEGION", Person: "ada@example.com"}})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

@@ -37,6 +37,11 @@ import (
 // alone — a resource server holds a token naming no person to what a service may do — which is
 // why the service is a claim of its own rather than an absence to be read, and why a request of
 // such a machine naming a project is refused rather than read.
+//
+// An entry that names a job list mints a token that names the account's address as its service
+// and no person, with the entry's scope and whole list whatever the request names
+// (exchange.Claims.Grant). Fleet is still the entry's service, so the launcher credential its
+// exchange mints records the service it would for any machine of the account.
 func (p *Provider) machine(token map[string]any, session string, projects []string) (exchange.Claims, error) {
 	identity := ReadIdentity(token)
 	if identity.Account == "" {
@@ -56,19 +61,18 @@ func (p *Provider) machine(token map[string]any, session string, projects []stri
 	if err != nil {
 		return exchange.Claims{}, err
 	}
-	claims := exchange.Claims{Session: name, Scope: exchange.ProjectScopePerson, Principal: Principal(identity.Account), Fleet: entry.Service}
-	if entry.Person == "" {
+	claims := exchange.Claims{Session: name, Principal: Principal(identity.Account), Fleet: entry.Service}
+	if !entry.Job.Listed() && entry.Person == "" {
 		if len(projects) > 0 {
 			return exchange.Claims{}, fmt.Errorf("%w: %s is the service %s and names no person, and the request named %s",
 				exchange.ErrProjectsNoPerson, identity.Account, entry.Service, oauthwire.JoinProjects(projects))
 		}
-		claims.Service = entry.Service
+		claims.Service, claims.Scope = entry.Service, exchange.ProjectScopePerson
 		return claims, nil
 	}
-	if claims.Projects, err = exchange.EntryProjects(identity.Account, entry.Project, projects); err != nil {
+	if err := claims.Grant(identity.Account, identity.Account, entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return exchange.Claims{}, err
 	}
-	claims.Person, claims.Scope = entry.Person, exchange.ProjectScopeNamed
 	return claims, nil
 }
 

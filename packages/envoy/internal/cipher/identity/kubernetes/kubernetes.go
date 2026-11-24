@@ -56,7 +56,7 @@ var _ identity.PodProvider = (*Provider)(nil)
 // that is not a service account's subject, an entry missing what it must name, an account listed
 // twice, and an account both an account entry and a read entry list. A session name two entries
 // fix is refused where the registry composes every provider's listings
-// (exchange.NewListingSet), with the same words.
+// (exchange.NewSet), with the same words.
 func New(c Config) (*Provider, error) {
 	p := &Provider{
 		config:   c,
@@ -65,21 +65,24 @@ func New(c Config) (*Provider, error) {
 	}
 	for i, entry := range c.Accounts {
 		where := fmt.Sprintf("account entry %d, %q", i+1, entry.Account)
-		if !accountPattern.MatchString(entry.Account) {
+		if !oauthwire.AccountSubject.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
-		if err := exchange.CheckGrant(where, entry.Project, entry.Person, entry.Session, true); err != nil {
+		if err := exchange.CheckGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, true); err != nil {
 			return nil, err
 		}
 		if _, listed := p.accounts[entry.Account]; listed {
 			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account writes as one identity", where)
 		}
 		p.accounts[entry.Account] = entry
-		p.listings = append(p.listings, exchange.Listing{Where: where, Principal: Principal(entry.Account), Person: entry.Person, Project: entry.Project, Session: entry.Session})
+		p.listings = append(p.listings, exchange.Listing{
+			Where: where, Principal: Principal(entry.Account), Person: entry.Person, Project: entry.Project,
+			Session: entry.Session, Job: entry.Job,
+		})
 	}
 	for i, entry := range c.Reads {
 		where := fmt.Sprintf("read entry %d, %q", i+1, entry.Account)
-		if !accountPattern.MatchString(entry.Account) {
+		if !oauthwire.AccountSubject.MatchString(entry.Account) {
 			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
 		}
 		if strings.TrimSpace(entry.Service) == "" {

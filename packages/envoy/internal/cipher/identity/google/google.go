@@ -80,9 +80,9 @@ var errPersonWithoutMachines = errors.New("oauth: a broker that accepts a person
 // machine audience, and, naming the entry, an account that is not a lowercase email address, an
 // entry with no service, half a pin (a Compute Engine project and no instance pattern, or the
 // other way round), an instance pattern that is not a pattern, half a grant (a person and no
-// project, or the other way round), and an account listed twice. A session name two entries fix
-// is refused where the registry composes every provider's listings (exchange.NewListingSet), with
-// the same words.
+// project, or the other way round), a job list beside a person or a project, and an account
+// listed twice. A session name two entries fix is refused where the registry composes every
+// provider's listings (exchange.NewSet), with the same words.
 func New(c Config) (*Provider, error) {
 	if c.PersonAudience != "" && c.Audience == "" {
 		return nil, errPersonWithoutMachines
@@ -102,14 +102,16 @@ func New(c Config) (*Provider, error) {
 		if _, err := path.Match(entry.Instance, ""); err != nil {
 			return nil, fmt.Errorf("exchange: %s: the instance-name pattern %q is not a pattern: %w", where, entry.Instance, err)
 		}
-		if (entry.Project == "") != (entry.Person == "") {
+		if !entry.Job.Listed() && (entry.Project == "") != (entry.Person == "") {
 			return nil, fmt.Errorf("exchange: %s: an entry names the person and the project together or neither (project %q, person %q)", where, entry.Project, entry.Person)
 		}
-		if entry.Person != "" {
-			if err := exchange.CheckGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
+		if entry.Job.Listed() || entry.Person != "" {
+			if err := exchange.CheckGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, false); err != nil {
 				return nil, err
 			}
 		} else if entry.Session != "" && !exchange.ValidSession(entry.Session) {
+			// An entry naming neither a person nor a job list is a machine that is its service and
+			// nothing else, so its session is all there is to check.
 			return nil, fmt.Errorf("exchange: %s: %s", where, exchange.SessionRule)
 		}
 		if _, listed := p.machines[entry.Account]; listed {
@@ -118,7 +120,7 @@ func New(c Config) (*Provider, error) {
 		p.machines[entry.Account] = entry
 		p.listings = append(p.listings, exchange.Listing{
 			Where: where, Principal: Principal(entry.Account), Person: entry.Person, Project: entry.Project,
-			Session: entry.Session, Service: entry.Service,
+			Session: entry.Session, Service: entry.Service, Job: entry.Job,
 		})
 	}
 	return p, nil

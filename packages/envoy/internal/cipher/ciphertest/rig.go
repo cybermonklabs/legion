@@ -28,9 +28,12 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	identityboot "github.com/sjawhar/envoy/internal/cipher/identity/boot"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
@@ -262,9 +265,9 @@ type providerConfig struct {
 	accessLifetime time.Duration
 	projectAccess  projectaccess.Access
 	hold           *hold.Gate
-	// exchange is the token exchange's entries NewRig built and gives the request machine too; nil
-	// has NewOAuthProvider build its own (newExchangeSet).
-	exchange *exchange.Set
+	// identities is the identity registry NewRig built and whose listed identities it gives the
+	// request machine too; nil has NewOAuthProvider build its own (newIdentities).
+	identities *identity.Registry
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -495,17 +498,17 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
-	// The token exchange's entries, built once and given to both the OAuth provider and the request
-	// machine, as main gives both the one set.
-	entries := newExchangeSet(t)
+	// The broker's identity registry, built once: the OAuth provider's exchange trades through it,
+	// and the request machine reads its listed identities, as main gives both the one registry.
+	identities := newIdentities(t, issuer)
 	// The request machine reads a credential's project from the same entries the exchange mints
 	// from, and asks Dispatch about projects on the one client, as main gives it both
 	// (requests.Machine.Exchange and Projects).
-	reqMachine.Exchange = entries
+	reqMachine.Exchange = identities.Policy()
 	if config.projectAccess != nil {
 		reqMachine.Projects = config.projectAccess
 	}
-	providerOptions := []ProviderOption{func(c *providerConfig) { c.exchange = entries }}
+	providerOptions := []ProviderOption{func(c *providerConfig) { c.identities = identities }}
 	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
 	// own Dispatch client, which keeps its answers in this rig's store, and on its registry, with
 	// the deadline rule where WithHoldRequiresDeadline sets it, as BROKER_HOLD_REQUIRES_DEADLINE
@@ -588,29 +591,27 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
-// newExchangeSet is the token exchange's entries a rig's broker trades on, the one set cmd/cipherd
-// builds from its exchange settings: the four accounts and the one workflow the Rig's constants
-// name.
-func newExchangeSet(t *testing.T) *exchange.Set {
+// newIdentities is the identity registry a rig's broker trades on, built as cmd/cipherd builds it
+// from its identity settings: its one stand-in issuer is both the cluster and GitHub, it lists the
+// four accounts and the one workflow the Rig's constants name, and it lists no machine, so there
+// is no box a person could have signed in on and no domain to hold one to.
+func newIdentities(t *testing.T, issuer *oidctest.Issuer) *identity.Registry {
 	t.Helper()
-	set, err := exchange.NewSet(
-		[]exchange.AccountEntry{
+	identities, err := identityboot.Open(context.Background(), config.Config{
+		K8sOIDCIssuer: issuer.URL(), ExchangeK8sAudience: ExchangeAudience,
+		ExchangeGitHubIssuer: issuer.URL(), ExchangeGitHubAudience: githubAudience,
+		ExchangeAccounts: []exchange.AccountEntry{
 			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
 			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
 			{Account: DaemonExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: DaemonExchangeSession},
 			{Account: OtherProjectAccount, Project: OtherProject, Person: ExchangePerson, Session: OtherProjectSession},
 		},
-		nil,
-		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
-		nil,
-		// The rig lists no machine, so there is no box a person could have signed in on and no
-		// domain to hold one to.
-		"",
-	)
+		ExchangeWorkflows: []exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
+	}, func(ctx context.Context, url string) (*oidc.Keys, error) { return oidc.NewKeys(ctx, url) })
 	if err != nil {
-		t.Fatalf("exchange.NewSet: %v", err)
+		t.Fatalf("identityboot.Open: %v", err)
 	}
-	return set
+	return identities.Registry
 }
 
 // DeviceLifetime is how long a device code and its user code the rig broker issues wait for a
@@ -640,20 +641,14 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 	if err != nil {
 		t.Fatalf("OAuth secret: %v", err)
 	}
-	policy := config.exchange
-	if policy == nil {
-		policy = newExchangeSet(t)
-	}
-	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
-	if err != nil {
-		t.Fatalf("oidc.NewKeys: %v", err)
+	identities := config.identities
+	if identities == nil {
+		identities = newIdentities(t, issuer)
 	}
 	exchangeConfig := oauth.ExchangeConfig{
-		Policy:     policy,
-		Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
-		GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
-		Projects:   config.projectAccess,
-		Hold:       config.hold,
+		Registry: identities,
+		Projects: config.projectAccess,
+		Hold:     config.hold,
 	}
 	provider, err := oauth.New(oauth.Config{
 		Secret: secret, DeviceLifetime: DeviceLifetime, AccessLifetime: accessLifetime,

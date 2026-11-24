@@ -154,9 +154,9 @@ func TestALegacyRowsWithheldNamesMoveByTheSessionRule(t *testing.T) {
 
 // TestAPodAndItsTradeStillShareOneSessionName: a pod's grants follow a pair, but its session name
 // is still held under its account, the principal its own token exchange claims the name under
-// (oauth.Provider.claimSession binds exchange.Set.Pod's Principal), so the pod's enrolment under S
-// and its trade under S never refuse each other. A pod enrolled under a login that proved no
-// account carries nothing, and its name is held under its account all the same.
+// (oauth.Provider.claimSession binds the kubernetes provider's Principal), so the pod's enrolment
+// under S and its trade under S never refuse each other. A pod enrolled under a login that proved
+// no account carries nothing, and its name is held under its account all the same.
 //
 // The control: bind the pair in bindSessionName (in.carry for in.name). The name is then held by
 // the pair, or by no principal under the login that proved no account, and not by the pod's
@@ -166,7 +166,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: carryPodAccount, Project: "LEGION", Person: "ada@example.com"}}, nil, nil, nil, "")
+	set, err := kubernetesPods([]exchange.AccountEntry{{Account: carryPodAccount, Project: "LEGION", Person: "ada@example.com"}})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

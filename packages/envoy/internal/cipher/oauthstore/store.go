@@ -195,6 +195,12 @@ type Store struct {
 	// it must be set before the provider serves the token-exchange grant.
 	ExchangeSubject func(ctx context.Context, request oauth2.Requester, subjectToken map[string]any) (string, error)
 
+	// exchangeSubjectTypes and exchangeActorTypes are the token types the exchange client may
+	// present as a subject token and as an actor token (ExchangeTypes): every type the broker's
+	// identity providers register, configured or not. The provider sets them before it serves
+	// the token-exchange grant.
+	exchangeSubjectTypes, exchangeActorTypes []string
+
 	// testWriteHook, when set, runs in writePodSession once its insert of a pod's first
 	// registration for a session has returned, before RegisterPodSession commits, given the
 	// context that carries the write's transaction. It exists only so a test can hold one

@@ -408,7 +408,7 @@ func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
 		// The broker's words for a revoked sign-in (internal/cipher/oauth, Provider.personSignIn).
 		{"a sign-in the broker revoked", http.StatusBadRequest, map[string]any{"error": "invalid_grant",
 			"error_description": "ada@example.com revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with `agent-secrets login`."}, 1},
-		// The broker's words for a machine no entry lists (internal/cipher/exchange, Set.Person),
+		// The broker's words for a machine no entry lists (internal/cipher/identity/google),
 		// as the token endpoint answers them.
 		{"a machine the deployment does not list", http.StatusBadRequest, map[string]any{"error": "invalid_request",
 			"error_description": "The subject token was refused: no entry lists the Google account box@fleet.iam.gserviceaccount.com, which the actor token names as the machine."}, 0},

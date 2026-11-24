@@ -148,23 +148,20 @@ var narrowingRows = map[string]narrowingRow{
 // configuration last.
 func newNarrowingFixture(t *testing.T, adjust func(*oauth.Config)) *signInFixture {
 	t.Helper()
-	return newSignInFixtureWith(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicyReading(t,
-			[]exchange.AccountEntry{
-				{Account: account, Project: project, Person: person},
-				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
-				{Account: otherAccount, Project: otherProject, Person: otherPerson},
-				{Account: personlessAccount, Session: personlessSession},
-			},
-			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
-			[]exchange.WorkflowEntry{
-				{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
-				{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
-			},
-			exchange.GoogleEntry{Account: signInMachine, Service: signInFleet},
-			exchange.GoogleEntry{Account: pinnedMachine, Service: pinnedFleet, Project: project, Person: person})
-		adjust(c)
-	})
+	return newSignInFixtureWith(t, adjust, listingWithReads(
+		[]exchange.AccountEntry{
+			{Account: account, Project: project, Person: person},
+			{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
+			{Account: otherAccount, Project: otherProject, Person: otherPerson},
+			{Account: personlessAccount, Session: personlessSession},
+		},
+		[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
+		[]exchange.WorkflowEntry{
+			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
+			{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
+		},
+		exchange.GoogleEntry{Account: signInMachine, Service: signInFleet},
+		exchange.GoogleEntry{Account: pinnedMachine, Service: pinnedFleet, Project: project, Person: person}))
 }
 
 // personTrade is a person's sign-in trade on signInMachine, with fresh tokens of both halves.
@@ -269,7 +266,18 @@ func withRecordedAccount(t *testing.T, f *signInFixture, kind string, answer oau
 // each of them.
 func TestEveryTradeKindNarrowsOnRequest(t *testing.T) {
 	// GetClient reads nothing of the store's own state: the two clients are the code's.
-	client, err := (&oauthstore.Store{}).GetClient(context.Background(), oauthwire.ExchangeClientID)
+	// The exchange client may present the subject token types this broker's identity providers
+	// register, which the provider tells the store at boot (oauth.New, oauthstore.Store
+	// .ExchangeTypes). A reader of that list says the same thing first, with every provider
+	// registered: a store told of none accepts the broker's own access token alone, and the walk
+	// below would read one type and call every row of narrowingRows unreachable.
+	registry, err := identities{}.build()
+	if err != nil {
+		t.Fatalf("the identity registry of every provider: %v", err)
+	}
+	store := &oauthstore.Store{}
+	store.ExchangeTypes(registry.TokenTypeNames())
+	client, err := store.GetClient(context.Background(), oauthwire.ExchangeClientID)
 	if err != nil {
 		t.Fatalf("GetClient(%s): %v", oauthwire.ExchangeClientID, err)
 	}
@@ -497,10 +505,9 @@ func TestANarrowedTradeIsCheckedAsItsBaseWord(t *testing.T) {
 		down := newFakeAccess()
 		down.kinds[person] = projectaccess.MemberRestricted
 		down.down = true
-		f := newNarrowingFixture(t, func(c *oauth.Config) {
-			c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet})
+		f := newSignInFixtureWith(t, func(c *oauth.Config) {
 			c.Exchange.Projects = down
-		})
+		}, listing([]exchange.AccountEntry{{Account: account, Person: person}}, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet}))
 		f.registers(t, account, "pod-uid-public", "public-session-1")
 		_, status, body := both(t, f, func() narrowingTrade {
 			return narrowingTrade{form: exchangeForm(f.podToken(t, "pod-uid-public", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key: newKey(t)}

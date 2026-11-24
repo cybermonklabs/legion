@@ -206,7 +206,9 @@ func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 // exchange to go through, and an entry that fixes one answers none, since every pod of that
 // account writes under the configuration's name and is registered for nothing. A read entry
 // always fixes one, and answers its service and session, the project scope that writes nothing,
-// and no person and no project.
+// and no person and no project. The daemon account's entry fixes legion-daemon:ACME, the daemon
+// session of its own project, so it answers LegionStatus too
+// (TestPodGivesLegionStatusToTheDaemonsEntryAlone).
 func TestPodAnswersTheListedAccount(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {
@@ -218,11 +220,11 @@ func TestPodAnswersTheListedAccount(t *testing.T) {
 		{name: "the session the request names", token: podToken(workerAccount, podUID), session: "implementer-g1",
 			want: exchange.Claims{Session: "implementer-g1", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: workerPrincipal, Instance: podUID}},
 		{name: "the session the entry fixes, the request naming none", token: podToken(daemonAccount, podUID), session: "",
-			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
+			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, LegionStatus: true, Principal: daemonPrincipal}},
 		{name: "the session the entry fixes, the request naming the same", token: podToken(daemonAccount, podUID), session: fixedSession,
-			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
+			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, LegionStatus: true, Principal: daemonPrincipal}},
 		{name: "another pod of the account is the same principal", token: podToken(daemonAccount, "another-pod-uid"), session: "",
-			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
+			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, LegionStatus: true, Principal: daemonPrincipal}},
 		{name: "a read entry's session, the request naming none", token: podToken(readerAccount, podUID), session: "",
 			want: exchange.Claims{Session: readerSession, Service: readerService, Scope: exchange.ProjectScopeNone, Principal: readerPrincipal}},
 		{name: "a read entry's session, the request naming the same", token: podToken(readerAccount, podUID), session: readerSession,

@@ -29,9 +29,9 @@ import (
 // session is left as it was: no project scope, no projects and no scope granted, whether the
 // trade asked for read or not; so is a narrowed trade of the public scope, which has no narrowed
 // word and which decide refuses before it comes this far. No path through decide can hand it such
-// a value today (ExchangeConfig.Policy is a concrete *exchange.Set, every decision of which sets
-// one of the four), so this test is the only thing that reaches the refusal, and it is what stops
-// it from falling back to the person scope as the switch did before the none scope existed.
+// a value today (every identity provider's decision and exchange.Set.Machine set one of the
+// four), so this test is the only thing that reaches the refusal, and it is what stops it from
+// falling back to the person scope as the switch did before the none scope existed.
 // LegionStatus beside any scope but named, the unset one included, is a server error that names
 // legion-status and the scope, and it too writes and grants nothing.
 func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T) {

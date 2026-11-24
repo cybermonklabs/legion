@@ -2,7 +2,6 @@ package oauth
 
 import (
 	"context"
-	"crypto"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -128,106 +128,31 @@ var subjectTokenAlgorithms = []jose.SignatureAlgorithm{
 	jose.EdDSA,
 }
 
-// The lifetime tolerance each JWT subject token type allows, which the library applies to both
-// ends: a token whose iat is older than the window, and one whose exp is further ahead than it,
-// are refused.
-const (
-	// kubernetesTolerance admits a projected service-account token's whole life. Kubernetes
-	// bounds one at 24 hours, so a shorter window would refuse a freshly minted token outright
-	// for expiring too far in the future. It is also what a pod-session registration is kept for
-	// past its last write (oauthstore.PodSessionRetention), since a registration must outlive
-	// every token the pod it was written for can still present.
-	kubernetesTolerance = 24 * time.Hour
-	// githubTolerance admits a workflow run's token, which lives minutes, while bounding how
-	// stale an iat the exchange accepts.
-	githubTolerance = time.Hour
-	// googleTolerance admits a machine's Google identity token, which Google mints for an hour
-	// and which its metadata server hands out again until it is nearly spent, so the window has
-	// to cover a whole lifetime as the GitHub one does rather than a fresh token alone.
-	googleTolerance = time.Hour
-)
-
-// KeySource answers the public key a token's header names, which is what the library's
-// jwt.Keyfunc has to return: *oidc.Keys is one, reading the issuer's published set.
-type KeySource interface {
-	// Key is the public key a token naming kid and signed with alg is checked against.
-	Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error)
-}
-
-// IssuerConfig is one issuer whose tokens the exchange accepts as a subject token: a Kubernetes
-// cluster, or GitHub. Every field is required of a configured issuer and the zero value is an
-// issuer the broker was not told about, whose token type is then not registered at all — so a
-// caller presenting it is refused by the library before any handler of the broker's runs.
-type IssuerConfig struct {
-	// Issuer is the `iss` the subject token must carry, which the library compares exactly.
-	Issuer string
-	// Audience is what the subject token's `aud` must carry. The library checks a subject
-	// token's issuer and its expiry and never its audience, so the exchange checks this itself:
-	// a token minted for another service is not spendable here.
-	Audience string
-	// Keys is the issuer's published signing keys, which the token's `kid` and `alg` are
-	// resolved against.
-	Keys KeySource
-}
-
-// configured reports whether the broker was told about this issuer at all.
-func (c IssuerConfig) configured() bool {
-	return c.Issuer != "" || c.Audience != "" || c.Keys != nil
-}
-
-// validate refuses an issuer that is named but not complete: half a configuration would register
-// a token type whose tokens could not be checked, which is worse than not accepting that kind of
-// caller at all. where names the issuer in the refusal.
-func (c IssuerConfig) validate(where string) error {
-	if !c.configured() {
-		return nil
-	}
-	if c.Issuer == "" || c.Audience == "" || c.Keys == nil {
-		return fmt.Errorf("oauth: the %s subject token issuer is configured in part (issuer %q, audience %q, keys %t); it needs all three or none", where, c.Issuer, c.Audience, c.Keys != nil)
-	}
-	return nil
-}
-
 // ExchangeConfig is what the RFC 8693 token exchange decides and verifies with. None of it is the
 // provider's to decide: the broker's wiring reads it from the deployment's configuration and
 // hands it over whole.
 type ExchangeConfig struct {
-	// Policy is the listed identities and what each may write. A nil Policy is a deployment
-	// that has listed none, which New reads as the empty set: the exchange is composed whether
-	// or not any identity or issuer is, because the token-exchange grant is the exchange
-	// client's only grant and a caller it refuses must be refused by name.
-	Policy *exchange.Set
-	// Kubernetes is the cluster issuer a pod's projected service-account token comes from.
-	Kubernetes IssuerConfig
-	// GitHub is the issuer a continuous-integration workflow run's token comes from.
-	GitHub IssuerConfig
-	// Google is the issuer a machine's identity token comes from, Google's own in a deployment
-	// and a stand-in for it on a dev stack.
-	Google IssuerConfig
+	// Registry is the broker's identity providers (internal/cipher/identity/boot): the token
+	// types each adds to the exchange, configured or not, the decision each makes for its own
+	// subject tokens, and the listed identities of all of them. A nil Registry is a deployment
+	// that has listed none and trusts no issuer, which New reads as the empty registry: the
+	// exchange is composed whether or not any identity or issuer is, because the token-exchange
+	// grant is the exchange client's only grant and a caller it refuses must be refused by name.
+	Registry *identity.Registry
 	// MachineCredentials creates or re-uses the launcher credential a machine holds, in the
 	// transaction the exchange carries (oauthstore.TxFrom), and answers its id. Every secrets
 	// route is an enrollment's, and an enrollment is made under a launcher credential and a
 	// proof signed by its key, so without this a machine holding a Dispatch access token could
-	// still read no secret. It is required of a broker that accepts a Google subject token and
-	// unused by one that does not; enroll.Service.IssueTokenLoginTx is what the broker's wiring
-	// hands over.
+	// still read no secret. It is required of a broker that registers a configured token type
+	// minting a launcher credential and unused by one that does not;
+	// enroll.Service.IssueTokenLoginTx is what the broker's wiring hands over.
 	MachineCredentials MachineCredentials
-	// PersonAudience is what a person's own Google identity token's `aud` must carry
-	// (BROKER_SIGNIN_DEVICE_AUDIENCE): the device-flow client `agent-secrets login` runs
-	// Google's device grant as. It is an audience of its own beside Google.Audience, which is a
-	// machine's, so neither token is spendable where the other is: a machine's identity token
-	// cannot be presented as the person it acts for, and a person's sign-in token cannot be
-	// presented as a machine. Empty is a broker that accepts no person's sign-in at all, whose
-	// person subject token type and machine actor token type are then not registered, so a
-	// caller presenting either is refused by the library before any handler of the broker's
-	// runs. Its issuer and keys are Google's own, since both tokens come from the one issuer.
-	PersonAudience string
 	// PersonSignIns records the sign-in of the person a trade names on the box key its DPoP
 	// proof presented, as the account the person's token names, in the transaction the exchange
 	// carries, and refuses with ErrSignInRevoked a trade whose key that person has revoked and
 	// with ErrSignInSubjectReplaced one whose account no longer holds the person's address. It is
 	// what makes a revoked sign-in stop working at the broker rather than at the person's own
-	// machine, and it is required of a broker that accepts a person's Google identity token and
+	// machine, and it is required of a broker that registers a configured sign-in token type and
 	// unused by one that does not.
 	PersonSignIns PersonSignIns
 	// Projects asks Dispatch whether a project is private, whether a person may see it, and what
@@ -245,25 +170,17 @@ type ExchangeConfig struct {
 	Hold *hold.Gate
 }
 
-// validate refuses a configuration the exchange could not serve.
+// validate refuses a configuration the exchange could not serve: a configured type that mints a
+// launcher credential with no MachineCredentials to mint it, and a configured sign-in type with no
+// PersonSignIns to record the sign-in.
 func (c ExchangeConfig) validate() error {
-	if err := c.Kubernetes.validate("Kubernetes"); err != nil {
-		return err
-	}
-	if err := c.GitHub.validate("GitHub"); err != nil {
-		return err
-	}
-	if err := c.Google.validate("Google"); err != nil {
-		return err
-	}
-	if c.Google.configured() && c.MachineCredentials == nil {
-		return errors.New("oauth: a broker that accepts a machine's Google identity token needs MachineCredentials: the exchange mints the machine's launcher credential, and without it no machine it answers could enroll or read a secret")
-	}
-	if c.PersonAudience != "" && !c.Google.configured() {
-		return errors.New("oauth: a broker that accepts a person's Google identity token needs the Google issuer too: the machine the person signs in on presents its own identity token as the actor, and the entries that list that machine are the Google ones")
-	}
-	if c.PersonAudience != "" && c.PersonSignIns == nil {
-		return errors.New("oauth: a broker that accepts a person's Google identity token needs PersonSignIns: the first trade records the sign-in the box key belongs to, and every later one is held to it")
+	for _, tt := range c.Registry.TokenTypes() {
+		if tt.Launcher != identity.LauncherNone && c.MachineCredentials == nil {
+			return errors.New("oauth: a broker that accepts a machine's Google identity token needs MachineCredentials: the exchange mints the machine's launcher credential, and without it no machine it answers could enroll or read a secret")
+		}
+		if tt.Launcher == identity.LauncherSignIn && c.PersonSignIns == nil {
+			return errors.New("oauth: a broker that accepts a person's Google identity token needs PersonSignIns: the first trade records the sign-in the box key belongs to, and every later one is held to it")
+		}
 	}
 	return nil
 }
@@ -272,7 +189,7 @@ func (c ExchangeConfig) validate() error {
 // wiring turns it into a row; nothing here is the provider's to decide.
 type MachineCredential struct {
 	// Subject keys the credential, so a machine's next exchange moves the one credential it
-	// already holds rather than adding another (exchange.MachineSubject).
+	// already holds rather than adding another (the identity provider's LauncherSubject).
 	Subject string
 	// Service is the fleet the machine's account is listed for (exchange.Claims.Fleet). A
 	// credential keyed by a subject carries one, which is what says the login is a service's
@@ -329,14 +246,20 @@ type PersonSignIn struct {
 type PersonSignIns func(ctx context.Context, in PersonSignIn) error
 
 // subjectTokenTypes is every type in types a caller may present as a subject token, sorted: all
-// of them but the machine's actor token type, which the exchange registers beside the person's
-// own so that a person's trade can carry it, and which is no subject of its own. It is read off
-// the registered types rather than built from the configuration a second time, so what the
-// metadata document names is exactly what the library will accept.
-func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
+// of them but the actor-only types, which the exchange registers beside a type whose trade
+// carries one, and which are no subject of their own. It is read off the registered types rather
+// than built from the configuration a second time, so what the metadata document names is
+// exactly what the library will accept.
+func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType, registry *identity.Registry) []string {
 	names := make([]string, 0, len(types))
 	for name := range types {
-		if name != oauthwire.ActorTokenTypeMachine && name != oauthwire.TokenTypeProxyPlaceholder {
+		// The proxy placeholder is no subject token of its own, whatever the registry holds: it is
+		// the type a release hands the airlock, and it is registered by this provider, not by an
+		// identity provider.
+		if name == oauthwire.TokenTypeProxyPlaceholder {
+			continue
+		}
+		if tt, _, ok := registry.TokenType(name); !ok || !tt.ActorOnly {
 			names = append(names, name)
 		}
 	}
@@ -349,9 +272,11 @@ func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 //
 // The access token is always registered: it is the only kind this provider issues, so it is both
 // the default requested type and the type a dev box session presents its machine access token
-// under. Each JWT type is registered only where its issuer is configured, so a caller presenting
-// an issuer the broker was never told about is refused by the library rather than by a half-built
-// handler.
+// under. Each identity provider's type is registered only where its issuer is configured
+// (identity.TokenType.Configured), so a caller presenting an issuer the broker was never told
+// about is refused by the library rather than by a half-built handler. Each is held to its
+// provider's issuer, its lifetime tolerance, and single use where its tokens are minted per
+// request; its key is resolved against its issuer's published keys (keyFunc).
 func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 	types := map[string]oauth2.RFC8693TokenType{
 		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
@@ -359,93 +284,18 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 		// traded for the approve capability (exchangeGrant, grantApprove). It is no subject type.
 		oauthwire.TokenTypeProxyPlaceholder: &rfc8693.DefaultTokenType{Name: oauthwire.TokenTypeProxyPlaceholder},
 	}
-	if c.Kubernetes.configured() {
-		types[oauthwire.SubjectTokenTypeKubernetes] = &rfc8693.JWTType{
-			Name:   oauthwire.SubjectTokenTypeKubernetes,
-			Issuer: c.Kubernetes.Issuer,
+	for _, tt := range c.Registry.TokenTypes() {
+		types[tt.Name] = &rfc8693.JWTType{
+			Name:   tt.Name,
+			Issuer: tt.Issuer,
 			JWTValidationConfig: rfc8693.JWTValidationConfig{
-				// A pod's projected token is a standing credential its kubelet refreshes, and a
-				// long-running role exchanges many times with the one it holds, so single use
-				// would refuse every renewal. What keeps a token from being spendable outside a
-				// pod is the pod binding the decision requires.
-				ValidateJTI:                false,
-				JWTLifetimeToleranceWindow: kubernetesTolerance,
-				ValidateFunc:               keyFunc(c.Kubernetes.Keys),
+				ValidateJTI:                tt.SingleUse,
+				JWTLifetimeToleranceWindow: tt.Tolerance,
+				ValidateFunc:               keyFunc(tt.Keys),
 			},
-		}
-	}
-	if c.GitHub.configured() {
-		types[oauthwire.SubjectTokenTypeGitHub] = &rfc8693.JWTType{
-			Name:   oauthwire.SubjectTokenTypeGitHub,
-			Issuer: c.GitHub.Issuer,
-			JWTValidationConfig: rfc8693.JWTValidationConfig{
-				// A workflow run mints a fresh token per request, so one presentation is all a
-				// token needs and a leaked one cannot be replayed.
-				ValidateJTI:                true,
-				JWTLifetimeToleranceWindow: githubTolerance,
-				ValidateFunc:               keyFunc(c.GitHub.Keys),
-			},
-		}
-	}
-	if c.Google.configured() {
-		types[oauthwire.SubjectTokenTypeGoogle] = &rfc8693.JWTType{
-			Name:   oauthwire.SubjectTokenTypeGoogle,
-			Issuer: c.Google.Issuer,
-			JWTValidationConfig: rfc8693.JWTValidationConfig{
-				// A machine reads one identity token from its metadata server and is handed the
-				// same token until it is nearly spent, so a machine renewing its access token
-				// presents the one it holds again and single use would refuse every renewal, as
-				// it would a pod's. What keeps such a token from being spendable by anyone who
-				// copied it is the DPoP key the minted token is bound to.
-				ValidateJTI:                false,
-				JWTLifetimeToleranceWindow: googleTolerance,
-				ValidateFunc:               keyFunc(c.Google.Keys),
-			},
-		}
-	}
-	if c.PersonAudience != "" {
-		// A person's own token and the machine's actor token come from the one issuer and are
-		// checked against the one key set; what tells them apart is the audience each must
-		// carry, which the broker checks itself (audience). Both are registered together: a
-		// person's trade carries both, and neither is presentable alone — the person type as a
-		// subject with no actor is refused by the decision, and the machine type is an actor
-		// type the exchange client may present and no subject type at all.
-		for _, name := range []string{oauthwire.SubjectTokenTypePerson, oauthwire.ActorTokenTypeMachine} {
-			types[name] = &rfc8693.JWTType{
-				Name:   name,
-				Issuer: c.Google.Issuer,
-				JWTValidationConfig: rfc8693.JWTValidationConfig{
-					// A person's sign-in holds Google's refresh token and mints an identity
-					// token from it whenever one is wanted, and the machine presents the same
-					// metadata token its own trades do, so neither is single use, for the
-					// reason a machine's subject token is not. What keeps a copied pair from
-					// being spendable is the box key the sign-in is recorded against.
-					ValidateJTI:                false,
-					JWTLifetimeToleranceWindow: googleTolerance,
-					ValidateFunc:               keyFunc(c.Google.Keys),
-				},
-			}
 		}
 	}
 	return types
-}
-
-// issuerOf is the configured issuer a token type's tokens come from, and false for a type that
-// is not one of the JWT kinds. The machine's actor token is Google's own, the same token its
-// subject type names; a person's carries the device-flow client's audience over Google's issuer
-// and keys, so it is answered as an issuer of its own.
-func (c ExchangeConfig) issuerOf(subjectTokenType string) (IssuerConfig, bool) {
-	switch subjectTokenType {
-	case oauthwire.SubjectTokenTypeKubernetes:
-		return c.Kubernetes, true
-	case oauthwire.SubjectTokenTypeGitHub:
-		return c.GitHub, true
-	case oauthwire.SubjectTokenTypeGoogle, oauthwire.ActorTokenTypeMachine:
-		return c.Google, true
-	case oauthwire.SubjectTokenTypePerson:
-		return IssuerConfig{Issuer: c.Google.Issuer, Audience: c.PersonAudience, Keys: c.Google.Keys}, true
-	}
-	return IssuerConfig{}, false
 }
 
 // keyFunc is a JWT subject token type's ValidateFunc: the library hands it the parsed but
@@ -458,7 +308,7 @@ func (c ExchangeConfig) issuerOf(subjectTokenType string) (IssuerConfig, bool) {
 //
 // The read runs on its own context rather than the request's, because the library's signature
 // gives it none; the key source bounds its own fetch, and a set already cached costs no read.
-func keyFunc(keys KeySource) jwt.Keyfunc {
+func keyFunc(keys identity.KeySource) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
 		if !slices.Contains(subjectTokenAlgorithms, token.SignatureAlgorithm) {
 			return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)
@@ -620,14 +470,15 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	}
 	var credential MachineCredential
 	var credentialID string
-	if asked && subjectTokenType == oauthwire.SubjectTokenTypeGoogle {
-		credentialID, credential, err = p.machineCredential(txCtx, r, session)
+	launcher := p.launcher(subjectTokenType)
+	if asked && launcher == identity.LauncherMachine {
+		credentialID, credential, err = p.machineCredential(txCtx, r, subjectTokenType, session)
 		if err != nil {
 			p.writeError(ctx, w, request, err)
 			return
 		}
 	}
-	if subjectTokenType == oauthwire.SubjectTokenTypePerson {
+	if launcher == identity.LauncherSignIn {
 		// A sign-in holds its credential: the person's trade is the one trade that may not
 		// decline (personDeclinesNothing), so every token it mints names the credential its
 		// revoke ends. A read trade asks for none and names the one the sign-in holds.
@@ -644,7 +495,7 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		if read {
 			err = p.signInCredential(txCtx, session)
 		} else {
-			credentialID, credential, err = p.personCredential(txCtx, r, session)
+			credentialID, credential, err = p.personCredential(txCtx, r, subjectTokenType, session)
 		}
 		if err != nil {
 			p.writeError(ctx, w, request, err)
@@ -872,34 +723,7 @@ func (p *Provider) decide(ctx context.Context, request oauth2.Requester, subject
 	subjectTokenType := form.Get(FormSubjectTokenType)
 	name := form.Get(oauthwire.FormSession)
 	var claims exchange.Claims
-	switch subjectTokenType {
-	case oauthwire.SubjectTokenTypeKubernetes:
-		if err = p.audience(subjectTokenType, subjectToken); err == nil {
-			claims, err = p.exchange.Policy.Pod(subjectToken, name, projects)
-		}
-	case oauthwire.SubjectTokenTypeGitHub:
-		if err = p.audience(subjectTokenType, subjectToken); err == nil {
-			claims, err = p.exchange.Policy.Workflow(subjectToken, name, projects)
-		}
-	case oauthwire.SubjectTokenTypeGoogle:
-		if err = p.audience(subjectTokenType, subjectToken); err == nil {
-			claims, err = p.exchange.Policy.Google(subjectToken, name, projects)
-		}
-	case oauthwire.SubjectTokenTypePerson:
-		// Two tokens, each held to the audience its own type is configured with: the person's
-		// to the device-flow client's, the machine's to the one a machine trades for itself
-		// with, so neither is spendable in the other's place. The actor token's claims are on
-		// the session because the library validated it before it asked for the subject
-		// (rfc8693.CustomJWTTypeHandler), and a request that carried none leaves it nil, which
-		// the policy refuses by name.
-		actor := session.GetActorToken()
-		if err = p.audience(subjectTokenType, subjectToken); err == nil && actor != nil {
-			err = p.audience(oauthwire.ActorTokenTypeMachine, actor)
-		}
-		if err == nil {
-			claims, err = p.exchange.Policy.Person(subjectToken, actor, name, projects)
-		}
-	case tokenTypeAccessToken:
+	if subjectTokenType == tokenTypeAccessToken {
 		// A machine access token is the broker's own, so there is no issuer to check it against:
 		// the login that was issued it recorded the approver it acts for and the launcher
 		// credential it holds, and those are the identity. What Dispatch calls that approver
@@ -910,9 +734,30 @@ func (p *Provider) decide(ctx context.Context, request oauth2.Requester, subject
 		if refused != nil {
 			return "", refused
 		}
-		claims, err = p.exchange.Policy.Machine(credential, approver, name, projects, kind)
-	default:
-		return "", oauth2.ErrInvalidRequest.WithHintf("The '%s' token type is not one this broker exchanges.", subjectTokenType)
+		claims, err = p.exchange.Registry.Policy().Machine(credential, approver, name, projects, kind)
+	} else {
+		tt, provider, ok := p.exchange.Registry.TokenType(subjectTokenType)
+		if !ok || tt.ActorOnly || !tt.Configured() {
+			return "", oauth2.ErrInvalidRequest.WithHintf("The '%s' token type is not one this broker exchanges.", subjectTokenType)
+		}
+		err = p.audience(tt, subjectToken)
+		// A type whose trade carries an actor holds both tokens, each to the audience its own
+		// type is configured with, so neither is spendable in the other's place: a person's to
+		// the device-flow client's, the machine's to the one a machine trades for itself with.
+		// The actor token's claims are on the session because the library validated it before it
+		// asked for the subject (rfc8693.CustomJWTTypeHandler), and a request that carried none
+		// leaves it nil, which the provider refuses by name. A type that names no actor never
+		// reads one, whatever the request carried.
+		var actor map[string]any
+		if tt.Actor != "" {
+			actor = session.GetActorToken()
+			if actorType, _, known := p.exchange.Registry.TokenType(tt.Actor); err == nil && actor != nil && known {
+				err = p.audience(actorType, actor)
+			}
+		}
+		if err == nil {
+			claims, err = provider.Decide(identity.Trade{TokenType: subjectTokenType, Subject: subjectToken, Actor: actor, Session: name, Projects: projects})
+		}
 	}
 	if err != nil {
 		// The refusal's own text is the hint: every sentence the exchange policy refuses with
@@ -1044,9 +889,9 @@ func readCut(form url.Values, read bool, now time.Time) (time.Time, error) {
 // decision nobody made and the broker's own failure rather than a token whose empty list reads as
 // any scope. Read as the person scope, as a build before exchange.ProjectScopeNone read every
 // value that was not named, a Claims nobody filled in would mint a token that acts as its person.
-// No path through decide hands it one today, since ExchangeConfig.Policy is a concrete
-// *exchange.Set and each of its decisions sets one of the four values below, so the refusal is
-// what keeps a value that package adds later from being minted as one of them before this switch
+// No path through decide hands it one today, since every identity provider's decision and the
+// set's own (exchange.Set.Machine) set one of the four values below, so the refusal is what keeps
+// a value the exchange package adds later from being minted as one of them before this switch
 // learns its word.
 func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSession, claims exchange.Claims, read bool) error {
 	if claims.LegionStatus && claims.Scope != exchange.ProjectScopeNamed {
@@ -1478,9 +1323,8 @@ func personDeclinesNothing() error {
 // state refuses it and the machine fixes it by making a key of its own, which is what every
 // machine does. A key a live read token is bound to is invalid_grant too, with a hint of its own
 // (keyBindsReadTokenHint).
-func (p *Provider) machineCredential(ctx context.Context, r *http.Request, session *oauthstore.ExchangeSession) (string, MachineCredential, error) {
+func (p *Provider) machineCredential(ctx context.Context, r *http.Request, subjectTokenType string, session *oauthstore.ExchangeSession) (string, MachineCredential, error) {
 	subjectToken := session.GetSubjectToken()
-	identity := exchange.ReadGoogleIdentity(subjectToken)
 	thumbprint := session.GetDPoPJWKThumbprint()
 	key, err := proofKey(r, thumbprint)
 	if err != nil {
@@ -1490,10 +1334,11 @@ func (p *Provider) machineCredential(ctx context.Context, r *http.Request, sessi
 	if !ok {
 		return "", MachineCredential{}, oauth2.ErrInvalidRequest.WithHint("The subject token names no expiry, so there is nothing to expire the machine's credential with.")
 	}
+	subject, host := p.launcherSubject(subjectTokenType, session, thumbprint)
 	cred := MachineCredential{
-		Subject:    exchange.MachineSubject(identity, thumbprint),
+		Subject:    subject,
 		Service:    session.Fleet,
-		Host:       machineHost(identity),
+		Host:       host,
 		Thumbprint: thumbprint,
 		JWK:        key,
 		Expires:    expires,
@@ -1656,9 +1501,8 @@ func (p *Provider) signInCredential(ctx context.Context, session *oauthstore.Exc
 // account and the box key) and bound to that box key, so two people signed in on one box hold a
 // credential each, one person signed in on two boxes holds one per box, and no sign-in's trade
 // moves another's.
-func (p *Provider) personCredential(ctx context.Context, r *http.Request, session *oauthstore.ExchangeSession) (string, MachineCredential, error) {
+func (p *Provider) personCredential(ctx context.Context, r *http.Request, subjectTokenType string, session *oauthstore.ExchangeSession) (string, MachineCredential, error) {
 	person, _ := session.Extra[ClaimPerson].(string)
-	machine, _ := session.Extra[ClaimMachine].(string)
 	thumbprint := session.GetDPoPJWKThumbprint()
 	key, err := proofKey(r, thumbprint)
 	if err != nil {
@@ -1668,11 +1512,12 @@ func (p *Provider) personCredential(ctx context.Context, r *http.Request, sessio
 	if !ok {
 		return "", MachineCredential{}, oauth2.ErrInvalidRequest.WithHint("The subject token names no expiry, so there is nothing to expire the sign-in's credential with.")
 	}
+	subject, host := p.launcherSubject(subjectTokenType, session, thumbprint)
 	cred := MachineCredential{
-		Subject:    exchange.PersonSubject(person, machine, thumbprint),
+		Subject:    subject,
 		Service:    session.Fleet,
 		Operator:   person,
-		Host:       machineHost(exchange.ReadGoogleIdentity(session.GetActorToken())),
+		Host:       host,
 		Thumbprint: thumbprint,
 		JWK:        key,
 		Expires:    expires,
@@ -1694,14 +1539,26 @@ func (p *Provider) personCredential(ctx context.Context, r *http.Request, sessio
 	return id, cred, nil
 }
 
-// machineHost is the machine as its credential's row records it, which is what an operator reads
-// on their machine-login page: the instance a Compute Engine token was minted on, and the
-// account alone for a token minted anywhere else, which names no instance to show.
-func machineHost(identity exchange.GoogleIdentity) string {
-	if identity.Compute.Whole() {
-		return identity.Compute.Project + "/" + identity.Compute.Zone + "/" + identity.Compute.Instance
+// launcher is the launcher credential a trade of subjectTokenType mints: none for the broker's own
+// access token and for any type no provider registers.
+func (p *Provider) launcher(subjectTokenType string) identity.Launcher {
+	tt, _, _ := p.exchange.Registry.TokenType(subjectTokenType)
+	return tt.Launcher
+}
+
+// launcherSubject is the subject and host of the credential the trade on session mints, as the
+// provider of its subject token type spells them, thumbprint being the key its DPoP proof
+// presented. The person and the machine a sign-in names are the ones the decision wrote onto the
+// session.
+func (p *Provider) launcherSubject(subjectTokenType string, session *oauthstore.ExchangeSession, thumbprint string) (subject, host string) {
+	_, provider, ok := p.exchange.Registry.TokenType(subjectTokenType)
+	if !ok {
+		return "", ""
 	}
-	return identity.Account
+	person, _ := session.Extra[ClaimPerson].(string)
+	machine, _ := session.Extra[ClaimMachine].(string)
+	trade := identity.Trade{TokenType: subjectTokenType, Subject: session.GetSubjectToken(), Actor: session.GetActorToken()}
+	return provider.LauncherSubject(trade, exchange.Claims{Person: person, Actor: machine}, thumbprint)
 }
 
 // proofKey is the public key of the DPoP proof on r, as JSON, which the machine's launcher
@@ -1858,15 +1715,11 @@ func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore
 // audience refuses a subject token whose `aud` does not carry the audience its issuer is
 // configured with. The library checks a subject token's issuer and its expiry and never its
 // audience, so without this a token a pod was given for another service would be spendable here.
-func (p *Provider) audience(subjectTokenType string, subjectToken map[string]any) error {
-	issuer, ok := p.exchange.issuerOf(subjectTokenType)
-	if !ok {
+func (p *Provider) audience(tt identity.TokenType, subjectToken map[string]any) error {
+	if hasAudience(subjectToken["aud"], tt.Audience) {
 		return nil
 	}
-	if hasAudience(subjectToken["aud"], issuer.Audience) {
-		return nil
-	}
-	return fmt.Errorf("the subject token was not minted for %s, which is the audience this broker accepts from %s", issuer.Audience, issuer.Issuer)
+	return fmt.Errorf("the subject token was not minted for %s, which is the audience this broker accepts from %s", tt.Audience, tt.Issuer)
 }
 
 // hasAudience reports whether an `aud` claim carries want. RFC 7519 Section 4.1.3 allows either

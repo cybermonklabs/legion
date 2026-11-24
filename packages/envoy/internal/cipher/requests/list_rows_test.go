@@ -561,7 +561,7 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 	// makes it: its requests and grants are PRIV's.
 	privatePod := func(t *testing.T, m *Machine) (string, *ecdsa.PrivateKey) {
 		t.Helper()
-		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, "")
+		set, err := kubernetesPolicy([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}})
 		if err != nil {
 			t.Fatalf("exchange.NewSet: %v", err)
 		}

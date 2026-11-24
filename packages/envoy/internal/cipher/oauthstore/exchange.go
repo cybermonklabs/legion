@@ -55,12 +55,12 @@ const SessionRetention = 90 * 24 * time.Hour
 // PodSessionRetention is how long a pod's registration to write under a session name
 // (RegisterPodSession) is kept past the last write of it: 24 hours.
 //
-// It is the longest a subject token the exchange accepts from a pod can live
-// (oauth.kubernetesTolerance, which admits a projected service-account token's whole life,
-// Kubernetes bounding one at 24 hours), so a registration outlives every token the pod it was
-// written for can still present. Shorter would refuse a pod still holding a token the exchange
-// accepts; longer would let a pod write under the name after every token naming it had been
-// refused for age anyway.
+// It is the longest a subject token the exchange accepts from a pod can live (the kubernetes
+// identity provider's token-type tolerance, which admits a projected service-account token's
+// whole life, Kubernetes bounding one at 24 hours), so a registration outlives every token the
+// pod it was written for can still present. Shorter would refuse a pod still holding a token the
+// exchange accepts; longer would let a pod write under the name after every token naming it had
+// been refused for age anyway.
 //
 // It is a constant rather than a setting because the bound follows from that tolerance and from
 // nothing a deployment chooses. What it means for an operator: the authority is the registrar's,

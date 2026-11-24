@@ -85,16 +85,18 @@ func newSignInFixtureAt(t *testing.T, issuer string) *signInFixture {
 	return newSignInFixtureAtWith(t, issuer, func(*oauth.Config) {})
 }
 
-// newSignInFixtureWith is newSignInFixture with adjust applied to the configuration last, so a
-// test can give the exchange a project-access check or entries of its own.
-func newSignInFixtureWith(t *testing.T, adjust func(*oauth.Config)) *signInFixture {
+// newSignInFixtureWith is newSignInFixture with each change applied to its identity configuration
+// and adjust applied to the configuration last, so a test can give the exchange a project-access
+// check or entries of its own.
+func newSignInFixtureWith(t *testing.T, adjust func(*oauth.Config), changes ...func(*identities)) *signInFixture {
 	t.Helper()
-	return newSignInFixtureAtWith(t, "", adjust)
+	return newSignInFixtureAtWith(t, "", adjust, changes...)
 }
 
-// newSignInFixtureAtWith is the fixture both of those build: its tokens carrying issuer
-// (newSignInFixtureAt), and adjust applied to the configuration last (newSignInFixtureWith).
-func newSignInFixtureAtWith(t *testing.T, issuer string, adjust func(*oauth.Config)) *signInFixture {
+// newSignInFixtureAtWith is the fixture both of those build: its tokens carrying iss as their
+// issuer (newSignInFixtureAt), each change applied to its identity configuration and adjust
+// applied to the configuration last (newSignInFixtureWith).
+func newSignInFixtureAtWith(t *testing.T, iss string, adjust func(*oauth.Config), changes ...func(*identities)) *signInFixture {
 	t.Helper()
 	google := oidctest.New(t)
 	googleKey := google.PublishKey(t, "google-key")
@@ -102,21 +104,25 @@ func newSignInFixtureAtWith(t *testing.T, issuer string, adjust func(*oauth.Conf
 	if err != nil {
 		t.Fatalf("Google keys: %v", err)
 	}
-	if issuer == "" {
-		issuer = google.URL()
+	if iss == "" {
+		iss = google.URL()
 	}
-	f := &signInFixture{google: google, googleKey: googleKey, issuer: issuer, revoked: map[string]bool{}, moved: map[string]bool{},
+	f := &signInFixture{google: google, googleKey: googleKey, issuer: iss, revoked: map[string]bool{}, moved: map[string]bool{},
 		otherAccount: map[string]bool{}, replaced: map[string]bool{}}
+	signIns := append([]func(*identities){
+		listing(nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet}),
+		func(id *identities) {
+			id.google = issuer{URL: iss, Audience: machineAudience, Keys: googleKeys}
+			id.personAudience = deviceAudience
+		},
+	}, changes...)
 	f.exchangeFixture = newExchangeFixture(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicy(t, nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet})
-		c.Exchange.Google = oauth.IssuerConfig{Issuer: issuer, Audience: machineAudience, Keys: googleKeys}
-		c.Exchange.PersonAudience = deviceAudience
 		// The credential a trade mints, written in the exchange's own transaction as
 		// cmd/cipherd writes it, so the access token's row may name it.
 		c.Exchange.MachineCredentials = recordCredential
 		c.Exchange.PersonSignIns = f.record
 		adjust(c)
-	})
+	}, signIns...)
 	return f
 }
 
@@ -525,9 +531,9 @@ func newExchangeFixtureWithoutPerson(t *testing.T, f *signInFixture) *exchangeFi
 		t.Fatalf("Google keys: %v", err)
 	}
 	return newExchangeFixture(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicy(t, nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet})
-		c.Exchange.Google = oauth.IssuerConfig{Issuer: f.google.URL(), Audience: machineAudience, Keys: googleKeys}
 		c.Exchange.MachineCredentials = recordCredential
+	}, listing(nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet}), func(id *identities) {
+		id.google = issuer{URL: f.google.URL(), Audience: machineAudience, Keys: googleKeys}
 	})
 }
 
@@ -873,12 +879,12 @@ func TestANarrowedTokenEndsWithWhatItWasTradedFrom(t *testing.T) {
 func TestAProviderNeedsItsSignInRecorder(t *testing.T) {
 	for _, c := range []struct {
 		name   string
+		change func(*identities)
 		adjust func(*oauth.ExchangeConfig)
 		says   string
 	}{
-		{name: "no recorder", adjust: func(e *oauth.ExchangeConfig) { e.PersonSignIns = nil }, says: "PersonSignIns"},
-		{name: "no Google issuer", adjust: func(e *oauth.ExchangeConfig) {
-			e.Google = oauth.IssuerConfig{}
+		{name: "no recorder", change: func(*identities) {}, adjust: func(e *oauth.ExchangeConfig) { e.PersonSignIns = nil }, says: "PersonSignIns"},
+		{name: "no Google issuer", change: func(id *identities) { id.google = issuer{} }, adjust: func(e *oauth.ExchangeConfig) {
 			e.MachineCredentials = nil
 		}, says: "Google issuer"},
 	} {
@@ -888,7 +894,7 @@ func TestAProviderNeedsItsSignInRecorder(t *testing.T) {
 					t.Fatalf("building the provider panicked rather than refusing: %v", r)
 				}
 			}()
-			err := buildRefusal(t, c.adjust)
+			err := buildRefusal(t, c.change, c.adjust)
 			if err == nil || !strings.Contains(err.Error(), c.says) {
 				t.Fatalf("oauth.New = %v, want a refusal naming %q", err, c.says)
 			}
@@ -896,9 +902,10 @@ func TestAProviderNeedsItsSignInRecorder(t *testing.T) {
 	}
 }
 
-// buildRefusal builds a provider whose exchange takes a person's token, with adjust applied to
-// the exchange's configuration last, and answers whatever oauth.New said.
-func buildRefusal(t *testing.T, adjust func(*oauth.ExchangeConfig)) error {
+// buildRefusal builds a provider whose exchange takes a person's token, with change applied to its
+// identity configuration and adjust to the exchange's configuration last, and answers whatever
+// building the registry or oauth.New said.
+func buildRefusal(t *testing.T, change func(*identities), adjust func(*oauth.ExchangeConfig)) error {
 	t.Helper()
 	google := oidctest.New(t)
 	google.PublishKey(t, "google-key")
@@ -906,10 +913,18 @@ func buildRefusal(t *testing.T, adjust func(*oauth.ExchangeConfig)) error {
 	if err != nil {
 		t.Fatalf("Google keys: %v", err)
 	}
+	id := identities{
+		google:         issuer{URL: google.URL(), Audience: machineAudience, Keys: keys},
+		personAudience: deviceAudience,
+		machines:       []exchange.GoogleEntry{{Account: signInMachine, Service: signInFleet}},
+	}
+	change(&id)
+	registry, err := id.build()
+	if err != nil {
+		return err
+	}
 	cfg := oauth.ExchangeConfig{
-		Policy:             newPolicy(t, nil, nil, exchange.GoogleEntry{Account: signInMachine, Service: signInFleet}),
-		Google:             oauth.IssuerConfig{Issuer: google.URL(), Audience: machineAudience, Keys: keys},
-		PersonAudience:     deviceAudience,
+		Registry:           registry,
 		MachineCredentials: func(context.Context, oauth.MachineCredential) (string, error) { return "", nil },
 		PersonSignIns:      func(context.Context, oauth.PersonSignIn) error { return nil },
 	}

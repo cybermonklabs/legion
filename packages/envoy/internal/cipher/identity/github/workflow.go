@@ -20,13 +20,17 @@ type workflowKey struct{ repository, workflow, ref string }
 
 func (k workflowKey) principal() string { return Principal(k.repository, k.workflow, k.ref) }
 
+// address is the workflow as an operator reads one, <repository>/<path>@<ref>: its principal
+// without the kind, and the service a job workflow's token names.
+func (k workflowKey) address() string { return k.repository + "/" + k.workflow + "@" + k.ref }
+
 // Principal is a workflow's spelling of a principal, <repository>/<path>@<ref> led by its kind, as
 // an operator reads one elsewhere. A path or ref carrying "@" could make two entries spell one
 // string, and New refuses that pair rather than let one's runs hold the other's names. Every run
 // of one workflow is one holder of a session name. Postgres holds this spelling in
 // oauth_session_bindings.principal, so it never changes.
 func Principal(repository, workflow, ref string) string {
-	return "workflow:" + repository + "/" + workflow + "@" + ref
+	return "workflow:" + workflowKey{repository, workflow, ref}.address()
 }
 
 // workflow answers the claims for a continuous-integration workflow run's GitHub token, from the
@@ -41,6 +45,10 @@ func Principal(repository, workflow, ref string) string {
 // The principal is that listed workflow, not the run: every run of it is one holder, so the next
 // run of a release workflow keeps writing under the name the run before it held, however soon
 // after it starts.
+//
+// A job entry's runs are answered with a token that names the workflow as its service,
+// <repository>/<path>@<ref>, which is its principal without the kind, and no person, with the
+// entry's scope and whole list whatever the request names (exchange.Claims.Grant).
 func (p *Provider) workflow(token map[string]any, session string, projects []string) (exchange.Claims, error) {
 	repository, err := exchange.ClaimString(token, "repository")
 	if err != nil {
@@ -74,11 +82,11 @@ func (p *Provider) workflow(token map[string]any, session string, projects []str
 	if err != nil {
 		return exchange.Claims{}, err
 	}
-	named, err := exchange.EntryProjects(repository+"/"+workflow, entry.Project, projects)
-	if err != nil {
+	claims := exchange.Claims{Session: name, Principal: key.principal()}
+	if err := claims.Grant(repository+"/"+workflow, key.address(), entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return exchange.Claims{}, err
 	}
-	return exchange.Claims{Session: name, Person: entry.Person, Scope: exchange.ProjectScopeNamed, Projects: named, Principal: key.principal()}, nil
+	return claims, nil
 }
 
 // workflowPath is the workflow file's path inside repository that workflowRef names, a GitHub

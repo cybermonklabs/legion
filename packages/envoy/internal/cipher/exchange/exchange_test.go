@@ -8,6 +8,10 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/github"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 )
 
 const (
@@ -47,10 +51,8 @@ const (
 	pinnedService   = "example-fleet"
 	poolService     = "example-pool"
 	// signInDomain is the Google Workspace domain BROKER_SIGNIN_DOMAIN names in these tests, the
-	// one a person signing in on a machine must belong to; otherDomain is any other Workspace,
-	// and stranger a person of it.
+	// one a person signing in on a machine must belong to, and stranger a person of another one.
 	signInDomain = "example.com"
-	otherDomain  = "other.example"
 	stranger     = "mallory@other.example"
 	// The job entries the set lists, each naming its identity and a job list and no person.
 	// jobAccount's pods name their sessions and write ACME, publicJobAccount's name theirs and
@@ -98,15 +100,61 @@ const (
 	fixedJobMachinePrincipal  = "google:" + fixedJobMachineAccount
 )
 
+// listedSet is the set every provider's entries compose, with each provider's decision beside
+// it, so a test reads a decision and the set it was listed in side by side, as the exchange does.
+type listedSet struct {
+	*exchange.Set
+	pods     *kubernetes.Provider
+	runs     *github.Provider
+	machines *google.Provider
+}
+
+func (l listedSet) Pod(token map[string]any, session string, projects []string) (exchange.Claims, error) {
+	return l.pods.Decide(identity.Trade{TokenType: kubernetes.SubjectTokenType, Subject: token, Session: session, Projects: projects})
+}
+
+func (l listedSet) Workflow(token map[string]any, session string, projects []string) (exchange.Claims, error) {
+	return l.runs.Decide(identity.Trade{TokenType: github.SubjectTokenType, Subject: token, Session: session, Projects: projects})
+}
+
+func (l listedSet) Google(token map[string]any, session string, projects []string) (exchange.Claims, error) {
+	return l.machines.Decide(identity.Trade{TokenType: google.SubjectTokenType, Subject: token, Session: session, Projects: projects})
+}
+
+func (l listedSet) Person(token, actor map[string]any, session string, projects []string) (exchange.Claims, error) {
+	return l.machines.Decide(identity.Trade{TokenType: google.PersonTokenType, Subject: token, Actor: actor, Session: session, Projects: projects})
+}
+
+// build composes the providers of the entries given into one set, as the identity registry does.
+func build(accounts []exchange.AccountEntry, reads []exchange.ReadEntry, workflows []exchange.WorkflowEntry, machines []exchange.GoogleEntry) (listedSet, error) {
+	pods, err := kubernetes.New(kubernetes.Config{Accounts: accounts, Reads: reads})
+	if err != nil {
+		return listedSet{}, err
+	}
+	runs, err := github.New(github.Config{Workflows: workflows})
+	if err != nil {
+		return listedSet{}, err
+	}
+	fleets, err := google.New(google.Config{Machines: machines, SignInDomain: signInDomain})
+	if err != nil {
+		return listedSet{}, err
+	}
+	registry, err := identity.NewRegistry([]identity.Provider{pods, fleets, runs}, nil)
+	if err != nil {
+		return listedSet{}, err
+	}
+	return listedSet{Set: registry.Policy(), pods: pods, runs: runs, machines: fleets}, nil
+}
+
 // listed is the set every decision test asks: one account whose sessions name themselves, one
 // account whose session the entry fixes, one read entry, the same pair for one workflow of one
 // repository on one ref, three Google accounts — one pinned to a project and an
 // instance-name pattern that writes for a person, one pinned to nothing that names no person,
 // and one that fixes the session its machines write under — and the job entries: three
 // accounts, two workflows and two Google accounts that name a job list and no person.
-func listed(t *testing.T) *exchange.Set {
+func listed(t *testing.T) listedSet {
 	t.Helper()
-	set, err := exchange.NewSet(
+	set, err := build(
 		[]exchange.AccountEntry{
 			{Account: workerAccount, Project: project, Person: person},
 			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
@@ -128,7 +176,6 @@ func listed(t *testing.T) *exchange.Set {
 			{Account: jobMachineAccount, Service: jobService, Job: jobList(t, publicJobs)},
 			{Account: fixedJobMachineAccount, Service: jobService, CloudProject: cloudProject, Instance: instanceGlob, Job: jobList(t, project), Session: jobMachineSession},
 		},
-		signInDomain,
 	)
 	if err != nil {
 		t.Fatalf("NewSet: %v", err)
@@ -161,9 +208,14 @@ func workflowToken(repo, workflowRef, jobRef, gitRef string) map[string]any {
 // runRef is the workflow_ref a run of path in repository on ref carries.
 func runRef(path string) string { return repository + "/" + path + "@" + ref }
 
+// TestNewSetRefusesAnEntryItCannotServe holds what the set refuses across providers, each
+// provider having refused its own entries already (internal/cipher/identity/<kind>): a session
+// name entries of two providers fix, and an identity two listings name. It holds too, through
+// the providers, an account subject with text around it and every job entry a provider refuses.
 func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
-	account := exchange.AccountEntry{Account: workerAccount, Project: project, Person: person}
-	flow := exchange.WorkflowEntry{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person}
+	account := exchange.AccountEntry{Account: workerAccount, Project: project, Person: person, Session: fixedSession}
+	flow := exchange.WorkflowEntry{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person, Session: fixedSession}
+	machine := exchange.GoogleEntry{Account: pinnedAccount, Service: pinnedService, Session: fixedSession}
 	with := func(change func(*exchange.AccountEntry)) exchange.AccountEntry {
 		entry := account
 		change(&entry)
@@ -174,7 +226,6 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 		change(&entry)
 		return entry
 	}
-	machine := exchange.GoogleEntry{Account: pinnedAccount, Service: pinnedService}
 	withMachine := func(change func(*exchange.GoogleEntry)) exchange.GoogleEntry {
 		entry := machine
 		change(&entry)
@@ -188,125 +239,20 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name      string
-		machines  []exchange.GoogleEntry
 		accounts  []exchange.AccountEntry
 		reads     []exchange.ReadEntry
 		workflows []exchange.WorkflowEntry
+		machines  []exchange.GoogleEntry
 		names     string
 	}{
-		{name: "an account that is not a service account subject",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "example-worker" })}, names: "example-worker"},
-		{name: "an account with no namespace",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "system:serviceaccount:example-worker" })}, names: "system:serviceaccount:example-worker"},
 		{name: "an account with text after it",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "system:serviceaccount:example-ns:example-public===x" })}, names: "example-public===x"},
 		{name: "an account with text before it",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "xsystem:serviceaccount:example-ns:example-public" })}, names: "xsystem:serviceaccount:example-ns:example-public"},
-		{name: "an empty account",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "" })}, names: "account entry 1"},
-		{name: "an account with no project",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Project = "  " })}, names: workerAccount},
-		{name: "an account with no person",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Person = "" })}, names: workerAccount},
-		{name: "an account whose fixed session carries whitespace",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = "legion daemon" })}, names: workerAccount},
-		{name: "an account whose fixed session is too long",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: workerAccount},
-		{name: "an account whose fixed session is a wildcard",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = "*" })}, names: workerAccount},
-		{name: "the same account twice",
-			accounts: []exchange.AccountEntry{account, with(func(e *exchange.AccountEntry) { e.Project = "OTHER" })}, names: "account entry 2"},
-		{name: "a repository that is not <owner>/<name>",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "example-repo" })}, names: "example-repo"},
-		// A repository's owner is a GitHub login, so each owner below is refused for what no
-		// login holds.
-		{name: "a repository whose owner holds a dot, which only a repository name may",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "a.b/example-repo" })}, names: "a.b/example-repo"},
-		{name: "a repository whose owner holds a slash, which makes it no <owner>/<name>",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "a/b/example-repo" })}, names: "a/b/example-repo"},
-		{name: "a repository whose owner starts with a hyphen, which no login does",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "-ada/example-repo" })}, names: "-ada/example-repo"},
-		{name: "a repository whose owner starts with an underscore, which no login does",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "_ada/example-repo" })}, names: "_ada/example-repo"},
-		{name: "a repository whose owner is 40 characters, past GitHub's 39",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = strings.Repeat("a", 40) + "/example-repo" })},
-			names:     strings.Repeat("a", 40) + "/example-repo"},
-		{name: "a repository with no owner",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "/example-repo" })}, names: "/example-repo"},
-		{name: "a workflow with no path",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Workflow = "" })}, names: repository},
-		{name: "a workflow with no ref",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Ref = "" })}, names: workflow},
-		{name: "a workflow with no project",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Project = "" })}, names: workflow},
-		{name: "a workflow with no person",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Person = " " })}, names: workflow},
-		{name: "a workflow whose fixed session is unprintable",
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Session = "legion\x00daemon" })}, names: workflow},
-		{name: "the same workflow twice",
-			workflows: []exchange.WorkflowEntry{flow, withFlow(func(e *exchange.WorkflowEntry) { e.Person = "bob@example.com" })}, names: "workflow entry 2"},
-		{name: "two workflows whose principals spell alike",
-			workflows: []exchange.WorkflowEntry{
-				withFlow(func(e *exchange.WorkflowEntry) { e.Workflow, e.Ref = ".github/workflows/a.yaml@refs/heads/b", "c" }),
-				withFlow(func(e *exchange.WorkflowEntry) { e.Workflow, e.Ref = ".github/workflows/a.yaml", "refs/heads/b@c" }),
-			}, names: "workflow entry 1"},
-		{name: "a session name two accounts fix",
-			accounts: []exchange.AccountEntry{
-				with(func(e *exchange.AccountEntry) { e.Session = fixedSession }),
-				{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
-			}, names: "account entry 1"},
 		{name: "a session name an account and a workflow fix",
-			accounts:  []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = fixedSession })},
-			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Session = fixedSession })}, names: workerAccount},
-		{name: "a Google account that is not an email address",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Account = "example-fleet" })}, names: "example-fleet"},
-		{name: "a Google account written with capitals, which no token carries",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Account = "Example-Fleet@example-project.iam.gserviceaccount.com" })},
-			names:    "google entry 1"},
-		{name: "a Google account with no service",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Service = " " })}, names: pinnedAccount},
-		{name: "a machine pinned to a project and no instance pattern",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.CloudProject = cloudProject })}, names: pinnedAccount},
-		{name: "a machine pinned to an instance pattern and no project",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Instance = instanceGlob })}, names: pinnedAccount},
-		{name: "a machine whose instance pattern is not a pattern",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.CloudProject, e.Instance = cloudProject, "example-[vm" })},
-			names:    "example-[vm"},
-		{name: "a machine named a person and no project",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Person = person })}, names: pinnedAccount},
-		{name: "a machine named a project and no person",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Project = project })}, names: pinnedAccount},
-		{name: "a machine whose fixed session carries whitespace",
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Session = "example fleet" })}, names: pinnedAccount},
-		{name: "the same Google account twice",
-			machines: []exchange.GoogleEntry{machine, withMachine(func(e *exchange.GoogleEntry) { e.Service = poolService })}, names: "google entry 2"},
+			accounts: []exchange.AccountEntry{account}, workflows: []exchange.WorkflowEntry{flow}, names: workerAccount},
 		{name: "a session name a machine and an account fix",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = fixedSession })},
-			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Session = fixedSession })}, names: pinnedAccount},
-		{name: "a read entry whose account is not a service account subject",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = "example-reader" })}, names: `read entry 1, "example-reader"`},
-		{name: "a read entry with no account",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = "" })}, names: "read entry 1"},
-		{name: "a read entry with a blank service",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Service = " " })}, names: `read entry 1, "` + readerAccount + `"`},
-		{name: "a read entry with no service",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Service = "" })}, names: `read entry 1, "` + readerAccount + `"`},
-		{name: "a read entry with no session, which it must fix",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "" })}, names: `read entry 1, "` + readerAccount + `"`},
-		{name: "a read entry whose session carries whitespace",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "example reader" })}, names: `read entry 1, "` + readerAccount + `"`},
-		{name: "a read entry whose session is too long",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: `read entry 1, "` + readerAccount + `"`},
-		{name: "a read entry whose session holds a wildcard",
-			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader.>" })}, names: `read entry 1, "` + readerAccount + `"`},
-		{name: "the same read account twice",
-			reads: []exchange.ReadEntry{reader, withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader-other" })}, names: `read entry 2, "` + readerAccount + `"`},
-		{name: "an account an account entry and a read entry both list",
-			accounts: []exchange.AccountEntry{account},
-			reads:    []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = workerAccount })}, names: `read entry 1, "` + workerAccount + `"`},
-		{name: "a session name a read entry and an account fix",
-			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = readerSession })},
-			reads:    []exchange.ReadEntry{reader}, names: `read entry 1, "` + readerAccount + `"`},
+			accounts: []exchange.AccountEntry{account}, machines: []exchange.GoogleEntry{machine}, names: pinnedAccount},
 		// An entry names a person and its project, or a job list, and never both; a workflow entry
 		// that names neither mints a token answerable to nobody. An account entry that names
 		// neither acts as the account itself (TestAnAccountEntryMayNameNoPerson).
@@ -342,7 +288,7 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			machines: []exchange.GoogleEntry{withMachine(func(e *exchange.GoogleEntry) { e.Session, e.Job = "example job", jobList(t, project) })}, names: pinnedAccount},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			set, err := exchange.NewSet(c.accounts, c.reads, c.workflows, c.machines, signInDomain)
+			set, err := build(c.accounts, c.reads, c.workflows, c.machines)
 			if err == nil {
 				t.Fatalf("NewSet(%s) = %v, want a refusal", c.name, set)
 			}
@@ -351,36 +297,15 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestAnAccountEntryWithNoProjectNamesNone: an account entry may name a person and no project,
-// which is the shared public-session account's entry. Its pods' tokens are named, act for the
-// entry's person, and name no project; a request naming one is refused as any entry's is; and
-// MappedProjects and ProjectsForAccount answer the same empty list. Only an account entry may do
-// this: a workflow's and a person-naming Google entry's empty project is still refused (the
-// table above), and a blank project that is not empty is still refused too.
-func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Person: person}}, nil, nil, nil, signInDomain)
-	if err != nil {
-		t.Fatalf("NewSet with an account entry naming no project = %v, want it taken", err)
-	}
-	claims, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", nil)
-	want := exchange.Claims{Session: "public-session-1", Person: person, Scope: exchange.ProjectScopeNamed, Principal: workerPrincipal, Instance: podUID}
-	if err != nil || !reflect.DeepEqual(claims, want) {
-		t.Fatalf("Pod under an entry naming no project = %+v, %v; want %+v: named, its person, no project", claims, err, want)
-	}
-	if _, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", []string{project}); !errors.Is(err, exchange.ErrProjectsFixed) {
-		t.Fatalf("a request naming %s under an entry naming none = %v, want ErrProjectsFixed", project, err)
-	}
-	if gotPerson, projects, ok := set.MappedProjects(workerPrincipal); gotPerson != person || len(projects) != 0 || !ok {
-		t.Fatalf("MappedProjects = %q, %v, %v; want %s, no project, true", gotPerson, projects, ok, person)
-	}
-	if projects, ok := set.ProjectsForAccount(workerAccount); len(projects) != 0 || !ok {
-		t.Fatalf("ProjectsForAccount = %v, %v; want no project, true", projects, ok)
-	}
-	if _, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Project: "  ", Person: person}}, nil, nil, nil, signInDomain); err == nil {
-		t.Fatal("NewSet with an account entry whose project is blank but not empty = nil error, want a refusal")
-	}
+	t.Run("an identity two listings name", func(t *testing.T) {
+		set, err := exchange.NewSet([]exchange.Listing{
+			{Where: "first entry", Principal: "account:" + workerAccount},
+			{Where: "second entry", Principal: "account:" + workerAccount},
+		})
+		if err == nil || !strings.Contains(err.Error(), "first entry") || !strings.Contains(err.Error(), "second entry") {
+			t.Fatalf("NewSet(one principal twice) = %v, %v; want a refusal naming both entries", set, err)
+		}
+	})
 }
 
 // TestAnAccountEntryMayNameNoPerson: an account entry may name neither a person nor a project
@@ -392,10 +317,10 @@ func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
 // request naming a project is refused as under any entry naming none, and MappedProjects and
 // ProjectsForAccount answer neither a person nor a project.
 func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
-	set, err := exchange.NewSet([]exchange.AccountEntry{
+	set, err := build([]exchange.AccountEntry{
 		{Account: workerAccount},
 		{Account: daemonAccount, Session: fixedSession},
-	}, nil, nil, nil, signInDomain)
+	}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewSet with account entries naming no person and no project = %v, want them taken", err)
 	}
@@ -450,7 +375,7 @@ func TestAPersonlessEntryNamesNoProject(t *testing.T) {
 			names:     []string{workflow}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			set, err := exchange.NewSet(c.accounts, nil, c.workflows, nil, signInDomain)
+			set, err := build(c.accounts, nil, c.workflows, nil)
 			if err == nil {
 				t.Fatalf("NewSet(%s) = %v, want a refusal", c.name, set)
 			}
@@ -463,43 +388,18 @@ func TestAPersonlessEntryNamesNoProject(t *testing.T) {
 	}
 }
 
-func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
-	set, err := exchange.NewSet(
-		[]exchange.AccountEntry{{Account: workerAccount, Project: project, Person: person}},
-		nil,
-		[]exchange.WorkflowEntry{
-			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
-			{Repository: repository, Workflow: workflow, Ref: "refs/heads/release", Project: "OTHER", Person: person},
-		},
-		nil, signInDomain,
-	)
-	if err != nil {
-		t.Fatalf("NewSet(one workflow on two refs): %v", err)
+// TestListedAnswersEachEntrysListing: a reader holding no token reads what an operator's entry
+// says of an identity, a machine's service among it, and nothing of an identity no entry lists.
+func TestListedAnswersEachEntrysListing(t *testing.T) {
+	set := listed(t)
+	if got, ok := set.Listed(pinnedPrincipal); !ok || got.Service != pinnedService || got.Person != person || got.Project != project {
+		t.Errorf("Listed(%s) = %+v, %t; want its service, person and project", pinnedPrincipal, got, ok)
 	}
-	for _, c := range []struct {
-		gitRef string
-		want   string
-	}{{ref, project}, {"refs/heads/release", "OTHER"}} {
-		claims, err := set.Workflow(workflowToken(repository, repository+"/"+workflow+"@"+c.gitRef, repository+"/"+workflow+"@"+c.gitRef, c.gitRef), "release-bot", nil)
-		if err != nil || !slices.Equal(claims.Projects, []string{c.want}) {
-			t.Errorf("Workflow(on %s) = %+v, %v; want the projects [%s]", c.gitRef, claims, err, c.want)
-		}
+	if got, ok := set.Listed(readerPrincipal); !ok || got.Service != readerService || got.Session != readerSession {
+		t.Errorf("Listed(%s) = %+v, %t; want its service and session", readerPrincipal, got, ok)
 	}
-}
-
-// TestNewSetTakesAManagedUsersRepository: a managed user's login ends in `_<shortcode>`, so a
-// workflow entry of a repository such an account owns is read, and a run of that workflow is the
-// entry's.
-func TestNewSetTakesAManagedUsersRepository(t *testing.T) {
-	const managed = "mona-cat_octo/example-repo"
-	set, err := exchange.NewSet(nil, nil, []exchange.WorkflowEntry{{Repository: managed, Workflow: workflow, Ref: ref, Project: project, Person: person}}, nil, signInDomain)
-	if err != nil {
-		t.Fatalf("NewSet(a workflow of %s): %v", managed, err)
-	}
-	run := managed + "/" + workflow + "@" + ref
-	claims, err := set.Workflow(workflowToken(managed, run, run, ref), "release-bot", nil)
-	if err != nil || !slices.Equal(claims.Projects, []string{project}) || claims.Person != person {
-		t.Errorf("Workflow(a run of %s) = %+v, %v; want the projects [%s] for %s", managed, claims, err, project, person)
+	if got, ok := set.Listed(personPrincipal); ok {
+		t.Errorf("Listed(%s) = %+v, true; want no listing of a person's own principal", personPrincipal, got)
 	}
 }
 
@@ -509,14 +409,16 @@ func TestNewSetTakesAManagedUsersRepository(t *testing.T) {
 // does. The answer is the caller's own copy, so the set stays as it was built.
 func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 	set := listed(t)
+	// The providers in rank order, kubernetes, google, github, and each provider's entries in
+	// its own order.
 	want := []exchange.Reservation{
 		{Session: fixedSession, Principal: daemonPrincipal},
 		{Session: jobPodSession, Principal: fixedJobPrincipal},
 		{Session: readerSession, Principal: readerPrincipal},
-		{Session: nightlySession, Principal: nightlyPrincipal},
-		{Session: jobRunSession, Principal: fixedJobWorkflowPrincipal},
 		{Session: machineSession, Principal: fixedPrincipal},
 		{Session: jobMachineSession, Principal: fixedJobMachinePrincipal},
+		{Session: nightlySession, Principal: nightlyPrincipal},
+		{Session: jobRunSession, Principal: fixedJobWorkflowPrincipal},
 	}
 	got := set.Reservations()
 	if !slices.Equal(got, want) {
@@ -591,7 +493,7 @@ func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
 		caseAccount      = "system:serviceaccount:example-ns:example-case"
 		roleSession      = "legion-acme-acme-1-implementer"
 	)
-	set, err := exchange.NewSet(
+	set, err := build(
 		[]exchange.AccountEntry{
 			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
 			{Account: workerAccount, Project: project, Person: person},
@@ -602,7 +504,7 @@ func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
 			{Account: jobAccount, Job: jobList(t, "JOB"), Session: "legion-daemon:JOB"},
 		},
 		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: "legion-daemon:READ"}},
-		nil, nil, signInDomain)
+		nil, nil)
 	if err != nil {
 		t.Fatalf("NewSet: %v", err)
 	}
@@ -638,47 +540,6 @@ func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
 	}
 }
 
-func TestPodRefusesWhatItCannotDecide(t *testing.T) {
-	set := listed(t)
-	for _, c := range []struct {
-		name    string
-		token   map[string]any
-		session string
-		want    error
-		names   string
-	}{
-		{name: "a token with no subject", token: map[string]any{}, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
-		{name: "a subject that is not a string", token: map[string]any{"sub": 7}, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
-		{name: "a token bound to no pod", token: podToken(workerAccount, ""), session: "implementer-g1", want: exchange.ErrNoPodBinding, names: workerAccount},
-		{name: "a pod binding with no uid", token: map[string]any{"sub": workerAccount, "kubernetes.io": map[string]any{"pod": map[string]any{}}},
-			session: "implementer-g1", want: exchange.ErrNoPodBinding, names: workerAccount},
-		{name: "an account no entry lists", token: podToken("system:serviceaccount:example-ns:example-other", podUID),
-			session: "implementer-g1", want: exchange.ErrNoEntry, names: "system:serviceaccount:example-ns:example-other"},
-		{name: "a session the entry does not fix", token: podToken(daemonAccount, podUID), session: "implementer-g1",
-			want: exchange.ErrSessionMismatch, names: fixedSession},
-		{name: "a session the read entry does not fix", token: podToken(readerAccount, podUID), session: "implementer-g1",
-			want: exchange.ErrSessionMismatch, names: readerSession},
-		{name: "a read account's token bound to no pod", token: podToken(readerAccount, ""), session: "",
-			want: exchange.ErrNoPodBinding, names: readerAccount},
-		{name: "no session where the entry fixes none", token: podToken(workerAccount, podUID), session: "",
-			want: exchange.ErrSessionRequired, names: workerAccount},
-		{name: "a session carrying whitespace", token: podToken(workerAccount, podUID), session: "implementer g1",
-			want: exchange.ErrSessionInvalid, names: workerAccount},
-		{name: "a session longer than the cap", token: podToken(workerAccount, podUID), session: strings.Repeat("s", exchange.MaxSessionBytes+1),
-			want: exchange.ErrSessionInvalid, names: workerAccount},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Pod(c.token, c.session, nil)
-			if !errors.Is(err, c.want) {
-				t.Fatalf("Pod(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
-			}
-			if !strings.Contains(err.Error(), c.names) {
-				t.Errorf("Pod(%s) refused with %q, which does not name %q", c.name, err, c.names)
-			}
-		})
-	}
-}
-
 // TestRegistrationRefusesWhatNeedsNoRegistration pins what a pod-session registration may be
 // written for: the pod of an entry that fixes no session, and nothing else. A token bound to no
 // pod proves only that the account exists, an account no entry lists exchanges nothing to begin
@@ -690,7 +551,7 @@ func TestPodRefusesWhatItCannotDecide(t *testing.T) {
 func TestRegistrationRefusesWhatNeedsNoRegistration(t *testing.T) {
 	set := listed(t)
 	for _, account := range []string{workerAccount, jobAccount} {
-		if err := set.Registration(account, podUID, "implementer-g1"); err != nil {
+		if err := set.pods.Registration(account, podUID, "implementer-g1"); err != nil {
 			t.Fatalf("Registration of a pod of %s for a name of its own = %v, want it accepted", account, err)
 		}
 	}
@@ -719,7 +580,7 @@ func TestRegistrationRefusesWhatNeedsNoRegistration(t *testing.T) {
 			want: exchange.ErrSessionInvalid, names: workerAccount},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			err := set.Registration(c.account, c.uid, c.session)
+			err := set.pods.Registration(c.account, c.uid, c.session)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Registration(%s) = %v; want %v", c.name, err, c.want)
 			}
@@ -728,96 +589,6 @@ func TestRegistrationRefusesWhatNeedsNoRegistration(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestPodNeverRepeatsAnUnusableSessionName(t *testing.T) {
-	set := listed(t)
-	const unusable = "implementer\x00g1"
-	_, err := set.Pod(podToken(workerAccount, podUID), unusable, nil)
-	if !errors.Is(err, exchange.ErrSessionInvalid) {
-		t.Fatalf("Pod(an unprintable session) = %v, want ErrSessionInvalid", err)
-	}
-	if strings.Contains(err.Error(), unusable) {
-		t.Errorf("Pod refused with %q, which repeats what the request sent", err)
-	}
-}
-
-func TestWorkflowAnswersTheListedRun(t *testing.T) {
-	set := listed(t)
-	for _, c := range []struct {
-		name    string
-		token   map[string]any
-		session string
-		want    exchange.Claims
-	}{
-		{name: "the session the request names", token: workflowToken(repository, runRef(workflow), runRef(workflow), ref),
-			session: "release-bot", want: exchange.Claims{Session: "release-bot", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: releasePrincipal}},
-		{name: "the session the entry fixes", token: workflowToken(repository, runRef(nightly), runRef(nightly), ref),
-			session: "", want: exchange.Claims{Session: nightlySession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: nightlyPrincipal}},
-		{name: "another run of the workflow is the same principal", token: withRun(workflowToken(repository, runRef(nightly), runRef(nightly), ref), "4243"),
-			session: "", want: exchange.Claims{Session: nightlySession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: nightlyPrincipal}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Workflow(c.token, c.session, nil)
-			if err != nil || !reflect.DeepEqual(claims, c.want) {
-				t.Fatalf("Workflow(%s) = %+v, %v; want %+v", c.name, claims, err, c.want)
-			}
-		})
-	}
-}
-
-func TestWorkflowRefusesWhatItCannotDecide(t *testing.T) {
-	set := listed(t)
-	for _, c := range []struct {
-		name    string
-		token   map[string]any
-		session string
-		want    error
-		names   string
-	}{
-		{name: "a token with no repository", token: workflowToken("", runRef(workflow), runRef(workflow), ref),
-			session: "release-bot", want: exchange.ErrClaimMissing, names: "repository"},
-		{name: "a token with no workflow_ref", token: workflowToken(repository, "", runRef(workflow), ref),
-			session: "release-bot", want: exchange.ErrClaimMissing, names: "workflow_ref"},
-		{name: "a token with no job_workflow_ref", token: workflowToken(repository, runRef(workflow), "", ref),
-			session: "release-bot", want: exchange.ErrClaimMissing, names: "job_workflow_ref"},
-		{name: "a token with no ref", token: workflowToken(repository, runRef(workflow), runRef(workflow), ""),
-			session: "release-bot", want: exchange.ErrClaimMissing, names: "ref"},
-		{name: "a workflow_ref that names no path", token: workflowToken(repository, repository+"/"+workflow, repository+"/"+workflow, ref),
-			session: "release-bot", want: exchange.ErrClaimMissing, names: repository},
-		{name: "a workflow_ref under another repository", token: workflowToken(repository, "example-org/other-repo/"+workflow+"@"+ref, "example-org/other-repo/"+workflow+"@"+ref, ref),
-			session: "release-bot", want: exchange.ErrClaimMissing, names: repository},
-		{name: "a job written in a reusable workflow", token: workflowToken(repository, runRef(workflow), runRef(".github/workflows/reusable.yaml"), ref),
-			session: "release-bot", want: exchange.ErrNoEntry, names: ".github/workflows/reusable.yaml"},
-		{name: "a workflow no entry lists", token: workflowToken(repository, runRef(".github/workflows/other.yaml"), runRef(".github/workflows/other.yaml"), ref),
-			session: "release-bot", want: exchange.ErrNoEntry, names: ".github/workflows/other.yaml"},
-		{name: "a ref no entry lists", token: workflowToken(repository, repository+"/"+workflow+"@refs/heads/topic", repository+"/"+workflow+"@refs/heads/topic", "refs/heads/topic"),
-			session: "release-bot", want: exchange.ErrNoEntry, names: "refs/heads/topic"},
-		{name: "a repository no entry lists", token: workflowToken("example-org/other-repo", "example-org/other-repo/"+workflow+"@"+ref, "example-org/other-repo/"+workflow+"@"+ref, ref),
-			session: "release-bot", want: exchange.ErrNoEntry, names: "example-org/other-repo"},
-		{name: "a session the entry does not fix", token: workflowToken(repository, runRef(nightly), runRef(nightly), ref),
-			session: "release-bot", want: exchange.ErrSessionMismatch, names: nightlySession},
-		{name: "no session where the entry fixes none", token: workflowToken(repository, runRef(workflow), runRef(workflow), ref),
-			session: "", want: exchange.ErrSessionRequired, names: workflow},
-		{name: "a session carrying whitespace", token: workflowToken(repository, runRef(workflow), runRef(workflow), ref),
-			session: "release bot", want: exchange.ErrSessionInvalid, names: workflow},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Workflow(c.token, c.session, nil)
-			if !errors.Is(err, c.want) {
-				t.Fatalf("Workflow(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
-			}
-			if !strings.Contains(err.Error(), c.names) {
-				t.Errorf("Workflow(%s) refused with %q, which does not name %q", c.name, err, c.names)
-			}
-		})
-	}
-}
-
-// withRun is token as another run of the same workflow carries it.
-func withRun(token map[string]any, run string) map[string]any {
-	token["run_id"] = run
-	return token
 }
 
 func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T) {
@@ -964,15 +735,6 @@ func TestMachineRefusesWhatItCannotDecide(t *testing.T) {
 	}
 }
 
-func TestSessionAtTheCapIsUsable(t *testing.T) {
-	set := listed(t)
-	name := strings.Repeat("s", exchange.MaxSessionBytes)
-	claims, err := set.Pod(podToken(workerAccount, podUID), name, nil)
-	if err != nil || claims.Session != name {
-		t.Fatalf("Pod(a session of exactly %d bytes) = %+v, %v; want it answered", exchange.MaxSessionBytes, claims, err)
-	}
-}
-
 // TestASessionNameHoldsNoWildcard: ValidSession takes every shape of session name a deployment
 // trades under, now that it refuses a name holding a NATS wildcard ('*' or '>', whose rows are
 // TestMachineRefusesWhatItCannotDecide's): an Envoy session id, the Legion daemon's fixed session,
@@ -1003,125 +765,6 @@ func googleToken(account string, verified any, cloud, instance string) map[strin
 	return token
 }
 
-// TestGoogleAnswersTheListedMachine pins what each kind of Google entry answers: a pinned entry
-// that names a person answers that person and its one project, an entry that pins nothing answers
-// its service and no person at all, and a token carrying no Compute Engine claims — a workload
-// identity pool's, and the one a pod's metadata server answers — is taken by an entry that pins
-// nothing. No Google entry ever answers an Instance: nothing registers a machine, so the claim on
-// the session name is what keeps two machines of one account apart. Every one of them answers
-// its Fleet, the service its account is listed for, whether or not the token names that service:
-// it is what the launcher credential the exchange mints records.
-func TestGoogleAnswersTheListedMachine(t *testing.T) {
-	set := listed(t)
-	for _, c := range []struct {
-		name    string
-		token   map[string]any
-		session string
-		want    exchange.Claims
-	}{
-		{name: "a pinned machine of the project and a name the pattern matches",
-			token: googleToken(pinnedAccount, true, cloudProject, instanceName), session: "example-machine",
-			want: exchange.Claims{Session: "example-machine", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: pinnedPrincipal, Fleet: pinnedService}},
-		{name: "another machine of that account is the same principal",
-			token: googleToken(pinnedAccount, true, cloudProject, "example-vm-8"), session: "example-other",
-			want: exchange.Claims{Session: "example-other", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: pinnedPrincipal, Fleet: pinnedService}},
-		{name: "email_verified as the string Google writes on some of its tokens",
-			token: googleToken(pinnedAccount, "true", cloudProject, instanceName), session: "example-machine",
-			want: exchange.Claims{Session: "example-machine", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: pinnedPrincipal, Fleet: pinnedService}},
-		{name: "an entry naming no person answers its service and no project",
-			token: googleToken(poolAccount, true, "", ""), session: "example-pool-1",
-			want: exchange.Claims{Session: "example-pool-1", Service: poolService, Scope: exchange.ProjectScopePerson, Principal: poolPrincipal, Fleet: poolService}},
-		{name: "an entry pinning nothing takes a machine that does run on an instance",
-			token: googleToken(poolAccount, true, "other-project", "anything"), session: "example-pool-2",
-			want: exchange.Claims{Session: "example-pool-2", Service: poolService, Scope: exchange.ProjectScopePerson, Principal: poolPrincipal, Fleet: poolService}},
-		{name: "the session the entry fixes, the request naming none",
-			token: googleToken(fixedAccount, true, "", ""), session: "",
-			want: exchange.Claims{Session: machineSession, Service: poolService, Scope: exchange.ProjectScopePerson, Principal: fixedPrincipal, Fleet: poolService}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Google(c.token, c.session, nil)
-			if err != nil || !reflect.DeepEqual(claims, c.want) {
-				t.Fatalf("Google(%s) = %+v, %v; want %+v", c.name, claims, err, c.want)
-			}
-		})
-	}
-}
-
-func TestGoogleRefusesWhatItCannotDecide(t *testing.T) {
-	set := listed(t)
-	for _, c := range []struct {
-		name    string
-		token   map[string]any
-		session string
-		want    error
-		names   string
-	}{
-		{name: "a token with no email", token: map[string]any{"email_verified": true}, session: "example-machine",
-			want: exchange.ErrClaimMissing, names: "email"},
-		{name: "an email that is not a string", token: map[string]any{"email": 7, "email_verified": true}, session: "example-machine",
-			want: exchange.ErrClaimMissing, names: "email"},
-		{name: "an account no entry lists", token: googleToken(strangerAccount, true, cloudProject, instanceName), session: "example-machine",
-			want: exchange.ErrNoEntry, names: strangerAccount},
-		{name: "an email Google has not verified", token: googleToken(pinnedAccount, false, cloudProject, instanceName), session: "example-machine",
-			want: exchange.ErrEmailNotVerified, names: pinnedAccount},
-		{name: "an email_verified of the string false", token: googleToken(pinnedAccount, "false", cloudProject, instanceName), session: "example-machine",
-			want: exchange.ErrEmailNotVerified, names: pinnedAccount},
-		{name: "a token with no Compute Engine claims against a pinned entry", token: googleToken(pinnedAccount, true, "", ""), session: "example-machine",
-			want: exchange.ErrNoComputeEngine, names: pinnedAccount},
-		{name: "a token with half a Compute Engine identity against a pinned entry",
-			token:   map[string]any{"email": pinnedAccount, "email_verified": true, "google": map[string]any{"compute_engine": map[string]any{"project_id": cloudProject}}},
-			session: "example-machine", want: exchange.ErrNoComputeEngine, names: pinnedAccount},
-		{name: "a machine of another project", token: googleToken(pinnedAccount, true, "other-project", instanceName), session: "example-machine",
-			want: exchange.ErrMachineNotAllowed, names: "other-project"},
-		{name: "an instance name the pattern does not match", token: googleToken(pinnedAccount, true, cloudProject, "example-other-1"), session: "example-machine",
-			want: exchange.ErrMachineNotAllowed, names: "example-other-1"},
-		{name: "no session where the entry fixes none", token: googleToken(pinnedAccount, true, cloudProject, instanceName), session: "",
-			want: exchange.ErrSessionRequired, names: pinnedAccount},
-		{name: "a session the entry does not fix", token: googleToken(fixedAccount, true, "", ""), session: "example-other",
-			want: exchange.ErrSessionMismatch, names: machineSession},
-		{name: "a session carrying whitespace", token: googleToken(pinnedAccount, true, cloudProject, instanceName), session: "example machine",
-			want: exchange.ErrSessionInvalid, names: pinnedAccount},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Google(c.token, c.session, nil)
-			if !errors.Is(err, c.want) {
-				t.Fatalf("Google(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
-			}
-			if !strings.Contains(err.Error(), c.names) {
-				t.Errorf("Google(%s) refused with %q, which does not name %q", c.name, err, c.names)
-			}
-		})
-	}
-}
-
-// TestGoogleSaysWhichRefusalItIs: the five refusals a machine can meet are five sentences, each
-// naming what an operator would change. They are compared against one another here, so that
-// collapsing two of them into one message fails.
-func TestGoogleSaysWhichRefusalItIs(t *testing.T) {
-	set := listed(t)
-	said := map[string]string{}
-	for name, token := range map[string]map[string]any{
-		"an account no entry lists":   googleToken(strangerAccount, true, cloudProject, instanceName),
-		"an unverified email":         googleToken(pinnedAccount, false, cloudProject, instanceName),
-		"no Compute Engine claims":    googleToken(pinnedAccount, true, "", ""),
-		"another Compute project":     googleToken(pinnedAccount, true, "other-project", instanceName),
-		"an instance name not listed": googleToken(pinnedAccount, true, cloudProject, "example-other-1"),
-	} {
-		_, err := set.Google(token, "example-machine", nil)
-		if err == nil {
-			t.Fatalf("Google(%s) was answered, want a refusal", name)
-		}
-		said[name] = err.Error()
-	}
-	for name, text := range said {
-		for other, otherText := range said {
-			if name != other && text == otherText {
-				t.Errorf("the refusals of %s and of %s read alike: %q", name, other, text)
-			}
-		}
-	}
-}
-
 // personToken is a person's own Google identity token's claims as the exchange is handed them:
 // the subject Google gives the account, the address it was minted for, whether Google holds that
 // address verified, and the Workspace domain in `hd`.
@@ -1131,140 +774,6 @@ func personToken(login string, verified any, domain string) map[string]any {
 		token["hd"] = domain
 	}
 	return token
-}
-
-// TestPersonAnswersTheSignedInPersonAndTheMachineActingForThem pins what a sign-in's trade
-// decides: the person is the subject of the token and the machine only acts for them, so the
-// claims name the person, the machine's listed account as the actor, and no project at all —
-// a person's sign-in on their own box reaches whichever projects that person reaches, as their
-// dev box's machine credential does. The principal is the person, so one person's boxes are one
-// holder and their session names follow them from box to box. The machine's fleet decides
-// nothing else: a fleet whose entry names a person and one whose entry names none answer alike,
-// because what the token names is the person who signed in, never the fleet.
-func TestPersonAnswersTheSignedInPersonAndTheMachineActingForThem(t *testing.T) {
-	set := listed(t)
-	for _, c := range []struct {
-		name         string
-		token, actor map[string]any
-		session      string
-		want         exchange.Claims
-	}{
-		{name: "a person of the domain on a pinned machine",
-			token: personToken(person, true, signInDomain), actor: googleToken(pinnedAccount, true, cloudProject, instanceName), session: "example-box-1",
-			want: exchange.Claims{Session: "example-box-1", Person: person, Scope: exchange.ProjectScopePerson, Principal: personPrincipal, Actor: pinnedAccount, Fleet: pinnedService}},
-		{name: "the same person on a second box of a fleet that names nobody",
-			token: personToken(person, true, signInDomain), actor: googleToken(poolAccount, true, "", ""), session: "example-box-2",
-			want: exchange.Claims{Session: "example-box-2", Person: person, Scope: exchange.ProjectScopePerson, Principal: personPrincipal, Actor: poolAccount, Fleet: poolService}},
-		{name: "an address Google spells with capitals is the lowercase login",
-			token: personToken("Ada@example.com", true, signInDomain), actor: googleToken(poolAccount, true, "", ""), session: "example-box-3",
-			want: exchange.Claims{Session: "example-box-3", Person: person, Scope: exchange.ProjectScopePerson, Principal: personPrincipal, Actor: poolAccount, Fleet: poolService}},
-		{name: "email_verified as the string Google writes on some of its tokens",
-			token: personToken(person, "true", signInDomain), actor: googleToken(poolAccount, "true", "", ""), session: "example-box-4",
-			want: exchange.Claims{Session: "example-box-4", Person: person, Scope: exchange.ProjectScopePerson, Principal: personPrincipal, Actor: poolAccount, Fleet: poolService}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Person(c.token, c.actor, c.session, nil)
-			if err != nil || !reflect.DeepEqual(claims, c.want) {
-				t.Fatalf("Person(%s) = %+v, %v; want %+v", c.name, claims, err, c.want)
-			}
-		})
-	}
-}
-
-// TestPersonRefusesWhatItCannotDecide walks every way a sign-in's trade is refused, each by the
-// sentinel an operator acts on and naming what to fix. The machine is read first and the person
-// second, so a box no entry lists is refused whoever is signed in on it.
-func TestPersonRefusesWhatItCannotDecide(t *testing.T) {
-	set := listed(t)
-	for _, c := range []struct {
-		name         string
-		token, actor map[string]any
-		session      string
-		want         error
-		names        string
-	}{
-		{name: "no actor token at all", token: personToken(person, true, signInDomain), actor: nil, session: "example-box",
-			want: exchange.ErrNoActorToken, names: "machine-google-identity"},
-		{name: "an actor token naming no account", token: personToken(person, true, signInDomain), actor: map[string]any{"email_verified": true}, session: "example-box",
-			want: exchange.ErrClaimMissing, names: "email"},
-		{name: "an actor token of an account no entry lists", token: personToken(person, true, signInDomain), actor: googleToken(strangerAccount, true, "", ""), session: "example-box",
-			want: exchange.ErrNoEntry, names: strangerAccount},
-		{name: "a machine whose own address Google has not verified", token: personToken(person, true, signInDomain), actor: googleToken(pinnedAccount, false, cloudProject, instanceName), session: "example-box",
-			want: exchange.ErrEmailNotVerified, names: pinnedAccount},
-		{name: "a machine running where its entry does not allow", token: personToken(person, true, signInDomain), actor: googleToken(pinnedAccount, true, "other-project", instanceName), session: "example-box",
-			want: exchange.ErrMachineNotAllowed, names: "other-project"},
-		{name: "a person's token naming no subject", token: map[string]any{"email": person, "email_verified": true, "hd": signInDomain}, actor: googleToken(poolAccount, true, "", ""), session: "example-box",
-			want: exchange.ErrClaimMissing, names: "sub"},
-		{name: "a person's token naming no address", token: map[string]any{"sub": "109", "email_verified": true, "hd": signInDomain}, actor: googleToken(poolAccount, true, "", ""), session: "example-box",
-			want: exchange.ErrClaimMissing, names: "email"},
-		{name: "a person of another Workspace domain", token: personToken(stranger, true, otherDomain), actor: googleToken(poolAccount, true, "", ""), session: "example-box",
-			want: exchange.ErrNotInDomain, names: stranger},
-		{name: "a person's token carrying no hd at all", token: personToken(person, true, ""), actor: googleToken(poolAccount, true, "", ""), session: "example-box",
-			want: exchange.ErrNotInDomain, names: person},
-		{name: "a person whose address Google has not verified", token: personToken(person, false, signInDomain), actor: googleToken(poolAccount, true, "", ""), session: "example-box",
-			want: exchange.ErrEmailNotVerified, names: person},
-		{name: "no session, which no entry fixes for a person", token: personToken(person, true, signInDomain), actor: googleToken(poolAccount, true, "", ""), session: "",
-			want: exchange.ErrSessionRequired, names: person},
-		{name: "a session carrying whitespace", token: personToken(person, true, signInDomain), actor: googleToken(poolAccount, true, "", ""), session: "example box",
-			want: exchange.ErrSessionInvalid, names: person},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Person(c.token, c.actor, c.session, nil)
-			if !errors.Is(err, c.want) {
-				t.Fatalf("Person(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
-			}
-			if !strings.Contains(err.Error(), c.names) {
-				t.Errorf("Person(%s) refused with %q, which does not name %q", c.name, err, c.names)
-			}
-		})
-	}
-}
-
-// TestPersonSaysWhichRefusalItIs: the refusals the spec names each read differently, since what
-// the person does about each one differs — sign in as an account of the domain, verify the
-// address, present the machine's token, have the fleet listed, or run where the entry allows.
-func TestPersonSaysWhichRefusalItIs(t *testing.T) {
-	set := listed(t)
-	said := map[string]string{}
-	for name, c := range map[string]struct{ token, actor map[string]any }{
-		"another domain":             {personToken(stranger, true, otherDomain), googleToken(poolAccount, true, "", "")},
-		"an unverified person":       {personToken(person, false, signInDomain), googleToken(poolAccount, true, "", "")},
-		"an unverified machine":      {personToken(person, true, signInDomain), googleToken(pinnedAccount, false, cloudProject, instanceName)},
-		"a machine no entry lists":   {personToken(person, true, signInDomain), googleToken(strangerAccount, true, "", "")},
-		"no machine acting for them": {personToken(person, true, signInDomain), nil},
-		"a machine where it may not": {personToken(person, true, signInDomain), googleToken(pinnedAccount, true, "other-project", instanceName)},
-	} {
-		_, err := set.Person(c.token, c.actor, "example-box", nil)
-		if err == nil {
-			t.Fatalf("Person(%s) was answered, want a refusal", name)
-		}
-		said[name] = err.Error()
-	}
-	for name, text := range said {
-		for other, otherText := range said {
-			if name != other && text == otherText {
-				t.Errorf("the refusals of %s and of %s read alike: %q", name, other, text)
-			}
-		}
-	}
-}
-
-// TestAnEmptySignInDomainAdmitsNobody: a set built with no domain refuses every person, whatever
-// their token says, rather than taking every account outside any Workspace. It is the rule
-// oidc.WorkspaceLogin states, and the one a broker told about no domain has to follow.
-func TestAnEmptySignInDomainAdmitsNobody(t *testing.T) {
-	set, err := exchange.NewSet(nil, nil, nil, []exchange.GoogleEntry{{Account: poolAccount, Service: poolService}}, "")
-	if err != nil {
-		t.Fatalf("NewSet: %v", err)
-	}
-	for _, token := range []map[string]any{
-		personToken(person, true, signInDomain),
-		personToken(person, true, ""),
-	} {
-		if _, err := set.Person(token, googleToken(poolAccount, true, "", ""), "example-box", nil); !errors.Is(err, exchange.ErrNotInDomain) {
-			t.Errorf("Person(hd %v) = %v, want %v: an empty configured domain admits nobody", token["hd"], err, exchange.ErrNotInDomain)
-		}
-	}
 }
 
 // TestReadGoogleIdentityReadsGooglesClaimShapes: the one reading of a Google identity token's own

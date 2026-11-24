@@ -3,6 +3,7 @@ package boot_test
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -171,5 +172,54 @@ func TestOpenListsEveryProvidersEntries(t *testing.T) {
 	}
 	if got := b.Registry.PodPrincipal("system:serviceaccount:a:b"); got != "account:system:serviceaccount:a:b" {
 		t.Errorf("PodPrincipal = %q, want the kubernetes provider's spelling", got)
+	}
+}
+
+// TestOpenListsTheJobEntries: the job settings reach their providers beside the settings that
+// name a person (BROKER_EXCHANGE_JOB_ACCOUNTS after BROKER_EXCHANGE_ACCOUNTS,
+// BROKER_EXCHANGE_JOB_WORKFLOWS after BROKER_EXCHANGE_WORKFLOWS, and
+// BROKER_VM_EXCHANGE_JOB_ACCOUNTS among the Google entries), so the policy answers each job
+// entry's principal with no person and its whole list, and an account both a person's setting
+// and a job setting list is refused as one identity listed twice, naming the job entry after the
+// person's.
+func TestOpenListsTheJobEntries(t *testing.T) {
+	i := newIssuers(t)
+	job := func(text string) exchange.JobProjects {
+		list, err := exchange.ParseJobProjects(text)
+		if err != nil {
+			t.Fatalf("ParseJobProjects(%q): %v", text, err)
+		}
+		return list
+	}
+	const (
+		worker     = "system:serviceaccount:example-ns:example-worker"
+		jobAccount = "system:serviceaccount:example-ns:example-job"
+	)
+	cfg := everyIssuer(i)
+	cfg.ExchangeAccounts = []exchange.AccountEntry{{Account: worker, Project: "ACME", Person: "ada@example.com"}}
+	cfg.ExchangeJobAccounts = []exchange.AccountEntry{{Account: jobAccount, Job: job("ACME")}}
+	cfg.ExchangeWorkflows = []exchange.WorkflowEntry{{Repository: "example-org/example-repo", Workflow: ".github/workflows/release.yaml", Ref: "refs/heads/main", Project: "ACME", Person: "ada@example.com"}}
+	cfg.ExchangeJobWorkflows = []exchange.WorkflowEntry{{Repository: "example-org/example-repo", Workflow: ".github/workflows/sweep.yaml", Ref: "refs/heads/main", Job: job("public,PRIVB,PRIVA")}}
+	cfg.ExchangeGoogleAccounts = []exchange.GoogleEntry{{Account: "example-job@example-project.iam.gserviceaccount.com", Service: "example-jobs", Job: job("PRIVA")}}
+	b, err := boot.Open(context.Background(), cfg, (&countingKeys{reads: map[string]int{}}).keys)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for _, c := range []struct {
+		principal string
+		projects  []string
+	}{
+		{"account:" + jobAccount, []string{"ACME"}},
+		{"workflow:example-org/example-repo/.github/workflows/sweep.yaml@refs/heads/main", []string{"PRIVA", "PRIVB"}},
+		{"google:example-job@example-project.iam.gserviceaccount.com", []string{"PRIVA"}},
+	} {
+		person, projects, ok := b.Registry.Policy().MappedProjects(c.principal)
+		if !ok || person != "" || !slices.Equal(projects, c.projects) {
+			t.Errorf("Policy().MappedProjects(%s) = %q, %v, %t; want no person and the job list %v", c.principal, person, projects, ok, c.projects)
+		}
+	}
+	cfg.ExchangeJobAccounts = []exchange.AccountEntry{{Account: worker, Job: job("ACME")}}
+	if _, err := boot.Open(context.Background(), cfg, (&countingKeys{reads: map[string]int{}}).keys); err == nil || !strings.Contains(err.Error(), "account entry 2") {
+		t.Fatalf("Open with %s in BROKER_EXCHANGE_ACCOUNTS and BROKER_EXCHANGE_JOB_ACCOUNTS = %v; want a refusal naming account entry 2", worker, err)
 	}
 }

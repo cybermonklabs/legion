@@ -67,9 +67,8 @@ func TestANamedTradeMintsUncheckedOnlyForAnEmptyList(t *testing.T) {
 			refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked")
 
 			public := newExchangeFixture(t, func(cfg *oauth.Config) {
-				cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
 				cfg.Exchange.Projects = c.dispatch(t)
-			})
+			}, listing([]exchange.AccountEntry{{Account: account, Person: person}}, nil))
 			public.registers(t, account, "pod-uid-1", "public-session-1")
 			public.introspectsProjects(t, public.exchanged(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t)),
 				oauthwire.ProjectScopeNamed, nil)
@@ -121,9 +120,8 @@ func TestAnUnreadableAccessTokenFileRefusesTheTrade(t *testing.T) {
 			refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
 
 			public := newExchangeFixture(t, func(cfg *oauth.Config) {
-				cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
 				cfg.Exchange.Projects = client
-			})
+			}, listing([]exchange.AccountEntry{{Account: account, Person: person}}, nil))
 			public.registers(t, account, "pod-uid-1", "public-session-1")
 			status, body = public.exchange(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t))
 			refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
@@ -145,9 +143,8 @@ func TestAnUnknownMemberKindRefusesTheTrade(t *testing.T) {
 		t.Helper()
 		const says = "a member kind this broker does not know"
 		public := newExchangeFixture(t, func(cfg *oauth.Config) {
-			cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
 			cfg.Exchange.Projects = access
-		})
+		}, listing([]exchange.AccountEntry{{Account: account, Person: person}}, nil))
 		key := newKey(t)
 		public.registers(t, account, "pod-uid-1", "public-session-1")
 		status, body := public.exchange(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key)

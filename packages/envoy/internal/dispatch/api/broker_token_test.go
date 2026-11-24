@@ -80,7 +80,7 @@ func personScopedTokenAnswer(jkt string) ciphertoken.Introspection {
 // serviceOnlyToken is the broker's answer for a machine nobody has signed in on: live, bound to
 // jkt, naming a session and the service its fleet is, and no person. It names no project either.
 // The exchange mints this shape for one caller only, a machine whose fleet entry names neither a
-// person nor a project (cipher/exchange's Set.Google), and marks it with the person scope, the
+// person nor a project (cipher/identity/google), and marks it with the person scope, the
 // wire's word for a token held to no one project.
 func serviceOnlyToken(jkt string) ciphertoken.Introspection {
 	return ciphertoken.Introspection{

@@ -115,7 +115,7 @@ func sessionAnswer(session, person, jkt string) ciphertoken.Introspection {
 
 // serviceAnswer is the broker's answer about a token naming a service and no person: a machine
 // nobody has signed in on. It names no project, under the person scope, as the exchange mints it
-// (exchange.Set.Google), and as ciphertoken holds such an answer to.
+// (internal/cipher/identity/google), and as ciphertoken holds such an answer to.
 func serviceAnswer(session, service, jkt string) ciphertoken.Introspection {
 	return ciphertoken.Introspection{
 		Active:       true,

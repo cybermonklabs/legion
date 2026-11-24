@@ -1,40 +1,23 @@
-// Package exchange decides what a verified subject token entitles its holder to write in
-// Dispatch: the claims a minted Dispatch access token carries — the session that is writing, the
-// person it acts for or the service it is, and its list of projects, either the one its
-// operator's entry names, the whole list a job's entry names, the one a restricted member's
-// machine login asked for, or the ones a trade acting as its person asked for, or none at all for
-// a token that only reads — and, beside them, the principal the session name belongs to.
+// Package exchange holds what the RFC 8693 token exchange decides with and every identity
+// provider shares: the claims a minted Dispatch access token carries — the session that is
+// writing, the person it acts for or the service it is, and its list of projects, either the one
+// its operator's entry names, the whole list a job's entry names, the one a restricted member's
+// machine login asked for, or the ones a trade acting as its person asked for, or none at all
+// for a token that only reads — and, beside them, the principal the session name belongs to; the
+// entries an operator lists; the rules every entry and every trade share (CheckGrant,
+// Claims.Grant, EntryProjects, ResolveSession, ValidSession, ClaimString); and the sentinels a
+// refusal wraps.
 //
-// It is the policy half of the RFC 8693 token exchange and nothing else. It verifies no token,
-// reads no configuration, takes no clock and makes no call: it is handed entries someone else
-// parsed and the already-verified claims of a subject token, and it answers Claims or refuses with
-// a sentinel the caller maps onto an OAuth error. A Set is built once and is then immutable, so
-// the same subject token decides the same way however many exchanges run at once.
+// It verifies no token, reads no configuration, takes no clock and makes no call. Each identity
+// provider (internal/cipher/identity/<kind>) decides its own subject tokens with these rules and
+// lists its entries as Listings; a Set is built once from every provider's listings and is then
+// immutable, and it decides the one trade no provider verifies: a dev box session's machine
+// credential, which no entry lists, because the person is the approver the credential already
+// records (Machine).
 //
-// Five kinds of subject token reach it, and what decides each one's claims differs:
-//
-//   - a pod's Kubernetes service-account token, where an entry keyed on the account subject
-//     (system:serviceaccount:<namespace>:<name>) gives the person and the project, or no project
-//     for an entry that names none (<service account>==<person>), or neither for an entry that
-//     names no person, whose token acts as the account itself (<service account>==), or a job
-//     list, or a read entry keyed on it gives a service and the session its token reads as, and
-//     the token must carry the pod it is bound to;
-//   - a continuous-integration workflow run's GitHub token, where an entry keyed on the
-//     repository, the workflow's path and the ref it ran on gives the project and the person, or
-//     a job list;
-//   - a machine's Google identity token, where an entry keyed on the account's email address
-//     gives the service, may pin the Compute Engine project and instance names the machine may
-//     carry, and may give a person and a project as a pod's entry does, or a job list;
-//   - a person's own Google identity token, carried with the machine's as the actor token, where
-//     the Workspace domain decides the person and that same machine entry decides the box they
-//     may sign in from;
-//   - a dev box session's machine credential, which no entry lists, because the person is the
-//     approver the credential already records, and which is held to one project when Dispatch
-//     calls that person a restricted member, a fact its caller asks Dispatch and hands in.
-//
-// An entry of the first three kinds that names a job list (JobProjects) names no person: the
-// job's own identity writes. Its token names that identity as its service — the account subject,
-// the workflow as <repository>/<path>@<ref>, the Google account's address — and no person, and
+// An entry of any provider that names a job list (JobProjects) names no person: the job's own
+// identity writes. Its token names that identity as its service — the account subject, the
+// workflow as <repository>/<path>@<ref>, the Google account's address — and no person, and
 // carries the entry's scope and whole list whatever the trade names: one project under
 // ProjectScopeNamed, or under ProjectScopePublic every public project and the private projects
 // the list names. A request naming a project the list does not name is refused.
@@ -53,8 +36,6 @@ package exchange
 import (
 	"errors"
 	"fmt"
-	"path"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -62,7 +43,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
-	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // Why a subject token is refused. Each stands for one answer an operator can act on: list the
@@ -139,20 +119,6 @@ const RestrictedLifetime = 270 * time.Second
 // every record the token's writes produce and read back in a dashboard, so it is bounded; 200
 // bytes is past any name a Legion session or a person's tool has reason to use.
 const MaxSessionBytes = 200
-
-// repositoryPattern is a GitHub repository as its token's `repository` claim names it,
-// <owner>/<name>: the owner a letter or digit, then up to 38 letters, digits, hyphens and
-// underscores, since a managed user's login ends in `_<shortcode>` (`mona-cat_octo`); the name up
-// to 100 of letters, digits, hyphens, underscores and dots.
-var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
-
-// googleAccountPattern is a Google service account's email address as a Google identity token
-// carries it in its `email` claim: lowercase, since that is the one spelling a token holds. It is
-// the grammar the broker's configuration states for the same accounts, repeated here because this
-// package reads no configuration and so cannot import the one that parses it. A Kubernetes
-// account's grammar is oauthwire.AccountSubject, which the configuration and the resource
-// servers read too.
-var googleAccountPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._%+-]*@[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$`)
 
 // ProjectScope says what a minted token's list of projects means. Its zero value is no scope at
 // all, so a Claims that was not built by this package carries one that every reader refuses:
@@ -435,7 +401,7 @@ type Claims struct {
 	// for none), and nil for a ProjectScopeNone token, which names no project. The slice is this
 	// Claims' own.
 	Projects []string
-	// Job is whether a job entry made this decision, which grant sets from the entry's job list
+	// Job is whether a job entry made this decision, which Grant sets from the entry's job list
 	// (JobProjects.Listed), so a job's token names the entry's listed identity as its service, no
 	// person and the list's projects. Like Principal it is no claim of the minted token: the
 	// exchange reads it to refuse a job's trade that asks for read (oauth's decide), since the
@@ -445,13 +411,13 @@ type Claims struct {
 	// names a project and fixes the session oauthwire.LegionDaemonSessionPrefix + that project, compared
 	// exactly, case included. Such a token is ProjectScopeNamed and holds the OAuth scope
 	// oauthwire.ScopeLegionStatus too (oauth.writeProjectScope), which Dispatch reads as leave to
-	// write a Legion issue's status. Pod alone sets it, and reads the session the entry fixes,
-	// never Session: an entry that fixes no session takes Session from the request, which may
-	// name any session. So a pod whose request names legion-daemon:<its project> gets no
-	// LegionStatus, and neither does an entry that fixes the daemon session of another project or
-	// that names no project. No other decision sets it: a job entry, whose Project is empty, a read
-	// entry, a workflow, a machine, a person's sign-in and a dev box never do, whatever session
-	// they carry.
+	// write a Legion issue's status. A pod's decision alone sets it (the kubernetes identity
+	// provider), and reads the session the entry fixes, never Session: an entry that fixes no
+	// session takes Session from the request, which may name any session. So a pod whose request
+	// names legion-daemon:<its project> gets no LegionStatus, and neither does an entry that
+	// fixes the daemon session of another project or that names no project. No other decision
+	// sets it: a job entry, whose Project is empty, a read entry, a workflow, a machine, a
+	// person's sign-in and a dev box never do, whatever session they carry.
 	LegionStatus bool
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
@@ -503,12 +469,14 @@ type Reservation struct {
 
 // Listing is one identity an operator's entry lists, as its identity provider spells it: the
 // principal its tokens hold session names under, the person and the one project the entry gives
-// it (both empty for an entry that names no person), the session the entry fixes ("" for none),
-// and the service its machines or its read-only pods are. Where names the entry in a refusal
-// ("account entry 1, …"). This package spells no provider's principal: each provider builds its
-// own listings, and a Set built from them answers every question that needs no token.
+// it (both empty for an entry that names no person), the job list it gives it instead (the zero
+// JobProjects for an entry that names none), the session the entry fixes ("" for none), and the
+// service its machines or its read-only pods are. Where names the entry in a refusal ("account
+// entry 1, …"). This package spells no provider's principal: each provider builds its own
+// listings, and a Set built from them answers every question that needs no token.
 type Listing struct {
 	Where, Principal, Person, Project, Session, Service string
+	Job                                                 JobProjects
 }
 
 // AccountEntry lists one Kubernetes service account and what a pod running as it may write.
@@ -632,19 +600,10 @@ type GoogleEntry struct {
 	Session string
 }
 
-// workflowKey is the triple a workflow run is looked up by: every field of an entry is required,
-// so the key is the whole identity and no partial match exists.
-type workflowKey struct{ repository, workflow, ref string }
-
-// Set is the listed identities as one build of the configuration read them, with the Google
-// Workspace domain a person signing in on a machine must belong to. It is immutable once built,
-// so every Pod, Workflow, Google, Person and Machine on it is a pure function of its arguments.
+// Set is the listed identities as the identity providers of one configuration spell them. It is
+// immutable once built, so Machine on it is a pure function of its arguments, and every reader of
+// a listing reads the configuration the exchange decides against.
 type Set struct {
-	accounts     map[string]AccountEntry
-	reads        map[string]ReadEntry
-	workflows    map[workflowKey]WorkflowEntry
-	google       map[string]GoogleEntry
-	signInDomain string
 	reservations []Reservation
 	// mapped is the person and projects each listed principal's entry gives it, for
 	// MappedProjects; a Google entry naming no person and no job list, an account entry naming no
@@ -675,195 +634,13 @@ func mappingOf(person, project string, job JobProjects) mapping {
 	return mapping{person: person, projects: []string{project}}
 }
 
-// NewSet validates every entry and builds the set the exchange decides against. It refuses,
-// naming the entry it refuses: an empty or blank required field, an account or repository that is
-// not of its grammar, a fixed session name that is not usable, an identity listed twice, since
-// two answers for one identity is a configuration whose meaning depends on order, two workflows
-// whose principals spell alike, and a session name two entries fix, since one name belongs to one
-// principal. A Google entry is refused on top of that for half a pin and for half a grant: one
-// that pins a Compute Engine project without an instance pattern or the other way round says
-// nothing clear about which machines it means, and one that names a person without a project, or
-// a project without a person, says nothing clear about what they may write. An account entry
-// that names a project and no person is refused, naming that rule: an entry that names a project
-// names its person, so no account entry's token that names a project is personless.
-//
-// An entry names a person and its project, or a job list (JobProjects), and NewSet refuses one
-// that names a job list beside a person or a project, of every kind, since its tokens could not
-// both act for that person and be the job. A workflow entry that names neither is refused as one
-// that names no person is. An account entry that names neither acts as the account itself, and
-// a Google entry that names neither is a machine that is its service and nothing else. A job
-// entry's fixed session is held to the rule every fixed session is, and reserved for its
-// principal as every other is. Its list needs no check here, since only ParseJobProjects builds
-// one; an identity a job entry and an entry naming a person both list is an identity listed
-// twice.
-//
-// reads are the read entries, which list Kubernetes service accounts as accounts does. An
-// account both lists name is refused, naming its read entry, for the reason an identity listed
-// twice is: it would have two answers, a token that writes as its person and one that only reads.
-// A read entry's session is required as well as usable, and is reserved for the account as an
-// account entry's fixed one is.
-//
-// signInDomain is the Google Workspace domain BROKER_SIGNIN_DOMAIN names, which Person holds a
-// signing-in person's own token to. It is a field of the set rather than an argument of that
-// decision because it is configuration exactly as the entries are, and it is refused nothing
-// here: an empty one admits nobody (oidc.WorkspaceLogin), which is what a broker told about no
-// domain should do with a person's token.
-func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntry, machines []GoogleEntry, signInDomain string) (*Set, error) {
-	set := &Set{
-		accounts:     make(map[string]AccountEntry, len(accounts)),
-		reads:        make(map[string]ReadEntry, len(reads)),
-		workflows:    make(map[workflowKey]WorkflowEntry, len(workflows)),
-		google:       make(map[string]GoogleEntry, len(machines)),
-		signInDomain: signInDomain,
-		mapped:       make(map[string]mapping, len(accounts)+len(reads)+len(workflows)+len(machines)),
-	}
-	fixedBy, spelledBy := map[string]string{}, map[string]string{}
-	reserve := func(where, session, principal string) error {
-		if session == "" {
-			return nil
-		}
-		if other, fixed := fixedBy[session]; fixed {
-			return fmt.Errorf("exchange: %s: %s fixes the same session name, and one name belongs to one identity", where, other)
-		}
-		fixedBy[session] = where
-		set.reservations = append(set.reservations, Reservation{Session: session, Principal: principal})
-		return nil
-	}
-	for i, entry := range accounts {
-		where := fmt.Sprintf("account entry %d, %q", i+1, entry.Account)
-		if !oauthwire.AccountSubject.MatchString(entry.Account) {
-			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
-		}
-		if err := CheckGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, true); err != nil {
-			return nil, err
-		}
-		if _, listed := set.accounts[entry.Account]; listed {
-			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account writes as one identity", where)
-		}
-		if err := reserve(where, entry.Session, AccountPrincipal(entry.Account)); err != nil {
-			return nil, err
-		}
-		set.accounts[entry.Account] = entry
-		set.mapped[AccountPrincipal(entry.Account)] = mappingOf(entry.Person, entry.Project, entry.Job)
-	}
-	for i, entry := range reads {
-		where := fmt.Sprintf("read entry %d, %q", i+1, entry.Account)
-		if !oauthwire.AccountSubject.MatchString(entry.Account) {
-			return nil, fmt.Errorf("exchange: %s: an account is system:serviceaccount:<namespace>:<name>", where)
-		}
-		if strings.TrimSpace(entry.Service) == "" {
-			return nil, fmt.Errorf("exchange: %s: the service is required, since a read entry's token names its service and no person", where)
-		}
-		if !ValidSession(entry.Session) {
-			return nil, fmt.Errorf("exchange: %s: the session is required, since a read entry fixes the session its token names, and %s", where, SessionRule)
-		}
-		if _, listed := set.reads[entry.Account]; listed {
-			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account reads as one identity", where)
-		}
-		if _, listed := set.accounts[entry.Account]; listed {
-			return nil, fmt.Errorf("exchange: %s: an account entry lists the same account, and one account mints one kind of token", where)
-		}
-		if err := reserve(where, entry.Session, AccountPrincipal(entry.Account)); err != nil {
-			return nil, err
-		}
-		set.reads[entry.Account] = entry
-		set.mapped[AccountPrincipal(entry.Account)] = mapping{}
-	}
-	for i, entry := range workflows {
-		where := fmt.Sprintf("workflow entry %d, %q", i+1, entry.Repository+"/"+entry.Workflow+"@"+entry.Ref)
-		if !repositoryPattern.MatchString(entry.Repository) {
-			return nil, fmt.Errorf("exchange: %s: a repository is <owner>/<name>", where)
-		}
-		if strings.TrimSpace(entry.Workflow) == "" {
-			return nil, fmt.Errorf("exchange: %s: the workflow's path is required, since an entry with no path matches no run", where)
-		}
-		if strings.TrimSpace(entry.Ref) == "" {
-			return nil, fmt.Errorf("exchange: %s: the ref is required, since an entry with no ref matches no run", where)
-		}
-		if err := CheckGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, false); err != nil {
-			return nil, err
-		}
-		key := workflowKey{entry.Repository, entry.Workflow, entry.Ref}
-		if _, listed := set.workflows[key]; listed {
-			return nil, fmt.Errorf("exchange: %s: the workflow is listed twice, and one workflow writes as one identity", where)
-		}
-		principal := workflowPrincipal(key)
-		if other, spelled := spelledBy[principal]; spelled {
-			return nil, fmt.Errorf("exchange: %s: %s spells the same identity, so the two could not be told apart as holders of a session name", where, other)
-		}
-		spelledBy[principal] = where
-		if err := reserve(where, entry.Session, principal); err != nil {
-			return nil, err
-		}
-		set.workflows[key] = entry
-		set.mapped[principal] = mappingOf(entry.Person, entry.Project, entry.Job)
-	}
-	for i, entry := range machines {
-		where := fmt.Sprintf("google entry %d, %q", i+1, entry.Account)
-		if !googleAccountPattern.MatchString(entry.Account) {
-			return nil, fmt.Errorf("exchange: %s: a Google account is the lowercase email address its identity tokens carry", where)
-		}
-		if strings.TrimSpace(entry.Service) == "" {
-			return nil, fmt.Errorf("exchange: %s: the service is required, since a machine whose entry names no person is its service and nothing else", where)
-		}
-		if (entry.CloudProject == "") != (entry.Instance == "") {
-			return nil, fmt.Errorf("exchange: %s: an entry pins the Compute Engine project and the instance names together or neither (project %q, instance names %q)", where, entry.CloudProject, entry.Instance)
-		}
-		if _, err := path.Match(entry.Instance, ""); err != nil {
-			return nil, fmt.Errorf("exchange: %s: the instance-name pattern %q is not a pattern: %w", where, entry.Instance, err)
-		}
-		if !entry.Job.Listed() && (entry.Project == "") != (entry.Person == "") {
-			return nil, fmt.Errorf("exchange: %s: an entry names the person and the project together or neither (project %q, person %q)", where, entry.Project, entry.Person)
-		}
-		if entry.Job.Listed() || entry.Person != "" {
-			if err := CheckGrant(where, entry.Person, entry.Project, entry.Job, entry.Session, false); err != nil {
-				return nil, err
-			}
-		} else if entry.Session != "" && !ValidSession(entry.Session) {
-			// An entry naming neither a person nor a job list is a machine that is its service and
-			// nothing else, so its session is all there is to check.
-			return nil, fmt.Errorf("exchange: %s: %s", where, SessionRule)
-		}
-		if _, listed := set.google[entry.Account]; listed {
-			return nil, fmt.Errorf("exchange: %s: the account is listed twice, and one account writes as one identity", where)
-		}
-		if err := reserve(where, entry.Session, GooglePrincipal(entry.Account)); err != nil {
-			return nil, err
-		}
-		set.google[entry.Account] = entry
-		set.mapped[GooglePrincipal(entry.Account)] = mappingOf(entry.Person, entry.Project, entry.Job)
-	}
-	return set, nil
-}
-
-// Reservations are the session names the entries fix, each with the principal it belongs to, in
-// the order the entries were listed: accounts first, then read entries, then workflows, then
-// Google accounts. The slice is the caller's own, so the set stays immutable.
-func (s *Set) Reservations() []Reservation {
-	return slices.Clone(s.reservations)
-}
-
-// MappedProjects is the person and the projects an operator's entry gives the tokens of
-// principal (AccountPrincipal, GooglePrincipal, or a workflow's), and false for a principal no
-// entry lists, a person's own among them. A Google entry naming no person and no job list, an
-// account entry naming no person and no job list, and a read entry, answer neither, and true. A
-// job entry answers no person and its whole list: a named list's one project, or a public list's
-// private projects, beside which its token reaches every public project. It is how a reader
-// holding no token — a release for a pod or a machine — reads the list that pod's or that
-// machine's token would carry. The slice is the caller's own.
-func (s *Set) MappedProjects(principal string) (person string, projects []string, ok bool) {
-	entry, listed := s.mapped[principal]
-	if !listed {
-		return "", nil, false
-	}
-	return entry.person, slices.Clone(entry.projects), true
-}
-
-// NewListingSet builds a set from listings alone, as the identity registry composes one from
-// every provider's Listings: the reservations of the sessions the listings fix, in their order,
-// and each principal's person and project. It refuses a principal listed twice and a session two
-// listings fix, naming both. It is the bridge until NewSet takes listings itself.
-func NewListingSet(listings []Listing) (*Set, error) {
+// NewSet builds the set from every identity provider's listings, as the identity registry
+// composes them: the reservations of the sessions the listings fix, in their order, and each
+// principal's person and project, or its job list. Each provider has refused its own entries
+// already; what is left for the set is what spans providers: a principal listed twice and a
+// session name two listings fix, since one name belongs to one principal, each refused naming
+// both entries.
+func NewSet(listings []Listing) (*Set, error) {
 	set := &Set{mapped: make(map[string]mapping, len(listings)), listed: make(map[string]Listing, len(listings))}
 	fixedBy := map[string]string{}
 	for _, listing := range listings {
@@ -878,9 +655,31 @@ func NewListingSet(listings []Listing) (*Set, error) {
 			set.reservations = append(set.reservations, Reservation{Session: listing.Session, Principal: listing.Principal})
 		}
 		set.listed[listing.Principal] = listing
-		set.mapped[listing.Principal] = mappingOf(listing.Person, listing.Project, JobProjects{})
+		set.mapped[listing.Principal] = mappingOf(listing.Person, listing.Project, listing.Job)
 	}
 	return set, nil
+}
+
+// Reservations are the session names the listings fix, each with the principal it belongs to, in
+// the order the listings were given: the providers in rank order, and each provider's entries in
+// its own order. The slice is the caller's own, so the set stays immutable.
+func (s *Set) Reservations() []Reservation {
+	return slices.Clone(s.reservations)
+}
+
+// MappedProjects is the person and the projects an operator's entry gives the tokens of
+// principal, and false for a principal no entry lists, a person's own among them. A Google entry
+// naming no person and no job list, an account entry naming no person and no job list, and a
+// read entry, answer neither, and true. A job entry answers no person and its whole list: a named
+// list's one project, or a public list's private projects, beside which its token reaches every
+// public project. It is how a reader holding no token — a release for a pod or a machine — reads
+// the list that pod's or that machine's token would carry. The slice is the caller's own.
+func (s *Set) MappedProjects(principal string) (person string, projects []string, ok bool) {
+	entry, listed := s.mapped[principal]
+	if !listed {
+		return "", nil, false
+	}
+	return entry.person, slices.Clone(entry.projects), true
 }
 
 // Listed is the listing of principal, and false for a principal no listing names, a person's own
@@ -892,11 +691,11 @@ func (s *Set) Listed(principal string) (Listing, bool) {
 }
 
 // ProjectsForAccount is the projects this configuration gives a token minted for one account,
-// and false for an account no entry lists. An account that opens with "system:serviceaccount:"
+// and false for an account no listing names. An account that opens with "system:serviceaccount:"
 // is read as a Kubernetes subject, any other as a Google account address, so a caller passes the
-// string its own configuration holds and spells no principal. It reads the same entries Pod and
-// Google mint from, so a grant made from this answer and the token of that account cannot
-// disagree. A workflow is no account and is answered false.
+// string its own configuration holds and spells no principal. It reads the listings the
+// kubernetes and google providers decide from, so a grant made from this answer and the token of
+// that account cannot disagree. A workflow is no account and is answered false.
 func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
 	principal := GooglePrincipal(account)
 	if strings.HasPrefix(account, oauthwire.AccountSubjectPrefix) {
@@ -941,15 +740,17 @@ func jobProjects(identity string, job JobProjects, asked []string) ([]string, er
 	return listed, nil
 }
 
-// grant sets in c what an operator's entry naming person and project, or the job list job, gives
+// Grant sets in c what an operator's entry naming person and project, or the job list job, gives
 // its token: for a person, Person, ProjectScopeNamed and the entry's one project or none
 // (EntryProjects); for an account entry naming neither a person nor a job list, service as
 // Service, ProjectScopeNamed and no project, since its token acts as the account itself; for a
-// job list, service as Service, the list's scope and its whole list (jobProjects). identity is
-// the caller as a refusal of the request's projects names it, and service the identity a token
-// naming no person names, which Pod, Workflow and Google each spell their own way. It refuses
-// what those two refuse, and c is then the caller's to drop.
-func (c *Claims) grant(identity, service, person, project string, job JobProjects, asked []string) error {
+// job list, service as Service, Job, the list's scope and its whole list (jobProjects). identity
+// is the caller as a refusal of the request's projects names it, and service the identity a
+// token naming no person names, which each identity provider spells its own way: a pod's account
+// subject, a workflow's <repository>/<path>@<ref>, a Google account's address. It is the one
+// place an entry's grant becomes a token's claims, so every provider's entries grant alike. It
+// refuses what those two refuse, and c is then the caller's to drop.
+func (c *Claims) Grant(identity, service, person, project string, job JobProjects, asked []string) error {
 	var err error
 	if job.Listed() {
 		c.Job, c.Service, c.Scope = true, service, job.Scope()
@@ -957,8 +758,8 @@ func (c *Claims) grant(identity, service, person, project string, job JobProject
 	} else {
 		c.Person, c.Scope = person, ProjectScopeNamed
 		if person == "" {
-			// Only an account entry names neither a person nor a job list here (NewSet), and it
-			// names no project either (CheckGrant): the account is the service its token names in
+			// Only an account entry names neither a person nor a job list here (CheckGrant), and
+			// it names no project either: the account is the service its token names in
 			// place of a person, and what Dispatch records its writes under.
 			c.Service = service
 		}
@@ -976,7 +777,7 @@ func (c *Claims) grant(identity, service, person, project string, job JobProject
 // required too, except of an account entry (account set), which may name a person and no project
 // — the shared public-session account's entry, minting named tokens that name no project (a pod
 // account many people launch must never act as one person's own token) — or name neither, when
-// its tokens act as the account itself (Pod). An account entry that names a project names its
+// its tokens act as the account itself (Grant). An account entry that names a project names its
 // person, so no account entry's token that names a project is personless. A person or a project
 // that is blank without being empty is refused everywhere, and so is a project that is no project
 // key: every token the entry mints names it, the exchange stores and reads that list through
@@ -1008,390 +809,6 @@ func CheckGrant(where, person, project string, job JobProjects, session string, 
 		return fmt.Errorf("exchange: %s: %s", where, SessionRule)
 	}
 	return nil
-}
-
-// Pod answers the claims for a pod's Kubernetes service-account token. The token's own shape is
-// read first — the account it was minted for, and the pod it is bound to — and the entry for that
-// account second, so an operator reading the refusal learns which of the two to fix.
-//
-// A token carrying no pod uid is refused however the account is listed: Kubernetes mints such a
-// token to anyone holding the account's credentials, and it proves only that the account exists,
-// where a bound one proves Kubernetes minted it for one pod of this cluster. It does not prove
-// that pod still runs: the broker's exchange verifies the token offline against the issuer's
-// published keys and asks the cluster nothing, so a token whose pod has been deleted is exchanged
-// until its own expiry, which the Kubernetes subject token's lifetime tolerance
-// (oauth.kubernetesTolerance) allows up to 24 hours ahead. What bounds the reach that follows is
-// the access token each exchange mints, which lives BROKER_ACCESS_TOKEN_SECONDS (15 minutes by
-// default). That trades immediate revocation of a pod's token for needing no access to the
-// cluster's own interface.
-//
-// The principal is the account, not the pod: every pod of one account is one holder, so the
-// replacement pod of a rolling update, or a Legion session resumed in a relaunched pod, keeps
-// writing under the name the pod before it held. What keeps the pods of one account apart from
-// one another is therefore not the claim on the name but Instance, the pod uid, which this
-// answers for an entry that fixes no session: the exchange mints nothing under that name unless a
-// registration its deployment made says that pod uid may use it, and a relaunch is a second pod
-// uid registered for the same name rather than a refusal. An entry that fixes a session answers
-// no Instance and needs no registration, because the name its tokens carry is the
-// configuration's, the same for every pod of the account.
-//
-// An account entry that names no person names no project either (NewSet), and its token acts as
-// the account itself: ProjectScopeNamed with no project and no person, and the account as its
-// Service, which a resource server reads in place of a person and Dispatch records the token's
-// writes under. A request of its pod naming a project is refused as under any entry naming none
-// (ErrProjectsFixed).
-//
-// A read entry always fixes its session, so its pods are answered the same way, with the claims
-// of a token that writes nothing: the entry's service and session, ProjectScopeNone, and no
-// person, no project and no Instance. Its token names no person, so a request of its pod naming
-// a project is refused (ErrProjectsNoPerson), as a machine's whose entry names no person is.
-//
-// A job entry's pods are answered with a token that names the account as its service and no
-// person, with the entry's scope and whole list whatever the request names (jobProjects), and
-// Instance as any entry's: the pod uid where the entry fixes no session, so a job pod registers
-// as a person's pod does, and none where it fixes one.
-//
-// Pod answers LegionStatus for a Legion daemon's own entry alone (Claims.LegionStatus).
-func (s *Set) Pod(token map[string]any, session string, projects []string) (Claims, error) {
-	account, err := ClaimString(token, "sub")
-	if err != nil {
-		return Claims{}, err
-	}
-	uid := podUID(token)
-	listing, err := s.podEntry(account, uid)
-	if err != nil {
-		return Claims{}, err
-	}
-	name, err := ResolveSession(listing.fixed(), session, account)
-	if err != nil {
-		return Claims{}, err
-	}
-	if listing.readOnly {
-		if len(projects) > 0 {
-			return Claims{}, fmt.Errorf("%w: %s reads as the service %s and names no person, and the request named %s",
-				ErrProjectsNoPerson, account, listing.read.Service, oauthwire.JoinProjects(projects))
-		}
-		return Claims{Session: name, Service: listing.read.Service, Scope: ProjectScopeNone, Principal: AccountPrincipal(account)}, nil
-	}
-	entry := listing.account
-	claims := Claims{Session: name, Principal: AccountPrincipal(account)}
-	if err := claims.grant(account, account, entry.Person, entry.Project, entry.Job, projects); err != nil {
-		return Claims{}, err
-	}
-	claims.LegionStatus = isLegionDaemon(entry)
-	if entry.Session == "" {
-		claims.Instance = uid
-	}
-	return claims, nil
-}
-
-// isLegionDaemon reports whether entry is a Legion daemon's own entry (Claims.LegionStatus).
-func isLegionDaemon(entry AccountEntry) bool {
-	project, fixesDaemonSession := strings.CutPrefix(entry.Session, oauthwire.LegionDaemonSessionPrefix)
-	return fixesDaemonSession && entry.Project != "" && project == entry.Project
-}
-
-// podListing is the entry that lists a pod's account: its AccountEntry, or, when readOnly is set,
-// its ReadEntry. NewSet refuses an account both lists name, so exactly one of them answers.
-type podListing struct {
-	account  AccountEntry
-	read     ReadEntry
-	readOnly bool
-}
-
-// fixed is the session name the listing fixes: a read entry's always, an account entry's when it
-// fixes one, and empty for an account entry that leaves the name to the request.
-func (l podListing) fixed() string {
-	if l.readOnly {
-		return l.read.Session
-	}
-	return l.account.Session
-}
-
-// podEntry is the reading of a pod's identity that Pod and Registration both begin with: the
-// pod uid the token must carry, refused first because a token bound to no pod proves only that
-// the account exists, and then the entry that lists the account, an account entry or a read
-// entry. Both refuse in this order, in these words, because they are this one helper: a
-// registrar and the exchange that reads its row refuse the same pods for the same reasons, which
-// Registration's doc promises.
-func (s *Set) podEntry(account, uid string) (podListing, error) {
-	if uid == "" {
-		return podListing{}, fmt.Errorf("%w: %s presented a token bound to no pod, which proves only that the account exists", ErrNoPodBinding, account)
-	}
-	if entry, listed := s.accounts[account]; listed {
-		return podListing{account: entry}, nil
-	}
-	if entry, listed := s.reads[account]; listed {
-		return podListing{read: entry, readOnly: true}, nil
-	}
-	return podListing{}, fmt.Errorf("%w: no entry lists the service account %s", ErrNoEntry, account)
-}
-
-// Registration refuses what a pod-session registration must refuse before it is written: a token
-// bound to no pod, an account no entry lists, and an entry that fixes a session, which needs no
-// registration because its name is the configuration's. A read entry is always that last: it
-// fixes the session its token names. The first two refusals are podEntry, the one reading of a
-// pod's identity Pod makes too, so a registrar and the exchange that reads its row refuse the
-// same pods for the same reasons; what it does not decide is whether the name belongs to the
-// account, which only the claim on the name answers (oauthstore.Store.BindSession).
-func (s *Set) Registration(account, podUID, session string) error {
-	listing, err := s.podEntry(account, podUID)
-	if err != nil {
-		return err
-	}
-	if fixed := listing.fixed(); fixed != "" {
-		return fmt.Errorf("%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", ErrSessionFixed, account, fixed)
-	}
-	if !ValidSession(session) {
-		return fmt.Errorf("%w: the registration of %s names a session of %d bytes; %s", ErrSessionInvalid, account, len(session), SessionRule)
-	}
-	return nil
-}
-
-// Workflow answers the claims for a continuous-integration workflow run's GitHub token, from the
-// claims GitHub puts in it: `repository`, `workflow_ref`, `job_workflow_ref` and `ref`.
-//
-// The identity is the repository, the workflow file's path and the ref, each compared exactly. A
-// run whose job comes from a reusable workflow other than the one the run started in is refused:
-// `job_workflow_ref` names the workflow file the job is written in and `workflow_ref` the one the
-// run entered through, and where they differ the code that is running is not the code the entry
-// names.
-//
-// The principal is that listed workflow, not the run: every run of it is one holder, so the next
-// run of a release workflow keeps writing under the name the run before it held, however soon
-// after it starts.
-//
-// A job entry's runs are answered with a token that names the workflow as its service,
-// <repository>/<path>@<ref>, which is its principal without the kind, and no person, with the
-// entry's scope and whole list whatever the request names (jobProjects).
-func (s *Set) Workflow(token map[string]any, session string, projects []string) (Claims, error) {
-	repository, err := ClaimString(token, "repository")
-	if err != nil {
-		return Claims{}, err
-	}
-	workflowRef, err := ClaimString(token, "workflow_ref")
-	if err != nil {
-		return Claims{}, err
-	}
-	jobRef, err := ClaimString(token, "job_workflow_ref")
-	if err != nil {
-		return Claims{}, err
-	}
-	ref, err := ClaimString(token, "ref")
-	if err != nil {
-		return Claims{}, err
-	}
-	if jobRef != workflowRef {
-		return Claims{}, fmt.Errorf("%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", ErrNoEntry, repository, workflowRef, jobRef)
-	}
-	workflow, ok := workflowPath(workflowRef, repository)
-	if !ok {
-		return Claims{}, fmt.Errorf("%w: the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s", ErrClaimMissing, repository)
-	}
-	key := workflowKey{repository, workflow, ref}
-	entry, listed := s.workflows[key]
-	if !listed {
-		return Claims{}, fmt.Errorf("%w: no entry lists the workflow %s of %s on %s", ErrNoEntry, workflow, repository, ref)
-	}
-	name, err := ResolveSession(entry.Session, session, repository+"/"+workflow)
-	if err != nil {
-		return Claims{}, err
-	}
-	claims := Claims{Session: name, Principal: workflowPrincipal(key)}
-	if err := claims.grant(repository+"/"+workflow, workflowIdentity(key), entry.Person, entry.Project, entry.Job, projects); err != nil {
-		return Claims{}, err
-	}
-	return claims, nil
-}
-
-// Google answers the claims for a machine's Google identity token, from the claims Google puts in
-// it: `email`, `email_verified` and, for a token minted on a Compute Engine instance with
-// format=full, the `google` → `compute_engine` members.
-//
-// The identity is the account the token was minted for, which an entry lists by its email
-// address. Google's signature, the issuer, the audience and the expiry are checked before this is
-// reached (oauth.ExchangeConfig); what is left to decide is that Google holds the address
-// verified, that the machine is one the entry allows, and what its token may write.
-//
-// Where a machine runs is the entry's to pin. An entry that pins the Compute Engine project and
-// an instance-name pattern holds the token to an instance of that project whose name the pattern
-// matches, and refuses a token carrying no Compute Engine claims, which proves nothing about
-// where it was minted. An entry that pins neither takes such a token: that is what a token minted
-// through a workload identity pool carries, and what a token from the metadata server of a pod on
-// Google Kubernetes Engine carries, neither of which runs on an instance of its own.
-//
-// The principal is the listed account, not the machine: every machine of one account is one
-// holder, so a machine rebuilt under another instance id keeps writing under the name the machine
-// before it held, and a machine of any other account is refused that name. Nothing separates two
-// machines of one account the way a registration separates two pods, so each names a session of
-// its own and the claim on the name keeps them apart.
-//
-// An entry that names a person and a project mints a token that acts for that person and names
-// that project, as a pod's entry does. An entry that names neither mints a token that names its
-// service and no person at all: it names no project either, and says so with the person scope,
-// the wire's word for a token no entry maps to a project. Nothing it can write follows from that
-// alone — a resource server holds a token naming no person to what a service may do — which is
-// why the service is a claim of its own rather than an absence to be read, and why a request of
-// such a machine naming a project is refused rather than read.
-//
-// An entry that names a job list mints a token that names the account's address as its service
-// and no person, with the entry's scope and whole list whatever the request names (jobProjects).
-// Fleet is still the entry's service, so the launcher credential its exchange mints records the
-// service it would for any machine of the account.
-func (s *Set) Google(token map[string]any, session string, projects []string) (Claims, error) {
-	identity := ReadGoogleIdentity(token)
-	if identity.Account == "" {
-		return Claims{}, fmt.Errorf("%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", ErrClaimMissing)
-	}
-	entry, listed := s.google[identity.Account]
-	if !listed {
-		return Claims{}, fmt.Errorf("%w: no entry lists the Google account %s", ErrNoEntry, identity.Account)
-	}
-	if !identity.EmailVerified {
-		return Claims{}, fmt.Errorf("%w: %s presented a token whose email_verified is not true", ErrEmailNotVerified, identity.Account)
-	}
-	if err := s.allowedMachine(entry, identity); err != nil {
-		return Claims{}, err
-	}
-	name, err := ResolveSession(entry.Session, session, identity.Account)
-	if err != nil {
-		return Claims{}, err
-	}
-	claims := Claims{Session: name, Principal: GooglePrincipal(identity.Account), Fleet: entry.Service}
-	if !entry.Job.Listed() && entry.Person == "" {
-		if len(projects) > 0 {
-			return Claims{}, fmt.Errorf("%w: %s is the service %s and names no person, and the request named %s",
-				ErrProjectsNoPerson, identity.Account, entry.Service, oauthwire.JoinProjects(projects))
-		}
-		claims.Service, claims.Scope = entry.Service, ProjectScopePerson
-		return claims, nil
-	}
-	if err := claims.grant(identity.Account, identity.Account, entry.Person, entry.Project, entry.Job, projects); err != nil {
-		return Claims{}, err
-	}
-	return claims, nil
-}
-
-// allowedMachine holds a token to the Compute Engine instance its entry pins, and takes every
-// machine of an entry that pins nothing. The two refusals are told apart because an operator acts
-// on each differently: a token with no Compute Engine claims was minted somewhere the pins cannot
-// describe, and a token with them from another project or another instance name is a machine the
-// entry does not list.
-func (s *Set) allowedMachine(entry GoogleEntry, identity GoogleIdentity) error {
-	if entry.CloudProject == "" && entry.Instance == "" {
-		return nil
-	}
-	if !identity.Compute.Whole() {
-		return fmt.Errorf("%w: %s presented a token carrying no Compute Engine identity, and its entry takes machines of the project %s named %s",
-			ErrNoComputeEngine, identity.Account, entry.CloudProject, entry.Instance)
-	}
-	if identity.Compute.Project != entry.CloudProject {
-		return fmt.Errorf("%w: %s presented a token minted in the project %s, and its entry takes machines of %s",
-			ErrMachineNotAllowed, identity.Account, identity.Compute.Project, entry.CloudProject)
-	}
-	// The pattern was checked at NewSet, so a match error here is impossible; a pattern that did
-	// not match is the refusal either way.
-	if matched, _ := path.Match(entry.Instance, identity.Compute.Instance); !matched {
-		return fmt.Errorf("%w: %s presented a token minted on the instance %s, and its entry takes the names %s",
-			ErrMachineNotAllowed, identity.Account, identity.Compute.Instance, entry.Instance)
-	}
-	return nil
-}
-
-// Person answers the claims for a person's own Google identity token, presented with the
-// machine's own as the actor token (RFC 8693 Section 2.1): the sign-in `agent-secrets login`
-// made on that machine, where the person is the subject and the machine is only acting for
-// them.
-//
-// The two tokens are read by the two rules that belong to them. The person's is held to the
-// Workspace rule the broker's own approval sign-in is held to (oidc.WorkspaceLogin): a subject,
-// an email of an address's shape that Google has verified, and the `hd` claim equal to the
-// configured domain, which an empty configured domain can never match. The domain comes from
-// `hd` alone, never from the address's suffix, because a personal Google account can hold an
-// address under a Workspace's domain. Google's signature, the issuer, the expiry and the
-// audience of the device-flow client are checked before this is reached
-// (oauth.ExchangeConfig.Person). The machine's is held to the entry rules a machine trading for
-// itself is held to: its account is one BROKER_VM_SERVICES lists, Google holds that address
-// verified, and the machine runs where the entry pins it, so a person cannot sign in from a box
-// of an account the deployment does not list.
-//
-// The principal is the person, as it is for a dev box session's machine credential: every
-// machine and every session of one person is one holder, so a person keeps their session names
-// from box to box, and no other identity may write under one of them. The token acts as that
-// person, with the person scope, and carries the projects the trade asked for: a person's sign-in
-// is their own identity on their own box, which reaches whichever projects that person reaches,
-// and the list says which of them this session works on. That the person may see each one is the
-// exchange's next question, which it asks Dispatch (internal/cipher/oauth); this package reads
-// no Dispatch.
-//
-// What it does not decide is whether that person's sign-in on that box key still stands: the
-// box key's thumbprint is the DPoP proof's, which this package never sees, and the sign-in is a
-// row the provider reads in the exchange's own transaction
-// (oauth.ExchangeConfig.PersonSignIns).
-func (s *Set) Person(token, actor map[string]any, session string, projects []string) (Claims, error) {
-	if actor == nil {
-		return Claims{}, fmt.Errorf("%w: a person signs in on a machine, so the machine's own Google identity token is presented as the actor token (%s)", ErrNoActorToken, oauthwire.ActorTokenTypeMachine)
-	}
-	machine := ReadGoogleIdentity(actor)
-	if machine.Account == "" {
-		return Claims{}, fmt.Errorf("%w: the actor token carries no email claim, so it names no machine (ask for it with format=full)", ErrClaimMissing)
-	}
-	entry, listed := s.google[machine.Account]
-	if !listed {
-		return Claims{}, fmt.Errorf("%w: no entry lists the Google account %s, which the actor token names as the machine", ErrNoEntry, machine.Account)
-	}
-	if !machine.EmailVerified {
-		return Claims{}, fmt.Errorf("%w: the machine %s presented an actor token whose email_verified is not true", ErrEmailNotVerified, machine.Account)
-	}
-	if err := s.allowedMachine(entry, machine); err != nil {
-		return Claims{}, err
-	}
-	login, err := oidc.WorkspaceLogin(personClaims(token), s.signInDomain)
-	switch {
-	case errors.Is(err, oidc.ErrNoSubject):
-		return Claims{}, fmt.Errorf("%w: the subject token carries no sub claim, so it names no person", ErrClaimMissing)
-	case errors.Is(err, oidc.ErrNoEmail):
-		return Claims{}, fmt.Errorf("%w: the subject token carries no email claim of an address's shape, so it names no person", ErrClaimMissing)
-	case errors.Is(err, oidc.ErrNotInDomain):
-		return Claims{}, fmt.Errorf("%w: %s signed in, and this broker takes the Google Workspace domain BROKER_SIGNIN_DOMAIN names; sign in again with `agent-secrets login` as an account of that domain", ErrNotInDomain, login)
-	case errors.Is(err, oidc.ErrEmailNotVerified):
-		return Claims{}, fmt.Errorf("%w: %s presented a token whose email_verified is not true", ErrEmailNotVerified, login)
-	case err != nil:
-		return Claims{}, fmt.Errorf("%w: the subject token is not a person's Google identity token (%v)", ErrClaimMissing, err)
-	}
-	name, err := ResolveSession("", session, login)
-	if err != nil {
-		return Claims{}, err
-	}
-	return Claims{
-		Session:   name,
-		Person:    login,
-		Scope:     ProjectScopePerson,
-		Projects:  slices.Clone(projects),
-		Principal: PersonPrincipal(login),
-		Actor:     machine.Account,
-		// The fleet the box belongs to, which the launcher credential the exchange mints for
-		// this sign-in records as its service: a credential keyed by a subject carries one.
-		// Nothing of the fleet reaches the token's claims — the token is the person's.
-		Fleet: entry.Service,
-	}, nil
-}
-
-// personClaims is the reading of a person's Google identity token that oidc.WorkspaceLogin
-// judges: the four claims its rule names, out of the claim map of a token the exchange's own
-// verifier has already checked. It is the one place those claim names are spelled for a person,
-// as ReadGoogleIdentity is for a machine; `email_verified` is read through the same isVerified,
-// since Google writes it as a boolean on some of its tokens and as the string "true" on others.
-func personClaims(token map[string]any) oidc.Claims {
-	subject, _ := token["sub"].(string)
-	email, _ := token["email"].(string)
-	domain, _ := token["hd"].(string)
-	return oidc.Claims{
-		Subject:       subject,
-		Email:         email,
-		EmailVerified: isVerified(token["email_verified"]),
-		HostedDomain:  domain,
-	}
 }
 
 // Machine answers the claims for a dev box session's machine credential, credential being the
@@ -1450,33 +867,24 @@ func (s *Set) Machine(credential, approver, session string, projects []string, k
 	return claims, nil
 }
 
-// The four spellings of a principal, each led by its kind so that no account, workflow, Google
-// account and person ever spell the same string. A workflow's is <repository>/<path>@<ref>, as an
-// operator reads one elsewhere; a path or ref carrying "@" could make two entries spell one
-// string, and NewSet refuses that pair rather than let one's runs hold the other's names.
+// The spellings of a principal, each led by its kind so that principals of two kinds never spell
+// the same string. Each identity provider spells its own (internal/cipher/identity/<kind>); the
+// person's is here, because a dev box's machine credential, which no provider verifies, and a
+// person's sign-in both hold their names under it.
 //
-// Three of them are exported because a broker grant follows a session name under one principal
-// too: enroll.Service.Create writes one of these into enrollments.carry_principal, and the next
-// enrollment of that name under that principal takes what the last one held. The name a session
-// writes its Dispatch tokens under and the name its grant follows are one name, so one holder has
-// to spell the same either way, which it does only while there is one definition of each
-// spelling. A pod's enrollment is the one exception, whose grant follows a pair rather than its
-// account alone (PodLaunchPrincipal), while its name is held under the account. A pod of an
-// account the broker pairs with that account (enroll.SessionBinder.PairedWith) takes what the
-// other account's pods of the name hold only under the same login account, the pair LaunchedBy
-// spells from the paired account's principal.
+// A broker grant follows a session name under one principal too: enroll.Service.Create writes one
+// of these into enrollments.carry_principal, and the next enrollment of that name under that
+// principal takes what the last one held. The name a session writes its Dispatch tokens under and
+// the name its grant follows are one name, so one holder has to spell the same either way, which
+// it does only while there is one definition of each spelling. A pod's enrollment is the one
+// exception, whose grant follows a pair rather than its account alone (PodLaunchPrincipal), while
+// its name is held under the account. A pod of an account the broker pairs with that account
+// (enroll.SessionBinder.PairedWith) takes what the other account's pods of the name hold only
+// under the same login account, the pair LaunchedBy spells from the paired account's principal.
 
 // AccountPrincipal is a Kubernetes ServiceAccount's spelling: the account a pod's own projected
 // token proves.
 func AccountPrincipal(account string) string { return "account:" + account }
-
-func workflowPrincipal(key workflowKey) string { return "workflow:" + workflowIdentity(key) }
-
-// workflowIdentity is a listed workflow as an operator reads one, <repository>/<path>@<ref>: its
-// principal without the kind, and the service a job workflow's token names.
-func workflowIdentity(key workflowKey) string {
-	return key.repository + "/" + key.workflow + "@" + key.ref
-}
 
 // GooglePrincipal is a Google account's spelling: the fleet a machine's own identity belongs to.
 func GooglePrincipal(account string) string { return "google:" + account }
@@ -1571,28 +979,4 @@ func ClaimString(token map[string]any, name string) (string, error) {
 		return "", fmt.Errorf("%w: the subject token's %s claim is not a non-empty string", ErrClaimMissing, name)
 	}
 	return text, nil
-}
-
-// podUID is the uid of the pod a projected service-account token is bound to (kubernetes.io → pod
-// → uid), and "" for a token bound to no pod, such as one kubectl create token mints.
-func podUID(token map[string]any) string {
-	kubernetes, _ := token["kubernetes.io"].(map[string]any)
-	pod, _ := kubernetes["pod"].(map[string]any)
-	uid, _ := pod["uid"].(string)
-	return uid
-}
-
-// workflowPath is the workflow file's path inside repository that workflowRef names, a GitHub
-// workflow_ref being "<owner>/<name>/<path>@<ref>". It answers false for a ref that is not of that
-// form or not under repository.
-func workflowPath(workflowRef, repository string) (string, bool) {
-	rest, under := strings.CutPrefix(workflowRef, repository+"/")
-	if !under {
-		return "", false
-	}
-	at := strings.LastIndex(rest, "@")
-	if at <= 0 {
-		return "", false
-	}
-	return rest[:at], true
 }

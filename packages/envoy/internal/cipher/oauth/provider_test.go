@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code"
@@ -88,7 +89,7 @@ func newFixtureOn(t *testing.T, dsn string, adjust func(*oauth.Config)) *fixture
 		RefreshLifetime: time.Hour,
 		ProofSkew:       10 * time.Second,
 		VerificationURL: "https://dispatch.example/credentials/machine",
-		Exchange:        oauth.ExchangeConfig{Policy: newPolicy(t, nil, nil)},
+		Exchange:        oauth.ExchangeConfig{Registry: identities{}.registry(t)},
 	}
 	adjust(&cfg)
 	provider, err := oauth.New(cfg, store)
@@ -664,7 +665,7 @@ func TestNewRefusesAConfigurationItCouldNotServe(t *testing.T) {
 	sound := oauth.Config{
 		Secret: secret, DeviceLifetime: time.Minute, AccessLifetime: time.Minute, RefreshLifetime: time.Hour,
 		VerificationURL: "https://dispatch.example/credentials/machine", ProofSkew: time.Minute,
-		Exchange: oauth.ExchangeConfig{Policy: newPolicy(t, nil, nil)},
+		Exchange: oauth.ExchangeConfig{Registry: identities{}.registry(t)},
 	}
 	for name, spoil := range map[string]func(*oauth.Config){
 		"no device lifetime":          func(c *oauth.Config) { c.DeviceLifetime = 0 },
@@ -673,8 +674,11 @@ func TestNewRefusesAConfigurationItCouldNotServe(t *testing.T) {
 		"no access lifetime":          func(c *oauth.Config) { c.AccessLifetime = 0 },
 		"no proof skew":               func(c *oauth.Config) { c.ProofSkew = 0 },
 		"a secret too short":          func(c *oauth.Config) { c.Secret = make([]byte, 31) },
-		"an issuer configured in part": func(c *oauth.Config) {
-			c.Exchange.Kubernetes = oauth.IssuerConfig{Issuer: "https://kubernetes.example"}
+		// An issuer configured in part is refused where the registry is built
+		// (identity.TokenType.Validate, TestTokenTypesAreTheConfiguredOnes); what oauth.New holds
+		// is a configured type it could not serve.
+		"a machine's type with nothing to mint its credential": func(c *oauth.Config) {
+			c.Exchange.Registry = identities{google: issuer{URL: "https://accounts.example", Audience: "broker-machines", Keys: oidc.NewKeysAt("https://accounts.example/keys")}}.registry(t)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

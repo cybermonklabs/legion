@@ -3,6 +3,8 @@
 package boot
 
 import (
+	"slices"
+
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/identity/github"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -11,10 +13,14 @@ import (
 func init() { register(entry{kind: github.Kind, rank: 30, open: openGitHub}) }
 
 // openGitHub builds the GitHub provider: the issuer BROKER_EXCHANGE_GITHUB_ISSUER names, read
-// only where it is set, its audience, and the exchange's workflow entries. No setting wires a
-// GitHub caller of the API or the NATS auth service.
+// only where it is set, its audience, and the exchange's workflow entries
+// (BROKER_EXCHANGE_WORKFLOWS, then BROKER_EXCHANGE_JOB_WORKFLOWS, so a job entry is numbered after
+// them in a refusal). No setting wires a GitHub caller of the API or the NATS auth service.
 func openGitHub(cfg config.Config, keys func(string) (*oidc.Keys, error), _ *Boot) (opened, error) {
-	c := github.Config{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Workflows: cfg.ExchangeWorkflows}
+	c := github.Config{
+		Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience,
+		Workflows: slices.Concat(cfg.ExchangeWorkflows, cfg.ExchangeJobWorkflows),
+	}
 	if c.Issuer != "" {
 		var err error
 		if c.Keys, err = keys(c.Issuer); err != nil {

@@ -11,7 +11,7 @@ import (
 
 	"authelia.com/provider/oauth2"
 
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -81,7 +81,7 @@ func TestK3TradesByDispatchState(t *testing.T) {
 		{"(b) answers 403", refuses},
 		{"(c) cannot be reached", unreachable},
 	}
-	policy, err := exchange.NewSet(nil, nil, nil, nil, "")
+	registry, err := identity.NewRegistry(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestK3TradesByDispatchState(t *testing.T) {
 		for i, state := range states {
 			t.Run(trade.name+"/"+state.name, func(t *testing.T) {
 				ctx := context.Background()
-				p := &Provider{exchange: ExchangeConfig{Policy: policy, Projects: state.access(t)}}
+				p := &Provider{exchange: ExchangeConfig{Registry: registry, Projects: state.access(t)}}
 				session := oauthstore.NewExchangeSession()
 				var err error
 				if trade.tokenType == tokenTypeAccessToken {

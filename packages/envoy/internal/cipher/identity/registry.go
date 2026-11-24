@@ -62,7 +62,7 @@ func NewRegistry(providers []Provider, callers map[Use][]CallerVerifier) (*Regis
 	for use, verifiers := range callers {
 		r.callers[use] = append([]CallerVerifier(nil), verifiers...)
 	}
-	policy, err := exchange.NewListingSet(listings)
+	policy, err := exchange.NewSet(listings)
 	if err != nil {
 		return nil, err
 	}

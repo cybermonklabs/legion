@@ -33,6 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
@@ -228,19 +229,18 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	if c.ProofSkew <= 0 {
 		return nil, fmt.Errorf("oauth: the proof skew (%v) must be positive", c.ProofSkew)
 	}
+	// A deployment that has listed no identity and trusts no issuer gets the empty registry
+	// rather than a nil one, so the exchange composes and refuses every caller by name instead of
+	// faulting on a map nobody built.
+	if c.Exchange.Registry == nil {
+		registry, err := identity.NewRegistry(nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("oauth: the empty identity registry: %w", err)
+		}
+		c.Exchange.Registry = registry
+	}
 	if err := c.Exchange.validate(); err != nil {
 		return nil, err
-	}
-	// A deployment that has listed no identity gets the empty set rather than a nil one, so the
-	// exchange composes and refuses every caller by name instead of faulting on a map nobody
-	// built. Its sign-in domain is empty, which admits no person at all: a set nobody built
-	// lists no machine either, so there is no box a person could have signed in on.
-	if c.Exchange.Policy == nil {
-		policy, err := exchange.NewSet(nil, nil, nil, nil, "")
-		if err != nil {
-			return nil, fmt.Errorf("oauth: the empty exchange policy: %w", err)
-		}
-		c.Exchange.Policy = policy
 	}
 	cfg := &oauth2.Config{
 		GlobalSecret:                c.Secret,
@@ -300,14 +300,14 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 		compose.RFC8693ActorTokenValidationFactory)
 	provider := compose.Compose(cfg, store, strategy, factories...)
 	reservations := map[string]string{}
-	for _, reservation := range c.Exchange.Policy.Reservations() {
+	for _, reservation := range c.Exchange.Registry.Policy().Reservations() {
 		reservations[reservation.Session] = reservation.Principal
 	}
 	p := &Provider{
 		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange,
 		approve: c.Approve, accessLifetime: c.AccessLifetime,
 		verificationURL: c.VerificationURL, grantTypes: grantTypes,
-		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes),
+		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes, c.Exchange.Registry),
 		// Read from the configuration the provider was composed with rather than written down
 		// again here, so the document names what the proof check will take. The library's own
 		// configuration ignores the context this lookup takes.
@@ -317,10 +317,13 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 		holderNonce:    cfg.GetDPoPNonceRequired(context.Background()),
 	}
 	// A provider built with no store serves no request at all and is only ever inspected, as the
-	// broker's route wiring test inspects it, so there is nothing there to give the decision or the
-	// fixed names to.
+	// broker's route wiring test inspects it, so there is nothing there to give the decision, the
+	// token types or the fixed names to.
 	if store != nil {
 		store.ExchangeSubject = p.decide
+		// The exchange client may present every type a provider registers, configured or not,
+		// as the client always listed every kind the broker knows.
+		store.ExchangeTypes(c.Exchange.Registry.TokenTypeNames())
 		// The one derivation of the names the configuration fixes: the provider's fixed claim and
 		// ReserveSessions read reservations, and the store's BindSession reads the same map to
 		// refuse a pair any of those names, by an exchange's claim or an enrollment's.
@@ -583,13 +586,19 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 // /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the only way
 // a row the exchange's gate reads is written.
 //
-// The policy decides what may be registered, in the same words the exchange refuses a pod with
-// (exchange.Set.Registration): a token bound to no pod, an account no entry lists and an entry
-// that fixes a session are each refused, the last because the name such an entry's tokens carry
-// is the configuration's and its pods need no registration at all. A caller maps those sentinels
-// and the store's refusal of a held name onto its own refusals; anything else is the store's.
+// The pod provider decides what may be registered, in the same words the exchange refuses a pod
+// with (identity.PodProvider.Registration): a token bound to no pod, an account no entry lists and
+// an entry that fixes a session are each refused, the last because the name such an entry's
+// tokens carry is the configuration's and its pods need no registration at all. A broker with no
+// pod provider refuses every registration as an account no entry lists. A caller maps those
+// sentinels and the store's refusal of a held name onto its own refusals; anything else is the
+// store's.
 func (p *Provider) RegisterPodSession(ctx context.Context, registrar, account, podUID, session, jkt string, generation int64) (oauthstore.PodSessionRegistration, error) {
-	if err := p.exchange.Policy.Registration(account, podUID, session); err != nil {
+	pods := p.exchange.Registry.Pods()
+	if pods == nil {
+		return oauthstore.PodSessionRegistration{}, fmt.Errorf("%w: this broker serves no pod provider, so it registers no pod", exchange.ErrNoEntry)
+	}
+	if err := pods.Registration(account, podUID, session); err != nil {
 		return oauthstore.PodSessionRegistration{}, err
 	}
 	return p.store.RegisterPodSession(ctx, registrar, podUID, session, jkt, generation)

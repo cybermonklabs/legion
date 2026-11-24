@@ -158,15 +158,15 @@ func TestThePodSessionRouteRegistersAJobAccountsPod(t *testing.T) {
 		return list
 	}
 	const fixed = "example-sweeper"
-	policy, err := exchange.NewSet([]exchange.AccountEntry{
+	registry, err := kubernetesRegistry([]exchange.AccountEntry{
 		{Account: workerAccount, Job: job(ciphertest.ExchangeProject)},
 		{Account: otherAccount, Job: job("public,PRIVA"), Session: fixed},
-	}, nil, nil, nil, "")
+	})
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
 	ts := newTestServerWith(t, withProvider(t, func(config *oauth.Config) {
-		config.Exchange = oauth.ExchangeConfig{Policy: policy}
+		config.Exchange = oauth.ExchangeConfig{Registry: registry}
 	}))
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
 
@@ -198,12 +198,12 @@ func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 	for _, account := range accounts {
 		entries = append(entries, exchange.AccountEntry{Account: account, Project: ciphertest.ExchangeProject, Person: ciphertest.ExchangePerson})
 	}
-	policy, err := exchange.NewSet(entries, nil, nil, nil, "")
+	registry, err := kubernetesRegistry(entries)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
 	return withProvider(t, func(config *oauth.Config) {
-		config.Exchange = oauth.ExchangeConfig{Policy: policy}
+		config.Exchange = oauth.ExchangeConfig{Registry: registry}
 	})
 }
 

@@ -69,24 +69,22 @@ func TestTheBrokerGivesLegionStatusToTheDaemonAlone(t *testing.T) {
 	}
 	// One policy holds every entry, so one broker mints every row's token. NewSet refuses two
 	// entries that fix one session name, so each entry below fixes a name of its own.
-	f := newSignInFixtureWith(t, func(c *oauth.Config) {
-		c.Exchange.Policy = newPolicyReading(t,
-			[]exchange.AccountEntry{
-				{Account: account, Project: project, Person: person},
-				{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
-				{Account: otherProjectAccount, Project: "OTHERP", Person: person},
-				{Account: crossProjectAccount, Project: "P2", Person: person, Session: "legion-daemon:P3"},
-				{Account: noProjectAccount, Person: person, Session: "legion-daemon:"},
-				{Account: roleAccount, Project: project, Person: person, Session: roleSession},
-			},
-			[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
-			[]exchange.WorkflowEntry{
-				{Repository: repository, Workflow: legionWorkflow, Ref: ref, Project: "WF", Person: person, Session: "legion-daemon:WF"},
-			},
-			exchange.GoogleEntry{Account: signInMachine, Service: signInFleet},
-			exchange.GoogleEntry{Account: vmMachine, Service: vmService, Project: "VM", Person: person, Session: "legion-daemon:VM"},
-		)
-	})
+	f := newSignInFixtureWith(t, func(*oauth.Config) {}, listingWithReads(
+		[]exchange.AccountEntry{
+			{Account: account, Project: project, Person: person},
+			{Account: daemonAccount, Project: project, Person: person, Session: daemonSession},
+			{Account: otherProjectAccount, Project: "OTHERP", Person: person},
+			{Account: crossProjectAccount, Project: "P2", Person: person, Session: "legion-daemon:P3"},
+			{Account: noProjectAccount, Person: person, Session: "legion-daemon:"},
+			{Account: roleAccount, Project: project, Person: person, Session: roleSession},
+		},
+		[]exchange.ReadEntry{{Account: readAccount, Service: readService, Session: readSession}},
+		[]exchange.WorkflowEntry{
+			{Repository: repository, Workflow: legionWorkflow, Ref: ref, Project: "WF", Person: person, Session: "legion-daemon:WF"},
+		},
+		exchange.GoogleEntry{Account: signInMachine, Service: signInFleet},
+		exchange.GoogleEntry{Account: vmMachine, Service: vmService, Project: "VM", Person: person, Session: "legion-daemon:VM"},
+	))
 	broker, verifier := newDispatchVerifier(t)
 
 	for _, c := range []struct {
