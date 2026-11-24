@@ -276,7 +276,7 @@ export function brokerRefusal(
 ): BrokerRefusedError | BrokerTradeFailedError {
   if (
     error instanceof LibraryError &&
-    error.name === "ResponseBodyError" &&
+    error.answeredOAuthError &&
     error.status >= 400 &&
     error.status < 500
   ) {

@@ -46,7 +46,7 @@ const INVALID_GRANT = "invalid_grant";
 function grantRefused(error: unknown): boolean {
   return (
     error instanceof LibraryError &&
-    error.name === "ResponseBodyError" &&
+    error.answeredOAuthError &&
     error.code.equals(INVALID_GRANT) &&
     (error.status === 400 || error.status === 401)
   );
@@ -71,7 +71,7 @@ export interface PersonIdentityOptions {
  * is {@link LibraryError}'s, compared as it came and shown only as the rule reads it.
  */
 function issuerSaid(error: unknown): string {
-  if (error instanceof LibraryError && error.name === "ResponseBodyError") {
+  if (error instanceof LibraryError && error.answeredOAuthError) {
     const shown = error.code.isEmpty ? "" : shownOAuthCode(String(error.code));
     const code = shown === "" ? "" : ` ${shown}`;
     const withheld = error.description.isEmpty ? "" : `: ${REFUSAL_TEXT_WITHHELD}`;
