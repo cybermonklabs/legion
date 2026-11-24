@@ -25,8 +25,10 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
-server=''
-trap '[ -z "$server" ] || kill "$server" 2>/dev/null; rm -rf "$work"' EXIT
+servers=()
+# `|| true`: a stand-in already gone makes kill fail, and under set -e the trap would stop there,
+# leave $work behind and exit 1.
+trap '[ ${#servers[@]} -eq 0 ] || kill "${servers[@]}" 2>/dev/null || true; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
@@ -65,7 +67,14 @@ fi
 #   rate-limit-delay  seconds the rate_limit route holds its answer, read when it was asked.
 #   raw          present: GET /repos/o/r/raw answers this file's bytes as text/plain, a body gh's
 #                request trace prints as it came, line for line.
-# and appends `<epoch> <method> <path>` to `log` for every request it answers. The server answers
+# and appends `<epoch> <method> <path>` to `log` for every request it answers.
+#
+# Its clock is the real one plus clock-offset, in whole seconds (0 while the file is absent). A
+# case driven on the stand-in clock (drive_on_clock below) runs the helper with a `sleep` that waits
+# one real second and then adds its seconds to clock-offset, and with a `date +%s` that answers the
+# same clock. So a wait the helper sleeps takes a second, and the helper, the stand-in's spends and
+# resets and the time logged for each request all read one clock: a call the helper makes before a
+# reset, or before its sleep has ended, reaches the stand-in before that reset. The server answers
 # each request in a thread of its own, and gh release view and edit send two at once, so the steps
 # that read a state file and then write one (spent-until, secondary-done, refused-calls) run under
 # one lock, and so does the read of spent-until each answer is made from. The two hold knobs make
@@ -112,6 +121,11 @@ def read(name, default=""):
 def write(name, value, mode="w"):
     with open(os.path.join(state, name), mode) as handle:
         handle.write(value)
+
+
+def clock():
+    """The stand-in's clock: the real one plus clock-offset."""
+    return time.time() + int(read("clock-offset", "0"))
 
 
 def knob(name):
@@ -167,7 +181,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if length:
             self.rfile.read(length)
         path = urllib.parse.urlsplit(self.path).path
-        now = time.time()
+        now = clock()
         with open(os.path.join(state, "log"), "a") as log:
             log.write(f"{now:.3f} {self.command} {path}\n")
         with EVENTS:
@@ -252,8 +266,11 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
     # gh drops the slower of two requests it raced; the write into its closed socket is no fault.
+    # Any other error is the stand-in's own: its traceback goes to the stand-in's stderr, the job
+    # log, beside the case it broke.
     def handle_error(self, request, client_address):
-        pass
+        if not isinstance(sys.exc_info()[1], ConnectionError):
+            super().handle_error(request, client_address)
 
 
 with Server(("127.0.0.1", 0), Handler) as httpd:
@@ -262,17 +279,26 @@ with Server(("127.0.0.1", 0), Handler) as httpd:
     httpd.serve_forever()
 PY
 
-mkdir -p "$work/state" "$work/bin" "$work/gh-config"
-python3 "$work/github.py" "$work/state" "$work/port" &
-server=$!
-for _ in $(seq 50); do
-  [ -s "$work/port" ] && break
-  sleep 0.1
-done
-if ! [ -s "$work/port" ]; then
+# stand_in <state dir> <port file> [<stderr file>]: starts a stand-in GitHub on that state, its
+# stderr the job log (or that file), and waits until it has written its port. Each one's process is
+# kept in servers, which the exit trap stops.
+stand_in() {
+  if [ -n "${3:-}" ]; then
+    python3 "$work/github.py" "$1" "$2" 2> "$3" &
+  else
+    python3 "$work/github.py" "$1" "$2" &
+  fi
+  servers+=("$!")
+  for _ in $(seq 50); do
+    [ -s "$2" ] && return
+    sleep 0.1
+  done
   echo "the stand-in GitHub wrote no port" >&2
   exit 1
-fi
+}
+
+mkdir -p "$work/state" "$work/bin" "$work/gh-config"
+stand_in "$work/state" "$work/port"
 port=$(<"$work/port")
 
 # The stand-in runner process: bash under the name GitHub's runner starts each job as.
@@ -346,13 +372,49 @@ logged_wait_names() {
   { [ "$(warnings)" -eq 0 ] || { [ "$(warnings)" -eq 1 ] && grep -q -e "$1" <<<"$err"; }; } && echo true || echo false
 }
 
+# The stand-in clock (the stand-in GitHub's header says what it is). $work/clockbin holds a sleep
+# that waits one real second, then adds its whole seconds to the stand-in's clock-offset, and a date whose
+# `+%s` answers the real time plus that offset, every other form of it being the real date's.
+mkdir -p "$work/clockbin"
+{
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nstate=%q\nreal_sleep=%q\n' "$work/state" "$(command -v sleep)"
+  cat <<'SH'
+if ! [[ $# -eq 1 && $1 =~ ^[0-9]+$ ]]; then
+  echo "the stand-in clock's sleep takes whole seconds, not '$*'" >&2
+  exit 2
+fi
+# A second of real time before the clock moves: a helper that did not wait for its sleep (one
+# that sent it to the background) makes its next call inside that second, before the clock has
+# moved, and the stand-in refuses it as a real GitHub would.
+"$real_sleep" 1
+offset=$(cat "$state/clock-offset" 2>/dev/null || echo 0)
+echo "$((offset + $1))" > "$state/clock-offset.next"
+mv "$state/clock-offset.next" "$state/clock-offset"
+SH
+} > "$work/clockbin/sleep"
+{
+  printf '#!/usr/bin/env bash\nstate=%q\nreal_date=%q\n' "$work/state" "$(command -v date)"
+  cat <<'SH'
+if [ "$*" = +%s ]; then
+  echo "$(($("$real_date" +%s) + $(cat "$state/clock-offset" 2>/dev/null || echo 0)))"
+else
+  exec "$real_date" "$@"
+fi
+SH
+} > "$work/clockbin/date"
+chmod +x "$work/clockbin/sleep" "$work/clockbin/date"
+# drive_on_clock <as for drive>: drive with the stand-in clock's sleep and date first on PATH, so a
+# wait the helper sleeps takes a second and a call it makes after the wait reaches the stand-in that
+# many seconds later by the stand-in's clock. The case's `github` starts the clock at the real time.
+drive_on_clock() { drive PATH="$work/clockbin:$PATH" "$@"; }
+
 echo "case: a spent budget whose reset falls before the job's limit is waited out"
 # The wait's line is logged when the helper sleeps; a host slower than the 10 s window has nothing
 # left to sleep and logs none (gh-read.sh's header). So these rows, and the like rows below, read the
 # wait off the stand-in's clock (the second call comes no sooner than the reset) and read the line
 # only when one was logged.
 github 10
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 reset=$(spent_until)
 check "exits 0" "$(is "$status" 0)"
 check "prints the answer of the call it made after the wait" "$(is "$out" '{"title":"t"}')"
@@ -452,7 +514,7 @@ check "naming the step's limit" "$(contains "$err" "past this step's limit at ")
 
 echo "case: a step limit alone is a limit"
 github 10
-drive STEP_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_on_clock STEP_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "waits and passes" "$(is "$status|$out" '0|{"title":"t"}')"
 check "any wait it logs is held to the step's limit" "$(logged_wait_names "within this step's limit at ")"
 github 60
@@ -510,7 +572,7 @@ fi
 strict='set -euo pipefail; shopt -s inherit_errexit;'
 echo "case: a caller under set -e still gets the wait"
 github 3
-drive JOB_TIMEOUT_MINUTES=5 -- "$strict"' gh_wait_reset gh api repos/o/r/pulls/1 > answer; cat answer'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- "$strict"' gh_wait_reset gh api repos/o/r/pulls/1 > answer; cat answer'
 check "exits 0" "$(is "$status" 0)"
 check "with the answer after the wait" "$(is "$out" '{"title":"t"}')"
 check "having called the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
@@ -531,14 +593,14 @@ check "and runs nothing after the call" "$(is "$(contains "$out" reached)" false
 echo "case: the budget is spent again when the wait ends"
 github 2
 touch "$work/state/always-spent"
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
 check "after waiting once" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "naming it" "$(contains "$err" "^::error::the API budget is still spent after the wait for its reset at $(utc "$(spent_until)")")"
 
 echo "case: --stderr keeps the deciding call's words in a file and the helper's own lines in the log"
 github 10 404
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset --stderr "$PWD/words" gh api repos/o/r/pulls/1 > body; echo "status=$?"; cat words'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset --stderr "$PWD/words" gh api repos/o/r/pulls/1 > body; echo "status=$?"; cat words'
 check "the call after the wait decides" "$(contains "$out" '^status=1$')"
 check "the file holds that call's words" "$(contains "$out" '^gh: Not Found (HTTP 404)$')"
 check "and not the refusal's" "$(is "$(contains "$out" 'rate limit exceeded')" false)"
@@ -548,7 +610,7 @@ rm -f "$work/words"
 
 echo "case: gh_read takes its attempt through the wait"
 github 3
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
 check "exits 0" "$(is "$status" 0)"
 check "prints the answer" "$(is "$out" '{"title":"t"}')"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
@@ -577,7 +639,7 @@ secondary() {
 echo "case: a secondary rate limit's retry-after is waited out"
 github never
 secondary 429 3
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "exits 0" "$(is "$status" 0)"
 check "prints the answer of the call after the wait" "$(is "$out" '{"title":"t"}')"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
@@ -614,7 +676,7 @@ check "naming the retry-after and the limit" \
 echo "case: a secondary rate limit that refuses again after the wait fails by name"
 github never
 secondary 403 2 always
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
 check "after waiting once" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "naming it" "$(contains "$err" "^::error::GitHub refused this call for its rate limit again after the wait")"
@@ -631,7 +693,7 @@ check "naming the 60 s minimum" "$(contains "$err" "wait 60 s (GitHub's document
 echo "case: gh_read takes a secondary rate limit through the wait too"
 github never
 secondary 403 2
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_read gh api repos/o/r/pulls/1'
 check "exits 0" "$(is "$status" 0)"
 check "calls the route twice" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
 check "the second call came the 2 s retry-after after the first: the helper waited, the ladder would not" \
@@ -664,7 +726,7 @@ check "it patched the release" "$(is "$(calls /repos/o/r/releases/1)" 1)"
 echo "case: gh release view under a spent budget waits, and the log holds no release"
 github 10
 touch "$work/state/release"
-drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh release view v1 --repo o/r --json name,body -q ".name, .body"'
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh release view v1 --repo o/r --json name,body -q ".name, .body"'
 check "exits 0" "$(is "$status" 0)"
 check "prints the release on stdout" "$(contains "$out" "^the draft's name$")"
 check "the second run came no sooner than the reset" "$(at_least "$(nth_at /graphql 2)" "$(spent_until)")"
@@ -713,7 +775,8 @@ check "and nothing on stderr" "$(is "$err" '')"
 echo "case: the wait is measured from after the rate_limit read, not before it"
 # The rate_limit route takes 5 s to answer a reset 3 s after the refusal: the budget is back by the
 # time the answer arrives, so the call goes again at once and logs no wait. A clock read before the
-# probe would see the reset still ahead and sleep for it, logging the wait.
+# probe would see the reset still ahead and sleep for it, logging the wait. The 5 s are real, so the
+# helper's own bound on that read (timeout 30) meets a slow answer too.
 github 3
 echo 5 > "$work/state/rate-limit-delay"
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
@@ -760,6 +823,80 @@ check "the rate-limit read is answered" "$(contains "$out" '^read=0 limit=[0-9][
 check "and the spend's call is refused for the spent budget" "$(contains "$out" '^spend=1$')"
 check "both reached the stand-in" "$(is "$(calls /rate_limit)|$(calls /repos/o/r/pulls/1)" '1|1')"
 rm -f "$work/overlap.sh" "$work/limit" "$work/limit.err"
+
+echo "case: an error of the stand-in's own reaches the log as its traceback"
+# The stand-in drops one kind of error alone: a ConnectionError, its write into a socket gh
+# closed. Any other error is a fault of its own, and it prints the traceback, so a case the fault
+# breaks shows why beside it; a fault that printed nothing left gh's EOF as its only trace (run
+# 45066092231: an int('') on a half-written spent-until). A second stand-in, its stderr kept in a
+# file, takes a spend that is no number. The server prints an error before it closes the
+# connection, so the traceback is in the file by the time the request has ended.
+mkdir -p "$work/fault-state"
+echo 'not a number' > "$work/fault-state/spend-for"
+stand_in "$work/fault-state" "$work/fault-port" "$work/fault-err"
+answer=$(python3 - "$(<"$work/fault-port")" <<'PY'
+import http.client
+import sys
+
+try:
+    connection = http.client.HTTPConnection("127.0.0.1", int(sys.argv[1]), timeout=30)
+    connection.request("GET", "/repos/o/r/pulls/1")
+    print(connection.getresponse().status)
+except http.client.RemoteDisconnected:
+    print("no answer")
+except OSError as error:
+    print(f"error: {error}")
+PY
+)
+check "the stand-in answers nothing" "$(is "$answer" 'no answer')"
+check "and prints a traceback that names the fault" \
+  "$(contains "$(<"$work/fault-err")" "^ValueError: invalid literal for int() with base 10: 'not a number'$")"
+
+echo "case: a socket closed under the stand-in's answer prints nothing"
+# gh drops the slower of two requests it raced, and the stand-in's write into that socket raises a
+# ConnectionError, which is no fault and prints nothing. A third stand-in, its stderr kept in a
+# file, holds a release's answer release-delay seconds. The client resets its connection once the
+# stand-in has logged the request, a second before the answer is due, so the answer is written
+# into a reset socket. The stand-in's thread count back at idle says the request has ended, and
+# with it any traceback the stand-in would print, before the file is read.
+mkdir -p "$work/drop-state"
+touch "$work/drop-state/release"
+echo 1 > "$work/drop-state/release-delay"
+: > "$work/drop-state/log"
+stand_in "$work/drop-state" "$work/drop-port" "$work/drop-err"
+threads() { awk '$1 == "Threads:" { print $2 }' "/proc/${servers[-1]}/status"; }
+idle=$(threads)
+closed=$(python3 - "$(<"$work/drop-port")" "$work/drop-state/log" <<'PY'
+import socket
+import struct
+import sys
+import time
+
+port, log = int(sys.argv[1]), sys.argv[2]
+try:
+    client = socket.create_connection(("127.0.0.1", port), timeout=30)
+    client.sendall(b"GET /repos/o/r/releases/tags/v1 HTTP/1.1\r\nHost: api.github.localhost\r\n\r\n")
+    for _ in range(600):
+        with open(log) as handle:
+            if any(line.split()[2:] == ["/repos/o/r/releases/tags/v1"] for line in handle):
+                break
+        time.sleep(0.05)
+    else:
+        sys.exit("the stand-in logged no request")
+    client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    client.close()
+    print("reset")
+except OSError as error:
+    print(f"error: {error}")
+PY
+) || true
+for _ in $(seq 600); do
+  [ "$(threads)" -le "$idle" ] && break
+  sleep 0.05
+done
+check "the client resets its request once the stand-in has read it" "$(is "$closed" reset)"
+check "the stand-in ends the request" "$(is "$(threads)" "$idle")"
+check "and prints nothing for the closed socket" "$(is "$(<"$work/drop-err")" '')"
 
 echo "case: on a GitHub runner, the job's start is read off the real Runner.Worker"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then

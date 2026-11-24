@@ -1,5 +1,8 @@
 package daemon
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestDaemonPermissionsOnRealServers
+//ci:reads packages/daemon/internal/intake/testdata/github/pr-opened.json TestDaemonPermissionsOnRealServers
+
 import (
 	"context"
 	"encoding/json"
@@ -46,6 +49,7 @@ const (
 // NATS server grant, while this test drives the daemon's real connection, durable consumers,
 // acknowledgements, and exceptions subscription through it.
 func TestDaemonPermissionsOnRealServers(t *testing.T) {
+	t.Parallel()
 	for _, image := range testnatsimages.Images {
 		t.Run(image.Name, func(t *testing.T) {
 			t.Run("the daemon restarts, reads its consumers' lag, acknowledges Dispatch, GitHub and the listener's wake, and receives exceptions", func(t *testing.T) {

@@ -671,6 +671,7 @@ func runWave(t *testing.T, clock *waveClock, rt *waveRuntime, waiting []api.Wake
 // (TestWithNoPacingTheBootWaveGoesOutInOneTick): all forty launches then go out inside one tick of
 // the test clock, which is the restart of 2026-11-04.
 func TestABootWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	clock, logged := newWaveClock(), &syncBuffer{}
@@ -733,6 +734,7 @@ func waveIssue(cfg config.Config, i int) string {
 // (TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce): all forty rows are then due in the same
 // instant, which is forty architects reading their whole context in one minute.
 func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -794,6 +796,7 @@ func TestAWaveOfCatchUpsIsWrittenOnTheLimitersScheduleInTheOrderItBecameReady(t 
 // own wiring when the rate is 0 (openWorkflow). Every catch-up of the wave is then written due at
 // once, and the architects it wakes all read their context in the same minute.
 func TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -829,6 +832,7 @@ func TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce(t *testing.T) {
 // this test holds the daemon to it so that a pacing silently turned off is not read as a pacing
 // that works.
 func TestWithNoPacingTheBootWaveGoesOutInOneTick(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	cfg.WorkerWakesPerMinute = 0
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
@@ -865,6 +869,7 @@ func TestWithNoPacingTheBootWaveGoesOutInOneTick(t *testing.T) {
 // The negative control is this same wave with the rate at 0
 // (TestWithNoPacingTheDisplacedWaveGoesOutInOneTick): all forty resume inside one tick.
 func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
 		return liveClaim(i, token, api.DaemonAPIVersion)
@@ -907,6 +912,7 @@ func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 // The negative control of the displaced case: the pacing reverted, the rate at 0, and the whole
 // roll's forty relaunches go out inside one tick of the test clock.
 func TestWithNoPacingTheDisplacedWaveGoesOutInOneTick(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	cfg.WorkerWakesPerMinute = 0
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
@@ -947,6 +953,7 @@ func TestWithNoPacingTheDisplacedWaveGoesOutInOneTick(t *testing.T) {
 // a non-exempt operator resume would leave the resumed claim parked launching with the state
 // naming its wake, which this test's own assertions would then read.
 func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
@@ -1065,6 +1072,7 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 // then answers 202 with the claim still launching, which this test reads at the suspend itself,
 // and the claim is suspended only when its turn comes.
 func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	waveClaims(t, cfg, claim.RoleArchitect, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	// Two claims of the wave that are not their trees' roots, so one of them is always waiting when
@@ -1209,6 +1217,7 @@ func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) 
 // a second claim's wake with the root's, and nothing else in the suite asserts that a closed
 // tree's other claims lose their paced wakes.
 func TestAnOperatorsCloseOfATreeTakesTheWakesOfItsRootAndItsWorker(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	waveClaims(t, cfg, claim.RoleArchitect, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	// Two claims of the wave that are not their trees' roots: the close below ends one of them
@@ -1288,6 +1297,7 @@ func TestAnOperatorsCloseOfATreeTakesTheWakesOfItsRootAndItsWorker(t *testing.T)
 // then stopped and replaced inside one tick of the test clock
 // (TestWithNoPacingTheStaleRelaunchWaveReplacesEveryProcessInOneTick).
 func TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaimsOf(t, cfg, claim.RoleImplementer, testWakeRate, func(i int, token claim.Token) supervise.Claim {
 		c := liveClaim(i, token, supervise.PodUpdateContract-1)
@@ -1388,6 +1398,7 @@ func resumedPrevious(t *testing.T, rt *waveRuntime, token claim.Token) runtime.L
 // every one of the forty running processes is stopped and replaced inside one tick of the test
 // clock.
 func TestWithNoPacingTheStaleRelaunchWaveReplacesEveryProcessInOneTick(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	cfg.WorkerWakesPerMinute = 0
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
@@ -1519,6 +1530,7 @@ func claimsOfWakes(waiting []api.WakeWaiting) map[claim.Token]bool {
 // admitted): the whole fleet is then in the pacing at once, and the boot-line wait times out,
 // since the gate never refuses any claim and writes no "gate is full" line.
 func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHolds(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	// The daemon supervises the controller's own claim only where it launches it; an operator's
 	// daemon stops that claim at boot instead (stopLaunchedController).
@@ -1633,6 +1645,7 @@ const staleRelaunchHeldLine = "supervise: the process speaks another plugin cont
 // at the claims that pass says it left to a later sweep — the idle ones it should have
 // admitted among them.
 func TestAStaleClaimInATurnIsPostedWithNoCreditWhileTheIdleClaimsTakeTheRate(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	// Twice the rate in a turn, so that a pass admitting them would run the gate dry before it
 	// reached an idle claim, and twice the rate idle, so that the gate is full and the claims it
@@ -1727,6 +1740,7 @@ func claimsOfTokens(tokens []claim.Token) map[claim.Token]bool {
 // whole wave before the restart (TestWithNoPacingTheBootWaveGoesOutInOneTick), and there is no
 // wave left for a restart to lose.
 func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	clock, logged := newWaveClock(), &syncBuffer{}
@@ -1778,6 +1792,101 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 	}
 }
 
+// dispatch://INFRA-5472: a restart while the pacing holds the relaunch of a process the daemon
+// found dead raises that relaunch again in the restart's own wave, beside the unfinished launches,
+// and does not wait for the runtime to report the death a second time. Such a claim records the
+// dead process (the park writes nothing of it), so boot restores it as live rather than as an
+// unfinished launch, and before this the only path that raised its relaunch again was the
+// sweep's next report of the death. In an issue pod whose roles container restarted, that report
+// waits for the pod's launcher to reconnect and say it runs no child, which is a probe interval
+// after boot: by then the boot wave holds the pacing, and the relaunch went in behind all of it
+// (in the outage this was filed from, a pod's five roles whose turns were due 53 minutes after a
+// restart ran 67 minutes after it, behind the 248 unfinished launches that restart raised first).
+//
+// What the stored claim says is what the boot reads: the death was charged (DeathCharged), so
+// no new report is needed to know the process is gone. That relaunch is the one the death
+// raised, so the report that does come later decides nothing, and no death is charged twice.
+func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
+	t.Parallel()
+	cfg := waveConfig(t)
+	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
+	dead := waveClaimsFrom(t, cfg, claim.RoleImplementer, waveSize+1, 1, func(i int, token claim.Token) supervise.Claim {
+		return liveClaim(i, token, api.DaemonAPIVersion)
+	})[0]
+	clock, logged := newWaveClock(), &syncBuffer{}
+	rt := newWaveRuntime(clock)
+
+	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
+	awaitWave(t, d, waveSize)
+	// The roles container of the dead claim's pod restarted: the runtime reports its process gone,
+	// and the daemon charges the death and parks the relaunch behind the wave.
+	recorded := d.claim(dead)
+	death := runtime.Observation{Locator: *recorded.Locator, Kind: runtime.Gone, At: clock.Now(), OutOfMemory: true,
+		Detail: "pod legion-acme-1 (uid 1) role implementer's launcher reports no child; container roles restarted 1 times"}
+	rt.fake().Emit(death)
+	testwait.Eventually(t, "the relaunch of the dead process to wait its turn behind the wave", func() bool {
+		return slices.ContainsFunc(waitingWakes(t, d), func(w api.WakeWaiting) bool { return w.Claim == dead })
+	})
+	charged := d.claim(dead).Budgets
+	launchedFirst := map[claim.Token]int{}
+	for _, launch := range rt.launches() {
+		launchedFirst[launch.claim]++
+	}
+	if launchedFirst[dead] != 0 {
+		t.Fatalf("the dead claim launched %d times before the restart, want none: its relaunch waits its turn", launchedFirst[dead])
+	}
+	d.stop()
+
+	rebindHeldPorts(t, &cfg)
+	restartClock, restartLog := newWaveClock(), &syncBuffer{}
+	restarted := newWaveRuntime(restartClock)
+	restartOrigin := restartClock.Now()
+	second := startWaveDaemon(t, cfg, restartClock, restarted, restartLog, nil)
+
+	// The runtime reports nothing of the dead process to this daemon: its launcher has not
+	// reconnected. The wave is every unfinished launch the first daemon had not run, and the
+	// relaunch of the death with them.
+	waveLeft := len(tokens) - len(rt.launches()) + 1
+	again := awaitWave(t, second, waveLeft)
+	inWave := slices.ContainsFunc(again, func(w api.WakeWaiting) bool { return w.Claim == dead }) ||
+		slices.ContainsFunc(restarted.launches(), func(l waveLaunch) bool { return l.claim == dead })
+	if !inWave {
+		t.Fatalf("the restart's wave of %d wakes holds no relaunch of %s, whose death the first daemon recorded", waveLeft, dead)
+	}
+	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
+
+	// The launcher reconnects and reports the death again. The relaunch the boot raised is that
+	// death's relaunch, so the report reserves no second wake and moves no turn. Where the burst
+	// let that relaunch straight out, it has already replaced the process the report is about.
+	if slices.ContainsFunc(again, func(w api.WakeWaiting) bool { return w.Claim == dead }) {
+		restarted.fake().Emit(death)
+		testwait.Eventually(t, "the late report of the recorded death to be judged", func() bool {
+			return second.claim(dead).ProcessGone
+		})
+		assertQueueLeft(t, second, "the late report of the recorded death", again)
+	}
+	runWave(t, restartClock, restarted, again, 1)
+
+	for _, token := range append(slices.Clone(tokens), dead) {
+		launches := launchedFirst[token] + restarted.launchesOf(token)
+		if launches != 1 {
+			t.Fatalf("%s launched %d times over the restart, want exactly once", token, launches)
+		}
+	}
+	for _, launch := range restarted.launches() {
+		if launch.claim == dead && !launch.resumed {
+			t.Fatalf("%s was spawned rather than resumed; the relaunch of a death comes back on its recorded session", dead)
+		}
+	}
+	if got := second.claim(dead).Budgets; got.Deaths != charged.Deaths || got.LaunchFailures != charged.LaunchFailures {
+		t.Fatalf("the dead claim has %d deaths and %d launch failures after the restart, want the %d and %d the first daemon charged: one death is charged once",
+			got.Deaths, got.LaunchFailures, charged.Deaths, charged.LaunchFailures)
+	}
+	if left := waitingWakes(t, second); len(left) != 0 {
+		t.Fatalf("wakesWaiting once the restart's wave has gone = %+v, want none", left)
+	}
+}
+
 // R2 of dispatch://INFRA-976/spec asks of a waiting wake that it lose nothing, not only that its
 // claim still decide: an operator's suspend of a claim whose wake waits over no process writes no
 // outbox row and, were it held, would live in the machine's memory alone, so a restart inside the
@@ -1791,6 +1900,7 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 // stored launching when the daemon stops, the restart counts it among the unfinished launches,
 // and it is relaunched — the drain undone by a restart nobody connected to it.
 func TestASuspendDecidedWhileTheWakeWaitedSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	clock, logged := newWaveClock(), &syncBuffer{}
@@ -1872,7 +1982,7 @@ func pacedLaneTree(t *testing.T, log *slog.Logger) (*laneTree, *wakepace.Limiter
 	tree := startLaneTree(t, log)
 	limiter := pacedWakes()
 	tree.runner.supervisor.deps.Clock = tree.clock
-	tree.runner.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	tree.runner.supervisor.deps.WakePace = wakePaceOf(limiter)
 	for range waveSize {
 		limiter.Reserve(tree.clock.Now())
 	}
@@ -1906,6 +2016,7 @@ func waitingWakeOf(t *testing.T, tree *laneTree, role claim.Role) (*supervise.Ma
 // and the issue's lane logs the row held behind it
 // (TestARunningLifecycleRowLogsEachRowHeldBehindItOnceItHasWaitedLong pins that shape).
 func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
+	t.Parallel()
 	var logged syncBuffer
 	tree, _ := pacedLaneTree(t, slog.New(slog.NewJSONHandler(&logged, nil)))
 
@@ -1993,6 +2104,7 @@ func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 // launches at once, there is no wake for a second start to meet, and
 // TestWithNoPacingTheBootWaveGoesOutInOneTick holds that shape for the launches themselves.
 func TestASecondStartOfAWaitingClaimTakesNoTokenAndStartsNoSecondLaunch(t *testing.T) {
+	t.Parallel()
 	tree, limiter := pacedLaneTree(t, nil)
 
 	tree.commit(t, "architect-start", tree.start(t, claim.RoleArchitect))
@@ -2051,6 +2163,7 @@ func noticeRowOf(t *testing.T, pool *store.Pool, issue string) (noticeRow, bool)
 // (TestWithNoPacingTheCatchUpWaveIsWrittenDueAtOnce): the catch-up is then due at once, the ready
 // has nothing to leave where it was, and the architect's minute holds the whole wave.
 func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

@@ -520,6 +520,7 @@ func toldInPlacePath(r *mainPathRig) string {
 // held task's place: the held task is retired unsent, and the decision it named is told by the
 // catch-up that start writes.
 func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
+	t.Parallel()
 	for _, path := range mainPaths {
 		t.Run(path.name, func(t *testing.T) {
 			sent := map[bool]int{}

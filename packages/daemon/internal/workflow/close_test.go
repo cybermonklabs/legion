@@ -212,6 +212,10 @@ func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
 		{name: "an issue close with no id", id: 0, stop: record.SuperviseRequest{Op: "issue_close"}, lastStart: 11, want: true},
 		{name: "an issue close of a lingering tree reads no root", id: 10, stop: record.SuperviseRequest{Op: "issue_close"}, lastStart: 11, root: lingering, want: false},
 		{name: "a suspend a newer start superseded", id: 10, stop: record.SuperviseRequest{Op: "suspend"}, lastStart: 11, want: false},
+		// A stopped task's step stop is fenced as a suspend is (stopTask): a later version of the
+		// plan that starts the task again writes a start the stop must not undo.
+		{name: "a step stop no start followed", id: 10, stop: record.SuperviseRequest{Op: "step_stop"}, lastStart: 4, want: true},
+		{name: "a step stop a newer start superseded", id: 10, stop: record.SuperviseRequest{Op: "step_stop"}, lastStart: 11, want: false},
 		{name: "a tree close of its linger", id: 10, stop: record.SuperviseRequest{Op: "tree_close", Linger: 7}, lastStart: 11, root: lingering, want: true},
 		{name: "a tree close with no root", id: 10, stop: record.SuperviseRequest{Op: "tree_close", Linger: 7}, lastStart: 4, want: false},
 		{name: "a start is not a stop", id: 10, stop: record.SuperviseRequest{Op: "start"}, lastStart: 4, want: false},

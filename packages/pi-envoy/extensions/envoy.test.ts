@@ -33,6 +33,7 @@ import {
   canonicalTopic,
   EnvelopeSchema,
   type Envelope,
+  IDEMPOTENCY_KEY_COMMITTED,
   legacyDispatchIssueSubject,
   type SessionAnswer,
   uncapturedTopicRefusal,
@@ -55,7 +56,11 @@ import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatc
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
-import { NATS_DIAL_PLAN, NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
+import {
+  NATS_DIAL_PLAN,
+  NATS_DIAL_TOKEN_DROPPED,
+  natsConnectionOptions,
+} from "@legion/envoy-client/nats-connection";
 import {
   renderSessionAnswers,
   sessionAnswersFailureLine,
@@ -67,6 +72,15 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
+import {
+  NATS_START_HOOK_MS,
+  NATS_STOP_HOOK_MS,
+  natsHookDeadline,
+  natsServerWithConfig,
+  sessionGrantConfig,
+  useNatsServerDirectory,
+} from "@legion/envoy-client/test/nats-server";
+import { runReplayGrantScenario } from "@legion/envoy-client/test/replay-grant-scenario";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
@@ -13996,6 +14010,113 @@ console.log(JSON.stringify(args));
     ]);
   });
 
+  // A reply Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`) is a reply
+  // posted: the attempt is answered with it. Each row boots a session whose reply route answers
+  // that, relays it one comment BTW and answers with what the session posted, what its log said
+  // and what it printed as a failure.
+  describe("a reply that landed with no answer", () => {
+    const REPLY = "/api/v1/comments/33333333-3333-4333-8333-333333333333/reply";
+    const LANDED = "envoy: a reply landed on Dispatch, which gave no copy of its answer";
+
+    async function btwLanded(
+      name: string,
+      runEphemeralTurn?: () => Promise<{ replyText: string }>
+    ): Promise<{ replies: unknown[]; warnings: string[]; failures: string[] }> {
+      process.env.DISPATCH_URL = "http://dispatch.test";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
+      const replies: unknown[] = [];
+      globalThis.fetch = async (input, init) => {
+        const path = new URL(input.toString()).pathname;
+        if (path === "/v1/interests/subscribe") {
+          return response({
+            session_id: "ses_delivery",
+            machine_id: "test",
+            dir: "/tmp",
+            topics: ["notifications.agent.ses_delivery"],
+            delivery: consumerDelivery("ses_delivery", { streamID: TEST_STREAM_ID }),
+          });
+        }
+        if (path === REPLY) {
+          replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
+          return new Response(
+            JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" }),
+            { status: 409, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return response({});
+      };
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      const printed = spyOn(console, "warn").mockImplementation(() => undefined);
+      const failures = () =>
+        printed.mock.calls
+          .map((call) => String(call[0]))
+          .filter((line) => line.includes("failed to deliver"));
+      try {
+        // Query-string isolation gives this stateful extension its own NATS subscription.
+        const { default: envoyExtension } = await import(`./envoy.ts?${name}`);
+        const fixture = createPi();
+        envoyExtension(fixture.pi);
+        await fixture.handlers.get("session_start")?.(
+          {},
+          {
+            ...sessionContext("ses_delivery"),
+            ...(runEphemeralTurn === undefined ? {} : { runEphemeralTurn }),
+          }
+        );
+        const agent = natsState.controls.get("notifications.agent.ses_delivery");
+        if (agent === undefined) throw new Error("agent subject was not subscribed");
+        agent.push(targetedCommentEnvelope("btw", name));
+        // Settled either way: the line that says the reply landed, or a second reply on the
+        // attempt, or the failure the delivery prints.
+        await until(
+          () => warnings.includes(LANDED) || replies.length > 1 || failures().length > 0,
+          "the reply's outcome"
+        );
+        await settle();
+        return { replies, warnings, failures: failures() };
+      } finally {
+        stopSink();
+        printed.mockRestore();
+      }
+    }
+
+    test("a BTW's reply is taken as posted, and no error reply follows it on the attempt", async () => {
+      const { replies, warnings, failures } = await btwLanded("btw-reply-landed", async () => ({
+        replyText: "Comment reply.",
+      }));
+
+      expect(replies).toEqual([
+        {
+          actor: { id: "ses_delivery", kind: "session" },
+          attempt: 1,
+          target: "session:ses_delivery",
+          body: "Comment reply.",
+        },
+      ]);
+      expect(warnings).toContain(LANDED);
+      expect(failures).toEqual([]);
+    });
+
+    test("an error reply that landed is no failure to deliver the frame", async () => {
+      // A host with no side turn refuses the BTW, and that refusal is the reply that lands.
+      const { replies, warnings, failures } = await btwLanded("btw-refusal-landed");
+
+      expect(replies).toEqual([
+        {
+          actor: { id: "ses_delivery", kind: "session" },
+          attempt: 1,
+          target: "session:ses_delivery",
+          error: "This OMP host does not support BTW delivery",
+        },
+      ]);
+      expect(warnings).toContain(LANDED);
+      expect(failures).toEqual([]);
+    });
+  });
+
   test("delivers a targeted Steer card and an Aside each as an aside, a turn running or not", async () => {
     let idle = false;
     const { agent, delivered, fixture } = await bootDirectSession("targeted-modes", {
@@ -14349,6 +14470,41 @@ console.log(JSON.stringify(args));
         expect(recordedWhenDelivered).toEqual([1]);
       });
     }
+
+    // An accept Dispatch recorded and gave no copy of its answer for (`409 KEY_COMMITTED`) spent
+    // the attempt as this session's, and the stored body a turn is made of is not in hand: the
+    // frame keeps its card, and the line says the accept was recorded and why no turn follows,
+    // never that Dispatch did not accept it.
+    test("stays a card, saying the accept was recorded, when the accept landed with no answer", async () => {
+      const warnings: string[] = [];
+      const stopSink = logger.registerLogSink((entry) => {
+        if (entry.level === "warn") warnings.push(entry.message);
+      });
+      try {
+        const { accepts, agent, delivered, fixture, posts } = await bootDirectSession(
+          "direct-accept-landed",
+          { accept: () => ({ code: IDEMPOTENCY_KEY_COMMITTED, status: 409 }) }
+        );
+
+        await onTestClock(() => {
+          agent.push(directDispatchEnvelope("steer", "direct-accept-landed"));
+          return delivered(1);
+        });
+
+        expect(accepts).toHaveLength(1);
+        expect(fixture.userMessages).toEqual([]);
+        expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual([
+          "envoy-message",
+        ]);
+        expect(posts).toEqual([]);
+        expect(warnings).toContain(
+          "envoy: Dispatch recorded this session's accept of a direct message and gave no copy of its answer, so no turn follows; it arrives as a card"
+        );
+        expect(warnings.filter((warning) => warning.includes("did not accept"))).toEqual([]);
+      } finally {
+        stopSink();
+      }
+    });
 
     // A failure that can clear is no answer: the accept asks again under its key, and Dispatch's
     // answer to the retry decides, so a Send whose first answer was lost is still the person's turn.
@@ -24091,6 +24247,9 @@ describe("consumer delivery", () => {
   for (const refusal of [
     { status: 503, reason: "no_grant" },
     { status: 409, reason: "not_requested" },
+    // A consumer filter past the server's max payload, which the listener used to answer 503
+    // consumer_error and now answers 413: the session is told the same way.
+    { status: 413, reason: "too_large" },
   ] as const) {
     test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with a notice naming it, and the next heartbeat asks again`, async () => {
       const session = await bootConsumer(`consumer-refused-${refusal.reason}`, {
@@ -24330,6 +24489,49 @@ describe("consumer delivery", () => {
     expect(session.replies(inbox)).toEqual(["received", "done"]);
     await session.tick();
     expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
+  });
+
+  // A peer's message whose JSON payload is nested past the depth the card's TOON encoder reaches
+  // made the shared renderer throw in `deliver`, so every copy of the frame failed and went back
+  // to the stream. The card shows such a payload as the text its sender sent, the frame is taken,
+  // and the extension says so once, naming the message.
+  test("a message whose payload is nested 9,999 deep is shown as its text, taken, and logged once with its id", async () => {
+    const warnings: { readonly message: string; readonly context?: unknown }[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
+    });
+    const session = await bootConsumer("consumer-deep-payload");
+    try {
+      const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+      const inbox = session.relay(
+        1,
+        JSON.stringify({ event_id: "evt-deep", source: "agent", topic: AGENT, payload: nested })
+      );
+      // The answer that settles the frame: `done` once it is taken, `nak` once it failed.
+      await until(
+        () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak"),
+        "the frame's settling answer",
+        30_000
+      );
+
+      expect(session.replies(inbox)).toEqual(["received", "done"]);
+      // TOON quotes the text as JSON quotes a string, so the card holds the sender's text whole.
+      expect(session.cards("evt-deep").map((card) => card.content)).toEqual([
+        expect.stringContaining(`\n  message: ${JSON.stringify(nested)}`),
+      ]);
+      expect(warnings.filter(({ message }) => message.includes("shown as its text"))).toEqual([
+        {
+          message: "envoy: a message's payload is shown as its text; the card could not lay it out",
+          context: {
+            event_id: "evt-deep",
+            error: "its layout is larger than the 1048576 bytes a card holds",
+          },
+        },
+      ]);
+    } finally {
+      stopSink();
+      await session.stop();
+    }
   });
 
   test("a NATS reconnect begins a new epoch and registers it at once", async () => {
@@ -24738,6 +24940,55 @@ describe("consumer delivery", () => {
         `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
     });
+
+    // The comment changed after its event was written. The card re-reads it, so it prints the
+    // comment as it stands: the deleted line every read prints in place of the body a delete
+    // cleared, or the words an edit wrote with the edited mark beside them. The part the event
+    // carried is in neither, nor the note that the body was cut.
+    test("is prompted with the deleted line for a comment deleted since", async () => {
+      const card = await cardForCutComment("cut-comment-deleted", (path) =>
+        path === `/api/v1/comments/${CUT_COMMENT}`
+          ? response({
+              comment: {
+                id: CUT_COMMENT,
+                issue_key: "INFRA-370",
+                body: "",
+                deleted_at: "2026-11-03T00:00:00Z",
+                deleted_by: { kind: "user", id: "alice" },
+              },
+              replies: [],
+            })
+          : undefined
+      );
+
+      expect(card).toContain(
+        `body: ${JSON.stringify("Deleted by user alice at 2026-11-03T00:00:00Z")}`
+      );
+      expect(card).not.toContain(CARRIED);
+      expect(card).not.toContain("first part only");
+    });
+
+    test("is prompted with the words an edit wrote and the edited mark for a comment edited since", async () => {
+      const card = await cardForCutComment("cut-comment-edited", (path) =>
+        path === `/api/v1/comments/${CUT_COMMENT}`
+          ? response({
+              comment: {
+                id: CUT_COMMENT,
+                issue_key: "INFRA-370",
+                body: "The paragraph as edited.\n\nAnd a second one.",
+                edited_at: "2026-11-03T00:00:00Z",
+              },
+              replies: [],
+            })
+          : undefined
+      );
+
+      expect(card).toContain(
+        `body: ${JSON.stringify("The paragraph as edited.\n\nAnd a second one. · edited 2026-11-03T00:00:00Z")}`
+      );
+      expect(card).not.toContain(CARRIED);
+      expect(card).not.toContain("first part only");
+    });
   });
 });
 
@@ -24829,6 +25080,76 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     }
   }, 120_000);
 });
+
+// The live view's replay answer (`pumpAgentStreamControl`) through a real nats-server, on the
+// session's own connection authenticated as a session user holding the grant the NATS auth
+// service gives a session (`sessionGrantConfig`, `natsgrant.Session` itself): publish its replies
+// under `_INBOX.*.<session id>.>` alone. The scenario is the one claude-envoy's row runs too
+// (`runReplayGrantScenario`): a replay asked on a reply subject naming the session is answered;
+// one asked on nats.go's own request inbox, the subject Dispatch used before, is refused by the
+// server and reaches nobody; the session then answers on its own prefix again. This row keeps the
+// extension's own boot, connection and shutdown. Docker-backed: the pi-envoy job runs this suite
+// with LEGION_E2E=1, its NATS service having pulled the image.
+const replyGrantServerDirectory = useNatsServerDirectory();
+
+describe.skipIf(process.env.LEGION_E2E !== "1")(
+  "the replay answer under a session's own NATS grant",
+  () => {
+    const SESSION = "ses_reply_grant";
+    const sessionUser = nkeys.createUser();
+    const requesterUser = nkeys.createUser();
+    const server = natsServerWithConfig(
+      replyGrantServerDirectory,
+      sessionGrantConfig({
+        sessionID: SESSION,
+        sessionKey: sessionUser.getPublicKey(),
+        requesterKey: requesterUser.getPublicKey(),
+      })
+    );
+
+    beforeAll(() => server.start(natsHookDeadline(NATS_START_HOOK_MS)), NATS_START_HOOK_MS);
+    afterAll(() => server.stop(natsHookDeadline(NATS_STOP_HOOK_MS)), NATS_STOP_HOOK_MS);
+
+    test("answers a replay asked on its own reply prefix, and nothing on nats.go's request inbox", async () => {
+      const decoder = new TextDecoder();
+      const originalSeed = process.env.NATS_NKEY_SEED;
+      process.env.ENVOY_NATS_URL = server.url;
+      process.env.NATS_NKEY_SEED = decoder.decode(sessionUser.getSeed());
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+        responseWithRegistration(input, init, [])) as typeof fetch;
+      natsState.realConnect = true;
+      const requester = await realConnect({
+        ...natsConnectionOptions({
+          servers: [server.url],
+          name: "pi-envoy-reply-grant-requester",
+          credential: {
+            kind: "seed",
+            seed: {
+              value: decoder.decode(requesterUser.getSeed()),
+              source: "the row's requester user",
+            },
+          },
+        }),
+        reconnect: false,
+      });
+      // A module instance of its own, as every row here takes one: the extension keeps its
+      // session's state, so a static import would share it with every other row of the file.
+      const { default: envoyExtension } = await import("./envoy.ts?reply-grant");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      const context = sessionContext(SESSION);
+      try {
+        await fixture.handlers.get("session_start")?.({}, context);
+        await runReplayGrantScenario({ requester, server, sessionID: SESSION });
+      } finally {
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+        await requester.close();
+        if (originalSeed === undefined) delete process.env.NATS_NKEY_SEED;
+        else process.env.NATS_NKEY_SEED = originalSeed;
+      }
+    }, 60_000);
+  }
+);
 
 // What the envoy_send and envoy_publish tools tell the model about where a message went
 // (INFRA-626): a send to a stopped session is queued and never sent, and a publish counts the

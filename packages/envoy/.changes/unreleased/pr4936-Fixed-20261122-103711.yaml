@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  Dispatch now resolves each footnote reference in a document's markdown from maps of the
+  document's definitions built once per read, where it walked the definitions from the first for
+  each reference: a document of n references and n definitions cost n²/2 comparisons. A reference
+  still resolves to the first definition whose label it equals, and failing that to the first whose
+  label it matches up to case. Reading 1,523 references and their definitions, a block of 32,000
+  characters, took 28 ms of CPU time and now takes 18 ms; eight times as many took 680 ms and now
+  take 145 ms. A `!` now starts a footnote reference only when `[^` follows it: `!x^a]` beside a
+  definition `[^a]` was read as a reference and lost its `x`, and each such `!` read the rest of
+  its line, so a line of 10,663 of them took 425 ms; it now keeps its text and takes 3 ms.
+time: 2026-11-22T10:37:11Z
+custom:
+    Issue: pr4936

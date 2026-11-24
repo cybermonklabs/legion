@@ -34,6 +34,7 @@ const (
 // rather than the daemon's, which is what keeps the row readable by the daemon of that other
 // project on a shared database.
 func TestTheTurnReadsABlockerOutsideTheProject(t *testing.T) {
+	t.Parallel()
 	t.Run("above the fan-out, beside the one project listing", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{issues: map[string]dispatch.Issue{

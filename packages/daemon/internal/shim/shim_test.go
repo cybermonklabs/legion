@@ -1326,10 +1326,7 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 // phase role left, as a `jj split` of its work into a described commit leaves one, becomes the
 // incoming phase role's, and the described commit under it keeps its id and its author.
 func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	for _, tc := range []struct {
 		name       string
 		leave      []string // what the previous role ran once README.md was written, nil for nothing
@@ -1433,10 +1430,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 // role's workspace; on a devbox, a checkout), so the adoption runs in the workspace it adopts and
 // leaves the repository the shim runs in as it was.
 func TestAdoptWorkingCopyLeavesTheRepositoryTheShimRunsInUntouched(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	home := t.TempDir()
 	initialize := func(dir string) {
 		t.Helper()
@@ -1529,10 +1523,7 @@ func treeOf(t *testing.T, root string) map[string]string {
 // backend reported it (the index jj rewrites as it snapshots the working copy, as in LEGION-731)
 // or a git command jj ran; and the lock stays.
 func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	for _, tc := range []struct {
 		name string
 		// script is the PATH's jj, given the real jj and the lock.
@@ -1685,10 +1676,7 @@ func TestThePinnedJJCarriesTheChunkedPackPatch(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the chunked pack mapping is Linux's alone: on %s the patched jj reads no JJ_PACK_MAPPED_LIMIT", runtime.GOOS)
 	}
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	const file = "README.md"
 	home := t.TempDir()
 	repository := t.TempDir()
@@ -1860,4 +1848,37 @@ func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 			sh.log.awaitLine(t, shimwire.TypeToolExecutionStart+" bash "+summary, 1)
 		})
 	}
+}
+
+// jjRun runs one jj command in the workspace it reads, as every jj a test starts must
+// (docs/testing.md).
+func jjRun(t *testing.T, home, dir string, args ...string) string {
+	t.Helper()
+	return workspaceCommand(t, home, dir, append([]string{"jj"}, args...))
+}
+
+// jjGit runs one git command in the workspace it reads, as jjRun runs a jj.
+func jjGit(t *testing.T, home, dir string, args ...string) string {
+	t.Helper()
+	return workspaceCommand(t, home, dir, append([]string{"git"}, args...))
+}
+
+// workspaceCommand runs one jj or git of a fixture's workspace under the isolated environment
+// this package's fixtures use (fixtureenv.Isolated), so no command of a test reads the git or jj
+// configuration, the credentials or the LEGION_ variables of whoever runs the tests — in a pod, of
+// the role whose live workspace this binary stands in. Isolated's own JJ_CONFIG names a file that
+// does not exist, which is what keeps the host's jj configuration out; the fixture writes none of
+// its own.
+//
+// home is the fixture's, and the shim under test is given the same one, so the two read one
+// configuration (docs/testing.md). It is outside the workspace: a fixture asserts on what the
+// workspace holds, and a home under it would put jj's and git's own files into the very change
+// under test.
+func workspaceCommand(t *testing.T, home, dir string, args []string) string {
+	t.Helper()
+	return fixturegit.Isolated(t, home).With(
+		"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
+		"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
+		"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test",
+	).Run(dir, args...)
 }

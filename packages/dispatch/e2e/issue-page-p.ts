@@ -20,6 +20,9 @@ declare global {
     /** `holdClipboard`'s clipboard: how many writes were made, and the resolve of each write
      *  still held. */
     __dispatchHeldClipboard?: { held: (() => void)[]; writes: number };
+    /** `holdFrames`' release: hands every held animation frame to the browser's next frame and
+     *  puts the page's own `requestAnimationFrame` back. */
+    __dispatchReleaseFrames?: () => void;
   }
 }
 
@@ -975,5 +978,45 @@ export async function holdClipboard(page: Page): Promise<HeldClipboard> {
         for (const resolve of window.__dispatchHeldClipboard?.held.splice(0) ?? []) resolve();
       }),
     writes: () => page.evaluate(() => window.__dispatchHeldClipboard?.writes ?? 0),
+  };
+}
+
+/**
+ * Holds every animation frame the page asks for from now on until `release`, which hands them to
+ * the browser's next frame: a loaded machine draws its next frame late, and the keys it takes in
+ * the meantime are handled before that frame. Cancelling a held frame drops it. Called once the
+ * page has loaded; a navigation ends it.
+ */
+export async function holdFrames(page: Page): Promise<{ release: () => Promise<void> }> {
+  await page.evaluate(() => {
+    const frame = window.requestAnimationFrame.bind(window);
+    const cancel = window.cancelAnimationFrame.bind(window);
+    const held = new Map<number, FrameRequestCallback>();
+    // A held frame's id starts far above the browser's own, which count up from 1, so a cancel
+    // of a frame asked for before the hold still reaches the browser.
+    let next = 1_000_000_000;
+    window.requestAnimationFrame = (callback) => {
+      next += 1;
+      held.set(next, callback);
+      return next;
+    };
+    window.cancelAnimationFrame = (id) => {
+      if (!held.delete(id)) cancel(id);
+    };
+    window.__dispatchReleaseFrames = () => {
+      window.requestAnimationFrame = frame;
+      window.cancelAnimationFrame = cancel;
+      for (const callback of held.values()) frame(callback);
+      held.clear();
+    };
+  });
+  return {
+    release: () =>
+      page.evaluate(() => {
+        if (window.__dispatchReleaseFrames === undefined) {
+          throw new Error("the page holds no frames to let go");
+        }
+        window.__dispatchReleaseFrames();
+      }),
   };
 }

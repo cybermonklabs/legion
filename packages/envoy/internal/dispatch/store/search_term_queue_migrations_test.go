@@ -25,8 +25,8 @@ const (
 // needs no gigabyte, over a database at 20261101182515, where the item tables are already above
 // that.
 func TestCensusExemptsTheSearchTermQueueTriggersFromTheTableLimit(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, searchTermTotalsColumns)
+	t.Parallel()
+	store := openMigratedTestStore(t, searchTermTotalsColumns)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(),
 		migrationsThrough(t, searchTermQueueTriggers), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
@@ -50,6 +50,7 @@ func TestCensusExemptsTheSearchTermQueueTriggersFromTheTableLimit(t *testing.T) 
 // migration touches the one small table it alters; and the triggers migration touches the four
 // item tables and document_search, which is the lock window the test below holds to an order.
 func TestTheSearchTermQueueMigrationsTouchOnlyWhatTheyMustLock(t *testing.T) {
+	t.Parallel()
 	for _, migration := range []struct {
 		name string
 		file string
@@ -80,6 +81,7 @@ func TestTheSearchTermQueueMigrationsTouchOnlyWhatTheyMustLock(t *testing.T) {
 // cannot each hold a lock the other waits for. The order is the migration's own claim about
 // itself, and this holds the file to it.
 func TestTheSearchTermQueueTriggersLockTheirTablesInOneOrder(t *testing.T) {
+	t.Parallel()
 	sql, err := migrationFiles.ReadFile("migrations/20261101182522_search_term_queue_triggers.up.sql")
 	if err != nil {
 		t.Fatalf("read 20261101182522: %v", err)

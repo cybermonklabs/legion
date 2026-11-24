@@ -92,6 +92,22 @@ func (c *Copy[V]) Remove(key string) {
 	delete(c.entries, key)
 }
 
+// Forget takes key out of the copy and out of its fence, for a key the bucket writes once and then
+// deletes, and never writes again: internal/kvchunk's chunks, each under a generation no other
+// write names. Nothing can reach the copy for such a key after its delete that the fence would
+// have to drop - no write follows the delete, and a watcher delivers the delete after the put - so
+// the fence entry a delete leaves (evict) guards nothing, and keeping it would hold one entry for
+// every chunk a rewrite ever replaced, until a completed read of the bucket swept them. Like
+// Remove, it does not call Rows.Removed.
+func (c *Copy[V]) Forget(key string) {
+	delete(c.entries, key)
+	delete(c.revisions, key)
+}
+
+// FenceLen is how many keys the fence holds a revision for: each key the copy holds, and each key a
+// delete removed, until a completed read of the bucket sweeps it or Forget drops it.
+func (c *Copy[V]) FenceLen() int { return len(c.revisions) }
+
 // BeginRead starts a read of the bucket (Cache.BeginRead): a fresh set of marks, the read's epoch
 // as the one the fence belongs to, and, for a recreated bucket whose revisions number from 1
 // again, no fence. Every entry stays.

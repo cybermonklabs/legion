@@ -167,6 +167,7 @@ var fleetRaceCases = []fleetRaceCase{
 // the row only in its write phase), which is what the control row checks; what it answers then is
 // logged, not judged.
 func TestACommentResolveIsRefusedOnAnIssueAnEarlierBuildClosesWhileItIsUnderWay(t *testing.T) {
+	t.Parallel()
 	for _, fleet := range fleetRaceCases {
 		t.Run(fleet.name, func(t *testing.T) {
 			fixture := newFleetRaceFixture(t, fleet, "Closed meanwhile")
@@ -211,6 +212,7 @@ func TestACommentResolveIsRefusedOnAnIssueAnEarlierBuildClosesWhileItIsUnderWay(
 // the PATCH takes first, so without the row the PATCH would read the labels before that writer's
 // commit and write its own over them: the earlier build's label lost.
 func TestALabelAddedBesideAnEarlierBuildsLabelKeepsBoth(t *testing.T) {
+	t.Parallel()
 	for _, fleet := range fleetRaceCases {
 		t.Run(fleet.name, func(t *testing.T) {
 			fixture := newFleetRaceFixture(t, fleet, "Labelled meanwhile")
@@ -330,6 +332,7 @@ func pauseLabelWrite(t *testing.T, database *store.Store, pid uint32) pgx.Tx {
 // function waits without a bound, and no wait of this row ends on a clock: each ends on the fact
 // it waits for, bounded only by the test binary's deadline (testwait).
 func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing.T) {
+	t.Parallel()
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			fixture := newItemRowFixture(t, testServerOptions{}, "Arrived meanwhile", "A spec.\n")

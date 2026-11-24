@@ -50,10 +50,13 @@ func TestTheRulesPassWhatTheyAreWrittenToPass(t *testing.T) {
 		{Label: "docs/testing.md", Text: "a line of ordinary prose"},
 		{Label: "ref legion/INVENTED-1", Text: "legion/INVENTED-1"},
 	}
-	lines, err := engine.scan(context.Background(), clean)
-	if err != nil {
-		t.Fatal(err)
+	pass := &pass{ctx: context.Background(), engine: engine}
+	for _, record := range clean {
+		if err := pass.add(record); err != nil {
+			t.Fatal(err)
+		}
 	}
+	lines := pass.report.lines
 	if len(lines) != 0 {
 		t.Errorf("the report is %q, want nothing", lines)
 	}
@@ -82,11 +85,11 @@ func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
 	)
 	scan := func(t *testing.T, record Record) []string {
 		t.Helper()
-		lines, err := engine.scan(context.Background(), []Record{record})
-		if err != nil {
+		var rep report
+		if err := engine.scan(context.Background(), record, &rep); err != nil {
 			t.Fatal(err)
 		}
-		return lines
+		return rep.lines
 	}
 	t.Run("a namespace passes", func(t *testing.T) {
 		for _, text := range []string{
@@ -166,14 +169,17 @@ func TestARecordIsReportedAgainstItselfAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines, err := engine.scan(context.Background(), []Record{
+	pass := &pass{ctx: context.Background(), engine: engine}
+	for _, record := range []Record{
 		{Label: "the first record", Text: "a host at " + theHost},
 		{Label: "the second record", Text: "nothing of ours"},
 		{Label: "the third record", Text: "nothing of ours either"},
-	})
-	if err != nil {
-		t.Fatal(err)
+	} {
+		if err := pass.add(record); err != nil {
+			t.Fatal(err)
+		}
 	}
+	lines := pass.report.lines
 	if want := []string{"the first record: " + theClass}; !slices.Equal(lines, want) {
 		t.Errorf("the report is %q, want %q", lines, want)
 	}
@@ -189,7 +195,7 @@ func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := engine.scan(ctx, []Record{{Label: "the title", Text: "a host at " + theHost}}); err == nil {
+	if err := engine.scan(ctx, Record{Label: "the title", Text: "a host at " + theHost}, &report{}); err == nil {
 		t.Fatal("a scan under a context that ended answered no error")
 	}
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
@@ -204,13 +210,18 @@ func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
 // one that names no repository on github.com names none, and the guard scans such a write as if
 // it were public rather than skipping it. A URL whose two names are no repository GitHub serves
 // names none either: the guard refuses a slug its exemption could not cover (Guard.scanThrough),
-// so a URL that answered one would refuse the push over the spelling of its remote.
+// so a URL that answered one would refuse the push over the spelling of its remote. The host is
+// read from the URL's authority alone, which ends at the first "/", "?" or "#", as git's
+// credential code and curl end it, and from scp syntax only where git reads that syntax: a path,
+// a query or a fragment that holds "@github.com", on another host or on this machine, names no
+// repository there, and neither does a file URL.
 func TestRepoFromURL(t *testing.T) {
 	for _, tc := range []struct{ url, want string }{
 		{"https://github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"https://github.com/invented-org/invented-repo", "invented-org/invented-repo"},
 		{"https://x-access-token:secret@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"ssh://git@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
+		{"git+ssh://git@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"git@github.com:invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"https://github.com/invented-org/invented-repo/", "invented-org/invented-repo"},
 		{"https://example.invalid/invented-org/invented-repo.git", ""},
@@ -218,6 +229,13 @@ func TestRepoFromURL(t *testing.T) {
 		{"https://github.com/invented-org", ""},
 		{"https://github.com/-invented-org/invented-repo", ""},
 		{"https://github.com/invented-org/../invented-repo", ""},
+		{"https://example.invalid/a@github.com/invented-org/invented-repo.git", ""},
+		{"file:///a/local/path/@github.com/invented-org/invented-repo.git", ""},
+		{"file://github.com/invented-org/invented-repo.git", ""},
+		{"/a/local/path@github.com:invented-org/invented-repo.git", ""},
+		{"https://example.invalid?@github.com/invented-org/invented-repo.git", ""},
+		{"https://example.invalid#@github.com/invented-org/invented-repo.git", ""},
+		{"http://example.invalid?x=@github.com/invented-org/invented-repo.git", ""},
 	} {
 		if got := RepoFromURL(tc.url); got != tc.want {
 			t.Errorf("RepoFromURL(%q) = %q, want %q", tc.url, got, tc.want)

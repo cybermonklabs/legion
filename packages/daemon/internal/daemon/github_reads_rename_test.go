@@ -33,6 +33,7 @@ import (
 // With no pair configured the same record is read under its own name, as a deployment that
 // configures no rename always did.
 func TestThePullRequestReadsOfATreeRecordedBeforeItsTransferAddressTheRepositoryGitHubServes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames

@@ -27,6 +27,7 @@ import (
 // sequence 1 from its listing, the edit reached no record, and no note said that Legion keeps
 // zeta/tools.
 func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-1800"
 	h := newHeldEditRecovery(t, key)
 	h.edit(t, key, "orbit/gadgets", 2)
@@ -57,6 +58,7 @@ func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing
 // records the issue on zeta/tools at sequence 3, with nothing said on it. Before, the held listing
 // recorded the issue at sequence 1, behind both edits.
 func TestTwoEditsOfAnUnrecordedIssuesRepositoryDuringARecoveryRecordItAtTheNewer(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-1802"
 	h := newHeldEditRecovery(t, key)
 	h.edit(t, key, "orbit/gadgets", 2)
@@ -72,10 +74,10 @@ func TestTwoEditsOfAnUnrecordedIssuesRepositoryDuringARecoveryRecordItAtTheNewer
 // zeta/tools. The record keeps zeta/tools, takes the edit's sequence, and the daemon says on the
 // issue that Legion keeps zeta/tools and does not apply the change to orbit/gadgets.
 func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
-	quickInstallReads(t)
+	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
-	w, client, installs, _ := repositoryRigWith(t, installs)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads)
 	const key = "LEGION-1801"
 	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
 	serveAndRecover(t, w, installs)
@@ -102,11 +104,11 @@ func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
 // parent. Before, the pass let zeta/tools go with the child unrecorded, and no later pass listed
 // it.
 func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testing.T) {
-	quickInstallReads(t)
+	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	refresher := &heldRefresher{gate: make(chan struct{})}
-	w, client, installs, _ := repositoryRigWith(t, installs, refresher.hold)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads, refresher.hold)
 	const root, parent, child = "LEGION-1809", "LEGION-1810", "LEGION-1811"
 	liveRoot(t, w, client, root)
 	deliver(t, w, client, issue(child, "zeta/tools", "todo", false, parent, 1))
@@ -157,10 +159,9 @@ type heldEditRecovery struct {
 
 func newHeldEditRecovery(t *testing.T, key string) heldEditRecovery {
 	t.Helper()
-	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
-	w, client, installs, _ := repositoryRigWith(t, installs)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads)
 	// No repository is unread before the event's preparation leaves zeta/tools so, which is what
 	// wakes the recovery, and deliver shows the issue before it prepares the event: the held listing
 	// is the first, and shows the issue at sequence 1.

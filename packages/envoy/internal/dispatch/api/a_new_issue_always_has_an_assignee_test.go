@@ -17,6 +17,7 @@ import (
 // Each step of the chain is driven through POST /api/v1/issues and the issue is then read back,
 // since the create's answer and the stored row must name the same person.
 func TestANewIssueAlwaysHasAnAssignee(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	// carol is nobody's creator and holds no token here, so an issue reaching her reached the
 	// project's default and nothing else.
@@ -83,6 +84,81 @@ func TestANewIssueAlwaysHasAnAssignee(t *testing.T) {
 	}
 }
 
+// A parent in another project passes on no assignee, as it passes on no repository, components
+// or legion label: the parent's step of the chain (defaultAssignee) is read only from a parent of
+// the new issue's own project, so a BETA issue filed for nobody under an ALPHA issue bob holds
+// lands on BETA's default, carol, and never on bob or on ALPHA's default, dave. The steps before
+// it still decide first: the assignee the create names, and the person who files it. A child of a
+// parent in its own project still takes that parent's assignee, in ALPHA and in BETA alike, which
+// is the control.
+func TestAParentInAnotherProjectPassesOnNoAssignee(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedPeople(t, database, "carol", "dave")
+	for project, person := range map[string]string{"ALPHA": "dave", "BETA": "carol"} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+			"key": project, "name": project,
+		}, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
+		}
+		putDefaultAssignee(t, handler, project, person)
+	}
+	alphaParent := createSharedTokenIssue(t, handler, map[string]any{
+		"project": "ALPHA", "title": "An ALPHA parent bob holds", "assignee": "bob",
+	})
+	betaParent := createSharedTokenIssue(t, handler, map[string]any{
+		"project": "BETA", "title": "A BETA parent bob holds", "assignee": "bob",
+	})
+
+	for _, step := range []struct {
+		step   string
+		person string
+		create func() assigneeIssue
+	}{
+		{"a child of another project's parent, filed for nobody", "carol", func() assigneeIssue {
+			return createSharedTokenIssue(t, handler, map[string]any{
+				"project": "BETA", "title": "Under ALPHA's parent", "parent": alphaParent.Key,
+			})
+		}},
+		{"a child of another project's parent, naming a null assignee", "carol", func() assigneeIssue {
+			return createSharedTokenIssue(t, handler, map[string]any{
+				"project": "BETA", "title": "Under ALPHA's parent for null", "parent": alphaParent.Key, "assignee": nil,
+			})
+		}},
+		{"a child of another project's parent, naming its assignee", "alice", func() assigneeIssue {
+			return createSharedTokenIssue(t, handler, map[string]any{
+				"project": "BETA", "title": "Under ALPHA's parent for alice", "parent": alphaParent.Key, "assignee": "alice",
+			})
+		}},
+		{"a child of another project's parent, filed by a person", "alice", func() assigneeIssue {
+			response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "BETA", "title": "Under ALPHA's parent, filed by alice", "parent": alphaParent.Key,
+			}, "alice")
+			if response.Code != http.StatusCreated {
+				t.Fatalf("create as a person: status=%d body=%s", response.Code, response.Body.String())
+			}
+			return decodeBody[assigneeIssue](t, response)
+		}},
+		{"a child of its own project's parent in ALPHA", "bob", func() assigneeIssue {
+			return createSharedTokenIssue(t, handler, map[string]any{
+				"project": "ALPHA", "title": "Under ALPHA's own parent", "parent": alphaParent.Key,
+			})
+		}},
+		{"a child of its own project's parent in BETA", "bob", func() assigneeIssue {
+			return createSharedTokenIssue(t, handler, map[string]any{
+				"project": "BETA", "title": "Under BETA's own parent", "parent": betaParent.Key,
+			})
+		}},
+	} {
+		t.Run(step.step, func(t *testing.T) {
+			created := step.create()
+			expectAssignee(t, created.Assignee, step.person)
+			read := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodGet,
+				"/api/v1/issues/"+created.Key, nil, "alice"))
+			expectAssignee(t, read.Assignee, step.person)
+		})
+	}
+}
+
 // A create that sends assignee as an explicit JSON null names nobody, as one that sends no
 // assignee does, so it walks the same chain (defaultAssignee) and lands on a person: the person
 // the credential acts for, else the parent's assignee, else the project's default. Only a PATCH
@@ -92,6 +168,7 @@ func TestANewIssueAlwaysHasAnAssignee(t *testing.T) {
 // Each issue is read back, and the project's listing, which every issue summary carries its
 // assignee on (GET /api/v1/issues has no assignee filter), names a person for every one of them.
 func TestACreateNamingNobodyTakesTheDefault(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	// carol is nobody's creator and holds no token here, so an issue reaching her reached the
 	// project's default and nothing else.

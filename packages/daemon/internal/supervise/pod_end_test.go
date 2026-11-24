@@ -59,7 +59,7 @@ func TestAFailedClaimKeepsThePodEndThatRanItsBudgetOut(t *testing.T) {
 
 // A death the runtime reports with no pod end — every runtime but the Sandbox one, and a pod that
 // carries no reason — leaves the claim naming none. The relaunch between the two deaths here
-// clears the first one's end in any case (launchNow); a second report with no launch between is
+// clears the first one's end in any case (launchTries); a second report with no launch between is
 // TestASecondReportOfOneDeathReplacesThePodEndTheFirstWrote's.
 func TestAClaimsPodEndIsTheEndThatLastKilledIt(t *testing.T) {
 	h := newHarness(t)

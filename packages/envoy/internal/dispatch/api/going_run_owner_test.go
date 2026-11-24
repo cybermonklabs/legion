@@ -18,6 +18,7 @@ import (
 // workload, recorded before the mark. A session of another workload, a workload's own token and
 // the shared bearer read none of them, and the shared bearer's empty author is nobody's.
 func TestARunRecordedBeforeTheMarkIsItsOwnCredentialsStill(t *testing.T) {
+	t.Parallel()
 	named := func(name string) *string { return &name }
 	workload := named("system:serviceaccount:legion:legion-worker")
 	otherWorkload := named("system:serviceaccount:legion:legion-reviewer")

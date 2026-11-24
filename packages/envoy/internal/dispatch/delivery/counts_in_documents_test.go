@@ -1,5 +1,7 @@
 package delivery
 
+//ci:reads packages/envoy/cmd/dispatch/README.md TestTheServerReadmeStatesTheBoundsThisPackageHolds docnumbers.Check under ../../../../.. (internal/docnumbers/docnumbers.go:63 os.ReadFile): the intake hold's lease, renewal and retry it states must equal the constants that decide them
+
 import (
 	"path/filepath"
 	"testing"

@@ -23,6 +23,17 @@
 // every component the repository and company rules match replaced by "<name>", the masking
 // .github/scripts/check-private-names.sh does (its named_parts function, which its mask applies).
 //
+// The rule pass of a push reads git's output as git writes it, the added paths and the diff, and
+// scans each record as it arrives (pass), and a refusal names at most 1000 lines, counting the
+// rest (refusalLines). So the pass holds one line of git's output, the record in hand, the
+// detector's cost of scanning it, and one commit's author, committer and message, whatever the
+// number and size of the push's files; what grows with the push is the list of its commits, about
+// one line of a commit's id each. One line is held whole, a few times over (the reader's buffer,
+// the record's text, the detector's lower-cased copy), however long it is: a line is neither
+// split, since a match could cross the split and pass unread, nor refused for its length, which
+// would refuse pushes the rules pass. A push of a 73 MB line took 416 MiB; a hook the kernel
+// stops for its memory refuses the push.
+//
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
 // switches on, the shared check refuses a dispatch:// link, and 786 tracked files of this
@@ -36,6 +47,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -96,6 +108,15 @@ type Guard struct {
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
+	// waitDelay, where it is not 0, stands in for procgroup.WaitDelay in every child of the guard,
+	// as exec's WaitDelay and as the wait readOutput gives a child's output after it exits
+	// (Guard.exitDelay). This package's own tests set it to an hour, so that the end after the
+	// exit never comes first and the end a test checks is the one the read takes.
+	waitDelay time.Duration
+	// onWait, where it is not nil, is handed the argv of each child whose output the guard reads as
+	// it is written (Guard.readOutput) and what that child's Wait answered. This package's own
+	// tests set it, to see which error a child's exit gave the read's end (readEndDelay).
+	onWait func(argv []string, waitErr error)
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
@@ -185,18 +206,26 @@ func (g *Guard) Rules(ctx context.Context, records ...Record) error {
 
 // rules is the rule-file pass over records, reported as a refusal of what.
 func (g *Guard) rules(ctx context.Context, what string, records []Record) error {
+	pass, err := g.rulePass(ctx, what)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if pass.add(record) != nil {
+			break
+		}
+	}
+	return pass.end(what)
+}
+
+// rulePass is a rule pass of the embedded rules, for records read one at a time, or the setup
+// failure of rules that could not be compiled.
+func (g *Guard) rulePass(ctx context.Context, what string) (*pass, error) {
 	engine, err := compiled()
 	if err != nil {
-		return &SetupFailure{What: what, Why: "the private-name rules could not be read", Err: err}
+		return nil, &SetupFailure{What: what, Why: "the private-name rules could not be read", Err: err}
 	}
-	lines, err := engine.scan(ctx, records)
-	if err != nil {
-		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: err}
-	}
-	if len(lines) == 0 {
-		return nil
-	}
-	return &Refusal{What: what, By: byRules, Lines: lines}
+	return &pass{ctx: ctx, engine: engine}, nil
 }
 
 // TextRequest is a piece of text a write would publish, as the shared check's text shape reads it:
