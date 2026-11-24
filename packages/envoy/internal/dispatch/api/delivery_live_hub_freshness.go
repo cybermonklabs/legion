@@ -51,15 +51,10 @@ func (h *deliveryHub) judgeLocked(g *hubGeneration, now time.Time) {
 		equalStringPointers(verdict.lastError, g.sent.lastError) {
 		return
 	}
-	for conn, subs := range g.conns {
-		told := map[string]bool{}
-		for _, sub := range subs {
-			viewer := sub.view.spec.viewer
-			if frame, changed := frames[viewer]; changed && !told[viewer] {
-				told[viewer] = true
-				conn.Send(frame)
-			}
-		}
+	g.sent = verdict
+	frame := g.freshnessFrameLocked(verdict)
+	for conn := range g.conns {
+		conn.Send(frame)
 	}
 }
 

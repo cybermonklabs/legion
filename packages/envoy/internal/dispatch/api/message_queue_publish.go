@@ -41,18 +41,7 @@ func (s *server) mayQueueForUnknownSession(
 		return false
 	}
 	route, err := model.ParseRoute(messageTarget(message.Target))
-	if err != nil || route.Kind != "session" || route.ID != pending.resolved.attemptSessionID {
-		return false, nil
-	}
-	writer, err := s.attemptWriter(ctx, actor)
-	if err != nil {
-		return false, err
-	}
-	hidden, err := s.sessionHiddenFrom(ctx, writer, route.ID)
-	if err != nil {
-		return false, err
-	}
-	return !hidden, nil
+	return err == nil && route.Kind == "session" && route.ID == pending.resolved.attemptSessionID
 }
 
 // attemptWriter is the writer of a delivery attempt as a read binds it: the request's reader where

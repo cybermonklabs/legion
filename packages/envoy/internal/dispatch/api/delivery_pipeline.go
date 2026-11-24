@@ -129,17 +129,6 @@ func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor,
 	if pop.leadTimes, err = s.readDeliveryRows(ctx, reader, settings, from, to, url.Values{}, false, false); err != nil {
 		return pipelinePopulation{}, err
 	}
-	if seesEveryObject(reader) {
-		return pop, nil
-	}
-	pop.deploys.Runs, pop.deploys.Jobs = runsWhere(pop.deploys.Runs, pop.deploys.Jobs, func(run delivery.DeliveryRun) bool {
-		return pop.leadTimes.runShown(run.RunID)
-	})
-	shown, err := s.prChecksShown(ctx, reader, settings.DeployRepo, pop.checks.Runs, pop.leadTimes.unnamedShown)
-	if err != nil {
-		return pipelinePopulation{}, err
-	}
-	pop.checks.Runs, pop.checks.Jobs = runsWhere(pop.checks.Runs, pop.checks.Jobs, shown)
 	return pop, nil
 }
 

@@ -152,8 +152,7 @@ func (s *server) recordHandoff(ctx context.Context, who model.Actor, issueKey, p
 // /api/v1/issues/{key}/handoffs. A closed issue's handoffs read as an open one's, and an issue of
 // a project the caller does not see holds none, as a key no issue carries holds none.
 func (s *server) listHandoffs(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
@@ -179,8 +178,7 @@ func (s *server) listHandoffs(w http.ResponseWriter, r *http.Request) {
 // getLatestHandoff is the newest handoff of one phase of an issue, with its body: GET
 // /api/v1/issues/{key}/handoffs/{phase}/latest.
 func (s *server) getLatestHandoff(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	issueKey, phase := r.PathValue("key"), r.PathValue("phase")
@@ -199,8 +197,7 @@ func (s *server) getLatestHandoff(w http.ResponseWriter, r *http.Request) {
 
 // getHandoff is one handoff by id, with its body: GET /api/v1/handoffs/{id}.
 func (s *server) getHandoff(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	if !requireUUIDPath(w, r, "handoff") {
