@@ -67,12 +67,14 @@ func TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt(t *tes
 			name: "a_parent_with_the_repository_of_the_pull_request", title: key("GDGT", number) + " the work",
 			before: func(t *testing.T, ctx context.Context, pool *store.Pool) {
 				seedGadgetsIssue(t, ctx, pool, number)
-				// The parent names the pull request's repository as its own, which its project maps.
-				parent := seedHeadIssue(t, ctx, pool, number+1)
+				// The parent names the pull request's repository as its own. It is of the issue's
+				// own project: a parent of another project passes on no repository (main's #4896,
+				// refs.IssueRepoTerms), so it would be no tie.
+				parent := seedGadgetsIssue(t, ctx, pool, number+1)
 				mustExec(t, ctx, pool, `update issues set repo = 'acme/widgets' where key = $1`, parent)
 			},
 			tie: func(t *testing.T, ctx context.Context, pool *store.Pool) string {
-				mustExec(t, ctx, pool, `update issues set parent_key = $2 where key = $1`, key("GDGT", number), key("HEAD", number+1))
+				mustExec(t, ctx, pool, `update issues set parent_key = $2 where key = $1`, key("GDGT", number), key("GDGT", number+1))
 				return key("GDGT", number)
 			},
 		},
