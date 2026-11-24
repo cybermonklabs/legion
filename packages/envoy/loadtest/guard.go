@@ -18,7 +18,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -717,7 +716,7 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 // tokens, so the client follows no redirect (redirects.Refused): none of the three answers one,
 // and a Location is the answering party's words.
 func checkStack(ctx context.Context, e endpoints) error {
-	client := redirects.Refused(&http.Client{Timeout: 10 * time.Second})
+	client := redirects.Refused(shortClient)
 	if err := checkNATSServerName(ctx, client, e.natsMon, e.natsServerName); err != nil {
 		return err
 	}

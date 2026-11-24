@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,7 +216,7 @@ func registrationBody(id string, topics []string, mentions bool) []byte {
 // (relaySessions.delivery). The registrations carry the listener's bearer, so their client follows
 // no redirect (redirects.Refused), as listenerclient.Client asks.
 func (st *step) registerSessions(ctx context.Context, ns *natsSessions) *registrar {
-	reg := &registrar{listener: &listenerclient.Client{URL: st.cfg.ep.listener, Token: st.cfg.ep.listenerToken, HTTP: redirects.Refused(&http.Client{Timeout: 10 * time.Second})},
+	reg := &registrar{listener: &listenerclient.Client{URL: st.cfg.ep.listener, Token: st.cfg.ep.listenerToken, HTTP: redirects.Refused(shortClient)},
 		bodies: make([]listenerwire.SubscribeRequest, len(st.ids)), relay: ns.relay}
 	for i := range st.ids {
 		reg.bodies[i] = st.registrationFields(i)
