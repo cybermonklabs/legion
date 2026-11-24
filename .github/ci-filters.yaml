@@ -1460,6 +1460,7 @@ pi_legion:
   - 'packages/dispatch/e2e/**'
   - 'packages/dispatch/web/src/api/types.ts'
   - 'packages/dispatch/web/src/api/paths.ts'
+  - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'skills/**'
   - 'scripts/pi-plugin-prepack.sh'
   - 'scripts/third-party-notices.ts'

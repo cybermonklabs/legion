@@ -219,9 +219,9 @@ const rigOwner = "example"
 
 // rigRepository and rigDefaultBranch are the repository and default branch a rig worker's
 // addressing names, as a real pane's does for its issue. They are the tester-proof world's, which
-// rig.sh and daemon-standin.ts name again: rigRepository must equal rig.sh's `worker_repo` and the
-// stand-in's REPOSITORY, and rigDefaultBranch rig.sh's `worker_default_branch` and the stand-in's
-// DEFAULT_BRANCH. The branch is not `main`, since the skills tell a worker never to assume one.
+// rig.sh names again: rigRepository must equal rig.sh's `worker_repo`, and rigDefaultBranch
+// rig.sh's `worker_default_branch`. The branch is not `main`, since the skills tell a worker never
+// to assume one.
 const (
 	rigRepository    = rigOwner + "/widgets"
 	rigDefaultBranch = "trunk"

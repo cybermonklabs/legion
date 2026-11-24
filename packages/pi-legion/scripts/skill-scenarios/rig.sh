@@ -159,9 +159,11 @@
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
 #   SKILL_SCENARIOS_POSTGRES_URL  a Postgres the batch uses in place of the container it would
-#                                 start, as a URL
-#                                 (postgres://<user>:<password>@<host>:<port>/<database>). It must
-#                                 be the Postgres on this machine: services_up reads the URL with
+#                                 start, as a postgres:// or postgresql:// URL
+#                                 (postgres://<user>:<password>@<host>:<port>/<database>), never
+#                                 a key=value connection string: services_up refuses one, since
+#                                 the batch can take a password out of a URL alone. It must be
+#                                 the Postgres on this machine: services_up reads the URL with
 #                                 require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh) before
 #                                 anything connects to it or the batch writes the URL anywhere,
 #                                 and refuses every host libpq reads from it but 127.0.0.1,
@@ -261,10 +263,10 @@ work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
 # The tester-proof world (worker_fixture below): its repository and that repository's default
-# branch, and the run's own issue, which run_tester_proof sets once seed.ts has filed it. The
-# daemon's side of the world names the repository and the branch again: daemon-pane.go's
-# rigRepository and rigDefaultBranch, which the pane's addressing names, and daemon-standin.ts's
-# REPOSITORY and DEFAULT_BRANCH, which its state names. Each must equal the value here.
+# branch, and the run's own issue, which run_tester_proof sets once seed.ts has filed it.
+# run_tester_proof gives the daemon stand-in the repository and the branch as arguments, for its
+# state. daemon-pane.go names them again, as rigRepository and rigDefaultBranch, which the pane's
+# addressing names, and each must equal the value here.
 worker_key=''
 worker_repo=example/widgets
 worker_default_branch=trunk
@@ -321,6 +323,10 @@ evidence=$work
 timeout_hook=
 # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# packages/envoy/scripts/lib/pg-url.sh's pg_url_run and pg_url_without_password: pg_sql gives psql
+# a given Postgres URL's password in PGPASSWORD alone, and safe_url prints that URL without it.
+# shellcheck source-path=SCRIPTDIR/../../../.. source=packages/envoy/scripts/lib/pg-url.sh
+. "$root/packages/envoy/scripts/lib/pg-url.sh"
 
 tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 tmux_socket=$work/tmux.sock
@@ -844,31 +850,32 @@ given_services() {
 
 # safe_url URL prints URL without its password, for a note, a failure message and a run's
 # dispatch.json: a server the operator gave can carry one in its URL. A postgres:// or
-# postgresql:// URL is read as libpq reads it: its user info runs to the first `@`, unless a `/`
-# comes first, and the password from the first `:` in it. A raw `@` in a password would end it
-# there, but such a URL never reaches this function: services_up reads every given Postgres URL
-# with require_loopback_dsn first, and the guard refuses the host libpq reads after that `@`
-# (ss@127.0.0.1 for postgres://u:p@ss@127.0.0.1/db). With a raw `/` in a password, libpq finds no
-# user info, since its search for the `@` stops at a `/`, and it reads the user name as the host:
-# the guard refused postgres://u:p/ss@127.0.0.1:5433/db, whose host libpq read as u. The query
-# loses each `password` and `sslpassword` parameter, its key percent-decoded as libpq decodes it
-# (`%70assword=` is `password=`), the other parameters stay in their order, and a query that keeps
-# none prints no `?`. Any other URL, the NATS one, is read as Go's net/url
-# reads it, which nats.go parses a server URL with: the password runs to the last `@` before the
-# path, the query or the fragment, so a raw `@` in it goes too.
+# postgresql:// URL loses its password as pg_url_without_password (pg-url.sh, sourced above) takes
+# it out, which reads the URL as libpq reads it. Then it loses each `sslpassword` parameter, which
+# pg-url.sh keeps: the query starts at the first `?` past the user info, each key is
+# percent-decoded as libpq decodes it (`%73slpassword=` is `sslpassword=`), the other parameters
+# stay in their order, and a query that keeps none prints no `?`. For a URL pg-url.sh refuses,
+# pg-url.sh names the fault on standard error, and safe_url prints a fixed placeholder, never the
+# URL. Any other URL, the NATS one, is read as Go's net/url reads it, which nats.go parses a server
+# URL with: the password runs to the last `@` before the path, the query or the fragment, so a raw
+# `@` in it goes too.
 safe_url() {
-  local scheme=${1%%://*} rest=${1#*://} user='' kept='' param key
+  local url scheme rest user='' kept='' param key
   local -a params=()
-  case $scheme in
-  postgres | postgresql) ;;
+  case $1 in
+  postgres://* | postgresql://*) ;;
   *)
     printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^/?#]*@,\1@,'
     return
     ;;
   esac
+  if ! url=$(pg_url_without_password "$1"); then
+    printf '%s\n' '<a Postgres URL pg-url.sh refuses>'
+    return
+  fi
+  scheme=${url%%://*} rest=${url#*://}
   if [[ ${rest%%/*} == *@* ]]; then
-    user=${rest%%@*}
-    user=${user%%:*}@
+    user=${rest%%@*}@
     rest=${rest#*@}
   fi
   case $rest in *\?*)
@@ -879,20 +886,24 @@ safe_url() {
   for param in "${params[@]}"; do
     key=${param%%=*}
     printf -v key '%b' "${key//%/\\x}"
-    case $key in password | sslpassword) ;; *) kept+="&$param" ;; esac
+    [ "$key" = sslpassword ] || kept+="&$param"
   done
   printf '%s://%s%s%s\n' "$scheme" "$user" "$rest" "${kept:+?${kept#&}}"
 }
 
 # pg_sql URL SQL runs SQL on URL with psql and prints each row's values, one row a line, tabs
 # between them. psql is libpq, so the host it connects to is the host require_loopback_dsn read
-# from the same URL (services_up). The URL is on psql's command line, as the repository's other
-# proofs give theirs. A failure is psql's own: it prints what Postgres answered and exits non-zero.
+# from the same URL (services_up). pg_url_run (pg-url.sh, sourced above) gives psql the URL
+# without its password, and the password in PGPASSWORD for that one command, so no process list
+# shows it. psql never asks for a password (-w): a server that asks for one the URL does not hold
+# fails at once, and does not wait on a terminal prompt that no time limit covers. A failure is
+# psql's own: it prints what Postgres answered and exits non-zero. A URL pg-url.sh refuses runs
+# no psql: pg-url.sh names the fault on standard error and returns 2.
 # until_true polls this for readiness, so the connect carries a bound of its own
 # (PGCONNECT_TIMEOUT), as nats_ready's probe does: a host that takes the connection and never
 # answers holds no caller past five seconds.
 pg_sql() {
-  PGCONNECT_TIMEOUT=5 psql "$1" -X -q -v ON_ERROR_STOP=1 -A -t -F $'\t' -c "$2"
+  PGCONNECT_TIMEOUT=5 pg_url_run "$1" psql -X -q -w -v ON_ERROR_STOP=1 -A -t -F $'\t' -c "$2"
 }
 
 # nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every
@@ -919,7 +930,8 @@ nats_ready() {
 # run and 20 more for the batch's own queries. A given server's max_connections is the operator's,
 # not the batch's, so services_up reads it and refuses a parallelism the server cannot serve.
 #
-# A given Postgres's URL is read with require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh)
+# A given Postgres must be a postgres:// or postgresql:// URL, the one form safe_url and pg_sql take
+# a password out of. Its URL is read with require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh)
 # before anything connects to that server or this batch writes the URL anywhere. The guard reads
 # the host with libpq, and pg_sql connects with psql, which is libpq, so the host psql reaches is
 # the host the guard read.
@@ -928,6 +940,12 @@ services_up() {
   local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port pg_host tool
   needs=$((30 * parallel + 20))
   if given_services; then
+    case $SKILL_SCENARIOS_POSTGRES_URL in
+    postgres://* | postgresql://*) ;;
+    *) fail "SKILL_SCENARIOS_POSTGRES_URL is not a postgres:// or postgresql:// URL: the batch names the server in its notes and in each run's dispatch.json, and it can take a password out of a URL alone, never out of a key=value connection string" ;;
+    esac
+    pg_url_without_password "$SKILL_SCENARIOS_POSTGRES_URL" >/dev/null ||
+      fail "SKILL_SCENARIOS_POSTGRES_URL is a URL pg-url.sh refuses, for the reason on the line above: pg_sql and safe_url take its password out with pg-url.sh, so the batch could neither reach that server nor name it"
     for tool in psql python3; do
       command -v "$tool" >/dev/null ||
         fail "$tool is not on PATH: a batch given SKILL_SCENARIOS_POSTGRES_URL reads that URL with python3 and libpq, and reaches the server with psql"
@@ -1526,16 +1544,20 @@ cmd_judge() {
 
 # worker_routes PR prints the routes the gh stand-in answers the tester's world from
 # (fixtures.json), for PR, the fixture's pull request as `gh pr view --json` prints it whole.
-# `gh pr list` lists PR when its `--head` (`--head=`, `-H`) names PR's branch, as the worker
-# prompt's lookup of the PR by `--head legion/<issue>` does, and lists nothing for any other head,
-# as GitHub's answer for a branch with no pull request is. The branch is legion/<key>, and a
-# Dispatch key holds letters, digits and a hyphen, so it goes into the route's regex as it is.
+# `gh pr list` answers as GitHub does for a repository whose one pull request is PR, open. A
+# `--head` (`--head=`, `-H`) that names PR's branch lists PR, as the worker prompt's lookup of the
+# PR by `--head legion/<issue>` does, and any other head lists nothing, as GitHub's answer for a
+# branch with no pull request is. A `--state` (`-s`) of closed or merged lists nothing, and every
+# other list, a list with no head among them, lists PR. The branch is legion/<key>, and a Dispatch
+# key holds letters, digits and a hyphen, so it goes into the route's regex as it is.
 worker_routes() {
   jq -n --argjson pr "$1" '
     ($pr.number|tostring) as $number
     | {routes:[
       {match:("^gh pr list( .*)? (--head[ =]|-H ?)" + $pr.headRefName + "( |$)"), stdout:[$pr]},
-      {match:"^gh pr list", stdout:[]},
+      {match:"^gh pr list( .*)? (--head[ =]|-H ?)", stdout:[]},
+      {match:"^gh pr list( .*)? (--state[ =]|-s ?)(closed|merged)( |$)", stdout:[]},
+      {match:"^gh pr list", stdout:[$pr]},
       {match:"^gh pr view", stdout:$pr},
       {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
       {match:"^gh pr (edit|comment|review|ready)", stdout:($pr.url+"#issuecomment-1")},
@@ -1680,7 +1702,8 @@ run_tester_proof() {
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[ui]\npaginate = "never"\n' >"$R/jj.toml"
   # Port 0: the kernel assigns the stand-in's port, which it prints, so concurrent runs never race.
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" tester
+  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" "$project" "$worker_key" tester \
+    "$worker_repo" "$worker_default_branch"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env

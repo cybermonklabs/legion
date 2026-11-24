@@ -4,6 +4,7 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scriptAssignments } from "../../../../scripts/e2e/lib/script-functions";
 import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
 
 // Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
@@ -246,15 +247,11 @@ test.skipIf(skip)(
 const promptPart = (name: string) =>
   readFileSync(path.join(DAEMON_MODULE, "internal", "prompts", name), "utf8").trimEnd();
 
-// A value rig.sh sets for the tester-proof world: `worker_repo`, the repository its fixture's pull
-// request is on, or `worker_default_branch`, the default branch of its fixture's remote.
-function rigWorld(name: string): string {
-  const set = new RegExp(`^${name}=(\\S+)$`, "m").exec(
-    readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8")
-  );
-  if (set?.[1] === undefined) throw new Error(`rig.sh sets no ${name}`);
-  return set[1];
-}
+// rig.sh's assignments, read once. rigWorld gives the value rig.sh sets for the tester-proof world:
+// `worker_repo`, the repository its fixture's pull request is on, or `worker_default_branch`, the
+// default branch of its fixture's remote.
+const rigAssignment = scriptAssignments(path.join(import.meta.dir, "rig.sh"));
+const rigWorld = (name: string) => rigAssignment(name).slice(name.length + 1);
 
 // The prompt a launch of a role starts with is the daemon's composition of that role's parts and
 // its addressing, and a tree's root architect is told the design gate steps after its addressing;

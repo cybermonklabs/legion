@@ -101,18 +101,17 @@ if (!route) {
   exit(1);
 }
 if (body !== undefined) {
-  const edited = routes.map((candidate) => {
-    // Each object of a list answer, or the answer itself, gets the new body where it has one.
-    const answers: unknown[] = Array.isArray(candidate.stdout)
-      ? candidate.stdout
-      : [candidate.stdout];
-    const replaced = answers.map((value) =>
-      typeof value === "object" && value !== null && !Array.isArray(value) && "body" in value
-        ? { ...value, body }
-        : value
-    );
-    return { ...candidate, stdout: Array.isArray(candidate.stdout) ? replaced : replaced[0] };
-  });
+  /** `value` with the new body, when it is an object that has a body. */
+  const withBody = (value: unknown): unknown =>
+    typeof value === "object" && value !== null && !Array.isArray(value) && "body" in value
+      ? { ...value, body }
+      : value;
+  const edited = routes.map((candidate) => ({
+    ...candidate,
+    stdout: Array.isArray(candidate.stdout)
+      ? candidate.stdout.map(withBody)
+      : withBody(candidate.stdout),
+  }));
   writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
   kept = body;
 }

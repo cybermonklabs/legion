@@ -375,7 +375,10 @@ The scenarios and every input are in the script's header (`./rig.sh` with no arg
 and each scenario's scoring rule is on the `score.ts` function that scores it. It needs a model
 route (the gateway, an Anthropic key file, or a provider block of the operator's own models.yml).
 A batch also needs Docker, unless both `SKILL_SCENARIOS_POSTGRES_URL` and
-`SKILL_SCENARIOS_NATS_URL` are set: the batch then uses those two servers and starts no container.
+`SKILL_SCENARIOS_NATS_URL` are set: the batch then uses those two servers, starts no container,
+and needs `psql` and `python3` instead, to read the Postgres URL with libpq and to reach the
+server. `SKILL_SCENARIOS_POSTGRES_URL` must be a `postgres://` or `postgresql://` URL of the
+Postgres on this machine.
 A judge always runs in a Docker container. Every container a batch or a judge starts has CPU and
 memory limits.
 `SKILL_SCENARIOS_WORK` must have no `.omp` in it or above it, so not under your home directory: Oh

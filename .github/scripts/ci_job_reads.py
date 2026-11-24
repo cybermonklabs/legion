@@ -3132,6 +3132,9 @@ GATES = [
         ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :200"),
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :201"),
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
+        (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/pi-legion/scripts/skill-scenarios/rig.sh:329 sources it for pg_sql and safe_url; "
+                                           "rig.test.ts:652 sources it for the safe_url row and :1443 copies it beside rig.sh, and "
+                                           "rig-isolation.test.ts:77-79 copies it into its scratch checkout beside rig.sh"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "

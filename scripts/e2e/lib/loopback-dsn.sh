@@ -107,7 +107,7 @@ require_loopback_dsn() {
 # well. envoy-session-delivery.sh and dispatch-session-settings.sh therefore call it in their
 # setup step as their one read of the DSN, before the builds, the services and the `create
 # database`, so a refused input ends the run where the run's other refusals are. The database's
-# name is only the shell's pid and random bytes, so each has it that early. The three other
+# name is only the shell's pid and random bytes, so each has it that early. The four other
 # callers name a database per run or per attempt, and call this where that name is made.
 #
 # lib/loopback-dsn.py does the work: it rebuilds the connection string from the keywords libpq

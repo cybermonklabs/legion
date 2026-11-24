@@ -639,15 +639,17 @@ describe("next_run", () => {
 // A batch given SKILL_SCENARIOS_POSTGRES_URL makes each run's database on that server
 // (own_dispatch), and names the server in its notes, its failures and each run's dispatch.json.
 describe("safe_url", () => {
+  const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
   // Catches: a note, a failure message or a run's dispatch.json that prints the password of a
   // server the operator gave, in a Postgres URL's user info as libpq reads it (to the first `@`,
   // a `?` in the password included), in its `password=` or `sslpassword=` parameter (its key
   // percent-decoded, as libpq reads `%70assword=`), or in a NATS
   // URL's user info as Go's net/url reads it (to the last `@`); a query left with a dangling `?`
-  // or `&`; and a safe_url that changes a URL with no password in it.
+  // or `&`; a safe_url that changes a URL with no password in it; and a URL pg-url.sh refuses (a
+  // raw `@` in its hosts) printed as it is, where safe_url prints a placeholder.
   test("safe_url drops the password of a URL and keeps the rest", () => {
     expect(
-      bash(`${fn("safe_url")}\nfor url; do safe_url "$url"; done`, [
+      bash(`. ${JSON.stringify(pgUrl)}\n${fn("safe_url")}\nfor url; do safe_url "$url"; done`, [
         "postgres://u:p@h:1/d",
         "postgres://u@h:1/d",
         "nats://127.0.0.1:4222",
@@ -664,13 +666,13 @@ describe("safe_url", () => {
       stdout:
         "postgres://u@h:1/d\npostgres://u@h:1/d\nnats://127.0.0.1:4222\n" +
         "postgres://u@127.0.0.1:5433/legion_test\n" +
-        "postgres://u@localhost:5432@10.1.2.3/db\n" +
+        "<a Postgres URL pg-url.sh refuses>\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable&application_name=x\n" +
         "postgresql://u@127.0.0.1:5433/d\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
         "nats://u@127.0.0.1:4222\n" +
         "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
-      stderr: "",
+      stderr: "-: refused a Postgres URL: a host holds a raw @ (the URL is not printed)\n",
     });
   });
 });
@@ -1435,7 +1437,11 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         path.join(scripts, "rig.sh"),
         readFileSync(path.join(import.meta.dir, "rig.sh"))
       );
-      for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
+      for (const file of [
+        ".omp-pin",
+        "skills/asd-ste100/SKILL.md",
+        "packages/envoy/scripts/lib/pg-url.sh",
+      ]) {
         mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
         writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
       }
@@ -1532,14 +1538,20 @@ describe("worker_routes", () => {
     headRefOid: "099b05dc19f7f7e5058e791d16ae05f0b123a2cc",
     body: "Dispatch: LWEVAL-1",
   };
+  /** The run directory whose fixtures.json holds worker_routes' routes for `pr`: made by the first
+   * call, inside a test, since the file's work directory is made in a hook, and read by every call
+   * after it, since no call here edits a body. */
+  let run: string | undefined;
   /** `gh <args>` answered by the gh stand-in from worker_routes' fixtures.json for `pr`. */
   function gh(...args: string[]) {
-    const run = freshDir("worker-routes");
-    const routes = bash(`${fn("worker_routes")}\nworker_routes "$1" >"$2/fixtures.json"`, [
-      JSON.stringify(pr),
-      run,
-    ]);
-    expect(routes).toEqual({ code: 0, stdout: "", stderr: "" });
+    if (run === undefined) {
+      run = freshDir("worker-routes");
+      const routes = bash(`${fn("worker_routes")}\nworker_routes "$1" >"$2/fixtures.json"`, [
+        JSON.stringify(pr),
+        run,
+      ]);
+      expect(routes).toEqual({ code: 0, stdout: "", stderr: "" });
+    }
     const result = Bun.spawnSync(
       [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
       { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
@@ -1552,8 +1564,10 @@ describe("worker_routes", () => {
   }
 
   // Catches: a world whose stand-in answers the prompt's lookup of the pull request with a 404,
-  // after which a tester took the pull request to be unreachable and left its body unedited.
-  test("a list of the PR's branch lists the PR, picked to the fields asked", () => {
+  // after which a tester took the pull request to be unreachable and left its body unedited; and a
+  // list of the open pull requests with no head that answers none, which tells a tester that lists
+  // the repository's pull requests that none exists.
+  test("a list of the PR's branch, or of no head, lists the PR, picked to the fields asked", () => {
     expect(
       gh(
         "pr",
@@ -1570,12 +1584,13 @@ describe("worker_routes", () => {
         ".[0].number"
       )
     ).toEqual({ code: 0, stdout: "1001\n", stderr: "" });
-    for (const head of [
-      ["--head", "legion/LWEVAL-1"],
-      ["--head=legion/LWEVAL-1"],
-      ["-H", "legion/LWEVAL-1"],
+    for (const filter of [
+      ["--head", "legion/LWEVAL-1", "--state", "open"],
+      ["--head=legion/LWEVAL-1", "--state", "open"],
+      ["-H", "legion/LWEVAL-1", "--state", "open"],
+      ["--state", "open"],
     ]) {
-      expect(gh("pr", "list", ...head, "--state", "open", "--json", "number,headRefOid")).toEqual({
+      expect(gh("pr", "list", ...filter, "--json", "number,headRefOid")).toEqual({
         code: 0,
         stdout: `[{"number":1001,"headRefOid":"${pr.headRefOid}"}]\n`,
         stderr: "",
@@ -1583,13 +1598,14 @@ describe("worker_routes", () => {
     }
   });
 
-  // Catches: a list of another branch, or of no branch, that names the fixture's PR, or that fails
-  // where GitHub answers an empty list.
-  test("a list of any other head, or of no head, is empty", () => {
+  // Catches: a list of another branch, or of the closed or merged pull requests, that names the
+  // fixture's open PR, or that fails where GitHub answers an empty list.
+  test("a list of any other head, or of closed or merged pull requests, is empty", () => {
     for (const filter of [
       ["--head", "legion/LWEVAL-10"],
       ["--head", "legion/LWEVAL-2"],
-      ["--state", "open"],
+      ["--state", "closed"],
+      ["-s", "merged"],
     ]) {
       expect(gh("pr", "list", ...filter, "--json", "number")).toEqual({
         code: 0,
