@@ -1,0 +1,29 @@
+-- 20261124195401_claim_message_wake.up.sql — when a message was last marked as waiting for a
+-- claim's role, so a paced wake of that role goes ahead of the others (dispatch://INFRA-5682 R1).
+--
+-- claims.message_wake_at is supervise.Claim.MessageMark: the time a start row of a role_message or
+-- agent_message wake, or the Envoy listener's report of such a wake for the claim, was written,
+-- whatever the claim's state. It is written in the transaction of that row or report
+-- (PodRecords.MarkMessageWake) and nowhere else: a claim's own write never sets it, and clears it
+-- only by the role taking a turn after it — upsertClaim drops the mark where the write's
+-- last_turn_start is later. A mark no later than last_turn_start is spent, since the role read its
+-- messages in that turn (supervise.Claim.MessageWaiting).
+--
+-- Why it is on the claim: a wake is memory only, so a restart lost which wakes carried a message,
+-- and the boot relaunched the role whose message is ageing behind every role owed before it. The
+-- boot's pass reads the mark here and places that relaunch in the pacing's message queue. Envoy
+-- keeps a role message for one hour (the listener's roleKeepWindow), and on 2026-11-23 a wake that
+-- waited behind a restart's whole backlog brought its role back 3601.4 s later, after the listener
+-- had dropped both its messages.
+--
+-- It back-fills nothing. Every row written before it reads null, which is a claim no message
+-- waits for: the mark is written by the next start row or listener report of a message wake, and
+-- a mark made up here would send a role to the front of the queue for a message nobody can show.
+--
+-- There is no down file: migrations here are forward-only. The release before this one names each
+-- column of claims it reads and writes (the claim store's claimSelect and upsertClaim), so it
+-- boots with the column standing, reads it not at all and leaves it as it is on every write; the
+-- database needs nothing taken off for a rollback. What the rollback costs is the order: that
+-- release paces every wake in one queue, so a role whose mark this column holds waits its turn
+-- among the rest, as it did before this release.
+alter table claims add column message_wake_at timestamptz;

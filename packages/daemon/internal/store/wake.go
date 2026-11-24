@@ -741,3 +741,47 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 	}
 	return open, nil
 }
+
+// MarkMessageWake marks on the claim that a message waits for its role, at at, inside the
+// caller's transaction: the transaction of the start row a released role's role_message or
+// agent_message wake writes, and of the Envoy listener's report of such a wake, whatever the
+// claim's state (dispatch://INFRA-5682 R1). The claim is the one whose token is token or whose
+// session is session, either of which the report names, and only this project's: the listener
+// reports a role token or a session and knows nothing of which daemon owns it, as
+// ReleasedClaimByToken states.
+//
+// The mark stands where it is the first a role has had no turn since, and the earlier mark stands
+// over a later one: that message is the one nearest the end of Envoy's keep window, so a wake let
+// out by it is the one that must be measured. A mark no later than the claim's last turn start is
+// spent — the role read its messages in that turn — and a message marked now replaces it. The
+// claim's own write never sets the column and clears it at the role's next turn (upsertClaim).
+//
+// It answers the claim it marked, the mark the row holds after the write, and whether a row was
+// marked at all; no row is a claim this project does not hold, which is no error here, since
+// every daemon reads its own claims.
+func (p *PodRecords) MarkMessageWake(ctx context.Context, tx pgx.Tx, token, session string, at time.Time) (claim.Token, time.Time, bool, error) {
+	if token == "" && session == "" {
+		return "", time.Time{}, false, errors.New("a message wake's mark needs the claim's token or its session")
+	}
+	if at.IsZero() {
+		return "", time.Time{}, false, errors.New("a message wake's mark needs the moment the message was marked")
+	}
+	var (
+		marked claim.Token
+		stamp  time.Time
+	)
+	err := tx.QueryRow(ctx, `update claims
+		set message_wake_at = case
+			when message_wake_at is null or message_wake_at <= coalesce(last_turn_start, '-infinity'::timestamptz)
+			then $4 else message_wake_at end
+		where project = $1 and (token = $2 or session = $3)
+		returning token, message_wake_at`,
+		p.project, token, session, at.UTC()).Scan(&marked, &stamp)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", time.Time{}, false, nil
+	}
+	if err != nil {
+		return "", time.Time{}, false, fmt.Errorf("mark the message wake of token %q, session %q: %w", token, session, err)
+	}
+	return marked, stamp.UTC(), true, nil
+}

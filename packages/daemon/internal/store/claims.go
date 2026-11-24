@@ -52,7 +52,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.handshake_confirmed_at, c.serving_check_look, c.serving_check_opened_at,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
-	c.last_turn_start, c.last_turn_end,
+	c.last_turn_start, c.last_turn_end, c.message_wake_at,
 	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
@@ -463,6 +463,13 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		delivered_rows = (select coalesce(array_agg(distinct delivered order by delivered), '{}'::bigint[])
 			from unnest(claims.delivered_rows || excluded.delivered_rows) as delivered),
 		last_turn_start = excluded.last_turn_start, last_turn_end = excluded.last_turn_end,
+		-- The mark that a message waits for the claim's role is written by the transaction of the
+		-- start row or the listener report that made it and by nothing else (MarkMessageWake,
+		-- dispatch://INFRA-5682 R1): a claim's machine learns of a mark only after it was written,
+		-- so its own write never sets one. What this write does is spend a mark the role has taken
+		-- a turn since, which is what MessageWaiting reads of it.
+		message_wake_at = case when excluded.last_turn_start > claims.message_wake_at
+			then null else claims.message_wake_at end,
 		last_death_cause = excluded.last_death_cause, last_start_failure = excluded.last_start_failure,
 		last_ready = excluded.last_ready, turn_outcomes = excluded.turn_outcomes,
 		abandoned_session = excluded.abandoned_session,
@@ -895,6 +902,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		lastSendFailure             *time.Time
 		lastSendError               *string
 		turnStart, turnEnd          *time.Time
+		messageMark                 *time.Time
 		lastReady                   *time.Time
 		outcomes                    []byte
 		abandoned                   []byte
@@ -920,7 +928,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&servingCheckLook, &servingCheckOpened,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
-		&turnStart, &turnEnd,
+		&turnStart, &turnEnd, &messageMark,
 		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
@@ -977,6 +985,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		}
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
+	// Null is a claim no message wake has been marked for, which the machine holds as the zero
+	// time (supervise.Claim.MessageMark, MarkMessageWake).
+	c.MessageMark = orZero(messageMark)
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	c.Step.StartedAt, c.Step.EndedAt = orZero(stepStarted), orZero(stepEnded)
