@@ -143,14 +143,21 @@ function seconds(value: number): string {
 }
 
 /**
- * `value`, a number of seconds, 0 or more, in milliseconds as its digits name them: the digits
- * {@link seconds} prints, the point moved three places. `value * 1000` in floating point can fall
- * short of the milliseconds the broker's own digits name, as 1.001 gives 1000.9999999999999: the
- * poll's test would then reach a code that ends 1001 ms on, and {@link unpollableRemedy} would
- * read the interval as the 1 s floor.
+ * `value`, a number of seconds, 0 or more, in whole milliseconds as its digits name them: the
+ * digits {@link seconds} prints, the point moved three places and what follows cut off. Nothing
+ * parses and floors a product or a shifted string, since either rounds to the nearest double.
+ * `value * 1000` in floating point can fall short of the milliseconds the broker's own digits
+ * name, as 1.001 gives 1000.9999999999999, so the poll's test would reach a code that ends
+ * 1001 ms on and {@link unpollableRemedy} would read that interval as the 1 s floor; a shifted
+ * string can round up to the next millisecond, as 1.0999999999999999 gives 1100 where its digits
+ * name 1099.9999999999999 ms, so the test would refuse a code its interval's own digits reach.
+ * Every reader of a count of milliseconds here ({@link codeLeft}'s test, the floor's test in
+ * {@link unpollableRemedy}, a code's end, the poll's wait) takes this one, so they agree.
+ * Exported for the tests, which hand a refused code to the poll the way the start would have.
  */
-function millisecondsOf(value: number): number {
-  return Number(`${seconds(value)}e3`);
+export function wholeMillisecondsOf(value: number): number {
+  const [whole = "", fraction = ""] = seconds(value).split(".");
+  return Number(`${whole}${fraction.slice(0, 3).padEnd(3, "0")}`);
 }
 
 /** A host an http broker may be on: this machine's loopback, as a dev stack's broker is. */
@@ -367,9 +374,9 @@ export interface DeviceAuthorization {
  * `intervalSeconds` apart reaches it: a poll waits the interval first (RFC 8628 Section 3.5),
  * so a code that lapses no later than that is one no poll reaches. {@link startDeviceLogin} and
  * {@link finishDeviceLogin} both read a code by this test, on the whole millisecond its end, a
- * `Date`, holds, against the interval's milliseconds as its digits name them
- * ({@link millisecondsOf}), so a code the one shows the other polls, but for the time between the
- * two calls, and an interval of 1.001 s reaches no code that ends 1001 ms on.
+ * `Date`, holds, against the interval's whole milliseconds as its digits name them
+ * ({@link wholeMillisecondsOf}), so a code the one shows the other polls, but for the time between
+ * the two calls, and an interval of 1.001 s reaches no code that ends 1001 ms on.
  */
 function codeLeft(
   expiresAt: Date,
@@ -378,7 +385,7 @@ function codeLeft(
 ): { readonly named: number; readonly left: number; readonly reached: boolean } {
   const named = expiresAt.getTime() - now;
   const left = Math.min(named, MOST_LIFETIME_SECONDS * 1000);
-  return { named, left, reached: millisecondsOf(intervalSeconds) < left };
+  return { named, left, reached: wholeMillisecondsOf(intervalSeconds) < left };
 }
 
 /**
@@ -395,7 +402,9 @@ function codeLeft(
  * is shorter than the code by less than a millisecond, which the code's end does not hold (there an
  * interval must also be shorter than the lifetime's whole milliseconds); and where the code lives
  * longer than 1 s but its end holds 1 s or less, as one of 1.0005 s does: a plain "longer than
- * 1 s" would name a limit it already passes.
+ * 1 s" would name a limit it already passes. The floor's own limit always reads so, since a code
+ * that outlives 1 s by less than a millisecond holds only 1 s, which no interval in [1, 1.001) s
+ * reaches.
  */
 function unpollableRemedy(
   named: number | undefined,
@@ -417,8 +426,8 @@ function unpollableRemedy(
       ? `it names a poll interval shorter than ${lifetime}, or its codes live ${longer} than ${DEFAULT_POLL_SECONDS} s`
       : `its codes live ${longer} than ${DEFAULT_POLL_SECONDS} s, or than both ${LEAST_POLL_SECONDS} s and a poll interval it names`;
   }
-  if (Math.floor(millisecondsOf(intervalSeconds)) === LEAST_POLL_SECONDS * 1000) {
-    return `its codes live ${longer} than ${LEAST_POLL_SECONDS} s, the least poll interval this machine keeps`;
+  if (wholeMillisecondsOf(intervalSeconds) === LEAST_POLL_SECONDS * 1000) {
+    return `its codes live a millisecond or more longer than ${LEAST_POLL_SECONDS} s, the least poll interval this machine keeps`;
   }
   if (outlivesLeast) return `its poll interval is shorter than ${lifetime}`;
   return intervalSeconds >= MOST_LIFETIME_SECONDS
@@ -532,10 +541,10 @@ export async function startDeviceLogin(options: {
   }
   const intervalSeconds = Math.max(answered.interval ?? DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS);
   const lifetimeSeconds = Math.min(answered.expires_in, MOST_LIFETIME_SECONDS);
-  // The lifetime's whole milliseconds as the broker's digits name them (millisecondsOf;
+  // The lifetime's whole milliseconds as the broker's digits name them (wholeMillisecondsOf;
   // oauth4webapi takes none below 0), on one reading of the clock, so the test sees the whole
   // milliseconds the end holds.
-  const lifetimeMs = Math.floor(millisecondsOf(lifetimeSeconds));
+  const lifetimeMs = wholeMillisecondsOf(lifetimeSeconds);
   const now = Date.now();
   const expiresAt = new Date(now + lifetimeMs);
   const code = codeLeft(expiresAt, intervalSeconds, now);
@@ -677,8 +686,9 @@ export async function finishDeviceLogin(
   let interval = started.intervalSeconds;
   // The polls in a row the broker did not answer or answered with an outage.
   let outages = 0;
-  // The wait before the next poll: the interval, or an outage's longer `Retry-After`.
-  let waitMs = interval * 1000;
+  // The wait before the next poll: the interval in the whole milliseconds the code's test reads
+  // (wholeMillisecondsOf), or an outage's longer `Retry-After`.
+  let waitMs = wholeMillisecondsOf(interval);
   // What is left of the code, read once from the wall clock, and the hour at most, which a step
   // back of that clock since `startDeviceLogin`, or a `started` a caller made, could otherwise
   // pass, and with it a timer's range; its end is kept on the monotonic clock.
@@ -736,7 +746,7 @@ export async function finishDeviceLogin(
       }
       const asked = unanswered ? retryAfterMs(error) : 0;
       // The wait before the next poll is capped at the code's lifetime where it is waited.
-      waitMs = Math.max(interval * 1000, asked);
+      waitMs = Math.max(wholeMillisecondsOf(interval), asked);
       continue;
     }
     const login = loginOf(started.key, started.brokerUrl, answered, Date.now());

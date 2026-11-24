@@ -31,6 +31,7 @@ import {
   finishDeviceLogin,
   refreshDeviceLogin,
   startDeviceLogin,
+  wholeMillisecondsOf,
   withDeviceLoginLock,
 } from "../device-login";
 import { DEVICE_LOGIN_FILE_VAR, readDeviceLogin } from "../device-login-file";
@@ -633,7 +634,7 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     ],
     [
       { expiresIn: 0 },
-      `a device code that had already lapsed, with a poll interval of 1 s${lapsed} its codes live longer than 1 s, the least poll interval this machine keeps`,
+      `a device code that had already lapsed, with a poll interval of 1 s${lapsed} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
     ],
     [
       { interval: null, expiresIn: 0 },
@@ -650,17 +651,19 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     // The broker's interval is already shorter than its code: only a longer lifetime helps.
     [
       { interval: 0.25, expiresIn: 1 },
-      `a device code that lives 1 s, with a poll interval of 0.25 s, so one of 1 s${lapses} its codes live longer than 1 s, the least poll interval this machine keeps`,
+      `a device code that lives 1 s, with a poll interval of 0.25 s, so one of 1 s${lapses} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
     ],
     [
       { interval: 0.0004, expiresIn: 1 },
-      `a device code that lives 1 s, with a poll interval of 0.0004 s, so one of 1 s${lapses} its codes live longer than 1 s, the least poll interval this machine keeps`,
+      `a device code that lives 1 s, with a poll interval of 0.0004 s, so one of 1 s${lapses} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
     ],
     // An interval under a millisecond past the floor is the floor in the poll's whole
-    // milliseconds, so its code needs the lifetime a code polled at 1 s needs.
+    // milliseconds, so its code needs the lifetime a code polled at 1 s needs, and the floor's cure
+    // always says "a millisecond or more": a broker that names a lifetime of 1.0005 s, past 1 s but
+    // holding only 1 s, is refused again against a plain "longer than 1 s".
     [
       { interval: 1.0005, expiresIn: 1 },
-      `a device code that lives 1 s, with a poll interval of 1.0005 s${lapses} its codes live longer than 1 s, the least poll interval this machine keeps`,
+      `a device code that lives 1 s, with a poll interval of 1.0005 s${lapses} its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps`,
     ],
     [
       { interval: 2, expiresIn: 1e-9 },
@@ -765,6 +768,12 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
       [1.001, 1.001, false],
       [0.25, 1, false],
       [599, 600, true],
+      // The digits cut where a shifted string would round: 1.0999999999999999 s is 1099 ms, short
+      // of the 1100 ms a 1.1 s code holds, and 1.0009999999999997 s holds 1000 ms, as a 1 s
+      // interval's.
+      [1.0999999999999999, 1.1, true],
+      [1.0999999999999999, 1.0999999999999999, false],
+      [1, 1.0009999999999997, false],
       // A lifetime past 2^64 nanoseconds, held to the hour here, where the Go helper's OAuth
       // library wraps it to about 900 s, so that helper refuses a 1000 s interval.
       [1000, 18446744974, true],
@@ -778,11 +787,12 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
         (started) => started,
         () => null
       );
-      // A code the start refused is handed to the poll as the start would have handed it.
+      // A code the start refused is handed to the poll as the start would have handed it: its end
+      // the whole milliseconds the start reads, from the one function it reads them by.
       const handed = shown ?? {
         ...base,
         intervalSeconds: Math.max(interval, 1),
-        expiresAt: new Date(now + expiresIn * 1000),
+        expiresAt: new Date(now + wholeMillisecondsOf(expiresIn)),
       };
       const waits: number[] = [];
       const polled = await finishDeviceLogin(handed, {
@@ -800,6 +810,38 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
       expect(polled, row).toEqual(
         reached ? "the first wait" : expect.stringContaining("no poll could reach it")
       );
+    }
+  } finally {
+    still.mockRestore();
+  }
+});
+
+// The poll waits the interval in the same whole milliseconds its test reads, so the wait is the
+// count the test made: 1.001 s is 1001 ms, where the product is 1000.9999999999999, and
+// 1.0999999999999999 s is 1099 ms, where a shifted string rounds to 1100.
+test("the poll waits the interval's whole milliseconds as its digits name them", async () => {
+  const base = await startDeviceLogin({ brokerUrl: broker().url, person: PERSON, host: HOST });
+  const now = Date.now();
+  const still = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    for (const [intervalSeconds, wait] of [
+      [5, 5_000],
+      [4.9997, 4_999],
+      [1.001, 1_001],
+      [1.0999999999999999, 1_099],
+    ] as const) {
+      const waits: number[] = [];
+      await finishDeviceLogin(
+        { ...base, intervalSeconds, expiresAt: new Date(now + 600_000) },
+        {
+          path: loginPath(),
+          sleep: async (ms) => {
+            waits.push(ms);
+            throw new Error("the first wait");
+          },
+        }
+      ).catch(() => undefined);
+      expect(waits, `${intervalSeconds} s`).toEqual([wait]);
     }
   } finally {
     still.mockRestore();
