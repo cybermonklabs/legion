@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/loadtest/listenerclient"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // stackFile is $LOADTEST_ROOT/stack.json. stack.sh setup writes it; stack.sh rewrites the pids as it
@@ -712,9 +713,11 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 // /varz names the stack, Dispatch answers an authenticated read with the stack's agent token, and
 // the listener answers /v1/sessions with the stack's API token and refuses any other token (a
 // listener with no token configured would answer every caller). The pod's live listener and
-// production Dispatch hold other tokens, so a mistaken target fails here.
+// production Dispatch hold other tokens, so a mistaken target fails here. The reads carry those
+// tokens, so the client follows no redirect (redirects.Refused): none of the three answers one,
+// and a Location is the answering party's words.
 func checkStack(ctx context.Context, e endpoints) error {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := redirects.Refused(&http.Client{Timeout: 10 * time.Second})
 	if err := checkNATSServerName(ctx, client, e.natsMon, e.natsServerName); err != nil {
 		return err
 	}
@@ -772,6 +775,10 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 	return nil
 }
 
+// guardGet reads url, with bearer as the request's bearer when it is not empty. A read that got no
+// answer fails as url allows (redact.Cause): a transport failure's own text beside a clean URL, or
+// its class. net/http's own error can quote a Location that did not parse (Go reads one before any
+// redirect policy), which can echo the bearer.
 func guardGet(ctx context.Context, client *http.Client, url, bearer string) (int, redact.Answer, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -783,7 +790,7 @@ func guardGet(ctx context.Context, client *http.Client, url, bearer string) (int
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, redact.Answer{}, err
+		return 0, redact.Answer{}, redact.Cause(err, url)
 	}
 	defer resp.Body.Close()
 	body, err := redact.ReadAnswer(resp, 1<<20)

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // cloudsqlCPUMetric is Cloud Monitoring's metric for a Cloud SQL instance's CPU: the fraction of
@@ -230,7 +231,10 @@ func readCloudSQLSeries(ctx context.Context, client *http.Client, base, token, p
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("the read of %s for %s failed: %w", metric, databaseID, err)
+			// net/http's error can quote the answering party's words (a Location that does not
+			// parse, which it reads before any redirect policy), which can echo the access token,
+			// so the failure is named by its class (redact.Class).
+			return nil, fmt.Errorf("the read of %s for %s failed: %w", metric, databaseID, redact.Class(err))
 		}
 		read, readErr := redact.ReadAnswer(resp, 1<<22)
 		resp.Body.Close()
@@ -375,21 +379,24 @@ func runCloudSQLCPU(args []string) error {
 		return err
 	}
 	databaseID := cloudsqlDatabaseID(*project, *instance)
-	points, err := readCloudSQLSeries(ctx, shortClient, *api, token, *project, cloudsqlCPUMetric, databaseID, ws, we)
+	// The reads carry the access token, so their client follows no redirect (redirects.Refused):
+	// Cloud Monitoring answers none, and a Location is the answering party's words.
+	monitoring := redirects.Refused(shortClient)
+	points, err := readCloudSQLSeries(ctx, monitoring, *api, token, *project, cloudsqlCPUMetric, databaseID, ws, we)
 	if err != nil {
 		return err
 	}
 	if len(points) == 0 {
 		return errNoCloudSQLSample(cloudsqlCPUMetric, databaseID, ws, we)
 	}
-	memory, err := readCloudSQLSeries(ctx, shortClient, *api, token, *project, cloudsqlMemoryMetric, databaseID, ws, we)
+	memory, err := readCloudSQLSeries(ctx, monitoring, *api, token, *project, cloudsqlMemoryMetric, databaseID, ws, we)
 	if err != nil {
 		return err
 	}
 	if len(memory) == 0 {
 		return errNoCloudSQLSample(cloudsqlMemoryMetric, databaseID, ws, we)
 	}
-	quota, err := readCloudSQLSeries(ctx, shortClient, *api, token, *project, cloudsqlMemoryQuotaMetric, databaseID, ws, we)
+	quota, err := readCloudSQLSeries(ctx, monitoring, *api, token, *project, cloudsqlMemoryQuotaMetric, databaseID, ws, we)
 	if err != nil {
 		return err
 	}

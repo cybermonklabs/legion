@@ -385,13 +385,19 @@ func (s *replaySeeder) write(ctx context.Context, sw seedWrite) ([]byte, error) 
 	}
 }
 
-// errClass names a transport error without the URL it may carry.
+// errClass names a transport error by a type alone, never its text, which can carry the URL: the
+// type of the error the request's *url.Error wraps, found through the wrapper redact.Error puts
+// over one whose text may not print, and otherwise the type of the error err wraps.
 func errClass(err error) string {
 	if err == nil {
 		return "no error"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Sprintf("%T", ue.Err)
 	}
 	return fmt.Sprintf("%T", errors.Unwrap(err))
 }
