@@ -610,7 +610,7 @@ func decodeSeparators(field string) (string, bool) {
 // fullWidthASCII is s with each full-width form of printable ASCII (fromFullWidth) as that ASCII
 // character; every other byte, one that is not UTF-8 among them, stays as it is.
 func fullWidthASCII(s string) string {
-	if !strings.ContainsRune(s, utf8.RuneError) && strings.IndexFunc(s, isFullWidth) < 0 {
+	if strings.IndexFunc(s, isFullWidth) < 0 {
 		return s
 	}
 	var b strings.Builder
