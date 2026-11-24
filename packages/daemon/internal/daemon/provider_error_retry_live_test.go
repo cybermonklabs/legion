@@ -491,7 +491,7 @@ func (r *providerErrorLive) controllerIsTold() {
 	if issue := r.issue(r.ladder); issue.Phase == phase.Held {
 		t.Fatalf("%s was held by the run of provider errors: %+v", r.ladder, issue)
 	}
-	r.note("%s is still %s: the notice is the one exit from a run, and no attempt limit holds the issue",
+	r.note("%s is still %s: the notice holds nothing, and no attempt limit holds the issue",
 		r.ladder, r.issue(r.ladder).Phase)
 }
 

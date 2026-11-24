@@ -20,13 +20,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A run of provider errors tells the issue's architect and the controller through two outbox rows,
-// a notice and a controller notice, and each row's lane is woken only once both rows have
-// committed. The notices are written on a goroutine of their own, outside any fact
-// (providerErrorRunReached), so their transaction has to open the commit scope itself. Without
-// that scope the records' wake runs at the write, inside the transaction
-// (projectRecords.wakeOnCommit): the lane looks before the row is there, finds nothing, and the
-// notice waits for the outbox's sweep, which runs every outboxLease.
+// A run of provider errors of a phase worker's claim tells the issue's architect and the controller
+// through two outbox rows, a notice and a controller notice, and each row's lane is woken only once
+// both rows have committed. The notices are written on a goroutine of their own, outside any fact
+// (providerErrorRunReached), so their transaction has to open the commit scope itself. Without that
+// scope the records' wake runs at the write, inside the transaction (projectRecords.wakeOnCommit):
+// the lane looks before the row is there, finds nothing, and the notice waits for the outbox's
+// sweep, which runs every outboxLease.
 func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
