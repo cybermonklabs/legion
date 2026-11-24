@@ -55,11 +55,17 @@ import (
 // the one the checks advance the clock past; the backstop is longer than any test advances its
 // clock, so the only backstop that comes due is one a test arms itself (k1's F). The tick is how
 // often the daemon's idle and wake passes run on the wall clock, each reading the test clock.
+//
+// The outbox sweep is how often the daemon's outbox sweeps its lanes on the wall clock
+// (overrides.outboxSweep): the checks let a lease they put on a row lapse, or make a held row due,
+// behind the daemon, and the row runs at the next sweep, which at the daemon's own outboxLease is
+// up to 30 s of each such check; a second keeps a check to its own work.
 const (
 	pauseRigIdleMinutes     = 10
 	pauseRigBackstopMinutes = 120
 	pauseRigTick            = 100 * time.Millisecond
 	pauseRigPodUpdateGrace  = 15 * time.Minute
+	pauseRigOutboxSweep     = time.Second
 )
 
 // The three lines of a pause the checks read (decision 23 of the plan): the pause service's line
@@ -77,12 +83,12 @@ const pauseRigReason = "the model provider is refusing every request"
 // pauseRuntime is the fake runtime with the moment of every launch on the test clock, as
 // waveRuntime has it (wake_wave_test.go), and the calls an issue pod's idle release makes of a
 // Kubernetes runtime, as releaseRuntime has them (idle_release_test.go): whether a pod runs the
-// configured image (always), whether the runtime still holds an issue's Sandbox, the bundle of a
-// pod's unpushed work, and the issue-level teardowns, a release's (ReleaseIssue) and a close's
-// (SuspendIssue), whose every deletion it records. The release's executors ask for the release's
-// teardown (runtime.IssueReleaser) and save nothing without it, so a rig without ReleaseIssue
-// would read no release and no save, whatever the pause held. IssuePod and IssueKeepsVolume are
-// the embedded fake's.
+// configured image (always), whether the runtime still holds an issue's Sandbox, the read of a
+// pod's workspace (the embedded fake's WorkspaceWork), and the issue-level teardowns, a release's
+// (ReleaseIssue) and a close's (SuspendIssue), whose every deletion it records. The release's
+// executors ask for the release's teardown (runtime.IssueReleaser) and check nothing without it,
+// so a rig without ReleaseIssue would read no release and no check, whatever the pause held.
+// IssuePod and IssueKeepsVolume are the embedded fake's.
 type pauseRuntime struct {
 	*fake.Runtime
 	clock *waveClock
@@ -90,10 +96,9 @@ type pauseRuntime struct {
 	runs  []waveLaunch
 	// sandboxes is every issue whose Sandbox (and pod) the runtime holds.
 	sandboxes map[string]bool
-	// deleted is every issue whose pod a teardown deleted, in order; bundled every issue a
-	// release asked for a bundle of.
+	// deleted is every issue whose pod a teardown deleted, in order. The workspace reads a release
+	// asked for are the embedded fake's (WorkspaceWork), which answers no work.
 	deleted []string
-	bundled []string
 }
 
 func newPauseRuntime(clock *waveClock) *pauseRuntime {
@@ -205,13 +210,6 @@ func (r *pauseRuntime) IssueSandbox(issue string) (string, bool) {
 	return "sandbox-" + strings.ToLower(issue), r.sandboxes[issue]
 }
 
-func (r *pauseRuntime) BundleWorkspace(_ context.Context, issue string, _ claim.Role) (runtime.WorkspaceBundle, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.bundled = append(r.bundled, issue)
-	return runtime.WorkspaceBundle{}, nil
-}
-
 func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
 	return r.teardown(ctx, issue, authorize)
 }
@@ -235,11 +233,14 @@ func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize fun
 }
 
 // podReads is what the runtime was asked to do to the pods: the issues whose pod a teardown
-// deleted and the issues a release asked for a bundle of.
-func (r *pauseRuntime) podReads() (deleted, bundled []string) {
+// deleted and the issues whose workspace a release read.
+func (r *pauseRuntime) podReads() (deleted, read []string) {
+	for _, call := range r.CallsOf("WorkspaceWork") {
+		read = append(read, call.Issue)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return slices.Clone(r.deleted), slices.Clone(r.bundled)
+	return slices.Clone(r.deleted), read
 }
 
 // suspendedOf is how many times the runtime was asked to stop a process of token.
@@ -428,6 +429,7 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 	r.o.clock = clock
 	r.o.idleTick = pauseRigTick
 	r.o.orphanSweep = time.Hour
+	r.o.outboxSweep = pauseRigOutboxSweep
 	r.o.controllerFirstWake = time.Second
 	r.o.workflowTokens = idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}
 	// GitHub answers each repository at main and an issue branch's create (startedAgainGitHub): the
@@ -737,6 +739,19 @@ func (r *pauseDaemonRig) awaitPasses() {
 		return false
 	})
 	time.Sleep(2 * pauseRigTick)
+}
+
+// awaitFullSweep waits until one whole pass of the daemon's sweep has run since the call
+// (supervision.reconcileOrphans, which decides the update rounds): two more passes have begun,
+// each with its runtime's ReconcileOrphans, and passes run one after another, so the first of them
+// read the clock after the call and has ended. A check that the sweep replaced
+// nothing reads what that pass did not do.
+func (r *pauseDaemonRig) awaitFullSweep() {
+	r.t.Helper()
+	before := len(r.rt.CallsOf("ReconcileOrphans"))
+	testwait.Eventually(r.t, "a whole pass of the daemon's sweep after this moment", func() bool {
+		return len(r.rt.CallsOf("ReconcileOrphans")) >= before+2
+	})
 }
 
 // lines is every line of the daemon's log whose message is msg, decoded.

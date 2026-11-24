@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr4392
+body: |-
+  The plugin declares daemon API contract 275. In a pod that carries the exchange identity, the
+  daemon starts an Oh My Pi role with `--session-id <id>` or `--resume <id>`, and one whose claim
+  records its session with no file with the one word `--resume=<id>`, as before. Under
+  `dispatch_token_broker`, it tells the roles of such a pod `DISPATCH_TOKEN_BROKER=1` and no
+  `DISPATCH_TOKEN_FILE`, and `GET /legion/v1/state` carries `dispatchCredential`, which a caller
+  below 275 is served without.

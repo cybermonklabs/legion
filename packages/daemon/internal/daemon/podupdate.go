@@ -71,10 +71,11 @@ import (
 // machine of this daemon holds is grouped as the store gives it, with an empty set. What is read
 // goes on the group's own copy of the claim and never on claims, which the orphan sweep's other
 // passes read after this one (reconcileOrphans). Whom an end names reads one fact of the store
-// besides the claims: whether the disk of the round's pod holds work from before the pod
-// (roundPodHoldsEarlierWork). The replacement through a process and the replacement by issue read
-// it before they ask the runtime (ReplacePod, ReplaceIssuePod), which can refuse or answer that
-// the replacement is no longer due and end nothing; the next sweep then reads it again.
+// besides the claims: whether the round's pod mounts a kept volume that an earlier pod of the
+// issue mounted (roundPodHoldsEarlierWork). The replacement through a process and the replacement
+// by issue read it before they ask the runtime (ReplacePod, ReplaceIssuePod), which can refuse or
+// answer that the replacement is no longer due and end nothing; the next sweep then reads it
+// again.
 //
 // Everything a round decides comes from the durable claim columns — the round, its reasons, when
 // it opened, when each worker was asked, when each answered, and when the operator's side was
@@ -3608,21 +3609,21 @@ func unansweredMembers(group []supervise.Claim, round string) []supervise.Claim 
 //     one that registered in the pod and lost its session, as a fresh start after a resume that
 //     found no session does, has none and ran there.
 //   - the disk of round's pod holds work from before the pod (earlierWork), and c has a session or
-//     a pod in its set. That disk holds the workspace that every role of the issue shares, as an
-//     earlier pod left it, in each case in which the store marks the pod; store.PodHoldsEarlierWork
-//     names those cases. So the work of any role an agent of which had run can be on that pod's
-//     disk, whether or not an agent of it registered there, whatever suspended it since and
-//     whatever it runs now: a role the daemon or the operator took over or suspended, a woken role
-//     whose launch the wake pacing parks, a role whose own launch replaced the pod, and a role that
-//     was suspended already at an idle release, whose work was in the shared workspace all the
-//     same. The store holds the record, so a daemon restart between the write of the mark and the
-//     end keeps it. An end over such a pod may name a role whose work the pod does not hold, which
-//     is the cost of reading the pod rather than each role
-//     (dispatch://INFRA-4425/comment/566feff4-2b27-41f2-89a9-b1a333d97ecd, and for the kept volume
+//     a pod in its set. That disk is a kept volume that an earlier pod of the issue mounted, which
+//     holds the workspace that every role of the issue shares as that earlier pod left it; the
+//     store marks such a pod (store.PodHoldsEarlierWork). So the work of any role an agent of which
+//     had run can be on that pod's disk, whether or not an agent of it registered there, whatever
+//     suspended it since and whatever it runs now: a role the daemon or the operator took over or
+//     suspended, a woken role whose launch the wake pacing parks, a role whose own launch replaced
+//     the pod, and a role that was suspended already when the earlier pod went, whose work was in
+//     the shared workspace all the same. The store holds the record, so a daemon restart between
+//     the write of the mark and the end keeps it. An end over such a pod may name a role whose
+//     work the pod does not hold, which is the cost of reading the pod rather than each role
+//     (dispatch://INFRA-4425/comment/566feff4-2b27-41f2-89a9-b1a333d97ecd,
 //     dispatch://INFRA-4425/comment/65c8b607-a452-4d88-9bcd-624fd7ab8b27). A claim with no session
 //     and an empty set never had an agent anywhere, as one refused for the pod with no session, so
-//     no work of it can be on any disk, and it is not named. A project pause's stop keeps the pod
-//     and saves no bundle, so no pod takes a release's work from it.
+//     no work of it can be on any disk, and it is not named. A project pause's stop keeps the pod,
+//     so a pause alone puts no role's work on a later pod's disk.
 //   - c's set is unknown (supervise.RegisteredPods.Unknown): a machine built over a stored claim
 //     that shows a session it held, now or abandoned, cannot say where each earlier agent of c
 //     registered (supervise's bootRegisteredPods). An end names every member that had not answered
@@ -3639,8 +3640,8 @@ func workOnRoundPod(c supervise.Claim, round string, earlierWork bool) bool {
 }
 
 // roundPodHoldsEarlierWork is whether the disk of the pod of round, a round of issue, holds work
-// from before the pod, as the store marks it (store.PodHoldsEarlierWork, which names the cases in
-// which it does). Each end of the round reads it as it ends the round, and hands the answer to
+// from before the pod, as the store marks it (store.PodHoldsEarlierWork: a later pod of the issue's
+// kept volume). Each end of the round reads it as it ends the round, and hands the answer to
 // every reader of workOnRoundPod that end makes (replacePodForRound, replaceIssuePodForRound,
 // endRoundWhosePodWent). A read that fails must not hide a loss, so it answers true, as if the
 // disk held such work, and the error is logged, unless the daemon's own stop cut the read short,
@@ -3663,7 +3664,7 @@ func (s *supervision) roundPodHoldsEarlierWork(ctx context.Context, issue, round
 // (awaitsRoundPod): every member of the round whose launch waits on that pod, that had not
 // answered it, and whose work may be on that pod's disk (lostClaim), with a session or with none.
 // A worker of such a claim can have died in the pod before the runtime refused its relaunch, or
-// its work can be on the pod's disk from before the pod (workOnRoundPod), and no ask of the round
+// the pod can mount the kept volume of an earlier pod (workOnRoundPod). No ask of the round
 // reaches such a claim (askRound), so no role was asked to push that work. What the round reads
 // and tells the issue of such a claim turns on whether a process of another claim runs in the pod,
 // and this is the one statement of that rule:

@@ -194,12 +194,11 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 		if err != nil || SandboxName(token) != hello.Sandbox {
 			return nil, shimwire.LauncherHelloAck{}, "launcher credential does not name this pod's role"
 		}
-		// The pod the connection is accepted for carries the instant the API server created it,
-		// and the instant the API server created its Sandbox, where that Sandbox owns the issue's
-		// kept volume. The two decide whether a release's saved work is this pod's to restore, or
-		// is on its volume already (launchers.restoreWorkspace). Both come from the informer's
-		// objects, so neither costs a request.
-		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, keptVolumeSince(view.sandbox), hello), r.launcherHelloAck(kind), ""
+		// The pod the connection is accepted for carries the instant the API server created its
+		// Sandbox, where that Sandbox owns the issue's kept volume, which each role's start in the
+		// pod records with the pod (launchers.recordKeptPod). It comes from the informer's Sandbox,
+		// so it costs no request.
+		return r.launchers.accept(token, credential.issue, keptVolumeSince(view.sandbox), hello), r.launcherHelloAck(kind), ""
 	}
 }
 

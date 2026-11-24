@@ -578,6 +578,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
+	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: dispatchCredentialContract, state: withoutDispatchCredential, dropped: "dispatchCredential"},
 }
 
@@ -888,18 +889,18 @@ const shapedAnswersContract = 193
 
 // dispatchCredentialContract is the daemon contract that added `dispatchCredential` to the state,
 // the daemon's own Dispatch credential under dispatch_token_broker and the two counts of the
-// Dispatch tokens its launches hand out (version.go's 248, DispatchCredentialView). A caller below
+// Dispatch tokens its launches hand out (version.go's 275, DispatchCredentialView). A caller below
 // it is served the state without the key (withoutDispatchCredential, its row of stateNarrowings):
 // one built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
 // whole body for a key it does not name, and one built after strips the key instead, so the band
-// keeps the body its own contract's record describes. podHoldContract's row stands just below it,
-// and every caller from 193 up states its contract, so a caller stating a contract from
-// podHoldContract up to below this one is served the keys of that contract and not this object.
+// keeps the body its own contract's record describes. priorityContract's row stands just below
+// it. Every caller from 193 up states its contract, so callers from 250 through 274 are served
+// the keys of 250 without this object.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
 // change's own number, as the last number of answers.go's SupportedContracts does.
-const dispatchCredentialContract = 248
+const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
@@ -1089,6 +1090,27 @@ const podHoldContract = 246
 func withoutPodHold(issue Issue) (Issue, bool) {
 	moved := issue.PodHold != nil
 	issue.PodHold = nil
+	return issue, moved
+}
+
+// priorityContract is the daemon contract that added each issue's own Dispatch `priority` and
+// its waitingLine's `priority`, the priority that placed it in the line (version.go's 250). A
+// plugin before it is served every issue without either key (withoutPriority). It is a literal
+// of its own and never DaemonAPIVersion, for the reason assignmentPlanContract is, and
+// answers.go's SupportedContracts names it.
+const priorityContract = 250
+
+// withoutPriority is the issue with no `priority` and a waitingLine with no `priority`, the two
+// keys priorityContract added to the state; every other key stays. The waiting line's view is
+// copied before it is changed, so the state the source answered is left as it was.
+func withoutPriority(issue Issue) (Issue, bool) {
+	moved := issue.Priority != nil
+	issue.Priority = nil
+	if issue.WaitingLine != nil && issue.WaitingLine.Priority != nil {
+		line := *issue.WaitingLine
+		line.Priority = nil
+		issue.WaitingLine, moved = &line, true
+	}
 	return issue, moved
 }
 

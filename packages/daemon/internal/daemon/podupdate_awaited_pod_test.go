@@ -707,12 +707,11 @@ func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
 // waits on the round's pod. A claim with a session that waits on another pod, and every claim
 // with no process that waits on none, is weighed as any claim is. A claim the daemon suspended is
 // passed over and waited for by nobody (roundAsks, dispatch://INFRA-4109 R1), and named where an
-// agent of it registered in the round's pod. Where the round's pod took an idle release's work,
-// which the store marks as work from before the pod (earlierWork, the mark the end reads), every
-// claim with a session or a pod in its set is named as one whose work may be on that pod's disk,
-// wherever its agents registered, since the release's bundle holds the whole workspace the roles
-// share; a claim with neither is named nothing there either. A claim with no session that waits on
-// another pod is no way to this round's pod, so the round is not posted to it.
+// agent of it registered in the round's pod. Where an earlier pod mounted the same kept volume,
+// the store marks the round's pod as holding earlier work. Every claim with a session or a pod
+// in its set is then named, wherever its agents registered, since the kept volume holds the
+// shared workspace. A claim with neither is not named. A claim with no session that waits on
+// another pod is not a way to find this round's pod, so the round is not posted to it.
 func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 	round := podUpdateRound
 	clock := roundClock{now: podUpdateStart, grace: podUpdateGrace}
@@ -749,7 +748,7 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 			posted: true, unwaited: true},
 		"it waits on the round's pod, with a session registered in another pod only": {
 			claim: registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true), elsewhere), posted: true},
-		"it waits on the round's pod, with a session registered in another pod only, and the pod took a release's work": {
+		"it waits on the round's pod, with a session registered in another pod only, and the pod is on a previously mounted kept volume": {
 			claim: registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true), elsewhere), earlierWork: true,
 			posted: true, lost: true, unwaited: true, waitingLost: true, notAsked: true},
 		"it waits on the round's pod, with a session, and its set unknown": {
@@ -757,12 +756,12 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 			posted: true, lost: true, unwaited: true, waitingLost: true, notAsked: true},
 		"it waits on the round's pod, with no session, registered nowhere": {
 			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), posted: true},
-		"it waits on the round's pod, with no session, registered nowhere, and the pod took a release's work": {
+		"it waits on the round's pod, with no session, registered nowhere, and the pod is on a previously mounted kept volume": {
 			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), earlierWork: true, posted: true},
 		"it waits on the round's pod, with no session, registered there before": {
 			claim:  registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), inPod),
 			posted: true, lost: true, unwaited: true, waitingLost: true, notAsked: true},
-		"it waits on the round's pod, with no session, registered in another pod only, and the pod took a release's work": {
+		"it waits on the round's pod, with no session, registered in another pod only, and the pod is on a previously mounted kept volume": {
 			claim: registeredIn(waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), elsewhere), earlierWork: true,
 			posted: true, lost: true, unwaited: true, waitingLost: true, notAsked: true},
 		"it waits on the round's pod, with no session, and its set unknown": {
@@ -786,7 +785,7 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 			posted: true, waiting: true, lost: true},
 		"it has no session, no process and waits on no pod, registered nowhere": {
 			claim: queued(supervise.RegisteredPods{})},
-		"it has no session, no process and waits on no pod, registered nowhere, and the pod took a release's work": {
+		"it has no session, no process and waits on no pod, registered nowhere, and the pod is on a previously mounted kept volume": {
 			claim: queued(supervise.RegisteredPods{}), earlierWork: true},
 		"it has no session, no process and waits on no pod, and its set unknown": {
 			claim: queued(unknown), lost: true},

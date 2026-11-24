@@ -619,20 +619,17 @@ func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 }
 
 // launcherStarts is what the launcher of pod asks of the store at a role's start there, before the
-// role runs, where the issue's Sandbox owns a kept volume (keptSince): the start of a role in a pod
-// of a kept volume, which records pod with its volume and drops a bundle that volume holds
-// (sandbox's launchers.restoreWorkspace, store.StartKeptPod). It answers whether the call deleted
-// a bundle, and false, having asked nothing, where the issue's pods have volumes of their own.
-func (r *podUpdateRig) launcherStarts(pod string) bool {
+// role runs, where the issue's Sandbox owns a kept volume (keptSince): the record of a role's start
+// in a pod of a kept volume, which records pod with its volume (sandbox's launchers.recordKeptPod,
+// store.StartKeptPod). It asks nothing where the issue's pods have volumes of their own.
+func (r *podUpdateRig) launcherStarts(pod string) {
 	r.t.Helper()
 	if r.keptSince.IsZero() {
-		return false
+		return
 	}
-	_, dropped, err := r.st.StartKeptPod(r.ctx, podUpdateProject, podUpdateIssue, pod, r.keptSince)
-	if err != nil {
+	if err := r.st.StartKeptPod(r.ctx, podUpdateProject, podUpdateIssue, pod, r.keptSince); err != nil {
 		r.t.Fatalf("the launcher of pod %s asked the store to record its start in a pod of the kept volume: %v", pod, err)
 	}
-	return dropped
 }
 
 // displacedInto is the role's process ending with the pod it ran in and the daemon starting the
@@ -1958,8 +1955,8 @@ func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
 // of a released pod records a process in it. Both readers of PodDrift ask it only through a
 // claim that records one (groupDrift, podProcess), so the branch that answers runtime.ErrPodGone
 // for a Sandbox suspended without this round's own displaced-pod mark is never reached for a
-// released pod: the sweep opens no round over it, writes nothing on the issue about work the
-// release's bundle is holding, and leaves the wake to bring the pod back.
+// released pod: the sweep opens no round over it, writes nothing on the issue about work a pod it
+// no longer has might have held, and leaves the wake to bring the pod back.
 func TestPodUpdateReadsAReleasedPodAsNoPodRatherThanAPodThatWent(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t,
