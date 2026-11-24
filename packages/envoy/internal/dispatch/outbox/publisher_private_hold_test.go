@@ -183,7 +183,7 @@ func TestAHeldPrivateEventPublishesOnceItsHubsAreProven(t *testing.T) {
 		PrivateHubsReady: func() bool { asked.Add(1); return proven.Load() },
 		privateHoldWait:  100 * time.Millisecond,
 	}
-	stop := runDeps(t, deps, 5*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	private := appendHoldMessage(t, database, broker, "PRIV-1")

@@ -412,7 +412,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
-		ListenerRosterUncached: options.rosterUncached,
+		ListenerRosterUncached: options.rosterUncached || options.listenerRosterUncached,
 		RouteRosterTTL:         options.routeRosterTTL,
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
@@ -440,7 +440,6 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:             options.buildCommit,
 		OutboxPublishes:         options.outboxPublishes,
 		Metrics:                 options.metrics,
-		ListenerRosterUncached:  options.listenerRosterUncached,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
