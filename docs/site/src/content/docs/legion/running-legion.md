@@ -1457,7 +1457,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   issues whose work came back first, oldest first by the moment it came back, and then the issues
   that have not started, by the Dispatch rank of each issue's tree root and then its own. A
   priority changed in Dispatch moves the issue at the next admission pass, and priority takes no
-  slot back from work that runs. Each line gives the issue's key, its place in the line, the part
+  slot back from work that runs. The order is strict and nothing ages: while a higher priority
+  keeps issues waiting, no issue of a lower one, and none with no priority, reaches a free slot,
+  however long it has waited. Each line gives the issue's key, its place in the line, the part
   it stands in (`returned` or `starting`) and the daemon's own sentence for that place: what put
   the issue in the line and when, the priority it waits at and where that priority came from,
   where it stands among the issues of its own priority and part, and whether
@@ -1622,7 +1624,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
   `priority` (the issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for none; absent on an
   issue the workflow does not record, and absent, with the `priority` of each member of the line
-  below, for a caller below contract 244),
+  below, for a caller below contract 250),
   `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
   count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
   made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
