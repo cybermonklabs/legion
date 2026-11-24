@@ -43,10 +43,12 @@ func probeDashboard(ctx context.Context, dispatch string) (string, string, error
 	// foreign -url may carry one; gorilla refuses to dial it). So the live socket's failure prints by
 	// its class (redact.Class: the rule prints no ws:// URL), the SSE request's as redact.Cause reads
 	// it beside the URL it asked.
-	liveAnswer := redact.Class(dialErr).Error()
+	var liveAnswer string
 	if resp != nil {
 		liveAnswer = redact.StatusLine(resp.StatusCode)
 		_ = resp.Body.Close()
+	} else {
+		liveAnswer = redact.Class(dialErr).Error()
 	}
 
 	sseURL := dispatch + ssePath
