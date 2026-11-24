@@ -81,7 +81,7 @@ type Admission struct {
 	// catchingUp names each root the daemon's boot catch-up has yet to finish
 	// (HoldForCatchUp): its record may still miss what its Dispatch event log holds, so no pass
 	// decides whether it waits on a person (workflow's ReconcileAwaiting), nor resumes it once
-	// answered — it keeps the place its answer gives it in the waiting line's first part,
+	// answered — it keeps the place its answer gives it in the waiting line, within its priority,
 	// among the issues whose work came back, oldest first (record.Waiting) — until the catch-up
 	// has applied its window and releases it (ReleaseCatchUp). Unlike pending, a release's own
 	// pass does not lift it.
@@ -1822,9 +1822,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, nil, fmt.Errorf("reconcile the roots waiting on a person: %w", err)
 	}
 	// Reconcile wrote roots of the snapshot (a wait entered or answered, a resume told in place),
-	// so what follows reads them as they now stand: an answer it recorded puts its root in the
-	// first part of this pass's waiting line, among the issues whose work came back, oldest first
-	// (record.Waiting), at the moment its own wait was answered.
+	// so what follows reads them as they now stand: an answer it recorded puts its root in this
+	// pass's waiting line, within its priority, among the issues whose work came back, oldest
+	// first (record.Waiting), at the moment its own wait was answered.
 	if changed {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, nil, err

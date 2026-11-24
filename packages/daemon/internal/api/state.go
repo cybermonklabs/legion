@@ -587,9 +587,10 @@ type Admission struct {
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
 	// tells it from an issue a person parked, which stands in none of the three.
 	Active []string `json:"active"`
-	// Waiting is the admission line, in the line's own order: the issues whose work came back,
-	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
-	// rank. It carries children as well as roots, for the same reason `active` does. An owed
+	// Waiting is the admission line, in the line's own order: by priority first (each issue's own
+	// Dispatch priority, else its tree root's, else after P3), and within one priority the issues
+	// whose work came back, oldest first, then the issues whose first phase can start, by their
+	// tree root's Dispatch rank. It carries children as well as roots, for the same reason `active` does. An owed
 	// start in it holds no row and waits for one, as does an issue released for what it waits
 	// on; an issue in it that holds a row already (the kinds record.LineEntry.Holds names)
 	// stands in both lists until the pass that promotes it, which takes no second row.
@@ -896,8 +897,8 @@ type AssignmentView struct {
 // with GateVersion and ArtifactID, the spec version of its registered document a person has not
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
-// wait; the answered root then stands in admission's waiting line as well, among the issues
-// whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
+// wait; the answered root then stands in admission's waiting line as well, within its priority,
+// among the issues whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
 // of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
 // (contract 68) — among them, and it names how the wait was answered, not always by a person.
 type WaitingOnView struct {

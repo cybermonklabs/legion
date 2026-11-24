@@ -47,6 +47,15 @@ func (p Priority) String() string {
 	return ""
 }
 
+// band is where p's band stands in the waiting line, lower first: P0 to P3 in their order, and
+// NoPriority, an entry neither it nor its tree root has a priority for, after P3 (Waiting).
+func (p Priority) band() uint8 {
+	if p == NoPriority {
+		return uint8(P3) + 1
+	}
+	return uint8(p)
+}
+
 // PriorityOf is the priority issue takes (dispatch://INFRA-3576, spec v4, Wanted 1 and 3): its
 // own, else its tree root's, else NoPriority. root is the record of issue's tree root, the issue
 // itself for a root, and the zero Issue where the root has no record. The root's priority is read

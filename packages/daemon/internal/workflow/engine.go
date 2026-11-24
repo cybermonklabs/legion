@@ -819,7 +819,9 @@ func (e *Engine) HearRepository(ctx context.Context, repo string) {
 
 // RecordedFact is the todo fact an issue's own record already says, for a run no live event
 // brought: admission's promotion of a stranded child (ReenterChild) and Adopt's entry of a queued
-// root's todo members.
+// root's todo members. It is a fact the daemon builds from its own record, so it keeps the stored
+// priority by copying it (dispatch://INFRA-3576 R1): a fact built from what Dispatch sent carries
+// Dispatch's, null included, and replaces it.
 func RecordedFact(issue record.Issue) intake.DispatchIssue {
 	fact := intake.DispatchIssue{
 		Key: issue.Key, Seq: issue.LastDispatchSeq, Status: issue.Status, Title: issue.Title,
