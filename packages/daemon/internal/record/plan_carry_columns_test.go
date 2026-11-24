@@ -23,7 +23,7 @@ func wantEveryColumnCarried(t *testing.T, tx pgx.Tx, table string, minimum int, 
 	if except == nil {
 		except = []string{}
 	}
-	rows, err := tx.Query(ctx, `select column_name, coalesce(column_default, '') from information_schema.columns
+	rows, err := tx.Query(ctx, `select column_name, coalesce(column_default, 'null') from information_schema.columns
 		where table_schema = 'public' and table_name = $1 and column_name <> 'generation' and not (column_name = any($2))
 		order by column_name`, table, except)
 	must(t, err)
@@ -40,9 +40,6 @@ func wantEveryColumnCarried(t *testing.T, tx pgx.Tx, table string, minimum int, 
 	names := make([]string, len(columns))
 	for i, c := range columns {
 		names[i] = c.name
-		if c.fallback == "" {
-			continue
-		}
 		var seeded int
 		must(t, tx.QueryRow(ctx, fmt.Sprintf(`select count(*) from %s where issue = 'LEGION-208' and generation = 1 and %s is distinct from %s`,
 			table, c.name, c.fallback)).Scan(&seeded))
