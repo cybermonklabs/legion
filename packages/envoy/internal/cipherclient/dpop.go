@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/dpopproof"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -26,9 +27,10 @@ type dpopTransport struct {
 
 // NewDPoPTransport is a RoundTripper that sends each request through base with a DPoP header: a
 // proof of key (typ dpop+jwt, ES256, the public key embedded) naming a fresh jti, the request's
-// method (htm), its URL without query or fragment (htu) and the time (iat), plus the server's most
-// recent nonce once it has sent one. A 400 use_dpop_nonce answer that carries a DPoP-Nonce is
-// retried once with that nonce. The helper carries no proof on the device authorization request.
+// method (htm), its URL as the server checks it (htu, proof.TargetURI: no query, fragment or user
+// information) and the time (iat), plus the server's most recent nonce once it has sent one. A
+// 400 use_dpop_nonce answer that carries a DPoP-Nonce is retried once with that nonce. The helper
+// carries no proof on the device authorization request.
 //
 // Only the public half of key ever leaves the process: the proof embeds the public JWK and
 // nothing else of the key, and each session makes its own key in its own process.
@@ -80,9 +82,7 @@ func (d *dpopTransport) send(r *http.Request) (*http.Response, error) {
 	d.mu.Lock()
 	nonce := d.nonce
 	d.mu.Unlock()
-	htu := *r.URL
-	htu.RawQuery, htu.Fragment = "", ""
-	compact, err := d.proof(r.Method, htu.String(), nonce, accessTokenHash(r.Header))
+	compact, err := d.proof(r.Method, proof.TargetURI(r.URL), nonce, accessTokenHash(r.Header))
 	if err != nil {
 		return nil, err
 	}
