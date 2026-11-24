@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `handoff_complete` takes `return_to` on a tester's completion with no verdict, the step its task
+  returns to should the check states fail the testing step, and refuses it beside a verdict
+  before any request.
+time: 2026-11-24T16:11:14Z
+custom:
+  Issue: check-states-return-to
