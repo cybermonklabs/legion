@@ -8,6 +8,7 @@
 #   - a Go test of the prompts package that pins words of the composed tester prompt;
 #   - a Go test behind the e2e build tag that reads a skill;
 #   - a Bun test that reads a skill, and one that pins words of a tool's description;
+#   - a Bun test whose assertion opens on one line and holds its words on the next;
 #   - a Go test that pins words of a daemon task text;
 #   - a shell harness under scripts/e2e that greps a role prompt;
 #   - a Bun test outside the packages that write agents' texts, which reads a role prompt by path;
@@ -137,6 +138,16 @@ test("the planted skill keeps its words", () => {
   expect(text).toContain("planted words of the architect skill");
 });'
 
+next_line_test=packages/pi-legion/src/zz-planted-next-line.test.ts
+plant "$next_line_test" 'import { expect, test } from "bun:test";
+import { phaseReminder } from "./reminders";
+
+test("the planted reminder keeps its words", () => {
+  expect(phaseReminder()).toContain(
+    "planted words on the line after the call",
+  );
+});'
+
 tool_test=packages/contracts/src/zz-planted-tool.test.ts
 plant "$tool_test" 'import { expect, test } from "bun:test";
 import { dispatchToolSpecs } from "./dispatch-tools";
@@ -195,6 +206,7 @@ check "lists the e2e-tagged Go test that reads a skill" "$(row_at "$work/all" "$
 check "lists the Bun test that reads a skill" "$(row_at "$work/all" "$bun_test" 'skills/legion-architect/SKILL.md' skill-file)"
 check "lists the Bun test that pins a tool description" "$(row_at "$work/all" "$tool_test" 'planted words of a tool description' asserted-words)"
 check "names the tool specs it reads" "$(row_at "$work/all" "$tool_test" 'dispatchToolSpecs[0]' tool-description)"
+check "lists the words on the line after an assertion's call" "$(row_at "$work/all" "$next_line_test" 'planted words on the line after the call' asserted-words)"
 check "lists the Go test that pins words of a daemon task text" "$(row_at "$work/all" "$task_test" 'planted words of a wake task' asserted-words)"
 check "names the task text it reads" "$(row_at "$work/all" "$task_test" 'WakeTask(' task-text)"
 check "lists the harness that greps a role prompt" "$(row_at "$work/all" "$harness" 'go/reviewer.md')"
