@@ -7,17 +7,17 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // newSubOwnerClaim is newLiveClaim for the sub-owner of task on issue, a root of its own tree: the
-// claim of role sub-owner whose agent record.SubOwnerAgent names, created and launched the way
+// claim of role sub-owner whose agent plan.SubOwnerAgent names, created and launched the way
 // the spawn route does, registered, and in the turn of a task it was given.
 func newSubOwnerClaim(t *testing.T, h *harness, issue, task string) liveClaim {
 	t.Helper()
-	token, err := claim.AgentToken(testProject, issue, record.SubOwnerAgent(task))
+	token, err := claim.AgentToken(testProject, issue, plan.SubOwnerAgent(task))
 	if err != nil {
 		t.Fatalf("the token of the sub-owner of task %s of %s: %v", task, issue, err)
 	}

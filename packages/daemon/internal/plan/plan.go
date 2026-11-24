@@ -172,22 +172,33 @@ type Refusal struct{ Task, Reason string }
 // (claim.AgentToken).
 const MaxAgentName = 32
 
-// SubOwnerPrefix begins the name of each sub-owner's agent (SubOwnerAgent): the claim role of a
-// sub-owner and a dash. record.IsSubOwnerAgent tells such a name by it.
-const SubOwnerPrefix = string(claim.RoleSubOwner) + "-"
+// subOwnerPrefix begins the name of each sub-owner's agent (SubOwnerAgent): the claim role of a
+// sub-owner and a dash. IsSubOwnerAgent tells such a name by it.
+const subOwnerPrefix = string(claim.RoleSubOwner) + "-"
 
 // SubOwnerAgent is the name of the agent of task's sub-owner, the last part of its claim token:
-// SubOwnerPrefix and the task's slug (TaskSlug) where that is at most MaxAgentName bytes, else
+// subOwnerPrefix and the task's slug (TaskSlug) where that is at most MaxAgentName bytes, else
 // `sub-owner-t-` and the first 12 lower-case hexadecimal characters of the SHA-256 of the id, 24
-// bytes, as TaskSlug hashes an id. It is the one statement of the name: record.SubOwnerAgent, which
-// the workflow and the route read, answers it, and Validate refuses two tasks with a sub-owner
-// whose agents it gives one name (a short id `t-<12 hex>`, and an id whose hash starts so).
+// bytes, as TaskSlug hashes an id. It is the one statement of the name, so the sub-owner of one task
+// has one claim token for every version and generation of its issue. The name is derived, never
+// stored. The workflow reads it to find the task a sub-owner's claim gives for, and the record to
+// name the agent at a task's parts. Validate refuses two tasks with a sub-owner whose agents it gives
+// one name (a short id `t-<12 hex>`, and an id whose hash starts so).
 func SubOwnerAgent(task string) claim.Agent {
-	if name := SubOwnerPrefix + TaskSlug(task); len(name) <= MaxAgentName {
+	if name := subOwnerPrefix + TaskSlug(task); len(name) <= MaxAgentName {
 		return claim.Agent(name)
 	}
 	sum := sha256.Sum256([]byte(task))
-	return claim.Agent(SubOwnerPrefix + "t-" + hex.EncodeToString(sum[:6]))
+	return claim.Agent(subOwnerPrefix + "t-" + hex.EncodeToString(sum[:6]))
+}
+
+// IsSubOwnerAgent reports whether agent is the agent of a task's sub-owner (SubOwnerAgent): a name
+// that starts with subOwnerPrefix. A step's agent is named for its role (record.NameAgents), and no
+// role of a deployment is `sub-owner` or starts with that prefix (the configuration refuses one), so
+// no step's agent is so named. The record's test of a claim (record.SubOwnerOf), which the route and
+// the fact read, asks it.
+func IsSubOwnerAgent(agent claim.Agent) bool {
+	return strings.HasPrefix(string(agent), subOwnerPrefix)
 }
 
 // Element is a `plan_task` block that stands under a task with no sub-owner, or under an element

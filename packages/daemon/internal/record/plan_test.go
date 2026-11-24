@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -430,7 +431,7 @@ func subOwnersPlans(t *testing.T, st *store.Store) (issue Issue, owners, earlier
 	ctx := context.Background()
 	const key = "LEGION-210"
 	subOwner := func(task string) claim.Token {
-		token, err := claim.AgentToken("legion", key, SubOwnerAgent(task))
+		token, err := claim.AgentToken("legion", key, plan.SubOwnerAgent(task))
 		must(t, err)
 		return token
 	}

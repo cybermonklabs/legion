@@ -171,7 +171,9 @@ func (e *Engine) handOnAgents(ctx context.Context, tx pgx.Tx, keys []string) err
 // queued at a generation the issue has left: admission's re-admission carries a running task, its
 // wait among it, to the next generation, and the row of the generation it left finishes without
 // acting (the outbox's taskBranch), so nothing else would end the wait. An issue of a tree that
-// lingers joins nothing, as no move starts anything there.
+// lingers joins nothing, as no move starts anything there. A join that ends at once, for a task
+// that holds the issue's own branch and needs none, leaves a task at its parts with no wait, whose
+// parts that wait then start (startAfterWait).
 func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error {
 	var order []string
 	for _, key := range keys {
@@ -248,7 +250,8 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // start that waited was a start again of the task at its first step or a move back
 // (Walk.StartReason), the task is told why, and its entry counts as a move back, as that start's own
 // would have had it waited for nothing (restartTask, transition). said is the log line, which names
-// the issue, the task, its place and role, and args.
+// the issue, the task, its place and role, and args. A task at its parts that now waits for nothing
+// lets its parts that wait start: this one place of the three doors runs startReadyNow for it.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
 	w, view := s.walk, s.issue
 	role := w.RoleAt(w.Place)
@@ -262,9 +265,12 @@ func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, sai
 	reason := w.StartReason
 	e.logOnCommit(ctx, said, append([]any{"issue", view.Key, "tree", view.Tree, "task", w.Task, "place", placeWords(w.Place), "role", role,
 		"reason", reason}, args...)...)
-	return e.start(ctx, tx, s, role, func(at Standing) string {
+	if err := e.start(ctx, tx, s, role, func(at Standing) string {
 		return task(view, at, record.PhaseRow{}, pr, reason)
-	}, reason != "")
+	}, reason != ""); err != nil || w.Place.Kind != record.PlaceParts {
+		return err
+	}
+	return e.startReadyNow(ctx, tx, view.Key)
 }
 
 // agentWaiters is each task of stored, the plan of a run, in the state running whose step waits for

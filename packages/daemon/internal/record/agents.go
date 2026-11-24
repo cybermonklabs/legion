@@ -2,38 +2,18 @@ package record
 
 import (
 	"slices"
-	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
-// maxAgentName is the longest name of an agent, in bytes: the bound of the agent grammar
-// (claim.AgentToken), as the plan states it.
-const maxAgentName = plan.MaxAgentName
-
-// SubOwnerAgent is the name of the agent of task's sub-owner, the last part of its claim token
-// (plan.SubOwnerAgent, the one statement of the name, which Validate holds unique among the tasks
-// of a plan). So the sub-owner of one task has one claim token for every version and generation of
-// its issue. The name is derived, never stored, and no step's agent has such a name
-// (IsSubOwnerAgent).
-func SubOwnerAgent(task string) claim.Agent {
-	return plan.SubOwnerAgent(task)
-}
-
-// IsSubOwnerAgent reports whether agent is the agent of a task's sub-owner (SubOwnerAgent): a name
-// that starts with plan.SubOwnerPrefix. NameAgents names a step's agent for its role, and no role of
-// the deployment is `sub-owner` or starts with that prefix, so no step's agent is so named.
-func IsSubOwnerAgent(agent claim.Agent) bool {
-	return strings.HasPrefix(string(agent), plan.SubOwnerPrefix)
-}
-
 // SubOwnerOf is the agent of token where token is the claim of a task's sub-owner: the agent its
-// token ends in (claim.Token.Cut) is named for one (IsSubOwnerAgent). It is false, with no agent,
-// for a step's claim, an architect's, the controller's and a token that names no agent. It is the
-// one test of "this claim is a task's sub-owner's", which the route, the fact and the record read.
+// token ends in (claim.Token.Cut) is named for one (plan.IsSubOwnerAgent). It is false, with no
+// agent, for a step's claim, an architect's, the controller's and a token that names no agent. It is
+// the one test of "this claim is a task's sub-owner's", which the route, the fact and the record
+// read.
 func SubOwnerOf(token claim.Token) (claim.Agent, bool) {
-	if _, agent, named := token.Cut(); named && IsSubOwnerAgent(agent) {
+	if _, agent, named := token.Cut(); named && plan.IsSubOwnerAgent(agent) {
 		return agent, true
 	}
 	return "", false
@@ -55,7 +35,7 @@ func SubOwnerOf(token claim.Token) (claim.Agent, bool) {
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role
 //     with no key, unless pass 2 or an earlier step of this pass gave that name.
 //  4. Each agent still with no name, in the order of its first step, takes the role of that first
-//     step, cut to maxAgentName bytes, where no agent of steps has that name. An agent whose role's
+//     step, cut to plan.MaxAgentName bytes, where no agent of steps has that name. An agent whose role's
 //     name another agent holds keeps no name: this release runs one agent of each role for an
 //     issue, and the caller refuses such a version before it writes anything.
 //
@@ -116,10 +96,10 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 }
 
 // RoleName is the name an agent takes from the role of its first step (NameAgents' pass 4): the
-// role, cut to maxAgentName bytes.
+// role, cut to plan.MaxAgentName bytes.
 func RoleName(role string) claim.Agent {
-	if len(role) > maxAgentName {
-		role = role[:maxAgentName]
+	if len(role) > plan.MaxAgentName {
+		role = role[:plan.MaxAgentName]
 	}
 	return claim.Agent(role)
 }

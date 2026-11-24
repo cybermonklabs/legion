@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -166,11 +167,11 @@ func mustClaimToken(t *testing.T, issue string, role claim.Role) claim.Token {
 	return token
 }
 
-// subOwnerToken is the claim token of the sub-owner of task on issue (record.SubOwnerAgent), the
+// subOwnerToken is the claim token of the sub-owner of task on issue (plan.SubOwnerAgent), the
 // one claim a notice names (record.Notice.To).
 func subOwnerToken(t *testing.T, issue, task string) claim.Token {
 	t.Helper()
-	token, err := claim.AgentToken("legion", issue, record.SubOwnerAgent(task))
+	token, err := claim.AgentToken("legion", issue, stepplan.SubOwnerAgent(task))
 	if err != nil {
 		t.Fatalf("claim token of the sub-owner of task %s of %s: %v", task, issue, err)
 	}

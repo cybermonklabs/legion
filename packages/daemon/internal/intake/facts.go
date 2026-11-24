@@ -1874,13 +1874,15 @@ type Refusal struct {
 
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner or a sub-owner gave, with one
 // reason for each cause: register_plan answers it for a plan that plan.Supported or plan.Validate
-// refuses, and the workflow for a version of a sub-owner of no task (NoSubOwnedTask), one that
-// changes a task its giver does not write (plan.OwnershipRefusals), one that changes or removes a
-// running or held task (RunningTaskChanged, HeldTaskChanged), one that changes whether the work of
-// a task merges once its retro or its merge has started or is held (MergeOfStartedActChanged), one
-// that leaves a done task whose work did not merge needed by no task (DoneTaskWouldMerge), or one
-// whose agent this release cannot name (AgentUnnamed). The message holds every reason in its
-// order, so a reader of the sentence alone reads every cause.
+// refuses, and the workflow for a version of a sub-owner of no task (NoSubOwnedTask), a version of
+// a sub-owner whose task stands at its report, its retro or its merge (PartsOfReportedTask,
+// PartsOfTaskAtAct), one that changes a task its giver does not write (plan.OwnershipRefusals), one
+// of a sub-owner that changes whether a task it does not write merges (MergeOfOwnersTask), one that
+// changes or removes a running or held task (RunningTaskChanged, HeldTaskChanged), one that changes
+// whether the work of a task merges once its retro or its merge has started or is held
+// (MergeOfStartedActChanged), one that leaves a done task whose work did not merge needed by no
+// task (DoneTaskWouldMerge), or one whose agent this release cannot name (AgentUnnamed). The message
+// holds every reason in its order, so a reader of the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -1891,7 +1893,7 @@ func PlanRefused(reasons []plan.Refusal) *Refusal {
 
 // NoSubOwnedTask is the reason a version of issue's plan is refused when agent, the sub-owner's
 // agent whose claim gave it (PlanGiven.SubOwner), is the sub-owner of no task of the plan in force
-// (record.SubOwnerAgent): the plan in force names each task a sub-owner gives the parts of.
+// (plan.SubOwnerAgent): the plan in force names each task a sub-owner gives the parts of.
 func NoSubOwnedTask(issue string, agent claim.Agent) plan.Refusal {
 	return plan.Refusal{Reason: fmt.Sprintf("%s is the sub-owner of no task of the plan in force of %s.", agent, issue)}
 }
@@ -1933,6 +1935,41 @@ func MergeOfStartedActChanged(task, act string, held bool) plan.Refusal {
 func DoneTaskWouldMerge(task string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is done and its work did not merge, and in this version no task needs it, "+
 		"so its work would merge by itself; a done task does not start again. Add a task that needs task %s, or keep a need on it.", task, task)}
+}
+
+// MergeOfOwnersTask is the reason a version that subOwner, the task whose sub-owner gave it, gives
+// of issue's plan is refused when it changes whether task, which subOwner does not write, merges by
+// itself (record.StoredPlan.Merging reads every task's needs, a part's among them): merges is
+// whether task merges under the plan in force. Which tasks merge is the owner of the issue's to
+// decide, and a sub-owner acts only inside the parts of its own task.
+func MergeOfOwnersTask(issue, task, subOwner string, merges bool) plan.Refusal {
+	change := "make task " + task + " merge by itself"
+	if merges {
+		change = "keep task " + task + " from merging by itself"
+	}
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("this version would %s. Whether task %s merges is for the owner of %s to decide, "+
+		"not for the sub-owner of task %s: ask the owner of %s for that change.", change, task, issue, subOwner, issue)}
+}
+
+// PartsOfReportedTask is the reason a version that the sub-owner of task gives of issue's plan is
+// refused while task stands at its report (record.PlaceReported), running or held: complete_task
+// was the sub-owner's own word that the parts are whole, and after it the task moves forward only,
+// so a part given then would never start. It names the ways back to the parts.
+func PartsOfReportedTask(issue, task string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s of %s stands at its report: you reported that its parts are done, and Legion joins them, "+
+		"so the task takes no part now and this version changed nothing. It takes parts again if the join conflicts (report-refused), "+
+		"if the merger returns its merge to you (merge-returned), or if the owner of %s stops it and starts it again. "+
+		"Ask the owner of %s for other missing work as a task of its own.", task, issue, issue, issue)}
+}
+
+// PartsOfTaskAtAct is the reason a version that the sub-owner of task gives of issue's plan is
+// refused while task stands at act, its retro or its merge, running or held: the task moves
+// forward only, and a part added then never starts. It names the ways back to the parts: the
+// merger's return, and the owner's stop and start again of the task.
+func PartsOfTaskAtAct(issue, task, act string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s of %s stands at its %s, so the task takes no part now and this version changed nothing. "+
+		"It takes parts again if the merger returns its merge to you (merge-returned), or if the owner of %s stops it and starts it again. "+
+		"Ask the owner of %s for other missing work as a task of its own.", task, issue, act, issue, issue)}
 }
 
 // AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,
@@ -2047,15 +2084,21 @@ const (
 	ChangeOfTask TaskAct = iota
 	// StopOfTask is the owner's stop of the task (stop_task).
 	StopOfTask
+	// ChangeOfParts is a version of the plan the task's sub-owner gives, which changes the task's
+	// parts (register_plan).
+	ChangeOfParts
 )
 
-// words is what act does to a task, as the refusal says nothing of the task is left to do, and the
-// call that changed nothing.
-func (act TaskAct) words() (does, call string) {
-	if act == StopOfTask {
-		return "stop", "stop"
+// words is what act does to a task, as the refusal says nothing of the task is left to do, the
+// call that changed nothing, and what the caller does instead, "" for nothing.
+func (act TaskAct) words(issue string) (does, call, instead string) {
+	switch act {
+	case StopOfTask:
+		return "stop", "stop", ""
+	case ChangeOfParts:
+		return "change", "version", fmt.Sprintf(" Ask the owner of %s for the missing work as a task of its own.", issue)
 	}
-	return "change", "plan"
+	return "change", "plan", ""
 }
 
 // FinishedTask is the 409 TASK_DONE refusal of act on task of issue, whose state is done or left
@@ -2064,7 +2107,8 @@ func (act TaskAct) words() (does, call string) {
 // never moved again, so each refuses every act with the one code, the code of a stop of a done
 // task. Every refusal of a finished task is made here, so the workflow judges the state once for
 // each act: a version of the plan that changes the task (versionRefusal), a version given by the
-// task's sub-owner, which changes its parts (giverOf), and the owner's stop (taskStopped).
+// task's sub-owner, which changes its parts and sends other missing work to the owner of the issue
+// (giverOf), and the owner's stop (taskStopped).
 func FinishedTask(issue, task string, state record.TaskState, act TaskAct) *Refusal {
 	var stands string
 	switch state {
@@ -2075,9 +2119,9 @@ func FinishedTask(issue, task string, state record.TaskState, act TaskAct) *Refu
 	default:
 		return nil
 	}
-	does, call := act.words()
+	does, call, instead := act.words(issue)
 	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
-		"task %s of %s %s, so nothing of it is left to %s. This %s changed nothing.", task, issue, stands, does, call)}
+		"task %s of %s %s, so nothing of it is left to %s. This %s changed nothing.%s", task, issue, stands, does, call, instead)}
 }
 
 // TaskAwaitsPerson is the 409 TASK_AWAITING_PERSON refusal of stop_task for task of issue, a root

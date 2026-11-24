@@ -96,29 +96,29 @@ func TestEachTaskWithASubOwnerHasAnAgentOfItsOwn(t *testing.T) {
 		{task: long, want: "sub-owner-t-d6796c45cce5"},
 		{task: "F", want: claim.Agent("sub-owner-" + plan.TaskSlug("F"))},
 	} {
-		got := SubOwnerAgent(tc.task)
+		got := plan.SubOwnerAgent(tc.task)
 		if got != tc.want {
 			t.Errorf("SubOwnerAgent(%q) = %q, want %q", tc.task, got, tc.want)
 		}
 		if !agentName.MatchString(string(got)) {
 			t.Errorf("SubOwnerAgent(%q) = %q (%d bytes), which is no agent's name: %s, at most 32 bytes", tc.task, got, len(got), agentName)
 		}
-		if !IsSubOwnerAgent(got) {
+		if !plan.IsSubOwnerAgent(got) {
 			t.Errorf("IsSubOwnerAgent(%q) = false, want true: it is the agent of the sub-owner of task %q", got, tc.task)
 		}
 		if _, err := claim.AgentToken("legion", "I-1", got); err != nil {
 			t.Errorf("AgentToken of SubOwnerAgent(%q) = %q: %v", tc.task, got, err)
 		}
 	}
-	if got := SubOwnerAgent(long); len(got) != 24 {
+	if got := plan.SubOwnerAgent(long); len(got) != 24 {
 		t.Errorf("SubOwnerAgent of an id of 40 characters = %q, %d bytes; want 24", got, len(got))
 	}
 	for _, name := range []claim.Agent{"implementer", "implementer-2", "architect"} {
-		if IsSubOwnerAgent(name) {
+		if plan.IsSubOwnerAgent(name) {
 			t.Errorf("IsSubOwnerAgent(%q) = true, want false: it is a step's agent or the architect", name)
 		}
 	}
-	token, err := claim.AgentToken("legion", "I-1", SubOwnerAgent("f"))
+	token, err := claim.AgentToken("legion", "I-1", plan.SubOwnerAgent("f"))
 	if err != nil || token != "legion-legion-i-1-sub-owner-f" {
 		t.Errorf("AgentToken(legion, I-1, SubOwnerAgent(f)) = %q, %v; want legion-legion-i-1-sub-owner-f", token, err)
 	}
@@ -144,11 +144,11 @@ func TestSubOwnerOfReadsTheAgentOfTheClaim(t *testing.T) {
 		wantAgent claim.Agent
 		want      bool
 	}{
-		{name: "a sub-owner's claim", token: token(SubOwnerAgent("f")), wantAgent: "sub-owner-f", want: true},
+		{name: "a sub-owner's claim", token: token(plan.SubOwnerAgent("f")), wantAgent: "sub-owner-f", want: true},
 		{name: "a step's claim", token: token("implementer")},
 		{name: "an architect's claim", token: token(claim.Agent(claim.RoleArchitect))},
 		{name: "the controller's claim", token: claim.ControllerToken("legion")},
-		{name: "a token that names no agent", token: claim.Token(SubOwnerAgent("f"))},
+		{name: "a token that names no agent", token: claim.Token(plan.SubOwnerAgent("f"))},
 	} {
 		if agent, ok := SubOwnerOf(tc.token); agent != tc.wantAgent || ok != tc.want {
 			t.Errorf("SubOwnerOf(%s), %s = %q, %t; want %q, %t", tc.token, tc.name, agent, ok, tc.wantAgent, tc.want)

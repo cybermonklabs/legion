@@ -31,7 +31,7 @@ const (
 
 // RoleSubOwner is the role of a task's sub-owner: the agent that writes the task's parts, gives
 // them to Legion and reports the task when they are done. Each task with a sub-owner has an agent
-// of its own, named for the task (`sub-owner-<task>`, record.SubOwnerAgent). It is none of Roles,
+// of its own, named for the task (`sub-owner-<task>`, plan.SubOwnerAgent). It is none of Roles,
 // so no pod's role list holds it, and no role of the deployment takes the word or that prefix.
 const RoleSubOwner Role = "sub-owner"
 

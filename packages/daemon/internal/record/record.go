@@ -551,17 +551,11 @@ type RunningStep struct {
 }
 
 // SubOwnerActs says whether a task standing at p is at the act of its sub-owner, which is no step:
-// its parts or its report (PlaceParts, PlaceReported). It is the one test of that act: a running
-// step's (RunningStep.OwnerAct), the reading of a row of the running steps (stepOfRow) and the
-// phase the workflow derives for a place each ask it.
+// its parts or its report (PlaceParts, PlaceReported). It is the one test of that act: the reading
+// of a row of the running steps (stepOfRow), a reader of a running step's place and the phase the
+// workflow derives for a place each ask it.
 func (p TaskPlace) SubOwnerActs() bool {
 	return p.Kind == PlaceParts || p.Kind == PlaceReported
-}
-
-// OwnerAct says whether s is the act of a task's sub-owner and not a step: its place is one where
-// the sub-owner acts (TaskPlace.SubOwnerActs).
-func (s RunningStep) OwnerAct() bool {
-	return s.Place.SubOwnerActs()
 }
 
 // RunningOf is the running steps of issue (Issue.Running) from the read of its run's plan rows
@@ -600,7 +594,7 @@ func RunningOf(issue Issue, planned bool, rows []pods.RunningRow) []RunningStep 
 func stepOfRow(row pods.RunningRow, held bool) RunningStep {
 	step := RunningStep{Task: row.Task, Place: TaskPlace{Kind: row.Kind, Position: row.Position}, Held: row.Held || held}
 	if step.Place.SubOwnerActs() {
-		step.Phase, step.Role, step.Agent = phase.Planning, claim.RoleSubOwner, SubOwnerAgent(row.Task)
+		step.Phase, step.Role, step.Agent = phase.Planning, claim.RoleSubOwner, plan.SubOwnerAgent(row.Task)
 		return step
 	}
 	switch row.Kind {

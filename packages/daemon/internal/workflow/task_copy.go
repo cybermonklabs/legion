@@ -68,7 +68,7 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (boo
 // nothing of it started: start raises its entry, or writes that it waits for its agent where that
 // agent runs a step of another task. Its task is told where its work stands and its own pull
 // request, as the start after the wait for an agent tells it (handOn). A task at its parts, where
-// its sub-owner acts, then starts each of its parts that waits for that join (startReady). The end
+// its sub-owner acts, then starts each of its parts that waits for that join (startAfterWait). The end
 // of the row a merge's start queued (fact.Base set) joined nothing: it records the base on the
 // task's pull request and as the task's base (mergeBaseSet), leaves the join's conflicts as they
 // are, and starts the merge. Any other end of a join changes nothing: one of a generation the issue
@@ -114,19 +114,8 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.startAfterWait(ctx, tx, s, "workflow: a task's join ended, and its step starts",
-		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts, "unmerged", fact.Unmerged); err != nil {
-		return intake.Result{}, err
-	}
-	if joined.Place.Kind != record.PlaceParts {
-		return intake.Result{}, nil
-	}
-	now, err := e.store.Issue(ctx, tx, issue.Key)
-	if err != nil || now == nil {
-		return intake.Result{}, err
-	}
-	_, err = e.startReady(ctx, tx, *now)
-	return intake.Result{}, err
+	return intake.Result{}, e.startAfterWait(ctx, tx, s, "workflow: a task's join ended, and its step starts",
+		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts, "unmerged", fact.Unmerged)
 }
 
 // mergeBaseSet records base, the default branch the row of a merge's start set the base of fact's

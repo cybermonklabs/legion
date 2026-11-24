@@ -569,7 +569,9 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // no task, so each of them is released on the copy of the root read for it (viewsOf, and view of
 // the issue as the release before wrote it for each after the first), by the rule above, as the
 // one task of a plan of one is released on the root itself; and the status queued for the tasks
-// retried is that of the phase the root then stands in (phaseNow).
+// retried is that of the phase the root then stands in (phaseNow). Once each is released, each
+// task that may start then starts (startReadyNow), once for the todo: a task released or started
+// again at its parts with no wait lets its parts that wait start.
 func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	released, err := e.observedIssue(ctx, tx, issue, fact)
 	if err != nil {
@@ -626,6 +628,11 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 			if err := e.startAtFirstStep(ctx, tx, held, restartReason); err != nil {
 				return err
 			}
+		}
+	}
+	if releasing {
+		if err := e.startReadyNow(ctx, tx, issue.Key); err != nil {
+			return err
 		}
 	}
 	if !retried {
@@ -2275,9 +2282,12 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		return intake.Result{Refusal: refusal}, err
 	}
 	// The architect's own words where it named any, which the restarted role's task and the log
-	// line for the release both carry; a decision that names none keeps the daemon's.
-	_, err = e.retryPhase(ctx, tx, s, s.issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false)
-	return intake.Result{}, err
+	// line for the release both carry; a decision that names none keeps the daemon's. A task
+	// released at its parts lets its parts that wait start (startReadyNow).
+	if _, err := e.retryPhase(ctx, tx, s, s.issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false); err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.startReadyNow(ctx, tx, issue.Key)
 }
 
 // heldStepRole is the role of the step the hold of s keeps at from, the phase the hold is from
@@ -2363,8 +2373,11 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 	if refusal, err := e.stepMovedRefusal(ctx, tx, s.issue, fact.Role, fact.Claim); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
-	_, err = e.retryPhase(ctx, tx, s, working, "the operator retried this phase's worker", fact.FreshSession)
-	return intake.Result{}, err
+	if _, err := e.retryPhase(ctx, tx, s, working, "the operator retried this phase's worker", fact.FreshSession); err != nil {
+		return intake.Result{}, err
+	}
+	// A task released at its parts lets its parts that wait start (startReadyNow).
+	return intake.Result{}, e.startReadyNow(ctx, tx, issue.Key)
 }
 
 // retryPhase gives issue the phase from back — a held issue leaves its hold — and starts that
@@ -2392,7 +2405,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // which is the architect's own words where its retry named any.
 //
 // Its callers have established that the tree does not linger, which is what holds every member
-// where it stood.
+// where it stood. A task released at its parts runs there with no wait, which lets its parts that
+// wait start: each caller, the door of its fact, runs startReadyNow once after it (retryOrEscalate,
+// restartPhase, releaseHeldRoot), so no door starts waiting tasks twice.
 //
 // It answers the phase the issue ends in, which the caller that must write a status of its own
 // reads (releaseHeldRoot): from, where nothing moved, and otherwise the phase the move took the

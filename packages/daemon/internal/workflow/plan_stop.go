@@ -320,10 +320,11 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // phase the hold is from (releaseHeldRoot says the same of a release). The role of that place is
 // started at a raised entry (start), which writes the start of its step, and its entry counts as a
 // move back, since it asks for the work again from the first step; at the parts no step's role
-// works the task, so the start only joins its needs, and the parts that wait start where the task
-// waits for nothing (startReady). The step the task stood in ended when it stopped (stopTask), so
-// none is ended here. The act is task_restarted, which the log line names: no row of the table
-// moves a held issue.
+// works the task, so the start only joins its needs. A task started again at its parts with no wait
+// lets its parts that wait start: each caller, the door of its fact, runs startReadyNow once after
+// every task it starts again (afterSeveral, releaseHeldRoot), so no door starts waiting tasks twice.
+// The step the task stood in ended when it stopped (stopTask), so none is ended here. The act is
+// task_restarted, which the log line names: no row of the table moves a held issue.
 //
 // Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
 // for its stop is never done or left, since each write of done or left clears the issue's hold in
@@ -400,14 +401,9 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 		return err
 	}
 	issue := s.issue
-	if err := e.start(ctx, tx, s, role, func(at Standing) string {
+	return e.start(ctx, tx, s, role, func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
-	}, true); err != nil || first.Kind != record.PlaceParts {
-		return err
-	}
-	// A task started again at its parts lets its parts that wait start, once it waits for nothing
-	// (mayStart): startReady, the start of each task that waits, starts them.
-	return e.startReadyNow(ctx, tx, s.issue.Key)
+	}, true)
 }
 
 // scopeWalks is the walk of each task of s's plan, in task id order, with s's own walk in place of

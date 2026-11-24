@@ -89,7 +89,7 @@ func seedOwnedVersion(t *testing.T, pool *pgxpool.Pool, key string, generation u
 // (startReady).
 func partsGiven(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, of string, version int, tasks ...ownedTask) {
 	t.Helper()
-	subOwner := agentClaim(t, key, record.SubOwnerAgent(of))
+	subOwner := agentClaim(t, key, plan.SubOwnerAgent(of))
 	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 		if err := putOwnedVersion(ctx, tx, key, issue.Generation, version, subOwner, tasks...); err != nil {
 			return err
@@ -103,9 +103,9 @@ func partsGiven(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, of string
 }
 
 // subOwnerOf is the running step of the sub-owner of task at its parts (record.RunningStep): the act
-// of the agent SubOwnerAgent names, in planning.
+// of the agent plan.SubOwnerAgent names, in planning.
 func subOwnerOf(task string) record.RunningStep {
-	return record.RunningStep{Task: task, Place: atParts, Role: claim.RoleSubOwner, Phase: phase.Planning, Agent: record.SubOwnerAgent(task)}
+	return record.RunningStep{Task: task, Place: atParts, Role: claim.RoleSubOwner, Phase: phase.Planning, Agent: plan.SubOwnerAgent(task)}
 }
 
 // A task with a sub-owner starts at its parts, where its sub-owner acts, and its parts start while
@@ -140,7 +140,7 @@ func TestATaskWithASubOwnerStandsAtItsParts(t *testing.T) {
 			t.Fatalf("%s at the start of its work stands in %s (hold %+v), want planning, where f's sub-owner acts", root.Key, issue.Phase, issue.Hold)
 		}
 		want := []record.RunningStep{subOwnerOf("f")}
-		if got := issue.Running; !slices.Equal(got, want) || !got[0].OwnerAct() {
+		if got := issue.Running; !slices.Equal(got, want) || !got[0].Place.SubOwnerActs() {
 			t.Fatalf("the running steps of %s = %+v, want %+v, an owner's act", root.Key, got, want)
 		}
 
@@ -267,10 +267,9 @@ func TestAPartWaitsWhileItsTaskIsStopped(t *testing.T) {
 
 // The act of a task's sub-owner is told apart from a step by its place alone
 // (record.TaskPlace.SubOwnerActs): the parts and the report are its act, and no act, a step, the
-// retro and the merge are none. Each reader asks the place: a running step's OwnerAct, the reading
-// of a row of the running steps (record.RunningOf), which names the sub-owner, its agent and
-// planning there, and the phase a place derives for a task with a sub-owner (issuePhaseOf),
-// planning.
+// retro and the merge are none. Each reader asks the place: the reading of a row of the running
+// steps (record.RunningOf), which names the sub-owner, its agent and planning there, and the phase a
+// place derives for a task with a sub-owner (issuePhaseOf), planning.
 //
 // The fault it catches is a reader that keeps a list of those places of its own (its control: the
 // place's test without the report, under which each reader fails at the report, so none of them
@@ -294,15 +293,12 @@ func TestASubOwnersActIsToldByItsPlace(t *testing.T) {
 		if got := tc.place.SubOwnerActs(); got != tc.acts {
 			t.Errorf("%+v.SubOwnerActs() = %t, want %t", tc.place, got, tc.acts)
 		}
-		if got := (record.RunningStep{Task: "f", Place: tc.place}).OwnerAct(); got != tc.acts {
-			t.Errorf("the running step of f at %+v: OwnerAct() = %t, want %t", tc.place, got, tc.acts)
-		}
 		row := pods.RunningRow{Task: "f", Kind: tc.place.Kind, Position: tc.place.Position}
 		if tc.place.Kind == record.PlaceStep {
 			row.Role, row.Key, row.Agent, row.At = "implementer", "f", "implementer-f", 1
 		}
 		steps := record.RunningOf(record.Issue{Key: key}, true, []pods.RunningRow{row})
-		subOwner := len(steps) == 1 && steps[0].Role == claim.RoleSubOwner && steps[0].Phase == phase.Planning && steps[0].Agent == record.SubOwnerAgent("f")
+		subOwner := len(steps) == 1 && steps[0].Role == claim.RoleSubOwner && steps[0].Phase == phase.Planning && steps[0].Agent == plan.SubOwnerAgent("f")
 		if subOwner != tc.acts {
 			t.Errorf("the running steps read from a row of f at %+v = %+v; the sub-owner's act in planning: %t, want %t", tc.place, steps, subOwner, tc.acts)
 		}

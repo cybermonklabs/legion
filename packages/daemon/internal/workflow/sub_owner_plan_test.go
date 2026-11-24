@@ -13,11 +13,11 @@ import (
 
 // subOwnersVersion is register_plan's fact for key at generation from the sub-owner of task of:
 // version of the document the plan seedOwnedVersion writes ("plan-artifact"), holding tasks, given
-// by the claim of the agent record.SubOwnerAgent names, as the route records a sub-owner's grant.
+// by the claim of the agent plan.SubOwnerAgent names, as the route records a sub-owner's grant.
 func subOwnersVersion(t *testing.T, key string, generation uint64, of string, version int, tasks ...plan.Task) intake.PlanGiven {
 	t.Helper()
 	given := laterVersion(t, key, generation, version, tasks...)
-	given.GivenBy = agentClaim(t, key, record.SubOwnerAgent(of))
+	given.GivenBy = agentClaim(t, key, plan.SubOwnerAgent(of))
 	return given
 }
 
@@ -63,7 +63,7 @@ func TestASubOwnerChangesOnlyItsParts(t *testing.T) {
 		mustTake(t, "the sub-owner's version 2", apply("sub-owner-version-2", subOwnersVersion(t, root.Key, root.Generation, "f", 2, f, h, f1, f2)))
 
 		standing := planStandingOf(t, pool, engine, root.Key, root.Generation)
-		if subOwner := agentClaim(t, root.Key, record.SubOwnerAgent("f")); standing.plan.Version.Version != 2 || standing.plan.Version.GivenBy != subOwner {
+		if subOwner := agentClaim(t, root.Key, plan.SubOwnerAgent("f")); standing.plan.Version.Version != 2 || standing.plan.Version.GivenBy != subOwner {
 			t.Fatalf("the version in force of %s is %d given by %s, want 2 given by f's sub-owner %s", root.Key, standing.plan.Version.Version, standing.plan.Version.GivenBy, subOwner)
 		}
 		tasks := tasksOf(t, pool, engine, root.Key)

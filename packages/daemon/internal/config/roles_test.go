@@ -9,7 +9,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
-	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // rolesFile writes body after minimalFile as a legion.yaml and each named prompt file beside it,
@@ -154,8 +153,8 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 			"roles: {" + name + ": {type: testing, prompt_file: checker.md}}\n",
 			"roles." + name + " names a role of Legion's own: a deployment defines roles of its own names"})
 	}
-	subOwnerOfF := string(record.SubOwnerAgent("f"))
-	if !record.IsSubOwnerAgent(claim.Agent(subOwnerOfF)) {
+	subOwnerOfF := string(plan.SubOwnerAgent("f"))
+	if !plan.IsSubOwnerAgent(claim.Agent(subOwnerOfF)) {
 		t.Fatalf("IsSubOwnerAgent(%q) = false: the case below names no sub-owner's agent", subOwnerOfF)
 	}
 	refusals = append(refusals, struct{ name, body, want string }{"the name of the agent of a task's sub-owner",

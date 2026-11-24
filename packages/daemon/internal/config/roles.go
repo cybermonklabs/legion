@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -69,7 +68,7 @@ func legionName(name string) bool {
 
 // readRoles is `roles`: a mapping of a role's name to its block, read in the file's order. A name
 // outside the grammar, longer than Dispatch's step record takes, a name of Legion's own, the name
-// of a task's sub-owner's agent (record.IsSubOwnerAgent) or a name named twice is refused naming
+// of a task's sub-owner's agent (plan.IsSubOwnerAgent) or a name named twice is refused naming
 // it. A step of a role takes the role's name as its agent's (record.NameAgents), so a role named
 // `sub-owner-f` would take the claim token of the sub-owner of task f. The block's type is judged
 // in resolveRoles, once `role_types` is read too, wherever the file names it.
@@ -95,7 +94,7 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 			return nil, fmt.Errorf("%s is %d characters, and a role's name has at most %d: Dispatch's step record takes no longer one", field, len(name), maxRoleWord)
 		case legionName(name):
 			return nil, fmt.Errorf("%s names a role of Legion's own: a deployment defines roles of its own names", field)
-		case record.IsSubOwnerAgent(claim.Agent(name)):
+		case plan.IsSubOwnerAgent(claim.Agent(name)):
 			return nil, fmt.Errorf("%s starts with %s-, as the agent of a task's sub-owner is named: a step of the role would take that agent's claim", field, claim.RoleSubOwner)
 		case slices.ContainsFunc(roles, func(r Role) bool { return string(r.Name) == name }):
 			return nil, fmt.Errorf("%s names %s twice", key, name)

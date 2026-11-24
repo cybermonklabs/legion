@@ -32,15 +32,16 @@ func partChanged(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, g
 
 // A stopped part that a later version changes starts again only where it may start, by the one
 // rule of a task's start (mayStart): each task it needs is done, and its task runs at its parts and
-// waits for nothing. While its task f is stopped, while f waits for the join of its needs, and
-// while f stands at its report, the sub-owner's version that changes the stopped part f1 leaves f1
-// waiting at no act, its stop ended. Once f's join ends, f1 starts (taskJoined, startReady). Where
-// f runs at its parts and waits for nothing, the same version starts f1 again at its first step, and
-// its worker is told that the sub-owner of task f gave the version.
+// waits for nothing. While its task f is stopped and while f waits for the join of its needs, the
+// sub-owner's version that changes the stopped part f1 leaves f1 waiting at no act, its stop ended.
+// Once f's join ends, f1 starts (taskJoined, startReady). Where f runs at its parts and waits for
+// nothing, the same version starts f1 again at its first step, and its worker is told that the
+// sub-owner of task f gave the version. While f stands at its report the version is refused
+// before (TestASubOwnersVersionDependsOnWhereItsTaskStands).
 //
 // The fault it catches is a part started again while its task does not run at its parts (its
 // control: startAtFirstStep that asks needsDone alone, as before, starts f1 at step 1 in the first
-// three cases, and each fails at "f1 waiting").
+// two cases, and each fails at "f1 waiting").
 func TestAStoppedPartStartsAgainOnlyWhereItsTaskStandsAtItsParts(t *testing.T) {
 	h := stepped("h", "implementer", "f")
 	for _, tc := range []struct {
@@ -50,7 +51,6 @@ func TestAStoppedPartStartsAgainOnlyWhereItsTaskStandsAtItsParts(t *testing.T) {
 		fState record.TaskState
 	}{
 		{name: "its task is stopped", f: subOwned("f").at(record.TaskRunning, atParts), stops: []string{"f", "f1"}, fState: record.TaskStopped},
-		{name: "its task stands at its report", f: subOwned("f").at(record.TaskRunning, atReport), stops: []string{"f1"}, fState: record.TaskRunning},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -174,53 +174,6 @@ func TestATodoStartsAStoppedTaskAndItsStoppedPartAgain(t *testing.T) {
 	assertTask(t, tasks, "e1", record.TaskRunning, atStep(1))
 }
 
-// A sub-owner gives no version while its task is done, or has left the workflow with its issue: no
-// part it adds could start, since a part starts only while its task runs at its parts. Its version
-// is refused TASK_DONE, naming the task and where it stands, and nothing is written.
-//
-// The fault it catches is a part added under a finished task, which never starts (its control:
-// giverOf with no test of the task's state takes the version).
-func TestASubOwnerOfAFinishedTaskGivesNoVersion(t *testing.T) {
-	for _, state := range []record.TaskState{record.TaskDone, record.TaskLeft} {
-		t.Run(string(state), func(t *testing.T) {
-			pool := migratedPool(t)
-			engine := returnEngine()
-			root := stepRoot(t, pool, phase.Implementing)
-			seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
-			a := stepped("a", "implementer").at(record.TaskRunning, atStep(1))
-			seedOwnedVersion(t, pool, root.Key, root.Generation, a, subOwned("f").at(state, atParts), part("f1", "f").at(record.TaskDone, atStep(1)))
-
-			before := planStandingOf(t, pool, engine, root.Key, root.Generation)
-			given := subOwnersVersion(t, root.Key, root.Generation, "f", 2, block("a", ""), ownedBlock("f"), partBlock("f1", "f", "implementer"),
-				partBlock("f2", "f", "implementer"))
-			assertPlanRefusal(t, pool, engine, root.Key, root.Generation, "sub-owner-version-2", applyFacts(t, pool, engine)("sub-owner-version-2", given),
-				intake.FinishedTask(root.Key, "f", state, intake.ChangeOfTask), before)
-		})
-	}
-}
-
-// The sub-owner of f gives no version that changes f1a, a part of its part f1: f1a is f1's
-// sub-owner's to change, and the reason says so, naming f1, whose part f1a is.
-//
-// The fault it catches is a reason that says what is not true of a part of a part, "task f1a is
-// not a part of task f" (its control: OwnershipRefusals with one reason for every sub-owner, as
-// before).
-func TestASubOwnerIsToldWhoseAPartOfItsPartIs(t *testing.T) {
-	pool := migratedPool(t)
-	engine := returnEngine()
-	root := stepRoot(t, pool, phase.Implementing)
-	seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
-	f1 := ownedTask{id: "f1", owner: "architect", partOf: "f", state: record.TaskWaiting}
-	seedOwnedVersion(t, pool, root.Key, root.Generation, subOwned("f").at(record.TaskRunning, atParts), f1, part("f1a", "f1"), stepped("h", "implementer", "f"))
-
-	ownedF1 := ownedBlock("f1")
-	ownedF1.PartOf = "f"
-	before := planStandingOf(t, pool, engine, root.Key, root.Generation)
-	given := subOwnersVersion(t, root.Key, root.Generation, "f", 2, ownedBlock("f"), ownedF1, changedPart("f1a", "f1"), block("h", "", "f"))
-	assertPlanRefusal(t, pool, engine, root.Key, root.Generation, "sub-owner-version-2", applyFacts(t, pool, engine)("sub-owner-version-2", given),
-		intake.PlanRefused([]plan.Refusal{{Task: "f1a", Reason: "task f1a is a part of task f1, and only the sub-owner of task f1 changes the parts of f1."}}), before)
-}
-
 // A plan given at generation 0, for an issue the daemon recorded since, waits there only while its
 // generation holds a plan an earlier owner gave (waitsAtZero), by the rule the first step passes
 // such plans over by (record.Store's PlansOfEarlierOwners): a version a sub-owner gave is its
@@ -235,7 +188,7 @@ func TestAPlanAtZeroWaitsOnlyBeforeAnEarlierOwnersPlan(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
-	architect, subOwner := architectOf(t), agentClaim(t, root.Key, record.SubOwnerAgent("f"))
+	architect, subOwner := architectOf(t), agentClaim(t, root.Key, plan.SubOwnerAgent("f"))
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		if err := putOwnedVersion(t.Context(), tx, root.Key, root.Generation, 1, architect, subOwned("f")); err != nil {
 			return err
