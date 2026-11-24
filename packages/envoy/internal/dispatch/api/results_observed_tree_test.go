@@ -45,6 +45,7 @@ func TestTheResultsReadCarriesEachResultsObservedTree(t *testing.T) {
 // there). Each of them carries its observed text's tree as a result in results does: the read
 // registers each result's tree only once no result is moved any more.
 func TestACICheckRecordedResultsCarryTheirObservedTrees(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	const observed = "The job ran `go test`: **pass**."

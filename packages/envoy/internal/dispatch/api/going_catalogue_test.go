@@ -386,6 +386,7 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 // call that names project and no issue fills neither row of dispatch_result, and the caller
 // refuses it before any request, naming what the issue row needs.
 func TestAGoingResultCallNamingAProjectFillsNoRoute(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatalf("build the catalogue: %v", err)

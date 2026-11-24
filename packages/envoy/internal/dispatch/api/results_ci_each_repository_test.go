@@ -123,6 +123,7 @@ func ciReadWants(t *testing.T, what string, ci map[string]any, want map[string]a
 // fail (R4): each head reads not known and names the two, and each carries the read of its own
 // repository, so #9's reads the failure.
 func TestEachRepositoryAtOneCommitDerivesItsOwnCIResult(t *testing.T) {
+	t.Parallel()
 	rig := newCIRepositoryRig(t)
 	rig.write("acme/widgets", 70, ciRepositoryShared)
 	rig.write("acme/infra", 9, ciRepositoryShared)
@@ -173,6 +174,7 @@ func TestEachRepositoryAtOneCommitDerivesItsOwnCIResult(t *testing.T) {
 // one its own repository's run derived, never the other repository's newer one; each derived
 // result stands at the pull request of its own head. The case runs with two passes and two fails.
 func TestEachHeadAtOneCommitNamesTheResultItsOwnRunDerived(t *testing.T) {
+	t.Parallel()
 	for _, each := range []struct{ conclusion, answer, reason string }{
 		{"success", "yes", ""},
 		{"failure", "no", "fail"},
@@ -225,6 +227,7 @@ func TestEachHeadAtOneCommitNamesTheResultItsOwnRunDerived(t *testing.T) {
 // still going, and #9 of acme/infra GitHub cannot be read for: the three name their heads, and
 // only #70's names a result. An issue with no pull request names no head at all.
 func TestTheCIReadNamesItsHeadAndTheResultItDerived(t *testing.T) {
+	t.Parallel()
 	rig := newCIRepositoryRig(t)
 	rig.write("acme/widgets", 70, ciEachHeadH1)
 	rig.write("acme/widgets", 71, ciEachHeadH2)

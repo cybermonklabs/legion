@@ -64,6 +64,7 @@ func withCICheck(job string) string {
 // it, so the other job's pass is refused 409 CHECK_NOT_THIS_JOBS while the change is unsettled, as
 // it is before the change (the control).
 func TestAJobChangeABrowserHasNotSettledLendsNoJobTheOriginalDigest(t *testing.T) {
+	t.Parallel()
 	rig, documents := newUnsettledCIJobRig(t)
 	original := checkOf(t, readResults(t, rig.handler, rig.issue), "c1")
 	token := otherJobToken(rig)
@@ -101,6 +102,7 @@ func TestAJobChangeABrowserHasNotSettledLendsNoJobTheOriginalDigest(t *testing.T
 // branch. Once the restore settles, c1 names go-checks again, under a digest of its own: the other
 // job's pass is at words that moved and counts for nothing, and no pass of c1 stands.
 func TestASettledChangeOfCICheckCountsTheNewJobsPassAndNothingAfterTheRestore(t *testing.T) {
+	t.Parallel()
 	rig, documents := newUnsettledCIJobRig(t)
 	writeBrowserDocument(t, documents, rig.verification, withCICheck(otherCIJob))
 	if err := documents.SettleIssueDocuments(context.Background(), rig.issue); err != nil {
@@ -133,6 +135,7 @@ func TestASettledChangeOfCICheckCountsTheNewJobsPassAndNothingAfterTheRestore(t 
 // still names go-checks and k1 keeps its words and digest. Once the edit settles, the read serves
 // the new words and job.
 func TestWhileAnEditIsNotSettledTheResultsReadServesTheSettledCheck(t *testing.T) {
+	t.Parallel()
 	rig, documents := newUnsettledCIJobRig(t)
 	before := readResults(t, rig.handler, rig.issue)
 	settledC1, settledK1 := checkOf(t, before, "c1"), checkOf(t, before, "k1")
@@ -161,6 +164,7 @@ func TestWhileAnEditIsNotSettledTheResultsReadServesTheSettledCheck(t *testing.T
 // version; once it settles, k1 then c1, the order of the version the settlement stores, which the
 // order of the block ids would not give.
 func TestTheResultsReadListsTheChecksInTheOrderOfTheNewestStoredVersion(t *testing.T) {
+	t.Parallel()
 	rig, documents := newUnsettledCIJobRig(t)
 	c1 := ciCheckBlock("c1", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`)
 	k1 := ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`"`)
@@ -192,6 +196,7 @@ func TestTheResultsReadListsTheChecksInTheOrderOfTheNewestStoredVersion(t *testi
 // lists no c9. The control: once the edit settles, the read lists c9 and the tester's result of it
 // is recorded.
 func TestACheckTheIndexDoesNotHoldYetIsNoCheckOfEitherRoute(t *testing.T) {
+	t.Parallel()
 	rig, documents := newUnsettledCIJobRig(t)
 	added := ciJobVerification + "\n" + ciCheckBlock("c9", `negative_control="`+ciJobNegativeControl+`"`)
 	writeBrowserDocument(t, documents, rig.verification, added)
@@ -223,6 +228,7 @@ func TestACheckTheIndexDoesNotHoldYetIsNoCheckOfEitherRoute(t *testing.T) {
 // pass stands. The control: the same edit, settled before the tester's pass, makes k1 CI's, so
 // that pass is refused 409 CHECK_PROVED_BY_CI, and k1 keeps its ci_check with no block.invalid.
 func TestACICheckABrowserGivesACheckHoldingNoResultTakesEffectWhenTheEditSettles(t *testing.T) {
+	t.Parallel()
 	ordinary := ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`"`)
 	edited := strings.Replace(ciJobVerification, ordinary,
 		ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`), 1)
@@ -290,6 +296,7 @@ func TestACICheckABrowserGivesACheckHoldingNoResultTakesEffectWhenTheEditSettles
 // nothing stored. The control: the same version written before the tester's pass resolves is
 // refused the same way, by the judgement made before the transaction opens.
 func TestACICheckAVersionGivesBetweenAWritesResolveAndItsLocksRefusesARolesResult(t *testing.T) {
+	t.Parallel()
 	ordinary := ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`"`)
 	edited := strings.Replace(ciJobVerification, ordinary,
 		ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`), 1)
@@ -332,6 +339,7 @@ func TestACICheckAVersionGivesBetweenAWritesResolveAndItsLocksRefusesARolesResul
 // names go-checks, and says why. The control: the same row named for go-checks's run stands, from
 // ci, at the head of the branch.
 func TestAJobsResultCountsOnlyForTheJobItsCheckNames(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, run, notCounted, answer string
 	}{

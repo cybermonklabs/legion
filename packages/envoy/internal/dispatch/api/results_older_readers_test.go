@@ -58,6 +58,7 @@ type olderReadersResult struct {
 // branch_heads names the head, recorded_results holds the job's result, and the tester's result
 // names the head in at_branch_head. The gate's answer, pass_stands, is yes on both, as before.
 func TestEachFieldAnOlderCommandReadsKeepsItsMeaning(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	job := jobRecorded(t, "the job's pass of c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))

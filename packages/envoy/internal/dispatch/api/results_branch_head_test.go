@@ -58,6 +58,7 @@ func standsAtBasis(t *testing.T, read issueResults, blockID, resultID, what stri
 // tested, on a push of legion/ACME-1, and no pull request is open. GitHub answers that the
 // branch's head is that commit, so c1 compares with that head and the pass stands there, from ci.
 func TestAJobsPassStandsAtTheHeadOfItsBranchWithNoPullRequest(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	pass := jobRecorded(t, "the job's pass of c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
@@ -73,6 +74,7 @@ func TestAJobsPassStandsAtTheHeadOfItsBranchWithNoPullRequest(t *testing.T) {
 // tested. c1 then compares with the new head, the job's pass is at another commit, and no pass of
 // c1 stands.
 func TestAJobsPassStopsStandingWhenItsBranchMoves(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	pass := jobRecorded(t, "the job's pass of c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
@@ -93,6 +95,7 @@ func TestAJobsPassStopsStandingWhenItsBranchMoves(t *testing.T) {
 // Where that final head is a later commit, the deleted branch leaves the pass at another commit,
 // not unknown.
 func TestAJobsPassOnADeletedBranchStandsAtAPullRequestHead(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	pass := jobRecorded(t, "the job's pass of c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
@@ -139,6 +142,7 @@ func TestAJobsPassOnADeletedBranchStandsAtAPullRequestHead(t *testing.T) {
 // pass of c1 and a tester's pass of k1 at the job's commit stand at another commit, and neither
 // check reads a pass.
 func TestABranchHeadGitHubCannotReadIsUnknown(t *testing.T) {
+	t.Parallel()
 	for _, status := range []int{http.StatusBadGateway, http.StatusForbidden} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			rig := newCIJobRig(t)
@@ -171,6 +175,7 @@ func TestABranchHeadGitHubCannotReadIsUnknown(t *testing.T) {
 // topic/ACME-1-retry, and recorded c1's result on each. c2 compares with the heads of both, as c1
 // does, in name order whichever result is newer, and GitHub is asked for each head once per read.
 func TestTwoChecksOfOneIssueCompareWithOneListOfHeads(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	twoProved := ciJobVerification + "\n" + ciCheckBlock("c2", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`)
 	if written := uploadVerification(t, rig.handler, rig.issue, twoProved); written.Code != http.StatusCreated {
@@ -205,6 +210,7 @@ func TestTwoChecksOfOneIssueCompareWithOneListOfHeads(t *testing.T) {
 // before_merge check of the issue compares with that branch's head. A tester's pass of k1, an
 // ordinary check, at that head stands there.
 func TestARolesPassAtABranchHeadStandsThere(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	jobRecorded(t, "the job's pass of c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
@@ -225,6 +231,7 @@ func TestARolesPassAtABranchHeadStandsThere(t *testing.T) {
 // alone, GitHub is never asked for the child's, and the child's result stands at another commit
 // on the parent's tab.
 func TestAChildsCIResultIsNoBranchOfItsParent(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	filed := rig.asPerson(t, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": ciJobProject, "title": "Child", "parent": rig.issue, "force": true})
@@ -265,6 +272,7 @@ func TestAChildsCIResultIsNoBranchOfItsParent(t *testing.T) {
 // c1 compares with nothing for repository_unreadable, and the job's pass and c1's pass_stands are
 // unknown. A guard: it passes before and after rule two compares with a branch's head.
 func TestABranchOfARepositoryGitHubCannotSeeIsUnknownNotGone(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	rig.github.hideRepository()
 	pass := jobRecorded(t, "the job's pass of c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))

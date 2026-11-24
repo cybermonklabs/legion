@@ -22,6 +22,7 @@ import (
 // acme/widgets' main alone. A result at linkedMerge, the merge commit of acme/tools#10, stands at
 // integration/x of acme/tools.
 func TestALinkedPullRequestsMergeBranchIsWalkedOnlyInItsOwnRepository(t *testing.T) {
+	t.Parallel()
 	const (
 		// ownCommit is a commit of acme/widgets that its branch integration/x carries and its
 		// main does not; linkedMerge is the commit acme/tools#10 merged into integration/x of

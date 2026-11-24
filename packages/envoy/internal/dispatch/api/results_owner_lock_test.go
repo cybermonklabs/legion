@@ -90,6 +90,7 @@ func writeVerification(t *testing.T, rig *ciJobRig, markdown string) {
 // hour, since the settlement of the uploaded Verification document holds the issue's owner lock
 // for a moment of its own.
 func TestAResultsWriteHoldsNoOwnerLockWhileGitHubIsAskedForItsCommit(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRigSettling(t, time.Hour)
 	held := holdWriteBeforeItsLocks(t, rig, rig.sessionToken(),
 		resultBody("k1", "pass", heldWriteCommit, map[string]any{"role": "tester"}))
@@ -120,6 +121,7 @@ func TestAResultsWriteHoldsNoOwnerLockWhileGitHubIsAskedForItsCommit(t *testing.
 // ones the resolve read. The write reads them under its locks in one statement with the text
 // they name, and reads no document while it holds those locks.
 func TestAResultsWriteRecordsTheCheckAVersionLeftBetweenItsResolveAndItsLocks(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	resolved := checkOf(t, readResults(t, rig.handler, rig.issue), "k1")
 	held := holdWriteBeforeItsLocks(t, rig, rig.sessionToken(),
@@ -151,6 +153,7 @@ func TestAResultsWriteRecordsTheCheckAVersionLeftBetweenItsResolveAndItsLocks(t 
 // digest. Comparing the digest alone would keep the reading the resolve made, and record the
 // check at a version the block index no longer holds for it.
 func TestAResultsWriteRecordsTheVersionALaterVersionRestoredTheDigestIn(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	resolved := checkOf(t, readResults(t, rig.handler, rig.issue), "k1")
 	held := holdWriteBeforeItsLocks(t, rig, rig.sessionToken(),

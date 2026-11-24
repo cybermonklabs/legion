@@ -47,6 +47,7 @@ func ciEvidenceAt(recorded, conclusion string) (model.CheckBlock, comparison) {
 // result at a head where the job recorded one of its own (jobResultHeads), so there the two meet
 // only where the issue's repository could not be resolved.
 func TestEveryCIResultAtOneCommitJoinsTheConflictTest(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, recorded, conclusion string
 		asRecorded                 bool

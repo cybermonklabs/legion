@@ -253,12 +253,14 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 // TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler: a results token
 // reaches the handlers of the rows the results list names and of no other row, and no socket.
 func TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler(t *testing.T) {
+	t.Parallel()
 	walkEveryChainWith(t, resultsLimitedToken())
 }
 
 // TestTheMountedServerServesAResultsTokenOnTheResultsListAlone: the mounted server answers a
 // results token 403 RESULTS_ONLY_TOKEN on every row but the listed ones, whose handlers answer it.
 func TestTheMountedServerServesAResultsTokenOnTheResultsListAlone(t *testing.T) {
+	t.Parallel()
 	walkTheMountedServerWith(t, resultsLimitedToken())
 }
 
@@ -266,6 +268,8 @@ func TestTheMountedServerServesAResultsTokenOnTheResultsListAlone(t *testing.T) 
 // reads as though it opened a route that is not there, so Register refuses it and names the
 // route. It replaces the package's list for its length, so it is not parallel.
 func TestRegisterRefusesAResultsListOfNoMountedRow(t *testing.T) {
+	// Not parallel: it swaps the package variable resultsScopeRoutes, which every server a test of
+	// the package builds registers.
 	kept := resultsScopeRoutes
 	t.Cleanup(func() { resultsScopeRoutes = kept })
 	if refusal := registerRefusal(t); refusal != "" {

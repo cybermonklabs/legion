@@ -45,6 +45,7 @@ func learnedInOrder(t *testing.T, database *store.Store, repo string, numbers ..
 // case. Each case reads k1 with the heads in both orders, and first checks that the read lists
 // them in the order it set.
 func TestTheCheckReasonIsTheSameWhateverTheOrderOfItsHeads(t *testing.T) {
+	t.Parallel()
 	for _, each := range []struct {
 		name, verdict, answer, reason string
 	}{
@@ -79,6 +80,7 @@ func TestTheCheckReasonIsTheSameWhateverTheOrderOfItsHeads(t *testing.T) {
 // whose read failed at one head (read_failed) and whose other head holds a pass and a fail. The
 // check reads unknown for pass_and_fail with either head first.
 func TestTheReasonOfAnUnknownCheckNamesAPassAndAFailAtAnyOfItsHeads(t *testing.T) {
+	t.Parallel()
 	const unread, both = "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1", "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2"
 	moved := false
 	at := func(id, verdict string, minute int) model.CheckResult {

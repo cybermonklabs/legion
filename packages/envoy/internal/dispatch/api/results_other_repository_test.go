@@ -225,6 +225,7 @@ func otherRepositoryRecord(t *testing.T, handler http.Handler, issue, commit str
 // repository holds is refused, naming both; and a 503 of acme/infra stores the result, since it is
 // no proof. A check CI proves reads #9's run in acme/infra alone, and #9's basis names acme/infra.
 func TestAResultAtTheHeadOfAPullRequestInAnotherRepository(t *testing.T) {
+	t.Parallel()
 	github := &otherRepositoryGitHub{
 		held: map[string]bool{}, down: map[string]bool{}, runs: map[string][]map[string]any{},
 		commitReads: map[string]int{}, runReads: map[string]int{},
@@ -317,6 +318,7 @@ func TestAResultAtTheHeadOfAPullRequestInAnotherRepository(t *testing.T) {
 // acme/app holds, is stored, since no other repository is asked about a commit the issue's own
 // repository holds.
 func TestAFailedReadOfThePullRequestHeadsRefusesTheRecord(t *testing.T) {
+	t.Parallel()
 	github := &otherRepositoryGitHub{
 		held: map[string]bool{}, down: map[string]bool{}, runs: map[string][]map[string]any{},
 		commitReads: map[string]int{}, runReads: map[string]int{},

@@ -113,6 +113,7 @@ func (r branchNewestRig) stands(t *testing.T, check string) branchNewestStands {
 // branch, or that Dispatch could not place, decides the check, and a later fail cancels an earlier
 // pass.
 func TestTheNewestResultDecidesACheckComparedWithABranch(t *testing.T) {
+	t.Parallel()
 	// The case production printed as a pass from tester: the tester's pass at the merged commit,
 	// then two fails at the same commit after a deploy moved back.
 	t.Run("a pass then two fails", func(t *testing.T) {
