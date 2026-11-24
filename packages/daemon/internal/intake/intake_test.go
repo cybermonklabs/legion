@@ -567,8 +567,7 @@ func TestCapturedIssueUpdatedEnvelopeDecodes(t *testing.T) {
 // deployed daemon consumes them: the old decoder must keep accepting those events until its
 // matching workflow change rolls out. The daemon reads no key the captured fixture lacks, which a
 // decoder rejecting unknown fields would refuse; it does read the priority, which the filled
-// fixture carries as P1 and the fact carries beside everything the original says
-// (dispatch://INFRA-3576).
+// fixture carries as P1 and the fact carries beside everything the original says.
 func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	original := string(capturedIssueCreatedEnvelope(t))
 	filled := strings.Replace(original, `\"priority\":null`, `\"priority\":1`, 1)

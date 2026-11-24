@@ -9,9 +9,9 @@ import (
 
 // Each issue's own Dispatch priority is served as `priority`, its number from 0 for P0 to 3 for
 // P3 or null for none, and each member of the waiting line carries the priority that placed it
-// as its waitingLine's `priority` (dispatch://INFRA-3576 R1). A caller below the contract that
-// added both is served neither key; a caller at this daemon's contract is served both, null
-// included. The fixture's LEGION-209 is set to P0 and every other issue to none.
+// as its waitingLine's `priority`. A caller below the contract that added both is served neither
+// key; a caller at this daemon's contract is served both, null included. The fixture's LEGION-209
+// is set to P0 and every other issue to none.
 func TestTheStateServedBelowThePriorityContractCarriesNoPriority(t *testing.T) {
 	state := populatedState(t)
 	p0, none := PriorityView(record.P0), PriorityView(record.NoPriority)

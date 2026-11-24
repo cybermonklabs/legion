@@ -26,10 +26,10 @@ func linePriorityKeys(line []LineEntry) []string {
 	return keys
 }
 
-// The acceptance case of dispatch://INFRA-3576 spec v4: a line holding a P0 child of a P1 tree, a
-// P1 root whose work came back and a P2 root ranked first on the board puts the P0 child first,
-// the P1 root second and the P2 root last. Priority is the first key of the whole line, and the
-// line's own order holds only within one priority (Sami, dispatch://BET-895/comment/3f80ddbe-f3aa-49e6-bc0c-ed72e4aea4d3).
+// The acceptance case: a line holding a P0 child of a P1 tree, a P1 root whose work came back and
+// a P2 root ranked first on the board puts the P0 child first, the P1 root second and the P2 root
+// last. Priority is the first key of the whole line, and the line's own order holds only within
+// one priority.
 //
 // Today's line puts the P1 root first, since its work came back, and the P2 root ahead of the P0
 // child, since the P2 root ranks first on the board and the child takes its tree root's place.
@@ -88,10 +88,9 @@ func TestTheWaitingLinePutsAP0ChildOfAP1TreeAheadOfAP1RootWhoseWorkCameBackAndAP
 
 // An issue with no priority of its own waits at its tree root's priority, an issue with none on
 // either waits after every issue with one, and within one priority the line keeps today's order
-// of the issues whose first phase can start: the tree root's rank, then the issue's own
-// (dispatch://INFRA-3576 spec v4, Wanted 1 and 2). Every entry here stands in the part of the
-// issues whose first phase can start, so no question of how priority meets the part of the work
-// that came back is read.
+// of the issues whose first phase can start: the tree root's rank, then the issue's own. Every
+// entry here stands in the part of the issues whose first phase can start, so no question of how
+// priority meets the part of the work that came back is read.
 //
 // Today's line orders them by their tree roots' ranks alone: the root with none ranked A first,
 // the P3 root, the child, and the two P1 roots.

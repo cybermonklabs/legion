@@ -1,4 +1,4 @@
--- 20261124060500_issue_priority.up.sql — each issue's own Dispatch priority (dispatch://INFRA-3576).
+-- 20261124060500_issue_priority.up.sql — each issue's own Dispatch priority.
 --
 -- Dispatch serves an issue's priority as an integer from 0 for P0 to 3 for P3, or null for none,
 -- on its listing, its detail read and every issue event, and refuses any other value. The daemon

@@ -56,7 +56,7 @@ func (p Priority) band() uint8 {
 	return uint8(p)
 }
 
-// PriorityOf is the priority issue takes (dispatch://INFRA-3576, spec v4, Wanted 1 and 3): its
+// PriorityOf is the priority issue takes: its
 // own, else its tree root's, else NoPriority. root is the record of issue's tree root, the issue
 // itself for a root, and the zero Issue where the root has no record. The root's priority is read
 // from the root's record each time, never copied onto its members, so a person's change of a

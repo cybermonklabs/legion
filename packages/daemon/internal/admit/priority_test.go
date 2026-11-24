@@ -108,11 +108,11 @@ func TestAReadmittedRootTakesThePriorityItsTodoShows(t *testing.T) {
 	}
 }
 
-// dispatch://INFRA-3576 spec v4, Wanted 4: a priority change in Dispatch moves the issue in the
-// waiting line at the daemon's next read of it, with no other action. Two roots wait under a full
-// cap in board order; a P0 set on the one ranked lower puts it first at the pass the event runs,
-// and taking the priority off puts it back behind its neighbour. Every entry here is a root that
-// never ran, so the move is read inside one part of the line.
+// A priority change in Dispatch moves the issue in the waiting line at the daemon's next read of
+// it, with no other action. Two roots wait under a full cap in board order; a P0 set on the one
+// ranked lower puts it first at the pass the event runs, and taking the priority off puts it back
+// behind its neighbour. Every entry here is a root that never ran, so the move is read inside one
+// part of the line.
 func TestAPriorityChangeMovesTheIssueInTheWaitingLineAtTheNextRead(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))

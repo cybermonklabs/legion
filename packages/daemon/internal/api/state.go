@@ -803,11 +803,11 @@ type Issue struct {
 	Ancestry  []string   `json:"ancestry,omitempty"`
 	Architect *ClaimView `json:"architect,omitempty"`
 	// Priority is the issue's own Dispatch priority (record.Issue.Priority): its number, 0 for P0
-	// to 3 for P3, or null for an issue with none (dispatch://INFRA-3576 R1). It is the issue's
-	// own and never its tree root's; the priority that placed a member of the line is its
-	// waitingLine's. It is set on every issue the workflow records, and absent on an issue it does
-	// not record (an operator's claim, Unrecorded) and from every issue of the body served a caller
-	// below priorityContract (shaping.go's withoutPriority).
+	// to 3 for P3, or null for an issue with none. It is the issue's own and never its tree
+	// root's; the priority that placed a member of the line is its waitingLine's. It is set on
+	// every issue the workflow records, and absent on an issue it does not record (an operator's
+	// claim, Unrecorded) and from every issue of the body served a caller below priorityContract
+	// (shaping.go's withoutPriority).
 	Priority *PriorityView `json:"priority,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak

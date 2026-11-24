@@ -3514,26 +3514,25 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 244: the admission waiting line is ordered by Dispatch priority first (dispatch://INFRA-3576
-// R1). `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` gain two keys: each issue
-// the workflow records carries `priority`, its own Dispatch priority as Dispatch sends it, a
-// number from 0 for P0 to 3 for P3 or null for none; and each member's `waitingLine` carries
-// `priority`, the priority that placed it in the line (its own, else its tree root's), null for a
-// member neither it nor its root has a priority for, whose band stands after P3. The records of
-// 244 hold `issues.*.priority` and `issues.*.waitingLine.priority`, and no record below 244 does:
-// a caller whose contract (the one it states, else its pod's) is below 244 is served every issue
-// without either key (the band of shaping.go's stateNarrowings, `withoutPriority`). Two values
-// change meaning at every contract and move no shape: `waitingLine.partPlace` and `partLength`
-// count within the member's priority band and part rather than within the part across the whole
-// line, and `admission.waiting` and each member's `place` follow the new order, which no reader
-// enumerates. (This entry took 221 when main declared 220, with no reading of the other open pull
-// requests. A reading of `const DaemonAPIVersion` at the head commit of each open pull request
-// that changes this file or whose file list GitHub cut short (138 of 500), made between
-// 2026-11-24T09:14:34Z and 09:17:00Z, found every number from 221 to 243 declared and nothing
-// above, so this entry moved to 244. The forward merge of 2026-11-24 that brought in e14345bfc8
-// brought main's 228 (#4590, INFRA-1575's entry above). A second reading (137 of 498), made
-// between 09:35:23Z and 09:40:15Z, found 221 to 227, 229 to 231 and 233 to 243 declared, 243 by
-// #5349 alone, and nothing above 243, so this entry kept 244, the lowest number above every number
-// declared. Read main's own number and every open pull request again at the next merge rather
-// than from this line.)
+// 244: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
+// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
+// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
+// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
+// priority for, whose band stands after P3. The records of 244 hold `issues.*.priority` and
+// `issues.*.waitingLine.priority`, and no record below 244 does: a caller whose contract (the one
+// it states, else its pod's) is below 244 is served every issue without either key (the band of
+// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
+// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
+// band and part rather than within the part across the whole line, and `admission.waiting` and
+// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
+// when main declared 220, with no reading of the other open pull requests. A reading of `const
+// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
+// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
+// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
+// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
+// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
+// 229 to 231 and 233 to 243 declared, 243 by #5349 alone, and nothing above 243, so this entry
+// kept 244, the lowest number above every number declared. Read main's own number and every open
+// pull request again at the next merge rather than from this line.)
 const DaemonAPIVersion = 244

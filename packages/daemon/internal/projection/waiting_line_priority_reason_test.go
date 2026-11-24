@@ -6,8 +6,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A member's sentence says the priority that placed it and whose it is (dispatch://INFRA-3576
-// R1): its own, its tree root's for a member with none of its own, and, where neither has one,
+// A member's sentence says the priority that placed it and whose it is: its own, its tree root's
+// for a member with none of its own, and, where neither has one,
 // that it waits after every issue at P0 to P3. The counts name the band it waits in: `at P0`, or
 // `with no priority`.
 func TestWaitingLineReasonSaysThePriorityThatPlacedTheMember(t *testing.T) {

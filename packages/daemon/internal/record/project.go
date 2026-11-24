@@ -422,10 +422,10 @@ func (p LinePart) String() string {
 type LineEntry struct {
 	Issue Issue
 	Kind  LineKind
-	// Priority is the priority that placed the entry, the first key of the whole line
-	// (dispatch://INFRA-3576 R1): PriorityOf, the issue's own, else its tree root's, else
-	// NoPriority, whose band stands after P3. The issue's own priority is Issue.Priority, which
-	// this does not change: the inherited priority orders the line and nothing else.
+	// Priority is the priority that placed the entry, the first key of the whole line:
+	// PriorityOf, the issue's own, else its tree root's, else NoPriority, whose band stands after
+	// P3. The issue's own priority is Issue.Priority, which this does not change: the inherited
+	// priority orders the line and nothing else.
 	Priority Priority
 	// Part is the part of the line the entry stands in within its priority's band, and PartPlace
 	// its place within that band and part alone, counted from 1. Waiting sets both in its last
@@ -1094,8 +1094,7 @@ const WaitingLineBand = "within its priority, among the issues whose work came b
 // them one. The cap counts the issues the daemon has started rather than the trees, so a child
 // waits in this line as a root does.
 //
-// Priority is the first key of the whole line (dispatch://INFRA-3576 R1, the order Sami chose at
-// dispatch://BET-895/comment/3f80ddbe-f3aa-49e6-bc0c-ed72e4aea4d3): each entry stands in the band
+// Priority is the first key of the whole line: each entry stands in the band
 // of the priority that places it (PriorityOf: the issue's own Dispatch priority, else its tree
 // root's, else after P3), P0 first. Within one band the line keeps the order below, in two parts.
 // Priority orders the line only: it takes no slot back from running work, and an entry the
@@ -1452,7 +1451,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// (LineEntry.Since); and the rank that placed a starting entry is its tree root's, which the
 	// sort above read the same record for.
 	//
-	// Priority is the first key of the whole line (dispatch://INFRA-3576 R1): each entry stands in
+	// Priority is the first key of the whole line: each entry stands in
 	// the band of the priority that places it (PriorityOf: its own, else its tree root's, else
 	// after P3), and within one band the returned part comes first, oldest first, and then the
 	// starting part by its tree root's rank and then its own, the order each part was just

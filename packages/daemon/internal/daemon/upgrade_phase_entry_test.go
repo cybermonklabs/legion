@@ -43,7 +43,7 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
-// issuePriorityMigration is dispatch://INFRA-3576's 20261124060500_issue_priority, which adds
+// issuePriorityMigration is the waiting line's 20261124060500_issue_priority, which adds
 // issues.priority. It stands above olderReleasesNewestMigration, yet preEntryStore applies it
 // with the fixture's own migrations: the tree is recorded through this release's PutIssue, which
 // names the column, and the phase entry reads and writes no issues column, so the column changes

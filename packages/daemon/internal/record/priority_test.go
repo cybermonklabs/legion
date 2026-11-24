@@ -46,11 +46,10 @@ func TestDispatchPriorityReadsDispatchsFourLevelsAndNone(t *testing.T) {
 	}
 }
 
-// The priority that places an issue is its own, else its tree root's, else none
-// (dispatch://INFRA-3576 spec v4, Wanted 1 and 3): a child's own priority counts over its
-// root's, a child with none takes its root's, and a root is its own tree root. The root's is read
-// from the root's record at that moment, never copied onto the child, so a change of the root's
-// priority in Dispatch moves its children with no event of theirs (Wanted 4).
+// The priority that places an issue is its own, else its tree root's, else none: a child's own
+// priority counts over its root's, a child with none takes its root's, and a root is its own tree
+// root. The root's is read from the root's record at that moment, never copied onto the child, so
+// a change of the root's priority in Dispatch moves its children with no event of theirs.
 func TestAnIssueTakesItsOwnPriorityElseItsTreeRootsElseNone(t *testing.T) {
 	root := linePartIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M")
 	root.Priority = P1

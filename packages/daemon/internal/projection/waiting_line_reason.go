@@ -123,7 +123,7 @@ func bandWords(priority record.Priority) string {
 }
 
 // priorityPlaced is the sentence that says which priority placed entry in the line and whose it
-// is (record.LineEntry.Priority, dispatch://INFRA-3576 R1): the issue's own, its tree root's, or
+// is (record.LineEntry.Priority): the issue's own, its tree root's, or
 // none on either, whose band stands after P3.
 func priorityPlaced(entry record.LineEntry) string {
 	switch {

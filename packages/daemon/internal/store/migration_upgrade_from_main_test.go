@@ -163,7 +163,7 @@ import (
 // claims.last_start_failure on every claim stored ready, working or idle, a column this list's
 // 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
-// dispatch://INFRA-3576's issue priority (20261124060500) is applied after all of these and
+// The waiting line's issue priority (20261124060500) is applied after all of these and
 // touches no outbox_kind_check: it adds issues.priority, null on every row it finds, which reads
 // as an issue with no priority.
 var thisBranchsMigrations = []int{
@@ -196,10 +196,10 @@ var thisBranchsMigrations = []int{
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
-// applied sequence, 20261121170714, the plan of an experiment's draw (20261123165139),
-// dispatch://INFRA-5463's 20261123212127 and dispatch://INFRA-3576's 20261124060500. That is why
-// the loop below holds the list rather than counting it, so that a version added above any of
-// them is named here rather than read as main's.
+// applied sequence, 20261121170714, the plan of an experiment's draw (20261123165139) and
+// dispatch://INFRA-5463's 20261123212127. That is why the loop below holds the list rather than
+// counting it, so that a version added above any of them is named here rather than read as main's.
+// The waiting line's issue priority, 20261124060500, stands above them too.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
