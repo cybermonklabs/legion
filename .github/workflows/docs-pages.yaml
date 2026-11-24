@@ -30,7 +30,6 @@ on:
       - 'deploy/kubernetes/**'
       - 'docs/site/**'
       - 'packages/contracts/src/**'
-      - 'packages/daemon/cmd/legion/tls-fixtures/*'
       - 'packages/daemon/internal/daemon/**'
       - 'packages/dispatch/**'
       - 'packages/envoy-client/src/**'

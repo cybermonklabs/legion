@@ -159,6 +159,14 @@ itself, whose tests import its sources by relative path.
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
   `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
 
+- A row whose verdict rests on a connection's backpressure bounds what the connection may hold
+  itself. On loopback the connection's buffers are the kernel's, and the TCP receive buffer grows to
+  `net.ipv4.tcp_rmem`'s maximum: 4 MiB in a gVisor pod, 6 MiB on a Kubernetes node's Linux 6.12 and
+  32 MiB by Linux 7.0's default, which CI's runner has. At 32 MiB a paused server let the
+  connection take a whole 24 MiB upload, so the client saw no progress and cut it off.
+  `socketDispatch` in `packages/envoy-client/src/__tests__/dispatch-keyed-writes.test.ts` reads a
+  body only 1 MiB past what its server took.
+
 - A suite that needs a program this host may not have skips with that program's name. Call
   `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
   `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs

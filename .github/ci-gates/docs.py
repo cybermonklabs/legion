@@ -55,7 +55,6 @@ GATE = gate("docs", "docs", runs=[
 ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
   + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF, workflow=CI)
 GATE = with_reads(GATE, [
-    Read('packages/daemon/cmd/legion/tls-fixtures/*', "filter docs held packages/daemon/cmd/legion/tls-fixtures/* by hand before the filters were computed: it selected 1 file(s) no other read of this gate declares"),
     Read('packages/daemon/internal/daemon/**', "filter docs held packages/daemon/internal/daemon/** by hand before the filters were computed: it selected 7 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/dispatch/pmdoc/**', "filter docs held packages/envoy/internal/dispatch/pmdoc/** by hand before the filters were computed: it selected 277 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/dispatch/delivery/**', "filter docs held packages/envoy/internal/dispatch/delivery/** by hand before the filters were computed: it selected 2 file(s) no other read of this gate declares", but=('**/*_test.go',)),
