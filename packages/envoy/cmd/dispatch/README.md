@@ -4562,7 +4562,7 @@ Within one issue, the largest amount by which an event was older than an event w
 Each opens its database with `jit` off, as Cloud SQL runs: with `jit` on, compiling a search with meaning at a cut took 7.5 s of 8.3 s.
 On a copy of 843,238 events in a gVisor pod, the listing of every issue at a cut took 3.9 s at 2026-11-10T00:00Z and 8.5 s at the copy's newest event, where the present listing took 1.6 s in the same pod.
 The listing names `issues` in about 11 places, and each reads the state of every issue through the shadow.
-A search at a cut ranks the matches of each kind of post on their rank first, and reads the post and its issue at the cut only for the rows that can enter the kind's first 100 (`searchAsOfBoundedPosts`); a filter of status, author or time, and a query of excluded words alone, read every match.
+A search at a cut ranks the matches of each kind of post on their rank first, and reads the post and its issue at the cut only for the rows that can enter the kind's first 100 (`searchAsOfBoundedPosts`); a filter of status, author or time, a query of excluded words alone, and a query whose plain words are all stop words read every match.
 On a copy of 1,127,985 events in the pod, a keyword search for the commonest word at the copy's newest event took 5.5 to 6.3 s on its first run after a restart of PostgreSQL and 3.7 to 4.3 s warm, against 11.8 s and 5.5 s when each match read its post and its issue; a common word took 2.5 to 2.9 s and 1.8 to 2.2 s.
 A query of excluded words alone at that event, which matches nearly every post, took 19 s warm.
 On the synthetic corpus, on 16 vCPUs, a search with meaning at a cut took 0.85 to 1.6 s warm and at most 3.7 s on a first run after a restart, against 1.9 s at the present.

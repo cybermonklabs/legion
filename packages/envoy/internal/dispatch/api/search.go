@@ -1985,11 +1985,15 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // runSearch is the search handler's own entry point. The keys a query names are resolved here
 // and the numnode check runs behind them, both before anything else - including before the one
 // model-service call this function ever makes - so a stopword-only or operator-only query never
-// pays for an embedding it would throw away. A query that names an issue by key answers that
-// issue even when it holds no lexeme any item matches, so numnode cannot refuse it and its round
-// trip is not made: the key forms need no statement at all (searchOwnIssueKeys), and typing a
-// key is what the bar does on every keystroke. It tries meaning search first when an embedder is
-// configured, falling back to keyword-only (runFusedSearchQuery)
+// pays for an embedding it would throw away. The same round trip reads whether any plain word of
+// the query gives a lexeme (plainto_tsquery of each word, stopWordsOnly), which a search at a cut
+// chooses its post pipeline by (ranksFirstAtACut). A query that names an issue by key answers
+// that issue even when it holds no lexeme any item matches, so numnode cannot refuse it and its
+// round trip is not made: the key forms need no statement at all (searchOwnIssueKeys), and typing
+// a key is what the bar does on every keystroke. Nor does such a query need the lexeme read: the
+// plain word that holds its key's number gives a lexeme, so its words alone choose rightly. It
+// tries meaning search first when an embedder is configured, falling back to keyword-only
+// (runFusedSearchQuery)
 // only when the query's own embedding could not be had - never when the meaning query itself then
 // fails, which is a real error the caller should see as a 500, not something to paper over as a
 // degraded answer.
@@ -2019,13 +2023,17 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 	parameters.ownKeys = keys
 	if len(keys) == 0 {
 		var nodes int
+		var lexemes bool
 		if err := s.deps.Store.Pool.QueryRow(ctx,
-			"select numnode(websearch_to_tsquery('english', $1))", parameters.text).Scan(&nodes); err != nil {
+			"select numnode(websearch_to_tsquery('english', $1)), "+
+				"exists (select from unnest($2::text[]) w where numnode(plainto_tsquery('english', w)) > 0)",
+			parameters.text, parameters.queryReading().words).Scan(&nodes, &lexemes); err != nil {
 			return model.SearchResponse{}, err
 		}
 		if nodes == 0 {
 			return model.SearchResponse{Results: []model.SearchResult{}, Limit: parameters.limit, Offset: parameters.offset}, nil
 		}
+		parameters.stopWordsOnly = !lexemes
 	}
 	run := s.runKeywordOnlyDegraded
 	if parameters.keywordsOnly {
