@@ -820,14 +820,19 @@ func (r *Runtime) openPane(ctx context.Context, spec runtime.SpawnSpec, ghDefaul
 // meanwhile is left to the caller's identity read, which reports it; one still the server's copy
 // when the bound runs out is an error, and the caller kills its pane (killUnrecorded), so no
 // process the daemon never recorded runs on.
+// The bound runs on the runtime's clock (timers), as every other span of the command timeout
+// does: a test that drives the timeout drives this one too, and a wait between reads is the
+// clock's as well, so a fake clock that stands still makes the launch wait on the pane rather
+// than on the machine.
 func (r *Runtime) awaitPaneCommand(ctx context.Context, report paneReport) error {
-	deadline := time.Now().Add(r.commandTimeout)
+	clk := r.timers()
+	deadline := clk.Now().Add(r.commandTimeout)
 	for {
 		fork, err := r.serverFork(report.pid)
 		if err != nil || !fork {
 			return err
 		}
-		if time.Now().After(deadline) {
+		if clk.Now().After(deadline) {
 			return fmt.Errorf("pane %s pid %d did not start its command within %s", report.pane, report.pid, r.commandTimeout)
 		}
 		select {
