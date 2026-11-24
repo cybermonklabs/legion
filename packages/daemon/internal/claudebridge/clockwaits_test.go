@@ -63,7 +63,7 @@ func TestTheBridgeWaitsOnlyOnItsClock(t *testing.T) {
 		{name: "time.Sleep taken as a value", want: "time.Sleep",
 			replaces: []replace{{"inbox.go", "func (in *inbox) close() {\n", "func (in *inbox) close() {\n\tsleep := time.Sleep\n\tsleep(6 * time.Second)\n"}}},
 		{name: "the report's http.Client given a Timeout", want: "net/http.Client's Timeout",
-			replaces: []replace{{"turnoutcome.go", "client:     &http.Client{},", "client:     &http.Client{Timeout: reportTimeout},"}}},
+			replaces: []replace{{"turnoutcome.go", "client:     redirects.Refused(&http.Client{}),", "client:     redirects.Refused(&http.Client{Timeout: reportTimeout}),"}}},
 		{name: "a read deadline set through a method value", want: "SetReadDeadline",
 			replaces: []replace{{"inbox.go", "_ = conn.SetReadDeadline(time.Now())", "setDeadline := conn.SetReadDeadline\n\t\t_ = setDeadline(time.Now().Add(6 * time.Second))"}}},
 		{name: "a second method of the wall clock's that sleeps", want: "time.Sleep",
@@ -77,7 +77,7 @@ func TestTheBridgeWaitsOnlyOnItsClock(t *testing.T) {
 				{"inbox.go", "func (in *inbox) close() {\n", "func (in *inbox) close() {\n\t_ = sleepsys.Nanosleep(&sleepsys.Timespec{Sec: 6}, nil)\n"},
 			}},
 		{name: "the report's client given a Transport with a ResponseHeaderTimeout", want: "net/http.Transport's ResponseHeaderTimeout",
-			replaces: []replace{{"turnoutcome.go", "client:     &http.Client{},", "client:     &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: reportTimeout}},"}}},
+			replaces: []replace{{"turnoutcome.go", "client:     redirects.Refused(&http.Client{}),", "client:     redirects.Refused(&http.Client{Transport: &http.Transport{ResponseHeaderTimeout: reportTimeout}}),"}}},
 	} {
 		t.Run(plant.name, func(t *testing.T) {
 			planted := maps.Clone(sources)
