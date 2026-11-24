@@ -206,9 +206,9 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // other embedded version, the step record's three, 20261119003157, 20261120042902 and
 // 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
 // one deletes the controller notices of two kinds the daemon no longer writes, and 20261119211852
-// rewrites outbox_kind_check over the rows main's daemon left. All three stand below main's
-// newest, 20261124060500, and the upgrade applies them all the same: Store.apply asks each
-// migration whether its own version is recorded.
+// rewrites outbox_kind_check over the rows main's daemon left. The upgrade applies all three
+// whatever main's newest version is: Store.apply asks each migration whether its own version is
+// recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
 	20261115060739: true, 20261115121838: true, 20261119211852: true,
 }

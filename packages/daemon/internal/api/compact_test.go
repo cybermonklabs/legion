@@ -112,8 +112,8 @@ func decodeCompaction(t *testing.T, recorder *httptest.ResponseRecorder) Compact
 // A claim idle on the provider-error ladder keeps its session, has it compacted, and is sent the
 // task it owes again — once, and only after the compaction, rather than at the end of a ladder
 // step counted against the transcript the compaction just shortened. The run of provider-error
-// turns it carried goes back to zero, so the issue's architect and the project's controller can
-// be told a second time.
+// turns it carried goes back to zero, so the provider-errors notice can go a second time
+// (internal/daemon's providerErrorRunReached says to whom).
 func TestACompactionKeepsTheSessionAndSendsTheOwedTaskAgain(t *testing.T) {
 	for _, door := range compactDoors() {
 		t.Run(door.name, func(t *testing.T) {

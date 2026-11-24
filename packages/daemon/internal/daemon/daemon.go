@@ -958,9 +958,8 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
-	// providerErrorRunReached tells the project's controller, and the issue's architect where one
-	// stands above the claim's agent, of a claim whose turns keep ending in a provider error; nil
-	// without a workflow, where nobody is told.
+	// providerErrorRunReached tells of a claim whose turns keep ending in a provider error, to the
+	// roles its own doc comment names; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.

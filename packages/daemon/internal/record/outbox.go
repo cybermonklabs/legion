@@ -954,21 +954,21 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // that pod by issue at the bound. It is told once per round (the daemon's reconcilePodUpdates).
 // A provider-errors notice names an issue whose role has ended six turns in a row in a provider
 // error: its Role is that role, and its Reason the model and the HTTP status the provider
-// answered, where it answered one, in words built from structured fields alone
-// (supervise's tellOfProviderErrors). It is told once, and not again until a turn with
-// no error puts that run back to zero; nothing is held and nothing is bounded, because a chain's
-// bottom refusing deterministically costs one request every ten minutes. It is the one kind of
-// these that the issue's architect is told as well, in a notice row of its own, unless the run is
-// the tree root's architect's own; a child's own architect's run goes to the architect above
-// that child (validNoticeKinds, the daemon's providerErrorRunReached). A tree-stalled
-// notice names a root of the daemon's own whose tree has stopped: nothing of the tree has moved
-// for longer than `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by
-// design (admit's tellStalledTrees says which trees are told). Its issue is that root, and its
-// Reason names the tree's quiet hours, each issue the workflow still runs with its phase, the
-// role whose turn it is and the state of its pull request, and what the controller is to decide.
-// It is told once for each stall: the daemon marks the root with the movement the notice was told
-// for, and tells again only once the tree moves past that mark. When admission sends each is its
-// rule (admit.Admission.wakeController and its callers, admit.Admission.TellController).
+// answered, where it answered one, in words built from structured fields alone (supervise's
+// tellOfProviderErrors). It is told once for each run of such turns (supervise.Claim's
+// ProviderErrorRun says what ends a run); nothing is held and nothing is bounded, because a
+// chain's bottom refusing deterministically costs one request every ten minutes. It is the one
+// kind of these that an architect is told as well, in a notice row of its own (validNoticeKinds;
+// the daemon's providerErrorRunReached says which architect, and for which run none). A
+// tree-stalled notice names a root of the daemon's own whose tree has stopped: nothing of the tree
+// has moved for longer than `stalled_tree_notice_hours`, no claim of it is at work, and it does
+// not wait by design (admit's tellStalledTrees says which trees are told). Its issue is that root,
+// and its Reason names the tree's quiet hours, each issue the workflow still runs with its phase,
+// the role whose turn it is and the state of its pull request, and what the controller is to
+// decide. It is told once for each stall: the daemon marks the root with the movement the notice
+// was told for, and tells again only once the tree moves past that mark. When admission sends
+// each is its rule (admit.Admission.wakeController and its callers,
+// admit.Admission.TellController).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
@@ -1107,11 +1107,11 @@ type ArchitectStall struct {
 //
 // Two kinds answer true. A provider-errors notice names the claim whose turns keep ending in a
 // provider error, and in an outage every claim of the project has a notice of its own to send.
-// It is told at exactly the sixth turn in a row and never again until a turn with no error puts
-// that run back to zero, so a second claim's notice dropped behind the first claim's would
-// never be sent at all. Two claims of one issue are two such claims — an issue's architect and
-// its worker fail their turns in the same outage — so the issue alone is not the key; the role
-// is the rest of it.
+// It is told at exactly the sixth turn in a row and once for each run (supervise.Claim's
+// ProviderErrorRun says what ends a run), so a second claim's notice dropped behind the first
+// claim's would never be sent at all. Two claims of one issue are two such claims — an issue's
+// architect and its worker fail their turns in the same outage — so the issue alone is not the
+// key; the role is the rest of it.
 //
 // A tree-stalled notice names one root whose tree has stopped, and carries no role: the stall
 // is the whole tree's and not one agent's. So its key is the issue alone, which is what an
@@ -2825,13 +2825,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // its own (MergeHoldsChanged), since a notice reaches only an architect.
 //
 // `provider-errors` is a claim whose turns have ended six times in a row in an error the model's
-// provider returned (supervise's tellOfProviderErrors). The issue's architect is told, since
-// narrowing the work the provider keeps refusing is the architect's, and so is the controller, in a
-// row of its own (ProviderErrorsNotice), since compacting that agent's session or starting that
-// agent in a fresh session is the controller's (internal/daemon's providerErrorRunReached). A run
-// of the tree root's architect's own claim is told to the controller alone: the architect's copy
-// would reach the failing session itself. A run of a child's own architect's claim is told to the
-// architect above that child (NoticeStartsAtParent).
+// provider returned (supervise's tellOfProviderErrors). It is told to an architect and to the
+// controller, the controller's copy in a row of its own (ProviderErrorsNotice); internal/daemon's
+// providerErrorRunReached says which architect, and for which run none (NoticeStartsAtParent).
 //
 // `task-stopped` is a task stopped where it stands, its issue held: by its owner's stop_task
 // (workflow's taskStopped), whose notice names the architect that made the call (StoppedBy) and

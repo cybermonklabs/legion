@@ -564,8 +564,8 @@ type Claim struct {
 	// to Deps.ProviderErrorRunReached, and not again until the run is back at zero: a turn with no
 	// error, a compaction that compacted the session (compactEnded) or a forgotten session
 	// (forgetSession) puts it there. It bounds nothing: R2 of dispatch://INFRA-956 forbids an
-	// attempt limit here, since a
-	// limit would fail every claim of a project at once in a provider outage.
+	// attempt limit here, since a limit would fail every claim of a project at once in a provider
+	// outage.
 	ProviderErrorRun int
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
 	// report it. It is written by the store's PutClaimStep alone and read back with the claim;

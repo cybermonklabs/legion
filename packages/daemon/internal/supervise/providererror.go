@@ -236,15 +236,13 @@ func providerErrorTask(cause string) string {
 
 // tellOfProviderErrors hands the claim's run of provider-error turns to
 // Deps.ProviderErrorRunReached, once, when it reaches providerErrorRunTold. The run goes on past
-// it, and another notice can go only after the run is back at zero: a turn with no error, a
-// compaction that compacted the session (compactEnded) or a forgotten session (forgetSession)
-// puts it there. Who is told is that callback's to decide (internal/daemon's
+// it, and another notice can go only after the run is back at zero (Claim.ProviderErrorRun says
+// what puts it there). Who is told is that callback's to decide (internal/daemon's
 // providerErrorRunReached). It is a notice rather than a hold, and it ends no run: R2 forbids an
-// attempt limit. model is the model
-// the failed request went to, and is empty when the error named none. next is what the daemon does
-// about the turn that reached the count, in the caller's words: a prompt's task is kept and sent
-// again, and a turn that ran no prompt of the daemon's has no task to send
-// (providerErrorTurnEnded).
+// attempt limit. model is the model the failed request went to, and is empty when the error named
+// none. next is what the daemon does about the turn that reached the count, in the caller's words:
+// a prompt's task is kept and sent again, and a turn that ran no prompt of the daemon's has no task
+// to send (providerErrorTurnEnded).
 func (m *Machine) tellOfProviderErrors(model, cause, next string) {
 	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
 		return

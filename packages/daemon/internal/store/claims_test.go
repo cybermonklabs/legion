@@ -341,8 +341,8 @@ func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 // The ladder a provider error puts a task on outlives the daemon that armed it: the count says
 // which step the next send waits, and the sentence is what that send puts in front of the task
 // (dispatch://INFRA-956 R2). The claim's own run of such turns is beside them, because that is
-// what the notice to the issue's architect and the project's controller is counted from, and
-// neither a restart nor a re-put of the delivery under a new id may lose either.
+// what the provider-errors notice is counted from, and neither a restart nor a re-put of the
+// delivery under a new id may lose either.
 func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)

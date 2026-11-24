@@ -268,12 +268,11 @@ func freshSessionCases() []freshSessionCase {
 
 // Every claim of the project that is not in a turn gets a new session through either door: the
 // claim forgets the session it recorded and starts again, and the run of provider errors it carried
-// starts again with it, so the project's controller can be told a second time, and the issue's
-// architect where one stands above the claim's agent. A phase worker that comes back owing no task
-// is started through its issue's phase, which is what hands it that phase's task: without it a
-// tester waiting on CI, or a worker an idle release suspended, would come back in a new session
-// with nothing to do. A claim that still owes a task keeps it, and a root architect works no phase
-// at all.
+// starts again with it, so the provider-errors notice can be sent a second time (internal/daemon's
+// providerErrorRunReached says to whom). A phase worker that comes back owing no task is started
+// through its issue's phase, which is what hands it that phase's task: without it a tester waiting
+// on CI, or a worker an idle release suspended, would come back in a new session with nothing to
+// do. A claim that still owes a task keeps it, and a root architect works no phase at all.
 func TestAFreshSessionStartsEveryClaimThatIsNotInATurn(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		for _, tc := range freshSessionCases() {

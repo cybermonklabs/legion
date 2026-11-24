@@ -2235,8 +2235,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // check reads: it does at once for a refusal whose status cannot clear, of the task's prompt or
     // of a reminder's own turn, which no prompt ran and which the daemon judges from its
     // turn-outcome report (dispatch://INFRA-4508). A refusal that can clear fails nothing, so the
-    // reminders keep their pace. At six such turns in a row the daemon tells the controller once,
-    // and the issue's architect where one stands above the claim's agent.
+    // reminders keep their pace. At six such turns in a row the daemon sends the `provider-errors`
+    // notice once (`providerErrorRunReached` in the daemon's `workflow.go` says to whom).
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);

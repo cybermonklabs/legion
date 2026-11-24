@@ -46,7 +46,7 @@ func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
 
 // A compaction that ran starts the claim's run of provider-error turns again, so the notice at
 // providerErrorRunTold goes a second time after six more refused turns. Without the reset it
-// would go once and never again until a turn of that claim ended with no error at all, and a
+// would go once and not again until another of the run's ends (Claim.ProviderErrorRun), and a
 // compaction the controller asked for would buy it no second look.
 //
 // The owed task goes again at once rather than at the end of the ladder step the compaction

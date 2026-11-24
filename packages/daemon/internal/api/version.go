@@ -3843,13 +3843,13 @@ package api
 // open pull requests, 2026-11-24T08:05:40Z to 08:08:24Z).
 // The merge of main `ce0420c3`, which still declares 220, keeps 234: no open head but this one
 // declares it (read at the head of each of the 494 open pull requests, 2026-11-24T09:45:39Z to
-// 09:48:06Z). The merge of main `7ccabcba`, which declares 228 (#4590, INFRA-1575's entry above),
+// 09:48:06Z). The merge of main `7ccabcba`, which declares 228 (#4590, INFRA-1575),
 // keeps 234: 229 (#2230), 230 (#4580), 231 (#4540), 232 (#5271) and 233 (#4173, #4180, #4182, #4193
 // and #4932) are other open pull requests', and no open head but this one declares 234 (read at the
 // head of each of the 492 open pull requests, 2026-11-24T10:02:56Z to 10:05:20Z). The merge of main
 // `e01affc8`, which still declares 228, keeps 234: no open head but this one declares it (read at
 // the head of each of the 483 open pull requests, 2026-11-24T11:35:13Z to 11:37:36Z). The merge of
-// main `3dbaa2b2`, which declares 232 (#5271, INFRA-4508's entry above), keeps 234: 229 to 233 are
+// main `3dbaa2b2`, which declares 232 (#5271, INFRA-4508), keeps 234: 229 to 233 are
 // other open pull requests', and no open head but this one declares 234 (read at the head of each
 // of the 478 open pull requests, 2026-11-24T12:32:36Z to 12:35:22Z). The merge of main `9a4e7a14`,
 // which still declares 232, keeps 234: no open head but this one declares it (read at the head of
@@ -3864,17 +3864,16 @@ package api
 // 248 though #3993, #4049 and #4392 declare it too: while cybermonklabs/legion#5399, under which no
 // branch picks this number by hand, is open, a branch keeps the number it holds rather than take a
 // new one by a census. The merge of main `5df00e2f`, which declares 250 (#5365, the waiting line's
-// priority, then the entry right above), moves this entry from 248 to 253: the rule above cannot
-// hold once the base declares a number above the one a branch keeps, since
-// check-daemon-api-contract.sh refuses a number not above the base's, and #5399 is still open. 251
-// (#5307) and 252 (#4540) are other open pull requests', and no open head declares 253 (read at the
-// head of each of the 488 open pull requests, 2026-11-24T17:55:43Z to 18:01:07Z; #5399's head
-// declares no number). The merge of main `c56ad6a1`, which declares 256 (#5349, the claim views'
-// cause times, the entry right above), moves this entry from 253 to 270: 253 is not above the
-// base's 256, so check-daemon-api-contract.sh would refuse it, and 270 is the number this change
-// was given at 2026-11-24T18:27:55Z by the session that hands out these numbers while #5399 is
-// still open. No open head declares 270 (read at the head of each of the 511 open pull requests,
-// 2026-11-25T00:22:02Z to 00:28:44Z; 265 (#5285), 267 (#5168), 268 (#5384), 271 (#4173), 272
-// (#4049) and 274 (#3993) are other open pull requests'). Read the base's own number and every open
-// head again at the next merge rather than from this line.)
+// priority), moves this entry from 248 to 253: the rule above cannot hold once the base declares a
+// number above the one a branch keeps, since check-daemon-api-contract.sh refuses a number not
+// above the base's, and #5399 is still open. 251 (#5307) and 252 (#4540) are other open pull
+// requests', and no open head declares 253 (read at the head of each of the 488 open pull requests,
+// 2026-11-24T17:55:43Z to 18:01:07Z; #5399's head declares no number). The merge of main
+// `c56ad6a1`, which declares 256 (#5349, the claim views' cause times), moves this entry from 253
+// to 270: 253 is not above the base's 256, so check-daemon-api-contract.sh would refuse it, and 270
+// is the number this change was given at 2026-11-24T18:27:55Z by the session that hands out these
+// numbers while #5399 is still open. No open head declares 270 (read at the head of each of the 511
+// open pull requests, 2026-11-25T00:22:02Z to 00:28:44Z; 265 (#5285), 267 (#5168), 268 (#5384), 271
+// (#4173), 272 (#4049) and 274 (#3993) are other open pull requests'). Read the base's own number
+// and every open head again at the next merge rather than from this line.)
 const DaemonAPIVersion = 270

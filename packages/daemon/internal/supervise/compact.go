@@ -377,11 +377,11 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, so the notice
 // at providerErrorRunTold can go a second time if the compacted session's turns go the same way;
-// without it the notice would go once and never again until a turn ended with no provider
-// error at all. It is this action's own reset and this action's own write: forgetSession's reset
-// belongs to a claim that is losing its session, and a compaction keeps it. A compaction that
-// was refused or skipped resets nothing — the session is as it was, so the run of refused turns
-// it carried still stands.
+// without it the notice would go once and not again until another of the run's ends
+// (Claim.ProviderErrorRun) came. It is this action's own reset and this action's own write:
+// forgetSession's reset belongs to a claim that is losing its session, and a compaction keeps it.
+// A compaction that was refused or skipped resets nothing — the session is as it was, so the run
+// of refused turns it carried still stands.
 //
 // The ladder's wait goes whatever the compaction did (TimerPromptRetry), so the owed task is
 // sent from here rather than at the end of a wait that was counted against the transcript this

@@ -158,8 +158,9 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
       // instead, and a claim the daemon has failed by then is reminded of nothing. The daemon
       // fails one at once for a refusal whose status cannot clear, of a prompt's turn or of a
       // reminder's own, which it judges from the turn-outcome report since no prompt ran it, and
-      // never for a refusal that can clear, however long the run: that run is told to the
-      // project's controller once, at six in a row (dispatch://INFRA-4508).
+      // never for a refusal that can clear, however long the run: at six in a row the daemon
+      // sends the `provider-errors` notice once (dispatch://INFRA-4508;
+      // `providerErrorRunReached` in the daemon says to whom).
       return { state };
     case "reminded":
       return state.state === "closed"

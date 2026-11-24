@@ -585,7 +585,7 @@ fallback chain, so the next prompt goes to another model
 ([Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged));
 a 429, a 408, a 401, a 403, a 5xx and an error the provider answered no status for are sent again
 too: a credential error is the fleet's rather than this claim's work, so it climbs the ladder like
-any other and the `provider-errors` notice at six, to the project's controller and to the issue's architect where one stands above the claim's agent, is what tells a person. A newer
+any other and the `provider-errors` notice at six (below) is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
 waits for the compaction's end instead, as everything the claim is owed does. An update round
@@ -611,24 +611,23 @@ the reminders keep their pace of one every 5 minutes, and the turn counts in the
 provider-error turns below. Nothing is sent again for such a turn: it carried no task.
 
 **After six turns of one claim in a row have ended in a provider error**, whether a prompt of the
-daemon's ran them or not, the project's controller is told once, and so is the issue's architect
-where one stands above the claim's agent, as `provider-errors on <KEY>`, with the run, the model
-where the prompt's result named one, and the cause
+daemon's ran them or not, the daemon tells once, as `provider-errors on <KEY>`, with the run, the
+model where the prompt's result named one, and the cause
 (`supervise: a run of turns that ended in a provider error; it is handed to ProviderErrorRunReached`).
-A run of the tree root's architect's own claim is told to the controller alone, and a run of a
+A run of a phase worker's claim is told to the architect that owns the issue and to the project's
+controller, a run of the tree root's architect's own claim to the controller alone, and a run of a
 child's own architect's claim to the architect above that child and the controller. Nothing is held
 and nothing is stopped by that count. A prompt's task is still kept and still sent again on the
 ladder, and the notice says so; a turn that no prompt of the daemon's ran carried no task, so
 nothing is sent again for it, the reminders keep their pace, and a notice whose sixth turn was such
-a turn says that the daemon sends no task again for it. The run
-goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
-compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
-Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
-recorded session is forgotten, by `legion claims retry --fresh-session`, the controller's
-`fresh_session`, or `legion claims forget-session`. Only after one of those can another notice
-go. The notice is the claim's own — the issue and the role that names it — so
-two claims of one issue each get a notice of their own, and in a provider outage every claim that
-reaches six is told.
+a turn says that the daemon sends no task again for it. The run goes back to zero three ways: at a
+turn of that claim that ends with no provider error, at a compaction of its session that ran
+(`legion claims compact`, or the controller's `compact`; one Oh My Pi refused or skipped resets
+nothing, since the session is as it was), and when the claim's recorded session is forgotten, by
+`legion claims retry --fresh-session`, the controller's `fresh_session`, or
+`legion claims forget-session`. Only after one of those can another notice go. The notice is the
+claim's own — the issue and the role that names it — so two claims of one issue each get a notice
+of their own, and in a provider outage every claim that reaches six is told.
 
 **When the memory guard of the controller's own pod ends one of the controller's programs**, the
 controller is told of that kill, as `memory-guard-kill on <PROJECT>`, under the project key as a

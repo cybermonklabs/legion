@@ -23,7 +23,7 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     # "Check the skills against their guard": the Claude plugin builder it spawns, and the
     # roots of its sweep over every file a Legion agent reads.
     ("packages/claude-envoy/**", f"{at('pi-legion-build', 'Check the skills against their guard')}: src/skills-guard.test.ts:349 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :29) and asserts an exact file list over the tree it writes"),
-    ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:47), outside the package it builds"),
+    ("packages/envoy-client/bin/dispatch.ts", "the sixth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:47), outside the package it builds"),
     (f"{DAEMON}/internal/**", f"{at('pi-legion-build', 'Check the skills against their guard')}: src/skills-guard.test.ts:235-239 sweeps every file under packages/daemon/internal, a root of the list at :228, and :137 reads internal/supervise"),
     ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:235-239, a root of the list at :227"),
     ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:235-239, a root of the list at :229, and :727 reads the legion guides under it"),

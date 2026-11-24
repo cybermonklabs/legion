@@ -2668,21 +2668,25 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 	}()
 }
 
-// providerErrorRunReached tells the project's controller, and the issue's architect where one
-// stands above the claim's agent, that a role's turns keep ending in a provider error (supervise's
-// Deps.ProviderErrorRunReached): the machine counts the run and decides when to tell, and this
-// names the notice kind, since supervise records nothing of internal/record. The architect is told
-// in a notice row, which the notice executor delivers to the architect that owns the issue, waking
-// it where its pod was released (deliverNotice, wakeForDelivery): narrowing the work the provider
-// keeps refusing is the architect's. The controller is told in a row of its own, since compacting
-// the agent's session or starting that agent in a fresh session is the controller's; admission's
-// own check stops a second controller notice while one still waits in the outbox (TellController).
-// The two rows are one transaction. A run of the tree root's architect's own claim writes the
-// controller's row alone (tellsArchitect), and a run of a child's own architect's claim writes its
-// notice row for the architect above that child (record.NoticeStartsAtParent). The machine calls it
-// inside its own decision, so the notices are queued on a goroutine of their own, bounded by
-// readyReleaseTimeout; a failure is logged and is not the daemon's end, since the run goes on and
-// the task is sent again either way.
+// providerErrorRunReached tells who must know that a role's turns keep ending in a provider error
+// (supervise's Deps.ProviderErrorRunReached), and it is the one place that says who that is:
+//
+//   - a run of a phase worker's claim tells the architect that owns the issue and the project's
+//     controller;
+//   - a run of the tree root's architect's own claim tells the controller alone (tellsArchitect);
+//   - a run of a child's own architect's claim tells the architect above that child
+//     (record.NoticeStartsAtParent) and the controller.
+//
+// The machine counts the run and decides when to tell, and this names the notice kind, since
+// supervise records nothing of internal/record. An architect is told in a notice row, which the
+// notice executor delivers, waking it where its pod was released (deliverNotice,
+// wakeForDelivery): narrowing the work the provider keeps refusing is the architect's. The
+// controller is told in a row of its own, since compacting the agent's session or starting that
+// agent in a fresh session is the controller's; admission's own check stops a second controller
+// notice while one still waits in the outbox (TellController). The two rows are one transaction.
+// The machine calls it inside its own decision, so the notices are queued on a goroutine of their
+// own, bounded by readyReleaseTimeout; a failure is logged and is not the daemon's end, since the
+// run goes on and the task is sent again either way.
 func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason string) {
 	if c.Issue == "" || w.admission == nil {
 		return

@@ -42,7 +42,7 @@ The daemon could not ask the session store for a role's start. Open one finding 
 
 ## `provider-errors`
 
-Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. It tells the architect that owns the issue too, except for a tree root architect's own run, which comes to you alone. Name the run and its model in the day's report, and send no architect anything. When one agent stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
+Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. It tells an architect too, except for a tree root architect's own run, which comes to you alone. Name the run and its model in the day's report, and send no architect anything. When one agent stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
 
 ## A root architect's stuck tool call
 
