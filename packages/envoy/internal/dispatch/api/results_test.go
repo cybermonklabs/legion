@@ -211,9 +211,9 @@ func writeKnownMergeOnBase(t *testing.T, database *store.Store, repo string, num
 	writeHeadOnBase(t, database, repo, number, head, "merged", issue, base)
 	if _, err := database.Pool.Exec(context.Background(),
 		`update pull_request_heads set merge_commit_sha = $3, merged_at = $4,
-		 attribution_rule = $5, attribution_checked_at = clock_timestamp()
-		 where repo = $1 and pr_number = $2`, repo, number, merge,
-		time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC), delivery.AttributionRule); err != nil {
+		 attribution_rule = $5, checked_at = clock_timestamp()
+		 where repo = $1 and number = $2`, repo, number, merge,
+		time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC), delivery.AttributionRuleVersion); err != nil {
 		t.Fatalf("fill the merge of %s#%d: %v", repo, number, err)
 	}
 }
@@ -222,7 +222,7 @@ func writeKnownBranchLanding(t *testing.T, database *store.Store, number int, fr
 	t.Helper()
 	writeKnownMergeOnBase(t, database, "acme/widgets", number, head, "", to, merge)
 	if _, err := database.Pool.Exec(context.Background(),
-		`update pull_request_heads set head_ref = $2 where repo = 'acme/widgets' and pr_number = $1`, number, from); err != nil {
+		`update pull_request_heads set head_ref = $2 where repo = 'acme/widgets' and number = $1`, number, from); err != nil {
 		t.Fatalf("name the branch landing in pull request %d: %v", number, err)
 	}
 }

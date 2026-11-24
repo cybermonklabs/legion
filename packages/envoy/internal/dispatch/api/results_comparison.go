@@ -556,54 +556,16 @@ func basisAt(bases []model.CheckBasis, sha string) *model.CheckBasis {
 	return nil
 }
 
-// onNamedBranch walks the branches a check compares with, in the order branchBases named them,
-// and answers where the commit stands.
+// onNamedBranch walks only the bases of the result's repository, even though the check serves
+// the union of its own and linked bases. A branch counts the commit only if its merge requirement
+// is met: no merge is needed for unmerged default-branch work, an absent merge cannot count,
+// and a held merge must be in the commit's history. Equality holds without asking GitHub.
 //
-// The walk is of the repository the result's commit is taken to be of. For every result but
-// one, that is the repository the check's issue resolves to, and the branches are the bases the
-// check named. The one is a result whose commit is taken to be of a linked repository, one the
-// issue links a pull request in and does not resolve to (commitRepositoryOf, from the row's
-// model.CheckResult.CommitRepo): it walks that repository's branches, chosen by the same rule
-// (linkedBranchBases), and the basis it stands at is a branch of that repository, which names it.
-// The issue's own repository holds no such commit, so its compare read answers 404 and the walk
-// there could only end unknown. A row naming the issue's own repository is one whose issue has
-// since come to resolve to that repository, and it is walked there as every other result of the
-// issue is. A result whose row names none reads nothing more than it did before the row could
-// name one. Every arm below is about the walked repository: its default branch, and whether the
-// App can read it.
-//
-// The walk stops at the first branch that carries the commit (delivery.BranchCarries). A yes
-// is the whole answer, and no branch after it is asked about, which is what holds an ordinary
-// issue's result to the one compare read it cost before a second branch was asked about at
-// all.
-//
-// Where no branch carries the commit, the cases turn on telling a branch the App cannot see
-// apart from a read Dispatch could not make at all (delivery.BranchAnswer):
-//
-//   - Every branch answering delivery.BranchDoesNotCarry is another commit: GitHub said so of
-//     each.
-//   - An earlier branch answering delivery.BranchUnseen says "this branch does not carry it"
-//     and nothing more, and the walk goes on. That is what keeps a base branch GitHub no
-//     longer holds, whose compare read answers 404, from turning a result the default branch
-//     answers for into an unknown.
-//   - An earlier branch answering delivery.BranchUnknown decides nothing either way. The walk
-//     goes on, since a later branch may yet carry the commit and that is the whole answer. But
-//     where none does the answer is unknown and never another commit. A database fault or a
-//     GitHub hiccup must not make a reviewer refuse an approval.
-//   - Either of those two as the last word is unknown: a branch that cannot be seen is no
-//     evidence about a branch that was never asked about, and a read that failed is no
-//     evidence about anything.
-//   - A walk the default branch is missing from is unknown wherever no branch carried the
-//     commit, whatever the branches it did ask answered. That is the `after_merge` check of a
-//     repository no read of this process ever named a default branch for, which compares with
-//     the branch its issue merged into alone (branchBases): "not on the branch the work merged
-//     into" is no evidence about the trunk, which nothing asked.
-//
-// The reason an unknown carries is the App's where the App is the one that cannot read the
-// repository (model.ReasonRepositoryUnreadable), and model.ReasonReadFailed otherwise. The
-// walk runs while the App cannot read the repository — that is what reaches a stored yes no
-// call could be made for — so a commit no stored row places is the ordinary end of it there,
-// and the two words part what a reader does next: give the App the repository, or ask again.
+// A carried commit with an unknown merge or a failed containment read is unknown. A later
+// branch can still place it. A failed branch read or a missing final branch leaves the answer
+// unknown if none places it; branches with known absent merges are not asked about at all.
+// Stored branch and containment answers remain usable when the App cannot read the repository.
+// Unknown names repository_unreadable where the App lacks access, and read_failed otherwise.
 func (c *comparisonReader) onNamedBranch(
 	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
 ) model.ResultCommitStands {
