@@ -444,7 +444,10 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer.revocationURL, strings.NewReader(url.Values{"token": {refreshToken}}.Encode()))
 	if err != nil {
-		return fmt.Errorf("oidc: revoke: %w", err)
+		// The endpoint is the issuer's own text and can carry a credential, which net/http's parse
+		// error quotes whole; redact.Cause prints, for an endpoint that is no clean URL, the
+		// failure's class alone.
+		return fmt.Errorf("oidc: revoke: the issuer's revocation_endpoint: %w", redact.Cause(err, issuer.revocationURL))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// The token endpoint's encoding (oauth2's AuthStyleInHeader): RFC 6749 section 2.3.1.
