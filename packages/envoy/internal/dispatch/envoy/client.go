@@ -9,18 +9,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
 	"slices"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/envoy/roleholder"
@@ -383,10 +384,11 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(c *Client) { c.logger = logger }
 }
 
-// New returns a client for an Envoy listener's HTTP control API.
+// New returns a client for an Envoy listener's HTTP control API at baseURL, which each call's
+// route is joined onto (newRequest).
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{
-		baseURL:    strings.TrimSuffix(baseURL, "/"),
+		baseURL:    baseURL,
 		httpClient: redirects.Refused(&http.Client{Timeout: defaultTimeout}),
 	}
 	for _, option := range options {
@@ -579,14 +581,7 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	}
 	const route = "POST /v1/interests/unsubscribe"
 	response, err := c.do(route, false, func() (*http.Request, error) {
-		request, err := http.NewRequestWithContext(
-			ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("%w: build %s request: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL))
-		}
-		request.Header.Set("Content-Type", "application/json")
-		return request, nil
+		return c.newRequest(ctx, http.MethodPost, route, "/v1/interests/unsubscribe", bytes.NewReader(body))
 	}, func(err error) error {
 		return unreachable(fmt.Errorf("%w: %s: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
 	})
@@ -833,19 +828,30 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 // get makes one authorized GET of route+query, the one shape every read of the listener takes.
 // route names the read in each error this returns, without query's selector, so the same read
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
-// both: no listener answered it (unreachable). Every error names the call by its route alone and
-// the transport's failure through redact.Cause, so none prints a credential the configured
-// listener URL carries; a call with a query prints the failure's class alone.
+// both: no listener answered it (unreachable).
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
 	return c.do("GET "+route, false, func() (*http.Request, error) {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
-		if err != nil {
-			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL))
-		}
-		return request, nil
+		return c.newRequest(ctx, http.MethodGet, "GET "+route, route+query, nil)
 	}, func(err error) error {
 		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
 	})
+}
+
+// newRequest is the request of the call name: method for route, with its own query, joined onto
+// the listener URL with that URL's query first (urljoin.Join), and a JSON body where it has one. A
+// request it cannot build is ErrUnavailable naming the call and the failure's class, not the URL.
+func (c *Client) newRequest(ctx context.Context, method, name, route string, body io.Reader) (request *http.Request, err error) {
+	endpoint, err := urljoin.Join(c.baseURL, route)
+	if err == nil {
+		request, err = http.NewRequestWithContext(ctx, method, endpoint.String(), body)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: build %s request: %v", ErrUnavailable, name, redact.Masked(err, redact.ClassNotAURL))
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	return request, nil
 }
 
 // sendSource is the source every send Dispatch makes through the listener names itself by.
@@ -926,13 +932,10 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	})
 	response, err := c.do("POST /v1/messages/send", marked, func() (*http.Request, error) {
 		written.Store(false)
-		request, err := http.NewRequestWithContext(
-			ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(encoded),
-		)
+		request, err := c.newRequest(ctx, http.MethodPost, "POST /v1/messages/send", "/v1/messages/send", bytes.NewReader(encoded))
 		if err != nil {
-			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, redact.Cause(err, c.baseURL))
+			return nil, err
 		}
-		request.Header.Set("Content-Type", "application/json")
 		// Dispatch reads the key-taken answer (SendResult): a duplicate's envelope id is never
 		// recorded, and a kept copy's 202 names that copy's event_id. Without the header the
 		// listener answers a copy Dispatch cannot prove its own, as every copy that names no
