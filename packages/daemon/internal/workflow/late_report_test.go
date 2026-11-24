@@ -285,14 +285,20 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 // hold is from, so it reports the run the stop ended (pastReportOf), and lateReport answers it
 // nothing because the merge is no step. The implementer works implementing and the retro, and
 // while the issue is held its report is of implementing (phase.Of, phase.LeftBy: held stands
-// outside the line), which the hold is not from, so it reports no run at all. Either refusal writes
-// nothing: the issue, its task, the role's row and the outbox stand as they were, and the handoff
-// record the report names is not kept as the role's last one.
+// outside the line), which the hold is not from, so it reports no run at all. Each report is the
+// one the role's `legion` tool sends while the issue is held (packages/pi-shared/src/
+// handoff-record.ts, completedPhase and findHandoffReport), which the completion route takes
+// (api's handoffComplete). The implementer's is of implementing, so it names the implementer's
+// newest implementing handoff record; the merger's names none, since merging ends with no record
+// and the route refuses a merge report that names one (HANDOFF_RECORD_MISMATCH). Either refusal
+// writes nothing: the issue, its task, the role's row and the outbox stand as they were, and the
+// record the implementer's report names is not kept as its last one.
 func TestALateReportOfTheRetroOrTheMergeAfterAStopIsNotCurrent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		role claim.Role
-		// moves take the task from its first step to where the owner stops it, at in place.
+		// moves take the task from its first step to where the owner stops it, at in place. handoff
+		// is the record the role's report names, "" for none.
 		moves   []TriggerKind
 		at      phase.Phase
 		place   record.TaskPlace
@@ -300,10 +306,10 @@ func TestALateReportOfTheRetroOrTheMergeAfterAStopIsNotCurrent(t *testing.T) {
 	}{
 		{name: "the implementer's report of the retro", role: claim.RoleImplementer,
 			moves: []TriggerKind{TriggerGateOpened, TriggerImplementationReady},
-			at:    phase.Retro, place: record.TaskPlace{Kind: record.PlaceRetro}, handoff: "retro-1"},
+			at:    phase.Retro, place: record.TaskPlace{Kind: record.PlaceRetro}, handoff: "implement-1"},
 		{name: "the merger's report of the merge", role: claim.RoleMerger,
 			moves: []TriggerKind{TriggerGateOpened, TriggerImplementationReady, TriggerRetroCompleted},
-			at:    phase.Merging, place: record.TaskPlace{Kind: record.PlaceMerge}, handoff: "merge-1"},
+			at:    phase.Merging, place: record.TaskPlace{Kind: record.PlaceMerge}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

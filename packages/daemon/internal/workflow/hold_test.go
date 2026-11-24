@@ -551,9 +551,14 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 				Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 3, Status: "in_progress", DispatchStatus: "in_progress",
 				Rank: "U", HandedOver: true, LastDispatchSeq: 4})
 			seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
-			counted := record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Rounds: 3, ConflictRounds: 1,
-				BackwardMoves: map[string]int{"testing-implementing": 2}, CapTold: 3}
-			seedPhase(t, pool, counted)
+			// The counts three review rounds that requested changes, one conflict round and two
+			// tester fails leave, the third counted round reaching review_round_cap 3 (recordPass,
+			// recordRound). The test reads them back without the pass.
+			counted := record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Rounds: 4, ConflictRounds: 1,
+				BackwardMoves: map[string]int{"reviewing-implementing": 3, "testing-implementing": 2}, CapTold: 3}
+			seeded := counted
+			seeded.Pass = 6
+			seedPhase(t, pool, seeded)
 			todo := func(seq int64, own bool) intake.DispatchIssue {
 				return intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: "todo",
 					Title: "root", Rank: "U", HandedOver: true, DaemonActor: own, StatusMove: own}
@@ -688,7 +693,11 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 				Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 3, Status: "in_progress", DispatchStatus: "in_progress",
 				Rank: "U", HandedOver: true, LastDispatchSeq: 4})
 			seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
-			counted := record.ReturnCounts{Pass: 4, Rounds: 3, ConflictRounds: 1, BackwardMoves: map[string]int{"testing-implementing": 2}, CapTold: 3}
+			// The counts three review rounds that requested changes, one conflict round and two
+			// tester fails leave, the third counted round reaching review_round_cap 3 (recordPass,
+			// recordRound).
+			counted := record.ReturnCounts{Pass: 6, Rounds: 4, ConflictRounds: 1,
+				BackwardMoves: map[string]int{"reviewing-implementing": 3, "testing-implementing": 2}, CapTold: 3}
 			seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Pass: counted.Pass, Rounds: counted.Rounds,
 				ConflictRounds: counted.ConflictRounds, BackwardMoves: counted.BackwardMoves, CapTold: counted.CapTold})
 			if tc.claims {
@@ -736,15 +745,17 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 	}
 }
 
-// A person's todo on a root held from reviewing, by its reviewer's failed claim, is a hold no plan
-// made, and the todo releases it into reviewing (releaseHeldRoot, retryPhase). It starts no new run:
-// the root keeps its generation and its one slot. The counts of its returns, which a root with no
-// plan rows keeps on its implementer's phases row (record.ImplementerCounts), stand as the hold left
-// them: the round the reviewer left is still open, so the release settles nothing and starts the
-// reviewer again. A review of that round that requests changes then settles it, and the move back
-// it makes raises the counts: one more pass, one more move back under reviewing-implementing
-// (recordPass) and one more review round (recordRound).
-func TestATodoOnAHeldRootKeepsTheCountsUntilAReviewRoundSettles(t *testing.T) {
+// A person's todo on a root held from reviewing, by its reviewer's failed claim, ends a hold no plan
+// made, and the todo releases it into reviewing (releaseHeldRoot, retryPhase). It opens no new
+// generation: the root keeps its generation and its one slot. The counts of its returns, which a
+// root with no plan rows keeps on its implementer's phases row (record.ImplementerCounts), stand as
+// the hold left them: the round the reviewer left is still open, so the release settles nothing and
+// starts the reviewer again. A review of that round that requests changes then settles it, and the
+// move back it makes raises the counts: one more pass, one more move back under
+// reviewing-implementing (recordPass) and one more review round (recordRound). A todo on a root held
+// for its stopped task is no such release: it starts the task again and raises its pass
+// (restartTask).
+func TestATodoOnARootWithAHoldNoPlanMadeKeepsTheCountsUntilAReviewRoundSettles(t *testing.T) {
 	const root = "LEGION-208"
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
