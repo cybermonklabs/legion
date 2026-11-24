@@ -2180,7 +2180,11 @@ build only under the `twobuild` tag and are a job of their own for the reason
 dispatch-multiprocess is: a row waits out durable hand-overs and settings polls, tens of seconds
 each, and the earlier builds are built here first. Most rows run the previous build, the newest
 legion-envoy-v* release in the history of origin/main; build-dispatch-build.sh resolves it,
-which needs the whole history and the tags (fetch-depth 0), and builds it from `git archive`.
+which needs main's history and the release tags, and builds it from `git archive`. The job checks
+out its own commit alone and then fetches main and the release tags with their history but none
+of their files (`--filter=blob:none`), which `git archive` fetches for a commit when it builds it:
+the whole repository, 3,242 branches and 3,710 tags on 2026-11-23, took the checkout to its
+2-minute budget in three merge groups that day (the workflow's comment has the numbers).
 The first-rollout row runs the first-rollout build instead, the newest release before the first
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds

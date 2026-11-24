@@ -71,28 +71,50 @@ jobs:
       # commit.
       FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
     steps:
-      # A BOUND OF ITS OWN AND A SECOND ATTEMPT, here and in dispatch-two-builds-same below. Of
-      # the 755 checkouts of this file's two jobs in ci.yaml runs created from 2026-11-16 12:52Z
-      # to 2026-11-18 13:39Z, 753 took 96 s at most (median 44 s) and two hung: run
-      # 44143226907's for 44 minutes, until the job's budget cancelled it, and run
-      # 44125069013's for 25 minutes. Each attempt carries 2 minutes, the 96 s plus 15 per cent
-      # rounded up to the next whole minute (dispatch-browser.yaml's rule). The second attempt
-      # runs only when the first did not end in success, and a second failure fails the job
-      # there. A step cut at its budget can leave its git running: the runner signals the
-      # action's own process, not the git processes it started (actions/runner,
-      # ProcessInvoker.cs). A git killed while it wrote refs or config can also leave a lock
-      # (.git/config.lock, packed-refs.lock, a ref's .lock) that actions/checkout does not delete
-      # before it reuses a directory: it deletes index.lock and shallow.lock alone
+      # THIS COMMIT ALONE, THEN THE HISTORY THE BUILD SCRIPT READS, here and in
+      # dispatch-two-builds-same below. With fetch-depth 0, actions/checkout fetched every branch
+      # head and every tag of the repository (+refs/heads/* and +refs/tags/*): on 2026-11-23,
+      # 3,242 branches and 3,710 tags, 908,848 objects in a 1.12 GiB pack. These two jobs'
+      # checkouts took p50 75 s, p90 90 s and p99 120 s in the 745 ci.yaml runs created that day,
+      # against p50 7 s and p99 17 s for the 62,144 checkouts of every other job, and they grew
+      # with the repository's refs: a median of 44 s on 2026-11-16 to 18, 69 s on 2026-11-22.
+      # On 2026-11-23 ten first attempts ran out their 2-minute budget and six more took 111 to
+      # 118 s; of the eleven second attempts, which fetched the same from nothing, three ran out
+      # too and failed the job, in merge-group runs 45174478128, 45247545394 and 45265727164. No
+      # checkout of another job ran out its budget on 2026-11-22 or 23: the 23 that failed did so
+      # in 1 to 15 s, on a runner shutdown or a ref that was gone.
+      #
+      # The jobs read none of those branches. build-dispatch-build.sh reads origin/main, the
+      # legion-envoy-v* tags, the history that joins them to HEAD, and the files of each commit it
+      # builds (git archive). So the checkout takes this commit alone (fetch-depth 1, as every
+      # other job of ci.yaml does), and the step after it fetches main and the release tags with
+      # their history but no file contents (--filter=blob:none). git archive fetches a release's
+      # files when it reads them, and a cached build reads none. The repository is public, so
+      # those fetches need no token, and the checkout keeps none (persist-credentials: false).
+      # Measured on a developer machine on 2026-11-23: the old fetch took 161 s; the checkout of
+      # one commit 12.6 s and the history 9 to 12 s. The script's three resolves named the same
+      # commits as a full clone's, its archive of each release wrote the same bytes, and without
+      # the history step each of the three refused.
+      #
+      # Each attempt still carries 2 minutes, and a second attempt follows a first that did not
+      # end in success: two of the 755 checkouts of 2026-11-16 to 18 hung, for 44 and 25 minutes,
+      # and a hang is not a matter of size. A step cut at its budget can leave its git running:
+      # the runner signals the action's own process, not the git processes it started
+      # (actions/runner, ProcessInvoker.cs). A git killed while it wrote refs or config can also
+      # leave a lock (.git/config.lock, packed-refs.lock, a ref's .lock) that actions/checkout
+      # does not delete before it reuses a directory: it deletes index.lock and shallow.lock alone
       # (src/git-directory-helper.ts). So the step between the two attempts ends every git
       # process on the runner, which runs this one job, and then empties the workspace, and the
-      # second attempt is a fresh clone.
+      # second attempt is a fresh clone. The history step bounds each of its own three attempts
+      # and does the same between them. With the checkout this small, the job's last step finds
+      # ./.github/actions/ci-ok-report in it even when the history fetch fails, so a failing
+      # merge group is reported at once.
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
         continue-on-error: true
         with:
           persist-credentials: false
-          fetch-depth: 0
       - name: End the git processes and the workspace a first attempt cut at its budget leaves
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
@@ -109,7 +131,26 @@ jobs:
         timeout-minutes: 2
         with:
           persist-credentials: false
-          fetch-depth: 0
+      - name: Fetch main's history and the release tags, without their files
+        timeout-minutes: 2
+        run: |
+          for attempt in 1 2 3; do
+            args=(--no-tags --filter=blob:none)
+            [[ -f .git/shallow ]] && args+=(--unshallow)
+            if timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
+              '+refs/heads/main:refs/remotes/origin/main' \
+              '+refs/tags/legion-envoy-v*:refs/tags/legion-envoy-v*'; then
+              echo "attempt $attempt: $(git rev-list --count HEAD) commits in the history of HEAD, $(git tag --list 'legion-envoy-v*' | wc -l) release tags"
+              exit 0
+            fi
+            echo "attempt $attempt did not complete within 30 s"
+            pkill -KILL -x git || true
+            pkill -KILL -f git-remote-http || true
+            while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+            find .git -name '*.lock' -delete
+          done
+          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
+          exit 1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
@@ -310,16 +351,16 @@ jobs:
       JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
-      # The whole history and the tags, as the job above takes them: build-dispatch-build.sh
-      # refuses a commit older than its floor release, which it reads by its tag. Bounded and
-      # tried again as the job above's checkout is, for the reasons its comment gives.
+      # This commit alone, then main's history and the release tags, as the job above takes them:
+      # build-dispatch-build.sh refuses a commit older than its floor release, which it reads by
+      # its tag. Bounded and tried again as the job above's checkout and history are, for the
+      # reasons its comment gives.
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
         continue-on-error: true
         with:
           persist-credentials: false
-          fetch-depth: 0
       - name: End the git processes and the workspace a first attempt cut at its budget leaves
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
@@ -336,7 +377,26 @@ jobs:
         timeout-minutes: 2
         with:
           persist-credentials: false
-          fetch-depth: 0
+      - name: Fetch main's history and the release tags, without their files
+        timeout-minutes: 2
+        run: |
+          for attempt in 1 2 3; do
+            args=(--no-tags --filter=blob:none)
+            [[ -f .git/shallow ]] && args+=(--unshallow)
+            if timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
+              '+refs/heads/main:refs/remotes/origin/main' \
+              '+refs/tags/legion-envoy-v*:refs/tags/legion-envoy-v*'; then
+              echo "attempt $attempt: $(git rev-list --count HEAD) commits in the history of HEAD, $(git tag --list 'legion-envoy-v*' | wc -l) release tags"
+              exit 0
+            fi
+            echo "attempt $attempt did not complete within 30 s"
+            pkill -KILL -x git || true
+            pkill -KILL -f git-remote-http || true
+            while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+            find .git -name '*.lock' -delete
+          done
+          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
+          exit 1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
