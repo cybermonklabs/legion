@@ -103,7 +103,12 @@ body: |-
     (`pull_request_canonical_repo`, migration `20261122070959`, as `store.ReadRepoRenames` and
     `refs.Renames.Canonical` read the pairs: both names of a `repo_projects` row in lower case, a
     row that renames nothing dropped, the greatest new name of one old name, and no pair once
-    `repo_projects` is gone), so a name finds the row a writer keyed under the canonical name. A
+    `repo_projects` is gone), so a name finds the row a writer keyed under the canonical name. The
+    boot's rename pass writes no column of `check_states` or of these tables: its write of a pull
+    request's row records that row's move to the new name and owes its issue a settle, which
+    publishes each state under the new name, with an event, and deletes the state under the old
+    one, so a reader that keys a state by its repository learns it under the new name; and the
+    settler keeps each name it met a pull request under. A
     close or a merge under any name ends the lifecycle and starts the next
     generation, while a rename and a move to another issue keep it: applying the records drops
     each head the pull request reached before the last close (`pull_request_former_heads_pulls.ended`,
