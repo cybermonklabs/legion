@@ -330,6 +330,7 @@ func writeIdleRigJSON(w http.ResponseWriter, body any) {
 // Run by anything but that launcher it does nothing: with no rig service named in its
 // environment there is no rig to serve.
 func TestIdleRigRoleProcess(t *testing.T) {
+	// Not parallel: it is the idle rig role process and exits the test binary.
 	rig := os.Getenv(idleRigURLVariable)
 	if rig == "" {
 		return

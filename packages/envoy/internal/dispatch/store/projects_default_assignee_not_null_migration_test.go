@@ -17,10 +17,7 @@ const projectsDefaultAssigneeNotNullVersion = 20261111210103
 // After it, the column refuses a project with no default.
 func TestTheDefaultAssigneeBackfillFillsEveryProject(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, projectsDefaultAssigneeNotNullVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", projectsDefaultAssigneeNotNullVersion-1, err)
-	}
+	store := openMigratedTestStore(t, projectsDefaultAssigneeNotNullVersion-1)
 	seedProjectsOfEveryKind(t, store)
 
 	// The negative control of the fill's `people` test, inside this one run: before the
@@ -66,10 +63,7 @@ func TestTheDefaultAssigneeBackfillFillsEveryProject(t *testing.T) {
 // the deployment takes after it has run the fill on the release still serving.
 func TestTheCensusCountsAProjectWithNoDefault(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, projectsDefaultAssigneeNotNullVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", projectsDefaultAssigneeNotNullVersion-1, err)
-	}
+	store := openMigratedTestStore(t, projectsDefaultAssigneeNotNullVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into people (email) values ('alice@d.example');
 		insert into projects (key, name, default_assignee) values

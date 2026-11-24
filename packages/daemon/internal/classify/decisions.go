@@ -1190,9 +1190,10 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 //
 // It does not hold for a head the record holds in a confirmed conflict: that approval ends the
 // round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
-// head will change until the base is merged forward, and the issue's move into merging is what
-// asks the merger for that merge (cybermonklabs/legion#4979, record.ConflictMergeNext). Read here, the
-// state build shows no mergeWait for the round the engine has just ended.
+// head will change until the base is merged forward. Where no ask of that merge was made before,
+// the issue's move into merging is what asks the merger for it (cybermonklabs/legion#4979,
+// record.ConflictMergeNext). Read here, the state build shows no mergeWait for the round the
+// engine has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
@@ -1226,21 +1227,51 @@ const (
 	MergeStateFactBasePush
 )
 
+// MergeForwardStands says whether a merge forward is asked, and stands, where issue stands, on
+// line, the phases its task walks (the workflow's Walk.Line: one for each step, then retro and
+// merging; phase.Order for an issue with no plan rows): implementing, where the work already is,
+// or any phase after implementing on that line (dispatch://INFRA-4374 R1). On the default steps
+// that is testing, reviewing, accepting, retro and merging. Where the task places a planner step
+// after the implementer, its planning is one too, since it works on a branch whose pull request is
+// open. The issue keeps that phase while the role asked (record.MergeForwardAsker) merges. An
+// issue that stands anywhere else - admitted, awaiting_person, a planning before the implementer,
+// or out of the workflow - has no pull request work to merge forward and is asked for none. A hold
+// counts as standing in the phase it is held from (record.StandsAt). Where the merge comes next
+// before merging - retro, or accepting where no step of the task follows the acceptance
+// (MergeComesNext) - nothing is asked (ConflictNeedsMerge): the merger merges the base forward once
+// the issue reaches merging (cybermonklabs/legion#4979), and an ask made before stands there until
+// it lands.
+func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
+	at := record.StandsAt(issue)
+	implementing, here := -1, -1
+	for i, p := range line {
+		switch p {
+		case phase.Implementing:
+			implementing = i
+		case at:
+			here = i
+		}
+	}
+	return at == phase.Implementing && implementing >= 0 || implementing >= 0 && here > implementing
+}
+
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
 // request (workflow's askMergeStateFor, which queues the ladder behind daemon's readMergeState):
-// whether a fact of kind fact asks for it. Each of two reasons asks, and one is enough:
+// whether a fact of kind fact asks for it, for an issue whose task walks line. Each of two reasons
+// asks, and one is enough:
 //
-//   - The fact moves the head, and the issue stands in a phase a merge forward is asked in,
-//     implementing through merging (record.MergeForwardPhases, dispatch://INFRA-4374 R0). GitHub
-//     runs no checks on a head that conflicts with its base, so without a read a conflicting push
-//     stands with no CI and nobody is told; the read that finds the head CONFLICTING is the first
-//     of the two reads that confirm a conflict (R2).
-//   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
-//     or merging. GitHub sends no event of the pull request while it computes whether the head
+//   - The fact moves the head, and a merge forward stands where the issue stands
+//     (MergeForwardStands, dispatch://INFRA-4374 R0): implementing, or a phase after it on the
+//     task's line. GitHub runs no checks on a head that conflicts with its base, so without a read
+//     a conflicting push stands with no CI and nobody is told; the read that finds the head
+//     CONFLICTING is the first of the two reads that confirm a conflict (R2).
+//   - The fact is a push to the base, and the issue stands in a phase after implementing on the
+//     task's line. GitHub sends no event of the pull request while it computes whether the head
 //     still merges into the moved base. In merging the merge is next (record.ConflictMergeNext),
-//     so a conflict there is acted on at once (R0); in accepting and retro it is recorded for the
-//     move into merging (cybermonklabs/legion#4979). In testing and reviewing the record otherwise
-//     keeps the state the read before the push left: a record read
+//     so a conflict there is acted on at once (R0). Where the merge comes next before merging
+//     (MergeComesNext: retro, or accepting where no step of the task follows the acceptance) it
+//     is recorded for the move into merging (cybermonklabs/legion#4979). Elsewhere, without a
+//     read, the record would keep the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
 //     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
 //     before it: there the head the implementer pushes next is read, by the reason above.
@@ -1252,29 +1283,33 @@ const (
 // or a head whose first conflicting read waits for its second (workflow's reviewRound,
 // round.waitsOnMergeState). Only the engine works out the round, so askMergeStateFor adds that
 // reason, and works the round out only for a fact the gate owes no read for.
-func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
+func MergeStateReadOwed(issue record.Issue, line []phase.Phase, fact MergeStateFact) bool {
 	switch fact {
 	case MergeStateFactHeadMove:
-		return record.StandsIn(issue, record.MergeForwardPhases...)
+		return MergeForwardStands(issue, line)
 	case MergeStateFactBasePush:
-		return record.StandsIn(issue, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging)
+		return MergeForwardStands(issue, line) && record.StandsAt(issue) != phase.Implementing
 	}
 	return false
 }
 
 // ConflictNeedsMerge is R0's decision on a confirmed conflict (dispatch://INFRA-4374 R0): why the
 // head that conflicts with its base must be merged forward now, or "" when nothing needs that yet,
-// and the conflict is recorded and nothing else is done. The reasons are read in this order, and
-// the first that holds is the answer:
+// and the conflict is recorded and nothing else is done. line is the phases the issue's task walks
+// (the workflow's Walk.Line: one for each step, then retro and merging). The reasons are read in
+// this order, and the first that holds is the answer:
 //
 //   - record.ConflictMergeNext: the issue stands in merging, or is held from it. The merge is the
 //     merger's next step, GitHub merges no head that conflicts with its base, and the merger merges
 //     the base forward itself (record.MergeForwardAsker, cybermonklabs/legion#4979).
-//   - "": the issue stands in accepting or retro, or is held from one of them. The work is
-//     reviewed and the merge comes next, so the conflict waits for merging, where the merger
+//   - "": the merge comes next for the issue before merging (MergeComesNext): it stands in retro,
+//     or in accepting where no step of its task follows the acceptance, or is held from one of
+//     them. Every step of the task has run, so the conflict waits for merging, where the merger
 //     resolves it (workflow's mergeForwardOnEntry), rather than going back to the implementer
 //     (cybermonklabs/legion#4979). Neither the architect's acceptance nor retro needs a head that
-//     merges, so nothing there waits on the merge forward.
+//     merges, so nothing there waits on the merge forward. In accepting where a tester or a
+//     reviewer step follows the acceptance, the reasons below decide, as in testing and
+//     reviewing: that step still needs a head the base's checks run on.
 //   - record.ConflictRulesUnread: the daemon could not read the base's rules (rules nil, or
 //     rules.Unread set). It cannot tell whether every check the base requires passed, so it acts
 //     at once, which is never later than a daemon that acted on every conflicting read. GitHub's
@@ -1291,17 +1326,17 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 //     once rather than wait for it.
 //
 // Otherwise every check the base requires is green on the head and no rule requires the head to
-// be current: the tester and the reviewer go on at that head, and the merge forward waits for the
-// step that needs it, the issue's move into merging, where record.ConflictMergeNext holds.
+// be current: the step the issue stands at goes on at that head, and the merge forward waits for
+// the step that needs it, the issue's move into merging, where record.ConflictMergeNext holds.
 //
 // It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
 // and any reader of the record decide alike. green is the caller's, so the engine, which logs the
 // contexts green on the head when nothing needs a merge yet, reads them once.
-func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []string) record.ConflictWhy {
+func ConflictNeedsMerge(issue record.Issue, line []phase.Phase, rules *record.BaseRules, green []string) record.ConflictWhy {
 	switch {
 	case record.StandsIn(issue, phase.Merging):
 		return record.ConflictMergeNext
-	case record.PastReview(issue):
+	case MergeComesNext(issue, line):
 		return ""
 	case rules == nil || rules.Unread != "":
 		return record.ConflictRulesUnread
@@ -1314,6 +1349,29 @@ func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []str
 		}
 	}
 	return ""
+}
+
+// MergeComesNext says whether the merge is the next step for issue, whose task walks line (one
+// phase for each step, then retro and merging): the issue stands in its retro or its merge, or in
+// accepting where no step of the task follows the acceptance, or is held from one of them
+// merges. In the default steps these are accepting, retro and merging. In merging the merger
+// merges the base forward itself, and before it the conflict waits for merging
+// (ConflictNeedsMerge, cybermonklabs/legion#4979). Where a step of the task follows the
+// acceptance, that step runs at the head before the merge, as a tester or a reviewer does after
+// the implementer. A line that holds no acceptance has no acceptance a step follows, so it answers
+// false in accepting.
+func MergeComesNext(issue record.Issue, line []phase.Phase) bool {
+	switch record.StandsAt(issue) {
+	case phase.Retro, phase.Merging:
+		return true
+	case phase.Accepting:
+		for at, p := range line {
+			if p == phase.Accepting {
+				return at+1 < len(line) && line[at+1] == phase.Retro
+			}
+		}
+	}
+	return false
 }
 
 // GreenContexts is every context green on the pull request's current head, each once and sorted:
@@ -1358,8 +1416,9 @@ func GreenContexts(pr record.PullRequest) []string {
 // (record.PullRequest.ConflictingHead, which only the second CONFLICTING read of that head writes,
 // workflow's mergeability), whatever fact is making the move. The exemption keys on that mark
 // rather than on the cause, because every way back out of a conflicting head is the same round of
-// work - a reviewer's request for changes, a worker's backward move, a tester's fail - and the
-// implementer answers each of them with the one forward merge the conflict needs. That merge moves
+// work - a reviewer's request for changes, a tester's fail, a worker's backward move to any
+// earlier step of its task - and what the conflict needs is the one forward merge, which the
+// implementer makes. That merge moves
 // the recorded head, the mark no longer equals it, and the next rejection counts, which is how the
 // exemption ends without a write of its own. The same mark is what says a head needs merging
 // forward before it can merge at all: an approval of it ends its review round (workflow's

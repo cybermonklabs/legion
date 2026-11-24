@@ -428,8 +428,10 @@ TRANSIENT_RETRY_SECONDS=5
 
 utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-# now: the epoch second check_dispatch_identity reads its bound by. cluster.test.sh replaces it
-# with a clock that its fake sleep moves, so the check's 120 s bound costs a test no real second.
+# now: the epoch second check_dispatch_identity reads its bound by, and heartbeat_age a lock's age
+# by. cluster.test.sh replaces it with a clock that its fake sleep moves, so the check's 120 s
+# bound costs a test no real second, and an age the test asserts is the age it wrote the lock at,
+# however long a loaded machine took between that write and this read.
 now() { printf %s "$EPOCHSECONDS"; }
 
 # kube ARGS: kubectl in the copy's namespace, bounded by timeout (never --request-timeout, which
@@ -751,7 +753,7 @@ pg_tier() {
 # pass any-run, so that a --run of theirs neither compares nor reads the lock: collect, which
 # only reads the run's directory on this pod (cmd_collect, collect_run), and the daemons, whose
 # parent came through here already -- a lock read of theirs would be an API call with no retry
-# before they write the pidfile that start_daemon waits 5 s for, and a lock that names another
+# before they write the pidfile that start_daemon waits for, and a lock that names another
 # run ends the heartbeat at its patch's test op and the sampler with it. Then the run's directory
 # and state.json, which must name NS and, when it records one, this PID namespace
 # (pid_ns_check); then this command is registered as one that holds the run alive.
@@ -1023,7 +1025,7 @@ heartbeat_age() {
     echo unknown
     return
   }
-  echo $(($(date -u +%s) - t))
+  echo $(($(now) - t))
 }
 
 # refuse_lock JSON: exit 2, naming the lock's holder and its heartbeat's age; past 15 min it is
@@ -1066,15 +1068,37 @@ kube_lock_take() {
 # ---- background daemons -------------------------------------------------------------------------------
 
 # start_daemon NAME: `cluster.sh _NAME` in a session of its own, so it outlives this command and
-# down stops it with its children by its process group. It writes its pidfile itself.
+# down stops it with its children by its process group. It writes its pidfile itself, and this
+# waits for whichever comes first, that pidfile or the daemon's end, with no count of naps: a
+# daemon a loaded machine is slow to start is still starting, not failed. setsid runs the daemon
+# in place, since this shell's background job leads no process group of its own, so $! is the
+# daemon itself; a daemon that has ended is gone or a zombie (pid_running). Job control is off for
+# the start (set +m, undone at return by local -): with it on, as SHELLOPTS=monitor or a sourcing
+# interactive shell gives it, the job would lead its own group, setsid would fork, and $! would be
+# a launcher that exits at once while its daemon lives on.
 start_daemon() {
-  local name=$1 i
+  local name=$1 daemon
+  local -
+  set +m
   setsid bash "$SELF" "_$name" --namespace "$NS" --run "$RUN" >>"$RUN_DIR/logs/$name.log" 2>&1 </dev/null &
-  for ((i = 0; i < 50; i++)); do
-    daemon_alive "$name" && return 0
+  daemon=$!
+  until daemon_alive "$name"; do
+    pid_running "$daemon" || {
+      daemon_alive "$name" && return 0
+      die "the $name daemon ended before this command saw its pidfile name it running; see $RUN_DIR/logs/$name.log"
+    }
     sleep 0.1
   done
-  die "the $name daemon did not start; see $RUN_DIR/logs/$name.log"
+}
+
+# pid_running PID: PID is a process that has not ended. A child that has ended stays a zombie,
+# which kill -0 still finds, until this shell reaps it. The 2>/dev/null comes before the read's
+# input, so bash's own message for a /proc/PID that is gone is silenced too.
+pid_running() {
+  local stat
+  read -r stat 2>/dev/null <"/proc/$1/stat" || return 1
+  stat=${stat##*) }
+  [ "${stat%% *}" != Z ]
 }
 
 # daemon_alive NAME: NAME's pidfile names a live `cluster.sh _NAME` of this run.

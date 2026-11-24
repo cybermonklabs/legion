@@ -486,6 +486,30 @@ describe("replies", () => {
     expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 0 });
   });
 
+  // A frame whose JSON spells half a surrogate pair alone made the card's TOON encoder throw, in
+  // the host's render and in the give-up's alike, so the frame went back to the stream on every
+  // delivery and nobody was ever told of it. The renderer reads the half as U+FFFD
+  // (`parseFrameJSON`), so a host that renders the frame as every host does takes it at once.
+  test("a frame whose text spells half a surrogate pair is taken, not sent again for ever", async () => {
+    const { delivery, replies, state, settled } = setup();
+    state.deliver = (frame) => {
+      renderInbound(frame.data, SESSION, frame.subject);
+      frame.done();
+    };
+    const payload = String.raw`{"event_id":"evt-1","source":"agent","payload":"\ud800"}`;
+    const answers: Array<RelayReply | undefined> = [];
+
+    for (const delivered of [1, 2, 3, 4]) {
+      const reply = `_INBOX.half-${delivered}`;
+      delivery.receive(relay({ seq: 1, delivered, reply, payload }));
+      await settled();
+      answers.push(repliesTo(replies, reply).at(-1));
+      if (answers.at(-1) === "done") break;
+    }
+
+    expect(answers).toEqual(["done"]);
+  });
+
   // A ledger of this repository never rejects, and a host may pass one of its own: a notice this
   // client cannot get an answer out of is no proof that anybody was told, so the frame stays.
   test("a give-up whose ledger rejects goes back to the stream", async () => {
@@ -599,6 +623,42 @@ describe("replies", () => {
     expect(Buffer.byteLength(shown[0] ?? "")).toBeLessThanOrEqual(INBOUND_CARD_MAX_BYTES);
     const card = decode(shown[0] ?? "") as { envoy: { id: string; message: unknown } };
     expect(card.envoy).toMatchObject({ id: "evt-wide", message: arrays });
+  });
+
+  // The two fixes meet here. The card cannot lay out a payload nested 9,999 deep, so it shows the
+  // payload as the text its sender sent; that text held half a surrogate pair alone, on which the
+  // encoder throws as well, so the text fallback itself threw and the frame went back to the
+  // stream for ever. The renderer reads the frame's text with each lone half as U+FFFD
+  // (`parseFrameJSON`), so the text the fallback shows encodes and the frame is taken.
+  test("a frame whose payload is nested 9,999 deep and holds half a surrogate pair alone is taken, shown as its text", async () => {
+    const { delivery, logs, replies, state, settled } = setup();
+    const shown: string[] = [];
+    state.deliver = (frame) => {
+      shown.push(renderInbound(frame.data, SESSION, frame.subject).content);
+      frame.done();
+    };
+    const nested = `${'{"a":'.repeat(9_999)}"\ud800"${"}".repeat(9_999)}`;
+    const payload = JSON.stringify({ event_id: "evt-deep-half", source: "agent", payload: nested });
+    const answers: Array<RelayReply | undefined> = [];
+
+    for (const delivered of [1, 2, 3, 4, 5, 6]) {
+      const reply = `_INBOX.deep-half-${delivered}`;
+      delivery.receive(relay({ seq: 1, delivered, reply, payload }));
+      await settled();
+      answers.push(repliesTo(replies, reply).at(-1));
+      if (answers.at(-1) === "done") break;
+    }
+
+    expect({ answers, logs, shown: shown.length }).toEqual({
+      answers: ["done"],
+      logs: [],
+      shown: 1,
+    });
+    const card = decode(shown[0] ?? "") as { envoy: { id: string; message: unknown } };
+    expect(card.envoy).toMatchObject({
+      id: "evt-deep-half",
+      message: nested.replace("\ud800", "\ufffd"),
+    });
   });
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {

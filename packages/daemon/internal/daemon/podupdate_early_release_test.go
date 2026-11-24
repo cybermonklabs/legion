@@ -24,6 +24,7 @@ import (
 // starts: the round then waits for an answer nobody is asked for again, the pod waits to the
 // bound, and the replacement here comes at the bound rather than before it.
 func TestPodUpdateEarlyReleaseAnAnswerStandsThroughATurnTheDaemonDidNotPrompt(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	clocks := rig.replacementClocks()
@@ -75,6 +76,7 @@ func TestPodUpdateEarlyReleaseAnAnswerStandsThroughATurnTheDaemonDidNotPrompt(t 
 // The negative control is the hold dropped: the task is then prompted into the worker at once,
 // and the first assertion fails.
 func TestPodUpdateEarlyReleaseAnAnsweredClaimIsHandedNoTaskUntilTheRoundEnds(t *testing.T) {
+	t.Parallel()
 	const task = "review the pull request"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -119,6 +121,7 @@ func TestPodUpdateEarlyReleaseAnAnsweredClaimIsHandedNoTaskUntilTheRoundEnds(t *
 // where one says nothing, the pod waits for it a minute before the bound and is replaced at the
 // bound.
 func TestPodUpdateEarlyReleaseAnAnswerReleasesTheRoundAndSilenceDelaysNothingPastTheBound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		answers []claim.Role

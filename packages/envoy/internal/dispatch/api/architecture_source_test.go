@@ -389,6 +389,7 @@ func sourceEvents(t *testing.T, database *store.Store) []string {
 // A project lists its sources in the order it added them; saving a repository it already has
 // changes that source's branch in place.
 func TestArchitectureSourcesListAddAndChangeBranch(t *testing.T) {
+	t.Parallel()
 	fake := twoSourceFake()
 	fake.installations["legion/arch"] = "write"
 	handler, database := newArchitectureSourceServer(t, fake)
@@ -478,6 +479,7 @@ func TestArchitectureSourcesListAddAndChangeBranch(t *testing.T) {
 // repository that only begins like the old name is saved as given. A sync and a removal under the
 // old name reach the source under the new name.
 func TestAnArchitectureSourceUnderARenamedNameIsSavedUnderItsNewName(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"cybermonklabs/legion": "read", "sjawhar/legion-smoke": "read"},
 		repos: map[string]*fakeArchitectureRepo{
@@ -530,6 +532,7 @@ func TestAnArchitectureSourceUnderARenamedNameIsSavedUnderItsNewName(t *testing.
 // edges stay, and an issue attached to one of each keeps the removed one as unknown. The times
 // recorded for the removed components (component_facts) go with them; the other source's stay.
 func TestArchitectureSourceDeleteRemovesOnlyItsComponents(t *testing.T) {
+	t.Parallel()
 	handler, database := newArchitectureSourceServer(t, twoSourceFake())
 	createTestProject(t, handler, "CORE")
 	putSource(t, handler, "CORE", "legion/arch", "main")
@@ -607,6 +610,7 @@ func TestArchitectureSourceDeleteRemovesOnlyItsComponents(t *testing.T) {
 // Every source route is authAny: an agent session lists, saves, refreshes and removes sources,
 // and a bearer save or removal is attributed to the session its body names.
 func TestAgentUsesEveryArchitectureSourceRoute(t *testing.T) {
+	t.Parallel()
 	handler, database := newArchitectureSourceServer(t, twoSourceFake())
 	createTestProject(t, handler, "CORE")
 	session := func(id string) map[string]string { return map[string]string{"kind": "session", "id": id} }
@@ -673,6 +677,7 @@ func TestAgentUsesEveryArchitectureSourceRoute(t *testing.T) {
 }
 
 func TestArchitectureSourceAccessFailuresAnswer409(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{installations: map[string]string{"legion/noread": "none"}}
 	handler, database := newArchitectureSourceServer(t, fake)
 	createTestProject(t, handler, "CORE")
@@ -699,6 +704,7 @@ func TestArchitectureSourceAccessFailuresAnswer409(t *testing.T) {
 }
 
 func TestArchitectureSourceWithoutAppKeyAnswers409(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	createTestProject(t, handler, "CORE")
 	response := dispatchRequest(t, handler, http.MethodPut, sourcePath("CORE", "legion/arch"), map[string]string{"branch": "main"}, "alice")
@@ -709,6 +715,7 @@ func TestArchitectureSourceWithoutAppKeyAnswers409(t *testing.T) {
 }
 
 func TestArchitectureSourceInputValidation(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read", "mona-cat_octo/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"mona-cat_octo/arch": {commit: shaArch, files: archFiles()}},
@@ -781,6 +788,7 @@ func TestArchitectureSourceInputValidation(t *testing.T) {
 }
 
 func TestArchitectureSourceRePutRevalidatesBeforeWriting(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "write"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles()}},
@@ -806,6 +814,7 @@ func TestArchitectureSourceRePutRevalidatesBeforeWriting(t *testing.T) {
 // A branch the repository does not have is refused before any write, as the sync would refuse it:
 // 409 SOURCE_ACCESS naming the branch and the repository, and no source row or event.
 func TestArchitectureSourcePutRefusesAMissingBranch(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles(), branchMissing: true}},
@@ -831,6 +840,7 @@ func TestArchitectureSourcePutRefusesAMissingBranch(t *testing.T) {
 // Re-pointing a source at a branch the repository does not have is refused the same way, and the
 // stored source keeps its branch, its sync bookkeeping and its components.
 func TestArchitectureSourceRePutRefusesAMissingBranch(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles()}},
@@ -870,6 +880,7 @@ func TestArchitectureSourceRePutRefusesAMissingBranch(t *testing.T) {
 // repository, with no source row and no event; and re-pointing a saved source at one leaves the
 // source on its branch.
 func TestArchitectureSourcePutRefusesACommitThatIsNoBranch(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles()}},
@@ -921,6 +932,7 @@ func TestArchitectureSourcePutRefusesACommitThatIsNoBranch(t *testing.T) {
 // on the row, because the HTTP call itself succeeded and the previous projection stays up; a
 // credential or branch problem is 409. It imports its own source only.
 func TestArchitectureSourceSyncRoute(t *testing.T) {
+	t.Parallel()
 	fake := twoSourceFake()
 	handler, database := newArchitectureSourceServer(t, fake)
 	createTestProject(t, handler, "CORE")
@@ -1021,6 +1033,7 @@ func TestArchitectureSourceSyncRoute(t *testing.T) {
 // row with its own outcome: one source's model error or access failure is on that row, and the
 // other source still imports.
 func TestArchitectureSourcesSyncEverySource(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	for _, target := range []string{"/api/v1/projects/CORE/architecture-sources/sync", "/api/v1/projects/NOPE/architecture-sources/sync"} {
@@ -1102,6 +1115,7 @@ func TestArchitectureSourcesSyncEverySource(t *testing.T) {
 // the next sync records a snapshot for the new branch's commit rather than
 // taking the unchanged-tree short-circuit against the old branch's import.
 func TestArchitectureSourceRePutReprojectsAnIdenticalTree(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"legion/arch": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"legion/arch": {commit: shaOne, files: archFiles()}},

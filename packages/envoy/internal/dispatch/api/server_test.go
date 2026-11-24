@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"maps"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +44,30 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// apiTestParallelism is how many of this package's tests run at once when the command line names
+// no -parallel. Every test of the package calls t.Parallel but those that change or measure
+// something the whole process shares (the default logger, the environment, a package variable,
+// heap statistics), which stay serial and run before the rest. Alone, a test spends most of its
+// time waiting on Postgres, not on a core, so go test's default of GOMAXPROCS (four on CI's arm
+// runner) leaves the runner idle, and on a dev box with hundreds of cores it would open more
+// connections than the test server allows: each test has a database and pools of its own
+// (storetest.Open), and testlimits.ServerConnections sizes the server for a few at once.
+//
+// Eight, not sixteen: at sixteen on the 4-vCPU race runner, each of three runs failed a different
+// test that holds a wall-clock bound (a 500 ms answer, a cold document read answering 503, a
+// meaning search's candidates), with no data race and the service at 159 of its 483 connections
+// (envoy-go-race-api jobs 137359069610, 137391716843 and 137399725401). The cores, not the
+// connections, were what ran out.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const apiTestParallelism = 8
+
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Main(m))
+}
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
 func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
@@ -52,6 +77,34 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 		t.Fatalf("ParseSharedAgentTokens(%q): %v", setting, err)
 	}
 	return tokens
+}
+
+// withDocumentService is input with a document service of the test's own, for a test that needs
+// none of its own making: one over the input's store, event broker, identity and server URL,
+// shut down once the test ends, after every cleanup registered later (a server's wait among
+// them). An input with no broker gets one, which the API and the service then share.
+func withDocumentService(t testing.TB, input DepsInput) DepsInput {
+	t.Helper()
+	if input.Events == nil {
+		input.Events = events.NewBroker()
+	}
+	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, ServerURL: input.ServerURL})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
+	input.Docs = documents
+	return input
+}
+
+// NewDeps builds no document service of its own: a service it built would have no holder to shut
+// it down, and its compaction worker would outlive every server it served. An input with none is
+// refused, naming the field.
+func TestNewDepsRefusesAnInputWithNoDocumentService(t *testing.T) {
+	if _, err := NewDeps(DepsInput{}); err == nil || !strings.Contains(err.Error(), "Docs is required") {
+		t.Fatalf("an input with no document service = %v, want it refused naming Docs", err)
+	}
 }
 
 // testServerOptions configure the server an API test drives.
@@ -170,6 +223,10 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
+	// list asks the listener and stores no copy, as the browser suite's server runs
+	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
+	listenerRosterUncached bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -319,21 +376,22 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter:     horizontest.StallWarning,
-		HorizonWarnEvery:      horizontest.StallWarning,
-		OIDC:                  options.oidc,
-		BrokerTokens:          brokerTokens,
-		AgentSecretsURL:       options.agentSecretsURL,
-		AgentSecretsTokenFile: agentSecretsTokenFile,
-		AgentStream:           options.agentStream,
-		AgentPublisher:        agentPublisher,
-		Embedder:              options.embedder,
-		Answerer:              options.answerer,
-		Files:                 options.files,
-		DashboardEntry:        options.dashboardEntry,
-		BuildCommit:           options.buildCommit,
-		OutboxPublishes:       options.outboxPublishes,
-		Metrics:               options.metrics,
+		HorizonStallAfter:      horizontest.StallWarning,
+		HorizonWarnEvery:       horizontest.StallWarning,
+		OIDC:                   options.oidc,
+		BrokerTokens:           brokerTokens,
+		AgentSecretsURL:        options.agentSecretsURL,
+		AgentSecretsTokenFile:  agentSecretsTokenFile,
+		AgentStream:            options.agentStream,
+		AgentPublisher:         agentPublisher,
+		Embedder:               options.embedder,
+		Answerer:               options.answerer,
+		Files:                  options.files,
+		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
+		OutboxPublishes:        options.outboxPublishes,
+		Metrics:                options.metrics,
+		ListenerRosterUncached: options.listenerRosterUncached,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -648,6 +706,7 @@ func assertRefusalMessage(t *testing.T, request string, response *httptest.Respo
 }
 
 func TestCreateProjectIssueAndReadPrimaryDocument(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -691,6 +750,7 @@ func TestCreateProjectIssueAndReadPrimaryDocument(t *testing.T) {
 }
 
 func TestCreateIssueWithMissingOrBlankSpecGetsAnEmptyPrimaryDocument(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -738,6 +798,7 @@ func TestCreateIssueWithMissingOrBlankSpecGetsAnEmptyPrimaryDocument(t *testing.
 }
 
 func TestCreateIssueRejectsSpecOutsideProofSchema(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -758,6 +819,7 @@ func TestCreateIssueRejectsSpecOutsideProofSchema(t *testing.T) {
 // stored as reads back as written and the create is refused, naming the line as written
 // (pmdoc's htmlFlowRefusal).
 func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -785,6 +847,7 @@ func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
 }
 
 func TestDocumentTextReportsUnavailableService(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
@@ -850,6 +913,7 @@ func (failingLoadStore) LoadDocument(context.Context, string) (docs.LoadedDocume
 }
 
 func TestDocumentEditRejectsInvalidOperationField(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -875,6 +939,7 @@ func TestDocumentEditRejectsInvalidOperationField(t *testing.T) {
 }
 
 func TestEventNotifyRules(t *testing.T) {
+	t.Parallel()
 	broker := events.NewBroker()
 	user := model.Actor{Kind: "user", ID: "alice"}
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -914,6 +979,7 @@ func TestEventNotifyRules(t *testing.T) {
 }
 
 func TestExternalIssueResolutionAndAutoCreation(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -953,6 +1019,7 @@ func TestExternalIssueResolutionAndAutoCreation(t *testing.T) {
 }
 
 func TestExternalIssueReferenceResolvesBothGitHubURLShapes(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1020,6 +1087,7 @@ func TestExternalIssueReferenceResolvesBothGitHubURLShapes(t *testing.T) {
 }
 
 func TestExternalIssueCreationReusesPullRequestLink(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1062,6 +1130,7 @@ func TestExternalIssueCreationReusesPullRequestLink(t *testing.T) {
 // An import names its project: a create that names external and no project, or an empty one,
 // is refused naming project, and stores no issue and no link.
 func TestExternalIssueRejectsAMissingProject(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1093,6 +1162,7 @@ func TestExternalIssueRejectsAMissingProject(t *testing.T) {
 // An external ref already linked to an issue of one project is not imported into another: the
 // refusal names both projects and no repository setting.
 func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", project, "alice"); response.Code != http.StatusCreated {
@@ -1125,6 +1195,7 @@ func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
 }
 
 func TestArtifactVersions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1205,6 +1276,7 @@ func agentRequest(t *testing.T, handler http.Handler, method, target string, bod
 }
 
 func TestIssueRouteVersionEventsAndChildStatus(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1301,6 +1373,7 @@ func TestIssueRouteVersionEventsAndChildStatus(t *testing.T) {
 }
 
 func TestListIssueEventsSupportsNewestCursorAndIDLookup(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1406,6 +1479,7 @@ func TestListIssueEventsSupportsNewestCursorAndIDLookup(t *testing.T) {
 }
 
 func TestActorAuthenticationRules(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	unauthenticated := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1434,6 +1508,7 @@ func TestActorAuthenticationRules(t *testing.T) {
 }
 
 func TestBearerReadRoutesDoNotRequireActor(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1504,6 +1579,7 @@ func TestBearerReadRoutesDoNotRequireActor(t *testing.T) {
 }
 
 func TestPerUserIssueStateIsIsolated(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1540,6 +1616,7 @@ func TestPerUserIssueStateIsIsolated(t *testing.T) {
 }
 
 func TestUserIssueStateSequenceRejectsStaleWrites(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1589,6 +1666,7 @@ func TestUserIssueStateSequenceRejectsStaleWrites(t *testing.T) {
 }
 
 func TestMessageMutationAppendsAndPublishesEvent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1617,6 +1695,7 @@ func TestMessageMutationAppendsAndPublishesEvent(t *testing.T) {
 }
 
 func TestResolveIssueRejectsMalformedNativeKey(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=TEST-not-a-number", nil, "alice")
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_ISSUE_REF"`) {
@@ -1625,6 +1704,7 @@ func TestResolveIssueRejectsMalformedNativeKey(t *testing.T) {
 }
 
 func TestArtifactUploadRecognizesParameterizedMarkdown(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1657,6 +1737,7 @@ func TestArtifactUploadRecognizesParameterizedMarkdown(t *testing.T) {
 }
 
 func TestArtifactSlugsIncludeExtensions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1700,6 +1781,7 @@ func TestArtifactSlugsIncludeExtensions(t *testing.T) {
 }
 
 func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1758,6 +1840,7 @@ func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
 }
 
 func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
+	t.Parallel()
 	// The seeded specs' settlement would lock the child row this test holds; keep it
 	// out of the lock queue so only the two status patches are counted as waiters.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -1843,6 +1926,7 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 }
 
 func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1906,6 +1990,7 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 }
 
 func TestIssueExternalLinksRequireAbsoluteHTTPURLs(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1938,6 +2023,7 @@ func TestIssueExternalLinksRequireAbsoluteHTTPURLs(t *testing.T) {
 }
 
 func TestDocumentUploadIndexesDispatchReferences(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1977,6 +2063,7 @@ func TestDocumentUploadIndexesDispatchReferences(t *testing.T) {
 }
 
 func TestIssueDocumentCreationIndexesDispatchReferences(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -2075,6 +2162,7 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 }
 
 func TestRevokedCookieIsRejectedAcrossDispatchSurfaces(t *testing.T) {
+	t.Parallel()
 	handler, sessions, cookie, request := newCookieServer(t)
 	if response := request(http.MethodPost, "/api/v1/projects", map[string]string{"key": "TEST", "name": "Test"}); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
@@ -2114,6 +2202,7 @@ func TestRevokedCookieIsRejectedAcrossDispatchSurfaces(t *testing.T) {
 // same room admits the cookie. A bearer once named its own session in a header the socket read,
 // which made it a second, weaker door into Dispatch.
 func TestTheDocumentSocketTakesACookieAndNotTheSharedAgentToken(t *testing.T) {
+	t.Parallel()
 	handler, _, cookie, request := newCookieServer(t)
 	if response := request(http.MethodPost, "/api/v1/projects", map[string]string{"key": "TEST", "name": "Test"}); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
@@ -2160,6 +2249,7 @@ func TestTheDocumentSocketTakesACookieAndNotTheSharedAgentToken(t *testing.T) {
 }
 
 func TestArtifactUploadSummaryCreatesNamedVersions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Named uploads", "before")
 	for _, test := range []struct {
@@ -2189,6 +2279,7 @@ func TestArtifactUploadSummaryCreatesNamedVersions(t *testing.T) {
 }
 
 func TestQuiesceDocumentsHookIsGatedByTestHooksEnabled(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/_test/quiesce", nil, "alice")
 	if response.Code != http.StatusNotFound {
@@ -2197,6 +2288,7 @@ func TestQuiesceDocumentsHookIsGatedByTestHooksEnabled(t *testing.T) {
 }
 
 func TestJSONMutationsRequireApplicationJSON(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	body := `{"key":"TEST","name":"Test project"}`
 
@@ -2220,6 +2312,7 @@ func TestJSONMutationsRequireApplicationJSON(t *testing.T) {
 }
 
 func TestUnauthenticatedLargeIssueBodyIsRejectedBeforeDecoding(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues", strings.NewReader(strings.Repeat(" ", 8<<20)))
 	request.Header.Set("Content-Type", "application/json")

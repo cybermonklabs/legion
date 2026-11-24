@@ -192,9 +192,17 @@
       "types": "./test/fake-dispatch.ts",
       "bun": "./test/fake-dispatch.ts"
     },
+    "./test/nats-server": {
+      "types": "./test/nats-server.ts",
+      "bun": "./test/nats-server.ts"
+    },
     "./test/relay-socket-stand-in": {
       "types": "./test/relay-socket-stand-in.ts",
       "bun": "./test/relay-socket-stand-in.ts"
+    },
+    "./test/replay-grant-scenario": {
+      "types": "./test/replay-grant-scenario.ts",
+      "bun": "./test/replay-grant-scenario.ts"
     },
     "./test/stall-proxy": {
       "types": "./test/stall-proxy.ts",

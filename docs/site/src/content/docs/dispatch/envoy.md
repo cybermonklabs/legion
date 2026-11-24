@@ -75,9 +75,9 @@ start-up log.
 A Slack app sends its events to the listener's public route `/webhook/slack`, which the listener
 mounts when `ENVOY_WEBHOOKS` lists `slack`. Set the app's Event Subscriptions request URL to it, for
 example `https://envoy.internal.example/webhook/slack`, and subscribe it to the `app_mention` bot
-event (its `app_mentions:read` scope). The listener answers Slack's `url_verification` challenge,
-and checks every other delivery's signature against `ENVOY_SLACK_SIGNING_SECRET`, the app's
-signing secret, answering `401` to one that does not match. The repository's
+event (its `app_mentions:read` scope). The listener checks every delivery's signature against
+`ENVOY_SLACK_SIGNING_SECRET`, the app's signing secret, before it reads the delivery as JSON,
+Slack's `url_verification` challenge included, and answers `401` to one that does not match. The repository's
 `deploy/slack/legion-app-manifest.yaml` creates such an app: the `app_mentions:read`,
 `chat:write`, `channels:history` and `groups:history` bot scopes and the `app_mention` bot event.
 
@@ -492,11 +492,14 @@ When `envoy-infra:gcp:NatsHub` renders this user, set its `daemon` field to `tru
 
 The last row is the subject a consumer acknowledges a message on. Replies to the API requests come
 back on `_INBOX.>`. The stored-message get (`STREAM.MSG.GET`) is how `legion state` reads each
-consumer's oldest waiting message, whose time is the consumer's lag; it only reads, one message at
-a time. A daemon whose user lacks it still runs. NATS does not answer a request it refuses, so the
-daemon's state shows each consumer with messages waiting as `unavailable: read the oldest waiting
-message: context deadline exceeded`, its waiting count still shown and the other consumers
-unchanged, and the daemon's log names the refused subject.
+consumer's oldest waiting message, whose time is the consumer's lag, and how the daemon confirms
+its Dispatch consumer has nothing waiting before admission releases the roots it held for that
+consumer to catch up; it only reads, one message at a time. A daemon whose user lacks it still
+runs. NATS does not answer a request it refuses, so the daemon's state shows each consumer with
+messages waiting as `unavailable: read the oldest waiting message: context deadline exceeded`, its
+waiting count still shown and the other consumers unchanged; a reconcile reads the Dispatch
+consumer as not idle and holds the roots its listing shows behind their log, the hold poller
+releases them on the consumer's own count, and the daemon's log names the refused subject.
 
 The consumer subjects end in `>`, so the grant reaches every consumer of `ENVOY_NOTIFICATIONS`,
 not just the daemon's three: a holder of the daemon's seed can read, recreate with another filter,
@@ -555,6 +558,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
+| `ENVOY_WEBHOOK_BODY_BUDGET` | The bytes of webhook body the listener holds at once across every webhook route; default 64 MiB. A delivery that finds no room within its route's short wait is answered `503` with `Retry-After: 1`. |
 
 A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN`, the OIDC pair or
 the Google pair, unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its

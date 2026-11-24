@@ -49,6 +49,7 @@ import (
 // (record.Store.EnqueueStart): the start then finishes without giving the worker anything,
 // which this test reads at the claim's pending task.
 func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
+	t.Parallel()
 	const firstTask, nextTask = "Implement the plan.", "Implement it again. Reason: the checks went red."
 	const firstEntry, nextEntry int64 = 1, 2
 	ctx := context.Background()

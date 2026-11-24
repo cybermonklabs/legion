@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // roleKeepWindow is a kept copy's hour: how old it may be, counted from the time the stream stored
@@ -576,8 +577,10 @@ func keptRoleCopyUntil(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // clock (cfg.now) against its store time (keptCopyEnded), the walk's own test of a copy it may
 // still forward (judgeKeptRoleCopy). A copy a walk has claimed is judged by the same two tests.
 // Every other copy has ended and reports false: one past its hour, one the cursor has moved past,
-// one the stream no longer holds at seq (the read answers another sequence, or none), and one no
-// read can decode, which no walk forwards. A read that did not answer is its error.
+// one the stream no longer holds at seq (the read answers another sequence, or none), and one whose
+// role no read can tell (readRoleFrame), which the walk ends. A copy is read field by field, as the
+// walk reads it (roleFrame.envelope), so a copy the walk forwards is held here too, an expects_reply
+// word this build does not know among it. A read that did not answer is its error.
 func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, seq uint64) (keptRoleCopy, bool, error) {
 	stored, err := cfg.client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
 	if errors.Is(err, nats.ErrMsgNotFound) {
@@ -592,10 +595,11 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 	if keptCopyEnded(cfg.now(), stored.Time) {
 		return keptRoleCopy{}, false, nil
 	}
-	var item contracts.Envelope
-	if err := json.Unmarshal(stored.Data, &item); err != nil {
+	frame, err := readRoleFrame(stored.Data)
+	if err != nil {
 		return keptRoleCopy{}, false, nil
 	}
+	item := frame.envelope()
 	cursor, err := cfg.client.ReadKeptRoleCursor(ctx, role)
 	if err != nil {
 		return keptRoleCopy{}, false, err
@@ -964,7 +968,7 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			return ended()
 		}
 		holderCtx, cancelHolder := context.WithTimeout(ctx, roleKeepHolderWindow)
-		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.registry, roleHolderSessions{cfg.sessions}, role)
+		resolved, holderErr := roles.ResolveHolder(holderCtx, leaderRoleClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
 		cancelHolder()
 		// The walk forwards to a live holder alone, and walks with no holder for every other
 		// resolution, one that did not answer included.
@@ -1340,19 +1344,35 @@ func roleKeepDrainHolds(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 	return claimed == holder, nil
 }
 
-// readRoleClaimHolder reads role's claim record from the role bucket through the role lane's own
-// claim read (roleLaneClaims.RoleClaim, within ctx and roleHolderReadTimeout, whichever ends
+// readRoleClaimHolder reads role's claim record from the role bucket stream's leader
+// (store.Registry.RoleClaimFromLeader, within ctx and roleHolderReadTimeout, whichever ends
 // first), and returns the session it names, empty for a role no record claims. It is the read the
-// kept lane makes of who holds a role outside a resolution - the handover's retry and the drain
-// hold - so each decides on the record, and none on the registry's watched copy of the bucket,
-// which can lack a claim the bucket holds or keep one the bucket dropped. Reading through
-// roleLaneClaims keeps the bound on a claim read in one place for both lanes.
+// session relay makes before it delivers a role message (takeOverFrame) and the read the kept lane
+// makes of who holds a role outside a resolution - the handover's retry and the drain hold - so
+// each decides on the record, and none on the registry's watched copy of the bucket, which can
+// lack a claim the bucket holds or keep one the bucket dropped. It is never a direct get: on a
+// replicated bucket a copy that has not applied a takeover answers the previous holder's claim,
+// and the relay would hand that holder a role message the new holder never receives.
 func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (string, error) {
-	claim, err := roleLaneClaims{cfg.registry}.RoleClaim(ctx, role)
+	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+	defer cancel()
+	claim, err := cfg.registry.RoleClaimFromLeader(readCtx, role)
 	if err != nil {
 		return "", err
 	}
 	return claim.HolderSessionID, nil
+}
+
+// leaderRoleClaims is the claim side (roles.ClaimStore) of the kept lane handover's resolution of
+// the role's holder: each claim read is the role bucket stream leader's
+// (store.Registry.RoleClaimFromLeader). On a replicated bucket a direct get can answer the claim
+// as it stood before a takeover; the handover would then walk the lane for the previous holder,
+// whose drain hold (roleKeepDrainHolds, a leader read) refuses every forward, and give the lane up
+// with the copy left on it until the next sweep, minutes later.
+type leaderRoleClaims struct{ registry *store.Registry }
+
+func (c leaderRoleClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
+	return c.registry.RoleClaimFromLeader(ctx, role)
 }
 
 // isOutboxCopy reports whether item is a copy Dispatch's outbox kept on a role's kept lane rather
@@ -1498,9 +1518,13 @@ type keptCopyVerdict struct {
 // (keptCopyClaimOf), for holder (empty for a walk with no live holder), before any cursor is
 // written for it, in this order:
 //
-//  1. A copy no read can decode reaches no holder however often it is read, so it is ended rather
-//     than every later walk stopping on it, logged with its stream sequence and counted
-//     (envoy_role_kept_undecodable_total).
+//  1. A copy whose role no read can tell (readRoleFrame, the read the session relay and a
+//     takeover pass make: not a JSON object, or a topic or role mark that is not a string and
+//     names no role) reaches no holder however often it is read, so it is ended rather than every
+//     later walk stopping on it, logged with its stream sequence and counted
+//     (envoy_role_kept_undecodable_total). Every other copy's envelope is read field by field
+//     (roleFrame.envelope), so a field the envelope's type for it does not take, or a value the
+//     wire rules or the envelope's own refuse, ends no copy.
 //  2. A copy under a delivery mode's dead-letter claim that this walk takes over
 //     (keptCopyModeClaimed) is a delivery mode drop whose dead letter was not confirmed, and it is
 //     owed that dead letter again, whatever its age now, whoever holds the role now and whether
@@ -1535,8 +1559,8 @@ type keptCopyVerdict struct {
 // it. Nor is a dead letter's claim on a copy owed no dead letter, which no walk writes. now is
 // called once per copy that decodes, whatever the verdict.
 func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, stored bus.StoredMessage, claim keptCopyClaim, now func() time.Time, seen func(key, recipient string) bool) keptCopyVerdict {
-	var item contracts.Envelope
-	if err := json.Unmarshal(stored.Data, &item); err != nil {
+	frame, err := readRoleFrame(stored.Data)
+	if err != nil {
 		return keptCopyVerdict{step: keptCopyEnd, report: func() {
 			cfg.roleKeptUndecodable.Inc()
 			cfg.logger.Error("listener kept role message cannot be decoded",
@@ -1545,6 +1569,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 				slog.String("error", err.Error()))
 		}}
 	}
+	item := frame.envelope()
 	at := now()
 	owed := !isOutboxCopy(item) && item.SourceSession != ""
 	// deadLetter is the verdict of a copy owed a dead letter for drop, with the report the copy

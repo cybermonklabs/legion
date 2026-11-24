@@ -223,7 +223,7 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	s.writeAnswer(w, r, AnswerFreshSession, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
 }
 
-// roleList names the roles a claim can be on, in the order the workflow reaches them.
+// roleList names the roles a claim can be on, in claim.Roles' order.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {

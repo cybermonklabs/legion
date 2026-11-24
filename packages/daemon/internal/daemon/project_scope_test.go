@@ -35,6 +35,7 @@ import (
 // Dispatch, and none of them ever gets a branch created on GitHub (refs/heads/legion/<key>) by this
 // daemon.
 func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.AdmissionCap = 2
 	other := "OTHER" + randomSuffix(t)
@@ -203,6 +204,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 // as the store holds them. The raw store beside it reads every project's, so each case shows the
 // other project's record is there to be read.
 func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	raw := record.NewStore()
@@ -326,6 +328,7 @@ func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
 // rolls back. Each refusal is logged at Warn with the row's kind, its key and the project, so
 // nothing is dropped in silence. The same write of a row of this project's own key goes through.
 func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	raw := record.NewStore()
@@ -568,6 +571,7 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 // where that daemon stands it — still merging, lingering nowhere, with no production check
 // opened and no row queued keyed by it — while it closes its own.
 func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	raw := record.NewStore()

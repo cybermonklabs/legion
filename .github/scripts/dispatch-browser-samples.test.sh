@@ -144,7 +144,18 @@ check "CPU" "$(contains "$out" 'took no CPU sample$')"
 echo "case: the sampler writes both files, over this machine's own /proc"
 # The one case that runs the sampler itself: the fixtures above stand in for what it writes, so
 # the shape it writes is worth holding. It is started as the browser steps start it, left to
-# take at least one tick, and killed as their trap kills it.
+# complete its first tick, and killed as their trap kills it.
+#
+# It waits for the tick, not for a clock. A tick is one `ps` over every process of the machine
+# and one awk over its lines, and on a loaded machine that is seconds: one tick's `ps` took 3.17 s
+# at load 812 over 19,145 processes, so the 2 s this case slept once read the CPU file before
+# its first line, and failed "the first CPU line of a tick is the machine's busy total" in 4 of 8
+# runs. Nor does the first `machine` line mark a tick done: awk writes its lines through a block
+# buffer, and a tick of that machine is 2,107 lines (42 KB), so the file holds the machine line
+# and part of the tick long before the tick ends. What marks it done is the second memory sample,
+# which the sampler's loop writes only after the first tick's ps and awk have exited and its
+# 5-s sleep has passed. The loop's 600 tries of 0.5 s are a hang guard for a sampler that never
+# completes a tick, which the first check below then names; no verdict rests on them.
 dir=$(fixture sampler-runs)
 # What a previous run left behind. The sampler truncates both files, so neither line survives
 # into the reading.
@@ -152,17 +163,29 @@ printf 'stale\n' > "$dir/memory-samples.txt"
 printf 'machine 999999999\n' > "$dir/cpu-samples.txt"
 "$samples_script" sample "$dir" &
 sampler=$!
-sleep 2
+ticked=no
+for _ in $(seq 600); do
+  # The numeric lines alone: the stale line is not one, and the sampler truncates the file before
+  # it writes its first.
+  if [ "$(grep -cE '^[0-9]+$' "$dir/memory-samples.txt" 2>/dev/null || true)" -ge 2 ]; then
+    ticked=yes
+    break
+  fi
+  sleep 0.5
+done
 kill "$sampler" 2>/dev/null || true
 wait "$sampler" 2>/dev/null || true
+check "it completed its first tick, which a second memory sample marks" "$(is "$ticked" yes)"
 check "the memory samples are numbers of kB" \
   "$(is "$(grep -cEv '^[0-9]+$' "$dir/memory-samples.txt")" 0)"
-check "it took at least one memory sample" \
-  "$(is "$(awk 'END { print (NR >= 1) ? "yes" : "no" }' "$dir/memory-samples.txt")" yes)"
 check "the first CPU line of a tick is the machine's busy total" \
   "$(contains "$(head -n 1 "$dir/cpu-samples.txt")" '^machine [0-9][0-9]*$')"
-check "every other CPU line is a pid, its ticks and its group" \
-  "$(is "$(grep -cEv '^(machine [0-9]+|[0-9]+ [0-9]+ (browser|runner|dispatch|postgres|bun))$' "$dir/cpu-samples.txt")" 0)"
+# Over the first tick's lines alone, up to the second `machine` line: the kill above ends the
+# sampler's shell and not the ps and awk of a tick it had started, so a later tick may still be
+# half written when this reads.
+check "every CPU line of the first tick is a pid, its ticks and its group" \
+  "$(is "$(awk '/^machine / { n++ } n == 1' "$dir/cpu-samples.txt" |
+    grep -cEv '^(machine [0-9]+|[0-9]+ [0-9]+ (browser|runner|dispatch|postgres|bun))$')" 0)"
 check "the stale memory sample is gone" "$(is "$(grep -c stale "$dir/memory-samples.txt" || true)" 0)"
 check "and the stale CPU sample with it" "$(is "$(grep -c 999999999 "$dir/cpu-samples.txt" || true)" 0)"
 # The reading over what it just wrote: the numbers are the machine's, so what is asserted is

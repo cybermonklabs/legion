@@ -15,6 +15,7 @@ import (
 // lookup, the revoke of a credential grant, a machine login and a sign-in, and a personal
 // token's mint, change and revoke.
 func TestEveryRowThatSettlesWhatAPersonSettlesNeedsApprove(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{
 		"POST /api/v1/artifacts/{id}/reviews",
 		"POST /api/v1/artifacts/{id}/versions/{number}/reviews",

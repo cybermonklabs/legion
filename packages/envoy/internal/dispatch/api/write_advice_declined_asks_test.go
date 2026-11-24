@@ -75,6 +75,7 @@ func addAnAskBlock(t *testing.T, handler http.Handler, artifactID string, actor 
 }
 
 func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
+	t.Parallel()
 	const question = "Which transport should the billing exporter use?"
 	const note = "I have no view on this one; pick what the team can run."
 	// theDeclinedAsk is the part the write's answer carries, once the person has declined.
@@ -273,6 +274,7 @@ const adviceBoundBytes = 64 * 1024
 // such an issue paid that, and the cost grew with each decline. The read sends heads now
 // (declinedAskHead), and this test fails if they ever go.
 func TestTheDeclinedAskReminderStaysBoundedWhateverThePeopleWrote(t *testing.T) {
+	t.Parallel()
 	const declines = 10
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "HEAVY")

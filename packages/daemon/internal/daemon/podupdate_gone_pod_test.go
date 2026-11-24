@@ -47,6 +47,7 @@ import (
 // of its own, with the issue whose round ended waiting behind it for its own next round, over the
 // pod in its place.
 func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
+	t.Parallel()
 	const (
 		waiting    = "LEGION-485"
 		waitingPod = "2e7c9a41-6b0d-4f58-a3c2-91d4e8b07f63"
@@ -132,6 +133,7 @@ func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
 // read the round again would end it again at each of the five sweeps, post five more ends to the
 // tester, and keep the slot for a round it has ended.
 func TestARoundOverAGonePodIsDecidedOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		waiting    = "LEGION-485"
 		waitingPod = "2e7c9a41-6b0d-4f58-a3c2-91d4e8b07f63"
@@ -209,6 +211,7 @@ func TestARoundOverAGonePodIsDecidedOnce(t *testing.T) {
 // Over five sweeps the issue is told once: a sweep that read the round again would write the
 // message again at each sweep.
 func TestARoundOverAGonePodThatLostWorkWritesOnce(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 	rig.tick()
@@ -253,6 +256,7 @@ func TestARoundOverAGonePodThatLostWorkWritesOnce(t *testing.T) {
 // The tester comes back in the pod in the gone pod's place, still in the round, and the new
 // daemon's first sweep ends the round on it.
 func TestARoundOverAGonePodIsEndedAgainAfterARestart(t *testing.T) {
+	t.Parallel()
 	const overAPodInItsPlace = "supervise: the pod this issue's update round was opened over is gone; the round is over"
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig, ends := newPodUpdateRigCountingEnds(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))

@@ -139,7 +139,7 @@ func TestRecorderCountsTheBinarysRequests(t *testing.T) {
 	t.Parallel()
 	rec := NewRecorder(t)
 	cmd := exec.Command(testBinary(t), "alpha", "bob")
-	cmd.Env = []string{fakeEnv + "=" + noDefect, fakeURLEnv + "=" + rec.URL()}
+	cmd.Env = []string{fakeEnv + "=" + noDefect, fakeURLEnv + "=" + rec.URL(), oneP}
 	out, err := cmd.CombinedOutput()
 	// The recorder answers 404, so the command fails once it has asked.
 	var exit *exec.ExitError
@@ -428,14 +428,14 @@ func TestTheRunCheckRefusesEachDifferenceFromTheDocumentedRun(t *testing.T) {
 	t.Parallel()
 	home, tmp := t.TempDir(), t.TempDir()
 	// The fake's own selector comes first, so each row that drops a variable keeps it.
-	documented := []string{fakeEnv + "=" + checksItsRun, "PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + tmp}
+	documented := []string{fakeEnv + "=" + checksItsRun, "PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + tmp, oneP}
 	for _, row := range []struct {
 		name, dir, stdin, says string
 		env                    []string
 	}{
 		{name: "the documented run", dir: home, env: documented},
 		{name: "a variable of the test process", dir: home, env: with(documented, leakEnv+"=1"), says: leakEnv + " reached the binary"},
-		{name: "no TMPDIR", dir: home, env: documented[:3], says: "are not a PATH and two directories"},
+		{name: "no TMPDIR", dir: home, env: slices.Concat(documented[:3], documented[4:]), says: "are not a PATH and two directories"},
 		{name: "a run outside HOME", dir: tmp, env: documented, says: "not in HOME"},
 		{name: "an input to read", dir: home, env: documented, stdin: "a line\n", says: "standard input is not empty"},
 	} {
@@ -557,10 +557,16 @@ func fakeCase(rec *Recorder, defect string) Case {
 	return Case{
 		Commands: [][]string{{"alpha"}, {"group"}, {"group", "child"}},
 		Hidden:   [][]string{{"internal"}, {"pass"}, {"group", "quiet"}},
-		Env:      []string{fakeEnv + "=" + defect, fakeURLEnv + "=" + rec.URL()},
+		Env:      []string{fakeEnv + "=" + defect, fakeURLEnv + "=" + rec.URL(), oneP},
 		Server:   rec,
 	}
 }
+
+// oneP runs a copy of this test binary on one P. The parallel tests keep dozens of copies alive
+// at once, controls and the fakes their Conformance runs, and a copy left to size GOMAXPROCS to
+// the host starts a thread for each P its collector's idle mark workers take, about 80 on a
+// 288-CPU host.
+const oneP = "GOMAXPROCS=1"
 
 // requireFails runs TestConformanceChild on child in a process of its own, with path as its PATH
 // when path is not empty, fails unless that process failed, the checks that failed are exactly
@@ -587,13 +593,13 @@ func requireFails(t *testing.T, child, path string, failed []string, says ...str
 	return out
 }
 
-// runChild runs TestConformanceChild on child in a process of its own, with env added to this
-// process's environment and a line on its standard input, which no run of the binary may read,
-// and answers its output and how it ended.
+// runChild runs TestConformanceChild on child in a process of its own, on one P (oneP), with env
+// added to this process's environment and a line on its standard input, which no run of the
+// binary may read, and answers its output and how it ended.
 func runChild(t *testing.T, child string, env ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(testBinary(t), "-test.run=^TestConformanceChild$", "-test.v", "-test.count=1")
-	cmd.Env = append(append(os.Environ(), childEnv+"="+child), env...)
+	cmd.Env = append(append(os.Environ(), oneP, childEnv+"="+child), env...)
 	cmd.Stdin = strings.NewReader("standard input no run of the binary may read\n")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -689,7 +695,7 @@ func runFake(defect string, args []string) int {
 func runProblem() string {
 	for _, entry := range os.Environ() {
 		switch name, _, _ := strings.Cut(entry, "="); name {
-		case "PATH", "HOME", "TMPDIR", fakeEnv, fakeURLEnv:
+		case "PATH", "HOME", "TMPDIR", fakeEnv, fakeURLEnv, "GOMAXPROCS":
 		default:
 			return name + " reached the binary, which only PATH, HOME, TMPDIR and Case.Env may"
 		}

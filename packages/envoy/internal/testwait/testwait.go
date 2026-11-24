@@ -15,7 +15,9 @@
 // close, and either fails the test at once when that answer is not there. Until waits until a
 // reading holds and returns it, asking every Poll, and its failure prints the last value it read;
 // UntilPolling is Until at a pace the caller gives, for a reading that costs something, such as a
-// request to a cluster. Receive waits for one receive from a channel. A wait that gives up writes
+// request to a cluster. Receive waits for one receive from a channel. Context is a context whose
+// deadline is that same moment, the test binary's deadline less margin, for a call that takes a
+// context or a socket whose deadline is the context's. A wait that gives up writes
 // "testwait: <test>: gave up waiting for <what> 30s before the test binary's deadline; last read:
 // <reading>" to stderr at once, then fails the test with the same text: without -v, Go's alarm
 // panics without printing a running test's log, so a cleanup that outlasted the margin would
@@ -24,6 +26,7 @@
 package testwait
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -43,13 +46,13 @@ func Eventually(t *testing.T, what string, condition func() bool) {
 	WithinPolling(t, Bounded(t, time.Minute, time.Second), Poll, what, condition)
 }
 
-// Bounded is bound, or what is left of the test binary's own deadline less margin when that is
+// Bounded is bound, or what is left of the test binary's own deadline less spare when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
-// Eventually is Bounded of a minute and a second; a wait with a span or a margin of its own takes
-// those.
-func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
+// Eventually is Bounded of a minute and a second; a wait with a span or a spare of its own takes
+// those. spare is the caller's, not this package's margin.
+func Bounded(t *testing.T, bound, spare time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
-		if left := time.Until(testDeadline) - margin; left < bound {
+		if left := time.Until(testDeadline) - spare; left < bound {
 			bound = left
 		}
 	}
@@ -121,17 +124,23 @@ func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read fun
 }
 
 // Receive waits for one receive from ch (a value, or the close of ch, which gives the zero value).
-// Its one bound is the test binary's deadline less margin.
+// Its one bound is the test binary's deadline less margin. A Receive begun once that moment has
+// passed asks ch once and does not wait: it reads the clock rather than race an expired timer
+// against ch, so a value already sent is taken every time, not on the half of the runs where the
+// select happens to pick ch.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
-	expired, stop := expiry(t)
-	defer stop()
-	select {
-	case value := <-ch:
-		return value
-	case <-expired:
+	if end, bounded := giveUpAt(t); !bounded || time.Now().Before(end) {
+		expired, stop := expiry(t)
+		defer stop()
+		select {
+		case value := <-ch:
+			return value
+		case <-expired:
+		}
 	}
-	// The margin has passed: ask once more, so a value that came beside the timer is taken.
+	// The margin has passed, before the wait began or during it: ask once more, so a value already
+	// sent, or one that came beside the timer, is taken.
 	select {
 	case value := <-ch:
 		return value
@@ -140,6 +149,23 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	gaveUp(t, what, nil)
 	var zero T
 	return zero
+}
+
+// Context gives a context whose deadline is the test binary's deadline less margin, cancelled
+// when t ends: Receive's end, for a call that takes a context, or a socket whose deadline is the
+// context's. Under -timeout 0 it has no deadline; under a -timeout of 30 s or less its deadline
+// has already passed when the test starts, so a call under it fails at once, as every wait here
+// does.
+func Context(t *testing.T) context.Context {
+	end, bounded := giveUpAt(t)
+	if !bounded {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		return ctx
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), end)
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // asked asks holds every poll until it reports true, and reports whether it did. Once end has
@@ -166,8 +192,8 @@ func expiry(t *testing.T) (<-chan time.Time, func() bool) {
 	return timer.C, timer.Stop
 }
 
-// giveUpAt is the moment Until and Receive give up in t: the test binary's deadline less margin,
-// and false when the binary has no deadline (-timeout 0).
+// giveUpAt is the moment Until, Receive and Context give up in t: the test binary's deadline less
+// margin, and false when the binary has no deadline (-timeout 0).
 func giveUpAt(t *testing.T) (time.Time, bool) {
 	deadline, bounded := t.Deadline()
 	if !bounded {

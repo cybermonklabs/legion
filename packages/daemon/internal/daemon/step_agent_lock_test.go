@@ -26,6 +26,7 @@ import (
 // it. The read takes no supervisor lock: with a fact's transaction holding the fact lock and a
 // Create waiting for it inside the supervisor's lock, the read answers at once.
 func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")
@@ -154,6 +155,7 @@ func (s *countingHolds) HoldSessions(ctx context.Context, project string, token 
 //
 // The control (the pull request records the run): stepAgent with no hold check names ses_taken.
 func TestAStepsAgentNamesNoSessionItsClaimDoesNotHold(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, st, sup, w, _ := stepAgentRig(t)
 	holder := mustClaimToken(t, "LEGION-943", claim.RoleImplementer)
@@ -199,6 +201,7 @@ func TestAStepsAgentNamesNoSessionItsClaimDoesNotHold(t *testing.T) {
 // The control (the pull request records the run): stepAgent asking Machine.HoldsItsSession, as
 // 5da94fd7fc did: "HoldSessions was called 1 times while the fact lock was held, want none".
 func TestTheReadOfAStepsAgentWritesNoHoldUnderTheFactLock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, st, sup, w, counted := stepAgentRig(t)
 	planner := mustClaimToken(t, "LEGION-208", claim.RolePlanner)

@@ -3,13 +3,14 @@ namespace, under the ServiceAccount `--service-account` names, labelled so a Net
 select it, and run on the image the driver's own pod runs.
 
 `job_spec` builds the Job from the driver's own pod: its security contexts, resources,
-tolerations, node selector and runtime class, and three of its mounts beside one `emptyDir` (the
-gateway key's one Secret item, and `models.yml` and the overlay from their ConfigMap). No service
-account token is mounted, no variable comes from a Secret, and no service link is set. The program
-(`s10_sandbox.py`), the bundles and the calls travel in environment variables, so the program is no
-file of the sandbox; the result comes back on the pod's log (`result_of`), and `KubeRunner` deletes
-the Job once it has read it. Before a run's first request, `KubeRunner.preflight` runs the same
-Job with no bundle: every check of the sandbox, and no judge.
+tolerations, node selector, runtime class and priority class, and its gateway key's one Secret
+item, beside one `emptyDir` and point 2's `models.yml` and overlay from the ConfigMap
+`ROUTE_CONFIG_MAP`. No service account token is mounted, no variable comes from a Secret, and no
+service link is set. The program (`s10_sandbox.py`), the bundles and the calls travel in
+environment variables, so the program is no file of the sandbox; the result comes back on the
+pod's log (`result_of`), and `KubeRunner` deletes the Job once it has read it. Before a run's first
+request, `KubeRunner.preflight` runs the same Job with no bundle: every check of the sandbox, and
+no judge.
 
 A failed call of the Kubernetes API is tried again (`RETRY_PAUSES`); one that still fails is no
 fault of the request's, and stops the run (`KubeUnavailable`), which writes nothing more for it.
@@ -40,6 +41,13 @@ LABEL = {"app.kubernetes.io/name": "s10-judge-sandbox"}
 # The ServiceAccount a sandbox runs as unless `--service-account` names another: one of its own,
 # bound to no cloud identity and no role. The driver's own pod's account is refused.
 SERVICE_ACCOUNT = "s10-judge-sandbox"
+# The ConfigMap of the driver's namespace that the sandbox mounts `models.yml` and the overlay from,
+# by these keys: point 2's route, which theorem-labs/agent-infra's cluster-grants/agentsessions.go
+# declares immutable (`s10JudgeRouteName`). A session pod's own route is no such file: it holds
+# Legion's live route as of the session's last apply, and `runtime_refusal` refuses any bytes but
+# point 2's.
+ROUTE_CONFIG_MAP = "s10-judge-route"
+ROUTE_ITEMS = ({"key": "models.yml", "path": "models.yml"}, {"key": "overlay.yml", "path": "overlay.yml"})
 # The pauses, in seconds, before each new try of a failed Kubernetes API call: a transient failure
 # passes, and one that lasts past them stops the run.
 RETRY_PAUSES = (5, 15, 45, 90)
@@ -105,19 +113,7 @@ def job_spec(name, pod, image, account, variables, environ, deadline=SANDBOX.OMP
     items = secret.get("items") or []
     if len(items) != 1 or items[0].get("path") != "key" or mounts[SANDBOX.KEY_MOUNT].get("subPath"):
         raise CannotRun(f"this pod's {SANDBOX.KEY_MOUNT} is not one item of one Secret, named key")
-    route_items = []
-    route_name = None
-    for path in (SANDBOX.MODELS_FILE, SANDBOX.OVERLAY_FILE):
-        mount = mounts.get(path)
-        config_map = (volumes.get((mount or {}).get("name"), {}) or {}).get("configMap")
-        if mount is None or config_map is None or not mount.get("subPath"):
-            raise CannotRun(f"this pod mounts no {path} from a ConfigMap for the sandbox to copy")
-        if route_name not in (None, config_map["name"]):
-            raise CannotRun("this pod mounts models.yml and the overlay from two ConfigMaps")
-        route_name = config_map["name"]
-        item = next((one for one in config_map.get("items") or [] if one.get("path") == mount["subPath"]),
-                    {"key": mount["subPath"], "path": mount["subPath"]})
-        route_items.append({"key": item["key"], "path": item["path"]})
+    route_items = [dict(one) for one in ROUTE_ITEMS]
     own_env = {one["name"]: one.get("value") for one in container.get("env", []) if "valueFrom" not in one}
     env = [{"name": one, "value": own_env.get(one) or environ.get(one, "")} for one in PROFILE_VARIABLES]
     env.append({"name": "PYTHONDONTWRITEBYTECODE", "value": "1"})
@@ -149,11 +145,15 @@ def job_spec(name, pod, image, account, variables, environ, deadline=SANDBOX.OMP
         "volumes": [
             {"name": "gateway-key", "secret": {"secretName": secret["secretName"], "items": [dict(items[0])],
                                                **({"defaultMode": secret["defaultMode"]} if "defaultMode" in secret else {})}},
-            {"name": "route", "configMap": {"name": route_name, "items": route_items}},
+            {"name": "route", "configMap": {"name": ROUTE_CONFIG_MAP, "items": route_items}},
             {"name": "work", "emptyDir": {}},
         ],
     }
-    for copied in ("tolerations", "nodeSelector", "runtimeClassName"):
+    # The priority class too: where the cluster has no default class, a pod that names none runs at
+    # priority 0, so a pod above it whose class may preempt can take its node mid-run, and that
+    # request becomes a deviation counted against the claim. A session pod names
+    # `agent-session-priority`, whose `preemptionPolicy: Never` lets the judge evict no pod.
+    for copied in ("tolerations", "nodeSelector", "runtimeClassName", "priorityClassName"):
         if spec.get(copied):
             pod_spec[copied] = spec[copied]
     return {

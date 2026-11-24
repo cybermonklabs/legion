@@ -111,6 +111,7 @@ func sameCheckFact(got, want intake.Fact, check record.ProductionCheck) bool {
 // without acting. The delivery names no phase, so nothing drops it for the phase the issue has left,
 // and the row's id is its delivery's.
 func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -141,6 +142,7 @@ func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing
 // bound, a report), a later look started, or the check closed. The implementer stays as it was, and
 // no start is recorded against it.
 func TestACheckStartFinishesWithoutActingWhenItsLookIsNotOpen(t *testing.T) {
+	t.Parallel()
 	closed := time.Now()
 	for _, tc := range []struct {
 		name  string
@@ -178,6 +180,7 @@ func TestACheckStartFinishesWithoutActingWhenItsLookIsNotOpen(t *testing.T) {
 // row would start would resume the implementer and relaunch the Sandbox under the run. The row's
 // check is still open at its look, so the check alone would let it start.
 func TestACheckStartOfAnIssueRunningAgainFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := checkRoot()
@@ -204,6 +207,7 @@ func TestACheckStartOfAnIssueRunningAgainFinishesWithoutActing(t *testing.T) {
 // ends the look as one nobody reported, with the hold as its cause, of the check the row's issue
 // holds.
 func TestACheckStartOnAnOperatorHeldImplementerEndsTheLook(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := checkRoot()
@@ -233,6 +237,7 @@ func TestACheckStartOnAnOperatorHeldImplementerEndsTheLook(t *testing.T) {
 // implementer stays as it was, with no start recorded against it, since the look the row would
 // start is the first check's, ended long before, and the second's look 1 has a start row of its own.
 func TestACheckStartOfAReplacedCheckFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := checkRoot()
@@ -280,6 +285,7 @@ func TestACheckStartOfAReplacedCheckFinishesWithoutActing(t *testing.T) {
 // and the look, so the row run again is a duplicate, and the bound's under the row's, so a bound
 // the workflow deferred as a new row applies afresh.
 func TestCheckLookAndCheckBoundRowsApplyTheirFacts(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -333,6 +339,7 @@ func TestCheckLookAndCheckBoundRowsApplyTheirFacts(t *testing.T) {
 // that ready and the bound, and then ends the look as today: the role is suspended, its pod is
 // deleted and the next look is named a bound out.
 func TestACheckLookBoundAfterAPauseCountsFromTheCheckRolesReady(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		state supervise.ClaimState
@@ -452,6 +459,7 @@ func (s *sentStatements) statements() []string {
 // the commit costs no id read. The pause ended after the look began, so the read goes on to the
 // role's claim and the look waits for its bound; the runner's pool records what it sends.
 func TestACheckLooksReadOfTheLatestPauseOpensReadOnlyAndReadsNoID(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -510,6 +518,7 @@ func TestACheckLooksReadOfTheLatestPauseOpensReadOnlyAndReadsNoID(t *testing.T) 
 // later merge replaced (its OpenedAt another than the issue's check's) each finish without acting:
 // the look they would end is not the issue's check's.
 func TestACheckLookRowOfNoCheckOrAReplacedOneAppliesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		recorded bool
@@ -558,6 +567,7 @@ func TestACheckLookRowOfNoCheckOrAReplacedOneAppliesNothing(t *testing.T) {
 // row applies under must tell the two checks apart. Otherwise a silent implementer keeps its pod
 // for the whole of the rerun's check, the cost the look bound exists to remove.
 func TestACheckLookRowOfALaterCheckEndsThatChecksLook(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -600,6 +610,7 @@ func TestACheckLookRowOfALaterCheckEndsThatChecksLook(t *testing.T) {
 // member's production check, bounded at a time the record holds) runs again at that moment rather
 // than on its backoff; a moment already past is the backoff's.
 func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, tc := range []struct {
 		name string
@@ -638,6 +649,7 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 // own, so its apply is fresh rather than this one's duplicate, as a deferred bound's is
 // (checkBound).
 func TestACheckWakeRowAppliesItsWakeAndARequeuedRowAppliesAfresh(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -679,6 +691,7 @@ func TestACheckWakeRowAppliesItsWakeAndARequeuedRowAppliesAfresh(t *testing.T) {
 // row names is the check's, with no look open, so the next look opens with a start row of its
 // own, woken by the row's reason. A row of a check a later merge replaced starts nothing.
 func TestACheckWakeRowStartsTheNextLookAndAReplacedChecksStartsNone(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -721,6 +734,7 @@ func TestACheckWakeRowStartsTheNextLookAndAReplacedChecksStartsNone(t *testing.T
 // compared against an open production check, so the boot reads neither its own revision nor
 // Dispatch's.
 func TestTheBootFactCarriesTheBootAlone(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	facts := &outboxFactHandler{}
 	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", handlers: []intake.Handler{facts}, log: quietLogger()}

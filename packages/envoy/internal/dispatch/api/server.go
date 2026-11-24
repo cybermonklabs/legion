@@ -255,7 +255,12 @@ type DepsInput struct {
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
 	EnvoyTimeout time.Duration
-	Docs         docs.API
+	// Docs is the document service the API serves documents through, and NewDeps refuses an input
+	// without one. Its caller builds it (docs.New; cmd/dispatch's newDocumentService) and shuts it
+	// down (docs.Service.Shutdown) once the server is done with it. NewDeps builds none of its own:
+	// nothing would hold a service it built to shut it down, and that service's compaction worker
+	// (startCompactionQueue) would run for the rest of the process.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
@@ -321,7 +326,8 @@ type DepsInput struct {
 	BuildCommit string
 }
 
-// NewDeps parses boot configuration once and returns API dependencies.
+// NewDeps parses boot configuration once and returns API dependencies. It refuses an input with
+// no document service (DepsInput.Docs).
 func NewDeps(input DepsInput) (Deps, error) {
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
@@ -330,16 +336,11 @@ func NewDeps(input DepsInput) (Deps, error) {
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
+	if input.Docs == nil {
+		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
+	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
-	}
-	if input.Docs == nil {
-		input.Docs = docs.New(docs.Deps{
-			Store:     input.Store,
-			Events:    input.Events,
-			Identity:  input.Identity,
-			ServerURL: input.ServerURL,
-		})
 	}
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
@@ -558,6 +559,12 @@ type server struct {
 	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
 	// wall clock.
 	drainReadLimit time.Duration
+	// drainDeadlineSet is called with the moment a drain began and the read deadline it computed
+	// from that moment, before the drain sets the deadline on the connection (readFor); nil, which
+	// every server the deployment builds leaves it, calls nothing. Only a test sets it, to judge the
+	// deadline in effect when a stalled read ended against the bound the drain chose, which no
+	// clock the test reads afterwards can name.
+	drainDeadlineSet func(began, deadline time.Time)
 	// repeatFoundInFlight is called when the keyed layer finds a repeat's key held by a first
 	// request still running, before it reads a byte of the repeat's body; nil, which every server
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a

@@ -200,6 +200,14 @@ type sessionDelivery struct {
 	// corrects it (fenceFilterWrite). It runs for every such read, so a test that moves the row
 	// once moves it under the first write alone.
 	afterStoredRowRead func()
+	// registrationCallBudget bounds the consumer calls a registration makes before it answers: its
+	// own consumer call (consumerFor), timed from before it waits for the session's lock, and the
+	// repair its confirm makes (confirmRegistered). Zero is sessionConsumerCallTimeout, which every
+	// listener main builds runs with. It is a seam for a test whose own work runs inside those
+	// bounds, as a session's consumer lock it holds while it writes, or afterRepairPlan running a
+	// whole registration on another listener in each pass: such a test gives the calls what is left
+	// of the test binary's deadline here, so the bound does not count the test's work.
+	registrationCallBudget time.Duration
 	// locks keeps the consumer calls made for one session one at a time: a registration's create or
 	// filter update, an unsubscribe's filter update, the relay's restart at the ack floor, which
 	// deletes the consumer and creates it again when a message awaits an ack, and the one delete
@@ -244,7 +252,7 @@ type sessionDelivery struct {
 	// read and written in session_consumer_delete.go alone, where the delete lifecycle is; a
 	// field of this type is declared with the type.
 	deleteMu   sync.Mutex
-	deletes    sync.WaitGroup
+	deletes    inflight
 	deletesOff bool
 	// grantMu guards the refusal episode below.
 	grantMu sync.Mutex
@@ -341,9 +349,18 @@ func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps
 	if m == nil || m.consumers == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.registrationCallBudgetOr())
 	defer cancel()
 	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
+}
+
+// registrationCallBudgetOr is the bound on a registration's consumer calls
+// (registrationCallBudget): sessionConsumerCallTimeout unless a test set one.
+func (m *sessionDelivery) registrationCallBudgetOr() time.Duration {
+	if m.registrationCallBudget == 0 {
+		return sessionConsumerCallTimeout
+	}
+	return m.registrationCallBudget
 }
 
 // repairAfterRegistration and repairAfterDelete name what a repair of a session's consumer
@@ -570,7 +587,9 @@ func (m *sessionDelivery) mark() uint64 { return m.marks.Add(1) }
 
 // drain drains the session-consumer connection, so the acks the relays sent reach the server,
 // within sessionConsumerDrain or what is left of ctx if that is less; with nothing left of ctx it
-// closes the connection. The relays are stopped first (sessionRelays.stop).
+// closes the connection and says so at WARN, since an ack the connection had not yet sent is then
+// lost and the server delivers its message again. The relays are stopped first
+// (sessionRelays.stop).
 func (m *sessionDelivery) drain(ctx context.Context) {
 	if m == nil || m.consumers == nil {
 		return
@@ -581,6 +600,7 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 	}
 	if timeout <= 0 {
 		m.consumers.Close()
+		m.logger.Warn("session consumer connection closed without a drain: the shutdown's HTTP window was spent")
 		return
 	}
 	if err := m.consumers.Drain(timeout); err != nil {
@@ -740,7 +760,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 	if m.grantRefused() {
 		return sessionDeliveryOutcome{}, noGrantRefusal(body.SessionID), noUnlock
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.registrationCallBudgetOr())
 	defer cancel()
 	streamID, err := m.consumers.StreamID(ctx)
 	if err != nil {

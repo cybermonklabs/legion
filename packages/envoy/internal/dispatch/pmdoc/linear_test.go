@@ -730,8 +730,9 @@ var leaking struct {
 // leakedCallGuard reports what, if anything, is still running past its own deadline - the message
 // timedWithDeadline fails a new call with before ever starting it, naming the call still leaking
 // CPU into this process's RUSAGE_SELF rather than inventing a ratio out of a measurement that
-// shared it. A pure function (no *testing.T) so a unit test can assert it directly: see
-// TestLeakedCallBlocksTheNextMeasurement.
+// shared it. heavy_bodies_test.go's workOf refuses to count a call's bytes the same way, since the
+// heap's allocations are the whole process's too. A pure function (no *testing.T) so a unit test
+// can assert it directly: see TestLeakedCallBlocksTheNextMeasurement.
 func leakedCallGuard(what string) string {
 	leaking.mu.Lock()
 	defer leaking.mu.Unlock()
@@ -746,7 +747,7 @@ func leakedCallGuard(what string) string {
 		labels = append(labels, label)
 	}
 	sort.Strings(labels) // a fixed order, not map iteration's, so the message is reproducible
-	return fmt.Sprintf("%s: refusing to measure while %s is still running past its own deadline (processCPUTime is this whole process's, so measuring now would attribute its ongoing CPU to this call instead)", what, strings.Join(labels, ", "))
+	return fmt.Sprintf("%s: refusing to measure while %s is still running past its own deadline (this process's CPU time and the heap's allocations are the whole process's, so measuring now would attribute that call's ongoing work to this one)", what, strings.Join(labels, ", "))
 }
 
 // runWithDeadline runs op, labelled what, in its own goroutine and reports whether it returned

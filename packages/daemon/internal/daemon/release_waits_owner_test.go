@@ -20,6 +20,7 @@ import (
 // recorded, and one whose parent is recorded in another tree have no architect of the tree between
 // them and the root, so their notice is queued on the tree root, as every such notice was.
 func TestARecoveryTellsEachChildItDidNotRecordOnItsRecordedParent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

@@ -486,6 +486,7 @@ func (tree *laneTree) blocked(t *testing.T, when string) {
 // waits for the sweep: it is still queued once a row committed after it has posted, and posts
 // when the sweep's timer fires.
 func TestACommittedRowRunsOnItsLaneWithoutASweep(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	clock := microClock()
 	client := &postingDispatch{}
@@ -531,6 +532,7 @@ func (h enqueuingByID) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (int
 // written without one does: a catch-up that claims kept decisions (workflow.EnqueueNaming, the
 // hand-over's and the ready's) is published at once rather than after the next sweep.
 func TestARowWrittenWithItsIDRunsOnItsLaneWithoutASweep(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	clock := microClock()
 	client := &postingDispatch{}
@@ -573,6 +575,7 @@ func (h startingWorker) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (in
 // without that wake the worker whose phase has just been handed its work waits for the next
 // sweep, up to one outbox lease after the transition.
 func TestAWorkerStartRunsOnItsLaneWithoutASweep(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.spawn.gate.open()
 	ctx := context.Background()
@@ -601,6 +604,7 @@ func TestAWorkerStartRunsOnItsLaneWithoutASweep(t *testing.T) {
 // nothing due and arms one timer for the wait, and the row runs when that timer fires on the
 // clock, with no sweep in between.
 func TestARowDueLaterRunsWhenItsLanesTimerFires(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	clock := microClock()
 	client := &postingDispatch{}
@@ -632,6 +636,7 @@ func TestARowDueLaterRunsWhenItsLanesTimerFires(t *testing.T) {
 // expedite that makes it due wakes its lane as it commits, and the notice is published with no
 // timer fired — neither the lane's wait for the hour it was due at nor the sweep.
 func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	noticeTree(t, pool, record.NewStore(), false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -672,6 +677,7 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 }
 
 func TestProjectRecordsExpediteWakesOnlyWhenItMovedARow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	base := record.NewStore()
@@ -724,6 +730,7 @@ func TestProjectRecordsExpediteWakesOnlyWhenItMovedARow(t *testing.T) {
 // write made while it blocks lands at once; the issue's own second lifecycle row, written while
 // its start blocks, waits — the lanes run on around it — and runs once the start has returned.
 func TestAStartBlockedOnTheRuntimeHoldsOnlyItsOwnIssuesLifecycleLane(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.holdArchitectStart(t)
 
@@ -763,6 +770,7 @@ func TestAStartBlockedOnTheRuntimeHoldsOnlyItsOwnIssuesLifecycleLane(t *testing.
 // registers returns at once rather than waiting on the lane, so the fact is applied within a
 // bound, and the board row it wrote runs beside the blocked start.
 func TestACommitOnABlockedLifecycleLanesIssueReturnsAtOnceAndItsBoardRowRuns(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.holdArchitectStart(t)
 
@@ -784,6 +792,7 @@ func TestACommitOnABlockedLifecycleLanesIssueReturnsAtOnceAndItsBoardRowRuns(t *
 // runs them: the newer row waits behind the older while it backs off, and once the backoff's
 // timer fires the older lands and then the newer, nothing drained by hand.
 func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -818,6 +827,7 @@ func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.
 // (errNoticeWaits) on its first backoff, and once the older has gone and that backoff's timer
 // fires, the newer is published — after the older, never before it.
 func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	noticeTree(t, pool, record.NewStore(), false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -866,6 +876,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 // One issue's lifecycle rows run one at a time, in id order: with two starts due, the second's
 // provision and launch begin only once the first has returned from the runtime.
 func TestALifecycleLaneRunsOneRowAtATimeInIdOrder(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.commit(t, "two-starts", tree.start(t, claim.RoleArchitect), tree.start(t, claim.RoleImplementer))
 	testwait.Eventually(t, "the architect's start reached Spawn", func() bool { return tree.spawn.gate.entries() == 1 })
@@ -888,6 +899,7 @@ func TestALifecycleLaneRunsOneRowAtATimeInIdOrder(t *testing.T) {
 // An issue's notice runs on its board lane beside its blocked lifecycle lane: the notice is
 // published to the issue's architect while that architect's start is still held in Spawn.
 func TestAnIssuesNoticePublishesWhileItsLifecycleRowBlocksOnTheRuntime(t *testing.T) {
+	t.Parallel()
 	tree := startLaneTree(t, nil)
 	tree.holdArchitectStart(t)
 
@@ -909,6 +921,7 @@ func TestAnIssuesNoticePublishesWhileItsLifecycleRowBlocksOnTheRuntime(t *testin
 // lease ahead, so the sweep that comes while it runs — at the very moment the first lease would
 // have lapsed — claims nothing again, and the row finishes once, with one write.
 func TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -960,6 +973,7 @@ func TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain(t *testing.T) {
 // lapsed, on the sweep after the lapse, with no restart: the sweep before the lapse starts its
 // lane, which finds the row another's and exits.
 func TestTheSweepAfterALeasesLapseStartsItsLaneAgainWithoutARestart(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -990,6 +1004,7 @@ func TestTheSweepAfterALeasesLapseStartsItsLaneAgainWithoutARestart(t *testing.T
 // retried with its lease cleared, on a settle the stop's context does not cut short; until the
 // block lifts the row is still the lane's, under its lease.
 func TestRunReturnsOnlyAfterItsLanesAndSettlesTheRowAStopInterrupted(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -1064,6 +1079,7 @@ func heldWarnings(t *testing.T, logged string) [][2]int64 {
 // row began its run: a row a project's pause held keeps the due time it had, which can be hours
 // before the row ahead of it began.
 func TestARunningLifecycleRowLogsEachRowHeldBehindItOnceItHasWaitedLong(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// due is how long before the running row began its run the held row fell due.
