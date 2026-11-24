@@ -678,7 +678,8 @@ cat >"$bin/gh" <<'EOF'
 # The fake gh: the production repository's two files and each commit's first parent. The call
 # FAKE_GH_FAILS names (main.go, Pulumi.prod.yaml or commits) fails instead, answering
 # FAKE_GH_ANSWERS on its stdout and saying FAKE_GH_SAYS on its stderr; Pulumi.prod.yaml's
-# listenerImage is FAKE_LISTENER_IMAGE where it is set.
+# listenerImage is FAKE_LISTENER_IMAGE where it is set. `gh auth token` answers FAKE_GH_TOKEN,
+# and fails as gh does with no sign-in when it is unset.
 printf '%s\n' "$*" >>"$FAKE_DIR/gh.log"
 fails() {
   [ "${FAKE_GH_FAILS:-}" = "$1" ] || return 0
@@ -687,6 +688,10 @@ fails() {
   exit 1
 }
 case $* in
+  "auth token")
+    [ -n "${FAKE_GH_TOKEN:-}" ] || { echo "no oauth token found for github.com" >&2; exit 1; }
+    printf '%s\n' "$FAKE_GH_TOKEN"
+    ;;
   *contents/dispatch/main.go*)
     fails main.go
     printf 'const (\n\tdatabaseVersion = "POSTGRES_%s"\n)\n' "${FAKE_PROD_MAJOR:-16}"
@@ -1070,7 +1075,7 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_DELAY \
   FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE \
   FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT FAKE_DAEMON_START_NAPS \
-  FAKE_GH_FAILS FAKE_GH_ANSWERS FAKE_GH_SAYS FAKE_LISTENER_IMAGE
+  FAKE_GH_FAILS FAKE_GH_ANSWERS FAKE_GH_SAYS FAKE_LISTENER_IMAGE FAKE_GH_TOKEN
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
 export LOADTEST_REPLAY_ISSUE=INFRA-639
@@ -1397,6 +1402,36 @@ done
 grep -qF -- "/manifests/$gh_marker" "$fake/curl.log" ||
   gh_fail "control: the listener image that is a reference was never read at the registry, so its case did not reach the read that refuses it"
 
+# kubectl's refusal of a manifest can quote what the manifest holds: here listener.yaml's image, the
+# production repository's answer to gh, a reference resolve_image takes whose repository is a run of
+# gh's token. up prints kubectl's words through the token filter (scripts/lib/token-filter.sh, the
+# daemon release gate's): the run is written [redacted] and the rest of the refusal is shown. The
+# twin is kubectl's own words, which up keeps, holding the marker; the control is that up asked the
+# fake gh for its token. The (d) cases below are the control that a refusal holding no run of the
+# token is shown whole.
+reset_fake
+: >"$fake/gh.log"
+gh_token="ghs_${gh_marker}_0123456789abcdefXYZ"
+printf '%s\n' "Error from server (Forbidden): error when creating \"STDIN\": deployments.apps \"listener\" is forbidden: image ghcr.io/example/$gh_marker is not admitted" \
+  >"$fake/apply-errors"
+FAKE_GH_TOKEN=$gh_token FAKE_APPLY_FAIL=listener.yaml FAKE_LISTENER_IMAGE="ghcr.io/example/$gh_marker:v1" \
+  run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+gh_printed=$(<"$gh_out")
+grep -qxF -- "auth token" "$fake/gh.log" ||
+  gh_fail "control: up never asked the fake gh for its token, so the filter of kubectl's refusal had nothing to filter by"
+((RC != 0)) || gh_fail "up went on after kubectl refused listener.yaml"
+[[ $gh_printed == *'kubectl apply of manifests/listener.yaml failed'* ]] ||
+  gh_fail "up's failure does not name manifests/listener.yaml: $gh_printed"
+! holds_marker "$gh_printed" || gh_fail "up printed a run of gh's token that kubectl's refusal of listener.yaml quoted: $gh_printed"
+[[ $gh_printed == *'is forbidden: image ghcr.io/example/[redacted] is not admitted'* ]] ||
+  gh_fail "up does not show kubectl's refusal of listener.yaml with the token's run written [redacted]: $gh_printed"
+gh_kubectl_err=$(find "$gh_root" -name 'apply-listener.yaml.err' -print -quit)
+if [ -z "$gh_kubectl_err" ] || ! grep -qF -- "$gh_marker" "$gh_kubectl_err"; then
+  gh_fail "twin: kubectl's own words for listener.yaml (${gh_kubectl_err:-no apply-listener.yaml.err under $gh_root}) do not hold the marker"
+fi
+run_cluster down --namespace "$gh_ns"
+((RC == 0)) || gh_fail "down after kubectl refused listener.yaml exited $RC: $(cat "$gh_out")"
+
 # What names nothing goes: a refusal that names no gh-words file, and an up that goes on, leave no
 # gh-words directory. The cases above, which name one each, are the control that the glob finds one.
 gh_dirs() { compgen -G "$gh_root/gh-words.*" || true; }
@@ -1414,7 +1449,7 @@ run_cluster down --namespace "$gh_ns"
 ((RC == 0)) || gh_fail "down exited $RC: $(cat "$gh_out")"
 export LOADTEST_CLUSTER_ROOT=$gh_prior_root
 ((gh_failed == 0)) || fail "up printed gh's words, or did not keep them where it says, in $gh_failed checks (each FAIL above)"
-pass "up prints no run of what gh said or answered for a commit's first parent, dispatch/main.go or dispatch/Pulumi.prod.yaml, names the gh-words file that keeps it, and leaves no gh-words directory that it names nowhere"
+pass "up prints no run of what gh said or answered for a commit's first parent, dispatch/main.go or dispatch/Pulumi.prod.yaml, nor of gh's token in kubectl's refusal of a manifest, names the gh-words file that keeps gh's words, and leaves no gh-words directory that it names nowhere"
 
 # checker_refused WHAT: up's refusal of WHAT left nothing: no kubectl create or apply, no lock, no
 # envoy-dispatch built, and no checker scratch directory.
@@ -2808,10 +2843,11 @@ pass "two starts of one runner job name get directories of their own, a start ne
   version=$(sed -n 's/^CHART_VERSION=//p' "$here/render-nats.sh")
   want=$(sed -n 's/^CHART_SHA256=//p' "$here/render-nats.sh")
   tree=$tmp/render-tree
-  mkdir -p "$tree/loadtest/cluster"
+  mkdir -p "$tree/loadtest/cluster" "$tree/scripts/lib"
   tree=$(cd -- "$tree" && pwd -P) # Match the directory spelling in render-nats.sh's refusal.
   chart=$tree/loadtest/cluster/nats-$version.tgz
   cp -- "$here/../common.sh" "$tree/loadtest/"
+  cp -- "$here/../../scripts/lib/token-filter.sh" "$tree/scripts/lib/"
   cp -- "$here/cluster.sh" "$here/render-nats.sh" "$here/nats-values.yaml" "$here/nats-$version.tgz" "$tree/loadtest/cluster/"
   vendored=$(sha256sum -- "$chart" | cut -d' ' -f1)
   [ "$vendored" = "$want" ] || fail "nats-$version.tgz has sha256 $vendored, not render-nats.sh's CHART_SHA256 '$want'"

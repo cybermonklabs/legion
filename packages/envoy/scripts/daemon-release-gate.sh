@@ -222,8 +222,8 @@ readonly work
 words=$(mktemp -d "${TMPDIR:-/tmp}/daemon-release-gate-words.XXXXXX")
 readonly words
 # The readers' stderr is printed at the end, through the same filter as every line (redact_lines,
-# below); the trap keeps the exit status the run ends with.
-trap 'if [ -f "$work/stderr" ]; then redact_lines <"$work/stderr" >&2 || true; fi; rm -rf "$work"; rmdir "$words" 2>/dev/null || true' EXIT
+# lib/token-filter.sh); the trap keeps the exit status the run ends with.
+trap 'if [ -f "$work/stderr" ]; then redact_lines "$work/tokens" <"$work/stderr" >&2 || true; fi; rm -rf "$work"; rmdir "$words" 2>/dev/null || true' EXIT
 
 shut=0
 unknown=0
@@ -281,52 +281,11 @@ said() {
   fi
 }
 
-# The credentials the gate's output is filtered for: the token gh uses, as `gh auth token` reads it
-# (its config, or the environment variable that overrides it), and each token variable gh reads,
-# one a line in a file only this user reads, never in a process's arguments.
-(
-  umask 077
-  {
-    gh auth token 2>/dev/null || true
-    printf '\n%s\n%s\n%s\n%s\n' "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" "${GH_ENTERPRISE_TOKEN:-}" "${GITHUB_ENTERPRISE_TOKEN:-}"
-  } >"$work/tokens"
-)
-if ! grep -qE '^.{8,}$' "$work/tokens"; then
-  echo "daemon-release-gate.sh: gh auth token answered no token, and no token variable is set, so no line below is filtered for one" >&2
-fi
-
-# redact_lines: stdin to stdout, line by line as each arrives, with every run of 8 characters of a
-# credential in $work/tokens written as [redacted], a stretch of such runs that touch or overlap as
-# one. A token shorter than 8 characters has no such run and is not filtered.
-redact_lines() {
-  python3 -c '
-import sys
-
-with open(sys.argv[1], encoding="utf-8", errors="surrogateescape") as handle:
-    tokens = [t for t in handle.read().split("\n") if len(t) >= 8]
-pieces = {t[i : i + 8] for t in tokens for i in range(len(t) - 7)}
-out = sys.stdout.buffer
-for raw in iter(sys.stdin.buffer.readline, b""):
-    line = raw.decode("utf-8", "surrogateescape")
-    hidden = [False] * len(line)
-    for piece in pieces:
-        at = line.find(piece)
-        while at >= 0:
-            hidden[at : at + 8] = [True] * 8
-            at = line.find(piece, at + 1)
-    shown, i = [], 0
-    while i < len(line):
-        if hidden[i]:
-            while i < len(line) and hidden[i]:
-                i += 1
-            shown.append("[redacted]")
-        else:
-            shown.append(line[i])
-            i += 1
-    out.write("".join(shown).encode("utf-8", "surrogateescape"))
-    out.flush()
-' "$work/tokens"
-}
+# The credentials the gate's output is filtered for, in $work/tokens, and the filter itself:
+# lib/token-filter.sh, which loadtest/cluster/cluster.sh's kubectl errors pass too.
+# shellcheck source=lib/token-filter.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/token-filter.sh"
+token_filter_init "$work/tokens" daemon-release-gate.sh
 
 # fetch <path> <dest>: the text of <path> in the deployment repository on its default branch, into
 # <dest>; on failure sets $fetch_error to what could not be done, in the gate's own words (said), and
@@ -1047,4 +1006,4 @@ source "${gate_lib}/daemon-release-gate-read-developer-box.sh"
     exit 3
   fi
   echo "GATE OPEN"
-} 2>"$work/stderr" | redact_lines
+} 2>"$work/stderr" | redact_lines "$work/tokens"
