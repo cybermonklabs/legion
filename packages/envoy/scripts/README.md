@@ -1013,9 +1013,14 @@ and `lib/daemon-release-gate-read-developer-box.sh`, which the gate sources.
 `daemon-release-gate.test.sh` proves every verdict behind a fake `gh`, a fake `docker` that
 answers a single image and an index the way the real one does and runs an image's files, and a
 fake `npm`. Its fakes, fixture builders and assertion helpers are in
-`lib/daemon-release-gate-harness.sh`, and its scenarios of the VM hub, the images' clients, the
-developer box, its versions and a project's fields in `lib/daemon-release-gate-cases-*.sh`, which
-it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
+`lib/daemon-release-gate-harness.sh`, and its scenarios of the daemon leg, the listener pins, the
+VM hub, the images' clients, the developer box, its versions, a project's fields and the reads
+that come back short in `lib/daemon-release-gate-cases-<group>.sh`, one file a group. The test
+runs each group in a process of its own (`lib/daemon-release-gate-group.sh`), up to one group per
+core at a time, and prints the groups in reading order once they have all ended, each with the
+seconds it took; `GATE_TEST_GROUP_SLOTS=1` runs them one at a time, to read a group's output as it
+runs, and `bash lib/daemon-release-gate-group.sh <group> /dev/null` runs one group alone. CI runs
+the test in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
 with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
 reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 

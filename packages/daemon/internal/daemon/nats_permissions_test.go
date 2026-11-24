@@ -1,5 +1,8 @@
 package daemon
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestDaemonPermissionsOnRealServers
+//ci:reads packages/daemon/internal/intake/testdata/github/pr-opened.json TestDaemonPermissionsOnRealServers
+
 import (
 	"context"
 	"encoding/json"

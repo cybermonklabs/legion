@@ -76,6 +76,7 @@ func storedIssueKey(t *testing.T, ctx context.Context, pool *store.Pool, repo st
 // TestAttributionTakesAnExternalLinkNamingThePullRequest: source 1, an issue whose external
 // link is the pull request's own URL.
 func TestAttributionTakesAnExternalLinkNamingThePullRequest(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-101"}, map[string][]string{
 		"ATTR-101": {"https://github.com/acme/widgets/pull/101"},
@@ -91,6 +92,7 @@ func TestAttributionTakesAnExternalLinkNamingThePullRequest(t *testing.T) {
 // TestAttributionIgnoresAnExternalLinkNamingAnotherPullRequest: a link to pull/103 credits
 // nothing to pull/102, though the URLs share a prefix.
 func TestAttributionIgnoresAnExternalLinkNamingAnotherPullRequest(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-103"}, map[string][]string{
 		"ATTR-103": {"https://github.com/acme/widgets/pull/1030"},
@@ -108,6 +110,7 @@ func TestAttributionIgnoresAnExternalLinkNamingAnotherPullRequest(t *testing.T) 
 // full URL or a bare #N in the pull request's own repository, that an issue's external link
 // names.
 func TestAttributionTakesACitedGitHubIssue(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-111", "ATTR-112", "ATTR-113"}, map[string][]string{
 		"ATTR-111": {"https://github.com/acme/widgets/issues/77"},
@@ -165,6 +168,7 @@ func TestAttributionTakesACitedGitHubIssue(t *testing.T) {
 // what the body cites, whole: an extra citation is a defect of its own, which a membership test
 // would pass over.
 func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
+	t.Parallel()
 	const cited = "https://github.com/acme/widgets/issues/7"
 	const citedAB = "https://github.com/a/b/issues/7"
 	const citedCD = "https://github.com/c/d/issues/9"
@@ -248,6 +252,7 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 // cited. A bare #N in a pull request stored under the old name names an issue under the new name.
 // A citation of a repository that only begins like the old name keeps its name.
 func TestCitedIssuesNameARenamedRepositoryByItsNewName(t *testing.T) {
+	t.Parallel()
 	renames := refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}})
 	body := "Fixes https://github.com/SJawhar/Legion/issues/5 and github.com/cybermonklabs/legion/issues/5, " +
 		"see https://github.com/sjawhar/legion-smoke/issues/599 and #12."
@@ -269,6 +274,7 @@ func TestCitedIssuesNameARenamedRepositoryByItsNewName(t *testing.T) {
 // an issue path every thirteen bytes, which is the shape a reading that walks back to the nearest
 // space pays the square of: such a reading needs the body back to its start at every path.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
+	t.Parallel()
 	const cited = "https://github.com/acme/widgets/issues/7"
 	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
 	var reads citebody.Reads
@@ -289,6 +295,7 @@ func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 // TestAttributionTakesTheHeadBranch: source 3, a key in the branch name, matched whatever its
 // case.
 func TestAttributionTakesTheHeadBranch(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-121"}, nil)
 	key, source := resolvedKey(t, ctx, pool, attributionFacts{
@@ -302,6 +309,7 @@ func TestAttributionTakesTheHeadBranch(t *testing.T) {
 // TestAttributionFallsBackToCommitMessages: source 5, the first known key across the commit
 // messages in commit order, which is read only where the four sources above name nobody.
 func TestAttributionFallsBackToCommitMessages(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-131", "ATTR-132"}, nil)
 	key, source := resolvedKey(t, ctx, pool, attributionFacts{
@@ -317,6 +325,7 @@ func TestAttributionFallsBackToCommitMessages(t *testing.T) {
 // cites, then the head branch, then the title and the body, then the commit messages; each
 // source is tried only when every earlier one found nothing.
 func TestAttributionTakesTheSourcesInOrder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	prURL := "https://github.com/acme/widgets/pull/140"
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-141", "ATTR-142", "ATTR-143", "ATTR-144", "ATTR-145"}, map[string][]string{
@@ -355,6 +364,7 @@ func TestAttributionTakesTheSourcesInOrder(t *testing.T) {
 // carries as readily as one that does it. Rule 1 credited this pull request to the issue its
 // title names.
 func TestAttributionTakesTheHeadBranchOverTheTitle(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-231", "ATTR-232"}, nil)
 	key, source := resolvedKey(t, ctx, pool, attributionFacts{
@@ -370,6 +380,7 @@ func TestAttributionTakesTheHeadBranchOverTheTitle(t *testing.T) {
 // Someone linking an issue to the pull request, or the pull request citing a GitHub issue an
 // issue holds, names the issue as deliberately as a branch does.
 func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	prURL := "https://github.com/acme/widgets/pull/240"
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-241", "ATTR-242", "ATTR-243"}, map[string][]string{
@@ -410,6 +421,7 @@ func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
 // TestAttributionRefusesAKeyDispatchDoesNotHave: a key-shaped string in every source that names
 // no stored issue credits nothing.
 func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	key, source := resolvedKey(t, ctx, pool, attributionFacts{
 		Repo: "acme/widgets", URL: "https://github.com/acme/widgets/pull/150",
@@ -426,6 +438,7 @@ func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {
 // reads only what the attribution needs: the pull request once and its commits once (one page),
 // never FetchPullRequest's first-commit read, which a complete row already answered.
 func TestReconcileBackfillsAttributionInputsOnce(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-161"}, nil)
@@ -503,6 +516,7 @@ func TestReconcileBackfillsAttributionInputsOnce(t *testing.T) {
 // no sessions and no attribution inputs rather than recording them short for good, and the next
 // pass completes it once the commits answer.
 func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-181"}, nil)
@@ -571,6 +585,7 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 // stored rows, those checked longest ago first, so the walk comes round to every row and an
 // issue that links a pull request credits it within one walk of the table.
 func TestAttributingStoredPullRequestsWalksTheTableInBatches(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-191"}, nil)
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
@@ -622,6 +637,7 @@ func TestAttributingStoredPullRequestsWalksTheTableInBatches(t *testing.T) {
 // TestReconcileCreditsAPullRequestAnIssueLinksLater: a pull request stored with no issue is
 // credited once an issue's external link names it, by the next pass and with no GitHub call.
 func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-171"}, nil)
