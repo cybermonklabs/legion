@@ -25,7 +25,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -55,6 +54,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/envconf"
@@ -533,11 +533,10 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
-	documentService := newDocumentService(boot, docs.Deps{
+	documentService := newDocumentService(boot, serverURL, docs.Deps{
 		Store:       database,
 		Events:      broker,
 		Identity:    requestIdentity,
-		ServerURL:   serverURL,
 		BuildCommit: buildCommit,
 	})
 	publishRoomFigures(documentService)
@@ -1832,15 +1831,17 @@ func devSignInSharedSigningKey(shared string) string {
 
 // newDocumentService is the document service main serves the document websocket and the API's
 // documents from: built, what main made from the rest of the configuration, with every setting the
-// service takes from boot filled in (documentDeps).
-func newDocumentService(boot bootConfig, built docs.Deps) *docs.Service {
-	return docs.New(documentDeps(boot, built))
+// service takes from boot and serverURL filled in (documentDeps).
+func newDocumentService(boot bootConfig, serverURL string, built docs.Deps) *docs.Service {
+	return docs.New(documentDeps(boot, serverURL, built))
 }
 
-// documentDeps is built with every setting the document service takes from boot filled in. The
-// settings tests read its answer, as they build the router through appContextOptions, so dropping
-// a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting).
-func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
+// documentDeps is built with every setting the document service takes from boot filled in, and
+// its origins: serverURL, the canonical origin. serverURL loses one trailing `/` first, as
+// api.NewDeps trims it, so the document service and the API read a server URL ending in `//` alike.
+// The settings tests read its answer, as they build the router through appContextOptions, so
+// dropping a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting).
+func documentDeps(boot bootConfig, serverURL string, built docs.Deps) docs.Deps {
 	built.Settle = boot.SettleDelay
 	built.MarkWait = boot.MarkWait
 	built.UnrecordedMarkTTL = boot.UnrecordedMarkTTL
@@ -1848,6 +1849,7 @@ func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
 	built.MaxLiveRooms = boot.MaxLiveRooms
 	built.MaxDocConnections = boot.MaxDocConnections
 	built.TestHooks = boot.TestHooksEnabled
+	built.Origins = text.NewOrigins(strings.TrimSuffix(serverURL, "/"))
 	return built
 }
 
