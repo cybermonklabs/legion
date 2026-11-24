@@ -293,12 +293,33 @@ case "$mode" in
     # The project part takes any name that holds no `)`, and the readings take one leg per
     # line, so a project named with a space, a digit or a capital is one leg here rather than
     # two or none.
-    jq --arg prefix "$caller / " '[.[].jobs[] | select(.name | startswith($prefix)
+    #
+    # jq's own error over an answer of another shape quotes the field it tripped on (a job's name
+    # or the page itself), and whatever answered the read in GitHub's place holds gh's token and
+    # wrote that answer. So jq's words go to a file of their own, which outlives this script
+    # (RUNNER_TEMP's on a runner, until the job ends), and the ::error:: line names that file in
+    # this script's own words. The answer stays in $pages, which the trap removes with the work
+    # directory, so the file is what an operator reads.
+    if ! jq --arg prefix "$caller / " '[.[].jobs[] | select(.name | startswith($prefix)
           and (ltrimstr($prefix) | test("^(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)")))]
       | map({id, name, conclusion,
           leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
             // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
-            // null)})' "$pages" > "$out_file"
+            // null)})' "$pages" > "$out_file" 2> "$work/jq"; then
+      rm -f "$out_file"
+      if kept=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dispatch-browser-run-reads-jq.XXXXXX") &&
+        cat "$work/jq" > "$kept"; then
+        said="are in $kept"
+      else
+        said="could not be kept"
+      fi
+      echo "::error::this run's jobs could not be read, so the legs this lane owed are" \
+        "unknown: GET $route answered no list of jobs jq could read. jq's own words, which can" \
+        "quote that answer, $said. This error is a" \
+        "failed read of the jobs API, not a failed browser row. Re-running this job reads the" \
+        "list again."
+      exit 1
+    fi
     ;;
   blobs-refused)
     [ "$#" -eq 1 ] || usage "$@"

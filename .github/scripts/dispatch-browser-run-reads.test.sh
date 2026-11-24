@@ -355,9 +355,10 @@ happy_page() {
 # do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
 # stand-in gh's per-call `kill-wrapper.<n>` files, and the stand-in `sleep`'s call log.
 fixture() {
-  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
+  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls" \
+    "$work/words"
   rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.*
-  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
+  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls" "$work/words"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
   printf '0\n' > "$work/reset"
@@ -370,6 +371,7 @@ fixture() {
 drive() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+    RUNNER_TEMP="$work/words" \
     GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=$retry_seconds "$read_script" "$@" 2>&1)
   status=$?
   set -e
@@ -389,6 +391,7 @@ drive_limited() {
   set +e
   out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES PATH="$work/bin:$PATH" GH_TOKEN=t \
     GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GITHUB_RUN_ATTEMPT=$run_attempt \
+    RUNNER_TEMP="$work/words" \
     GH_RETRY_SECONDS=$retry_seconds "${assignments[@]}" \
     "$work/bin/Runner.Worker" -c '"$@"; exit $?' worker "$read_script" "$@" 2>&1)
   status=$?
@@ -416,6 +419,17 @@ sleeps() {
     n=$((n + 1))
   done
   echo "$waits"
+}
+# words_said <regex>: how many of the files gh-read.sh kept a run's stderr in, under the
+# RUNNER_TEMP each drive is given, hold a line matching the regex. gh-read.sh prints no word of
+# gh's: it names those files, and this is how a case reads what gh said.
+words_said() {
+  local file matched=0
+  for file in "$work"/words/gh-read-words.*; do
+    [ -e "$file" ] || continue
+    ! grep -q -- "$1" "$file" || matched=$((matched + 1))
+  done
+  echo "$matched"
 }
 
 echo "case: this attempt's jobs become the four fields the readings consume"
@@ -498,9 +512,51 @@ check "and that this error is a failed read and not a failed row" \
   "$(contains "$(error_line)" 'This error is a failed read of the jobs API, not a failed browser row\. Re-running this job reads the list again\.$')"
 check "nor that no row failed, which this job did not read" \
   "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
-check "every attempt's gh output still reaches the log" \
-  "$(is "$(grep -c '^HTTP 502$' <<<"$out" || true)" 3)"
+# gh-read.sh prints no word of gh's: it keeps each run's stderr in a file of its own under
+# RUNNER_TEMP (TMPDIR, else /tmp) and prints one line of its own naming that file and the run's
+# exit, with the HTTP status where gh wrote one in gh's own shape, `(HTTP nnn)`. This case's
+# stderr is the bare `HTTP 502` the script's own reading greps for, which is no `(HTTP nnn)`, so
+# the helper's line names no status of gh's; gh's words are in the file it names.
+check "the helper's line names each attempt's exit and the file holding its words" \
+  "$(is "$(grep -c '^gh-read.sh: the command exited 1; its own words are in ' <<<"$out" || true)" 3)"
+check "and gh's own words are in those files" "$(is "$(words_said '^HTTP 502$')" 3)"
 check "and the ladder waited 1 s and then 2 s" "$(is "$(sleeps)" "1|2")"
+
+echo "case: an answer jq cannot read as a list of jobs"
+# Whatever answers the read in GitHub's place holds gh's token and writes the answer, and jq's
+# error over an answer of another shape quotes the value it tripped on: whole under jq 1.8, its
+# first ten characters under jq 1.7, which is a run of eight of the marker either way. The marker
+# not-a-secret-token stands for the token here: no run of eight of its characters
+# (redacttest.Piece's run) may be printed. The two answers below are one that is a string where
+# the slurped pages should be, and one page whose `jobs` is a string.
+marker=not-a-secret-token
+# holds_marker <text>: true when the text holds a run of eight characters of the marker.
+holds_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    [[ $1 != *"${marker:at:8}"* ]] || return 0
+  done
+  return 1
+}
+for answer in "\"$marker\"" "[{\"jobs\": \"$marker\"}]"; do
+  fixture 0
+  printf '%s\n' "$answer" > "$work/page.json"
+  drive jobs "$work/out.json" "$caller"
+  while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$out"
+  check "the stand-in gh answered once (control)" "$(is "$(calls)" 1)"
+  check "  twin: its answer holds the marker" "$(is "$(grep -cF -- "$marker" "$work/page.json")" 1)"
+  check "  fails the step" "$(is "$status" 1)"
+  check "  writes no out-file" "$(is "$(wrote_out_file)" no)"
+  check "  prints no run of the marker the answer holds" \
+    "$(if holds_marker "$out"; then echo false; else echo true; fi)"
+  check "  prints one ::error:: line, naming the route and the file that keeps jq's words" \
+    "$(is "$(errors) $(contains "$(error_line)" "GET repos/o/r/actions/runs/41/attempts/4/jobs?per_page=100 answered no list of jobs jq could read\. jq's own words, which can quote that answer, are in $work/words/dispatch-browser-run-reads-jq\.")" '1 true')"
+  check "  and says it is a failed read and not a failed row" \
+    "$(contains "$(error_line)" 'This error is a failed read of the jobs API, not a failed browser row\. Re-running this job reads the list again\.$')"
+  kept=$(sed -n "s|.*are in \($work/words/dispatch-browser-run-reads-jq\.[^ .]*\)\..*|\1|p" <<<"$out" | sed -n 1p)
+  check "  twin: jq's own words in that file quote the marker" \
+    "$(if [ -n "$kept" ] && holds_marker "$(cat "$kept")"; then echo true; else echo false; fi)"
+done
 
 echo "case: a refusal gh printed no HTTP status for"
 # A resolution failure prints no status line, and a line that named one anyway would send a
@@ -514,8 +570,10 @@ check "which names the exit status and says gh printed none" \
   "$(contains "$(error_line)" 'exited 1, printing no HTTP status')"
 check "and names no status of its own" \
   "$(is "$(contains "$(error_line)" 'HTTP [0-9][0-9][0-9]')" false)"
-check "while gh's own words reach the log" \
-  "$(contains "$out" '^could not resolve host: api.github.com$')"
+check "the helper's line names that attempt, with no status of gh's" \
+  "$(is "$(grep -c '^gh-read.sh: the command exited 1; its own words are in ' <<<"$out" || true)" 3)"
+check "while gh's own words are in the files it names" \
+  "$(is "$(words_said '^could not resolve host: api.github.com$')" 3)"
 
 echo "case: an earlier attempt answered a status and the last attempt did not"
 # The ladder's three attempts need not fail for one reason: during the 2026-11-08 incident the
@@ -537,10 +595,10 @@ check "says that attempt exited with no status of its own" \
   "$(contains "$(error_line)" 'decided the failure, exited 1, printing no HTTP status')"
 check "and names the earlier attempt that was answered one, with its own attempt number" \
   "$(contains "$(error_line)" 'where attempt 1 answered HTTP 502')"
-check "while every attempt's own words still reach the log" \
-  "$(contains "$out" '^gh: Server Error (HTTP 502)$')"
+check "while every attempt's own words are in the files the helper's lines name" \
+  "$(is "$(words_said '^gh: Server Error (HTTP 502)$')" 1)"
 check "the later attempts' too" \
-  "$(is "$(grep -c '^error connecting to api.github.com$' <<<"$out" || true)" 2)"
+  "$(is "$(words_said '^error connecting to api.github.com$')" 2)"
 
 echo "case: an attempt the 30 s bound ended is reported as a timeout and not as a bare refusal"
 # The first of the three cases that read the script's own `timeout 30` as the bound firing,
