@@ -67,8 +67,10 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 		unheldCommit = "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
 	)
 	linked := &linkedGitHub{
-		held:     map[string][]string{"acme/tools": {toolsMerge}},
-		pulls:    map[string]string{"acme/tools#9": "merged"},
+		held:  map[string][]string{"acme/tools": {toolsMerge}},
+		pulls: map[string]string{"acme/tools#9": "merged"},
+		merged: map[string]linkedMerge{"acme/tools#9": {title: "The linked work", headRef: "work", headSHA: headCommit,
+			base: "main", mergeCommit: toolsMerge, mergedAt: "2026-11-20T12:00:00Z"}},
 		branches: map[string][]string{"acme/tools:main": {toolsMerge}},
 		failing:  []string{"acme/widgets"},
 	}
