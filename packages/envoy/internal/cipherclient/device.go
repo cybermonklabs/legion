@@ -3,6 +3,7 @@
 package cipherclient
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // SignInScopes are the only scopes a person's sign-in asks for: who they are and their address.
@@ -44,8 +46,8 @@ type DeviceFlow struct {
 	// secret of the person's, and the broker checks the audience of the token it mints rather
 	// than trusting this client.
 	ClientID, ClientSecret string
-	// HTTP is the client every call goes through; nil is the client the context carries
-	// (oauth2.HTTPClient), else http.DefaultClient.
+	// HTTP is the client every call goes through, as a copy that follows no redirect (clientOf);
+	// nil is the client the context carries (oauth2.HTTPClient), else http.DefaultClient.
 	HTTP *http.Client
 
 	mu     sync.Mutex
@@ -77,7 +79,8 @@ type SignIn struct {
 // issuer did not serve prints as the status of the last request (redact.Answered, through
 // redact.Masked, so the error still unwraps to go-oidc's), a 2xx answer read whole that does not
 // read as this issuer's document as fixed text, and a request that failed as its class. A
-// redirect whose target fails is that failure. go-oidc hands back only the text of its error, so
+// redirect is an answer that is no document: the client follows none (clientOf), so it prints as
+// its status and its Location is asked nothing. go-oidc hands back only the text of its error, so
 // the call is read under a CallScope (redact.OAuth2), as every call of go-oidc and x/oauth2 is.
 func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	d.mu.Lock()
@@ -126,17 +129,17 @@ func (d *DeviceFlow) client(ctx context.Context) *http.Client {
 	return clientOf(ctx, d.HTTP)
 }
 
-// clientOf is the client a call of a library over ctx goes through: explicit, else the one ctx
-// carries (oauth2.HTTPClient), else http.DefaultClient, as x/oauth2 itself resolves a context's
-// client.
+// clientOf is the client a call of a library over ctx goes through: a copy that follows no
+// redirect (redirects.Refused) of explicit, else of the one ctx carries (oauth2.HTTPClient), else
+// of http.DefaultClient, as x/oauth2 itself resolves a context's client. A device flow's calls
+// carry the client secret, the device code and the refresh token, and an external account's the
+// subject token and the access token it mints; an OpenID issuer's discovery, device and token
+// endpoints, Google's security token service and IAM Credentials answer no redirect their client
+// must follow, and a followed one would carry the credential on to the host its Location names.
+// A 3xx is the answer, which go-oidc and x/oauth2 refuse by its status.
 func clientOf(ctx context.Context, explicit *http.Client) *http.Client {
-	if explicit != nil {
-		return explicit
-	}
-	if client, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); client != nil {
-		return client
-	}
-	return http.DefaultClient
+	carried, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
+	return redirects.Refused(cmp.Or(explicit, carried, http.DefaultClient))
 }
 
 // Start asks the issuer for a device code and a user code: what the person types in, and where.

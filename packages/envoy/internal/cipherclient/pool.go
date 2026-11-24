@@ -4,6 +4,7 @@ package cipherclient
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 const (
@@ -65,7 +67,8 @@ type PoolIdentity struct {
 	// path is this client's to build, as Google's own libraries build it.
 	SecurityTokenServiceURL string
 	IAMCredentialsURL       string
-	// HTTP is the client both calls go through; nil is http.DefaultClient.
+	// HTTP is the client both calls go through, as a copy that follows no redirect (postGoogle);
+	// nil is http.DefaultClient.
 	HTTP *http.Client
 }
 
@@ -199,13 +202,16 @@ func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAc
 	return answer.Token, nil
 }
 
-// postGoogle posts body to endpoint through client (nil is http.DefaultClient), with bearer on
-// the Authorization header when it is not empty, and decodes the answer into out, which it reads
-// through redact.ReadAnswer. None of its errors holds a library's text or a body: a request that
-// failed is its class (redact.Class), a non-2xx answer its status and registered error code
-// (redact.Answered) - a Google error body's description and message can be anything, an echo of
-// the token the request carried among them - and a success that does not decode fixed text, since
-// the answer holds a token.
+// postGoogle posts body to endpoint through a copy of client (nil is http.DefaultClient) that
+// follows no redirect, with bearer on the Authorization header when it is not empty, and decodes
+// the answer into out, which it reads through redact.ReadAnswer. Google's security token service
+// and IAM Credentials answer no redirect their client must follow, and a followed one would carry
+// the subject token in the body (307, 308), or the bearer net/http copies to the same host name,
+// on to the host its Location names, so a 3xx is the non-2xx answer it is. None of its errors
+// holds a library's text or a body: a request that failed is its class (redact.Class), a non-2xx
+// answer its status and registered error code (redact.Answered) - a Google error body's
+// description and message can be anything, an echo of the token the request carried among them -
+// and a success that does not decode fixed text, since the answer holds a token.
 func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer string, body []byte, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, poolTimeout)
 	defer cancel()
@@ -217,10 +223,7 @@ func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer strin
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
+	resp, err := redirects.Refused(cmp.Or(client, http.DefaultClient)).Do(req)
 	if err != nil {
 		return redact.Class(err)
 	}

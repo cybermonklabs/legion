@@ -27,6 +27,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
 
 // printedSecret stands for a credential in a place it does not belong. No printed text holds it.
@@ -320,25 +321,24 @@ func TestDiscoveryGoesThroughTheClientEveryOtherCallDoes(t *testing.T) {
 	}
 }
 
-// TestARedirectedDiscoveryPrintsWhereItEnded: the status a failed discovery prints is the last
-// request's, so a 302 whose target refuses the connection prints as the refused connection it
-// ended in, and unwraps to it, not as the 302 that sent it there. A discovery the issuer answered
-// 404 prints that status, and its error still unwraps to go-oidc's own: the control. Each status is
-// looked for as the error prints one ("HTTP 302"), never as its digits alone, which the issuer's
-// own address in the same error can hold (port 33025 did).
-func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
-	// A port held refused for the whole test (testport.Refused), not one a closed listener freed.
-	closed := testport.Refused(t)
+// TestARedirectedDiscoveryPrintsItsStatus: the client a discovery goes through follows no redirect
+// (clientOf), so a 302 is the issuer's answer and prints as its status, and the host its Location
+// names is asked nothing. A discovery the issuer answered 404 prints that status, and its error
+// still unwraps to go-oidc's own: the control. Each status is looked for as the error prints one
+// ("HTTP 302"), never as its digits alone, which the issuer's own address in the same error can
+// hold (port 33025 did).
+func TestARedirectedDiscoveryPrintsItsStatus(t *testing.T) {
+	target, asked := redirectstest.Target(t)
 	redirected := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "http://"+closed+"/.well-known/openid-configuration", http.StatusFound)
+		http.Redirect(w, r, "http://"+target+"/.well-known/openid-configuration", http.StatusFound)
 	})
 	_, err := exampleFlow(redirected).Start(context.Background())
 	if err == nil {
-		t.Fatal("Start read a discovery document from a port that is closed")
+		t.Fatal("Start read a discovery document the issuer answered 302")
 	}
-	namesAll(t, "the redirected discovery", err.Error(), "connection refused")
-	if strings.Contains(err.Error(), "HTTP 302") || !errors.Is(err, syscall.ECONNREFUSED) {
-		t.Errorf("the redirected discovery = %q (errors.Is ECONNREFUSED: %t), want the refused connection it ended in", err, errors.Is(err, syscall.ECONNREFUSED))
+	namesAll(t, "the redirected discovery", err.Error(), "the server answered HTTP 302")
+	if n := asked(); n != 0 {
+		t.Errorf("the host the redirect names was asked %d times, want none (Start: %v)", n, err)
 	}
 
 	missing := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
