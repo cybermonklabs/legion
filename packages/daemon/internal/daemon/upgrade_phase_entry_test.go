@@ -43,6 +43,13 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
+// issuePriorityMigration is dispatch://INFRA-3576's 20261124060500_issue_priority, which adds
+// issues.priority. It stands above olderReleasesNewestMigration, yet preEntryStore applies it
+// with the fixture's own migrations: the tree is recorded through this release's PutIssue, which
+// names the column, and the phase entry reads and writes no issues column, so the column changes
+// nothing the upgrade under test reads.
+const issuePriorityMigration = 20261124060500
+
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -85,7 +92,7 @@ func preEntryStore(t *testing.T) *store.Store {
 	}
 	widened := false
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration {
+		if migration.Version == phaseEntryMigration || migration.Version > olderReleasesNewestMigration && migration.Version != issuePriorityMigration {
 			continue
 		}
 		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -117,7 +124,7 @@ func migrationsAbove(t *testing.T, version int) int {
 	}
 	withheld := 0
 	for _, migration := range all {
-		if migration.Version > version {
+		if migration.Version > version && migration.Version != issuePriorityMigration {
 			withheld++
 		}
 	}

@@ -386,6 +386,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
 			"ancestry": issue.Ancestry,
+			// The record's P1 as the wire spells a Dispatch priority: its number, 0 for P0.
+			"priority": 1,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,
