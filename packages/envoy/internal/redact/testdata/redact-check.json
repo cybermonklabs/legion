@@ -3576,6 +3576,11 @@
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
       {
+        "file": "packages/envoy/internal/cipher/proxy/dpop.go",
+        "callee": "(net/http.RoundTripper).RoundTrip",
+        "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
+      },
+      {
         "file": "packages/envoy/internal/cipherclient/dpop.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
