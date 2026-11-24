@@ -482,7 +482,10 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 			// The row before this one deleted its stream, the account's last, so this create can
 			// meet the store failure CreateStream retries (its doc says how): a direct create
 			// failed there with "err_code=10049 description=error creating store for stream".
-			stream := CreateStream(t, js, config)
+			stream, err := js.CreateStream(t.Context(), config) // plant: the direct create
+			if err != nil {
+				t.Fatalf("create the stream: %v", err)
+			}
 			t.Cleanup(func() {
 				if err := js.DeleteStream(context.Background(), row.stream); err != nil {
 					t.Errorf("delete the stream: %v", err)
