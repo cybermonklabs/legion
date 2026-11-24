@@ -184,9 +184,15 @@ func goRuleCopies(text string) int {
 	return len(ruleNeedle.FindAllStringIndex(text, -1))
 }
 
-// sqlRuleCopies is each .sql file of the module that spells the rule, read with its comments
-// blanked (sqlCode), as its path with the number of copies in it. A walk that read no migration
-// would answer none for a reason other than there being none, so it fails the test instead.
+// sqlRuleCount is the number of copies of the rule in a SQL text, read with its comments blanked
+// (sqlCode).
+func sqlRuleCount(text string) int {
+	return len(ruleNeedle.FindAllStringIndex(sqlCode(text), -1))
+}
+
+// sqlRuleCopies is each .sql file of the module that spells the rule (sqlRuleCount), as its path
+// with the number of copies in it. A walk that read no migration would answer none for a reason
+// other than there being none, so it fails the test instead.
 func sqlRuleCopies(t *testing.T) []string {
 	t.Helper()
 	copies := []string{}
@@ -204,7 +210,7 @@ func sqlRuleCopies(t *testing.T) []string {
 		if filepath.Dir(path) == migrationDir {
 			migrations++
 		}
-		if spelled := len(ruleNeedle.FindAllStringIndex(sqlCode(string(text)), -1)); spelled > 0 {
+		if spelled := sqlRuleCount(string(text)); spelled > 0 {
 			copies = append(copies, fmt.Sprintf("%s (%d)", filepath.ToSlash(path), spelled))
 		}
 		return nil
@@ -308,6 +314,9 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	}{
 		{`const q = "select coalesce(asked_of, assignee) from asks"`, 1},
 		{`const q = "select coalesce( a.asked_of , i.assignee ) from asks a"`, 1},
+		// SQL in a raw string, under a quoted qualifier holding a doubled quote and under one past ASCII.
+		{"const q = `select coalesce(\"a\"\"b\".asked_of, 'fallback') from asks as \"a\"\"b\"`", 1},
+		{"const q = `select coalesce(ä.asked_of, 'fallback') from asks as ä`", 1},
 	} {
 		if got := goRuleCopies(planted.source); got != planted.spelled {
 			t.Errorf("the Go count finds %d copies of the rule in %q, want %d", got, planted.source, planted.spelled)
@@ -335,9 +344,27 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		{"create function f() returns void language plpgsql as $$ begin -- coalesce(a.asked_of, i.assignee)\nend $$", 0},
 		{"create function f() returns text language sql as $body$ select coalesce(a.asked_of, i.assignee) from asks a $body$", 1},
 		{"select $q$ -- $q$, coalesce(a.asked_of, i.assignee) from asks a", 1},
+		// A qualifier is any identifier PostgreSQL's lexer reads (scan.l): a quoted one holding a
+		// doubled quote, which stands for one quote; an unquoted one with a character past ASCII or
+		// a `$` in it; and a quoted one with Unicode escapes, with or without its UESCAPE clause.
+		{`select coalesce("a""b".asked_of, 'fallback') from asks as "a""b"`, 1},
+		{"select coalesce(ä.asked_of, 'fallback') from asks as ä", 1},
+		{"select coalesce(a$1.asked_of, 'fallback') from asks as a$1", 1},
+		{`select coalesce(U&"\00e4".asked_of, 'fallback') from asks as U&"\00e4"`, 1},
+		{`select coalesce(U&"!00e4" UESCAPE '!'.asked_of, 'fallback') from asks as U&"!00e4" UESCAPE '!'`, 1},
+		{`select coalesce(a.U&"asked_of", 'fallback') from asks a`, 1},
+		// The same text wholly inside a line comment or a nested block comment is no copy.
+		{"-- coalesce(\"a\"\"b\".asked_of, 'fallback')\nselect 1", 0},
+		{"-- coalesce(ä.asked_of, 'fallback')\nselect 1", 0},
+		{"/* outer /* inner */ coalesce(\"a\"\"b\".asked_of, 'fallback') */ select 1", 0},
+		{"/* outer /* inner */ coalesce(ä.asked_of, 'fallback') */ select 1", 0},
+		// A line comment ends at a carriage return as it does at a newline (scan.l's non_newline).
+		{"-- a note\rselect coalesce(a.asked_of, i.assignee) from asks a", 1},
+		// A name is read whole: asked_of with a character past ASCII after it is another column.
+		{"select coalesce(a.asked_ofä, i.assignee) from asks a", 0},
 	} {
-		if got := len(ruleNeedle.FindAllStringIndex(sqlCode(planted.sql), -1)); got != planted.spelled {
-			t.Errorf("the needle counts %d copies of the rule in %q, want %d", got, planted.sql, planted.spelled)
+		if got := sqlRuleCount(planted.sql); got != planted.spelled {
+			t.Errorf("the .sql count finds %d copies of the rule in %q, want %d", got, planted.sql, planted.spelled)
 		}
 	}
 	if t.Failed() {
