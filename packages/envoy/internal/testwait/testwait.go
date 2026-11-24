@@ -130,7 +130,7 @@ func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read fun
 // select happens to pick ch.
 func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
-	if end, bounded := giveUpAt(t); !bounded || time.Now().Before(end) {
+	if end, bounded := giveUpAt(t); !bounded || clock.Now().Before(end) {
 		expired, stop := expiry(t)
 		defer stop()
 		select {
@@ -173,7 +173,7 @@ func Context(t *testing.T) context.Context {
 // (bounded false) it asks until holds reports true.
 func asked(end time.Time, bounded bool, poll time.Duration, holds func() bool) bool {
 	for !holds() {
-		if bounded && !time.Now().Before(end) {
+		if bounded && !clock.Now().Before(end) {
 			return false
 		}
 		time.Sleep(poll)
@@ -188,8 +188,7 @@ func expiry(t *testing.T) (<-chan time.Time, func() bool) {
 	if !bounded {
 		return nil, func() bool { return false }
 	}
-	timer := time.NewTimer(time.Until(end))
-	return timer.C, timer.Stop
+	return clock.Timer(end)
 }
 
 // giveUpAt is the moment Until, Receive and Context give up in t: the test binary's deadline less
