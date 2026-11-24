@@ -3595,7 +3595,7 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		}
 		return token
 	}
-	if err := s.readQueued(ctx, tx, issues, fmt.Sprintf("read the queued role runs of %d issues", len(issues)), reaches,
+	if err := s.readQueued(ctx, tx, issues, func() string { return fmt.Sprintf("read the queued role runs of %d issues", len(issues)) }, reaches,
 		func(token claim.Token, queued QueuedSupervise) {
 			run := runs[token]
 			run.Queued = append(run.Queued, queued)
@@ -3629,7 +3629,7 @@ func (s *Postgres) ClaimQueued(ctx context.Context, tx pgx.Tx, token claim.Token
 		return token
 	}
 	var queued []QueuedSupervise
-	if err := s.readQueued(ctx, tx, []string{issue}, fmt.Sprintf("read the queued rows of claim %s of %s", token, issue), reaches,
+	if err := s.readQueued(ctx, tx, []string{issue}, func() string { return fmt.Sprintf("read the queued rows of claim %s of %s", token, issue) }, reaches,
 		func(_ claim.Token, row QueuedSupervise) { queued = append(queued, row) }); err != nil {
 		return nil, err
 	}
@@ -3653,7 +3653,7 @@ type queuedIdentity struct {
 // the caller does not read, and only a row it answers a claim for is decoded and handed to add, so
 // a row that does not decode fails only a read that selects it. describe names the read in its
 // errors.
-func (s *Postgres) readQueued(ctx context.Context, tx pgx.Tx, issues []string, describe string,
+func (s *Postgres) readQueued(ctx context.Context, tx pgx.Tx, issues []string, describe func() string,
 	reaches func(queuedIdentity, map[PhaseRole]PhaseEntry) claim.Token, add func(claim.Token, QueuedSupervise)) error {
 	entries, err := s.PhaseEntries(ctx, tx, issues)
 	if err != nil {
@@ -3664,7 +3664,7 @@ func (s *Postgres) readQueued(ctx context.Context, tx pgx.Tx, issues []string, d
 		now() - created_at, coalesce(lease_token <> '' and lease_until > now(), false)
 		from outbox where kind = $1 and issue = any($2) order by id`, string(OutboxKindSupervise), issues)
 	if err != nil {
-		return fmt.Errorf("%s: %w", describe, err)
+		return fmt.Errorf("%s: %w", describe(), err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -3673,7 +3673,7 @@ func (s *Postgres) readQueued(ctx context.Context, tx pgx.Tx, issues []string, d
 		var running bool
 		row, err := scanOutbox(rows, &role, &generation, &named, &age, &running)
 		if err != nil {
-			return fmt.Errorf("%s: %w", describe, err)
+			return fmt.Errorf("%s: %w", describe(), err)
 		}
 		token := reaches(queuedIdentity{roleRunIdentity: roleRunIdentity{issue: row.Issue, role: role, generation: generation}, named: claim.Token(named)}, entries)
 		if token == "" {
@@ -3690,7 +3690,7 @@ func (s *Postgres) readQueued(ctx context.Context, tx pgx.Tx, issues []string, d
 		add(token, QueuedSupervise{ID: row.ID, Request: request, Attempts: row.Attempts, Running: running, Age: age})
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("%s: %w", describe, err)
+		return fmt.Errorf("%s: %w", describe(), err)
 	}
 	return nil
 }
