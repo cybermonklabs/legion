@@ -2648,6 +2648,21 @@ test("read_state names the reached claim after a generation clears a second agen
   }
 });
 
+test("read_state names a pause stop whose claim does not parse by issue and role alone", async () => {
+  const state = legionState({
+    paused: {
+      id: 9,
+      since: "2026-11-16T08:00:00Z",
+      by: { kind: "operator" },
+      reason: "a provider outage",
+      waitsOn: [{ claim: "not-an-agent-token", issue: "LEGION-208", role: "implementer", askedAt: "2026-11-16T08:00:00Z" }],
+      held: [],
+    },
+  });
+  const line = (await summaryLinesOf(recordingDaemon({ state }).daemon)).find((line) => line.startsWith("paused: "));
+  expect(/; waits on 1 claim — (.+); holds no row$/.exec(line ?? "")?.[1]).toBe("LEGION-208 implementer");
+});
+
 // What the controller reads of the wake pacing in `read_state` with no field: one line with how
 // many wakes the pacing holds until their turn and when the earliest of them is due. The
 // controller's skill has it read that line after a resume (`skills/legion-controller/references/
