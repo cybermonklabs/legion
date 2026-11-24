@@ -10,11 +10,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
+// staleTestBound is the bound of each read and of the boot's pass in the test of the pass's bound:
+// long enough that a loaded machine's scheduling stays well inside half of it, short beside the
+// daemon's own 30 s.
+const staleTestBound = 2 * time.Second
+
 // The boot's stale-plugin pass holds the API's start until it returns, so it is bounded as a
-// whole (stalePluginBootBound). Over a store that takes each read and never answers, two stale
-// claims of a role that is none of Legion's hold the boot for the one bound, not for a bound
-// each, and one line names the two claims left to the next sweep. No line of a failed read is
-// written for a read the pass's own bound ended.
+// whole (staleBootBound). Over a store that takes each read and never answers, two stale claims
+// of a role that is none of Legion's hold the boot for the one bound, not for a bound each, and
+// one line names the two claims left to the next sweep. No line of a failed read is written for a
+// read the pass's own bound ended. The two bounds are the test's own and equal, as the daemon's
+// are (stalePluginReadBound, stalePluginBootBound), so it waits out its own bound and not the
+// daemon's half minute.
 //
 // The control is the pass without its own bound, run by hand: each read then ends at its own
 // bound, one after the other, and the pass holds the boot for twice the bound.
@@ -25,14 +32,15 @@ func TestTheBootsStalePluginPassHoldsTheBootForOneBoundWhateverTheFleet(t *testi
 	}
 	logs := &syncBuffer{}
 	s := stalePassSupervision(t, logs, hung)
+	s.staleReadBound, s.staleBootBound = staleTestBound, staleTestBound
 	s.claims = staleProbers(t, 2)
 
 	began := time.Now()
 	s.bootStalePlugins()
 	held := time.Since(began)
 
-	if held >= stalePluginBootBound+stalePluginBootBound/2 {
-		t.Fatalf("the boot's pass held the boot %s over a store that never answers, want its one bound, %s", held, stalePluginBootBound)
+	if held >= staleTestBound+staleTestBound/2 {
+		t.Fatalf("the boot's pass held the boot %s over a store that never answers, want its one bound, %s", held, staleTestBound)
 	}
 	lines := loggedLines(t, logs.String(), "supervise: the stale-plugin pass's bound ended before it read every claim")
 	if len(lines) != 1 || lines[0]["claims"] != float64(2) {

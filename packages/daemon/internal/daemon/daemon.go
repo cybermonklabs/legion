@@ -5,6 +5,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1526,6 +1527,12 @@ type supervision struct {
 	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
 	// grants every refresh.
 	refreshGate supervise.RefreshAdmitter
+	// staleReadBound and staleBootBound bound the stale-plugin pass: each read of a claim's plan
+	// (refreshStalePlugins) and the boot's pass as a whole (bootStalePlugins). Zero is the
+	// production stalePluginReadBound and stalePluginBootBound, which every supervision the daemon
+	// opens keeps. A test of the bounds shortens them, so it waits out its own bound rather than
+	// the daemon's half minute.
+	staleReadBound, staleBootBound time.Duration
 	// backends is the one decision of the harness a role runs on for a claim of an issue
 	// (roleBackends), which the launch, the stale-plugin rule (noPluginInstall) and the API's
 	// compaction route read; nil in a supervision a test builds by hand reads worker_backends alone.
@@ -2204,12 +2211,12 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // the plan of a claim's issue, and the boot's budget can be spent by now: the replay before it runs
 // on a budget of its own, since the boot's would end it (run). So it runs on the machines'
 // context, which the daemon's stop ends as it ends the boot, with a hold mark of its own. The API
-// starts only once it returns, so it is bounded as a whole (stalePluginBootBound), whatever the
+// starts only once it returns, so it is bounded as a whole (staleBootBound), whatever the
 // fleet's size. A daemon that cannot relaunch onto a plugin writes its boot line for each stale
 // claim the pass read within that bound; one line names how many it did not read, and the next
 // sweep reads them.
 func (s *supervision) bootStalePlugins() {
-	pass, end := context.WithTimeout(store.ForConcurrentWorker(s.supervisor.ctx), stalePluginBootBound)
+	pass, end := context.WithTimeout(store.ForConcurrentWorker(s.supervisor.ctx), cmp.Or(s.staleBootBound, stalePluginBootBound))
 	defer end()
 	s.refreshStalePlugins(pass, s.claims, "boot")
 }

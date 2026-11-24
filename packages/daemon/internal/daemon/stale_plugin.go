@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 
@@ -111,7 +112,7 @@ import (
 // A claim whose read of whether its launch installs a plugin fails is decided nothing by this
 // pass: no relaunch is posted and no line says it is stale, since nothing established either.
 // One Warn line names the claim and the read's error, and the next sweep reads it again. Each
-// read is bounded on its own (stalePluginReadBound), whatever the pass's context allows. A read
+// read is bounded on its own (staleReadBound), whatever the pass's context allows. A read
 // that fails because ctx ended, the daemon stopping, says nothing of the store: the pass writes
 // no line for it and ends there, since no sweep follows a stop.
 //
@@ -122,7 +123,7 @@ import (
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervise.Claim, trigger string) {
 	noInstall := func(ctx context.Context, c supervise.Claim) (bool, error) {
-		read, end := context.WithTimeout(ctx, stalePluginReadBound)
+		read, end := context.WithTimeout(ctx, cmp.Or(s.staleReadBound, stalePluginReadBound))
 		defer end()
 		return noPluginInstall(read, s.cfg, s.backends, c)
 	}
