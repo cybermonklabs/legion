@@ -27,8 +27,10 @@ export const LAYOUT_GROUP_MAX = 10;
  * it carries `data-layout-open` too, since then it shows more than its cap by the reader's own
  * choice.
  *
- * `label` is the group in words, a plural noun ("labels"), which ends the button's name: "Show 3
- * more labels", and "Show fewer labels" while open. `className` lays the group out; `contents`
+ * `label` is the group in words, a plural noun ("labels"), which ends the button's name. Closed,
+ * the name opens with the visible "+N", so a voice reader who says what the button reads presses
+ * it (WCAG 2.5.3), then counts the whole group, which is at least two: "+3, show all 13 labels".
+ * Open, it reads "Show fewer labels". `className` lays the group out; `contents`
  * lets its entries flow in the row around it, beside a control the host draws after them.
  *
  * Given `list`, the group is a list named by it: a `ul` with each entry in an `li`, and the
@@ -60,7 +62,9 @@ export function CappedGroup({
       <button
         aria-controls={groupId}
         aria-expanded={open}
-        aria-label={open ? `Show fewer ${label}` : `Show ${hidden} more ${label}`}
+        aria-label={
+          open ? `Show fewer ${label}` : `+${hidden}, show all ${entries.length} ${label}`
+        }
         className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
         data-layout-more={list === undefined ? "" : undefined}
         onClick={() => setOpen((current) => !current)}

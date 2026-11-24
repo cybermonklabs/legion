@@ -46,7 +46,7 @@ test("a group of eleven draws ten and +1, which opens the rest in place and fold
   try {
     const group = view.container.querySelector<HTMLElement>('[data-layout-group="labels"]');
     expect(drawn(group as HTMLElement)).toEqual(labels(10));
-    const more = screen.getByRole("button", { name: "Show 1 more labels" });
+    const more = screen.getByRole("button", { name: "+1, show all 11 labels" });
     expect(more).toHaveTextContent("+1");
     expect(more).toHaveAttribute("aria-expanded", "false");
     expect(more).toHaveAttribute("aria-controls", group?.id ?? "");
@@ -66,19 +66,33 @@ test("a group of eleven draws ten and +1, which opens the rest in place and fold
 
     await user.click(fewer);
     expect(drawn(group as HTMLElement)).toEqual(labels(10));
-    expect(screen.getByRole("button", { name: "Show 1 more labels" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "+1, show all 11 labels" })).toHaveFocus();
   } finally {
     view.unmount();
   }
 });
 
-test("a cap below ten is the group's own, and the measure is told it", () => {
+// The closed control's name opens with the text it shows, so a voice reader who says "+2" presses
+// it (WCAG 2.5.3), and counts the whole group, never a "1 more" that would need a singular.
+test("a cap below ten is the group's own, the measure is told it, and the control's name starts with what it shows", () => {
   const view = render(<Labels count={5} max={3} />);
   try {
     const group = view.container.querySelector<HTMLElement>('[data-layout-group="labels"]');
     expect(group).toHaveAttribute("data-layout-max", "3");
     expect(drawn(group as HTMLElement)).toEqual(labels(3));
-    expect(screen.getByRole("button", { name: "Show 2 more labels" })).toHaveTextContent("+2");
+    const more = screen.getByRole("button", { name: "+2, show all 5 labels" });
+    expect(more).toHaveTextContent("+2");
+    expect(more.getAttribute("aria-label")?.startsWith(more.textContent ?? "")).toBe(true);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a group of four capped at three names its control +1, show all 4", () => {
+  const view = render(<Labels count={4} max={3} />);
+  try {
+    const more = screen.getByRole("button", { name: "+1, show all 4 labels" });
+    expect(more).toHaveTextContent("+1");
   } finally {
     view.unmount();
   }
@@ -113,7 +127,7 @@ test("given a list name, the group is a named list whose control sits in an item
     expect(drawn(list)).toEqual(labels(10));
     const items = within(list).getAllByRole("listitem");
     expect(items).toHaveLength(11);
-    const more = screen.getByRole("button", { name: "Show 2 more agents" });
+    const more = screen.getByRole("button", { name: "+2, show all 12 agents" });
     expect(more.parentElement).toBe(items[10] ?? null);
     expect(items[10]).toHaveAttribute("data-layout-more");
     expect(more).not.toHaveAttribute("data-layout-more");
