@@ -485,6 +485,9 @@ func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.Ch
 		return noBases(model.ReasonReadFailed)
 	}
 	compared := c.branchesIn(ctx, check, repo, true, len(own.pulls) > 0 || len(linked.repos) > 0)
+	for index := range compared.merges {
+		compared.merges[index] = mergeAnswer{state: mergeNotAsked}
+	}
 	if len(compared.bases) == 0 && compared.reason == "" {
 		compared = noBases(model.ReasonRepositoryUnreadable)
 	}
