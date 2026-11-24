@@ -182,8 +182,11 @@ export const REFERENCE_TARGETS_MAX = 256;
  * `IDEMPOTENCY_REPLAYED_HEADER` and the resource read afresh in the first answer's shape (a
  * broadcast with the first answer's `excluded`), so a recipient whose attempt a live sender holds
  * can still read `pending`, and a repeat after a lost answer is that replay, never
- * `409 IDEMPOTENCY_KEY_COMMITTED`. Where a first answer was a comment or an issue message, eight
- * routes answer its repeat with that post read afresh, under the first answer's status: a
+ * `409 IDEMPOTENCY_KEY_COMMITTED`. `POST /api/v1/issues/{key}/status-change` keeps a recovery
+ * point too: a repeat of a finished call answers its `200` from what its steps stored, each issue
+ * as its step's write answered it, and a repeat that takes the key of a call that stopped runs
+ * only the steps the point does not hold. Where a first answer was a comment or an issue message,
+ * eight routes answer its repeat with that post read afresh, under the first answer's status: a
  * comment's edit, resolve, reopen, accept and reject, an issue message's edit, and a session's
  * reply to a comment or a message. Any other stored success is not replayed once it holds a
  * comment or an issue message that is deleted (an object whose own id is the post, such as a
