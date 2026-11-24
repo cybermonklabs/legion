@@ -8,7 +8,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
     ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:77,78,330,3131 and legion-role-claim.test.ts:14,15,102 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1265"),
-    ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:352 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :30) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-48 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
+    ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:350 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :30) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-48 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
     ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:43), outside the package it builds"),
     ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
     ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:14, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:20, scripts/prepack.test.ts:4"),
@@ -28,12 +28,12 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :238-242 reads the roots at :228-236; scripts/skill-scenarios/rig.test.ts:1297,1540; prepack stages skills"),
     ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34"),
     ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
-    (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:238-242 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :231"),
-    ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:238-242, a root of the list at :230"),
-    ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:238-242, a root of the list at :232"),
-    ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:238-242, a root of the list at :233"),
-    ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:238-242, a root of the list at :234"),
-    ("README.md", "packages/pi-legion/src/skills-guard.test.ts:238-242, a root of the list at :235"),
+    (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:236-240 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :229"),
+    ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :228"),
+    ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :230"),
+    ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :231"),
+    ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :232"),
+    ("README.md", "packages/pi-legion/src/skills-guard.test.ts:236-240, a root of the list at :233"),
     ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:19 imports scripts/e2e/lib/script-functions and :700 sources scripts/e2e/lib/loopback-dsn.sh for the services_up row; rig.sh:333 sources scripts/e2e/lib/rig.sh"),
     ("packages/envoy/scripts/lib/pg-url.sh", "packages/pi-legion/scripts/skill-scenarios/rig.sh:337 sources it for pg_sql and safe_url; "
                                              "rig.test.ts:653 sources it for the safe_url row, :699 for the services_up row and :1541 copies it beside rig.sh, and "
