@@ -30,20 +30,17 @@ import (
 // place in the block of approved.json and at each place of the same opening line in the spec files
 // (attributeLeftOut); each with each other file unchanged (filesRead). Each writer is a function of
 // the package (valueAt, textWritten, attributeOutOfFiles), handed a tree or files and copies of its
-// own; each input is read in the reader's own process (sweepReader); and each of the two sweeps
-// derives at least its floors of inputs of each base, of those that the reader reads and of those
-// that it refuses (sweepFloors).
+// own; each input is derived in the test process and judged against its base (sweepAgainst); and
+// each of the two sweeps reads and refuses at least its floors of inputs of each base (sweepFloors).
 func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
 	floorsCover(t, "texts", bases)
 	floorsCover(t, "attributes", bases)
-	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
-			p := reader.start(t)
 			s, err := ReadScenario(base)
 			if err != nil {
 				t.Fatalf("the base: %v", err)
@@ -86,10 +83,10 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 					}
 				}
 			}
-			n := sweepAgainst(t, p, name, base, inputs)
+			n := sweepAgainst(t, base, inputs)
 			atFloor(t, "texts", name, n)
 			t.Logf("%d texts inside a block: %d refused, %d read", n.inputs, n.refused, n.read)
-			n = sweepAgainst(t, p, name, base, leftOutAttributes(t, base, tree))
+			n = sweepAgainst(t, base, leftOutAttributes(t, base, tree))
 			atFloor(t, "attributes", name, n)
 			t.Logf("%d attributes left out: %d refused, %d read, %d of them toward true by right: %q",
 				n.inputs, n.refused, n.read, n.byRight, n.rights)

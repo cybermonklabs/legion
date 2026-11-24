@@ -431,7 +431,7 @@ func treePointer(place []string) string {
 }
 
 // encodeTree is the JSON text of the tree v, with the members of each object in the order of their
-// names, so that one tree has one text (readerLine).
+// names, so that one tree has one text (filesKey).
 func encodeTree(t *testing.T, v any) []byte {
 	t.Helper()
 	data, err := json.Marshal(v, json.Deterministic(true))
@@ -442,7 +442,7 @@ func encodeTree(t *testing.T, v any) []byte {
 }
 
 // encodeTree writes one tree as one text, whatever the order in which Go gives the keys of a map,
-// and the distinct-input check rests on it (readerLine): each of ten encodes of an object of 26
+// and the distinct-input check rests on it (filesKey): each of ten encodes of an object of 26
 // members, decoded from a text that names them from z to a, is the text that names them from a to
 // z. An encode in the order in which Go gives the keys of the map writes that text only by chance.
 func TestEncodeTreeWritesOneTreeAsOneText(t *testing.T) {

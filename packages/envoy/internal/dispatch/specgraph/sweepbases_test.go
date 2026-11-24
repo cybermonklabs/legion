@@ -20,8 +20,7 @@ import (
 
 // sweepBases is each base that the sweeps read, by its name (sweepBaseNames), each built alone by
 // sweepBase from a read of its scenario of its own: the setup of each sweep. No code that builds one
-// base holds another, so a writer of a base reaches its own base alone; and the floor's digest of
-// each sweep holds the bytes of each base that it read (sweepCount.judged).
+// base holds another, so a writer of a base reaches its own base alone.
 func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	t.Helper()
 	bases := map[string]fstest.MapFS{}
@@ -116,8 +115,8 @@ type builtBase struct {
 // sweep adds each planted_on that a record names and c9, no commit of the history. And the same
 // later failing example planted on c9, which no commit of the history holds: it counts from no
 // commit, so the check reads unknown (planted_on_outside_history) at c2 and at m2, and the refusal
-// sweep refuses the check at c9 and at f2, neither of which may take it out (countedCommit gives it
-// no commit, so neither refusal has a right). And carry with its failing example in the form of a
+// sweep refuses the check at c9 and at f2, neither of which takes it out (refusalsTakeOut names
+// neither, so neither refusal has a right). And carry with its failing example in the form of a
 // query or an agent of the code, its commit c1 and no planted_on and no fault path: as no step
 // planted it, it counts nowhere, and the check reads unknown (no_planted_on) at c2 and at m2, so
 // the member sweep adds planted_on, and fault_paths, to a failing example that neither alone makes
