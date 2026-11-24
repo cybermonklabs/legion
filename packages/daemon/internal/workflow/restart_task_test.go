@@ -74,7 +74,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		engine, logged := loggedEngine()
 		root := stoppedAtTesting(t, pool, engine)
 		stopped := taskOf(t, pool, engine, root.Key)
-		entry := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry
+		entry := topEntryOf(t, pool, root.Key)
 		writes, statuses, prompts := len(stepWrites(t, pool, root.Key)), len(statusWrites(t, pool, root.Key)), len(hookPrompts(t, pool))
 		logged.Reset()
 
@@ -103,7 +103,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		}
 		row := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer)
 		if row.Entry != entry+1 || !row.EntryMovedBack || !strings.Contains(row.EntryTask, restartedBy) {
-			t.Fatalf("the implementer's row has entry %d (moved back %v) and task %q, want entry %d, raised as a move back, whose task holds %q",
+			t.Fatalf("the implementer's row has entry %d (moved back %v) and task %q, want entry %d, one above the issue's highest, raised as a move back, whose task holds %q",
 				row.Entry, row.EntryMovedBack, row.EntryTask, entry+1, restartedBy)
 		}
 		starts := superviseRowsOf(t, pool, root.Key, "start")

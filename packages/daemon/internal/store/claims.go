@@ -581,17 +581,7 @@ func readClaims(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, error) {
 // claimRepository, the tmux runtime's Options.ClaimRepository), the one its bundle's write token
 // reaches, since a token spells its issue lowercased. A token no claim holds is refused.
 func (s *Store) ClaimIssue(ctx context.Context, token claim.Token) (string, error) {
-	var issue string
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `select issue from claims where token = $1`, string(token)).Scan(&issue)
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", fmt.Errorf("no claim holds token %s", token)
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the issue of claim %s: %w", token, err)
-	}
-	return issue, nil
+	return s.claimColumn(ctx, token, "issue")
 }
 
 // ClaimRole is the stored role of the claim of token, the role of the step its agent does now,
@@ -599,17 +589,25 @@ func (s *Store) ClaimIssue(ctx context.Context, token claim.Token) (string, erro
 // runtime's Options.ClaimRole), since a token names its agent and not its role. A token no claim
 // holds is refused.
 func (s *Store) ClaimRole(ctx context.Context, token claim.Token) (claim.Role, error) {
-	var role string
+	role, err := s.claimColumn(ctx, token, "role")
+	return claim.Role(role), err
+}
+
+// claimColumn is column of the claim of token (ClaimIssue, ClaimRole), read in a read-only
+// transaction of its own; a token no claim holds is refused. column is a column name its callers
+// spell, never a value read from outside.
+func (s *Store) claimColumn(ctx context.Context, token claim.Token, column string) (string, error) {
+	var value string
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `select role from claims where token = $1`, string(token)).Scan(&role)
+		return tx.QueryRow(ctx, `select `+column+` from claims where token = $1`, string(token)).Scan(&value)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("no claim holds token %s", token)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read the role of claim %s: %w", token, err)
+		return "", fmt.Errorf("read the %s of claim %s: %w", column, token, err)
 	}
-	return claim.Role(role), nil
+	return value, nil
 }
 
 // claimMayRun is the stored claim that may still hold a process: one in a state that runs, or one

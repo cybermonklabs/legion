@@ -906,8 +906,8 @@ primary_issue() {
   wait_for_worker "$root_issue" reviewer
   pass
 
-  # Three real GitHub changes-requested reviews, each posted by the reviewer pane, which then
-  # records its handoff and completes its phase, exercise the round counter, the return to
+  # Three real GitHub changes-requested reviews, each posted by the reviewer pane, whose
+  # completion then names its handoff record, exercise the round counter, the return to
   # implementing, and the third `pr-blocked` publication. Every recovery repeats the real workers.
   for round in 1 2 3; do
     begin "review-round-$round-changes-requested"

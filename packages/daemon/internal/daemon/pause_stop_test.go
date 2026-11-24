@@ -1058,10 +1058,11 @@ func (r *pauseRig) atTheCheckersStep() (worker, other supervise.Claim) {
 	return worker, other
 }
 
-// backstopsDue is each claim's role with an open backstop of LEGION-208, by role.
+// backstopsDue is the claim of each open backstop of LEGION-208, by claim. Both claims of
+// atTheCheckersStep hold the checker's role, so only the claim tells which one a backstop wakes.
 func (r *pauseRig) backstopsDue() []string {
 	r.t.Helper()
-	rows, err := r.pool.Query(r.ctx, `select role from pod_wake_backstops where issue = $1 and not fired order by role`, pauseIssue)
+	rows, err := r.pool.Query(r.ctx, `select claim from pod_wake_backstops where issue = $1 and not fired order by claim`, pauseIssue)
 	if err != nil {
 		r.t.Fatalf("read the backstops of %s: %v", pauseIssue, err)
 	}
@@ -1087,8 +1088,8 @@ func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
 		t.Fatalf("backstops after the stop of the checker's own claim = %v, want none: it works no step", got)
 	}
 	r.mustStop(worker, supervise.PauseStop{Pause: held.ID})
-	if got := r.backstopsDue(); len(got) != 1 || got[0] != string(stepPauseChecker) {
-		t.Fatalf("backstops after the stop of the step's worker = %v, want the checker's step's one", got)
+	if got := r.backstopsDue(); len(got) != 1 || got[0] != string(worker.Token) {
+		t.Fatalf("backstops after the stop of the step's worker = %v, want the step's worker %s's one", got, worker.Token)
 	}
 }
 
@@ -1117,8 +1118,8 @@ func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
 	if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and issue = $2`, held.ID, pauseIssue); got != 2 {
 		t.Fatalf("stops the cancel recorded = %d, want both claims of the checker", got)
 	}
-	if got := r.backstopsDue(); len(got) != 1 || got[0] != string(stepPauseChecker) {
-		t.Fatalf("backstops after the paused cancel = %v, want the checker's step's one", got)
+	if got := r.backstopsDue(); len(got) != 1 || got[0] != string(worker.Token) {
+		t.Fatalf("backstops after the paused cancel = %v, want the step's worker %s's one, not the checker's own claim %s's", got, worker.Token, other.Token)
 	}
 }
 

@@ -61,9 +61,6 @@ func newPodRefusalRigOf(t *testing.T, answers func(pool *store.Pool, records rec
 	clock := &heldClock{}
 	sup.deps.Clock = clock
 	told := answers(pool, runner.records)
-	// The runtime reads the claims' machines through the outbox, as the daemon's does once attach
-	// has stored it (workflowRuntime.outboxWake).
-	told.outboxWake.Store(runner)
 	sup.deps.PodRefused = told.podRefused
 	runner.handlers = told.handlers
 	if deps != nil {
@@ -672,11 +669,13 @@ func (r *podRefusalRig) startRow() record.OutboxRow {
 	return row
 }
 
-// podRefusedSpecs is the spec builder of a test whose launch is refused before the claim asks to
-// hold its session: it answers every launch with pod-1's refusal (runtime.AwaitsPodUpdate), as the
-// runtime answers a launch into a pod built without the role's slot. A launch builds its spec
-// before it holds the names of the session it resumes (supervise's start), so this refusal leaves
-// the claim holding nothing, and another claim can then hold the session the claim records.
+// podRefusedSpecs is the spec builder of a test that needs a claim refused by its pod while it
+// holds no name of the session it records. It answers every launch with pod-1's refusal
+// (runtime.AwaitsPodUpdate), which no real spec builder returns: it stands in for a state that a
+// daemon may not reach in one run, since a real launch holds the session's names before the
+// runtime can refuse it and the machine keeps the names it holds. A launch builds its spec before
+// it holds those names (supervise's start), so this refusal leaves the claim holding nothing, and
+// another claim can then hold the session the claim records.
 type podRefusedSpecs struct{}
 
 func (podRefusedSpecs) SpawnSpec(_ context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
@@ -688,10 +687,10 @@ func (podRefusedSpecs) SpawnSpec(_ context.Context, c supervise.Claim) (runtime.
 // while the pod stands. Here the issue has moved on to reviewing, so the start the refusal queues
 // is of no phase and carries no task, and no delivery refuses it. The rule's resume is refused by
 // the pod that still stands before the claim's session is asked about, as the operator's resume is
-// (supervise's resumeByRule and resume), and the outbox holds a start of the claim while its
-// machine still reports the refusal (supervise.Machine.RefusalStands). Were the start to end, its
-// end would ask the workflow again (intake.RefusedStartEnded), whose start would end the same way,
-// at the database's speed: one row, one fact and one log line a turn, telling nobody.
+// (supervise's resumeByRule and resume), so the start waits for the pod. Were it answered for the
+// session first and ended, its end would ask the workflow again (intake.RefusedStartEnded), whose
+// start would end the same way, at the database's speed: one row, one fact and one log line a turn,
+// telling nobody.
 func TestARefusedClaimThatRecordsASessionItDoesNotHoldWaitsForItsPod(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -868,4 +867,44 @@ func TestAStartAnEarlierRefusalQueuedAsksAgainWhenAnotherPodRefusesItsLaunch(t *
 	r.runner.settle(ctx, row, nil)
 	r.owedEntryQueued()
 	r.outboxSettles()
+}
+
+// While a refusal's report is not yet taken, the machine's next report of the same refusal — the
+// hourly one while the pod stands (supervise's tellPodRefused) — starts no second report: the
+// first is still tried, and two would each tell the issue and the controller once the store took
+// them. Here the store refuses every report; the second report of pod-1's refusal starts no tries of
+// its own, so exactly one first try is logged.
+func TestASecondReportOfARefusalNotYetTakenStartsNoTries(t *testing.T) {
+	t.Parallel()
+	logs := &syncBuffer{}
+	var answers *workflowRuntime
+	r := newPodRefusalRig(t, failingAnswers(&answers, failingRefusals(-1), slog.New(slog.NewJSONHandler(logs, nil))), nil)
+	r.refuseTheTestersResume()
+	answers.podRefused(r.machine, r.machine.Claim(), "pod-1", "the pod pod-1 of LEGION-208 still stands")
+	const line = "apply a launch its issue's pod refused"
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		var firsts, seconds int
+		for _, logged := range loggedLines(t, logs.String(), line) {
+			switch logged["attempt"] {
+			case float64(1):
+				firsts++
+			case float64(2):
+				seconds++
+			}
+		}
+		if firsts > 1 {
+			t.Fatalf("the log holds %d first tries of pod-1's report, want one: the second report started tries of its own", firsts)
+		}
+		if seconds > 0 {
+			if firsts != 1 {
+				t.Fatalf("the log holds a second try and %d first tries, want one first try", firsts)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("20 s on the log holds %d first tries and no second, want the report tried again", firsts)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

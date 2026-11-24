@@ -32,9 +32,22 @@ import (
 // queued task is judged by (Deps.PhaseHolds), where it brings the claim back (startHolds) and, for
 // a launch the wake pacing parks, at that launch's turn (launchAfter). The zero StartWork — an
 // operator's request, the boot's, a start of no phase — is judged by nothing.
+//
+// LeaveSession is the session the start's claim must not resume (record.SuperviseRequest's
+// LeaveSession): the session of a key's agent, recorded by the claim of a name that agent held,
+// which a step's agent of a later generation took (workflow's leaveKeySessions). The claim leaves
+// it where it still records it, so that agent starts in a session of its own (revive); a claim
+// that records another session has left it already, and resumes that one.
 type StartWork struct {
-	Phase      phase.Phase
-	Generation uint64
+	Phase        phase.Phase
+	Generation   uint64
+	LeaveSession string
+}
+
+// leaves is whether start asks the claim to leave the session it records now (StartWork's
+// LeaveSession).
+func (m *Machine) leaves(start StartWork) bool {
+	return start.LeaveSession != "" && m.claim.Session == start.LeaveSession
 }
 
 // ErrStartLeft is a start the machine judged no longer the work of its claim's issue
@@ -65,6 +78,14 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // start brings the claim back for, which its caller has judged already (startHolds) and the
 // launch judges again at the turn of a wake the pacing parks it on (launchAfter).
 //
+// A start that leaves the session the claim records (leaves, StartWork's LeaveSession) forgets it
+// once the admission has bound the claim, so the launch spawns a fresh agent, as retry's fresh
+// session does: no agent but the key whose session it is resumes it. Whether the claim may clear
+// it is asked first (mayForget), and a refusal there, as a refused admission, leaves the claim
+// exactly as it was. Every caller reaches it with a claim that runs nothing — queued, suspended,
+// failed or retired — since the outbox suspends a running claim first (internal/daemon's
+// suspendToLeave), so the forget writes no record of a process that still runs.
+//
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
 // that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
@@ -75,6 +96,12 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
 func (m *Machine) revive(ctx context.Context, exempt bool, start StartWork, admitted func()) error {
+	leave := m.leaves(start)
+	if leave {
+		if err := m.mayForget(ctx, "start"); err != nil {
+			return err
+		}
+	}
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
@@ -82,6 +109,10 @@ func (m *Machine) revive(ctx context.Context, exempt bool, start StartWork, admi
 	m.claim.TreeEpoch = bound.TreeEpoch
 	if admitted != nil {
 		admitted()
+	}
+	if leave {
+		m.log.Info("supervise: the start leaves the session a key's agent ran in, so it spawns a fresh agent", "session", m.claim.Session)
+		m.forgetSession("its step's agent took a name a key's agent held in an earlier generation, so it starts in a session of its own: this session was that key's")
 	}
 	return m.launchAfter(ctx, false, exempt, true, noEnd, start)
 }

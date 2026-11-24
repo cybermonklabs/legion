@@ -373,10 +373,6 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	if err != nil || !fired {
 		return intake.Result{}, err
 	}
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil {
-		return intake.Result{}, err
-	}
 	released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(fact.Claim))
 	if err != nil || !found {
 		return intake.Result{}, err

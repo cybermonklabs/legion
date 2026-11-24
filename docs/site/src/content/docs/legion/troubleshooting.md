@@ -588,15 +588,16 @@ claim the daemon holds no cause and sentence for, or with `legion claims list --
 whole record.
 
 **`refusal-unrecorded` in that column** is no failure. The claim's last launch was refused by its
-issue's pod, and the daemon's database has not taken a fact of that refusal: its report, before
-which the issue and the controller are not told, or the read again at the end of a start row of
-the claim. Until one is taken, the claim's start is not queued. The daemon tries the fact again,
-at least once an hour, and logs each failed try at ERROR (`apply a launch its issue's pod
-refused`, or `apply the end of a start row of a claim its pod refused`).
-`legion claims list --json` shows `unrecordedRefusal`: `since`, when the first try failed,
-`attempts`, and `error`, the last try's error. Look at the database first. The word goes once a
-try is taken, or at the first try after the claim launches on another pod, which applies nothing.
-A claim that failed prints its failure's word instead.
+issue's pod, and the daemon's database has not taken a fact that records the refusal: its report,
+before which the issue and the controller are not told, or the check the daemon makes when a
+start of the claim ends, which tells nobody either way. Until one is taken, the claim's start is
+not queued. The daemon tries each such fact again, at least once an hour, and logs each failed
+try at ERROR (`apply a launch its issue's pod refused`, or `apply the end of a start row of a
+claim its pod refused`). `legion claims list --json` shows `unrecordedRefusal`, of the oldest
+such fact: `since`, when its first try failed, `attempts`, and `error`, its last try's error.
+Look at the database first. The word goes once every such fact is taken, and at once when the
+claim launches on another pod, since the facts of the refusal it left are then not applied. A
+claim that failed prints its failure's word instead.
 
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker

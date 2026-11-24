@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1114,10 +1113,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// the daemon wrote into the slot's Secret just before: the child starts only once the kubelet's
 	// projection holds it, so its first push or comment is never made as the App the files held.
 	if command.GitHubCredential != nil {
-		m.mu.Lock()
-		stopped := m.startStops[command.Generation]
-		m.mu.Unlock()
-		if err := m.awaitGitHubCredential(ctx, env, command.Generation, *command.GitHubCredential, received, stopped); err != nil {
+		if err := m.awaitGitHubCredential(ctx, env, command.Generation, *command.GitHubCredential, received); err != nil {
 			return abandon(err)
 		}
 	}
@@ -1170,13 +1166,16 @@ func (m *manager) ghRoot(env []string) string {
 // awaitGitHubCredential waits, reading once a second, until the slot's hosts.yml that want names
 // holds a token whose SHA-256 is want's digest. Where the files do not hold it first, it answers
 // why it stopped waiting: the bound want names passed, counted from received, the moment the
-// start of generation reached the launcher; a stop of that generation closed stopped
-// (readCommands; nil for a start no connection marked); or ctx, the container's, ended. The
-// daemon sets the bound to what remains of its own wait on the start before the stop grace, so
-// the refusal reaches it while it still waits, and the stop it sends after a start it gave up on
-// finds no child.
+// start of generation reached the launcher; a stop of that generation closed the mark of its
+// start (startStops, which readCommands marks; a start no connection marked has none, and no stop
+// ends its wait); or ctx, the container's, ended. The daemon sets the bound to what remains of its
+// own wait on the start before the stop grace, so the refusal reaches it while it still waits,
+// and the stop it sends after a start it gave up on finds no child.
 func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, generation uint64, want shimwire.LauncherGitHubCredential,
-	received time.Time, stopped <-chan struct{}) error {
+	received time.Time) error {
+	m.mu.Lock()
+	stopped := m.startStops[generation]
+	m.mu.Unlock()
 	if !filepath.IsLocal(want.HostsFile) {
 		return fmt.Errorf("the start names the gh file %q, which is not under the slot's gh directory", want.HostsFile)
 	}
@@ -1189,8 +1188,7 @@ func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, gener
 	for {
 		if data, err := os.ReadFile(path); err == nil {
 			if token, err := ghconfig.TokenFromHosts(data); err == nil {
-				sum := sha256.Sum256([]byte(token))
-				if hex.EncodeToString(sum[:]) == want.TokenDigest {
+				if shimwire.GitHubTokenDigest(token) == want.TokenDigest {
 					return nil
 				}
 			}

@@ -934,7 +934,7 @@ type plan struct {
 	// run it until that pod is replaced, and the workflow queues a start of the claim wherever its
 	// outbox holds none that brings the claim back; nil without a workflow, where nobody is told and
 	// nothing is queued.
-	podRefused func(c supervise.Claim, pod, detail string)
+	podRefused func(m *supervise.Machine, c supervise.Claim, pod, detail string)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)

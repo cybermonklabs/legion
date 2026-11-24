@@ -1451,6 +1451,10 @@ type PodRefusedLaunch struct {
 	Claim  claim.Token
 	Pod    string
 	Detail string
+	// Generation is the generation of the claim whose launch the pod refused, as the machine held
+	// it at the refusal: a claim the store holds at a later generation has launched since, and the
+	// fact applies nothing (workflow's refusalStands).
+	Generation uint64
 }
 
 func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }
@@ -1469,6 +1473,9 @@ type RefusedStartEnded struct {
 	// (supervise.Machine.RefusedPod), which the start this fact queues is marked with
 	// (record.SuperviseRequest.RefusedPod).
 	Pod string
+	// Generation is the claim's generation when the row ended, which the fact is judged by as the
+	// refusal's report is (PodRefusedLaunch.Generation).
+	Generation uint64
 }
 
 func (f RefusedStartEnded) namedIssue() (string, bool) { return f.Issue, true }
@@ -1832,13 +1839,18 @@ func RunningTaskChanged(task string) plan.Refusal {
 }
 
 // AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task
-// would take name — the name its key held in an earlier version, or its role's — which another
-// agent of the plan holds from an earlier version (record.NameAgents, record.UnnamedAgents). This
-// release names each agent of an issue for a role and gives each name to one agent, so such a
-// version is refused as a plan before anything is written, never as an error of the write.
-func AgentUnnamed(task string, place int, name string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s, which this step's agent would take, "+
-		"from an earlier version; this release names each agent of an issue for a role and gives each name to one agent. This release of Legion does not carry it out yet.", place, task, name)}
+// would take name — the name its key held in an earlier version, or its role's — which holder holds:
+// the key of another agent of the plan that holds the name, or the key whose rows held it in an
+// earlier version, "" for an agent with no key (record.NameAgents, record.UnnamedAgents). A name a
+// key held is that key's alone, and this release runs one agent of each role for an issue, so such
+// a version is refused as a plan before anything is written, never as an error of the write.
+func AgentUnnamed(task string, place int, name, holder string) plan.Refusal {
+	held := "another agent of this plan, with no key,"
+	if holder != "" {
+		held = "key " + holder + ", from this version or an earlier one,"
+	}
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and %s holds the name %s, which this step's agent would take; "+
+		"a name a key held is that key's alone, and this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, held, name)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,

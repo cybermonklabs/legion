@@ -2,7 +2,12 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
+import {
+  expectNoMissingHelpers,
+  nameMissingHelpers,
+  scriptCheckpoints,
+  scriptFunctions,
+} from "./script-functions";
 
 const dir = temporaryDirectory("script-functions-test");
 const path = join(dir, "fixture.sh");
@@ -34,6 +39,41 @@ describe("scriptFunctions", () => {
 
   test("a function the script does not define throws, naming the script", () => {
     expect(() => fn("absent")).toThrow(/fixture\.sh defines no absent\(\)/);
+  });
+});
+
+describe("scriptCheckpoints", () => {
+  const checkpoints = join(dir, "checkpoints.sh");
+  /** The fixture's checkpoints, read once the hook below has written it. */
+  let checkpoint: (name: string) => string;
+  beforeAll(() => {
+    writeFileSync(
+      checkpoints,
+      `#!/usr/bin/env bash
+begin first
+step one
+  begin indented
+begin "quoted"
+step two
+begin last
+step three
+`
+    );
+    checkpoint = scriptCheckpoints(checkpoints);
+  });
+
+  test("a checkpoint runs from its begin line to the line before the next begin", () => {
+    expect(checkpoint("first")).toBe("begin first\nstep one\n  begin indented");
+  });
+
+  test("a quoted name is named with its quotes", () => {
+    expect(checkpoint('"quoted"')).toBe('begin "quoted"\nstep two');
+  });
+
+  test("a name no begin line holds, or the last checkpoint, throws, naming the script", () => {
+    expect(() => checkpoint("absent")).toThrow(/checkpoints\.sh has no checkpoint begin absent/);
+    expect(() => checkpoint("quoted")).toThrow(/checkpoints\.sh has no checkpoint begin quoted/);
+    expect(() => checkpoint("last")).toThrow(/checkpoints\.sh has no checkpoint begin last/);
   });
 });
 

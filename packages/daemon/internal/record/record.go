@@ -700,23 +700,21 @@ type PhaseRow struct {
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
-	// tree brings back, and a root architect's start of work it was not on raise it, and write the
-	// three fields below beside it, in their own transaction (workflow's start, StartPromotedWorker,
-	// StartArchitect and ResumeAwaitedRoot). A phase worker's raise puts it one above the highest of
-	// the row's own entry, the entry of every row of the issue that names the step's claim or is of
-	// the role, and the entry that claim was last given (RoleClaim.GivenEntry), so the row where the
-	// task stands holds the role's highest entry; an architect's raise puts it at the row's own entry
-	// plus one (workflow's enter). It is the finer of the two numbers a completion is held to: the
-	// issue's generation is the same for every entry of one run, where the entry is new at each one,
-	// which is what tells one testing phase from the testing phase after a move back
-	// (api/handoff.go). A start that hands the role no work it was not already on leaves it where it
-	// stands — the send of this entry's own work to a claim behind it, the held phase's retry, and
-	// every start of no entry (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit
-	// it is never reset: ClearGeneration leaves the entry and clears the task below. Zero on a row
-	// no entry has been raised on: a role the issue's phases have not reached, and every row of a
-	// daemon upgraded in place that the upgrade found with no work handed out, which the completion
-	// route reads as nothing to compare. The reviewer's row has a second reader: each task the
-	// reviewer is given in reviewing ends naming this number (reviewround.EntryLabel), its review's
+	// tree brings back, and a root architect's start of work it was not on raise it, to one
+	// above the highest entry of every phases row of the issue (workflow's enter), and
+	// write the three fields below beside it, in their own transaction
+	// (workflow's start, StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the
+	// finer of the two numbers a completion is held to: the issue's generation is the same for
+	// every entry of one run, where the entry is new at each one, which is what tells one testing
+	// phase from the testing phase after a move back (api/handoff.go). A start that hands
+	// the role no work it was not already on leaves it where it stands — the send of this entry's
+	// own work to a claim behind it, the held phase's retry, and every start of no entry
+	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
+	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
+	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
+	// in place that the upgrade found with no work handed out, which the completion route reads
+	// as nothing to compare. The reviewer's row has a second reader: each task the reviewer is
+	// given in reviewing ends naming this number (reviewround.EntryLabel), its review's
 	// footer names it back, and only a review that names the number the row holds moves
 	// ReviewedHead. Because the number is never reset and each entry raises it, a review of an
 	// earlier entry can never name the entry that stands.
@@ -2155,12 +2153,19 @@ type Store interface {
 	// task reached no architect tells nothing and hands over instead (ReleaseKeptClaims).
 	ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error
 	// ClaimSession is the session claims records for token, "" and no error when the token holds
-	// no row. The workflow reads it for the claim the daemon starts the reviewer under (workflow's
-	// reviewerToken), in the reviewer's first round as in every later one, to tell the reviewer's
+	// no row. The workflow reads it for the claim of the worker on the reviewer's step (workflow's
+	// reviewersClaim), in the reviewer's first round as in every later one, to tell the reviewer's
 	// own review from another review-App session's by the Legion footer each carries
 	// (PullRequestReview.LegionSession). The session is recorded there when the reviewer's agent
 	// registers; the claim the outbox makes holds none until then.
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
+	// ClaimLaunchedSince is whether claims holds token at a generation above generation: the
+	// claim's generation when a launch of it was refused, so a claim held at a later one has
+	// launched since (each try of a launch writes the claim at the next generation first, supervise's
+	// writeTry). It locks the claim's row for the rest of tx (for update), so a launch whose first
+	// write comes after this read waits for tx's commit. False where the token holds no row, and
+	// for generation 0, which names no refused launch.
+	ClaimLaunchedSince(ctx context.Context, tx pgx.Tx, token claim.Token, generation uint64) (bool, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
 	// same branch and pull request), its design gate with what its holders took of it
@@ -2216,6 +2221,9 @@ type Store interface {
 	// agent, ordered by generation, task and place: the earlier rows NameAgents names a version's
 	// agents from.
 	PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error)
+	// KeyNames is every name a key's agent held on issue (plan_key_names), the lasting record that
+	// no deletion of a plan removes: NameAgents reserves each for its key beside the plan_steps rows.
+	KeyNames(ctx context.Context, tx pgx.Tx, issue string) ([]KeyName, error)
 	// IssueClaims is every stored claim of issue in project (the claims' project token), in any
 	// state, with its stored role, ordered by token: what a walk over every claim of an issue
 	// reads, so each row it writes names one stored claim.
@@ -2587,8 +2595,15 @@ type Store interface {
 	// RoleRuns is RoleRun for a bounded batch, keyed by token. Each batch reads its queued starts
 	// and claims from the caller's transaction snapshot rather than one query pair per role.
 	RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error)
-	// RoleClaims is the claims of tokens alone, keyed by token: RoleRuns' second statement
-	// without its first, for a caller that judges a run by its claim and reads no queued start
+	// ClaimQueued is every supervise row of issue at generation that reaches token when it runs,
+	// whatever role its payload names, oldest first: a row that names the claim, and a row that
+	// names none whose role's worker is token (WorkerClaimOf over the issue's phases rows, as the
+	// outbox derives it). A keyed agent's claim holds the role of each of its steps in turn, so the
+	// start of its next step reaches it as much as a start of the role it holds now, which RoleRuns,
+	// keyed by one role, does not read.
+	ClaimQueued(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, generation uint64) ([]QueuedSupervise, error)
+	// RoleClaims is the claims of tokens alone, keyed by token: RoleRuns' last statement without
+	// the two before it, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 }

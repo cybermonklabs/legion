@@ -13,11 +13,11 @@ import (
 // A re-admission clears the work a role's phase entry named and leaves the number where it
 // stands. The task goes because it is the old generation's, cleared with that generation's
 // handoffs (ClearGeneration): the tree runs again, and what the role is owed is whatever its
-// promotion hands it, not the task of a run that ended. The number stays because it counts the
-// entries handed on the role's row of this issue, raised above every row of the role, every row of
-// the same claim and the entry that claim was given (workflow's enter), and nothing of a
-// re-admission unhands one: the promotion raises it again (workflow's StartPromotedWorker), so the
-// entry the new work is sent under is above every entry a completion still in flight could name.
+// promotion hands it, not the task of a run that ended. The number stays because it is one counter
+// of the issue's phases rows (workflow's enter), and nothing of a re-admission unhands one: the
+// promotion raises it again (workflow's
+// StartPromotedWorker), so the entry the new work is sent under is above every entry a completion
+// still in flight could name.
 func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

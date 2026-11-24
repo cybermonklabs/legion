@@ -7,6 +7,28 @@
 -- are written, from the issue's earlier rows, and nothing else writes it. A step of the key owner
 -- holds none: its agent is the tree's architect.
 --
+-- plan_steps.leave_session is record.PlanStep.LeaveSession: the session the claim of the step's
+-- agent recorded when the step was written, where that agent takes a name a key's agent held in an
+-- earlier generation, so its claim's session is that key's. Only the project's default steps
+-- write one (workflow's leaveKeySessions); every start of the step's agent carries it
+-- (record.SuperviseRequest.LeaveSession), and the claim leaves it where it still records it. Every
+-- other row holds the empty string, and so does every row the table already holds.
+--
+-- plan_key_names is record.KeyName, the lasting record of every name a key's agent held on an
+-- issue: record.PutPlan writes one row for each step of a key (but the owner's), and
+-- record.NameAgents reserves each name for its key beside the plan_steps rows. The rows of a plan
+-- go when a later version gives the task again (PutPlan) or the first step of a run passes over
+-- an earlier owner's plan (DeletePlan); no deletion of a plan touches this table, and no code
+-- removes a row of it: a stored claim keeps the
+-- session it records across the issue's generations (supervise's launch resumes it), so a name a
+-- key held names that key's session for as long as the issue does. The table names no issues row,
+-- as the plan tables name none (20261117034837_issue_plans), because an owner can give a plan
+-- before the daemon records its issue, at generation 0, and PutPlan writes this table with it; so
+-- an operator who removes an issue's record by hand removes its rows here too. Each row holds the
+-- latest generation whose steps gave the key that name (record.KeyName.Generation), which tells a
+-- row with no key that shows the name before the key held it from one written after it (workflow's
+-- handedBefore). The table is filled below from the plan_steps rows this migration names.
+--
 -- Every row the table already holds is named by the update below with the name record.NameAgents
 -- gave it, where the rows it holds still show that name. A step with no key is named for its role:
 -- the release before this one ran each role at most once in a task and refused every key but the
@@ -28,10 +50,12 @@
 --   begin;
 --   update outbox set payload = payload - 'claim'
 --   where kind in ('supervise', 'issue_bundle', 'update_ask', 'hook_prompt', 'merge_forward', 'controller_notice') and payload ? 'claim';
---   update outbox set payload = payload - 'refusedPod' where kind = 'supervise' and payload ? 'refusedPod';
+--   update outbox set payload = payload - 'refusedPod' - 'leaveSession' where kind = 'supervise' and (payload ? 'refusedPod' or payload ? 'leaveSession');
 --   update claims set role = substring(token from '^legion-[^-]+-[^-]+-[0-9]+-(.+)$')
 --   where role <> substring(token from '^legion-[^-]+-[^-]+-[0-9]+-(.+)$');
 --   alter table plan_steps drop column if exists agent;
+--   alter table plan_steps drop column if exists leave_session;
+--   drop table if exists plan_key_names;
 --   delete from schema_version where version = 20261123203837;
 --   commit;
 --   SQL
@@ -63,10 +87,12 @@
 -- Only the top-level key of those six kinds goes: a notice's update round names claims of its own
 -- under the same key, which that release reads.
 --
--- The update of a queued start's `refusedPod` is owed to the release before as well. This release
--- marks a start a refused launch queues with the pod whose refusal queued it
--- (record.SuperviseRequest.RefusedPod), a key that release does not know and decodes strictly as it
--- decodes `claim`, so the update takes it off each queued supervise row that carries it.
+-- The update of a queued start's `refusedPod` and `leaveSession` is owed to the release before as
+-- well. This release marks a start a refused launch queues with the pod whose refusal queued it
+-- (record.SuperviseRequest.RefusedPod), and a start of a step whose agent takes a key's name with
+-- the session to leave (record.SuperviseRequest.LeaveSession), keys that release does not know and
+-- decodes strictly as it decodes `claim`, so the update takes them off each queued supervise row
+-- that carries them.
 --
 -- The update of claims is owed to the release before too. This release moves a claim to the role of
 -- the step its key works (supervise.Machine.Rerole writes claims.role), and the release before
@@ -83,3 +109,15 @@ update plan_steps s set agent = case when s.agent_key = '' then s.role else
   (select k.role from plan_steps k where k.issue = s.issue and k.agent_key = s.agent_key
     order by k.generation, k.task, k.position limit 1) end
 where s.agent_key <> 'owner';
+alter table plan_steps add column leave_session text not null default '';
+create table plan_key_names (
+  issue text not null,
+  name text not null check (name <> ''),
+  agent_key text not null check (agent_key <> '' and agent_key <> 'owner'),
+  generation bigint not null check (generation >= 0),
+  primary key (issue, name));
+insert into plan_key_names (issue, name, agent_key, generation)
+select distinct on (s.issue, s.agent) s.issue, s.agent, s.agent_key, s.generation
+from plan_steps s
+where s.agent_key <> '' and s.agent_key <> 'owner' and s.agent <> ''
+order by s.issue, s.agent, s.generation desc, s.task desc, s.position desc;

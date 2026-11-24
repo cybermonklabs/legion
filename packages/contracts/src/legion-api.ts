@@ -1821,12 +1821,13 @@ export const LegionOperatorClaimResponse = z.object({
    * for another reason. These routes are the only surface the controller's claim reaches, so the
    * controller's cause is read here alone. */
   leakCheckCause: nonEmptyString.optional(),
-  /** A launch of the claim its issue's pod refused whose fact the daemon's store has not taken
-   * (`supervise.Claim.UnrecordedRefusal`): the report that tells the issue and the controller and
-   * queues the claim's start, or its re-check at the end of a start row. The daemon tries it again,
-   * at least once an hour, for as long as it fails; `since` is when the first failed try failed,
-   * `attempts` how many have failed, `error` the last try's error. Absent while no such fact fails.
-   * The store never writes it, so these routes, which read the live machine, alone carry it, and
+  /** The oldest fact of a launch of the claim its issue's pod refused that the daemon's store has
+   * not taken (`supervise.Claim.UnrecordedRefusal`): the report that tells the issue and the
+   * controller and queues the claim's start, or a re-check at the end of a start row. The daemon
+   * tries each such fact again, at least once an hour, for as long as it fails and the refusal it
+   * names stands; `since` is when that fact's first try failed, `attempts` how many of its tries
+   * have failed, `error` its last try's error. Absent while no such fact fails. The store never
+   * writes it, so these routes, which read the live machine, alone carry it, and
    * `legion claims list` prints it as the cause word `refusal-unrecorded`. */
   unrecordedRefusal: z
     .object({

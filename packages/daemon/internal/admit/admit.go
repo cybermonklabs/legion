@@ -2886,7 +2886,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		// The starts go in the order of the roles (claim.Roles), the owner among them, as one start
 		// for each role did before a claim could be an agent of another role's name.
 		slices.SortStableFunc(standing.claims, func(x, y comeBack) int {
-			return cmp.Or(cmp.Compare(roleOrder(x.role), roleOrder(y.role)), cmp.Compare(x.token, y.token))
+			return cmp.Or(cmp.Compare(claim.RoleRank(x.role), claim.RoleRank(y.role)), cmp.Compare(x.token, y.token))
 		})
 		members = append(members, standing)
 		return nil
@@ -2949,15 +2949,6 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 	}
 	return nil
-}
-
-// roleOrder is role's place in claim.Roles, and a place after every role of Legion for a role
-// that is none of them.
-func roleOrder(role claim.Role) int {
-	if i := slices.Index(claim.Roles, role); i >= 0 {
-		return i
-	}
-	return len(claim.Roles)
 }
 
 // owedEntryRole is one role the entry work is owed to: the issue whose current phase it is the

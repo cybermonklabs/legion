@@ -2,8 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -570,8 +568,7 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 		r.log.Info("sandbox runtime: the start waits for its slot's gh files to hold its credential",
 			"claim", spec.Claim, "slot", slot, "app", held.app, "generation", spec.Generation)
 	}
-	sum := sha256.Sum256([]byte(held.token))
-	return &shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: hex.EncodeToString(sum[:])}, nil
+	return &shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: shimwire.GitHubTokenDigest(held.token)}, nil
 }
 
 // slotAppChanges is whether a launch of spec into pod, a pod it keeps, would start its claim's slot
@@ -581,13 +578,26 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 // (launchedRoleAnnotation), where it records one. A role that acts as no App the deployment
 // defines is another App. It reads the slot's Secret and writes nothing; relaunch asks it only of a
 // launcher that does not wait for a start's credential.
+//
+// It asks the runtime's ActsAs once, for the claim (as runtime.SlotRole does), and judges each role
+// by that one answer: an ActsAs that gives the claim a role gives it for every role read here. A
+// failed ask, or a failed read of the Secret, is an error the launch retries, never a slot read as
+// starting another App: that answer holds the launch for the pod's update round
+// (runtime.AwaitsPodUpdate), which a read that failed for a moment must not cost.
 func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (bool, error) {
-	appOf := func(role claim.Role) (appauth.AppRole, error) {
-		acting, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, role)
-		if err != nil {
-			return "", err
+	var acting claim.Role
+	acts := false
+	if r.actsAs != nil {
+		var err error
+		if acting, acts, err = r.actsAs(ctx, spec.Claim); err != nil {
+			return false, fmt.Errorf("the role whose App the slot of %s holds: %w", spec.Claim, err)
 		}
-		return appauth.AppRoleFor(acting, r.deploymentApps)
+	}
+	appOf := func(role claim.Role) (appauth.AppRole, error) {
+		if acts {
+			role = acting
+		}
+		return appauth.AppRoleFor(role, r.deploymentApps)
 	}
 	app, err := appOf(spec.Role)
 	if err != nil {

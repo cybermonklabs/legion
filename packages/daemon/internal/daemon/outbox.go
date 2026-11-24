@@ -466,15 +466,30 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 // the two facts, applied one at a time (intake.ApplyFact), leave one start whichever runs second. A
 // refusal made after the read is one whose report reads the outbox after the finish.
 //
-// The start a refusal queued keeps this from feeding itself: it is marked with the pod whose
-// refusal queued it (record.SuperviseRequest.RefusedPod), and its end asks nothing while the machine
-// reports that same pod, since a start queued for that refusal again would end the same way. A
-// start marked with a pod that no longer refuses the claim asks again, as an unmarked start does,
-// for the refusal the machine reports now, whose pod the fact carries onto the start it queues. So
-// an unmarked start — a transition's, a wake's, the boot's, an operator's — adds at most one marked
-// start, whichever fence ends it. A start that reaches the claim while the pod stands waits for the
-// pod rather than ending (supervise.Machine.RefusalStands, the start below), and the workflow
-// queues no start the outbox would end without acting (workflow's queueRefusedStart).
+// Why no start of a refused claim feeds another, and why none is lost, is said here and nowhere
+// else; the code that holds it points here. A start row of a claim whose last launch stands refused
+// can end while the pod that refused it still stands: at a fence of the outbox above
+// Machine.StartedBy, at a step its claim has left, at a start the machine says has left it
+// (supervise.ErrStartLeft), at the refusal of a failed claim's rule resume. Each such end makes this
+// ask, and the start it queues could end the same way, at the database's speed. Three things bound
+// it. Every decision that would bring the claim back asks its pod first and answers the pod's
+// refusal while that pod stands (supervise's podStillRefuses, in resume, resumeByRule and every
+// launch), and an operator's suspension holds the row on its backoff (the start below), so no start
+// of a refused claim is answered at the machine without launching while that pod stands. A start a
+// refusal queued is marked with the pod whose refusal queued it (record.SuperviseRequest.RefusedPod),
+// and its end asks nothing while the machine reports that same pod, since a start queued for that
+// refusal again would end the same way; a start marked with a pod that no longer refuses the claim
+// asks again, as an unmarked start does, for the refusal the machine reports now, whose pod the fact
+// carries onto the start it queues. So each unmarked start — a transition's, a wake's, the boot's,
+// an operator's — adds at most one marked start, whichever way it ends. And the workflow queues no
+// start the outbox would end without acting (workflow's queueRefusedStart).
+//
+// A refusal that lands after the machine answered a start, at the turn of a launch the wake pacing
+// parked, is the refusal of a pod that stood after the one the start was marked with, since the
+// start's own decision found the earlier pod gone. The row then ends with the claim refused and
+// asks here, whatever its mark, so the claim is queued a start marked with the new pod, and the
+// task that row handed, which the refusal's suspension retired, is sent again with it as the owed
+// entry (workflow's queueRefusedStart): no start is spent on a pod that refuses it.
 //
 // It runs on a goroutine of its own, since the read waits out the decision in flight on the
 // claim's machine, which can hold a Sandbox relaunch for minutes, and the lane goes on meanwhile.
@@ -512,9 +527,9 @@ func (r *outbox) startRowEnded(ctx context.Context, row record.OutboxRow) {
 			return
 		}
 		held := machine.Claim()
-		fact := intake.RefusedStartEnded{Issue: held.Issue, Role: held.Role, Claim: token, Pod: pod}
+		fact := intake.RefusedStartEnded{Issue: held.Issue, Role: held.Role, Claim: token, Pod: pod, Generation: held.Generation}
 		id := fmt.Sprintf("refused-start-ended:%s:%d", token, row.ID)
-		applyRefusalFact(ctx, r.log, machine, pod, "apply the end of a start row of a claim its pod refused", func(ctx context.Context) error {
+		applyRefusalFact(ctx, r.log, machine, id, pod, "apply the end of a start row of a claim its pod refused", func(ctx context.Context) error {
 			_, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...)
 			return err
 		}, "row", row.ID, "claim", token)
@@ -2753,6 +2768,22 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 		}
+		// A start that leaves a session (record.SuperviseRequest.LeaveSession) reaches a claim that
+		// may still run in it: the agent of a name a key held, whose step's agent of a later
+		// generation starts in a session of its own. The claim is suspended first, as the daemon and
+		// keeping its session, so the decision below brings it back and leaves that session there
+		// (supervise's revive); the start waits on the row's backoff until it runs nothing.
+		if found {
+			err := r.suspendToLeave(ctx, machine, token, row, payload)
+			if errors.Is(err, supervise.ErrStepLeft) {
+				r.log.Info("outbox start serves a step its issue left before its claim left a key's session; finished without acting", "row", row.ID,
+					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if !found {
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
@@ -2864,7 +2895,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// own, which the workflow's move of the issue does not wait on, so the machine judges the
 		// same rule again under its own lock before it starts a process, and a start the issue has
 		// left since starts none and is finished without acting here (supervise.ErrStartLeft).
-		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation}
+		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation, LeaveSession: payload.LeaveSession}
 		var brought error
 		switch state {
 		case supervise.StateQueued:
@@ -2909,20 +2940,6 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, Start: work}); err != nil {
 				brought = fmt.Errorf("relaunch retired claim %s: %w", token, err)
-			}
-		}
-		// A start the machine answered with no error has not brought the claim back while the pod
-		// that refused the claim's last launch still stands: no path of the machine launches into
-		// that pod (supervise's podStillRefuses), so the answer started nothing, or a refusal came
-		// between the answer and here, at the turn of a launch the wake pacing held. Either way the
-		// row waits for the pod, as a refused launch's row does below, rather than ending: the end
-		// of a start row of a claim its pod refuses asks the workflow for the claim's start again
-		// (startRowEnded), and a start that ended the same way would ask again, at the database's
-		// speed. A launch that ran, or that the pacing parked, dropped the refusal first
-		// (supervise.Machine.RefusalStands), so this holds no such start.
-		if brought == nil {
-			if err := machine.RefusalStands(); err != nil {
-				brought = fmt.Errorf("start claim %s: %w", token, err)
 			}
 		}
 		// A launch refused because the issue's pod cannot run it until that pod's update round or

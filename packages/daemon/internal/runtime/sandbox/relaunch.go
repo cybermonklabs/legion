@@ -340,13 +340,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// overlays): replacing it here would end every role in it and delete the issue's disk
 		// with whatever they did not push, so the launch writes nothing and waits for the pod's
 		// update round or its release (runtime.ErrAwaitsPodUpdate, PodLacksRole, rolesDrift),
-		// naming what the pod lacks (runtime.PodLacks, over the roles its template was built with;
-		// a template no launcher of this layout wrote holds none, and lacks nothing). A launch whose
-		// slot and role the template holds goes on.
-		held := templateRoles(s)
-		if lacks := runtime.PodLacks(func(name claim.Role) bool {
-			return len(held) > 0 && !slices.Contains(held, name)
-		}, slot, spec.Role); lacks != "" {
+		// naming what the pod lacks (runtime.PodLacks, over the roles its template was built with:
+		// templateLacks). A launch whose slot and role the template holds goes on.
+		if lacks := runtime.PodLacks(templateLacks(s), slot, spec.Role); lacks != "" {
 			return runtime.Locator{}, runtime.AwaitsPodUpdate{Pod: string(pod.UID), Reason: fmt.Sprintf("launch %s: the pod %s of %s was built without %s",
 				spec.Claim, pod.UID, spec.Issue, lacks)}
 		}

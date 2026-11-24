@@ -161,8 +161,8 @@ func TestOneKeyIsOneSessionAcrossTwoRoles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newAgentsRig(t)
-			if steps := r.walkOneKey(tc.steps, tc.keyed); oneKeyHolds(r, steps, tc.keyed) != nil {
-				t.Fatal(oneKeyHolds(r, steps, tc.keyed))
+			if err := oneKeyHolds(r, r.walkOneKey(tc.steps, tc.keyed), tc.keyed); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

@@ -186,15 +186,16 @@ const maxRoleHolderSessionBytes = 256
 // putIssueRoleHolders publishes the session of each role of an issue. The daemon sends the issue's
 // whole set, so the transaction deletes each stored holder whose role, session and claim the body
 // does not name together, then writes each holder by its session, which keeps one row a session:
-// a holder that did not change keeps its recorded_at, and only whether its claim works the role's
-// step is written again. A holder that changed is deleted before the write, so the write meets the
-// session key alone. The body is checked whole before the transaction opens: each role is a role
-// of an issue (legionclaim.IsRole: one of Legion's six or a role the deployment defines), and may
-// be named for several sessions, since two claims of one issue can hold one role; each session is
-// a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once; and each claim named
-// is a claim token of this issue (legionclaim.CutClaimToken), once. A body that fails is 400
-// INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a check or an index of the
-// table, whose check takes the same roles.
+// a holder whose role, session and claim did not change keeps its row, recorded_at included, and
+// is written again only where whether its claim works the role's step changed, so a publication
+// that changes nothing writes no row. A holder that changed is deleted before the write, so the
+// write meets the session key alone. The body is checked whole before the transaction opens: each
+// role is a role of an issue (legionclaim.IsRole: one of Legion's six or a role the deployment
+// defines), and may be named for several sessions, since two claims of one issue can hold one
+// role; each session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes,
+// once; and each claim named is a claim token of this issue (legionclaim.CutClaimToken), once. A
+// body that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a
+// check or an index of the table, whose check takes the same roles.
 func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	var input issueRoleHoldersInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -255,7 +256,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		}
 		if slices.Contains(sessions[:index], holder.Session) {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
-				"session %s is named for two roles. A session holds one role of an issue.", holder.Session))
+				"session %s is named twice. A session holds one role of an issue.", holder.Session))
 			return
 		}
 		roles[index] = holder.Role
@@ -305,6 +306,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			select $1::text, published.role, published.session, published.claim, published.works_step
 			from unnest($2::text[], $3::text[], $4::text[], $5::boolean[]) as published(role, session, claim, works_step)
 			on conflict (issue_key, session) do update set works_step = excluded.works_step
+			where issue_role_holders.works_step is distinct from excluded.works_step
 		`, issue, roles, sessions, claims, worksStep); err != nil {
 			s.writeHandlerError(w, err)
 			return

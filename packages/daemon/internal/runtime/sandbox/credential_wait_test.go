@@ -1,9 +1,11 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,6 +99,53 @@ func TestALaunchOfAnotherAppIntoASlotWhoseLauncherDoesNotWaitIsRefused(t *testin
 				t.Errorf("the refused launch sent its launcher %#v, want nothing", frames)
 			}
 		})
+	}
+}
+
+// A failed ask of the runtime's ActsAs is an error the launch retries, never a slot read as
+// starting another App: that answer holds the launch for the pod's update round
+// (runtime.ErrAwaitsPodUpdate), which an ask that failed for a moment must not cost. Key a's claim
+// `…-implementer` runs as the implementer in a kept pod whose launcher does not wait, and is
+// launched again as the merger, a role of the App its slot holds, while its ActsAs answers the
+// first ask and fails every ask after it. The launch fails with that failure and starts nothing.
+// Control: once the ActsAs answers again, the same launch starts.
+func TestAFailedActsAsAskInALaunchIsRetriedNotHeldForThePodsRound(t *testing.T) {
+	keyed := claim.Token("legion-legion-legion-208-implementer")
+	refused := errors.New("the owner's record could not be read")
+	var failing atomic.Bool
+	var asked atomic.Int32
+	actsAs := func(context.Context, claim.Token) (claim.Role, bool, error) {
+		if failing.Load() && asked.Add(1) > 1 {
+			return "", false, refused
+		}
+		return "", false, nil
+	}
+	g := newRig(t, nil, withoutCredentialWait(), withOptions(func(o *Options) { o.ActsAs = actsAs }))
+	g.spawn(rootSpec(t))
+	g.spawn(testSpec(t, keyed, claim.RoleImplementer, testTree))
+	g.clearActions()
+	sent := len(g.sent(keyed))
+	again := testSpec(t, keyed, claim.RoleMerger, testTree)
+	again.Generation++
+	starts := func(frames []shimwire.Frame) bool {
+		return slices.ContainsFunc(frames, func(frame shimwire.Frame) bool {
+			start, ok := frame.(shimwire.LauncherStart)
+			return ok && start.Generation == again.Generation
+		})
+	}
+
+	failing.Store(true)
+	_, err := g.r.Spawn(g.ctx, again)
+	if errors.Is(err, runtime.ErrAwaitsPodUpdate) || !errors.Is(err, refused) {
+		t.Fatalf("the launch whose ActsAs fails after its first answer = %v, want the failure %q, which the launch retries, and never runtime.ErrAwaitsPodUpdate", err, refused)
+	}
+	if starts(g.sent(keyed)[sent:]) {
+		t.Fatal("the launch whose ActsAs failed sent its start, want none")
+	}
+
+	failing.Store(false)
+	if _, err := g.r.Spawn(g.ctx, again); err != nil || !starts(g.sent(keyed)[sent:]) {
+		t.Fatalf("control: the launch again once its ActsAs answers = %v, sending its start: %t; want it started", err, starts(g.sent(keyed)[sent:]))
 	}
 }
 

@@ -1620,6 +1620,14 @@ func BundleDigest(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// GitHubTokenDigest is the TokenDigest of a LauncherGitHubCredential that names token: the hex
+// SHA-256 of its bytes. The daemon names it for the token it writes into a slot's hosts.yml, and
+// the launcher compares it with the digest of the token that file holds.
+func GitHubTokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 // marshalWorkspaceBundle renders b as the body ParseWorkspaceBundle reads. JSON escapes its own
 // newlines, so the header line is one line. The body it builds is the whole of what the sequence
 // carries — the header, the newline and the bundle's own bytes — so that whole is what

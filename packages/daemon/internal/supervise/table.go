@@ -2741,9 +2741,10 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // failed claim is never resumed by rule. A claim whose last launch its issue's pod refused is
 // refused while that pod stands (podStillRefuses), before its session is asked about, as resume
 // asks them: the refusal answers runtime.ErrAwaitsPodUpdate, on which an outbox start waits for the
-// pod (internal/daemon's start), whatever the session's own answer would have been. A claim
-// recording a session it does not hold is not resumed by rule either (resumeRefusal): it stays
-// suspended, and the line says why.
+// pod (internal/daemon's startRowEnded says why). A claim recording a session it does not hold is
+// not resumed by rule either (resumeRefusal): it stays suspended, and the line says why. A start
+// that leaves the recorded session resumes none (StartWork's LeaveSession, revive), so that session
+// is not asked about.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	resume := ev.(RequestRuleResume)
 	rule := resume.Reason
@@ -2758,9 +2759,11 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Info("supervise: not resumed by rule: the pod that refused its last launch still stands", "rule", rule, "error", err)
 		return err
 	}
-	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
-		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
-		return nil
+	if !m.leaves(resume.Start) {
+		if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
+			m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
+			return nil
+		}
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 	return m.revive(ctx, exemptWake(ev), resume.Start, nil)
@@ -2816,10 +2819,13 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// own reason answers for a claim that failed nothing, an operator's retry of a worker it
 		// stopped.
 		m.forgetSession(cmp.Or(m.claim.Failure, why))
-	} else if err := m.resumeRefusal(ctx, "retry"); err != nil {
+	} else if !m.leaves(start) {
 		// A retry that relaunches the recorded session is refused it the way a resume is
-		// (resumeRefusal), before the budgets start over.
-		return err
+		// (resumeRefusal), before the budgets start over. A start that leaves that session
+		// resumes none (revive), so it is not asked.
+		if err := m.resumeRefusal(ctx, "retry"); err != nil {
+			return err
+		}
 	}
 	return m.revive(ctx, exemptWake(ev), start, func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""

@@ -1332,14 +1332,20 @@ type SuperviseRequest struct {
 	WakeKind string `json:"wakeKind,omitempty"`
 	// RefusedPod marks a start a refused launch queued (workflow's queueRefusedStart): the uid of
 	// the issue pod whose refusal of the claim's launch queued it (supervise.Machine.RefusedPod).
-	// The end of a start row asks the workflow to read the claim's queued starts again while the
-	// claim's last launch stands refused (the daemon outbox's startRowEnded), and a start marked
-	// with the pod that still refuses the claim asks nothing: it was queued for that refusal, and a
-	// start queued for it again would end the same way. A start marked with a pod that no longer
-	// refuses the claim asks again, as an unmarked start does. Every other start carries none. The
-	// release before decodes strictly (DisallowUnknownFields), so the way back of
+	// The end of a start marked with the pod that still refuses the claim asks the workflow for no
+	// further start (the daemon outbox's startRowEnded, which says why). Every other start carries
+	// none. The release before decodes strictly (DisallowUnknownFields), so the way back of
 	// 20261123203837_plan_step_agent deletes the key from each queued row before that release boots.
 	RefusedPod string `json:"refusedPod,omitempty"`
+	// LeaveSession is the session a start's claim must not resume: the session the claim recorded
+	// when the step was written whose agent took a name a key's agent held in an earlier generation
+	// (PlanStep.LeaveSession), which every start of that agent carries. The claim leaves it where it
+	// still records it, so the agent starts in a session of its own, and a claim that runs it is
+	// suspended first (the daemon outbox's start, supervise's revive); a claim that records another
+	// session has left it already, and the start resumes that one. Every other start carries none.
+	// The release before decodes strictly, so the way back of 20261123203837_plan_step_agent deletes
+	// the key from each queued row before that release boots.
+	LeaveSession string `json:"leaveSession,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -2553,6 +2559,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.RefusedPod != "" && value.Op != "start" {
 			return fmt.Errorf("a supervise %s names the refused pod %q; only a start a refused launch queued names one", value.Op, value.RefusedPod)
+		}
+		if value.LeaveSession != "" && value.Op != "start" {
+			return fmt.Errorf("a supervise %s names the session %q to leave; only a start names one", value.Op, value.LeaveSession)
 		}
 	case RoleMessage:
 		if value.Role == "" {

@@ -26,6 +26,32 @@ func planStepAgents(t *testing.T, store *Store) []string {
 		from plan_steps order by issue, generation, task, position`)
 }
 
+// keyNamesOf is each plan_key_names row of the store, as `<issue> <name> <key> <generation>`,
+// ordered by issue and name: the lasting record of the names keys held, which the migration fills
+// from the steps it names and the way back drops.
+func keyNamesOf(t *testing.T, store *Store) []string {
+	t.Helper()
+	rows, err := store.Pool().Query(context.Background(), `select issue || ' ' || name || ' ' || agent_key || ' ' || generation from plan_key_names order by issue, name`)
+	if err != nil {
+		t.Fatalf("read plan_key_names: %v", err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read plan_key_names: %v", err)
+	}
+	return names
+}
+
+// tableExists is whether the store holds a table of that name in its schema.
+func tableExists(t *testing.T, store *Store, table string) bool {
+	t.Helper()
+	var exists bool
+	if err := store.Pool().QueryRow(context.Background(), `select to_regclass('public.' || $1) is not null`, table).Scan(&exists); err != nil {
+		t.Fatalf("ask whether %s exists: %v", table, err)
+	}
+	return exists
+}
+
 // seedPlanSteps writes the plan of issue at generation, one task `a`, with steps, each a role and
 // its agent key: the rows a plan_steps read finds, without the name of any agent.
 func seedPlanSteps(t *testing.T, store *Store, issue string, generation int, steps ...[2]string) {
@@ -90,6 +116,12 @@ func TestThePlanStepAgentMigrationNamesEveryStepItFinds(t *testing.T) {
 	want = append(want, "LEGION-209 1/a/1 reviewer", "LEGION-209 1/a/2 implementer")
 	if got := planStepAgents(t, store); !slices.Equal(got, want) {
 		t.Fatalf("the steps after the migration = %q, want %q: each key named for the role of its first row of the issue, each step with no key for its role, and the owner's step unnamed", got, want)
+	}
+	// The lasting record holds each name a key's rows hold, by issue, with the latest generation
+	// that gave it, and no name of a step with no key or of the owner's step: no issue row stands
+	// for either issue, as none need stand for a plan given before the daemon records its issue.
+	if got, want := keyNamesOf(t, store), []string{"LEGION-208 implementer k 2", "LEGION-209 reviewer k 1"}; !slices.Equal(got, want) {
+		t.Fatalf("plan_key_names after the migration = %q, want %q: each name a key's rows hold, of each issue, at its latest generation", got, want)
 	}
 	readSteps := func(st *Store) []record.PlanStep {
 		t.Helper()
@@ -161,9 +193,22 @@ func TestThePlanStepAgentWayBackPutsEachClaimInItsTokensRole(t *testing.T) {
 	if _, err := store.Pool().Exec(ctx, `update plan_steps set agent = 'implementer' where agent_key = 'k'`); err != nil {
 		t.Fatalf("name the key's agent: %v", err)
 	}
+	// A name the key held in a plan whose rows went: the record keeps it, and the way back drops it
+	// with the table.
+	if _, err := store.Pool().Exec(ctx, `insert into plan_key_names (issue, name, agent_key, generation) values ('LEGION-208', 'tester', 'j', 1)`); err != nil {
+		t.Fatalf("record key j's name: %v", err)
+	}
 
 	if _, err := store.Pool().Exec(ctx, headerWayBackOf(t, planStepAgentMigrationFile), pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("run the way back as one transaction: %v", err)
+	}
+	if tableExists(t, store, "plan_key_names") {
+		t.Fatal("plan_key_names stands after the way back, want it dropped: the release before knows no such table")
+	}
+	var added int
+	if err := store.Pool().QueryRow(ctx, `select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'plan_steps'
+		and column_name in ('agent', 'leave_session')`).Scan(&added); err != nil || added != 0 {
+		t.Fatalf("plan_steps keeps %d of agent and leave_session after the way back (%v), want neither", added, err)
 	}
 	for _, c := range claims {
 		var role string
@@ -181,5 +226,10 @@ func TestThePlanStepAgentWayBackPutsEachClaimInItsTokensRole(t *testing.T) {
 	want := []string{"LEGION-208 1/a/1 implementer", "LEGION-208 1/a/2 implementer", "LEGION-208 1/a/3 "}
 	if got := planStepAgents(t, store); !slices.Equal(got, want) {
 		t.Fatalf("the steps after the roll forward = %q, want %q: the key named again as it was", got, want)
+	}
+	// The roll forward fills the record again from the steps it names; a name only the dropped
+	// record kept is gone, which the way back's cost is.
+	if got, want := keyNamesOf(t, store), []string{"LEGION-208 implementer k 1"}; !slices.Equal(got, want) {
+		t.Fatalf("plan_key_names after the roll forward = %q, want %q: filled again from the named steps", got, want)
 	}
 }

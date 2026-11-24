@@ -82,6 +82,15 @@ func IsRole(role Role) bool {
 // IsBuiltin reports whether role is one of Legion's six (Roles), and no role of the deployment.
 func IsBuiltin(role Role) bool { return slices.Contains(Roles, role) }
 
+// RoleRank is role's place in Roles; a role outside them, a role of the deployment, goes after
+// every one of them.
+func RoleRank(role Role) int {
+	if i := slices.Index(Roles, role); i >= 0 {
+		return i
+	}
+	return len(Roles)
+}
+
 // NewToken is the token of the agent named for role on issue, AgentToken(project, issue,
 // Agent(role)): `legion-<project>-<issue project, lowercased>-<number>-<role>`, byte for byte the
 // shipped roleToken (packages/contracts/src/legion-roles.ts:48-55). It refuses a name that is no

@@ -618,8 +618,8 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		}
 		row := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
 		const told = "Reason: the owner gave version 1 of the plan while task default was stopped."
-		if row.Entry != 1 || !strings.Contains(row.EntryTask, told) {
-			t.Fatalf("the implementer's row has entry %d and task %q, want entry 1, raised, whose task holds %q", row.Entry, row.EntryTask, told)
+		if want := topEntryOfOthers(t, pool, key, claim.RoleImplementer) + 1; row.Entry != want || row.Entry != topEntryOf(t, pool, key) || !strings.Contains(row.EntryTask, told) {
+			t.Fatalf("the implementer's row has entry %d and task %q, want entry %d, one above every other row of the issue, raised, whose task holds %q", row.Entry, row.EntryTask, want, told)
 		}
 		if row.StepTask != "a" || row.StepPlace != 1 {
 			t.Fatalf("the implementer's row names step %d of task %q, want step 1 of task a, the step its start raised it for", row.StepPlace, row.StepTask)

@@ -452,11 +452,13 @@ type Claim struct {
 	// it with the process it is about, and the claim written there records no process for a
 	// later report to be about.
 	DeathCharged bool
-	// UnrecordedRefusal is a launch of this claim its issue's pod refused whose fact the store has
-	// not taken yet: the refusal's report to the workflow, or its re-check at the end of a start
-	// row (Machine.RefusalNotRecorded). The daemon tries such a fact again on a backoff for as long
-	// as it fails, and until one is taken the issue and the controller are told nothing and no
-	// start that only that fact would queue is queued. Nil while no such fact fails. It is memory
+	// UnrecordedRefusal is the oldest fact of a launch of this claim its issue's pod refused that
+	// the store has not taken yet: the refusal's report to the workflow, or a re-check at the end
+	// of a start row (Machine.RefusalNotRecorded). The daemon tries each such fact again on a
+	// backoff for as long as it fails and the refusal it names stands; where the failing fact is
+	// the report, the issue and the controller are told nothing until it is taken, and no start that
+	// only that fact would queue is queued. Nil while no such fact fails, and from the moment the
+	// machine drops or replaces the refusal a fact names, which ends that fact's tries. It is memory
 	// only, as Compacting is: Machine.Claim and Machine.View report it, and the store never writes
 	// it, so the operator's listing, which reads the live machine, is the one surface that carries
 	// it (`legion claims list` prints it as the cause word `refusal-unrecorded`).
@@ -1137,9 +1139,11 @@ type Deps struct {
 	// Whether a start of the claim must be queued so that whatever replaces the pod resumes it is
 	// the daemon's to read from its outbox, not the machine's: the machine cannot tell whether the
 	// outbox start that raised a launch still stands, since a launch the wake pacing held, or a
-	// retry of one whose write failed, runs after that start's row has finished. Nil tells no one.
-	// It is called inside the machine's decision and returns at once.
-	PodRefused func(c Claim, pod, detail string)
+	// retry of one whose write failed, runs after that start's row has finished. m is the claim's
+	// own machine, which the daemon's tries of the fact read and mark (Machine.RefusedPod,
+	// Machine.RefusalNotRecorded). Nil tells no one. It is called inside the machine's decision and
+	// returns at once.
+	PodRefused func(m *Machine, c Claim, pod, detail string)
 	// SessionGone is told the Envoy session a claim recorded once no process stands behind it,
 	// once per process end (sessionGone says where and when, and why then). It is the daemon's
 	// clean stop of that session's registration, which makes the listener read it `gone` at once
@@ -1672,13 +1676,17 @@ type Machine struct {
 	// writes the claim once and records the pod again.
 	refusedPod     string
 	podRefusedTold time.Time
-	// unrecorded is the refused launch's fact the store has not taken (Claim.UnrecordedRefusal),
-	// nil while none fails. It is guarded by unrecordedMu and not by mu: the tries that mark and
-	// clear it run on goroutines of their own beside the decisions (internal/daemon's
-	// applyRefusalFact), one of which can hold mu through a Sandbox relaunch for minutes, and the
-	// operator's listing reads it through View, which never waits on a decision.
+	// unrecorded is each fact of a refused launch of the claim that the store has not taken, by the
+	// fact's event id, with the pod whose refusal it reports (Claim.UnrecordedRefusal shows the
+	// oldest). It is guarded by unrecordedMu and not by mu, so View reads it without waiting on a
+	// decision; but a mark is set under mu too, only while refusedPod names its pod
+	// (RefusalNotRecorded), and each write of refusedPod drops the marks of every other pod under
+	// mu (setRefusedPod), so a mark stands only while the refusal it names does.
 	unrecordedMu sync.Mutex
-	unrecorded   *UnrecordedRefusal
+	unrecorded   map[string]unrecordedFact
+	// reporting is the pod of each refusal whose report is being tried now
+	// (BeginRefusalReport), under unrecordedMu.
+	reporting map[string]bool
 	// podLoad is the gate's hold of the session load of the claim's process in its issue pod, from
 	// that process's start until its load ends, at its settle after the registration or at an end
 	// of the process before it (podStarted, endPodLoad), nil for none and for every claim the pod
@@ -2444,26 +2452,8 @@ func (m *Machine) RefusedPod() string {
 	return m.refusedPod
 }
 
-// RefusalStands is the refusal of the claim's last launch where the issue pod that refused it
-// still stands, or where which pod the issue holds cannot be read (podStillRefuses), and nil where
-// no launch of the claim is refused or another pod stands now, which drops the refusal. It is
-// asked under the decision lock, so it waits out a decision in flight as Claim does, and like every
-// launch refused while that pod stands it tells the issue and the controller at most hourly.
-//
-// The outbox asks it of a start whose decision answered no error (internal/daemon's start): while
-// the pod still refuses the claim, no path of the machine launched into it, so that start brought
-// the claim back by nothing, and it waits for the pod rather than ending, whichever path answered
-// it. The end of a start row of a claim its pod refuses then never comes before that pod goes. A
-// launch that ran, or that the wake pacing parked, dropped the refusal first (launchAfter), so this
-// answers nil for it.
-func (m *Machine) RefusalStands() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.podStillRefuses()
-}
-
 // UnrecordedRefusal is a refused launch's fact the store has not taken (Claim.UnrecordedRefusal):
-// Since is when the first failed try of it failed, Attempts how many tries have failed since, and
+// Since is when the first failed try of it failed, Attempts how many tries of it have failed, and
 // Error the last failed try's error, kept as a far side's text is (storetext.FarSideError).
 type UnrecordedRefusal struct {
 	Since    time.Time
@@ -2471,40 +2461,105 @@ type UnrecordedRefusal struct {
 	Error    string
 }
 
-// RefusalNotRecorded marks the claim as carrying a refused launch's fact the store did not take
-// (Claim.UnrecordedRefusal), err being the failed try's error: the first failed try since the mark
-// was last cleared sets when, and each failed try counts one more attempt. Both of the claim's
-// facts mark it, the refusal's report and its re-check at the end of a start row, so a try of either
-// that is taken clears it, and the next failure of the other marks it again from one. It takes no
-// decision lock and publishes nothing: the claim reads the mark where it is reported (current,
-// View).
-func (m *Machine) RefusalNotRecorded(err error) {
-	m.unrecordedMu.Lock()
-	defer m.unrecordedMu.Unlock()
-	next := UnrecordedRefusal{Since: m.deps.Clock.Now(), Attempts: 1, Error: storetext.FarSideError(err.Error())}
-	if held := m.unrecorded; held != nil {
-		next.Since, next.Attempts = held.Since, held.Attempts+1
+// unrecordedFact is one fact of a refused launch the store has not taken (Machine.unrecorded): the
+// pod whose refusal it reports, and the mark the claim shows for it.
+type unrecordedFact struct {
+	pod string
+	UnrecordedRefusal
+}
+
+// RefusalNotRecorded marks the fact id about the refusal of the claim's launch by the issue pod pod
+// as one the store did not take, err being the failed try's error (Claim.UnrecordedRefusal): the
+// fact's first failed try sets when, and each failed try of it counts one more attempt. Each fact
+// has a mark of its own, the refusal's report and each re-check at the end of a start row alike, so
+// a try of one fact that is taken clears that fact's mark alone (RefusalRecorded). Where the
+// machine no longer reports pod's refusal nothing is marked, since that fact will not be applied
+// (internal/daemon's applyRefusalFact). It waits for the decision in flight, as RefusedPod does,
+// so a mark is never set after the refusal it names was dropped (setRefusedPod). It publishes
+// nothing: the claim reads the marks where it is reported (current, View).
+func (m *Machine) RefusalNotRecorded(id, pod string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.refusedPod != pod {
+		return
 	}
-	m.unrecorded = &next
-}
-
-// RefusalRecorded clears the mark RefusalNotRecorded sets: a try of the fact was taken, or the fact
-// was dropped because the machine no longer reports the refusal it names.
-func (m *Machine) RefusalRecorded() {
 	m.unrecordedMu.Lock()
 	defer m.unrecordedMu.Unlock()
-	m.unrecorded = nil
+	mark := unrecordedFact{pod: pod, UnrecordedRefusal: UnrecordedRefusal{Since: m.deps.Clock.Now(), Attempts: 1}}
+	if held, ok := m.unrecorded[id]; ok {
+		mark.Since, mark.Attempts = held.Since, held.Attempts+1
+	}
+	mark.Error = storetext.FarSideError(err.Error())
+	if m.unrecorded == nil {
+		m.unrecorded = map[string]unrecordedFact{}
+	}
+	m.unrecorded[id] = mark
 }
 
-// unrecordedRefusal is a copy of the mark RefusalNotRecorded sets, nil while none stands.
+// RefusalRecorded clears the mark of the fact id that RefusalNotRecorded set: a try of that fact
+// was taken, or the fact was dropped because the machine no longer reports the refusal it names.
+// Every other fact keeps its mark.
+func (m *Machine) RefusalRecorded(id string) {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	delete(m.unrecorded, id)
+}
+
+// BeginRefusalReport records that a report of pod's refusal of the claim's launch is being tried,
+// and is false where one already is: the daemon then starts no second report of the same refusal,
+// whose tries would each tell the issue and the controller again once the store took them
+// (internal/daemon's podRefused). Its caller ends the record when its tries end (EndRefusalReport).
+func (m *Machine) BeginRefusalReport(pod string) bool {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	if m.reporting[pod] {
+		return false
+	}
+	if m.reporting == nil {
+		m.reporting = map[string]bool{}
+	}
+	m.reporting[pod] = true
+	return true
+}
+
+// EndRefusalReport ends the record BeginRefusalReport made: the report of pod's refusal was taken,
+// dropped or stopped, so the next report of it may start.
+func (m *Machine) EndRefusalReport(pod string) {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	delete(m.reporting, pod)
+}
+
+// setRefusedPod records pod as the issue pod that refuses the claim's launches, "" for none, and
+// drops the mark of every unrecorded fact about another pod's refusal (Claim.UnrecordedRefusal):
+// such a fact will not be applied, so the claim no longer waits on it. It runs under mu, as every
+// write of refusedPod does.
+func (m *Machine) setRefusedPod(pod string) {
+	m.refusedPod = pod
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	for id, mark := range m.unrecorded {
+		if mark.pod != pod {
+			delete(m.unrecorded, id)
+		}
+	}
+}
+
+// unrecordedRefusal is a copy of the mark of the oldest fact RefusalNotRecorded marked, the one
+// whose first failed try failed first (the smaller event id between two of one moment), nil while
+// none stands.
 func (m *Machine) unrecordedRefusal() *UnrecordedRefusal {
 	m.unrecordedMu.Lock()
 	defer m.unrecordedMu.Unlock()
-	if m.unrecorded == nil {
-		return nil
+	var oldest *UnrecordedRefusal
+	var oldestID string
+	for id, mark := range m.unrecorded {
+		if oldest == nil || mark.Since.Before(oldest.Since) || (mark.Since.Equal(oldest.Since) && id < oldestID) {
+			held := mark.UnrecordedRefusal
+			oldest, oldestID = &held, id
+		}
 	}
-	held := *m.unrecorded
-	return &held
+	return oldest
 }
 
 // View is a copy of the claim as the machine last published it: as its latest decision left it, or
@@ -3277,7 +3332,7 @@ func (m *Machine) podRefused(ctx context.Context, cause error) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	var awaits runtime.AwaitsPodUpdate
 	if errors.As(cause, &awaits) {
-		m.refusedPod = awaits.Pod
+		m.setRefusedPod(awaits.Pod)
 	}
 	m.logFarSideError(ctx, slog.LevelWarn, "supervise: the claim's pod cannot run this launch until its update round or its release replaces it; the claim is suspended, charged nothing, until another pod stands",
 		err, "generation", m.claim.Generation, "pod", m.refusedPod)
@@ -3315,7 +3370,7 @@ func (m *Machine) podStillRefuses() error {
 			return err
 		}
 	}
-	m.refusedPod = ""
+	m.setRefusedPod("")
 	return nil
 }
 
@@ -3331,7 +3386,7 @@ func (m *Machine) tellPodRefused(cause error) {
 		return
 	}
 	m.podRefusedTold = now
-	m.deps.PodRefused(m.current(), m.refusedPod, storetext.FarSideError(cause.Error()))
+	m.deps.PodRefused(m, m.current(), m.refusedPod, storetext.FarSideError(cause.Error()))
 }
 
 // writeTry is a fresh try of the launch (launchTries): the claim at the next generation with a
