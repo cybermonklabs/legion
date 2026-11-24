@@ -122,6 +122,14 @@ It names each table with the schema `public`, so a common table expression of th
 Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`.
 `deleted_at` is the post's own delete mark as the post stands now, `comments.deleted_at` or `messages.deleted_at`, on every version of a deleted comment or message at every cut, and null on every other version, so a reader leaves out or marks every version of a deleted post.
 So a search at a cut hides a post deleted after the cut as soon as its delete commits, before the fill reads the delete.
+
+A past-time keyword search with no status, author or updated_since filter ranks posts by their keyword rank before reading their issues at the cut (`searchAsOfBoundedPosts`).
+To keep deleted posts out of that ranking without fetching the matched posts' rows, it anti-joins on `id` with `deleted_at is not null`.
+Two concurrent partial indexes serve those anti-joins, each with a `select 0` census:
+
+- `20261124162630_comments_deleted`, `(id)` on `comments` where `deleted_at is not null`.
+- `20261124162631_messages_deleted`, `(id)` on `messages` where `deleted_at is not null`.
+
 `Store.TextVersionsAt(ctx, cut)` answers the relation only for a cut at or before the reach.
 For a later cut it answers `*TextVersionsNotReachedError`, whose `Error()` names the reach and the cut.
 With no cursor row, the error has `Reached` false and says that the fill has reached no time yet.
