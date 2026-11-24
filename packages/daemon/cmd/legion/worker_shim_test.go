@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -284,6 +285,134 @@ esac
 	}
 	if err := <-daemon; err != nil {
 		t.Fatalf("the daemon side: %v", err)
+	}
+}
+
+// A shim killed outright mid-build — at its stop grace, by the kernel's out-of-memory kill, with
+// its pod — is the one end of a warm-up build that nothing of the warm-up sees: no line, no
+// release, and the index the build left reads `indexing`. The record the warm-up wrote before the
+// build, `.codegraph/legion-warm.build`, still says `running`, and the next shim's warm-up,
+// once it holds the lease, reads that as a build that died unseen and builds nothing: before, it
+// repaired the index with `codegraph index` at once, the loop that took INFRA-3080's pod down at
+// every role start on 2026-11-24.
+//
+// The first shim runs as a process of its own (TestMain's rig) so it can be killed outright, and
+// its stand-in `init` is killed with it, as role-init's kill of the role's namespace ends it. The
+// lease the killed shim leaves is backdated past its stale bound, as a minute's wait would leave
+// it, so the second shim, run here, takes it over and reads the workspace. Its agent stays up
+// until that warm-up has released the lease after its `status`.
+func TestWorkerShimDoesNotRepairAfterAShimKilledMidBuild(t *testing.T) {
+	dir := t.TempDir()
+	socket := testtmp.Socket(t, "s")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	token := filepath.Join(dir, "token")
+	if err := os.WriteFile(token, []byte("boot-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	codegraphLog, building := filepath.Join(dir, "codegraph.log"), filepath.Join(dir, "building")
+	standIn := `#!/bin/sh
+printf '%s\n' "$1" >> '` + codegraphLog + `'
+case "$1" in
+status) if [ -e .codegraph/begun ]; then echo '{"initialized":true,"index":{"state":"indexing"}}'; else echo '{"initialized":false}'; fi ;;
+init) mkdir -p .codegraph; : > .codegraph/begun; echo $$ > '` + building + `'; exec sleep 60 ;;
+index) exit 0 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(standIn), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	workspaceDir := t.TempDir()
+	t.Setenv("LEGION_WORKSPACE", workspaceDir)
+	lease := filepath.Join(workspaceDir, ".codegraph", "legion-warm.lock")
+
+	firstDaemon := acknowledgeHello(ln)
+	agentPID := filepath.Join(dir, "agent.pid")
+	first := exec.Command(os.Args[0], "worker-shim",
+		"--connect", "unix://"+socket, "--boot-token-file", token, "--warm-codegraph",
+		"--", "sh", "-c", `echo $$ > "$0"; echo '{"type":"fake_ready"}'; ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done`, agentPID)
+	first.Env = append(os.Environ(), testMainEnv+"=1")
+	var printed bytes.Buffer
+	first.Stdout, first.Stderr = &printed, &printed
+	first.WaitDelay = testwait.Bounded(t, 1<<60, 30*time.Second)
+	if err := first.Start(); err != nil {
+		t.Fatalf("start the first shim: %v", err)
+	}
+	var agent, build int
+	t.Cleanup(func() {
+		_ = first.Process.Kill()
+		for _, pid := range []int{agent, build} {
+			if pid > 0 {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	readPID := func(path string) int {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return 0
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
+		if err != nil {
+			return 0
+		}
+		return pid
+	}
+	testwait.Eventually(t, "the first shim's warm-up to be building", func() bool {
+		agent, build = readPID(agentPID), readPID(building)
+		return agent > 0 && build > 0
+	})
+	// The shim dies outright, and with it, as role-init's kill of the role's namespace ends them,
+	// its agent and its build. Each signal goes to one pid alone, never to a group: the first shim
+	// shares this test binary's own group.
+	for _, pid := range []int{first.Process.Pid, agent, build} {
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = first.Wait()
+	testwait.Receive(t, "the daemon side of the killed shim's stream", firstDaemon)
+	stale := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(lease, stale, stale); err != nil {
+		t.Fatalf("the killed shim left no lease to backdate: %v; it printed:\n%s", err, printed.String())
+	}
+	if calls := logLines(t, codegraphLog); !slices.Equal(calls, []string{"status", "init"}) {
+		t.Fatalf("the first shim's codegraph calls = %v, want status then init", calls)
+	}
+
+	secondDaemon := acknowledgeHello(ln)
+	var stdout, stderr bytes.Buffer
+	// The agent waits for the warm-up's second `status`, which runs under the lease, then for the
+	// lease's release, which follows whatever the warm-up decided; it gives up after a minute and
+	// ends 9, which the exit status below reads as the failure it is.
+	waiting := `echo '{"type":"fake_ready"}'; ticks=0
+while [ "$(grep -c '^status$' "$0")" -lt 2 ] || [ -e "$1" ]; do
+  [ "$ticks" -lt 1200 ] || exit 9
+  sleep 0.05; ticks=$((ticks+1))
+done
+exit 7`
+	returned := make(chan int, 1)
+	go func() {
+		returned <- run(context.Background(), []string{"legion", "worker-shim",
+			"--connect", "unix://" + socket, "--boot-token-file", token, "--warm-codegraph",
+			"--", "sh", "-c", waiting, codegraphLog, lease}, &stdout, &stderr)
+	}()
+	if code := testwait.Receive(t, "the second shim's return", returned); code != 7 {
+		t.Fatalf("the second shim = exit %d, want the agent's 7; stderr: %s; stdout: %s", code, stderr.String(), stdout.String())
+	}
+	if err := testwait.Receive(t, "the daemon side of the second shim's stream", secondDaemon); err != nil {
+		t.Fatalf("the daemon side: %v", err)
+	}
+	if calls := logLines(t, codegraphLog); !slices.Equal(calls, []string{"status", "init", "status"}) {
+		t.Fatalf("codegraph calls across both shims = %v, want the second shim's warm-up to run status alone: the first shim's build died with it, and a repair would run it again", calls)
 	}
 }
 

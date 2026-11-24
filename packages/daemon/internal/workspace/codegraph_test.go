@@ -1323,31 +1323,38 @@ func (r *boundRow) answered(end string) {
 
 // TestNextCodegraphStep table-tests the pure decision warmCodegraphIndexOn runs on: a parsed
 // status decides outright (its `initialized:false` always means init, even when `.codegraph/`
-// exists); dirExists is consulted only when status failed or didn't parse; and a live lock
-// always wins over an index repair.
+// exists); dirExists is consulted only when status failed or didn't parse; a live lock
+// always wins over an index repair; and a record of the last warm-up build that holds (held:
+// that build died, under the image's CodeGraph and the cap, in this workspace) wins over every
+// build, an init as much as an index repair.
 func TestNextCodegraphStep(t *testing.T) {
 	for _, tc := range []struct {
-		name                string
-		dirExists, lockLive bool
-		statusExitCode      int
-		statusStdout        string
-		want                codegraphStep
+		name                      string
+		dirExists, lockLive, held bool
+		statusExitCode            int
+		statusStdout              string
+		want                      codegraphStep
 	}{
-		{"status valid, not initialized, no directory: init", false, false, 0, `{"initialized":false}`, codegraphStepInit},
-		{"status valid, not initialized, directory exists: init (untracked .codegraph)", true, false, 0, `{"initialized":false}`, codegraphStepInit},
-		{"status valid, complete: none", true, false, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
-		{"status valid, complete, lock live: none (complete wins, lock irrelevant)", true, true, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
-		{"status valid, partial, no live lock: index", true, false, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepIndex},
-		{"status valid, partial, live lock: none", true, true, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepNone},
-		{"status failed, directory exists, no live lock: index", true, false, 1, ``, codegraphStepIndex},
-		{"status failed, directory exists, live lock: none", true, true, 1, ``, codegraphStepNone},
-		{"status failed, no directory: init", false, false, 1, ``, codegraphStepInit},
-		{"status unparseable, directory exists: index", true, false, 0, `not json`, codegraphStepIndex},
-		{"status unparseable, no directory: init", false, false, 0, `not json`, codegraphStepInit},
+		{"status valid, not initialized, no directory: init", false, false, false, 0, `{"initialized":false}`, codegraphStepInit},
+		{"status valid, not initialized, directory exists: init (untracked .codegraph)", true, false, false, 0, `{"initialized":false}`, codegraphStepInit},
+		{"status valid, complete: none", true, false, false, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
+		{"status valid, complete, lock live: none (complete wins, lock irrelevant)", true, true, false, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
+		{"status valid, partial, no live lock: index", true, false, false, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepIndex},
+		{"status valid, partial, live lock: none", true, true, false, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepNone},
+		{"status failed, directory exists, no live lock: index", true, false, false, 1, ``, codegraphStepIndex},
+		{"status failed, directory exists, live lock: none", true, true, false, 1, ``, codegraphStepNone},
+		{"status failed, no directory: init", false, false, false, 1, ``, codegraphStepInit},
+		{"status unparseable, directory exists: index", true, false, false, 0, `not json`, codegraphStepIndex},
+		{"status unparseable, no directory: init", false, false, false, 0, `not json`, codegraphStepInit},
+		{"record holds, status valid, not initialized: none (no init)", true, false, true, 0, `{"initialized":false}`, codegraphStepNone},
+		{"record holds, status valid, partial, no live lock: none (no repair)", true, false, true, 0, `{"initialized":true,"index":{"state":"indexing"}}`, codegraphStepNone},
+		{"record holds, status valid, complete: none", true, false, true, 0, `{"initialized":true,"index":{"state":"complete"}}`, codegraphStepNone},
+		{"record holds, status failed, directory exists: none (no repair)", true, false, true, 1, ``, codegraphStepNone},
+		{"record holds, status unparseable, no directory: none (no init)", false, false, true, 0, `not json`, codegraphStepNone},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nextCodegraphStep(tc.dirExists, tc.lockLive, tc.statusExitCode, tc.statusStdout); got != tc.want {
-				t.Fatalf("nextCodegraphStep(%v, %v, %d, %q) = %v, want %v", tc.dirExists, tc.lockLive, tc.statusExitCode, tc.statusStdout, got, tc.want)
+			if got := nextCodegraphStep(tc.dirExists, tc.lockLive, tc.held, tc.statusExitCode, tc.statusStdout); got != tc.want {
+				t.Fatalf("nextCodegraphStep(%v, %v, %v, %d, %q) = %v, want %v", tc.dirExists, tc.lockLive, tc.held, tc.statusExitCode, tc.statusStdout, got, tc.want)
 			}
 		})
 	}

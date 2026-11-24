@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -127,7 +128,8 @@ func WarmCodegraphIndexInBackground(dir string) {
 // so a stop mid-build — the launcher's SIGTERM to the role's whole process group, which ends Oh My
 // Pi and the codegraph child at once — never leaves the lease behind for the role's relaunch to
 // read as a live build. The index such a stop leaves partial is repaired by the next warm-up
-// (nextCodegraphStep: initialized, not complete, no live CodeGraph lock → `index`). launched is
+// (nextCodegraphStep: initialized, not complete, no live CodeGraph lock, no record of a build
+// that died → `index`). launched is
 // the instant the caller's process started — a role shim's Run — which the one line a built index
 // logs reports the build against, beside the build's own duration, so a pod's log says how long
 // after the role's launch its index was ready.
@@ -157,7 +159,12 @@ func WarmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
 // attempt it, and never relies on CodeGraph's own mtime-based (2-minute) staleness check, which
 // can hand the lock to a second writer regardless. The whole warm-up, `status` included, runs
 // under the workspace's cross-process lease (acquireWarmLease, warmLeaseHeartbeat): a second
-// process that finds the lease held leaves the build to its holder.
+// process that finds the lease held leaves the build to its holder. Beside that lease it keeps
+// the record of its last build (warmBuild): a build that died, rather than exiting 0 or being
+// stopped by its own warm-up, holds every later warm-up of that workspace on that disk, since
+// the same build would die the same way and a build that kills its pod runs again at every
+// role's launch (INFRA-5717). Each build is bounded by codegraphMemoryCap (runCodegraph), well
+// under the pod's limit, and runs CodeGraph's parse pool at codegraphParseWorkers.
 // Every codegraph invocation gets a minimal, explicit environment — PATH, HOME, TMPDIR when set,
 // and DO_NOT_TRACK=1 — never the process's full environment: a provisioning caller may hold a
 // one-shot GitHub token or other secrets in its own environment, and codegraph gets none of them.
@@ -210,9 +217,32 @@ func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, dir string, launch
 		complete = initialized && indexComplete
 	}
 	lockLive := dirExists && !complete && codegraphLockHeldByLiveProcess(dir)
-	step := nextCodegraphStep(dirExists, lockLive, status.exitCode, status.stdout)
+	// The record of the last build is read under the lease, so a record still `running` is no
+	// live build's: it is one that died with the process that wrote it.
+	recordFile := filepath.Join(codegraphDir, warmBuildName)
+	version := codegraphVersion(codegraphPath)
+	record, recorded, err := readWarmBuild(recordFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s reads its build record %s as none: %s\n", dir, recordFile, err)
+	}
+	holding := false
+	if recorded {
+		created, createdOK, err := Created(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s could not read when the workspace was created: %s\n", dir, err)
+		}
+		holding = record.holds(version, codegraphMemoryCap, created, createdOK)
+	}
+	step := nextCodegraphStep(dirExists, lockLive, holding, status.exitCode, status.stdout)
 	if step == codegraphStepNone {
-		if lockLive {
+		switch {
+		case complete && recorded:
+			// Whoever completed the index — a later warm-up, an agent's own `codegraph index` —
+			// the record says nothing of this workspace any longer.
+			removeWarmBuild(dir, recordFile)
+		case holding:
+			fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s skipped: its last build, %s, %s\n", dir, record.describe(), warmBuildReason(record))
+		case lockLive:
 			fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s skipped: a build in progress holds the index lock\n", dir)
 		}
 		return
@@ -225,29 +255,67 @@ func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, dir string, launch
 		subcommand = "index"
 	}
 	buildStarted := time.Now()
+	// The record is written, and synced, before the build starts: a build that takes the pod with
+	// it leaves no line and runs no code of this warm-up's, and the disk is all the next one has.
+	running := warmBuild{Subcommand: subcommand, Started: buildStarted, Outcome: warmOutcomeRunning, CodeGraph: version, Cap: codegraphMemoryCap}
+	if err := writeWarmBuild(recordFile, running); err != nil {
+		fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s could not record its build: %s\n", dir, err)
+		return
+	}
 	result, err := runCodegraph(ctx, c, codegraphPath, dir, subcommand)
 	built := time.Since(buildStarted)
 	if ctx.Err() != nil {
+		// The warm-up's own stop ended this build (a role's stop, the shim on its way out), so
+		// the next launch builds again: an orderly stop is no reason to hold a workspace.
+		removeWarmBuild(dir, recordFile)
 		fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s ended with its process before `codegraph %s` finished; the next launch's warm-up repairs the index\n", dir, subcommand)
 		return
 	}
+	ended := func(outcome string, peak uint64) {
+		done := running
+		done.Outcome, done.Peak = outcome, peak
+		if err := writeWarmBuild(recordFile, done); err != nil {
+			fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s could not record how its build ended: %s\n", dir, err)
+		}
+	}
 	if err != nil {
+		// The build never ran: nothing of this workspace's is held by a command that failed to
+		// start.
+		removeWarmBuild(dir, recordFile)
 		fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up could not run for %s: %s\n", dir, err)
 		return
 	}
-	if result.timedOut {
+	switch {
+	case result.cappedAt > 0:
+		ended(warmOutcomeMemoryCap, result.cappedAt)
+		fmt.Fprintf(os.Stderr, "[legion] codegraph %s for %s ended at its memory cap: its process group read %d MiB, over the cap of %d MiB, after %s: %s\n",
+			subcommand, dir, result.cappedAt>>20, codegraphMemoryCap>>20, built.Round(time.Millisecond), strings.TrimSpace(result.stderr))
+		return
+	case result.timedOut:
+		ended(warmOutcomeTimedOut, 0)
 		fmt.Fprintf(os.Stderr, "[legion] codegraph %s for %s timed out after %s: %s\n", subcommand, dir, codegraphTimeout, strings.TrimSpace(result.stderr))
 		return
-	}
-	if result.signal != "" {
+	case result.signal != "":
+		ended(warmOutcomeKilled, 0)
 		fmt.Fprintf(os.Stderr, "[legion] codegraph %s for %s was ended by %s: %s\n", subcommand, dir, result.signal, strings.TrimSpace(result.stderr))
 		return
-	}
-	if result.exitCode != 0 {
+	case result.exitCode != 0:
+		ended(exitOutcome(result.exitCode), 0)
 		fmt.Fprintf(os.Stderr, "[legion] codegraph %s failed for %s (exit %d): %s\n", subcommand, dir, result.exitCode, strings.TrimSpace(result.stderr))
 		return
 	}
+	removeWarmBuild(dir, recordFile)
 	fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s built the index: codegraph %s took %s, done %s after launch\n", dir, subcommand, built.Round(time.Millisecond), time.Since(launched).Round(time.Millisecond))
+}
+
+// warmBuildReason is what the skipped line says of a record that holds: a build still `running`
+// died with the process that wrote it, since this warm-up holds the lease, and any other outcome
+// is one that build reported.
+func warmBuildReason(rec warmBuild) string {
+	if rec.Outcome == warmOutcomeRunning {
+		return "which died unseen (a pod end, an out-of-memory kill, a shim killed at its stop grace); it runs again on a new workspace, or under another CodeGraph or cap"
+	}
+	return "and it would end the same way again; it runs again on a new workspace, or under another CodeGraph or cap"
 }
 
 // warmLeaseStep is a seam for the lease's own tests, nil otherwise: it is called with the name of
@@ -455,20 +523,29 @@ const (
 // `.codegraph/codegraph.lock` (codegraphLockHeldByLiveProcess) — always wins over an index
 // repair: a build that is still running also reports `index.state: "indexing"`,
 // indistinguishable from one left partial by a dead process, so this never relies on CodeGraph's
-// own mtime-based staleness check to tell the two apart.
-func nextCodegraphStep(dirExists, lockLive bool, statusExitCode int, statusStdout string) codegraphStep {
+// own mtime-based staleness check to tell the two apart. held — whether the record of the last
+// warm-up build of this workspace holds (warmBuild.holds: that build died, under the image's
+// CodeGraph and this cap, in this workspace) — wins over every build, an `init` as much as a
+// repair: the same build on the same disk dies the same way, and at every role's launch
+// (INFRA-5717 R2).
+func nextCodegraphStep(dirExists, lockLive, held bool, statusExitCode int, statusStdout string) codegraphStep {
 	if statusExitCode == 0 && json.Valid([]byte(statusStdout)) {
 		initialized, complete := codegraphStatus(statusStdout)
 		switch {
-		case !initialized:
-			return codegraphStepInit
 		case complete:
 			return codegraphStepNone
+		case held:
+			return codegraphStepNone
+		case !initialized:
+			return codegraphStepInit
 		case lockLive:
 			return codegraphStepNone
 		default:
 			return codegraphStepIndex
 		}
+	}
+	if held {
+		return codegraphStepNone
 	}
 	if !dirExists {
 		return codegraphStepInit
@@ -552,27 +629,31 @@ func codegraphLockHeldByLiveProcess(dir string) bool {
 }
 
 // codegraphResult is one codegraph run that ran: its output, and its exit status, or the signal
-// that ended it, and whether that signal was the run's own codegraphTimeout. A codegraph a signal
-// ended answered no status, as one that exited non-zero did, and the warm-up reads the two alike:
-// a `status` so ended is one that answered nothing (nextCodegraphStep's fallback), and a build so
-// ended leaves its index "indexing" (measured on CodeGraph 1.5.0, killed with SIGTERM and with
-// SIGKILL mid-build), which a later warm-up repairs with `codegraph index`, at most once per
-// directory per process (indexed). exitCode is -1 where signal is set.
+// that ended it, and whether that signal was the run's own codegraphTimeout or its memory cap. A
+// codegraph a signal ended answered no status, as one that exited non-zero did, and the warm-up
+// reads the two alike: a `status` so ended is one that answered nothing (nextCodegraphStep's
+// fallback), and a build so ended leaves its index "indexing" (measured on CodeGraph 1.5.0,
+// killed with SIGTERM and with SIGKILL mid-build), which a later warm-up repairs with `codegraph
+// index`, at most once per directory per process (indexed) and never where the record of that
+// build holds (warmBuild). exitCode is -1 where signal is set. cappedAt is the size the run's
+// process group was read at when the cap ended it, and 0 for every other end.
 type codegraphResult struct {
 	stdout   string
 	stderr   string
 	exitCode int
 	signal   string
 	timedOut bool
+	cappedAt uint64
 }
 
 // codegraphEnvironment is the minimal environment every codegraph invocation gets: its own PATH
 // lookup (so a self-exec or any PATH-relative helper it spawns still resolves), HOME (codegraph
-// reads its config/cache under it), TMPDIR when the caller's own environment sets one, and the
-// telemetry/update-check opt-out. Nothing else — never GH_*, LEGION_*, provider keys, or any
-// other token-shaped variable a provisioning caller's own process environment may hold.
+// reads its config/cache under it), TMPDIR when the caller's own environment sets one, the size
+// of CodeGraph's parse pool (codegraphParseWorkers, the count the memory cap was measured at),
+// and the telemetry/update-check opt-out. Nothing else — never GH_*, LEGION_*, provider keys, or
+// any other token-shaped variable a provisioning caller's own process environment may hold.
 func codegraphEnvironment() []string {
-	env := []string{"DO_NOT_TRACK=1"}
+	env := []string{"DO_NOT_TRACK=1", "CODEGRAPH_PARSE_WORKERS=" + codegraphParseWorkers}
 	if path, ok := os.LookupEnv("PATH"); ok {
 		env = append(env, "PATH="+path)
 	}
@@ -585,25 +666,47 @@ func codegraphEnvironment() []string {
 	return env
 }
 
-// runCodegraph runs one codegraph subcommand in dir, bounded by codegraphTimeout on c, with
-// codegraphEnvironment's minimal, explicit environment — never the caller's full environment. ctx
-// ending, or the timeout, SIGTERMs the child (CodeGraph 1.5.0 dies of it within about two seconds,
-// its SQLite closed) and kills it after codegraphStopGrace; either way Run returns once the
-// child is reaped, so a caller waiting on the warm-up is never held longer than that grace past
-// the end of its context.
+// runCodegraph runs one codegraph subcommand in dir, bounded by codegraphTimeout on c and by
+// codegraphMemoryCap, with codegraphEnvironment's minimal, explicit environment — never the
+// caller's full environment. ctx ending, or the timeout, SIGTERMs the child (CodeGraph 1.5.0 dies
+// of it within about two seconds, its SQLite closed) and kills it after codegraphStopGrace;
+// either way Run returns once the child is reaped, so a caller waiting on the warm-up is never
+// held longer than that grace past the end of its context.
+//
+// The child leads a process group of its own (Setpgid, as procgroup.Configure sets it), which is
+// what makes the cap possible: the group holds the child and everything it starts — CodeGraph's
+// node, its parse workers — and nothing of the caller's, so the warm-up may end the whole group
+// outright without touching the shim that runs it or that shim's agent. The group's size is read
+// every codegraphMemoryPoll on c as the launcher's memory guard reads a process
+// (watchCodegraphMemory, memoryguard.GroupReader), and above the cap the group gets SIGKILL: a V8
+// flag would bound neither WASM nor native memory, and an address-space limit would break WASM
+// outright.
 func runCodegraph(ctx context.Context, c clock.Clock, codegraphPath, dir string, args ...string) (codegraphResult, error) {
 	bounded, cancel := c.WithTimeout(ctx, codegraphTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(bounded, codegraphPath, args...)
 	cmd.Dir = dir
 	cmd.Env = codegraphEnvironment()
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The context's stop signals the group, as the cap's kill does: the child's own children are
+	// CodeGraph's, and a stop that reached the child alone would leave them holding its pipes.
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = codegraphStopGrace
 	killed := procgroup.KilledByContext(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	// The watch's first read is armed before the build starts, so it is armed before anything the
+	// build does: a test that moves a fake clock one poll on, once its stand-in build holds its
+	// memory, moves it past an armed read.
+	poll := c.NewTimer(codegraphMemoryPoll)
+	if err := cmd.Start(); err != nil {
+		poll.Stop()
+		return codegraphResult{stdout: stdout.String(), stderr: stderr.String()}, err
+	}
+	capped := watchCodegraphMemory(poll, cmd.Process.Pid)
+	err := cmd.Wait()
+	peak := capped()
 	result := codegraphResult{stdout: stdout.String(), stderr: stderr.String()}
 	switch end := procgroup.Ended(err); {
 	case err == nil:
@@ -611,10 +714,53 @@ func runCodegraph(ctx context.Context, c clock.Clock, codegraphPath, dir string,
 		result.exitCode = end.Exited.ExitCode()
 	case end.Signal != "":
 		result.exitCode, result.signal = -1, end.Signal
-		// The bound's SIGTERM is the run's own timeout only while the caller's ctx still runs.
-		result.timedOut = killed() && ctx.Err() == nil
+		// The bound's SIGTERM is the run's own timeout only while the caller's ctx still runs,
+		// and the cap's own SIGKILL is neither.
+		result.timedOut = peak == 0 && killed() && ctx.Err() == nil
+		result.cappedAt = peak
 	default:
 		return result, err
 	}
 	return result, nil
+}
+
+// watchCodegraphMemory reads the process group led by pid each time poll fires, as the launcher's
+// memory guard reads a process, resetting poll by codegraphMemoryPoll after each read, and sends
+// the group SIGKILL at the first read above codegraphMemoryCap. It answers stopped: a function the
+// caller calls once the command's wait has returned, which ends the watch and answers the size
+// that ended the group, or 0 where the cap never did. A read that fails ends nothing: a group the
+// reader cannot see holds nothing this watch can judge, and the next read follows one poll later.
+//
+// The watch is this warm-up's own, not the launcher's: the guard ends one process near the pod's
+// limit, where a role's agent may be the process that grew most, and this ends one build well
+// below it (INFRA-5717 R1).
+func watchCodegraphMemory(poll clock.Timer, pid int) (stopped func() uint64) {
+	stop := make(chan struct{})
+	peak := make(chan uint64, 1)
+	go func() {
+		reader := memoryguard.NewGroupReader("/proc")
+		defer reader.Close()
+		defer poll.Stop()
+		for {
+			select {
+			case <-stop:
+				peak <- 0
+				return
+			case <-poll.C():
+			}
+			size, _, err := reader.Read(pid)
+			if err != nil || size <= codegraphMemoryCap {
+				poll.Reset(codegraphMemoryPoll)
+				continue
+			}
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			peak <- size
+			<-stop
+			return
+		}
+	}()
+	return func() uint64 {
+		close(stop)
+		return <-peak
+	}
 }

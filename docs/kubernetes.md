@@ -5682,6 +5682,17 @@ it waits for that release at least 3 s and at most what the pod's `terminationGr
 The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion config check` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
 it runs the warm-up again, and `status` on the index that stop left on the pod's disk answers complete, so nothing runs, or reports it partial, which `codegraph index` repairs.
 A relaunch in a new pod finds no index and builds one, as the issue's first pod did, except on [a kept volume](#a-kept-volume-on-a-microvm-pod), where it finds the index that the earlier pod left.
+
+Each build runs in a process group of its own, with CodeGraph's parse pool at one worker (`CODEGRAPH_PARSE_WORKERS=1`), and the warm-up reads that group every 250 ms as the launcher's memory guard reads a process:
+above 3,072 MiB it sends the group SIGKILL and logs `codegraph <subcommand> for <workspace> ended at its memory cap: its process group read <size> MiB, over the cap of 3072 MiB`.
+The cap was measured in a Job of an issue pod's shape (2 CPUs, 8Gi, gVisor, the worker image's CodeGraph): `codegraph init` of cybermonklabs/legion, 10,565 indexed files, peaked at 2,314 MiB and of a second repository of 4,674 indexed files at 1,655 MiB, each at one parse worker, and the cap is the larger plus a quarter, rounded up to a multiple of 256 MiB.
+It leaves the pod under the guard's 85% mark while the pod's six roles hold their median (2,417 MiB of the guard's hourly readings over 2026-11-23/24), so a warm-up no longer takes the pod's sandbox down by itself.
+
+Beside the lease, the warm-up keeps the record of its last build at `.codegraph/legion-warm.build`, one JSON line: the subcommand, its start, how it ended, and the CodeGraph version (read from `/opt/codegraph/package.json`) and the cap it ran under.
+It is written, and synced, before the build starts, and removed when the build exits 0, when the warm-up's own stop ended the build, when the build never started, and when a warm-up finds the index complete.
+A build that died otherwise — at the cap, on a signal the shim did not send, at the 30-minute timeout, with a non-zero exit, or with its pod, which leaves the record saying `running` — holds every later warm-up of that workspace on that disk, each of which runs `status` alone and logs `codegraph warm-up for <workspace> skipped: its last build, codegraph <subcommand> started <instant>, ended "<outcome>", …`.
+The index is built again once it is complete, the workspace is a new one (`.jj/legion-created` after the recorded build's start), or the image's CodeGraph version or the cap differs, each of which allows one new attempt; an agent's own `codegraph index` is never held by the record.
+
 The tester's `affected` and the reviewer's `impact`/`callers` queries answer once `codegraph status --json` reports `index.state: "complete"`;
 before that a role falls back to grep, as its prompt says.
 The init containers never call `codegraph`.
