@@ -3,9 +3,12 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -196,5 +199,105 @@ func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
 	}
 	if counted != 4 {
 		t.Fatalf("the pairs add up to %d moves back, want the 4 moves somebody made, of the 5 passes the implementer's row counts; the whole count is %v", counted, conflicted)
+	}
+}
+
+// taskCounts is the counts of the returns of key's task a at generation, as recordPass keeps them
+// on its plan_tasks row (record.Store.ReturnCounts).
+func taskCounts(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64) record.ReturnCounts {
+	t.Helper()
+	var counts record.ReturnCounts
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		counts, err = engine.store.ReturnCounts(ctx, tx, key, generation, "a")
+		return err
+	})
+	return counts
+}
+
+// testerMovesBack is the tester's own move of key out of testing back to the phase named
+// (request_backward_move).
+func testerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, to phase.Phase) {
+	t.Helper()
+	applyRefusingNothing(t, pool, engine, intake.BackwardMove{Issue: key, Requester: claim.RoleTester, To: to, Reason: "the review missed a case"})
+}
+
+// A move back is counted by the task's own order, not by phase.Order: with the steps
+// `implementer reviewer tester`, the reviewer's approval moves the task on from reviewing to
+// testing and counts nothing, though testing comes before reviewing in phase.Order, and the
+// tester's move back to reviewing is a move back of the task and counts its pair, testing-reviewing,
+// and a pass. The tester's fail after it adds its own pair. The twin: an issue with no plan rows
+// walks today's line, where the tester's pass into reviewing counts nothing and the reviewer's
+// move back to testing counts reviewing-testing.
+func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
+	pool := migratedPool(t)
+	engine := stepEngine(nil)
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "tester")
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Pass != 0 || len(counts.BackwardMoves) != 0 {
+		t.Fatalf("after the approval of reviewing into testing the task counts %+v, want nothing: the approval moves it on", counts)
+	}
+	testerMovesBack(t, pool, engine, root.Key, phase.Reviewing)
+	if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Pass != 1 || !maps.Equal(counts.BackwardMoves, map[string]int{"testing-reviewing": 1}) {
+		t.Fatalf("after the tester's move back to reviewing the task counts %+v, want pass 1 and testing-reviewing 1", counts)
+	}
+	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerTesterFailed, "", record.PhaseRow{})
+	if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Pass != 2 ||
+		!maps.Equal(counts.BackwardMoves, map[string]int{"testing-reviewing": 1, "testing-implementing": 1}) {
+		t.Fatalf("after the tester's fail the task counts %+v, want pass 2, testing-reviewing 1 and testing-implementing 1", counts)
+	}
+
+	// The twin: an issue with no plan rows counts by today's line.
+	todays := migratedPool(t)
+	seedWorkBackIssue(t, todays, headOne)
+	move(t, todays, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, todays, engine, "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+	if moves := backwardMoves(t, todays); len(moves) != 0 {
+		t.Fatalf("with no plan rows the tester's pass into reviewing counted %v, want nothing", moves)
+	}
+	applyRefusingNothing(t, todays, engine, intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleReviewer, To: phase.Testing, Reason: "test it again"})
+	if moves := backwardMoves(t, todays); !maps.Equal(moves, map[string]int{"reviewing-testing": 1}) {
+		t.Fatalf("with no plan rows the reviewer's move back to testing counted %v, want reviewing-testing 1", moves)
+	}
+}
+
+// The hook a deployment that writes no `hooks:` key runs fires at the fifth move back of a task in
+// another order, and its message lists each count under its own pair, the move back that is a
+// forward pair of phase.Order among them: `testing-reviewing=4`. The fifth move is the tester's
+// move back to reviewing, which the prompt names.
+func TestAHookNamesAMoveOfAnyOrderAtItsFifthReturn(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "tester")
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	testerMovesBack(t, pool, engine, root.Key, phase.Reviewing)
+	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerTesterFailed, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	for range 3 {
+		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+		if prompts := hookPrompts(t, pool); len(prompts) != 0 {
+			t.Fatalf("the hook fired %+v before the fifth move back", prompts)
+		}
+		testerMovesBack(t, pool, engine, root.Key, phase.Reviewing)
+	}
+	prompts := hookPrompts(t, pool)
+	if want := []string{"implementer", "tester", "reviewer"}; !sameStrings(promptRoles(prompts), want) {
+		t.Fatalf("the hook prompted %v at the fifth move back, want %v", promptRoles(prompts), want)
+	}
+	for _, prompt := range prompts {
+		if prompt.Hook != "work-back" || prompt.Count != 5 || prompt.From != phase.Testing || prompt.To != phase.Reviewing {
+			t.Fatalf("the %s's prompt = %+v, want work-back fired at the fifth move back, testing to reviewing", prompt.Role, prompt)
+		}
+		if message := prompt.Message(root.Key); !strings.Contains(message, "Counts by move: testing-implementing=1, testing-reviewing=4.") {
+			t.Fatalf("the %s's message lists other counts than testing-implementing=1, testing-reviewing=4:\n%s", prompt.Role, message)
+		}
 	}
 }

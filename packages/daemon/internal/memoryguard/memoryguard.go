@@ -390,10 +390,10 @@ func SettingsOf(w shimwire.LauncherMemoryGuard) Settings {
 // every role (a line names it `none`), and whether the guard must spare it.
 //
 // Session is a process whose end ends its role's session: the role's role-init, its shim, and
-// every direct child of the shim. The classifier cannot tell the agent from the shim's other
-// direct children (the secrets renewer, the working copy's adoption, the CodeGraph warm-up), so it
-// marks them all, a superset of the agent whose only cost is a kill left unnamed, never a wrong
-// name (Guest). Oh My Pi's helpers are not session processes, since one can end alone. The guest
+// every direct child of the shim. The classifier marks them by their place in the tree, the agent
+// and the shim's other direct children (the secrets renewer, the working copy's adoption, the
+// CodeGraph warm-up) alike, a superset of the agent whose only cost is a kill left unnamed, never
+// a wrong name (Guest). Oh My Pi's helpers are not session processes, since one can end alone. The guest
 // watch reads it; the guard ignores it.
 type Class struct {
 	Role      string

@@ -6,9 +6,9 @@ sidebar:
 ---
 
 This page is for the operator: the person who runs the Legion daemon for a Dispatch project and
-keeps it healthy. The daemon runs on a host (or in a pod) that the agents' pods can reach; every
-agent it starts runs as an [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) pod in
-your cluster, from one published worker image.
+keeps it healthy. The daemon runs on a host (or in a pod) that the agents' pods can reach; each
+issue it starts runs as one [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) pod
+in your cluster, from one published worker image, and every agent of that issue runs in it.
 
 ## What you need
 
@@ -157,8 +157,9 @@ runtime starts, which covers what arrived while the daemon was down, and a start
 GitHub's merge state `unknown` asks for the ladder below; once an agent's handoff has
 been recorded, the moment the daemon next decides on that pull request's state; in the merge-state
 ladder, five reads half a minute apart, which a review round whose approval waits on GitHub asks
-for, a push to the head of an issue in `implementing` through `merging` asks for, and a push to
-the base asks for each issue standing in `testing` through `merging`; after a ladder whose five
+for, a push to the head of an issue in `implementing`, `testing`, `reviewing`, `accepting`, `retro`
+or `merging` asks for, and a push to the base asks for each issue standing in one of those phases
+but `implementing`; after a ladder whose five
 reads all answered `unknown`, or a second read of a conflict whose five attempts answered no
 state, again and again with waits of one, two, four and eight minutes and then ten, until GitHub
 answers a state, the head moves or the pull request is no longer open, each
@@ -182,11 +183,12 @@ lost, or that still waits behind the daemon's GitHub consumer, leaves the record
 the next of them:
 
 - **An opened or reopened pull request, in any phase.** An issue whose record holds no open pull
-  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch of
-  the repository itself (not a fork's) that the daemon does not record open is applied as its
-  opened webhook would be, a reopen when the record holds the same pull request: the workflow
-  records it in whatever phase the issue is, and moves an implementing issue whose implementer
-  completed on to testing.
+  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch that the
+  daemon does not record open is applied as its opened webhook would be. This holds only for the
+  repository itself, not a fork, and is a reopen when the record holds the same pull request. The
+  workflow records it in whatever phase the issue is. An implementing issue whose implementer
+  completed moves on to its task's next step, or toward its retro where that step is the task's
+  last.
 
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in
@@ -354,9 +356,9 @@ Dispatch read them, delete the files, then install every App from
   `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
   at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
-  the daemon has started rather than the pods, since an issue keeps its pod past the slot — through
-  its acceptance, its retro and its merge, on to its own close — and an issue waiting up to its
-  review keeps both, unless it waits on another issue, when it keeps only its pod
+  the daemon has started rather than the pods, since an issue keeps its pod where it holds no slot —
+  through `accepting`, `retro` and `merging`, which hold none, on to its own close — and an issue
+  waiting in a phase that keeps a slot keeps both, unless it waits on another issue, when it keeps only its pod
   ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
   and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
@@ -364,8 +366,10 @@ Dispatch read them, delete the files, then install every App from
   raised from 20Gi with the shared scratch) comes from `storage_class`, which is required. That
   disk is the pod's own: Kubernetes creates its claim with the pod, names it `<pod>-issue`, and
   deletes it when the pod goes, so an issue's clone, workspace and caches live as long as its pod
-  and no longer. What outlives a pod is what was pushed to the issue's branch and each agent's
-  conversation, which the session database holds. The daemon-launched controller's pod has a
+  and no longer. What outlives a pod is what was pushed to the issue's branch, each agent's
+  conversation, which the session database holds, and, when the daemon released an idle pod, the
+  workspace's unpushed work, which the release saves as a git bundle in the daemon's database and
+  the next pod restores. The daemon-launched controller's pod has a
   volume of its own, which its Sandbox owns and which does outlive its pods. A microVM issue pod
   under `runtime.kubernetes.sandbox.microvm.keep_volume: true` is the exception: its volume is a
   claim that the issue's Sandbox owns, so it outlives the pod, and it goes when the issue leaves
@@ -453,7 +457,8 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its session. A child's
+  With `tester`, the merge hands the tester the check's first look in its session, a fresh one
+  where the task had no tester step. A child's
   other five claims are retired. A root's are suspended with the rest of its tree for the linger,
   and retired when the linger ends. With `off`, no check opens at all: a child's close retires
   every claim of the child and releases its pod, and a root's close suspends every claim of its
@@ -552,17 +557,18 @@ What each part is for:
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi settings overlays
-  a role of a unit drawn into it names where the experiment reaches that role, and
+  a role of a unit drawn into it names where the experiment reaches that role,
   `instructions`, one markdown file on the daemon's own disk that the daemon reads at boot and
-  appends to that role's system prompt.
+  appends to that role's system prompt, and `plan`, how the issues drawn into it are done (below).
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
   A role of a drawn unit that the experiment reaches names each arm's `config_files` in its
   `PI_CONFIG_FILES` after the operator's own and the role's own, in the order the project's file
   declares the experiments, and ends its system prompt with each arm's `instructions` in that same
   order.
-  The draw is made once, when the unit is opened, and is recorded with the arm, the mode in force
-  and the instant; the launch then follows that record and not the mode, so moving a mode to `off`
+  The draw is made once, when the unit is opened, and is recorded with the arm, its `plan` where it
+  names one, the mode in force and the instant; the launch then follows that record and not the
+  mode, so moving a mode to `off`
   stops new draws and takes nothing from a unit already running.
   Under `runtime: kubernetes` each overlay must be a file one of the operator's pod mounts
   carries, and the day a project declares an arm with overlay files every live issue pod of the
@@ -570,6 +576,16 @@ What each part is for:
   ([Running Legion on Kubernetes](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md),
   "Operator configuration").
   Before you turn one on, write its [pre-registration](#pre-registering-an-experiment).
+- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
+  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
+  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
+  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
+  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+  The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
+  whatever the file says later.
+  An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
+  most one experiment of a project sets it; `owner-alone`, the owner doing the whole issue itself
+  in one step, is refused, since this release does not carry it out.
 - **`projects.<KEY>.commit_issue_trailer_repos`** (optional) names the repositories whose commits
   carry their issue key:
 
@@ -674,10 +690,14 @@ What each part is for:
   to, one or more of `implementer`, `tester`, `reviewer`, `planner` and `merger` (`architect` is
   refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
-  name `moves`, the moves it counts, each written `<from>-<to>` with two workflow phases
-  (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, and the 18
-  other pairs the daemon counts), or the word `any`, which is also what a hook that leaves the
-  key out takes. A hook fires when the move is one it counts and the counts of the moves it
+  name `moves`, the moves it counts, each written `<from>-<to>` with two different workflow phases
+  (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, or any other of the
+  28 moves back a task's line can make, such as `testing-reviewing` on a task whose reviewer step
+  comes before its tester step), or the word `any`, which is also what a hook that leaves the
+  key out takes. A pair that no line makes as a move back is refused, since the hook would never
+  fire: a move into `retro` or `merging`, which end every line, and a move from `implementing` to
+  `testing`, `reviewing` or `accepting`, whose steps come after the implementer's. A hook fires
+  when the move is one it counts and the counts of the moves it
   counts, added up, are then a whole multiple of its `every`
   ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
   hook by its place in the list and the key at fault, as `hooks[0].every`. The daemon reads every
@@ -981,8 +1001,9 @@ answer. A pre-registration states seven things.
    judged on: the share of issues merged with no fix by a person, say, or the median hours from
    an issue's start to its merge. Say how it is computed and which records it is read from. List
    secondary measures if you want them, and let none of them decide the experiment. Say which
-   roles the arms reach (`roles`), and check that no reached role decides the outcome: a merge
-   waits on the reviewer's approval and the architect's sign-off, and the tester's fail sends
+   roles the arms reach (`roles`), and check that no reached role decides the outcome: where the
+   task has those steps, a merge waits on the reviewer's approval and the architect's sign-off, and
+   the tester's fail sends
    work back, so where the arm reaches those roles a merge rate or a count of review rounds is
    partly the treatment's own verdict, and a laxer reviewer reads as a better arm. Leave such
    roles out of `roles`, or choose an outcome no reached role decides.
@@ -1031,10 +1052,12 @@ answer. A pre-registration states seven things.
      launch logs one line naming the issue, the role, the experiment and the arm. Read those
      lines and count the unit out of the exposure for that period.
    - **An arm the project's file no longer names.** The record keeps the arm, but a launch names
-     only the files the file still holds, so from the moment the arm leaves the file its units run
-     as a unit in no experiment runs. Take an arm out of the file only when the experiment is
-     over, and record the date if you do it sooner, because every unit of that arm is unexposed
-     from then on.
+     only the files the file still holds, so from the moment the arm leaves the file its units load
+     none of its files. Its `plan` is the one part that stays: Legion reads each issue's group
+     from the draw it recorded, so an issue of an arm whose `plan` is `default` still runs the
+     project's default steps and takes no plan from its owner. Take an arm out of the file only
+     when the experiment is over, and record the date if you do it sooner, because every unit of
+     that arm is unexposed to its files from then on.
 
 A template to copy:
 
@@ -1463,13 +1486,15 @@ Closing the terminal leaves the project without one, and the daemon logs
   earlier release's own `legion state` prints it.
 
   **The same answers in `legion state --json`.** Each issue carries `assignments`, one
-  `{experiment, variant, mode, drawnAt}` per answer that applies to it, in that same declared
+  `{experiment, variant, mode, drawnAt, plan?}` per answer that applies to it, in that same declared
   order and then any experiment the file no longer names, in the order of their names; the
   declaration each answer of a declared experiment was drawn from is in the settings, under
   `settings.projects.<KEY>.memory` for the block's experiment and
   `settings.projects.<KEY>.experiments` for the rest. An issue carries its tree's answer for a
   tree experiment and its own for an issue experiment, `drawnAt` is absent where no draw was
-  made, and the key itself is absent from an issue no experiment holds an answer for. The three
+  made, `plan` is the group the arm set at the draw (`owner` or `default`), which the issue keeps
+  whatever the file says later, and is absent where the arm set none, and the key itself is absent
+  from an issue no experiment holds an answer for. The three
   fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
   (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
   exactly as they did, absent together where nothing was drawn for that tree. Read

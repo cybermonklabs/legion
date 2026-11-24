@@ -238,4 +238,6 @@ var AssignmentRecordFields = []RecordFieldDecision{
 		Reason: "when the draw was made, absent where the row records none: it is how a reader tells a unit a hand-over settled at no arm from one that was drawn, and what the issue's `memoryDrawnAt` carries for the row named `memory`"},
 	{Field: "Carried", Column: ColumnWithheld,
 		Reason: "the record's mark of a row a hand-over wrote rather than a draw: what a reader of the state measures is the arm the unit ran under, and a carried row names that arm as a drawn one does"},
+	{Field: "Plan", Column: ColumnAgents, Keys: []string{"plan"},
+		Reason: "the group the arm set when the issue was drawn, which the issue runs on for its whole life: the workflow reads it at the issue's first step and at register_plan and stop_task, and the project's file can change an arm's plan or rename the arm after the draw, so a reader takes the group from the record and never from the settings; it is absent where the arm named none"},
 }

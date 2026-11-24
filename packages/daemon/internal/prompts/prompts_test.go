@@ -369,6 +369,51 @@ func clauses(text string) []string {
 	return found
 }
 
+// blocks are the blocks of text, each folded to one line: each blank-line paragraph cut before
+// every line that starts an item of a list (startsListItem), so a paragraph and each item of a
+// list in it are blocks of their own. A block is the span a reader takes one item's rule from:
+// the words of one item limit no other.
+func blocks(text string) []string {
+	var found []string
+	for _, paragraph := range strings.Split(text, "\n\n") {
+		block := ""
+		for _, line := range strings.Split(paragraph, "\n") {
+			if block != "" && startsListItem(line) {
+				found, block = append(found, foldWhitespace(block)), ""
+			}
+			block += line + "\n"
+		}
+		found = append(found, foldWhitespace(block))
+	}
+	return found
+}
+
+// startsListItem says whether line, past its indent, starts an item of a list: `- `, or a number
+// of any length and `. `, so `10. ` starts an item as `1. ` does.
+func startsListItem(line string) bool {
+	item := strings.TrimLeft(line, " ")
+	digits := len(item) - len(strings.TrimLeft(item, "0123456789"))
+	return strings.HasPrefix(item, "- ") || digits > 0 && strings.HasPrefix(item[digits:], ". ")
+}
+
+// Each item of a list is a block of its own (blocks), a numbered item of two digits as much as
+// one of one, so a check that one item names a step cannot pass on the words of its neighbour. A
+// wrapped line that starts with a number but no `. ` after it stays in the item it continues.
+func TestBlocksGiveEachItemOfAListABlockOfItsOwn(t *testing.T) {
+	var text strings.Builder
+	text.WriteString("Steps:\n")
+	want := []string{"Steps:"}
+	for n := 1; n <= 11; n++ {
+		fmt.Fprintf(&text, "%d. Step %d,\n   10 files.\n", n, n)
+		want = append(want, fmt.Sprintf("%d. Step %d, 10 files.", n, n))
+	}
+	text.WriteString("  - A nested item.\n\nA closing paragraph.")
+	want = append(want, "- A nested item.", "A closing paragraph.")
+	if got := blocks(text.String()); !reflect.DeepEqual(got, want) {
+		t.Errorf("blocks =\n%q\nwant\n%q", got, want)
+	}
+}
+
 // clauseHolds says whether one clause of text (clauses) holds each of terms, in the order given:
 // a rule pinned by its terms, so a rewording that keeps them passes and a change of one fails,
 // while each term still has to stand in the one clause that states the rule.

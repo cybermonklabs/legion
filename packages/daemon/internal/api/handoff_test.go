@@ -371,8 +371,9 @@ func phaseRowOf(t *testing.T, h *harness, key string, role claim.Role) *record.P
 // commit, or without a record, is refused before anything is recorded or read. The completion also
 // reads its branch's open pull request on GitHub, as the implement App minted for the repository's
 // owner: one the daemon has not recorded - its opened webhook lost, or still waiting behind the
-// GitHub consumer's backlog - is recorded, and the completion moves the issue to testing, where
-// without the read it would wait in implementing for that webhook.
+// GitHub consumer's backlog - is recorded, and the completion moves the issue to its task's next
+// step, testing in the default steps this issue walks, where without the read it would wait in
+// implementing for that webhook.
 func TestHandoffCompleteRecordsTheImplementersRecordAndTheOpenPullRequestGitHubShows(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newWorkflowHandoffHarness(t, github, io.Discard)
@@ -493,7 +494,8 @@ func TestHandoffCompleteWithReadyNotABooleanIsRefused(t *testing.T) {
 
 // An implementer's completion with no open pull request on its branch is refused before anything
 // is applied: the implementer's phase row and the pull request record stay as they were, so the
-// same completion, once the pull request is open, is applied and moves the issue to testing.
+// same completion, once the pull request is open, is applied and moves the issue to its task's
+// next step (testing, in the default steps this issue walks).
 func TestHandoffCompleteWithNoOpenPullRequestRecordsNothing(t *testing.T) {
 	github := newHandoffGitHub(t)
 	github.set(func(g *handoffGitHub) { g.pullState = "closed" })
@@ -585,8 +587,9 @@ func TestHandoffCompleteNamesTheClosedPullRequestTheRecordHolds(t *testing.T) {
 
 // A pull request merged while the issue was in implementing told the architect (pr-merged), and
 // the workflow runs on: GitHub lists no open pull request on the branch, and the completion is
-// applied and moves the issue to testing on the merged record, where a refusal would leave it in
-// implementing with nothing recorded and nobody told.
+// applied and moves the issue to its task's next step (testing, in the default steps this issue
+// walks) on the merged record, where a refusal would leave it in implementing with nothing
+// recorded and nobody told.
 func TestHandoffCompleteOnAMergedPullRequestMovesTheIssueToTesting(t *testing.T) {
 	github := newHandoffGitHub(t)
 	github.set(func(g *handoffGitHub) { g.pullState, g.merged = "closed", true })
@@ -779,12 +782,12 @@ func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testi
 	}
 }
 
-// The reviewer's own approval moves the issue on as well: the review event takes reviewing to
-// accepting, the architect's sign-off and a phase that ends with no handoff record, before the
-// reviewer's completion lands. That completion is still of reviewing, the phase the reviewer left,
-// so the route reads its own new review record back against reviewing's word rather than refusing
-// a record for accepting, and the engine records it on the reviewer's row and leaves the issue in
-// accepting for the architect.
+// The reviewer's own approval moves the issue on as well: the review event takes reviewing to the
+// task's next step, accepting in the default steps this issue walks, the architect's sign-off and
+// a phase that ends with no handoff record, before the reviewer's completion lands. That
+// completion is still of reviewing, the phase the reviewer left, so the route reads its own new
+// review record back against reviewing's word rather than refusing a record for accepting, and
+// the engine records it on the reviewer's row and leaves the issue in accepting for the architect.
 func TestHandoffCompleteRecordsALateCompletionOfReviewingWhileTheIssueIsAccepting(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Accepting)

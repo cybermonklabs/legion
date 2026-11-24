@@ -13,8 +13,8 @@ import (
 // The boot writes back every claim its normalization changed, so the stored row says what the
 // restored machine holds. A claim an earlier daemon stored suspended, recording no process and a
 // death charged against the process it no longer records, is restored with the charge cleared
-// (supervise.NormalizeClaim), and the row is written so; a row left charged would be charged again
-// at every boot until some other write of the claim happened to carry the cleared value.
+// (supervise.NormalizeClaim), and the row is written so; before, the row kept a charge the
+// restored claim no longer held until some other write of the claim carried the cleared value.
 func TestABootWritesBackTheDeathChargeItsNormalizationClears(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
