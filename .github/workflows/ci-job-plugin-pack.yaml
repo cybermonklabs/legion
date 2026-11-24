@@ -63,13 +63,14 @@ jobs:
   plugin-pack:
     runs-on: ubuntu-24.04
     # The step's own -timeout is 15 minutes, as the daemon's plain step carries, so a hung pack
-    # prints the goroutine dump that names it before the runner cancels the job. Around it are
-    # the Bun install, the Oh My Pi install and the Go build of internal/daemon's test binary,
-    # which the cache restore above makes incremental; 30 minutes leaves that setup room on a
-    # slow runner and still fails inside the hour.
-    timeout-minutes: 30
+    # prints the goroutine dump that names it before the runner cancels the job: the slowest green
+    # run's 216 s and that -timeout, 1,116 s. The limit holds the Bun install and the Oh My Pi
+    # install at their worst too, each failing by name before it:
+    # why: .github/ci-notes/ci-job-plugin-pack.md#the-jobs-limit-held-to-the-installs-it-runs-and-to-its-test-steps-deadline
+    # 216 s + 425 s + 1,207 s = 1,848 s -> 31 min.
+    timeout-minutes: 31
     env:
-      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 31 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,7 +83,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
 
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

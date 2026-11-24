@@ -17,8 +17,10 @@
 # replaces nats-server, whose hooked copy would take the replacement's place. A module with no
 # workspace builds on a copy of its go.mod with the replace added (go test -modfile, which go
 # refuses in a workspace).
-# The script reads go's JSON (go work edit -json, go mod download -json) with jq. Nothing else of
-# nats-server changes, and no
+# The script reads go's JSON (go work edit -json, go mod download -json) with jq. The download of
+# nats-server's module runs under .github/scripts/network-install.sh's bound for go, so a module
+# proxy that answers and then all but stops fails it by name instead of holding the job that runs
+# this script until its limit. Nothing else of nats-server changes, and no
 # build without this script sees a hook.
 #
 #   -C <module dir>  the Go module to test, as `go -C` takes it (relative to the caller's
@@ -46,6 +48,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 envoy="$(dirname "$here")"
 hooked="$envoy/internal/testnats/testdata/hooked"
+network_install="$(cd "$envoy/../.." && pwd)/.github/scripts/network-install.sh"
 nats_server='github.com/nats-io/nats-server/v2'
 
 die() {
@@ -168,8 +171,9 @@ for point in ${drops[@]+"${drops[@]}"}; do
 done
 
 # Downloaded from the work directory, where no go.mod is, so the module's own go.sum is not
-# touched.
-(cd "$work" && GOWORK=off go mod download -json "$nats_server@v$server") >"$work/download.json" ||
+# touched. The wrapper keeps the command's standard output, which is go's JSON, and prints its own
+# lines to standard error.
+(cd "$work" && GOWORK=off "$network_install" go -- go mod download -json "$nats_server@v$server") >"$work/download.json" ||
   die "go mod download could not fetch $nats_server@v$server"
 source_dir="$(jq -r '.Dir // empty' "$work/download.json")" || die "jq could not read go mod download's answer"
 [ -n "$source_dir" ] && [ -d "$source_dir" ] || die "go mod download found no source for $nats_server@v$server"

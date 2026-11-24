@@ -100,7 +100,7 @@
 #      a later push.
 #  10. a `built` row whose published image was built from another build recipe than the one
 #      this tree holds. THE RECIPE IS NOT THE DOCKERFILE ALONE: it is the row's own Dockerfile
-#      path, every file of the build context directory that Dockerfile sits in, and
+#      path, every file of the directory that Dockerfile sits in, and
 #      .github/workflows/browser-image.yaml itself. One function hashes it,
 #      .github/scripts/ci_images.py's recipe_sha256, whose docstring is where what the recipe
 #      holds and why each part of it is in there are written; that workflow stamps the hash
@@ -288,11 +288,11 @@ MIRROR_JOB = "ci.yaml's ci-images job"
 # copies.
 BUILD_WORKFLOW = ".github/workflows/browser-image.yaml"
 # The one Dockerfile BUILD_WORKFLOW builds, and the label that build writes the hash of its
-# whole build recipe into — that Dockerfile's own path, the context directory it sits in, and
+# whole build recipe into — that Dockerfile's own path, the directory it sits in, and
 # BUILD_WORKFLOW itself (ci_images.py's recipe_sha256, whose docstring argues for each of the
 # three). Rule 8 holds every `built` row to that file, because a row naming another is a row
 # no build pushes, which the hash says too: the path is in it, so a row naming another file
-# of the context directory hashes to something other than the label the published image
+# of that directory hashes to something other than the label the published image
 # carries. Rule 10 reads that label back out of the image the row's digest names, and so is
 # the only half of this check that can tell an edited recipe from the bytes the package
 # serves.
@@ -361,6 +361,11 @@ IMAGE_FROM = {
         "scripts/e2e/lib/nats-image.sh sets it to testnats.HubImage, the Go string constant "
         "packages/envoy/internal/testnats/nats.go declares, which is in the reach above and whose "
         "reference this check reads (scripts/e2e/lib/nats-image.test.ts holds the helper to it)"
+    ),
+    (".github/workflows/ci-job-pi-legion.yaml", "image"): (
+        "the judge-image step reads it out of packages/pi-legion/scripts/skill-scenarios/rig.sh's "
+        "`judge_image=` assignment, so it is the reference rig.sh's own pull names; that file is "
+        "in the reach above, and this check reads the reference in it"
     ),
     (".github/workflows/ci-job-envoy-smoke.yaml", "ENVOY_SMOKE_IMAGE"): (
         "the local tag the envoy-smoke job's own build loaded (the job sets it to "

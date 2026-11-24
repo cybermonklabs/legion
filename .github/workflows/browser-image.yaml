@@ -46,18 +46,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # The budget is the rule's arithmetic over the one measurement there is: job 128574128282
-    # of run 42429205771, 77 s whole, cold — no cache entry to read, the full apt and the
-    # Playwright base fetched. Its steps, as that job ran them: 1 s set-up, 7 s checkout, 1 s
-    # crane, 0 s row, 0 s decide, 9 s buildx, 0 s login, 47 s build and push, 0 s tag and 1 s
-    # record (one step here now), 2 s the second checkout, 0 s the ci-ok report, 6 s the post
-    # steps — 74 s of steps inside the 77 s the job took whole. One step carries a budget of
-    # its own, the build, at 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor; the job's is
-    # that budget plus the measured maximum of every step without one, the other 74 - 47 = 27 s,
-    # rounded up: 2 min + 27 s -> 3 min. A run whose row already names a served digest skips
-    # the buildx, login and build steps and their post steps, 61 s of those 74, and is left
-    # with about 13 s of work.
-    timeout-minutes: 3
+    # The budget, held to the reads of the network the job makes, each of which fails by name
+    # before this limit: the build step's own limit, the bounds of the crane install, of the
+    # decide step's read and of the record step's three, the builder's pull of its BuildKit image,
+    # and the measured maximum of every other step.
+    # why: .github/ci-notes/browser-image.md#the-jobs-limit-held-to-the-reads-it-makes
+    # 780 s + 848 s + 245 s + 240 s + 735 s + 20.4 s = 2,868.4 s -> 48 min.
+    timeout-minutes: 48
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of
@@ -210,7 +205,7 @@ jobs:
             # --platform is named for the reason rule 10 of .github/scripts/check-ci-images.sh
             # names it on this same read: a config belongs to one platform, this build pushes
             # linux/amd64 alone, and the three readers of this label must read the same image.
-            carried=$(crane config --platform linux/amd64 "$REGISTRY@$ROW_DIGEST" | jq -r '.config.Labels["legion.browser-image.source-sha256"] // ""' || true)
+            carried=$(.github/scripts/network-install.sh crane -- crane config --platform linux/amd64 "$REGISTRY@$ROW_DIGEST" | jq -r '.config.Labels["legion.browser-image.source-sha256"] // ""' || true)
             if [ "$carried" = "$SOURCE" ]; then
               publish=false
               why="$REGISTRY@$ROW_DIGEST, the digest this row names, was built from this recipe ($SOURCE), so there is nothing to push"
@@ -272,9 +267,11 @@ jobs:
       - name: Build and push
         id: build
         if: steps.decide.outputs.publish == 'true'
-        # 47 s measured on that same job, cold: no cache entry to read, the whole apt set and
-        # the Playwright base fetched. 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor.
-        timeout-minutes: 2
+        # The build's slowest green run, less its three reads of the network, with 15 per cent
+        # over, and those three reads at their worst case:
+        # why: .github/ci-notes/browser-image.md#the-build-steps-limit
+        # (65.7 s - 10.15 s) x 1.15 = 63.9 s, + 183 s + 245 s + 245 s = 736.9 s -> 13 min.
+        timeout-minutes: 13
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           # provenance: false below only stops the attestation attaching to the pushed image: the
@@ -288,10 +285,12 @@ jobs:
           BUILDX_METADATA_PROVENANCE: disabled
           DOCKER_BUILD_SUMMARY: "false"
         with:
-          # The Dockerfile copies nothing out of the build context, so the context is the
-          # directory the Dockerfile is in: a whole-repository context would be packed up and sent
-          # to the builder for nothing.
-          context: .github/docker
+          # The Dockerfile copies nothing out of the build context, and its install RUN bind-mounts
+          # two files from it, .github/scripts/network-install.sh and .github/scripts/fetch.sh, so
+          # the context is .github and .github/docker/browser.Dockerfile.dockerignore cuts it to
+          # .github/docker and those two scripts: a whole-repository context would be packed up and
+          # sent to the builder for nothing.
+          context: .github
           file: .github/docker/browser.Dockerfile
           # Every runner that pulls this image is linux/amd64, and so is its base.
           platforms: linux/amd64
@@ -367,15 +366,15 @@ jobs:
           print(row_tag(BUILT, ".github/docker/browser.Dockerfile", os.environ["DIGEST"]))
           ')
           if [ "$PUBLISH" = "true" ]; then
-            crane tag "$ref" "$tag"
+            .github/scripts/network-install.sh crane -- crane tag "$ref" "$tag"
             echo "tagged $ref as $REGISTRY:$tag"
           fi
-          manifest=$(crane manifest "$ref")
+          manifest=$(.github/scripts/network-install.sh crane -- crane manifest "$ref")
           # An index names one manifest per platform and holds no layers of its own, so where the
           # push left one, the amd64 child is the manifest whose layers this image is.
           child=$(jq -r 'first(.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest) // ""' <<<"$manifest")
           if [ -n "$child" ]; then
-            manifest=$(crane manifest "$REGISTRY@$child")
+            manifest=$(.github/scripts/network-install.sh crane -- crane manifest "$REGISTRY@$child")
           fi
           layers=$(jq '.layers | length' <<<"$manifest")
           size=$(jq '[.layers[].size] | add' <<<"$manifest")

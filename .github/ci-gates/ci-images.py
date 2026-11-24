@@ -6,11 +6,13 @@ GATE = gate("ci_images", "ci-images", reads=reads(
     (".github/ci-images.yaml", f"{at('ci-images', COPY_STEP)} copies the rows it holds, and "
                                f"{at('ci-images', PACKAGE_STEP)} reads each row's digest"),
     (".github/scripts/mirror-ci-images.sh", f"{at('ci-images', COPY_STEP)} runs it"),
+    (".github/scripts/network-install.sh", f"{at('ci-images', COPY_STEP)}: mirror-ci-images.sh runs every crane "
+                                           f"call through it, under its bound for crane"),
     (".github/scripts/check-ci-images.sh", f"{at('ci-images', PACKAGE_STEP)} runs it"),
     (".github/scripts/ci_images.py", "every reader of a row goes through it, the recipe hash "
                                      "rule 10 compares among them"),
-    (".github/docker/**", f"{at('ci-images', PACKAGE_STEP)} hashes every file of the build "
-                          f"context, which is this directory, and refuses the built row whose "
+    (".github/docker/**", f"{at('ci-images', PACKAGE_STEP)} hashes every file of the directory the "
+                          f"browser image's Dockerfile sits in, and refuses the built row whose "
                           f"published image carries another recipe's sha256 in its "
                           f"legion.browser-image.source-sha256 label"),
     (".github/workflows/browser-image.yaml", f"the other half of that recipe: "

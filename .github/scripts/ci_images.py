@@ -125,16 +125,28 @@ def row_tag(kind: str, source: str, digest: str) -> str:
 # ---------------------------------------------------------------- a built row's build recipe
 def recipe_sha256(dockerfile: str, workflow: str) -> str:
     """The sha256 of the whole recipe a `built:` row's image is built from: the Dockerfile's own
-    path, every file of the build context directory, which is the directory that Dockerfile sits
-    in, and the workflow file that runs the build. Both paths are relative to the repository
-    root, which is where every reader of this runs.
+    path, every file of the directory that Dockerfile sits in, and the workflow file that runs
+    the build. Both paths are relative to the repository root, which is where every reader of
+    this runs.
 
     Each file is folded in as its path and the sha256 of its bytes, in the order those paths
     sort, so a byte changed in any of them moves the hash, and so do a file added to the
-    context and a file renamed inside it — both of which change what the build receives while
+    directory and a file renamed inside it — both of which change what the build receives while
     every file it reads today stays as it was.
 
-    The Dockerfile's path is folded in ahead of them because the context is the directory and
+    The build's context is that directory's parent, .github, which the Dockerfile's own
+    .dockerignore cuts to that directory and two scripts, .github/scripts/network-install.sh and
+    .github/scripts/fetch.sh: the install RUN bind-mounts them for that RUN alone, so they leave
+    nothing in the image. They decide how long a read of the network may wait and how often it is
+    tried, and never which bytes the image holds, so they are no part of the recipe, and an edit of
+    them alone builds no new image: ci.yaml's browser_image filter runs the browser-image job for it,
+    and the decide step finds the recipe's hash on the published image and builds nothing. So an
+    edit of either that breaks the install RUN is not caught by this image's build until the next
+    change of the recipe, in whatever pull request makes it, and fails there, naming the RUN.
+    Their own tests (network-install.test.sh and fetch.test.sh, in ci.yaml's test job) run on every
+    such edit; they run the scripts as the RUN calls them, not the RUN.
+
+    The Dockerfile's path is folded in ahead of them because what is hashed is the directory and
     not the file: two rows naming two Dockerfiles of one directory read the same files, so
     without that path they would hash alike, and a row built from the other file of
     .github/docker would carry the hash the browser image's own label holds — rule 10 of
@@ -144,7 +156,7 @@ def recipe_sha256(dockerfile: str, workflow: str) -> str:
     so that name is as much of the recipe as the bytes it names.
 
     All three are in it because all three decide the bytes that get pushed. The Dockerfile and
-    every other file of the context, because the build reads them: a `COPY` takes a context
+    every other file of its directory, because the build reads them: a `COPY` takes a context
     file into the image, and a context file no `COPY` names today is one the next edit of the
     Dockerfile can name. The workflow, because the build is more than its Dockerfile: its
     `labels:`, `outputs:`, `platforms:`, `provenance:` and build-args, the pin of the action

@@ -23,14 +23,18 @@ on:
 jobs:
   conflicts-script:
     runs-on: ubuntu-24.04-arm
+    # why: .github/ci-notes/ci-job-conflicts-script.md#the-jobs-limit-held-to-the-installs-it-runs
+    # 50 s + 425 s = 475 s -> 8 min.
+    timeout-minutes: 8
     env:
-      JOB_TIMEOUT_MINUTES: 360 # GitHub's default timeout-minutes, which this job keeps, for gh-read.sh's wait
+      JOB_TIMEOUT_MINUTES: 8 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Lint the conflict measurement script
         run: bunx biome check --error-on-warnings scripts/conflicts
       # scripts/conflicts is no workspace; the root package pins its TypeScript and Bun types.

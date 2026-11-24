@@ -436,10 +436,25 @@ ARG GH_STACK_TOOL
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-RUN set -eu; \
+# Every curl download of this file goes through one form, .github/scripts/fetch.sh, which each RUN
+# that downloads bind-mounts into /usr/local/bin (its header says the form): an attempt cut 30 s
+# into a stall (under 10,000 bytes a second, or no connection), and at a bound that a download
+# still moving runs into only below the slowest rate CI has seen; up to two more attempts after any
+# failure (curl's --retry-all-errors: a 429, a 5xx, a reset, or a cut attempt), no new attempt once
+# the retries have run past twice that bound, honouring a Retry-After; success only for a 2xx with
+# the file written, whatever curl exits; then one line naming the stage, the address, curl's exit
+# status and the HTTP status. Any checksum check stays after its fetch. A single 503 from GitHub
+# failed this image's build in job 137719519443 (2026-11-23). The file's other installs (apt-get,
+# bun install, go install, go mod download, npm ci and uv) do not go through it.
+# Each call's bound is its file's size at 250,000 bytes a second, rounded up to the minute, and at
+# least 60 s, under the 257 kB/s at which PyPI served a wheel that was still moving in job
+# 137969866080 (fetch.sh's header says why); a version bump reads the size again. The sizes, read
+# on 2026-11-24, the bounds and the green fetch times are in .github/ci-notes/worker-image.md. mise's
+# archive is 37,439,195 bytes, 150 s at that rate: 180 s.
+RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetch.sh \
+    set -eu; \
     t=/tmp/mise; mkdir -p "$t"; \
-    curl -fsSLo "$t/mise.tar.gz" \
-      "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64.tar.gz"; \
+    fetch.sh tools 180 "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64.tar.gz" -o "$t/mise.tar.gz"; \
     printf '%s  %s\n' "$MISE_SHA256" "$t/mise.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
     tar -xzf "$t/mise.tar.gz" -C "$t" --no-same-owner; \
@@ -464,9 +479,13 @@ COPY .omp-pin /omp-pin
 # it stands in; a pin of any other shape fails here by its name rather than fetch an address it
 # does not name. /opt/omp is the Oh My Pi archive with its one top-level directory stripped, as mise strips
 # it: bin/omp. Each fetch refuses by the tool's name and the address it read: a digest ARG that is
-# no 64-hex sha256, a download curl did not complete (a 404, a truncated body), or an archive
-# whose sha256 is not the pinned one, so the log says which of the four failed and why, though
-# BuildKit marks every line of this RUN. The four digests are declared here, after the layers
+# no 64-hex sha256, a download that did not succeed in three attempts (a 404, a stall, a truncated
+# body, a 5xx: fetch.sh's form, which the comment above the mise layer gives), or an archive whose
+# sha256 is not the pinned one, so the log says which of the four failed and why, though
+# BuildKit marks every line of this RUN. Each fetch's bound is its file's size at the rate that
+# comment gives: Oh My Pi's archive, 172,730,371 bytes, 691 s, so 720 s; jj's, 10,171,787 bytes,
+# 41 s, and gh's, 14,863,663 bytes, 59 s, so 60 s each; gh-stack's binary, 26,885,107 bytes, 108 s,
+# so 120 s. The four digests are declared here, after the layers
 # above, so a bump of one rebuilds this layer alone. gh-stack is installed as gh lays out an
 # extension it installs, a directory gh-stack holding the executable gh-stack, and must print the
 # version its pin names.
@@ -474,7 +493,8 @@ ARG OMP_SHA256
 ARG JJ_SHA256
 ARG GH_SHA256
 ARG GH_STACK_SHA256
-RUN set -eu; \
+RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetch.sh \
+    set -eu; \
     omp_pin="$(cat /omp-pin)"; \
     part() { case "$1" in "" | *[!A-Za-z0-9._-]* | *..*) return 1 ;; esac; }; \
     pinned() { \
@@ -492,19 +512,19 @@ RUN set -eu; \
     gh_version="${GH_TOOL#gh@}"; \
     stack_repo="${GH_STACK_TOOL#github:}"; stack_repo="${stack_repo%@*}"; stack_version="${GH_STACK_TOOL##*@}"; \
     fetch() { \
-      tool=$1; arg=$2; want=$3; url=$4; file=$5; \
+      tool=$1; arg=$2; want=$3; bound=$4; url=$5; file=$6; \
       printf '%s\n' "$want" | grep -Eqx '[0-9a-f]{64}' || { echo "tools: $tool: ARG $arg is '$want', which is no 64-hex sha256, so the archive at $url is not fetched" >&2; exit 1; }; \
-      curl -fsSL --max-time 300 -o "$file" "$url" || { echo "tools: $tool: the archive did not download from $url (curl exit $?)" >&2; exit 1; }; \
+      fetch.sh tools "$bound" "$url" -o "$file"; \
       got=$(sha256sum "$file"); got=${got%% *}; \
       [ "$got" = "$want" ] || { echo "tools: $tool: the archive from $url has sha256 $got, and ARG $arg pins $want" >&2; exit 1; }; \
       echo "tools: $tool: $url, sha256 $got"; \
     }; \
     asset() { printf 'https://github.com/%s/releases/download/%s/%s' "$1" "$2" "$3"; }; \
     t=/tmp/tools; mkdir -p "$t" /opt/omp /opt/tools; \
-    fetch omp OMP_SHA256 "$OMP_SHA256" "$(asset "$omp_repo" "$omp_tag" "omp-${omp_tag}-linux-x64.tar.gz")" "$t/omp.tar.gz"; \
-    fetch jj JJ_SHA256 "$JJ_SHA256" "$(asset "$jj_repo" "$jj_tag" "jj-${jj_tag}-x86_64-unknown-linux-musl.tar.gz")" "$t/jj.tar.gz"; \
-    fetch gh GH_SHA256 "$GH_SHA256" "$(asset cli/cli "v${gh_version}" "gh_${gh_version}_linux_amd64.tar.gz")" "$t/gh.tar.gz"; \
-    fetch gh-stack GH_STACK_SHA256 "$GH_STACK_SHA256" "$(asset "$stack_repo" "v${stack_version}" linux-amd64)" "$t/gh-stack"; \
+    fetch omp OMP_SHA256 "$OMP_SHA256" 720 "$(asset "$omp_repo" "$omp_tag" "omp-${omp_tag}-linux-x64.tar.gz")" "$t/omp.tar.gz"; \
+    fetch jj JJ_SHA256 "$JJ_SHA256" 60 "$(asset "$jj_repo" "$jj_tag" "jj-${jj_tag}-x86_64-unknown-linux-musl.tar.gz")" "$t/jj.tar.gz"; \
+    fetch gh GH_SHA256 "$GH_SHA256" 60 "$(asset cli/cli "v${gh_version}" "gh_${gh_version}_linux_amd64.tar.gz")" "$t/gh.tar.gz"; \
+    fetch gh-stack GH_STACK_SHA256 "$GH_STACK_SHA256" 120 "$(asset "$stack_repo" "v${stack_version}" linux-amd64)" "$t/gh-stack"; \
     tar -xzf "$t/omp.tar.gz" -C /opt/omp --strip-components=1 --no-same-owner; \
     tar -xzf "$t/jj.tar.gz" -C "$t" --no-same-owner ./jj; \
     tar -xzf "$t/gh.tar.gz" -C "$t" --no-same-owner "gh_${gh_version}_linux_amd64/bin/gh"; \
@@ -547,9 +567,16 @@ RUN apk add --no-cache git
 # runtime stage, each in a stage of its own: neither reads this checkout's source or module files,
 # so neither a source change nor a dependency bump rebuilds them, and the two build beside each
 # other and beside go-modules, where one stage built them one after the other before the download.
+# go-third-party-notices.sh fetches go-licenses with go-fetch.sh, which this RUN bind-mounts beside
+# network-install.sh, under network-install.sh's bound for go, and builds it from the module cache
+# with the network off (GOPROXY a file:// proxy of the cache), held by the build step's own limit: a
+# bound around the compile would time the compile as a wait on the network, as gopls's 74 s of
+# compile under the 120 s bound did (go-fetch.sh's header says why).
 FROM go-base AS go-licenses
 COPY scripts/go-third-party-notices.sh /usr/local/bin/
-RUN go-third-party-notices.sh --install
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    --mount=type=bind,source=.github/scripts/go-fetch.sh,target=/usr/local/bin/go-fetch.sh \
+    go-third-party-notices.sh --install
 
 # `go install pkg@version` builds the module at that tag with its own go.mod, whatever this
 # checkout's go.work says, so the binary changes only with GOPLS_VERSION (or GO_VERSION), never
@@ -706,18 +733,22 @@ ARG GO_SHA256
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 COPY packages/daemon/docker/language-servers/package.json packages/daemon/docker/language-servers/package-lock.json /opt/language-servers/
-RUN set -eu; \
+# Each download's bound is its file's size at the rate the comment above the tools stage's mise
+# layer gives, 250,000 bytes a second, rounded up to the minute: uv's archive, 16,682,639 bytes,
+# 67 s, so 120 s; Node's, 32,026,916 bytes, 128 s, so 180 s; the AWS CLI's zip, 74,130,102 bytes,
+# 297 s, and Go's archive, 70,588,678 bytes, 282 s, so 300 s each; kubectl, 59,121,826 bytes,
+# 236 s, so 240 s; yq, 14,168,224 bytes, 57 s, so 60 s; Chromium's zip, 206,050,610 bytes, 824 s,
+# so 840 s.
+RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetch.sh \
+    set -eu; \
     t=/tmp/toolchain; mkdir -p "$t" /out/bin /opt/node; \
-    curl -fsSLo "$t/uv.tar.gz" \
-      "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"; \
-    curl -fsSLo "$t/node.tar.xz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
-    curl -fsSLo "$t/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip"; \
-    curl -fsSLo "$t/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
-    curl -fsSLo "$t/kubectl" "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
-    curl -fsSLo "$t/yq" \
-      "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"; \
-    curl -fsSLo "$t/chromium.zip" \
-      "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip"; \
+    fetch.sh toolchain 120 "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o "$t/uv.tar.gz"; \
+    fetch.sh toolchain 180 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "$t/node.tar.xz"; \
+    fetch.sh toolchain 300 "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip" -o "$t/awscli.zip"; \
+    fetch.sh toolchain 300 "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o "$t/go.tar.gz"; \
+    fetch.sh toolchain 240 "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o "$t/kubectl"; \
+    fetch.sh toolchain 60 "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" -o "$t/yq"; \
+    fetch.sh toolchain 840 "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip" -o "$t/chromium.zip"; \
     printf '%s  %s\n' "$UV_SHA256" "$t/uv.tar.gz" "$NODE_SHA256" "$t/node.tar.xz" \
       "$AWS_CLI_SHA256" "$t/awscli.zip" "$GO_SHA256" "$t/go.tar.gz" \
       "$KUBECTL_SHA256" "$t/kubectl" "$YQ_SHA256" "$t/yq" \
@@ -784,13 +815,15 @@ RUN set -eu; \
 # every command, so it is compiled. Any other file that fails to compile fails the build, so a
 # version bump that adds one fails here and is read by a person. The installer's
 # .install/.backup goes too. gcloud and bq are linked from /out/bin and gsutil is not; the SDK's
-# LICENSE and its bundled CPython's LICENSE.txt go to the notices stage.
+# LICENSE and its bundled CPython's LICENSE.txt go to the notices stage. The archive's bound is its
+# size at the rate the comment above the tools stage's mise layer gives: 94,824,123 bytes, 379 s,
+# so 420 s.
 ARG GCLOUD_VERSION
 ARG GCLOUD_SHA256
-RUN set -eu; \
+RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetch.sh \
+    set -eu; \
     t=/tmp/gcloud; mkdir -p "$t"; export CLOUDSDK_CONFIG="$t/config"; \
-    curl -fsSLo "$t/sdk.tar.gz" \
-      "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz"; \
+    fetch.sh gcloud 420 "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz" -o "$t/sdk.tar.gz"; \
     printf '%s  %s\n' "$GCLOUD_SHA256" "$t/sdk.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
     tar -xzf "$t/sdk.tar.gz" -C /opt --no-same-owner; \
@@ -1003,9 +1036,10 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # certificate left behind in the trust directory, which would otherwise dangle.
 ARG PGDG_KEY_SHA256
 # hadolint ignore=DL3008
-RUN install -d -m 0755 /etc/apt/keyrings \
+RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetch.sh \
+    install -d -m 0755 /etc/apt/keyrings \
     && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-    && curl -fsSL -o /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && fetch.sh postgres 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /etc/apt/keyrings/pgdg.asc \
     && printf '%s  %s\n' "$PGDG_KEY_SHA256" /etc/apt/keyrings/pgdg.asc > /tmp/pgdg-key.sha256 \
     && sha256sum --check --strict /tmp/pgdg-key.sha256 \
     && rm -f /tmp/pgdg-key.sha256 \
@@ -1102,7 +1136,15 @@ COPY packages/daemon/docker/codegraph/package.json /in/codegraph/package.json
 # the stage comment above describes (a source change, not a pin bump, reuses it, so it rebuilds
 # rarely), and running unauthenticated GitHub raw-content requests in parallel risks tripping its
 # secondary rate limit for a build-time saving that doesn't matter on a layer this cold.
-RUN set -eu; \
+# Each read goes through fetch.sh, the form the comment above the mise layer gives, at 60 s an
+# attempt, the least bound that comment gives, since each file is a few kilobytes: an attempt cut
+# 30 s into a stall, up to two more attempts after any failure (a 429, a 5xx, a reset or a cut
+# attempt), with no new attempt after 120 s of retrying, and success only for a 2xx; then one line
+# naming the URL, curl's exit status and the HTTP status. A single 503 from
+# raw.githubusercontent.com failed this RUN, and the worker-image job with it, in job 137719519443
+# (2026-11-23); each file is read in about a second.
+RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetch.sh \
+    set -eu; \
     omp_pin="$(cat /omp-pin)"; omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; \
     omp_tag="v${omp_pin##*@}"; \
     jj_repo="${JJ_TOOL#github:}"; jj_repo="${jj_repo%@*}"; jj_tag="v${JJ_TOOL##*@}"; \
@@ -1117,7 +1159,7 @@ RUN set -eu; \
       "$omp_repo" "$omp_tag" "$jj_repo" "$jj_tag" "$gh_tag" "$stack_repo" "$stack_tag" "$codegraph_node_tag" "$codegraph_version" \
       "$typescript_version" "$tsls_version" "$pyright_version" > /in/tags.env; \
     gh_raw_url() { printf 'https://raw.githubusercontent.com/%s/%s/%s' "$1" "$2" "$3"; }; \
-    fetch() { curl -fsSL "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
+    fetch() { fetch.sh notices 60 "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
     fetch oven-sh/bun "bun-v${BUN_VERSION}" LICENSE.md bun-LICENSE.md; \
     fetch "$omp_repo" "$omp_tag" LICENSE omp-LICENSE; \
     fetch "$omp_repo" "$omp_tag" packages/coding-agent/THIRD-PARTY-NOTICES.txt omp-coding-agent-THIRD-PARTY-NOTICES.txt; \
@@ -1136,19 +1178,19 @@ RUN set -eu; \
     fetch golang/go "go${GO_VERSION}" LICENSE go-LICENSE; \
     fetch golang/tools "gopls/v${GOPLS_VERSION}" LICENSE gopls-LICENSE; \
     crates() { \
-      curl -fsSIo /dev/null "$(gh_raw_url "$1" "$2" Cargo.lock)"; \
+      fetch.sh notices 60 "$(gh_raw_url "$1" "$2" Cargo.lock)" -I -o /dev/null; \
       printf '%s links Rust crates whose license texts its release does not ship. They are the packages listed in\nhttps://github.com/%s/blob/%s/Cargo.lock, the lockfile of the release this image installs; the\nlicense of each is published with it on crates.io.\n' "$3" "$1" "$2" > "/in/$4"; \
     }; \
     crates "$jj_repo" "$jj_tag" jj jj-crates; \
     crates astral-sh/uv "$UV_VERSION" uv uv-crates; \
     crates jdx/mise "${MISE_VERSION}" mise mise-crates; \
-    curl -fsSIo /dev/null "$(gh_raw_url golang/tools "gopls/v${GOPLS_VERSION}" gopls/go.mod)"; \
+    fetch.sh notices 60 "$(gh_raw_url golang/tools "gopls/v${GOPLS_VERSION}" gopls/go.mod)" -I -o /dev/null; \
     printf 'gopls links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/golang/tools/blob/gopls/v%s/gopls/go.mod, the module file of the release this image builds; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$GOPLS_VERSION" > /in/gopls-modules; \
-    curl -fsSIo /dev/null "$(gh_raw_url kubernetes/kubernetes "v${KUBECTL_VERSION}" go.mod)"; \
+    fetch.sh notices 60 "$(gh_raw_url kubernetes/kubernetes "v${KUBECTL_VERSION}" go.mod)" -I -o /dev/null; \
     printf 'kubectl links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/kubernetes/kubernetes/blob/v%s/go.mod, the module file of the release this image installs.\nThe k8s.io modules that file replaces with ./staging/src (kubectl itself, client-go, apimachinery, cli-runtime\nand component-base among them) are source of the Kubernetes release itself, each with its license file under\nhttps://github.com/kubernetes/kubernetes/tree/v%s/staging/src/k8s.io; the license of every other module is in\nhttps://github.com/kubernetes/kubernetes/tree/v%s/LICENSES/vendor.\n' "$KUBECTL_VERSION" "$KUBECTL_VERSION" "$KUBECTL_VERSION" > /in/kubectl-modules; \
-    curl -fsSIo /dev/null "$(gh_raw_url mikefarah/yq "v${YQ_VERSION}" go.mod)"; \
+    fetch.sh notices 60 "$(gh_raw_url mikefarah/yq "v${YQ_VERSION}" go.mod)" -I -o /dev/null; \
     printf 'yq links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/mikefarah/yq/blob/v%s/go.mod, the module file of the release this image installs; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$YQ_VERSION" > /in/yq-modules; \
-    curl -fsSIo /dev/null "$(gh_raw_url "$stack_repo" "$stack_tag" go.mod)"; \
+    fetch.sh notices 60 "$(gh_raw_url "$stack_repo" "$stack_tag" go.mod)" -I -o /dev/null; \
     printf 'gh-stack links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/%s/blob/%s/go.mod, the module file of the release this image installs; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$stack_repo" "$stack_tag" > /in/gh-stack-modules
 # GCLOUD_VERSION, AZURE_CLI_PYTHON_VERSION and azure-cli's lock come in after the fetches, which
 # read none of them; the assembly RUN below is what reads them. BuildKit puts every ARG declared

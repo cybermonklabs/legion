@@ -67,6 +67,7 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     ]),
 ], reads=reads(
     (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
+    (".github/scripts/network-install.sh", f"{at('envoy-go', 'Pull test container images')}: the action runs each pull through it"),
     (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
     (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', UNIT_TEST_STEP)} runs it, and "
                             f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),

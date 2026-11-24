@@ -68,4 +68,7 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     '!packages/envoy/deploy/**',
     '!packages/envoy/infra/**',
     '!packages/*/.changes/**',
+    '.github/scripts/network-install.sh',
+    '.github/scripts/go-fetch.sh',
+    '.github/scripts/fetch.sh',
 ])

@@ -202,7 +202,7 @@ count and the merged report both read 1,616.
 
 The image this repository builds and publishes for every CI job that can launch WebKit or
 Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
-tag browser-69c3a316): Playwright's own browser host, which bakes Chromium, WebKit and
+tag browser-75a1df5d): Playwright's own browser host, which bakes Chromium, WebKit and
 Firefox and every host package they need under /ms-playwright - where its
 PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
 binary, jq, python3 with PyYAML - which .github/scripts/ci-tools.sh imports to read a row
@@ -342,10 +342,19 @@ it is built again. So the download now carries a budget of its own and a second 
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-downloads-in-place-of-a-go-build),
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
-seconds" in that log) answers a failed read, not a slow one. The job's budget is the
+seconds" in that log) answers a failed read, not a slow one. The job's budget was the
 browser step's 1,080 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to the 32 minutes
-of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
+budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to 32 minutes.
+
+THE FROZEN INSTALL, AT ITS WORST. The frozen install then moved under
+.github/scripts/network-install.sh, which bounds a wait bun's own client does not end on a
+registry that answers and then trickles, and can take 425 s before it fails the install by name:
+three attempts of bun's 120 s, each killed 15 s after its SIGTERM, with two 10 s pauses. So the
+install counts at that 425 s in place of the census's 52 s, as a budget of its own, and the
+steps without one at 565 - 52 = 513 s: 1,080 + 120 + 120 + 513 + 425 = 2,258 s, 37 min 38 s,
+rounded up to the 38 minutes of the shard job's `timeout-minutes`. At 32 a stalled install's
+third attempt would end the leg in GitHub's cancellation, which names nothing. The browser
+step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -731,12 +740,19 @@ The shard job's note "THE TWO NETWORK READS, AT A BUSY HOUR" holds here too, and
 two legs is this job's: in run 44213916667 alone (chromium-alone) spent 355 s pulling the
 image, and the 6-minute budget cancelled it 3 s into its checkout. The download carries the
 same budget and second attempt as there, and the pull is counted at that 355 s. The job's
-budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
-without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
-minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
+budget was the browser step's 180 s, the two download attempts' 120 s each, and the steps
+without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to 15 minutes,
+whose 38 s left over held the step that places the binaries
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
-The browser step's own budget is unchanged, and it still
-fires first.
+
+The frozen install then moved under .github/scripts/network-install.sh, for the reason the shard
+job's note "THE FROZEN INSTALL, AT ITS WORST" gives, and counts at its 425 s in place of the 9 s
+above, as a budget of its own; the step that places the binaries counts at the shard job's
+measured 1 s. So the job's budget is 180 + 120 + 120 + (442 - 9) + 425 + 1 = 1,279 s, 21 min 19 s,
+rounded up to the 22 minutes of the alone job's `timeout-minutes`. At 15 the job could end in
+GitHub's cancellation, which names nothing, before a stalled install was named: the image's pull
+at 355 s, the two download attempts and the install's 425 s alone are 1,020 s. The browser step's
+own budget is unchanged, and it still fires first.
 
 ## What the alone job downloads in place of a Go build
 
@@ -909,6 +925,15 @@ full-lane run after this job's Go cache restore moved from go-envoy to go-envoy-
 sign-in, 96 s in the steps without a budget, 219 s whole - and that restore reads
 go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
 
+Three installs then moved under .github/scripts/network-install.sh, which bounds a wait that
+each client's own timeout does not end on a host that answers and then trickles: the Playwright
+download, whose step's budget is then 5 min (.github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
+says why); the frozen install; and the image's pull. Each of the last two can take 425 s before
+the script fails it by name (three attempts of 120 s, each killed 15 s after its SIGTERM, with
+two 10 s pauses), counted on top of the figures above, the pull in place of its 120 s:
+5 + 4 + 2 + 2 min plus 135 s, 425 s and 425 s = 29 min 25 s -> 30 min. 17 minutes would end the
+job in GitHub's cancellation, which names nothing, before a stalled install is named.
+
 ## Why the two-process job restores go-envoy-test
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
@@ -947,12 +972,16 @@ headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
 `toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
 already. A row that later needs CJK or Thai glyphs would fail visibly.
 
-The 4-minute budget: this step downloads browsers only, and Playwright makes up to
-five attempts, across its download hosts, inside it. Of the 339 s maximum above,
-measured in job 127214381394, 317 s were the Ubuntu mirror serving 21.1 MB at
-66.4 kB/s, which this step no longer asks for; Chromium, its headless shell and
-ffmpeg downloaded in 6 s there. Healthy today is a 20 s median and a 34 s 95th
-percentile for the whole step.
+The step's budget: this step downloads browsers only, and Playwright makes up to five attempts,
+across its download hosts, inside it. Of the 339 s maximum above, measured in job 127214381394,
+317 s were the Ubuntu mirror serving 21.1 MB at 66.4 kB/s, which this step no longer asks for;
+Chromium, its headless shell and ffmpeg downloaded in 6 s there. Healthy today is a 20 s median
+and a 34 s 95th percentile for the whole step. Playwright's own wait is a socket's idle time,
+30 s, which a host that answers and then sends a byte every 5 s never reaches: such a download
+of Playwright 1.64.1 had not ended after 900 s. So the download runs under
+.github/scripts/network-install.sh's bound for playwright, 60 s an attempt (twice the slowest
+green step of 64, 10 s, rounded up to the minute), three attempts, each killed 15 s after its
+SIGTERM, with two 10 s pauses: 245 s before it fails by name. The budget holds that: 5 minutes.
 
 No browser cache here: it would save about 4 s, since the three archives - Chrome for
 Testing, its headless shell and ffmpeg - download in 8 to 9 s, and it would add about
@@ -1032,7 +1061,11 @@ their own, as this file's head requires. Its Postgres then moved from a `service
 container to the harness's own, for the reason .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs gives, which
 added that job's two steps for it at that job's figures: the pull at 120 s and the
 connections read at its two-minute floor. 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s
--> 15 min.
+-> 15 min. Three installs then moved under .github/scripts/network-install.sh, for the reasons
+.github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets gives,
+at that job's figures: the install step's budget is 5 min, and the frozen install and the pull
+count at 425 s each, the pull in place of its 120 s. 5 + 4 + 2 min plus 135 s, 425 s and 425 s =
+27 min 25 s -> 28 min.
 
 ## Why the embedder job builds contracts
 
@@ -1141,6 +1174,14 @@ was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at
 six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
 240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
 
+Three installs then moved under .github/scripts/network-install.sh: the frozen install, the
+Playwright copy's pull and the Postgres image's pull. Each can take 425 s on a stalled registry
+before the script fails it by name (three attempts of 120 s, each killed 15 s after its SIGTERM,
+with two 10 s pauses). Counted on top of the figures above, the Postgres pull's 425 s in place of
+its 120 s: 240 + 333 + 3 x 425 = 1,848 s, 30 min 48 s, so the job budget is 31 minutes. The 12
+main gives the job would end it in GitHub's cancellation, which names nothing, before a stalled
+pull is named.
+
 ## Why the visual job restores go-envoy-test
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
@@ -1166,7 +1207,11 @@ a person's `--update-snapshots` takes.
 The copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml), named by the one
 digest packages/dispatch/e2e/visual-run.sh runs, pulled here so the run of the "Browser-test dispatch dashboard against its baselines" step does not
 pay for it inside the browser step's own budget. A failed pull is a fault of this
-repository's own package, so it fails here and says so.
+repository's own package, so it fails here and says so. The pull runs under
+.github/scripts/network-install.sh's bound for docker, which tries an attempt again in two
+cases, when that bound cut it and when its output names a network fault (a refused or reset
+connection, a 429 or a 5xx), and fails any other at once: docker ends a wait for a registry's
+headers by itself, but not a wait for a body that trickles.
 
 ## The stack's Postgres image, pulled here for the same reason
 
@@ -1323,6 +1368,16 @@ runs one `echo` and has no measurement of its own - 1 s is what this job's other
 one-command steps measure. 180 + 37 = 217 s, which is 3 min 37 s, so 4 min. The job's
 budget is above the step's, so the step's own budget fires first and names the step,
 which is the reason this file's head gives for putting budgets on steps.
+
+The frozen install then moved under .github/scripts/network-install.sh, which can take 425 s on
+a stalled registry before it fails the install by name: three attempts of bun's 120 s, each
+killed 15 s after its SIGTERM, with two 10 s pauses. Counted on top of the 217 s, as a budget
+of its own, that is 642 s, 10 min 42 s, so 11 min: 4 min would end the job in GitHub's
+cancellation, which names nothing, in the install's second attempt. A stall ended the job that way
+before the install was bounded: in merge-group run 45080655607 (2026-11-22) the job's `bun install
+--frozen-lockfile` printed "Resolved, downloaded and extracted [8]" at 23:19:12Z and then nothing
+until the 4-minute limit cancelled the job at 23:23:10Z, and the next step read no blob report.
+Under network-install.sh's bound a stalled attempt ends at 120 s and the next one runs.
 
 What that sample does not hold: no browser step failed in any of those runs, so no blob
 report in them carries a failed row's trace, and the download, the merge and reading

@@ -38,6 +38,10 @@ on:
       - "scripts/assemble-third-party-notices.sh"
       - ".github/go-release-targets.json"
       - ".github/agent-secrets-client-targets.json"
+      # Bind-mounted into each RUN of the Dockerfile that installs, so a change to either is a change
+      # of those RUNs and builds the image again.
+      - ".github/scripts/network-install.sh"
+      - ".github/scripts/go-fetch.sh"
   workflow_dispatch:
     inputs:
       # "Confirm the version" in release_publish sets it when its run lost its version to another

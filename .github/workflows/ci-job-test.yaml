@@ -106,6 +106,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_gh_version_test: check-gh-version.test.sh and what it tests."
         type: string
         required: false
+      network_install_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.network_install_test: network-install.test.sh,
+          fetch.test.sh and what they test.
+        type: string
+        required: false
       check_gitleaks_version_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_gitleaks_version_test:
@@ -334,7 +340,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
 
       # release-push.test.sh renders its fold-notes cases with the real changie; where changie is
       # absent, as on a developer's machine, those cases print a SKIP line and count nothing.
@@ -378,6 +384,14 @@ jobs:
       - name: Test the gh version check
         if: inputs.changes-result != 'success' || inputs.check_gh_version_test == 'true'
         run: .github/scripts/check-gh-version.test.sh
+
+      # One step and one gate for the two scripts that bound a read of the network, a wrapped
+      # install and a curl download: ci.yaml is at its size limit, and each gate is two lines there.
+      - name: Test the bounds on network installs and downloads
+        if: inputs.changes-result != 'success' || inputs.network_install_test == 'true'
+        run: |
+          .github/scripts/network-install.test.sh
+          .github/scripts/fetch.test.sh
 
       - name: Test the gitleaks version check
         if: inputs.changes-result != 'success' || inputs.check_gitleaks_version_test == 'true'
@@ -661,7 +675,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # The steps the test job ran before the split, less its tests: the same Bun install, and the
     # builds, lints and typechecks that ran beside the harnesses. No run has measured them apart
-    # yet, so the limit stays the one they ran under there.
+    # yet, so the limit stays the one they ran under there. The install runs under
+    # .github/scripts/network-install.sh's bound for bun, 425 s at its worst.
     timeout-minutes: 30
     env:
       JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -675,7 +690,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
 
       # The very command release.yaml's claude_envoy_build runs, so a pull request whose source
       # that job would refuse fails this job, and with it the required ci-ok, instead of merging

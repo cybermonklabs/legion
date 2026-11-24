@@ -16,6 +16,9 @@ GATE = gate("envoy_smoke", "envoy-smoke", runs=[
     ]),
 ], reads=reads(
     (".github/actions/pull-test-images/**", at("envoy-smoke", "Pull test container images")),
+    (".github/scripts/network-install.sh", f"{at('envoy-smoke', 'Pull test container images')}: the action runs each pull through it"),
+    (".github/scripts/go-fetch.sh", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)}: packages/envoy/docker/Dockerfile's "
+                                    "go-licenses RUN bind-mounts it and fetches the tool with it"),
     (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-smoke', 'Pull test container images')}: const HubImage"),
     (".github/actions/install-pulumi/**", at("envoy-smoke", "./.github/actions/install-pulumi")),
     (".github/actions/install-docker-plugin/**",
@@ -32,7 +35,8 @@ GATE = gate("envoy_smoke", "envoy-smoke", runs=[
      f"{at('envoy-smoke', 'Start the machine watch over the live tests')} and "
      f"{at('envoy-smoke', 'Report what the live tests ran on')} run it"),
     (f"{ENVOY}/docker/Dockerfile", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds it (its `file:`), and "
-                                   f"{at('envoy-smoke', BASE_IMAGES_STEP)} reads its FROM lines"),
+                                   f"{at('envoy-smoke', BASE_IMAGES_STEP)} reads its FROM lines; its RUN "
+                                   "instructions that install bind-mount .github/scripts/network-install.sh"),
     (".dockerignore", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds with `context: .`, so the root .dockerignore "
                       "decides which of the files below reach any COPY of that Dockerfile"),
     (".bun-version", "packages/envoy/docker/Dockerfile:20 COPY .bun-version, which :21-27 holds the web stage's own Bun to"),

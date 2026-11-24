@@ -8,4 +8,4 @@ GATE = gate("proof_sdk_offline", "proof-sdk-offline", reads=reads(
      f"{at('proof-sdk-offline', 'Start the fault proxy over the old proof-sdk route')} runs it; "
      f"the hosts it faults (the job's FAULT_HOSTS) and the log its refusals are counted from "
      f"are that step's arguments"),
-) + bun_job("proof-sdk-offline"))
+) + bun_job("proof-sdk-offline", install_step="Frozen install behind the proxy, cold"))

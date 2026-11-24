@@ -82,15 +82,8 @@ name: CI caches
 # save their entries themselves.
 # why: .github/ci-notes/ci-caches.md#the-architecture-check-and-spec-check-families
 #
-# Three entries here are no Go family: the elan home the airlock-lean job restores, whose key is
-# the content of the Lean toolchain the model names rather than a Go version, and the two earlier
-# Dispatch builds dispatch-two-builds restores, each keyed on a release commit and the hash of the
-# script that builds it, which the dispatch-builds job fills.
-# why: .github/ci-notes/ci-caches.md#the-two-entries-that-went-with-the-jobs-that-read-them
-#
-# go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
-# with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
-# writes it on main, and the workflows that run there call it, this one's dispatch-builds job too.
+# why: .github/ci-notes/ci-caches.md#the-entries-that-are-no-go-family
+# why: .github/ci-notes/ci-caches.md#the-caches-this-workflow-does-not-fill
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: the five
@@ -1037,13 +1030,8 @@ jobs:
               gh_wait_reset gh cache delete "$id"
             done
 
-  # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
-  # needs. No setup-go and no Go family: the key is the runner's architecture, since elan and the
-  # toolchain are binaries of it, and the content of the lean-toolchain the model names, since
-  # that file is what decides which toolchain elan installs, so the entry is refreshed when the
-  # model moves to another Lean and at no other time. install-elan puts elan under
-  # $RUNNER_TEMP/elan and `lake build` downloads the named toolchain into it on a miss, which is
-  # the whole of what is saved. It runs on ubuntu-24.04-arm, the runner airlock-lean runs on.
+  # The elan home ci.yaml's airlock-lean job restores.
+  # why: .github/ci-notes/ci-caches.md#the-elan-entry
   elan:
     if: inputs.only != 'dispatch-builds'
     runs-on: ubuntu-24.04-arm
@@ -1078,3 +1066,34 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: ${{ steps.elan-cache.outputs.cache-primary-key }}
+
+  # The zsh-debs entry ci.yaml's claude-envoy and dispatch-ui jobs restore.
+  # why: .github/ci-notes/ci-caches.md#the-zsh-debs-entry
+  zsh-debs:
+    if: inputs.only != 'dispatch-builds'
+    runs-on: ubuntu-24.04-arm
+    # Two downloads of 5 MB on a miss, each inside the action's own bound of about two minutes;
+    # a run that finds the key costs the checkout alone.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: zsh-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/zsh-debs
+          key: zsh-debs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/install-zsh/action.yml') }}
+          lookup-only: true
+
+      - if: steps.zsh-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/install-zsh
+        with:
+          install: 'false'
+
+      - if: steps.zsh-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/zsh-debs
+          key: ${{ steps.zsh-cache.outputs.cache-primary-key }}

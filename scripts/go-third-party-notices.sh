@@ -13,10 +13,18 @@
 # repository's own modules (every module `go list -m` names from here) are left out: they are this
 # repository's code.
 #
+# go-licenses is fetched by .github/scripts/go-fetch.sh, under network-install.sh's bound for go, and
+# built from the module cache with the network off, so its compile is never timed as a wait on the
+# network (go-fetch.sh's header says why). go-fetch.sh is the one beside this checkout's scripts/
+# (../.github/scripts), or else the one on PATH: a Dockerfile's RUN, which has no checkout, bind-mounts
+# it and network-install.sh into /usr/local/bin. A run that finds go-licenses already built fetches
+# nothing.
+#
 # POSIX sh, so it runs in the golang:*-alpine build stages as well as on a runner.
 set -eu
 
 GO_LICENSES_VERSION=v2.0.1
+GO_LICENSES="github.com/google/go-licenses/v2@$GO_LICENSES_VERSION"
 
 if [ "${1-}" != --install ] && [ "$#" -lt 2 ]; then
   echo "usage: scripts/go-third-party-notices.sh <out> <package>... | --install" >&2
@@ -54,8 +62,16 @@ EOF
 tool_dir="${XDG_CACHE_HOME:-$HOME/.cache}/legion/go-licenses-$GO_LICENSES_VERSION-$go_version-$go_hostos-$go_hostarch"
 tool="$tool_dir/go-licenses"
 if [ ! -x "$tool" ]; then
+  go_fetch="$(dirname "$0")/../.github/scripts/go-fetch.sh"
+  if [ ! -x "$go_fetch" ]; then
+    go_fetch=$(command -v go-fetch.sh) || {
+      echo "go-third-party-notices: go-licenses is not built at $tool, and no go-fetch.sh is beside this checkout ($(dirname "$0")/../.github/scripts) or on PATH to fetch it with" >&2
+      exit 1
+    }
+  fi
+  "$go_fetch" "$GO_LICENSES"
   (cd / && GOOS="$go_hostos" GOARCH="$go_hostarch" CGO_ENABLED=0 GOFLAGS='' GOBIN="$tool_dir" \
-    "$go_cmd" install "github.com/google/go-licenses/v2@$GO_LICENSES_VERSION")
+    GOPROXY="file://$("$go_cmd" env GOMODCACHE)/cache/download" "$go_cmd" install "$GO_LICENSES")
 fi
 if [ "$1" = --install ]; then
   exit 0

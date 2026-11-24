@@ -9,6 +9,8 @@ GATE = gate("envoy_infra_go", "envoy-infra-go", exact=[
     ]),
 ], reads=reads(
     (".github/actions/pull-test-images/**", at("envoy-infra-go", "Pull the NATS and Postgres test container images")),
+    (".github/scripts/network-install.sh",
+     f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: the action runs each pull through it"),
     (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
     (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
     (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),

@@ -18,7 +18,9 @@ runs:
         started=$(date +%s)
         directory="$RUNNER_TEMP/claude-code-$pin"
         mkdir -p "$directory"
-        bun add --cwd "$directory" --exact --no-save "@anthropic-ai/claude-code@$pin"
+        # The npm registry's install, under .github/scripts/network-install.sh's bound for bun.
+        "$GITHUB_ACTION_PATH/../../scripts/network-install.sh" bun -- \
+          bun add --cwd "$directory" --exact --no-save "@anthropic-ai/claude-code@$pin"
         claude="$directory/node_modules/.bin/claude"
         "$claude" --version
         echo "installed @anthropic-ai/claude-code@$pin in $(( $(date +%s) - started ))s"

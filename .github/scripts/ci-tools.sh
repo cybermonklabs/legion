@@ -524,42 +524,97 @@ ci_tools__tempfile() {
 # reads them under. A request that carries one goes through ci_tools__curl_held below, this same
 # ladder less `-L`.
 # `--fail` is what keeps a 504's body out of <file>, `--retry 7 --retry-all-errors` rides out a
-# flap of the service, and `--max-time` bounds one attempt, so a hung attempt becomes the exit
-# code that sends the caller to the second source. Exit 23 is the one exit that sends it
-# nowhere: ci_tools__curl_report below reads it as this run's own write error, and the caller
-# refuses where it stands.
+# flap of the service, and a stall ends an attempt, so a hung attempt becomes the exit code that
+# sends the caller to the second source. Exit 23 is the one exit that sends it nowhere:
+# ci_tools__curl_report below reads it as this run's own write error, and the caller refuses
+# where it stands.
+#
+# AN ATTEMPT IS CUT ON A STALL, NOT ON A CLOCK THAT A MOVING DOWNLOAD RUNS INTO. `--speed-limit
+# 10000 --speed-time 30` ends an attempt that moved fewer than 10,000 bytes a second for 30
+# seconds straight (curl exit 28, "Operation too slow"), and `--connect-timeout 30` one that has
+# not connected in 30 s, so a host that accepts and sends nothing, one that sends a byte now and
+# then, one that stops mid-body and one that never answers the connection are each cut 30 s into
+# the stall. `--max-time <max_time>`, the row's own bound, is what is left of the clock: it ends
+# an attempt that keeps moving above the floor and still has not finished. It is the larger of
+# twice the row's slowest green fetch, rounded up to the minute, and the row's largest file at
+# 250,000 bytes a second, rounded up to the minute, and .github/ci-tools.yaml names each row's.
+# Until 2026-11-23 the clock was the only cut, at 60 s, and it failed a download that was still
+# moving: in job 137969866080 (run 45253427255) PyPI served uv's 17,211,825-byte wheel at about
+# 257 kB/s, curl had read 15,412,215 bytes of it when the 60 s ended the attempt (`curl: (28)
+# Operation timed out after 59879 milliseconds with 15412215 out of 17211825 bytes received`),
+# and the install failed with `no source served the bytes`. That wheel's 67 s whole is the uv
+# row's slowest fetch, so its bound is 180 s. Every other row's slowest is under 11 s, so its
+# file's size decides: 60 s holds 15,000,000 bytes at 250,000 bytes a second, a little under
+# the 257 kB/s that wheel kept moving at, and a larger file takes a larger bound (Bun's npm
+# tarballs 240 s, the Pulumi CLI's tarball 480 s).
+# The floor and the window are measured against the fetches that land: in the green
+# tool-fallback and tool-fallback-arm jobs of 2026-11-23 the manifest names, every row's
+# slowest fetch, 4 MB to 120 MB with its digest check, took 0.7 s to 10.8 s (the slowest jj's
+# copy, three requests), and the one slow fetch that kept moving read 257 kB/s.
+# 10,000 bytes a second is a twenty-fifth of that slowest moving rate, and 30 s is nearly three
+# times the longest green fetch; a stall reads 0, or 0.2 bytes a second for a host that sends a
+# byte every 5 s, so it is under the floor from its first second.
 #
 # `--retry-max-time 60` bounds the ladder as a whole, and it is the bound on when a new attempt
-# may start: an attempt already running when the minute is over still finishes under
-# `--max-time`, and curl starts no attempt after it.
-# What it buys is the hang. Without it a host that accepts and sends nothing costs the whole
-# ladder — eight attempts of `--max-time` 60 s plus a back-off of 1, 2, 4, 8, 16, 32 and 64 s —
-# which is about ten minutes for one row, while many jobs of .github/workflows/ci.yaml carry
-# `timeout-minutes: 10`.
-# Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it buys almost
-# nothing: the back-off alone reaches the minute, so the ladder is one attempt shorter.
-# This issue's tester measured both shapes at the manifest's `max_time` of 60. Against a source
-# that refuses at once, as a 504 does, the bound makes 7 attempts. Their back-off is
-# 1+2+4+8+16+32, so that ladder costs 63 s. Without the bound the same source makes 8 attempts,
-# which is that back-off plus 64 s, or 127 s. The 63 s was measured twice. One such ladder
-# against a port that refuses at once took 1m3.064s and exited 7. And in job 129743677408 of
-# .github/workflows/ci.yaml the two kinds of step are apart by a factor of two: seven of the
-# eight negative controls each drive two ladders, because their primary meets the fault and
-# their second source is a dead port, and measured 126 to 127 s, while seven of the head's own
-# installs and seven of the second-source cases each drive one and measured 63 to 65 s (73 s
-# and 72 s for jj, which carry mise's own 10 s). So 126 s is two ladders and not one.
-# The eighth of each is Bun, whose primary oven-sh/setup-bun fetches as a Node action and not
-# through this function: its negative control drives one ladder, against the dead port, after
-# that action's own failed download, and measured 104 s, while its head install and its
-# second-source case drive none, because npm answers, and measured 23 s and 30 s.
-# The hang is the other shape. It costs 124 s with the bound, where the ladder without the
-# bound costs about ten minutes. So a row's primary costs about one minute before the second
-# source is read against a source that refuses at once, and about two minutes against a host
-# that hangs. Both are inside every ci.yaml budget.
+# may start: an attempt already running when the minute is over still finishes under its own
+# cuts, and curl starts no attempt after it.
+# Against a source that answers 504 at once, the shape of the 2026-11-08 outage, the back-off
+# alone reaches the minute: the bound makes 7 attempts, whose back-off is 1+2+4+8+16+32, so that
+# ladder costs 63 s. This issue's tester measured it twice, and one such ladder against a port
+# that refuses at once took 1m3.064s and exited 7. In job 129743677408 of
+# .github/workflows/ci.yaml seven of the eight negative controls each drove two ladders, because
+# their primary met the fault and their second source was a dead port, and measured 126 to
+# 127 s, while seven of the head's own installs and seven of the second-source cases each drove
+# one and measured 63 to 65 s (73 s and 72 s for jj, which carry mise's own 10 s). The eighth of
+# each is Bun, whose primary oven-sh/setup-bun fetches as a Node action and not through this
+# function: its negative control drives one ladder, against the dead port, after that action's
+# own failed download, and measured 104 s, while its head install and its second-source case
+# drive none, because npm answers, and measured 23 s and 30 s.
+# Against a host that hangs, each attempt is cut 30 s into the stall, so the second attempt
+# starts at 31 s and the third would start past the minute: about 61 s.
+# THE WORST CASE A JOB'S LIMIT COUNTS IS 92 s PLUS THE ROW'S `max_time`: an attempt can start up
+# to the minute plus the back-off before it, which is at most 32 s (the 64 s back-off comes after
+# 63 s of back-off already slept, past the minute), and it may then move above the floor for its
+# whole `max_time`. For a row's 60 s that is 152 s, for 120 s 212 s, for 180 s (uv's and mise's)
+# 272 s, for 240 s (Bun's) 332 s, and for the Pulumi CLI's 480 s, 572 s.
+#
+# THE RESULT IS HELD, NOT CURL'S EXIT ALONE. The fetch succeeded only when curl exited 0, the
+# last answer's HTTP status (`-w '%{http_code}'`, after any redirect `-L` followed) is a 2xx, and
+# <file> is there; a file that stood at <file> before is removed first, so it is this call's.
+# curl 8.14.1, Debian trixie's, exits 0 after a 429 or a 503 whose Retry-After waits past
+# --retry-max-time, having printed its error 22 and written nothing, where 7.88.1 and 8.5.0 exit
+# 22. ci_tools__curl_outcome below reads that as the exit 22 it is, so the caller's report says
+# the source did not serve the bytes and the next source is read, on every curl.
 ci_tools_curl() {
-  local file=$1 max_time=$2 url=$3
+  local file=$1 max_time=$2 url=$3 code status=0
   shift 3
-  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" "$@" "$url"
+  [ ! -f "$file" ] || rm -f -- "$file"
+  code=$(curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --connect-timeout 30 \
+    --speed-limit 10000 --speed-time 30 --max-time "$max_time" -w '%{http_code}' -o "$file" \
+    "$@" "$url") || status=$?
+  ci_tools__curl_outcome "$status" "$code" "$file" 2xx
+}
+
+# ci_tools__curl_outcome <curl's exit> <the last HTTP status> <file> <2xx|2xx-3xx>: curl's exit
+# where it is not 0; 0 where the status is a 2xx and <file> is there, or a 3xx where the caller
+# reads a redirect itself (2xx-3xx); and otherwise 22, curl's own exit for an answer `--fail`
+# refuses, after one line on stderr that says what curl did. The line names no address, since a
+# store's address carries a signed grant, and the caller's report names the source.
+ci_tools__curl_outcome() {
+  local status=$1 code=${2:-000} file=$3 passing=$4
+  [ "$status" -eq 0 ] || return "$status"
+  case $code in
+    2[0-9][0-9])
+      [ ! -e "$file" ] || return 0
+      printf 'ci-tools: curl exited 0 on HTTP %s and left nothing at %s, so this fetch is read as curl exit 22\n' \
+        "$code" "$file" >&2
+      return 22
+      ;;
+    3[0-9][0-9]) [ "$passing" != 2xx-3xx ] || return 0 ;;
+  esac
+  printf 'ci-tools: curl exited 0 on HTTP %s, which is no 2xx (curl 8.14.1 exits 0 on a 429 or a 503 whose Retry-After waits past --retry-max-time), so this fetch is read as curl exit 22\n' \
+    "$code" >&2
+  return 22
 }
 
 # ci_tools__curl_held <file> <max_time> <url> [curl argument…]: ci_tools_curl for a request that
@@ -570,7 +625,9 @@ ci_tools_curl() {
 # the package's, and is only as safe as the curl a runner has.
 # It writes `<status> <redirect address>` on standard output, the address empty where the answer
 # is no redirect. `--fail` makes a 4xx or 5xx curl exit 22 as before, so exit 0 is a 2xx or a 3xx,
-# and a 3xx is one answer, which no `--retry` repeats. The caller reads that line: the token
+# and a 3xx is one answer, which no `--retry` repeats; and where curl exits 0 on any other status,
+# as curl 8.14.1 does after a Retry-After past --retry-max-time, ci_tools__curl_outcome returns
+# 22 for it, as for ci_tools_curl. The caller reads that line: the token
 # request refuses a redirect, and the blob request follows it in a request handed no credential.
 # For a `Location` that is a path, curl writes the address against the request's own, and with a
 # `-u` credential it writes that user and password into it (curl 8.5.0, measured 2026-11-17), so
@@ -582,10 +639,14 @@ ci_tools_curl() {
 # way to read none: a .curlrc that names `location` or `location-trusted` would make this call
 # follow the redirect, and location-trusted would send it the credential.
 ci_tools__curl_held() {
-  local file=$1 max_time=$2 url=$3
+  local file=$1 max_time=$2 url=$3 answer status=0
   shift 3
-  curl -q -fsS --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" \
-    -w '%{http_code} %{redirect_url}' "$@" "$url"
+  [ ! -f "$file" ] || rm -f -- "$file"
+  answer=$(curl -q -fsS --retry 7 --retry-all-errors --retry-max-time 60 --connect-timeout 30 \
+    --speed-limit 10000 --speed-time 30 --max-time "$max_time" -o "$file" \
+    -w '%{http_code} %{redirect_url}' "$@" "$url") || status=$?
+  printf '%s' "$answer"
+  ci_tools__curl_outcome "$status" "${answer%% *}" "$file" 2xx-3xx
 }
 
 # ci_tools__redirect_target <address>: what a line names of the address a redirect points at, its
@@ -868,6 +929,9 @@ ci_tools_blob_url() {
 # or an address of another scheme, is printed as its own status, which no caller reads as a
 # copy, beside a refusal that names it. A request the service did not answer at all reads 000.
 # The first request puts `-q` first, for the reason ci_tools__curl_held gives.
+# Each request carries --max-time 60, the bound ci_tools_ghcr_token gives its own request, which
+# reads no body either, so a package or a store that answers and then all but stops reads 000 at
+# the minute instead of holding the job until its limit.
 ci_tools_registry_head() {
   if [ "$#" -lt 3 ]; then
     ci_tools__error "ci_tools_registry_head takes a token, a headers file and a URL, and this call gave $#"
@@ -876,7 +940,7 @@ ci_tools_registry_head() {
   local token=$1 headers=$2 url=$3 answer status location
   shift 3
   answer=$(printf 'Authorization: Bearer %s' "$token" |
-    curl -q -sS -o /dev/null -D "$headers" -w '%{http_code} %{redirect_url}' -I -H @- "$@" "$url") ||
+    curl -q -sS --max-time 60 -o /dev/null -D "$headers" -w '%{http_code} %{redirect_url}' -I -H @- "$@" "$url") ||
     answer=000
   status=${answer%% *}
   case $status in
@@ -887,8 +951,8 @@ ci_tools_registry_head() {
       elif ! ci_tools__store_address "$location"; then
         ci_tools__error "a HEAD of $url answered $status, a redirect to $(ci_tools__redirect_target "$location"), which this run does not follow: it reads a store at an https address alone"
       else
-        status=$(curl -sS --proto "$(ci_tools__store_proto)" -o /dev/null -D "$headers" -w '%{http_code}' \
-          -I -L "$@" "$location") || status=000
+        status=$(curl -sS --max-time 60 --proto "$(ci_tools__store_proto)" -o /dev/null -D "$headers" \
+          -w '%{http_code}' -I -L "$@" "$location") || status=000
       fi
       ;;
   esac

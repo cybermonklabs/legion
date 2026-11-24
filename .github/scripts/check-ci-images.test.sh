@@ -150,6 +150,16 @@ jobs:
     steps:
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
 YAML
+  # The third: pi-legion's pull of the judge image, whose reference the step reads out of rig.sh.
+  cat > "$root/.github/workflows/ci-job-pi-legion.yaml" <<YAML
+name: CI job pi-legion
+on: [workflow_call]
+jobs:
+  pi-legion:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: .github/scripts/network-install.sh docker -- docker pull "\$image"
+YAML
   cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'
 name: Pull the images tests start
 description: Pull the images the tests start.

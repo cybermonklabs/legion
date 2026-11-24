@@ -44,8 +44,11 @@ jobs:
     # compiles a hooked nats-server and the packages above it under the detector again, up to 5
     # minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66. The
     # script's own test compiles one more hooked build, of a fixture with one test that skips, up
-    # to 5 minutes, and runs it at once, so 71 in all.
-    timeout-minutes: 80
+    # to 5 minutes, and runs it at once, so 71 in all. And at least the waits on the network up to
+    # the last forced-order step's download of nats-server, so each can fail by name:
+    # why: .github/ci-notes/ci-job-envoy-go-race.md#the-jobs-limit-held-to-the-downloads-its-forced-order-steps-run
+    # 240 s + 19 s + 2,100 s + 1,325 s + 1,325 s + 425 s = 5,434 s -> 91 min.
+    timeout-minutes: 91
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -59,7 +62,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 80 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 91 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

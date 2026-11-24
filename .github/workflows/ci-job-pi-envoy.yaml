@@ -27,11 +27,13 @@ jobs:
     # --timeout (package.json) rather than as a job this limit cancels: over the job's 42 green
     # merge-group runs from 2026-11-20T01:35Z to 2026-11-21T08:58Z, its other steps at their
     # longest, 94 s, 5 s of its clock over its steps, and its test step's longest, 406 s
-    # (run 44807153227), plus that one guard, 250 s: 755 s, or 13 minutes. 15 leaves the test step
-    # room to grow as it did from 285 s on 2026-11-18 to 406 s.
-    timeout-minutes: 15
+    # (run 44807153227), plus that one guard, 250 s: 755 s, or 13 minutes. And at least the waits
+    # on the network before its tests, so each can fail by name:
+    # why: .github/ci-notes/ci-job-pi-envoy.md#the-jobs-limit-held-to-the-installs-it-runs-through-network-installsh
+    # 240 s + 1,207 s + 2 x 245 s + 425 s = 2,362 s -> 40 min.
+    timeout-minutes: 40
     env:
-      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 40 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
@@ -53,10 +55,13 @@ jobs:
       - uses: ./.github/actions/install-omp
       # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
       # the only way the place a session registers can be read from the session itself, and refuses
-      # on GitHub Actions without a tmux.
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
-      - run: bun install --frozen-lockfile
+      # on GitHub Actions without a tmux. .github/scripts/runner-tmux.sh uses the runner image's
+      # tmux, reading no network, and says how an image without one gets it; daemon-go runs the
+      # same script.
+      - name: Use the runner image's tmux
+        run: .github/scripts/runner-tmux.sh
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Build contracts for pi-envoy
         run: bun run build
         working-directory: packages/contracts

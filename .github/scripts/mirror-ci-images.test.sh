@@ -4,8 +4,9 @@
 # package holds every row reads nothing outside that package, it refuses a library/golang row —
 # held or being copied — whose image carries another Go than the row's tag names, it reads which
 # repository a row names as .github/scripts/ci_images.py does, it copies nothing and reads no
-# registry for a row this repository builds rather than copies, and it fails naming the row
-# when a copy lands at another digest.
+# registry for a row this repository builds rather than copies, it fails naming the row when a
+# copy lands at another digest, it runs rows at once, and one failed row fails the run after
+# every other row has run.
 #
 # NO CASE REACHES THE NETWORK. Every case puts a stand-in `crane` first on PATH, which reads and
 # writes a stand-in registry under $CRANE_STATE: `tags` is one `<reference>\t<digest>` line per
@@ -14,10 +15,11 @@
 # `crane config` can read, `package` is one digest per line, `copied` is one reference per line
 # the stand-in copied, and `references` is every reference the stand-in was asked for, in the
 # order it was asked, which is what a case reads to say where a run went. The cases before the
-# last build a miniature repository under a temporary directory and symlink the real script, and
-# the reference grammar it reads a row with (ci_images.py), into it, so the script under test is
-# the file CI runs: it resolves its root from its own path (`cd "$(dirname "$0")/../.."`), which
-# the symlink puts at the fixture root.
+# last build a miniature repository under a temporary directory and symlink the real script, the
+# reference grammar it reads a row with (ci_images.py) and the bound every crane call of it runs
+# under (network-install.sh) into it, so the script under test is the file CI runs: it resolves
+# its root from its own path (`cd "$(dirname "$0")/../.."`), which the symlink puts at the
+# fixture root.
 #
 # The last case is the ordering ci.yaml's ci-images job keeps: the package mode of
 # check-ci-images.sh reads which rows the package holds, so the copy for this change must run
@@ -67,6 +69,26 @@ state=${CRANE_STATE:?CRANE_STATE names the stand-in registry}
 case "${1:-}" in
   digest)
     printf '%s\n' "$2" >> "$state/references"
+    # The first `crane digest` of a tag `rendezvous` lists waits up to 5 s for that of every tag
+    # it lists to have started, and writes whether they met, `<tag> together` or `<tag> alone`, to
+    # `met`: two rows read one after another never meet, and two read at once always do.
+    arrived="$state/arrived.$(printf '%s' "$2" | tr '/:@' '___')"
+    if [ -s "$state/rendezvous" ] && grep -qxF -- "$2" "$state/rendezvous" && [ ! -e "$arrived" ]; then
+      : > "$arrived"
+      met=alone
+      for _ in $(seq 50); do
+        all=1
+        while IFS= read -r other; do
+          [ -e "$state/arrived.$(printf '%s' "$other" | tr '/:@' '___')" ] || all=0
+        done < "$state/rendezvous"
+        if [ "$all" = 1 ]; then
+          met=together
+          break
+        fi
+        sleep 0.1
+      done
+      printf '%s %s\n' "$2" "$met" >> "$state/met"
+    fi
     awk -F'\t' -v reference="$2" '$1 == reference { digest = $2 } END { if (digest == "") exit 1; print digest }' \
       "$state/tags"
     ;;
@@ -138,6 +160,7 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/state"
   ln -s "$mirror_script" "$root/.github/scripts/mirror-ci-images.sh"
   ln -s "$script_dir/ci_images.py" "$root/.github/scripts/ci_images.py"
+  ln -s "$script_dir/network-install.sh" "$root/.github/scripts/network-install.sh"
   cat > "$root/.github/ci-images.yaml" <<YAML
 registry: $REGISTRY
 
@@ -350,6 +373,37 @@ check "names the row and both digests" \
   "$(contains "$out" "$REGISTRY:bun-1.3.14-1b2c3d4e landed at $OTHER, and the row says $BUN")"
 check "names the reference it copied" "$(contains "$out" "This copy read docker.io/oven/bun:1.3.14@$BUN")"
 check "and says what to do" "$(contains "$out" 're-run the ci-images job')"
+
+echo "case: two rows run at once"
+# The rows run PARALLEL at a time. Both rows of this tree read their tag in the package first, and
+# the stand-in holds each of those two reads until the other has started, up to 5 s: a run that
+# read one row and then the next would meet nobody.
+root=$(fixture runs-rows-at-once)
+printf '%s\n' "$REGISTRY:nats-2.10-0a1b2c3d" "$REGISTRY:bun-1.3.14-1b2c3d4e" > "$root/state/rendezvous"
+run_mirror "$root"
+check "exits 0" "$(is "$status" 0)"
+check "the two rows' reads met" \
+  "$(is "$(sort "$root/state/met")" "$(printf '%s together\n' "$REGISTRY:bun-1.3.14-1b2c3d4e" "$REGISTRY:nats-2.10-0a1b2c3d")")"
+check "and the rows' lines are printed in row order" \
+  "$(is "$(grep -E '^(held|copied) ' <<<"$out" | cut -d' ' -f1)" "$(printf 'held\ncopied')")"
+check "and the summary accounts for both" \
+  "$(contains "$out" '^1 row(s) already in the package, 1 copied, 0 built by this repository$')"
+
+echo "case: one failed row fails the run, and every other row still runs"
+# The bun row's copy lands at another digest, and the golang row after it copies as it should.
+root=$(fixture one-row-fails)
+printf '%s\t%s\n' "docker.io/oven/bun:1.3.14@$BUN" "$OTHER" > "$root/state/upstreams"
+golang_row "$root" 1.27.1
+run_mirror "$root"
+check "fails" "$(is "$status" 1)"
+check "names the failed row's own error" \
+  "$(contains "$out" "$REGISTRY:bun-1.3.14-1b2c3d4e landed at $OTHER, and the row says $BUN")"
+check "names the failed row in its last line" \
+  "$(contains "$(tail -n 1 <<<"$out")" 'these rows failed: bun-1\.3\.14-1b2c3d4e\.')"
+check "still copied the row after it" \
+  "$(contains "$out" "copied $REGISTRY:golang-1.27.1-alpine-3d4e5f60 $GOLANG")"
+check "and prints no summary of a run that passed" \
+  "$(is "$(contains "$out" 'row(s) already in the package')" false)"
 
 echo "case: the gate's rule 9 before the copy, and after it"
 # ci.yaml's ci-images job runs this script and then the gate's package mode, in that order,

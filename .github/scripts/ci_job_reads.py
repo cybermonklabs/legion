@@ -350,17 +350,21 @@ def setup_bun(job, workflow=""):
     )
 
 
-def bun_job(job, workflow=""):
-    """setup_bun and a frozen `bun install`. No .npmrc anywhere, and one Bun configuration file,
+def bun_job(job, workflow="", install_step="Install dependencies"):
+    """setup_bun and a frozen `bun install`, which runs under .github/scripts/network-install.sh's
+    bound for bun. No .npmrc anywhere, and one Bun configuration file,
     packages/dispatch/bunfig.toml, which holds `[test]` alone and so changes no install: an
-    install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
-    install = at(job, "bun install --frozen-lockfile", workflow)
+    install runs at the repository root, and Bun reads bunfig.toml from the working directory.
+    `install_step` is the name of the job's step that installs, which every job but
+    proof-sdk-offline calls "Install dependencies"."""
+    install = at(job, install_step, workflow)
     return setup_bun(job, workflow) + reads(
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-61)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
         ("patches/**", f"{install} applies package.json:52-61 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
+        (".github/scripts/network-install.sh", f"{install} runs the install through it, under its bound for bun"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
           for w in WORKSPACES],
     )
@@ -383,6 +387,30 @@ def install_jj(job):
         (".github/scripts/ci-tools.sh", ".github/actions/install-jj/action.yml:44,63 source it: ci_tools_fetch installs "
                                         "mise, ci_tools_fetch_fallback reads the jj row's second source and "
                                         "ci_tools_verify checks the binary"),
+    )
+
+
+def install_zsh(job):
+    """The zsh .github/actions/install-zsh installs from Ubuntu's two pinned packages: the action,
+    and the helper whose bounded fetch reads a package the Actions cache lacks."""
+    return reads(
+        (".github/actions/install-zsh/**", at(job, "./.github/actions/install-zsh")),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-zsh/action.yml:53 sources it, and :72's "
+                                        "ci_tools_curl fetches a package the cache lacks"),
+    )
+
+
+# The step of daemon-go and pi-envoy that uses the runner image's tmux.
+RUNNER_TMUX_STEP = "Use the runner image's tmux"
+
+
+def runner_tmux(job):
+    """The step that uses the runner image's tmux: the script it runs, which installs Ubuntu's tmux
+    through .github/scripts/network-install.sh where the image has none."""
+    return reads(
+        (".github/scripts/runner-tmux.sh", at(job, RUNNER_TMUX_STEP)),
+        (".github/scripts/network-install.sh",
+         f"{at(job, RUNNER_TMUX_STEP)}: runner-tmux.sh installs Ubuntu's tmux through it where the runner image has none"),
     )
 
 
@@ -761,9 +789,13 @@ def forced_order_run(job, step, workdir, pkgs):
 
 
 def forced_order_reads(job, step):
-    """forced-order.sh itself and the hooks it applies, which `job`'s `step` reads."""
+    """forced-order.sh itself, the hooks it applies, and the bound its download of nats-server's
+    module runs under, which `job`'s `step` reads."""
     return reads((FORCED_ORDER, f"{at(job, step)} runs it"),
-                 (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step)}, patches nats-server with them"))
+                 (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step)}, patches nats-server with them"),
+                 (".github/scripts/network-install.sh",
+                  f"{FORCED_ORDER}, run by {at(job, step)}, downloads nats-server's module through it, under "
+                  f"its bound for go"))
 
 
 def two_builds_go_step():

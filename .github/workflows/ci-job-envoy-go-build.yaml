@@ -61,10 +61,15 @@ jobs:
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
     # The steps of envoy-go-checks but its script tests took 5.9 min at the median, 6.8 at p90 and
-    # 9.6 at most over 695 successful pull-request runs of 2026-11-22; half again is 15.
-    timeout-minutes: 15
+    # 9.6 at most over 695 successful pull-request runs of 2026-11-22. The limit also holds two
+    # waits on the network at their worst, each through .github/scripts/network-install.sh and
+    # each 425 s (three attempts of 120 s, each killed 15 s after its SIGTERM, with two 10 s
+    # pauses): the workspace install, under its bound for bun, and the pack step's fetch of
+    # go-licenses, which scripts/go-third-party-notices.sh makes with go-fetch.sh under its bound
+    # for go. 576 s + 425 s + 425 s = 1,426 s -> 24 min.
+    timeout-minutes: 24
     env:
-      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 24 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -119,7 +124,8 @@ jobs:
           fi
           echo "The spec-check action read $COUNT statements."
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

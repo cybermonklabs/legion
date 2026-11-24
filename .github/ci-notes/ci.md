@@ -46,7 +46,9 @@ only one side has. A base tree whose filters cannot be computed makes every filt
 change that touches none of those files is not compared, and costs no second computation.
 
 When the computation fails for any reason - a step before it that failed (setup-go, Bun's setup
-and the install each run with `continue-on-error`), a go command that cannot run, a gate file or a `//ci:` line that cannot be
+and the install each run with `continue-on-error`; the install runs under network-install.sh's
+bound for bun, so a registry that stalls costs one attempt of 120 s and the next attempt runs,
+and only three that fail end the step, by name), a go command that cannot run, a gate file or a `//ci:` line that cannot be
 read, a run past five minutes - the script writes instead a file in which every filter the changes
 job hands on is `'**'`, its first line `# FAIL-OPEN:` with the reason, and exits 0: every job
 runs, as on a dispatch, and the paths filter's verdicts and the outputs stay one shape. The run is
@@ -69,6 +71,23 @@ The hand-kept facts the sets are computed from are each in a file of their owner
 `.github/ci-gates` per gate, and a `//ci:` line beside each read a test makes outside its
 package (.github/scripts/ci_filter_sources.py). Two pull requests that each add a read of a
 different test, or a gate of a different job, edit different files.
+
+## The changes job's limit, and the chain a merge group waits on
+
+The job's 34 minutes are above the sum of its steps' own timeouts, 33: the filter generation's 9
+(`ci-filters-generate.sh` stops this tree's run at 300 s and kills it 15 s later, and bounds the
+base's fetch at 65 s and its install at 125 s, so it ends within 505 s), Bun's install's 8
+(`network-install.sh`'s bound for bun, three attempts of 120 s with their kills and pauses, 425 s),
+3 each for the checkout, setup-go, Bun's setup, the upload and the paths filter, and 1 for the ref.
+
+Every other job of a merge-group run waits on this one, so its limit is part of the longest chain
+a merge group can run before ci-ok judges it, which main's merge-queue rule fails 180 minutes in.
+Over every job ci-ok needs that a merge group runs (48 of its 50 needs; dispatch-browser-pr and
+worker-image run on pull requests only), the longest chain of job limits is this job's 34 and
+daemon-go's 135, 169 minutes, which leaves ci-ok's judging step its 10 under the 180. A job that
+sets no `timeout-minutes` counts at GitHub's default of 360 and so carries that chain past the
+rule by itself, as `conflicts-script` did until it took a limit of its own
+(`ci-job-conflicts-script.md`).
 
 ## How a filter is computed
 
@@ -856,8 +875,12 @@ here matches nothing.
 
 Every file the browser image's build reads, for the browser-image job
 (.github/workflows/browser-image.yaml, which the build reads too): that build's
-context is .github/docker, so every file under it reaches the build, and the
-Dockerfile it builds is the only file there today.
+context is .github, which .github/docker/browser.Dockerfile.dockerignore cuts to
+.github/docker and two scripts, .github/scripts/network-install.sh and
+.github/scripts/fetch.sh, which the install RUN bind-mounts to bound its reads of the
+network, so every file of .github/docker reaches the build, and those scripts with them.
+The scripts leave nothing in the image, so the recipe hash below leaves them out, and an
+edit of them alone builds no image (ci_images.py's recipe_sha256 says what that delays).
 .github/ci-images.yaml is deliberately not named. The build does read that file:
 its `row` step reads the registry and the digest of the row built from that
 Dockerfile out of it at run time, and its publish decision is that digest and the
@@ -2726,3 +2749,62 @@ nothing races. check-ci-filters.sh holds both jobs to their one `name:` (ci_filt
 DISPATCH_NAMES), the reconcile step to its one `if:` (RECONCILE_IF), the changes job to the
 output and the exact step (REF_OUTPUT, REF_STEP_RUN), and every other job to a name that can
 evaluate to neither check.
+
+## The runner's own pulls of a job's service and container images
+
+Before a job's first step the runner pulls each image the job's `services:` and `container:` name,
+with `docker pull` and no timeout of its own; actions/runner tries a pull again only after a
+non-zero exit, so a registry that answers and then all but stops holds the pull, and a workflow can
+give that pull no bound of its own. The job's limit is its one bound. A job limit held to the
+installs it runs through `.github/scripts/network-install.sh` therefore counts each such pull at
+240 s, before the job's installs: a green daemon-go job pulled its Postgres service image in
+96.5 s (job 137585009527 of merge-group run 45142843312, 2026-11-23, from its `docker pull` at
+09:00:40.9Z to `Status: Downloaded` at 09:02:17.4Z, one layer stalling about 30 s twice),
+doubled and rounded up to the minute. The figure was 180 s from an earlier sample, whose slowest
+of 304 green "Initialize containers" steps pulled in 62.7 s (dispatch-browser's webkit-alone, job
+135946192641).
+
+Each such limit is held to this sum: up to each step that installs, the runner's pulls, the bounds
+of every step before it (its own limit, or its installs where it sets none) and the step's own
+installs at their worst case, three attempts of the kind's bound, each killed 15 s after its
+SIGTERM, with two 10 s pauses (`network-install.sh --bounds` prints each kind's numbers), and each
+tool install that reads `.github/scripts/ci-tools.sh` at the worst case the section below derives.
+Each job whose limit this rests on derives it in its own note (`ci-job-daemon-go.md`,
+`ci-job-pi-envoy.md`, `ci-job-pi-legion.md`, `ci-job-pi-shared.md`, `ci-job-plugin-pack.md`,
+`ci-job-claude-envoy.md`, `ci-job-dispatch-ui.md`, `ci-job-envoy-client.md`,
+`ci-job-envoy-smoke.md`, `ci-job-envoy-go-checks.md`, `ci-job-envoy-go-race.md`,
+`ci-job-ci-images.md`, `ci-job-conflicts-script.md`, `dispatch-browser.md`, `browser-image.md`,
+`worker-image.md`).
+
+## The worst case of the tool installs that read .github/scripts/ci-tools.sh
+
+The actions that install a tool through `.github/scripts/ci-tools.sh` run no install through
+network-install.sh, and carry bounds of their own, which a job's sum counts at their worst. One
+fetch of a row's source is `ci_tools_curl` (`--retry 7 --retry-all-errors --retry-max-time 60
+--connect-timeout 30 --speed-limit 10000 --speed-time 30 --max-time <the row's max_time>`): a
+stall is cut 30 s in, and an attempt that keeps moving runs up to the row's `max_time`, the larger
+of twice its slowest green fetch and its largest file at 250,000 bytes a second, each rounded up
+to the minute (`.github/ci-tools.yaml` names each), so one fetch fails by name inside 92 s +
+`max_time` (the comment above that function says why): 152 s for a row's 60 s, 212 s for 120 s,
+272 s for 180 s, 332 s for 240 s and 572 s for 480 s. A row whose second source is the copy in
+ghcr.io/cybermonklabs/legion/ci reads three more after its primary fails: the pull token, the
+blob, and the store the blob's redirect names, each under the row's own `max_time`.
+
+- 848 s: `.github/actions/install-crane` on an x86_64 runner, whose row's tarball takes 120 s: the
+  release asset, 212 s, then the copy, 3 × 212 s. On an arm64 runner, whose row's tarball takes
+  60 s, 608 s: 152 s, then 3 × 152 s; `.github/actions/install-changie` and
+  `.github/actions/install-elan` the same, 608 s.
+- 544 s: `.github/actions/install-uv`: the release asset, then PyPI's wheel, 2 × 272 s.
+- 2,300 s: `.github/actions/install-jj`: its mise, whose row takes 180 s on either machine: the
+  release asset, 272 s, then the copy, 3 × 272 s, 1,088 s; then `mise install` of the jj spec,
+  whose API reads gave up after 336 s behind a proxy that accepted and never answered (mise
+  2026.8.12: 30 s a request, each tried 3 more times), and whose download the action bounds at
+  60 s, tried 4 times, 240 s; then the copy of the jj binary, whose row takes 120 s on either
+  machine, 3 × 212 s, 636 s: 1,088 s + 336 s + 240 s + 636 s.
+- 304 s: `.github/actions/install-zsh`, which fetches each of its two pinned files the Actions
+  cache lacks through `ci_tools_curl` with a bound of its own of 60 s: 2 × (92 s + 60 s).
+- 1,144 s: `.github/actions/install-pulumi`: get.pulumi.com, then the release asset, the one
+  tarball the row's 480 s holds, 2 × 572 s.
+- 424 s: `.github/actions/install-docker-plugin`: the release asset, then get.pulumi.com, 2 ×
+  212 s.
+- 848 s: `.github/actions/install-helm`: get.helm.sh, 212 s, then the copy, 3 × 212 s.

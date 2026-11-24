@@ -23,15 +23,18 @@ on:
 jobs:
   pi-shared:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci-job-pi-shared.md#the-jobs-limit-held-to-the-installs-it-runs
+    # 41 s + 425 s + 2,300 s = 2,766 s -> 47 min.
+    timeout-minutes: 47
     env:
-      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 47 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Typecheck pi-shared
         run: bun run typecheck
         working-directory: packages/pi-shared

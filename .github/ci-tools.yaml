@@ -164,9 +164,26 @@ tools:
     # It is the one word every log line and every refusal of that source says, so a row that
     # moves to another source moves every sentence about it with one edit.
     second_source: ghcr-mirror
-    # The per-attempt bound in seconds the helper gives curl. One attempt that hangs past a minute
-    # is the outage the second source answers, so every row carries 60.
-    max_time: 60
+    # The bound in seconds the helper gives curl for one attempt's whole transfer (--max-time):
+    # the larger of twice the row's slowest green fetch, rounded up to the minute, the rule
+    # network-install.sh's kinds follow, and the size of the largest file a source of the row
+    # serves at 250,000 bytes a second, rounded up to the minute, under the 257 kB/s at which PyPI
+    # served uv's wheel while it was still moving in job 137969866080 (run 45253427255). So a
+    # download that keeps moving at that rate lands, and a stall ends an attempt before it:
+    # ci_tools_curl (.github/scripts/ci-tools.sh) cuts one that moves fewer than 10,000 bytes a
+    # second for 30 s, or has not connected in 30 s.
+    # The fetches were read in the green tool-fallback and tool-fallback-arm jobs of runs
+    # 45175342383, 45183363102, 45190825753, 45201056167 and 45253427255 (2026-11-23), each from
+    # the line that starts the fetch to the `served the bytes` line after its digest check, so each
+    # is a fetch and its check. Each row names its slowest; every one is under 11 s, so the size
+    # decides each bound above 60 s but uv's. The sizes are the `Content-Length` each source
+    # answered on 2026-11-24 (a range request's total for npm), and a ghcr copy's is that of what
+    # it holds, the member where `mirror_member` names one. A version bump reads the size again.
+    # A job's limit counts one fetch at 92 s more than this bound (the comment above
+    # ci_tools_curl says why): 152 s for a bound of 60 s.
+    # crane: 4.75 s from its release asset, job 137784808139 (run 45201056167). Its tarball is
+    # 16,496,784 bytes, 66 s at 250,000 bytes a second: 120 s, so 212 s a fetch.
+    max_time: 120
     # ghcr-mirror rows only. The URL .github/scripts/mirror-ci-tools.sh fetches the bytes from to
     # fill the copy. It is the row's `primary` wherever the primary is the asset itself.
     mirror_from: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
@@ -186,6 +203,8 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
+    # 2.46 s from the copy, job 137995865218 (run 45253427255). Its tarball is 14,831,376 bytes,
+    # 59 s at 250,000 bytes a second: 60 s.
     max_time: 60
     mirror_from: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz
     mirror_member: ""
@@ -201,6 +220,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
+    # 1.14 s from the copy, job 137723037002 (run 45183363102).
     max_time: 60
     mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
     mirror_member: ""
@@ -217,6 +237,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
+    # 2.41 s from the copy, job 137995865218 (run 45253427255).
     max_time: 60
     mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_arm64.tar.gz
     mirror_member: ""
@@ -234,7 +255,9 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    # 1.77 s from the copy, job 137723037002 (run 45183363102). Its archive is 37,439,195 bytes,
+    # 150 s at 250,000 bytes a second: 180 s, so 272 s a fetch.
+    max_time: 180
     mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
     mirror_member: ""
 
@@ -252,7 +275,9 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    # 4.15 s from the copy, job 137995865218 (run 45253427255). Its archive is 36,881,250 bytes,
+    # 148 s at 250,000 bytes a second: 180 s, so 272 s a fetch.
+    max_time: 180
     mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-arm64.tar.gz
     mirror_member: ""
 
@@ -276,7 +301,9 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    # 10.84 s from the copy, its three requests, job 137784808139 (run 45201056167). The copy
+    # holds the binary, 24,839,104 bytes, 99 s at 250,000 bytes a second: 120 s, so 212 s a fetch.
+    max_time: 120
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-x86_64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
@@ -294,7 +321,9 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    # 10.75 s from the copy, its three requests, job 137723037126 (run 45183363102). The copy
+    # holds the binary, 21,257,568 bytes, 85 s at 250,000 bytes a second: 120 s, so 212 s a fetch.
+    max_time: 120
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-aarch64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
@@ -318,7 +347,9 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: npm
-    max_time: 60
+    # 2.04 s from npm, job 137749490344 (run 45190825753). The package's tarball is 52,418,437
+    # bytes, 210 s at 250,000 bytes a second: 240 s, so 332 s a fetch.
+    max_time: 240
     # npm rows only. The package the binary is published in, one per platform variant.
     npm_package: "@oven/bun-linux-x64"
     # npm rows only. The member of that package's tarball which is the binary itself.
@@ -336,7 +367,9 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: npm
-    max_time: 60
+    # No green job fetches this row's npm package; it is the package of the row above, of the
+    # same size, read at 2.04 s there: 52,418,564 bytes, 210 s at 250,000 bytes a second: 240 s.
+    max_time: 240
     npm_package: "@oven/bun-linux-x64-baseline"
     npm_member: package/bin/bun
 
@@ -351,7 +384,9 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: npm
-    max_time: 60
+    # 3.79 s from npm, job 137995865218 (run 45253427255). The package's tarball is 53,132,992
+    # bytes, 213 s at 250,000 bytes a second: 240 s, so 332 s a fetch.
+    max_time: 240
     npm_package: "@oven/bun-linux-aarch64"
     npm_member: package/bin/bun
 
@@ -368,6 +403,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
+    # 1.17 s from the copy, job 137723037002 (run 45183363102).
     max_time: 60
     mirror_from: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
     mirror_member: ""
@@ -384,6 +420,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
+    # 2.43 s from the copy, job 137995865218 (run 45253427255).
     max_time: 60
     mirror_from: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-aarch64-unknown-linux-gnu.tar.gz
     mirror_member: ""
@@ -405,7 +442,11 @@ tools:
     primary_digest_of: the release tarball uv-x86_64-unknown-linux-gnu.tar.gz, whole
     primary_member: uv-x86_64-unknown-linux-gnu/uv
     second_source: pypi
-    max_time: 60
+    # Its release asset at most 0.74 s, job 137723037002 (run 45183363102). PyPI's 17,211,825-byte
+    # wheel is the slowest fetch of any row: in job 137969866080 (run 45253427255, attempt 1) it
+    # came at about 257 kB/s, 67 s for the whole, and the 60 s this field held then cut it with
+    # 15,412,215 bytes read. Twice those 67 s, rounded up to the minute: 180 s, so 272 s a fetch.
+    max_time: 180
     # github-release, pypi, pulumi-releases and helm-releases second sources only. The whole
     # address that service serves this row's bytes at, written out, because such a service has
     # no one prefix every row of it begins with the way a release asset has https://github.com.
@@ -428,7 +469,9 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: pulumi-releases
-    max_time: 60
+    # 0.90 s from its release asset, job 137723037002 (run 45183363102). The tarball is 24,184,600
+    # bytes at both sources, 97 s at 250,000 bytes a second: 120 s, so 212 s a fetch.
+    max_time: 120
     second_url: https://get.pulumi.com/releases/plugins/pulumi-resource-docker-v4.11.0-linux-amd64.tar.gz
     second_member: ""
 
@@ -446,7 +489,9 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: github-release
-    max_time: 60
+    # 2.75 s from get.pulumi.com, job 137723037002 (run 45183363102). The tarball is 119,816,773
+    # bytes at both sources, 479 s at 250,000 bytes a second: 480 s, so 572 s a fetch.
+    max_time: 480
     second_url: https://github.com/pulumi/pulumi/releases/download/v3.268.0/pulumi-v3.268.0-linux-x64.tar.gz
     second_member: ""
 
@@ -470,7 +515,10 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    # 0.72 s from the copy, job 137995673550 (run 45253427255), the one green job of that sample
+    # that fetched this row. The tarball is 17,455,249 bytes, 70 s at 250,000 bytes a second:
+    # 120 s, so 212 s a fetch.
+    max_time: 120
     mirror_from: https://get.helm.sh/helm-v3.20.2-linux-amd64.tar.gz
     mirror_member: ""
 

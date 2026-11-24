@@ -103,11 +103,9 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
-    # Above the sum of its steps' own timeouts, 28 minutes: the filter generation's 9
-    # (ci-filters-generate.sh stops this tree's run at 300 s and kills it 15 s later, and bounds the
-    # base's fetch at 65 s and its install at 125 s, so it ends within 505 s), 3 each for the
-    # checkout, setup-go, Bun's setup and install, the upload and the paths filter, and 1 for the ref.
-    timeout-minutes: 30
+    # why: .github/ci-notes/ci.md#the-changes-jobs-limit-and-the-chain-a-merge-group-waits-on
+    # 9 + 8 + 5 x 3 + 1 = 33 min of steps -> 34.
+    timeout-minutes: 34
     outputs:
       # why, for each output below with a `lane:` term: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
       # and .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
@@ -133,6 +131,7 @@ jobs:
       check_bun_workspace_manifests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_bun_workspace_manifests_test }}
       check_zod_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_zod_version_test }}
       check_gh_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gh_version_test }}
+      network_install_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.network_install_test }}
       check_gitleaks_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gitleaks_version_test }}
       workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
@@ -258,8 +257,9 @@ jobs:
         uses: ./.github/actions/setup-bun
       - name: Install dependencies
         continue-on-error: true
-        timeout-minutes: 3
-        run: bun install --frozen-lockfile
+        # network-install.sh's bound for bun at its worst, 425 s, rounded up to the minute.
+        timeout-minutes: 8
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Compute every filter from what each job reads
         timeout-minutes: 9
         env:
@@ -378,6 +378,7 @@ jobs:
       check_bun_workspace_manifests_test: ${{ needs.changes.outputs.check_bun_workspace_manifests_test }}
       check_zod_version_test: ${{ needs.changes.outputs.check_zod_version_test }}
       check_gh_version_test: ${{ needs.changes.outputs.check_gh_version_test }}
+      network_install_test: ${{ needs.changes.outputs.network_install_test }}
       check_gitleaks_version_test: ${{ needs.changes.outputs.check_gitleaks_version_test }}
       workflow_paths_test: ${{ needs.changes.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ needs.changes.outputs.check_image_trigger_paths_test }}
@@ -1091,8 +1092,8 @@ jobs:
     if: ${{ always() }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    # The verdict step's 10 and the hold step's 175 (the reconcile step's 10 runs only when the
-    # hold does not), with three over for the checkout and the two refusals.
+    # The checkout's 3, the verdict step's 10 and the hold step's 175 (the reconcile step's 10
+    # runs only when the hold does not); the two refusals only print.
     timeout-minutes: 188
     env:
       JOB_TIMEOUT_MINUTES: 188 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -1102,6 +1103,7 @@ jobs:
     steps:
       # why: .github/ci-notes/ci.md#the-job-reads-nothing-of-the-tree-but-ci-oksh-ci-okjq-ci-ok-reconcilesh-and
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
         with:
           sparse-checkout: .github
           persist-credentials: false

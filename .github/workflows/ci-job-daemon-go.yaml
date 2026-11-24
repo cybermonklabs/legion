@@ -82,8 +82,12 @@ jobs:
     # most, the plain step's 15.0 and its 15 minutes, the race-impossible step's 0.5 and its 10,
     # then Stage 1's 0.2 and the report. That is under 43 minutes. The forced-order step adds its
     # compile of a hooked nats-server under the detector, up to 5 minutes, and forced-order.sh's
-    # 10-minute -timeout, so 60.
-    timeout-minutes: 60
+    # 10-minute -timeout, so under 58.
+    # It holds the waits on the network too, each failing by name before the job's limit, the
+    # forced-order step's download of nats-server after both go test steps above at their worst:
+    # why: .github/ci-notes/ci-job-daemon-go.md#each-jobs-limit-held-to-the-installs-it-runs
+    # 240 s + 490 s + 2,300 s + 1,207 s + 544 s + 425 s + 1,800 s + 630 s + 425 s = 8,061 s, under 8,100 s.
+    timeout-minutes: 135
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -97,7 +101,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 60 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 135 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL; internal/cipher runs in the plain step), and the Stage 1
@@ -144,9 +148,11 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176). .github/scripts/runner-tmux.sh
+      # uses the runner image's tmux, reading no network, and says how an image without one gets
+      # it; pi-envoy runs the same script.
+      - name: Use the runner image's tmux
+        run: .github/scripts/runner-tmux.sh
 
       # The workspace and boundary tests drive a real jj, the one the worker image ships (its
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and
@@ -251,9 +257,11 @@ jobs:
     # daemon-go's says: over the same 158 green daemon-go jobs, the setup's 1.7 min
     # at most, then the Postgres sizing step's 19 s (its cold build of the connections command
     # and the service's restart, as envoy-go-race's job 137890840698 took them), then the race
-    # step's 36.3 and its 30 minutes, then the report. That is under 69 minutes, and 70 is the
-    # limit.
-    timeout-minutes: 70
+    # step's 36.3 and its 30 minutes, then the report. That is under 69 minutes. It holds the
+    # waits on the network too:
+    # why: .github/ci-notes/ci-job-daemon-go.md#each-jobs-limit-held-to-the-installs-it-runs
+    # 240 s + 19 s + 490 s + 2,300 s + 1,207 s + 1,275 s = 5,531 s, under 5,580 s.
+    timeout-minutes: 93
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -267,7 +275,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 70 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 93 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # internal/daemon's, internal/launcher's and internal/intake's store (testpg).
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       TESTCONTAINERS_RYUK_DISABLED: "true"
@@ -312,8 +320,9 @@ jobs:
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
 
       # internal/daemon's tests boot the daemon on the tmux runtime, which resolves tmux.
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+      # .github/scripts/runner-tmux.sh uses the runner image's tmux, as daemon-go's step does.
+      - name: Use the runner image's tmux
+        run: .github/scripts/runner-tmux.sh
 
       # internal/launcher's workspace-bundle and git-lock tests drive the real jj and its
       # working-copy filters (testbin.RequireJJFilters).

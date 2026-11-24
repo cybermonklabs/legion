@@ -1,0 +1,9 @@
+# The context .github/workflows/browser-image.yaml builds browser.Dockerfile from is .github, for
+# two files outside this directory: .github/scripts/network-install.sh and .github/scripts/fetch.sh,
+# which the install RUN bind-mounts to bound its reads of the network. This file, which BuildKit
+# reads beside that Dockerfile, cuts the context to this directory and those two scripts, so the
+# build receives what it received when its context was .github/docker, and the scripts.
+*
+!docker
+!scripts/network-install.sh
+!scripts/fetch.sh

@@ -44,6 +44,12 @@ on:
       - ".bun-version"
       - ".dockerignore"
       - ".github/workflows/worker-image.yaml"
+      # network-install.sh and go-fetch.sh are bind-mounted into worker.Dockerfile's go-licenses
+      # RUN, and fetch.sh into each of its RUNs that downloads with curl, so a change to any of them
+      # is a change of those RUNs and builds the image again.
+      - ".github/scripts/network-install.sh"
+      - ".github/scripts/go-fetch.sh"
+      - ".github/scripts/fetch.sh"
   workflow_dispatch:
 
 # why: .github/ci-notes/release.md#why-the-workflow-level-permissions-block-is-empty-and-the-four-stages-a-release-waits-for

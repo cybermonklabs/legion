@@ -137,8 +137,11 @@ readonly src=$out/src
 
 # The JavaScript parts: the install, the Go contracts the server compiles (regenerated, never the
 # copy in the tree) and the contracts bundle, then the web app and the command. The install, the
-# codegen and the web app are in the order the commit's image build makes them.
-(cd -- "$src" && bun install --frozen-lockfile) || fail "bun install --frozen-lockfile failed in the archive of $sha."
+# codegen and the web app are in the order the commit's image build makes them. The install reads
+# the npm registry for any package the job's own install did not leave in Bun's cache, so it runs
+# under .github/scripts/network-install.sh's bound for bun, as every install of a required job does.
+(cd -- "$src" && "$root/.github/scripts/network-install.sh" bun -- bun install --frozen-lockfile) ||
+  fail "bun install --frozen-lockfile failed in the archive of $sha."
 (cd -- "$src/packages/contracts" && bun run gen:go && bun run build) ||
   fail "the contracts build (gen:go, build) of $sha failed."
 (cd -- "$src/packages/dispatch" && bun run build:web) || fail "the web build (bun run build:web) of $sha failed."

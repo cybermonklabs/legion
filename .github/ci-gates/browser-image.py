@@ -5,4 +5,6 @@ EXCLUDED = excluded('browser_image', "gates browser-image.yaml's image build; .g
     '.github/workflows/browser-image.yaml',
     '.github/docker/**',
     '.github/scripts/ci_images.py',
+    '.github/scripts/network-install.sh',
+    '.github/scripts/fetch.sh',
 ])

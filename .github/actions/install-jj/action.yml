@@ -57,6 +57,13 @@ runs:
       shell: bash
       env:
         MISE_GITHUB_TOKEN: ${{ github.token }}
+        # mise 2026.8.12 gives a download 30 minutes (its http_download_timeout) and tries it 3
+        # more times (http_retries), so a release host that answers and then all but stops could
+        # hold this step for two hours before the second source below is read. 60 s is the
+        # slowest of 36 green runs of this whole action, 4 s (daemon-go job 137584905889 and
+        # pi-legion job 137584952348, merge-group runs of 2026-11-23), times two, rounded up to
+        # the minute. Each API request keeps mise's own 30 s (http_timeout).
+        MISE_HTTP_DOWNLOAD_TIMEOUT: 60s
       run: |
         set -euo pipefail
         # shellcheck source=.github/scripts/ci-tools.sh

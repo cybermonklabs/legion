@@ -68,15 +68,19 @@ jobs:
     # A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to
     # the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job
     # concluded `success`, when the files still ran one after another under a 10-minute limit.
-    # 28 rather than the next minute up: #2918 (dispatch://INFRA-1545) makes install-jj retry
-    # on a 1057 s ladder and gates a job's ceiling above its slowest retried step, a refusal
-    # that names 18 minutes, and that branch carries 28, so both hold one value on this line.
+    # #2918 (dispatch://INFRA-1545) makes install-jj retry on a 1057 s ladder and gates a job's
+    # ceiling above its slowest retried step, a refusal that names 18 minutes; the limit below
+    # holds that too.
     # Every figure here is a cold-Bun one: off main the setup-bun wrapper passes no-cache, so a
     # pull request's run and a merge group's both download the 34 MB release asset rather than
     # restore it, and that download is the 2 s above.
-    timeout-minutes: 28
+    # That sum is the floor; the limit also holds the waits on the network before the tests, so
+    # each can fail by name:
+    # why: .github/ci-notes/ci-job-pi-legion.md#the-jobs-limit-held-to-the-installs-it-runs
+    # 240 s + 2,300 s + 1,207 s + 425 s + 425 s = 4,597 s -> 77 min.
+    timeout-minutes: 77
     env:
-      JOB_TIMEOUT_MINUTES: 28 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 77 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:
@@ -97,7 +101,16 @@ jobs:
       - uses: ./.github/actions/install-omp
       # scripts/skill-scenarios/rig.test.ts runs rig.sh judge-omp's container with the runner's own
       # Docker. Every image a CI job fetches is a copy in ghcr.io/cybermonklabs/legion/ci, named by
-      # digest, which ci.yaml's ci-images job publishes from .github/ci-images.yaml.
+      # digest, which ci.yaml's ci-images job publishes from .github/ci-images.yaml. rig.sh pulls
+      # its judge_image where the daemon lacks it, with `docker pull` and no bound of its own on a
+      # body that trickles, so it is pulled here first, under network-install.sh's bound for
+      # docker, and the test finds it in the daemon's store. The image is read out of rig.sh, so
+      # the two never name two images.
+      - name: Pull the judge image rig.sh runs
+        run: |
+          image=$(sed -n 's/^judge_image=//p' packages/pi-legion/scripts/skill-scenarios/rig.sh)
+          [ -n "$image" ] || { echo "::error file=packages/pi-legion/scripts/skill-scenarios/rig.sh::rig.sh assigns no judge_image, so there is no judge image to pull"; exit 1; }
+          .github/scripts/network-install.sh docker -- docker pull "$image"
       # scripts/skill-scenarios/daemon-pane.test.ts runs daemon-pane.go with `go run` inside packages/daemon.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -114,7 +127,8 @@ jobs:
             ~/.cache/go-build
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Build contracts for pi-legion
         run: bun run build
         working-directory: packages/contracts
@@ -143,7 +157,10 @@ jobs:
     # install and contracts' build (14), the typecheck (16), the pack, the upload and the ci-ok
     # report (4), the post steps (5) and the job's own clock over its steps (5): 61 s, measured on
     # ubuntu-24.04. Ten minutes is about ten times that, room for a slow runner and a cold Bun
-    # download, and it still cuts off a hung pack long before pi-legion's 28.
+    # download, and it still cuts off a hung pack long before pi-legion's 28. The workspace
+    # install runs under .github/scripts/network-install.sh's bound for bun, 425 s at its worst
+    # (three attempts of 120 s, each killed 15 s after its SIGTERM, with two 10 s pauses), which
+    # the ten minutes hold too: 61 s + 425 s = 486 s.
     timeout-minutes: 10
     env:
       JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -152,7 +169,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Build contracts for pi-legion
         run: bun run build
         working-directory: packages/contracts

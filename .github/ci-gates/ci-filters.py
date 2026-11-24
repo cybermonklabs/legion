@@ -22,6 +22,8 @@ GATE = gate("ci_filters", "ci-filters", runs=[
                                 "from the project it runs in"),
     (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "
                            "local action a step's `uses:` names, for the inputs it checks"),
+    (".github/scripts/network-install.sh", f"{at('ci-filters', 'Pull the actionlint image')} runs the pull "
+                                           "through it, under its bound for docker"),
     (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
     (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
     (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "

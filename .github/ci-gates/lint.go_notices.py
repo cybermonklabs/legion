@@ -2,6 +2,8 @@
 GATE = gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
     (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),
     (NOTICES, f"{NOTICES_LOOPS} runs it once per release target"),
+    (".github/scripts/go-fetch.sh", f"{NOTICES} fetches go-licenses with it"),
+    (".github/scripts/network-install.sh", "go-fetch.sh runs its go get through it, under its bound for go"),
     (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
     (CLIENT_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
     (INFRA_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),

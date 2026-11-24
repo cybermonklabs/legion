@@ -79,6 +79,9 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
      f"{at('envoy-go-build', FIXTURE_STEP)}: internal/dispatch/pmdoc/web_fixtures_test.go:40-45 "
      "webFixturePath joins it under pmdocSourceDir, and --check reads its content to compare"),
     (NOTICES, f"{at('envoy-go-build', 'Pack envoy binaries')} runs it"),
+    (".github/scripts/go-fetch.sh", f"{at('envoy-go-build', 'Pack envoy binaries')}: {NOTICES} fetches "
+                                    "go-licenses with it"),
+    (".github/scripts/network-install.sh", "go-fetch.sh runs its go get through it, under its bound for go"),
     (GO_TARGETS, f"{at('envoy-go-build', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
     # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
     # go.sum and the command's packages, all under the packages/envoy/** read; what is outside

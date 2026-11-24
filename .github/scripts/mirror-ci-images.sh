@@ -56,8 +56,17 @@
 # copy it starts, then the digest that copy landed at), one for each row this repository builds
 # rather than copies, one more before either copy line for each library/golang row (the
 # reference it read and the Go those bytes carry), and one summary line at the end, which
-# accounts for every row. It copies with `crane` from PATH (.github/actions/install-crane
+# accounts for every row. The rows run four at a time (PARALLEL below), and each row's lines are
+# printed together, in row order. A row that fails fails the run, after every other row has run
+# to its end, and the run ends with one error naming each row that failed in place of the
+# summary. It copies with `crane` from PATH (.github/actions/install-crane
 # installs it) under a login that may write the package.
+#
+# Every crane call runs through .github/scripts/network-install.sh's bound for crane, beside this
+# script: crane's registry client sets no deadline of its own on an answer, so a registry that
+# accepts and never answers, or sends part of a manifest and then all but stops, would otherwise
+# hold the ci-images job until its limit. The wrapper keeps crane's standard output, which the
+# reads below take, and prints one line of its own for each attempt on standard error.
 #
 # Run from anywhere: .github/scripts/mirror-ci-images.sh
 # CI runs it in ci.yaml's ci-images job, before the package mode of
@@ -71,6 +80,11 @@ if ! command -v crane >/dev/null 2>&1; then
   echo "::error file=.github/scripts/mirror-ci-images.sh::crane is not on PATH, and this script copies with it. Run .github/actions/install-crane first." >&2
   exit 1
 fi
+
+# crane_bounded <crane argument…>: one crane call, under the wrapper's bound for crane.
+crane_bounded() {
+  .github/scripts/network-install.sh crane -- crane "$@"
+}
 
 # The reference grammar is .github/scripts/ci_images.py's, beside this script in the repository
 # it copies for, which PYTHONPATH names: the gate reads a row's upstream with the same two
@@ -130,7 +144,7 @@ fi
 # image_go <reference>: the GOLANG_VERSION of that image's config, which library/golang's own
 # build writes there. Prints nothing where the config carries no such entry.
 image_go() {
-  crane config --platform linux/amd64 "$1" | PYTHONDONTWRITEBYTECODE=1 python3 -c '
+  crane_bounded config --platform linux/amd64 "$1" | PYTHONDONTWRITEBYTECODE=1 python3 -c '
 import json
 import sys
 
@@ -157,20 +171,25 @@ check_go() {
   echo "go     $reference carries Go $carried_go, the version its upstream tag names"
 }
 
-held=0
-copied=0
-built=0
-while IFS=$'\t' read -r registry tag digest source kind claimed_go; do
+# mirror_row <row> <result file>: one row of the list above, read, checked and copied where the
+# package lacks it, with every line of its own on its standard output or its standard error. It
+# writes the one word that says what became of the row (built, held or copied) to <result file>,
+# and fails, naming the row, on any refusal.
+mirror_row() {
+  local registry tag digest source kind claimed_go have result=$2
+  IFS=$'\t' read -r registry tag digest source kind claimed_go <<<"$1"
   if [ "$kind" = "built" ]; then
     # Nothing to copy, and nothing to read: .github/workflows/browser-image.yaml builds this
     # row's image and pushes it into the package, so this script writes no tag for it and
     # `crane digest` here would read one nothing writes. `check-ci-images.sh package` is what
     # reads whether the package holds this row, as it does for every other row.
     echo "built  $registry:$tag $digest ($source)"
-    built=$((built + 1))
-    continue
+    echo built > "$result"
+    return 0
   fi
-  have=$(crane digest "$registry:$tag" 2>/dev/null || true)
+  # Its standard error, crane's and the wrapper's, is dropped: a tag the package does not hold is
+  # crane's own refusal, which the copy below answers, and no fault of this run.
+  have=$(crane_bounded digest "$registry:$tag" 2>/dev/null || true)
   if [ "$have" = "$digest" ]; then
     # The Go check on the package's own copy: `crane copy` kept the manifest digest, so those
     # are this row's bytes under this row's digest, and a run that copies nothing — the common
@@ -179,8 +198,8 @@ while IFS=$'\t' read -r registry tag digest source kind claimed_go; do
       check_go "$registry@$digest" "$claimed_go" "${source%@*}"
     fi
     echo "held   $registry:$tag $digest"
-    held=$((held + 1))
-    continue
+    echo held > "$result"
+    return 0
   fi
   # The same check at the upstream the copy below reads, and before it: bytes whose label is
   # wrong never land in the package. The copy reads that registry anyway.
@@ -188,13 +207,76 @@ while IFS=$'\t' read -r registry tag digest source kind claimed_go; do
     check_go "$source" "$claimed_go" "${source%@*}"
   fi
   echo "copy   $source -> $registry:$tag"
-  crane copy "$source" "$registry:$tag"
-  have=$(crane digest "$registry:$tag")
+  crane_bounded copy "$source" "$registry:$tag"
+  have=$(crane_bounded digest "$registry:$tag")
   if [ "$have" != "$digest" ]; then
     echo "::error file=.github/ci-images.yaml::$registry:$tag landed at $have, and the row says $digest. This copy read $source, so the bytes it copied are the row's: another writer moved this tag after the copy. Read the package for what else writes this tag, then re-run the ci-images job." >&2
     exit 1
   fi
   echo "copied $registry:$tag $digest"
-  copied=$((copied + 1))
+  echo copied > "$result"
+}
+
+# The rows run PARALLEL at a time, each in a subshell of its own whose two streams go to one file,
+# so a row's lines stay together; they are printed in row order, each row once it and every row
+# before it are done. One row run after another made the ci-images job's limit hold every row's
+# worst case in turn. Every row still runs, whatever another row does: a row left for a later run
+# would leave its consumers pinned to a digest the package lacks.
+# Why 4: the registries' limits do not bound it. Docker Hub counts an unauthenticated pull per
+# manifest of each architecture, 100 per 6 hours per address, whatever the concurrency, and its
+# abuse limit is "in the order of thousands of requests per minute" (docs.docker.com/docker-hub/usage/);
+# ghcr.io publishes no request limit, only 10 GB a layer and a 10-minute upload
+# (docs.github.com, "Working with the Container registry"). What bounds it is the crane kind's
+# bound, measured on copies that ran one at a time (network-install.sh, THE KINDS): copies at once
+# share the runner's link, and crane copy already moves 4 blobs at a time of its own. 4 rows at
+# once is 16 transfers, and the 990 MB Playwright copy, at 18.2 s alone, keeps room under 60 s.
+PARALLEL=4
+runs=$(mktemp -d)
+trap 'rm -rf "$runs"' EXIT
+count=$(grep -c '' <<<"$rows")
+printed=0
+# print_done: every row's lines, in row order, from the first not yet printed to the first not
+# yet done.
+print_done() {
+  while [ "$printed" -lt "$count" ] && [ -e "$runs/$((printed + 1)).status" ]; do
+    printed=$((printed + 1))
+    cat "$runs/$printed.out"
+  done
+}
+row=0
+while IFS= read -r line; do
+  row=$((row + 1))
+  while [ "$(jobs -pr | wc -l)" -ge "$PARALLEL" ]; do
+    wait -n || :
+    print_done
+  done
+  (
+    set +e
+    (set -e; mirror_row "$line" "$runs/$row.kind")
+    echo "$?" > "$runs/$row.status.part"
+    mv "$runs/$row.status.part" "$runs/$row.status"
+  ) < /dev/null > "$runs/$row.out" 2>&1 &
 done <<<"$rows"
+wait
+print_done
+
+held=0
+copied=0
+built=0
+failed=""
+for row in $(seq "$count"); do
+  if [ "$(cat "$runs/$row.status")" != 0 ]; then
+    failed="${failed:+$failed, }$(sed -n "${row}p" <<<"$rows" | cut -f2)"
+    continue
+  fi
+  case $(cat "$runs/$row.kind") in
+    held) held=$((held + 1)) ;;
+    copied) copied=$((copied + 1)) ;;
+    built) built=$((built + 1)) ;;
+  esac
+done
+if [ -n "$failed" ]; then
+  echo "::error file=.github/ci-images.yaml::these rows failed: $failed. Each row's own error is above; every other row ran to its end, $held held, $copied copied and $built built by this repository." >&2
+  exit 1
+fi
 echo "$held row(s) already in the package, $copied copied, $built built by this repository"

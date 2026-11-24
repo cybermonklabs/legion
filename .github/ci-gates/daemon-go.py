@@ -71,13 +71,18 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     (".github/scripts/ci-tools.sh", ".github/actions/install-uv/action.yml:20 sources it, and ci_tools_fetch "
                                     "reads the uv row's two sources"),
     (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
+    (".github/scripts/network-install.sh",
+     f"{at('daemon-go', 'Pull the NATS test container images')} and "
+     f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))}: the action runs each pull "
+     f"through it"),
     (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const Image, "
                                             f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                             f"consts Image, SkippingImage"),
     (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                            f"const HubImage"),
 ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP) + ceiling_reads("daemon-go-race", job_file("daemon-go"))
-  + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod"))
+  + install_jj("daemon-go") + install_omp("daemon-go") + runner_tmux("daemon-go")
+  + setup_go("daemon-go", f"{DAEMON}/go.mod"))
 GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter daemon_go_tests held packages/daemon/** by hand before the filters were computed: it selected 171 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/cipher/policy/**', "filter daemon_go_tests held packages/envoy/internal/cipher/policy/** by hand before the filters were computed: it selected 2 file(s) no other read of this gate declares", but=('**/*_test.go',)),

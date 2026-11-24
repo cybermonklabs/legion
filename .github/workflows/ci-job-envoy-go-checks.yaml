@@ -42,16 +42,20 @@ jobs:
     runs-on: ubuntu-24.04
     # The setup below (Bun, the workspace install, Go and the go-envoy restore) is the one these
     # tests ran under in that job, kept whole so that no test loses a tool it reads. Their steps took
-    # 15.8 min at the median and 21.4 at most over 695 pull-request runs of 2026-11-22.
-    timeout-minutes: 30
+    # 15.8 min at the median and 21.4 at most over 695 pull-request runs of 2026-11-22. The limit
+    # holds the Bun install and the helm install at their worst too, each failing by name before it:
+    # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-jobs-limit-held-to-the-installs-it-runs
+    # 1,328 s + 425 s + 848 s = 2,601 s -> 44 min.
+    timeout-minutes: 44
     env:
-      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 44 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
