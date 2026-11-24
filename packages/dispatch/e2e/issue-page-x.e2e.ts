@@ -575,14 +575,22 @@ async function expectDetails(page: Page, { seeded }: ProposedPage): Promise<void
 }
 
 /** Every folded row's count is what the tree read holds under it, an overtaken node and what
- *  stands under it counted as every node is. */
-async function expectFoldedCounts(page: Page, { answer, key }: ProposedPage): Promise<void> {
+ *  stands under it counted as every node is. A question indexed from a block stands for the ask
+ *  it was indexed into as well. */
+async function expectFoldedCounts(
+  page: Page,
+  { answer, key, seeded }: ProposedPage
+): Promise<void> {
+  const asks = new Map([
+    [seeded.ids.openQuestion, [seeded.whole.openQuestion.askId]],
+    [seeded.ids.overtakenQuestion, [seeded.questionAskId]],
+  ]);
   await expect
     .poll(
       async () =>
         (await foldedCounts(page)).flatMap((row) => {
           if (row.readId === null) return [];
-          const held = heldUnder(answer, key, row.readId);
+          const held = heldUnder(answer, key, row.readId, asks.get(row.readId));
           return row.count === held ? [] : [`${row.id} draws ${row.count}, its read holds ${held}`];
         }),
       {

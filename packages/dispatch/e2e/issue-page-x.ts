@@ -230,13 +230,19 @@ const ITEM_BLOCKS: Readonly<Record<string, true>> = {
   message_block: true,
 };
 
-/** Every node of issue `key` in `answer` under the node `readId`, at any depth, by the read's
- *  `parent`, that the page draws as a row: the tree each count walks. The walk passes through a
- *  block of an item, which is no row, to the replies under it. */
-function underIn(answer: IssueTreeRead, key: string, readId: string): IssueTreeNode[] {
+/** Every node of issue `key` in `answer` under the node `readId`, and under each of `alike`, the
+ *  nodes the page draws in the same row, at any depth, by the read's `parent`, that the page draws
+ *  as a row: the tree each count walks. The walk passes through a block of an item, which is no
+ *  row, to the replies under it. */
+function underIn(
+  answer: IssueTreeRead,
+  key: string,
+  readId: string,
+  alike: readonly string[] = []
+): IssueTreeNode[] {
   const children = childrenIn(answer);
   const found: IssueTreeNode[] = [];
-  const seen = new Set<string>([readId]);
+  const seen = new Set<string>([readId, ...alike]);
   const walk = (id: string): void => {
     for (const child of children.get(id) ?? []) {
       if (!ownOf(child, key) || seen.has(child.id)) continue;
@@ -245,13 +251,21 @@ function underIn(answer: IssueTreeRead, key: string, readId: string): IssueTreeN
       walk(child.id);
     }
   };
-  walk(readId);
+  for (const id of [readId, ...alike]) walk(id);
   return found;
 }
 
-/** How many nodes the branch of `readId` holds in `answer`: what its row's folded count counts. */
-export function heldUnder(answer: IssueTreeRead, key: string, readId: string): number {
-  return underIn(answer, key, readId).length;
+/** How many nodes the branch of `readId` holds in `answer`: what its row's folded count counts.
+ *  A question the server indexed from a block of a document is two nodes of the read, the block
+ *  and its ask, which the page draws as one row, so `alike` names the ask's id for the block's
+ *  row. */
+export function heldUnder(
+  answer: IssueTreeRead,
+  key: string,
+  readId: string,
+  alike: readonly string[] = []
+): number {
+  return underIn(answer, key, readId, alike).length;
 }
 
 /** How many of the nodes `reserved` names stand in the branch of `readId` in `answer`. */
@@ -496,6 +510,9 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   );
   expect(asked.applied, "the spec does not take the question that is made overtaken").toBe(1);
   const questionAskId = await awaitBlockAsk(key, OVERTAKEN_QUESTION_ID);
+  // The criterion and the statement name the question by its ask, which is the node a `parent`
+  // pointer takes (`conversationKinds`); the question's own state is written on its block, the
+  // node the page draws its row from.
   const parent = `dispatch://${key}/ask/${questionAskId}`;
   const under = await editArtifact(
     whole.specArtifactId,
@@ -605,7 +622,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
     check2: addressIn(nodes.check2, key),
     check4: addressIn(nodes.check4, key),
     decision1: addressIn(nodes.decision1, key),
-    overtakenQuestion: parent,
+    overtakenQuestion: addressIn(nodes.overtakenQuestion, key),
     planTask1: addressIn(nodes.planTask1, key),
     planTask2: addressIn(nodes.planTask2, key),
     statement7: addressIn(nodes.statement7, key),
@@ -645,15 +662,19 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   expect(lensNode?.parent?.id, "the tree read does not stand the lens under statement 8").toBe(
     nodes.statement8.id
   );
-  const parentOf = (id: string) => answer.nodes?.find((one) => one.id === id)?.parent?.id;
-  expect(
-    parentOf(nodes.questionCriterion.id),
-    "the tree read does not stand the criterion under the overtaken question"
-  ).toBe(nodes.overtakenQuestion.id);
-  expect(
-    parentOf(nodes.questionStatement.id),
-    "the tree read does not stand the statement under the overtaken question"
-  ).toBe(nodes.overtakenQuestion.id);
+  // The page draws the question's block and the ask it was indexed into as one row, so the
+  // criterion and the statement stand under the question where the read parents them on either.
+  const questionNodes = [nodes.overtakenQuestion.id, questionAskId];
+  for (const [id, what] of [
+    [nodes.questionCriterion.id, "criterion"],
+    [nodes.questionStatement.id, "statement"],
+  ] as const) {
+    const parentId = answer.nodes?.find((one) => one.id === id)?.parent?.id ?? "";
+    expect(
+      questionNodes,
+      `the tree read does not stand the ${what} under the overtaken question`
+    ).toContain(parentId);
+  }
   return {
     addresses,
     answer,
