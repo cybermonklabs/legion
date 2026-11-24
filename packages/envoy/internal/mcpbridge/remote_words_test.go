@@ -1,16 +1,24 @@
 package mcpbridge
 
 import (
+	"bufio"
+	"io"
+	"io/fs"
 	"log"
+	"os"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// An MCP server's words - a JSON-RPC error's message, a notification's URI - reach the bridge's
-// errors and log lines only as the rule for remote text reads them: each URL with no user
-// information and no query or fragment value. These rows read each print site's final output.
+// An MCP server's words - a JSON-RPC error's message, a notification's URI, a line its child writes
+// on standard error - reach the bridge's errors and log lines only as the rule for remote text
+// reads them: each URL with no user information and no query or fragment value. These rows read
+// each print site's final output.
 
 // capturedLog is what the log package writes from now until t ends, each line without its date
 // and time.
@@ -54,6 +62,72 @@ func TestAnRPCErrorPrintsTheServersWordsAsTheRuleReadsThem(t *testing.T) {
 		env := map[string]string{"MOCK_MCP_INITIALIZE_ERROR": redacttest.Words}
 		check(t, "mcpbridge.rpc-message/stdio", NewManagedServer(stdioConfig(buildMockBinary(t), env), nil).Start)
 	})
+}
+
+// TestAChildsStandardErrorPrintsAsTheRuleReadsIt: a managed server's child writes a line that
+// quotes the probe's URL on its standard error, then a line that holds no URL. What reaches the
+// bridge's standard error, where the child's own writes and the bridge's log both go, holds the
+// first line as the rule reads it, named by its server, and none of the credentials; the second
+// prints as the child wrote it. Captures mcpbridge.child-stderr.
+func TestAChildsStandardErrorPrintsAsTheRuleReadsIt(t *testing.T) {
+	bin := buildMockBinary(t)
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("make a pipe for the bridge's standard error: %v", err)
+	}
+	defer read.Close()
+	var captured logtest.Buffer
+	go io.Copy(&captured, read)
+	restoreLog := logtest.Keep(t)
+	stderr := os.Stderr
+	restore := func() {
+		os.Stderr = stderr
+		restoreLog()
+	}
+	defer restore()
+	os.Stderr = write
+	log.SetOutput(write)
+	log.SetFlags(0)
+
+	s := NewManagedServer(stdioConfig(bin, map[string]string{"MOCK_MCP_STDERR": redacttest.Words}), nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	testwait.Eventually(t, "the child's last line of standard error", func() bool {
+		return strings.Contains(captured.String(), "mock: stderr done\n")
+	})
+	s.Stop()
+	restore()
+	write.Close()
+
+	text := captured.String()
+	redacttest.RequireNone(t, "mcpbridge.child-stderr", text)
+	for _, want := range []string{"mcp-bridge: whatsapp: stderr: " + redacttest.Shown + "\n", "mcp-bridge: whatsapp: stderr: mock: stderr done\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the bridge's standard error is %q; want it to hold %q", text, want)
+		}
+	}
+}
+
+// failedRead is a reader whose every read fails with err.
+type failedRead struct{ err error }
+
+func (r failedRead) Read([]byte) (int, error) { return 0, r.err }
+
+// TestAManagedServersReadErrorNamesTheReadAlone: the read of a managed server's child's standard
+// output fails with an error that quotes the probe's URL, as an *fs.PathError quotes the path it
+// read. The line the server logs names the read and the system's reason, and none of the error's
+// own text. Captures mcpbridge.read-error/stdio.
+func TestAManagedServersReadErrorNamesTheReadAlone(t *testing.T) {
+	logged := capturedLog(t)
+	s := NewManagedServer(ServerConfig{Name: "whatsapp"}, nil)
+	s.scanner = bufio.NewScanner(failedRead{&fs.PathError{Op: "read", Path: redacttest.Code, Err: syscall.EIO}})
+	s.readLoop()
+	text := logged.String()
+	redacttest.RequireNone(t, "mcpbridge.read-error/stdio", text)
+	if want := "mcp-bridge: whatsapp: read error: read: " + syscall.EIO.Error() + "\n"; text != want {
+		t.Errorf("the server logged %q; want %q", text, want)
+	}
 }
 
 // TestRenderTopicNamesTheURIAsTheRuleReadsIt: a notification's URI that the server's pattern does
