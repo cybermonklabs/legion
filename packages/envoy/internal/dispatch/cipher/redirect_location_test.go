@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -59,7 +60,7 @@ func TestABrokerRedirectPrintsNoLocationOfIt(t *testing.T) {
 		{"elsewhere", func(bearer string) string { return "http://" + dead + "/moved?access_token=" + bearer }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := New(echo(c.location), tokenFile(t, token)).Pending(context.Background(), "sjawhar")
+			_, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", echo(c.location)), tokenFile(t, token)).Pending(context.Background(), "sjawhar")
 			if err == nil {
 				t.Fatal("the call answered no error")
 			}

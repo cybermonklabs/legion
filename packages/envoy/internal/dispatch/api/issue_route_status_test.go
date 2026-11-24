@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -423,7 +424,7 @@ func stateRosterServer(t *testing.T, rows []map[string]any) *server {
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(listener.Close)
-	return &server{deps: Deps{Envoy: envoy.New(listener.URL)}, lifetime: context.Background()}
+	return &server{deps: Deps{Envoy: envoy.New(configaddr.New("ENVOY_URL", listener.URL))}, lifetime: context.Background()}
 }
 
 // A session past its live window still holds its role and still receives: what is sent to it is

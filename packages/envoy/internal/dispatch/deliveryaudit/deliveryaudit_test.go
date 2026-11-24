@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -176,7 +177,7 @@ func newRig(t *testing.T) *rig {
 		Identity:              identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		AgentTokens:           tokens,
 		ServerURL:             "https://dispatch.example",
-		EnvoyURL:              listener.URL,
+		EnvoyURL:              configaddr.New("ENVOY_URL", listener.URL),
 		EnvoyAccountTokenFile: accountToken,
 		Docs:                  documents,
 		Events:                broker,

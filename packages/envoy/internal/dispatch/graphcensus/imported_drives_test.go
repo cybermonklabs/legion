@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -147,7 +148,7 @@ func newWritersRig(t *testing.T) *writersRig {
 		Identity:    identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		AgentTokens: tokens,
 		ServerURL:   writersServerURL,
-		EnvoyURL:    listener.URL,
+		EnvoyURL:    configaddr.New("ENVOY_URL", listener.URL),
 		// The held send waits on the test longer than the client's own window would let it.
 		EnvoyTimeout: time.Minute,
 		// A refused send settles failed once the take-over window has passed, which a test

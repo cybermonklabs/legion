@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -61,7 +62,7 @@ func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 				_, _ = w.Write(recorder.Body.Bytes())
 			}))
 			t.Cleanup(server.Close)
-			client := dispatchenvoy.New(server.URL,
+			client := dispatchenvoy.New(configaddr.New("ENVOY_URL", server.URL),
 				dispatchenvoy.WithAccountTokenFile(rig.accountTokenFile(t, issuer.token(t, rigDispatchPrincipal))),
 				dispatchenvoy.WithToken(rigSharedToken))
 

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -71,7 +72,7 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 		Events:      events.NewBroker(),
 	}
 	if brokerURL != "" {
-		depsInput.AgentSecretsURL = brokerURL
+		depsInput.AgentSecretsURL = configaddr.New("DISPATCH_AGENT_SECRETS_URL", brokerURL)
 		depsInput.AgentSecretsTokenFile = tokenFile
 	}
 	deps, err := NewDeps(depsInput)

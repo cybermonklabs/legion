@@ -19,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
@@ -154,7 +155,7 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 		Origin:           listenerBrokerOrigin,
 	})
 	verifier, err := ciphertoken.New(ciphertoken.Options{
-		BrokerURL: broker.Server.URL,
+		BrokerURL: configaddr.New(EnvBrokerURL, broker.Server.URL),
 		Account:   listenerBrokerAccount("listener-account-token"),
 		Origin:    listenerBrokerOrigin,
 		Replay:    &spentProofsInMemory{},

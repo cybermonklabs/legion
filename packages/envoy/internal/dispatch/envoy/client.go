@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -320,7 +321,9 @@ type SendResult struct {
 
 // Client reads live session metadata from the Envoy listener.
 type Client struct {
-	baseURL  string
+	// baseURL is the listener's address (ENVOY_URL) without its trailing slash: every request is
+	// built from its Raw, and every error names it only as the Address prints it (Cause).
+	baseURL  configaddr.Address
 	apiToken string
 	// identity is Dispatch's own identity at the listener (listenerIdentity): the token file
 	// WithAccountTokenFile names, or the Google identity WithGoogleIdentity names; nil presents
@@ -382,10 +385,10 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(c *Client) { c.logger = logger }
 }
 
-// New returns a client for an Envoy listener's HTTP control API.
-func New(baseURL string, options ...Option) *Client {
+// New returns a client for an Envoy listener's HTTP control API at baseURL.
+func New(baseURL configaddr.Address, options ...Option) *Client {
 	client := &Client{
-		baseURL: strings.TrimSuffix(baseURL, "/"),
+		baseURL: configaddr.New(baseURL.Setting(), strings.TrimSuffix(baseURL.Raw(), "/")),
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
@@ -581,15 +584,15 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	const route = "POST /v1/interests/unsubscribe"
 	response, err := c.do(route, false, func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(
-			ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
+			ctx, http.MethodPost, c.baseURL.Raw()+"/v1/interests/unsubscribe", bytes.NewReader(body),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("%w: build %s request: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL))
+			return nil, fmt.Errorf("%w: build %s request: %v", ErrUnavailable, route, c.baseURL.Cause(err))
 		}
 		request.Header.Set("Content-Type", "application/json")
 		return request, nil
 	}, func(err error) error {
-		return unreachable(fmt.Errorf("%w: %s: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
+		return unreachable(fmt.Errorf("%w: %s: %v", ErrUnavailable, route, c.baseURL.Cause(err)))
 	})
 	if err != nil {
 		return nil, err
@@ -839,13 +842,13 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 // listener URL carries; a call with a query prints the failure's class alone.
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
 	return c.do("GET "+route, false, func() (*http.Request, error) {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL.Raw()+route+query, nil)
 		if err != nil {
-			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL))
+			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, c.baseURL.Cause(err))
 		}
 		return request, nil
 	}, func(err error) error {
-		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
+		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, c.baseURL.Cause(err)))
 	})
 }
 
@@ -928,10 +931,10 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	response, err := c.do("POST /v1/messages/send", marked, func() (*http.Request, error) {
 		written.Store(false)
 		request, err := http.NewRequestWithContext(
-			ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(encoded),
+			ctx, http.MethodPost, c.baseURL.Raw()+"/v1/messages/send", bytes.NewReader(encoded),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, redact.Cause(err, c.baseURL))
+			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, c.baseURL.Cause(err))
 		}
 		request.Header.Set("Content-Type", "application/json")
 		// Dispatch reads the key-taken answer (SendResult): a duplicate's envelope id is never
@@ -940,7 +943,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		// session is, with the envelope it built for this request, whose id names no stored copy.
 		request.Header.Set(listenerwire.ReadsHeader, listenerwire.ReadsKeyTaken)
 		return request, nil
-	}, func(err error) error { return sendTransportError(redact.Cause(err, c.baseURL), written.Load()) })
+	}, func(err error) error { return sendTransportError(c.baseURL.Cause(err), written.Load()) })
 	if err != nil {
 		return SendResult{}, err
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
@@ -237,7 +238,10 @@ type DepsInput struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	EnvoyURL        string
+	// EnvoyURL is the Envoy listener's address (cmd/dispatch: ENVOY_URL), which the listener
+	// client builds every call from and prints only as the Address prints it; the empty Address
+	// builds no client.
+	EnvoyURL configaddr.Address
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -284,10 +288,10 @@ type DepsInput struct {
 	// AgentPublisher queues a targeted message for a session no store of the listener's holds;
 	// nil queues none. See Deps.AgentPublisher; cmd/dispatch passes its NATS client.
 	AgentPublisher AgentPublisher
-	// AgentSecretsURL is the secrets broker's API base URL (DISPATCH_AGENT_SECRETS_URL); empty
-	// means the feature is off. AgentSecretsTokenFile is the file holding Dispatch's own
+	// AgentSecretsURL is the secrets broker's API base URL (DISPATCH_AGENT_SECRETS_URL); the empty
+	// Address means the feature is off. AgentSecretsTokenFile is the file holding Dispatch's own
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
-	AgentSecretsURL       string
+	AgentSecretsURL       configaddr.Address
 	AgentSecretsTokenFile string
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
@@ -343,7 +347,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		input.Events = events.NewBroker()
 	}
 	var envoyClient *envoy.Client
-	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
+	if !input.EnvoyURL.Empty() {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
 		if input.EnvoyAccountTokenFile != "" {
 			options = append(options, envoy.WithAccountTokenFile(input.EnvoyAccountTokenFile))
@@ -354,7 +358,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
 		}
-		envoyClient = envoy.New(envoyURL, options...)
+		envoyClient = envoy.New(input.EnvoyURL, options...)
 	}
 	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):
 	// GitHub budgets the App and each installation, not this process.
@@ -367,8 +371,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		return Deps{}, err
 	}
 	var agentSecretsClient *cipher.Client
-	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
-		agentSecretsClient = cipher.New(url, input.AgentSecretsTokenFile)
+	if !input.AgentSecretsURL.Empty() {
+		agentSecretsClient = cipher.New(input.AgentSecretsURL, input.AgentSecretsTokenFile)
 	}
 	heartbeat := input.StreamHeartbeat
 	if heartbeat == 0 {

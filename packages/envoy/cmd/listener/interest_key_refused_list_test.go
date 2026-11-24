@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -191,7 +192,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 	registerV1Routes(mux, state, "test-machine", logging.New("test"))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	dispatch := envoy.New(server.URL)
+	dispatch := envoy.New(configaddr.New("ENVOY_URL", server.URL))
 	for _, id := range []string{unreadableLegacy, invalidKey} {
 		t.Run("dispatch/"+id[:min(len(id), 8)], func(t *testing.T) {
 			found, err := dispatch.Session(context.Background(), id)

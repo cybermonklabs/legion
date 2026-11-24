@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -167,7 +168,9 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 		return fmt.Errorf("%s needs the spent-proof bucket %s, which this bus did not open: %w", EnvBrokerURL, bus.DPoPProofBucket, err)
 	}
 	verifier, err := ciphertoken.New(ciphertoken.Options{
-		BrokerURL: b.config.BrokerURL,
+		// The listener's own setting reaches the token check as an Address, so an introspection's
+		// error names it only as the Address prints it.
+		BrokerURL: configaddr.New(EnvBrokerURL, b.config.BrokerURL),
 		Account:   b.config.account(),
 		Origin:    strings.TrimSuffix(b.config.Origin, "/"),
 		Replay:    spentProofs{kv: kv},

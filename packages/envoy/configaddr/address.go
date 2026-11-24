@@ -54,18 +54,21 @@ func New(setting, raw string) Address {
 // name (WordsNotPrinted), and "" for the zero Address.
 func (a Address) Setting() string { return a.setting }
 
-// Raw is the address as configured, credential included. It builds a request to the broker: its
-// URL, the URL its proof signs, the audience of a request object it carries, and the OAuth
-// endpoints. Five callers read it for anything else, and none of them prints it: the helper's
+// Raw is the address as configured, credential included. It builds a request to the address: its
+// URL, the URL a proof signs, the audience of a request object it carries, and the OAuth
+// endpoints. These callers read it for anything else, and none of them prints it: the helper's
 // check that a URL it is asked to sign is one of its operator routes (internal/cipher/helper's
-// operatorRoute), agent-secrets-helper's check that an address is set (its serve), the token
-// client's trim of the address it is given (cipherclient.New), agent-secrets' check that a
-// broker whose settings it acts on is https or loopback (requireTrustedBrokerURL), and its check
-// that an id it prints by its shape is no value the address holds (addressHolds). Every caller
-// keeps what it answers out of every output - a log field, an error's text, a line on stderr -
-// since printing it is the leak this type exists to prevent: a message names the address through
-// the Address itself, a request URL built from it through Call, and that request's error through
-// Error or Cause, or through Named where the URL ends in what a caller typed.
+// operatorRoute), agent-secrets-helper's check that an address is set (its serve), the trim of
+// the address each client is given (cipherclient.New, Dispatch's listener client envoy.New, its
+// broker client cipher.New, and the token check ciphertoken.New), agent-secrets' check that a
+// broker whose settings it acts on is https or loopback (requireTrustedBrokerURL), its check that
+// an id it prints by its shape is no value the address holds (addressHolds), and Dispatch's boot
+// checks that ENVOY_URL and DISPATCH_AGENT_SECRETS_URL parse as absolute http(s) URLs
+// (resolveBootConfig) and, beside the dev sign-in, name this machine (devSignInFence). Every
+// caller keeps what it answers out of every output - a log field, an error's text, a line on
+// stderr - since printing it is the leak this type exists to prevent: a message names the address
+// through the Address itself, a request URL built from it through Call, and that request's error
+// through Error or Cause, or through Named where the URL ends in what a caller typed.
 func (a Address) Raw() string {
 	if a.raw == nil {
 		return ""

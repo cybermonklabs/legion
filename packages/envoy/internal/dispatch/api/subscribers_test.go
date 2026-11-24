@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -194,7 +195,7 @@ func newSubscribersHandler(t *testing.T, database *store.Store, envoyURL string)
 		ServerURL:   "https://dispatch.example",
 		Docs:        documentService,
 		Events:      broker,
-		EnvoyURL:    envoyURL,
+		EnvoyURL:    configaddr.New("ENVOY_URL", envoyURL),
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -270,7 +271,7 @@ func TestSubscribersShowADeadSessionsLastHeartbeat(t *testing.T) {
 		{"session_id": "live", "title": "planner", "last_seen": 1800000000000},
 	})
 	listener.lastSeen = map[string]int64{"live": 1700000100000, "known_dead": 1700000200000}
-	s := &server{deps: Deps{Envoy: envoy.New(envoyURL)}}
+	s := &server{deps: Deps{Envoy: envoy.New(configaddr.New("ENVOY_URL", envoyURL))}}
 
 	response := httptest.NewRecorder()
 	s.writeSubscribers(response, httptest.NewRequest(http.MethodGet, "/api/v1/issues/TEST-1/subscribers", nil), issueSubscriberBase("TEST-1"))

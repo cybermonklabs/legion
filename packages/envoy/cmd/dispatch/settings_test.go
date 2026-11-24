@@ -1016,10 +1016,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"ENVOY_URL": func(t *testing.T) {
-			if boot := resolveWith(t, nil); boot.EnvoyURL != "http://127.0.0.1:9020" {
+			if boot := resolveWith(t, nil); boot.EnvoyURL.Raw() != "http://127.0.0.1:9020" {
 				t.Errorf("unset: EnvoyURL = %q", boot.EnvoyURL)
 			}
-			if boot := resolveWith(t, map[string]string{"ENVOY_URL": "http://listener.example:9020/"}); boot.EnvoyURL != "http://listener.example:9020" {
+			if boot := resolveWith(t, map[string]string{"ENVOY_URL": "http://listener.example:9020/"}); boot.EnvoyURL.Raw() != "http://listener.example:9020" {
 				t.Errorf("EnvoyURL = %q", boot.EnvoyURL)
 			}
 			refusedWith(t, map[string]string{"ENVOY_URL": "listener.example:9020"}, "ENVOY_URL")
@@ -1458,7 +1458,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"DISPATCH_AGENT_SECRETS_URL": func(t *testing.T) {
 			tokenFile := writeFile(t, "account-token", "account-token")
-			if boot := resolveWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_URL": "https://broker.example/", "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": tokenFile}); boot.AgentSecretsURL != "https://broker.example" {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_URL": "https://broker.example/", "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": tokenFile}); boot.AgentSecretsURL.Raw() != "https://broker.example" {
 				t.Errorf("AgentSecretsURL = %q", boot.AgentSecretsURL)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_URL": "https://broker.example/v1", "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": tokenFile}, "DISPATCH_AGENT_SECRETS_URL")

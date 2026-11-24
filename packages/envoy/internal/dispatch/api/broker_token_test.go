@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -217,7 +218,7 @@ func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...fun
 	broker := ciphertokentest.NewStubBroker(t)
 	serving.brokerTokens = func(database *store.Store) *ciphertoken.Verifier {
 		opts := ciphertoken.Options{
-			BrokerURL: broker.Server.URL,
+			BrokerURL: configaddr.New("DISPATCH_AGENT_SECRETS_URL", broker.Server.URL),
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
 			Origin:    testServerURL,
 			Replay:    store.NewDPoPProofs(database.Pool),
@@ -806,7 +807,7 @@ func TestBrokerTokenRefusalsEachHaveTheirOwnCode(t *testing.T) {
 	t.Run("the broker unreachable", func(t *testing.T) {
 		// The verifier asks a broker at a port the test holds and nothing listens on.
 		refused := "http://" + testport.Refused(t)
-		rig := newBrokerTokenRig(t, func(o *ciphertoken.Options) { o.BrokerURL = refused })
+		rig := newBrokerTokenRig(t, func(o *ciphertoken.Options) { o.BrokerURL = configaddr.New("DISPATCH_AGENT_SECRETS_URL", refused) })
 		caller := newBrokerCaller(t)
 		const token = "a-token-nobody-can-be-asked-about"
 

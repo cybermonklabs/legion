@@ -2361,6 +2361,18 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": ["packages/envoy/internal/oidc/redirect_location_test.go"],
         "capture": "oidc.revoke-redirect"
+      },
+      {
+        "row": "configured-url-envoy-shape",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/cmd/dispatch/configured_url_words_test.go"],
+        "capture": "dispatch.configured-url/envoy-shape"
+      },
+      {
+        "row": "configured-url-envoy-dev-fence",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/cmd/dispatch/configured_url_words_test.go"],
+        "capture": "dispatch.configured-url/envoy-dev-fence"
       }
     ],
     "boundary_fields": {
@@ -2907,7 +2919,7 @@
       "capture": "envoy.build-unsubscribe",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: build %s request: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "preimage": "\"%w: build %s request: %v\", ErrUnavailable, route, c.baseURL.Cause(err)",
         "replacement": "\"%w: build %s request: %v\", ErrUnavailable, route, err"
       }
     },
@@ -2921,7 +2933,7 @@
       "capture": "envoy.Client.Unsubscribe",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: %s: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "preimage": "\"%w: %s: %v\", ErrUnavailable, route, c.baseURL.Cause(err)",
         "replacement": "\"%w: %s: %v\", ErrUnavailable, route, err"
       }
     },
@@ -2935,7 +2947,7 @@
       "capture": "envoy.build-get",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: build GET %s request: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "preimage": "\"%w: build GET %s request: %v\", ErrUnavailable, route, c.baseURL.Cause(err)",
         "replacement": "\"%w: build GET %s request: %v\", ErrUnavailable, route, err"
       }
     },
@@ -2949,7 +2961,7 @@
       "capture": "envoy.Client.Sessions",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: GET %s: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "preimage": "\"%w: GET %s: %v\", ErrUnavailable, route, c.baseURL.Cause(err)",
         "replacement": "\"%w: GET %s: %v\", ErrUnavailable, route, err"
       }
     },
@@ -2970,7 +2982,7 @@
       "capture": "envoy.build-send",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "send request: %v\", ErrUnavailable, redact.Cause(err, c.baseURL)",
+        "preimage": "send request: %v\", ErrUnavailable, c.baseURL.Cause(err)",
         "replacement": "send request: %v\", ErrUnavailable, err"
       }
     },
@@ -2984,7 +2996,7 @@
       "capture": "envoy.Client.Send",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "sendTransportError(redact.Cause(err, c.baseURL), written.Load())",
+        "preimage": "sendTransportError(c.baseURL.Cause(err), written.Load())",
         "replacement": "sendTransportError(err, written.Load())"
       }
     },
@@ -8796,13 +8808,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/cipher",
       "test": "TestABrokerRedirectPrintsNoLocationOfIt/unparsed",
-      "production": "Dispatch agent-secrets Client.do: a call whose Location does not parse prints its failure as the broker's address allows (redact.Cause)",
+      "production": "Dispatch agent-secrets Client.do: a call whose Location does not parse prints its failure as the broker's address allows (configaddr.Address.Cause)",
       "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
       "capture": "dispatch-agentsecrets.redirect/unparsed",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/cipher/client.go",
-        "preimage": "redact.Cause(err, c.URL)",
-        "replacement": "err"
+        "preimage": "\"agent-secrets: %s %s: %w\", method, path, c.URL.Cause(err)",
+        "replacement": "\"agent-secrets: %s %s: %w\", method, path, err"
       }
     },
     {
@@ -8894,13 +8906,97 @@
       "requirement": "r3-each-site",
       "package": "./internal/ciphertoken",
       "test": "TestARedirectOfAnIntrospectionPrintsNoLocationOfIt",
-      "production": "ciphertoken Verifier.introspect: an introspection whose Location does not parse is ErrBrokerUnreachable printed as the broker's address allows (redact.Cause)",
+      "production": "ciphertoken Verifier.introspect: an introspection whose Location does not parse is ErrBrokerUnreachable printed as the broker's address allows (configaddr.Address.Cause)",
       "function": "(*github.com/sjawhar/envoy/internal/ciphertoken.Verifier).introspect",
       "capture": "brokertoken.introspect-redirect",
       "mutation": {
         "file": "packages/envoy/internal/ciphertoken/introspect.go",
-        "preimage": "redact.Cause(err, v.brokerURL)",
-        "replacement": "err"
+        "preimage": "\"%w: %w\", ErrBrokerUnreachable, v.brokerURL.Cause(err)",
+        "replacement": "\"%w: %w\", ErrBrokerUnreachable, err"
+      }
+    },
+    {
+      "id": "brokertoken-introspect-build",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionTheVerifierCannotBuildNamesNoCredentialTheBrokerURLCarries",
+      "production": "ciphertoken Verifier.introspect: an introspection request that cannot be built from the broker's address is ErrBrokerUnreachable printed as the address allows (configaddr.Address.Cause), never net/http's error, which quotes the URL whole",
+      "function": "(*github.com/sjawhar/envoy/internal/ciphertoken.Verifier).introspect",
+      "capture": "brokertoken.introspect-build",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/introspect.go",
+        "preimage": "\"%w: build the introspection request: %w\", ErrBrokerUnreachable, v.brokerURL.Cause(err)",
+        "replacement": "\"%w: build the introspection request: %w\", ErrBrokerUnreachable, err"
+      }
+    },
+    {
+      "id": "dispatch-agentsecrets-build",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestARequestTheClientCannotBuildNamesNoCredentialTheConfiguredURLCarries",
+      "production": "Dispatch agent-secrets Client.do: a call that cannot be built from DISPATCH_AGENT_SECRETS_URL prints its failure as the address allows (configaddr.Address.Cause), never net/http's error, which quotes the URL whole",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
+      "capture": "dispatch-agentsecrets.build",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cipher/client.go",
+        "preimage": "\"agent-secrets: build %s %s request: %w\", method, path, c.URL.Cause(err)",
+        "replacement": "\"agent-secrets: build %s %s request: %w\", method, path, err"
+      }
+    },
+    {
+      "id": "configured-url-envoy-shape",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestABootRefusalNamesNoCredentialItsAddressCarries/envoy-shape",
+      "production": "dispatch resolveBootConfig: the refusal of an ENVOY_URL that is not an absolute http(s) URL names it as its configaddr.Address prints (Format)",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.configured-url/envoy-shape",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "\"ENVOY_URL=%q (expected an absolute http(s) URL)\", envoyURL)",
+        "replacement": "\"ENVOY_URL=%q (expected an absolute http(s) URL)\", envoyURL.Raw())"
+      }
+    },
+    {
+      "id": "configured-url-envoy-dev-fence",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestABootRefusalNamesNoCredentialItsAddressCarries/envoy-dev-fence",
+      "production": "dispatch devSignInFence: the refusal of an ENVOY_URL that names another machine beside the dev sign-in names it as its configaddr.Address prints (Format)",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.devSignInFence",
+      "capture": "dispatch.configured-url/envoy-dev-fence",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost\", boot.EnvoyURL)",
+        "replacement": "ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost\", boot.EnvoyURL.Raw())"
+      }
+    },
+    {
+      "id": "configured-url-agent-secrets-shape",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestABootRefusalNamesNoCredentialItsAddressCarries/agent-secrets-shape",
+      "production": "dispatch resolveBootConfig: the refusal of a DISPATCH_AGENT_SECRETS_URL that is not an absolute http(s) URL with no path names it as its configaddr.Address prints (Format)",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.configured-url/agent-secrets-shape",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "(expected an absolute http(s) URL with no path)\", agentSecretsURL)",
+        "replacement": "(expected an absolute http(s) URL with no path)\", agentSecretsURL.Raw())"
+      }
+    },
+    {
+      "id": "configured-url-agent-secrets-dev-fence",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestABootRefusalNamesNoCredentialItsAddressCarries/agent-secrets-dev-fence",
+      "production": "dispatch devSignInFence: the refusal of a DISPATCH_AGENT_SECRETS_URL that names another machine beside the dev sign-in names it as its configaddr.Address prints (Format)",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.devSignInFence",
+      "capture": "dispatch.configured-url/agent-secrets-dev-fence",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "DISPATCH_AGENT_SECRETS_URL=%q must name 127.0.0.1, [::1] or localhost\", boot.AgentSecretsURL)",
+        "replacement": "DISPATCH_AGENT_SECRETS_URL=%q must name 127.0.0.1, [::1] or localhost\", boot.AgentSecretsURL.Raw())"
       }
     },
     {
@@ -11231,6 +11327,26 @@
       "site": "envoy's credential-carrying clients handed on net/http's error as it came, so a Location that did not parse (net/http quotes it before CheckRedirect is asked), or one a following client asked, put the request's credential into a log line or an error: the listener's broker read, Dispatch's agent-secrets client, the broker's wake notice, judge read and Dispatch read, the generateIdToken mint, Dispatch's introspection, the Azure embeddings call and Entra exchange, and the OIDC revocation",
       "source": "the class search of round 7's third must-fix over the envoy module",
       "guard": "listener-edge-redirect-unparsed"
+    },
+    {
+      "site": "cmd/dispatch/main.go resolveBootConfig: the ENVOY_URL refusal printed the configured URL with %q, its user information, query and fragment included",
+      "source": "the second pull request's site census",
+      "guard": "configured-url-envoy-shape"
+    },
+    {
+      "site": "cmd/dispatch/main.go devSignInFence: the ENVOY_URL refusal beside the dev sign-in printed the configured URL with %q",
+      "source": "the second pull request's site census",
+      "guard": "configured-url-envoy-dev-fence"
+    },
+    {
+      "site": "internal/dispatch/cipher/client.go Client.do: a request that could not be built from DISPATCH_AGENT_SECRETS_URL handed on net/http's error, which quotes the URL whole",
+      "source": "the second pull request's site census",
+      "guard": "dispatch-agentsecrets-build"
+    },
+    {
+      "site": "internal/ciphertoken/introspect.go Verifier.introspect: an introspection that could not be built from the broker's URL handed on net/http's error, which quotes the URL whole",
+      "source": "the second pull request's site census",
+      "guard": "brokertoken-introspect-build"
     }
   ]
 }
