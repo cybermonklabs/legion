@@ -99,8 +99,7 @@ const (
 //     leaves the deadline where it was, and the next tick tries again; a renewal that affects no
 //     row means the row names another holder or none, and the hold is lost at once.
 //   - Release frees the name at once and wakes the standbys: it deletes the row and notifies
-//     HoldReleasedChannel in one transaction. Abandon frees it only at the row's expiry: it stops
-//     renewing and sends nothing.
+//     HoldReleasedChannel in one transaction.
 //
 // A renewal the context abandoned can still reach the database later, once whatever held its row
 // lets go; it extends the row only to its own send time plus the TTL, which delays a take-over and
@@ -159,8 +158,7 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 }
 
 // Lost is closed when the hold is no longer this process's to act on: its loss deadline passed, a
-// renewal or SetToken found the row another's, or Release, Lapse or Abandon was called. It is never
-// reopened.
+// renewal or SetToken found the row another's, or Release was called. It is never reopened.
 func (h *Hold) Lost() <-chan struct{} { return h.lost }
 
 // Deadline is the current loss deadline: the send time of the last confirmed renewal (or the
@@ -187,12 +185,13 @@ func (h *Hold) SetToken(ctx context.Context, token string) error {
 	return nil
 }
 
-// end is the shared part of Release and Lapse: it ends the hold as Abandon does -- stops the
-// renewal, waits for it to return, and closes Lost -- and then sends statement for this hold's name
-// and holder, so a row another holder has taken is left alone and wakes nobody. doing names the
-// call in the error it wraps.
+// end is the shared part of Release and Lapse: it stops the renewal, waits for it to return,
+// closes Lost, and sends statement for this hold's name and holder, so a row another holder has
+// taken is left alone and wakes nobody. doing names the call in the error it wraps.
 func (h *Hold) end(ctx context.Context, doing, statement string) error {
-	h.Abandon()
+	h.stop()
+	<-h.done
+	h.lose()
 	if _, err := h.db.Exec(ctx, statement, h.name, h.holder); err != nil {
 		return fmt.Errorf("%s hold %q: %w", doing, h.name, err)
 	}
@@ -213,21 +212,6 @@ func (h *Hold) Release(ctx context.Context) error {
 // is left alone and wakes nobody.
 func (h *Hold) Lapse(ctx context.Context) error {
 	return h.end(ctx, "lapse", lapseHold)
-}
-
-// Abandon is the end of a hold for a holder that cannot know whether an act it made under the hold
-// still reaches its target: it stops the renewal, waits for it to return, and closes Lost, as
-// Release does, but sends no statement. The row stays with this holder and its token, and keeps the
-// expiry of the last renewal (or the take) that reached the database: a renewal Abandon cancelled
-// can still reach it after Abandon returns, as the Hold type says, and its expiry is no later than
-// its own send time plus the TTL. The row lapses at that expiry on the database's clock, as the row
-// of a holder that died does. So no other holder can take the name before then, and no standby is
-// woken: a standby takes the name on its first try after the lapse. Abandon needs no database.
-// Release or Lapse after it still sends its statement.
-func (h *Hold) Abandon() {
-	h.stop()
-	<-h.done
-	h.lose()
 }
 
 // Expiry reads how long name's hold has left, as expires_at - now() on the database's clock, so a

@@ -194,7 +194,8 @@ type Options struct {
 	// at no variant; the empty list, which draws nothing, is a caller that declared none.
 	// ExperimentSource is the random source a `random` mode is drawn with; nil is
 	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
-	// from; nil is time.Now, and a test pins it.
+	// from, and the clock that spaces the state route's warning for an unknown view
+	// (otherViewWarnings); nil is time.Now, and a test pins it.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	Now              func() time.Time
@@ -399,6 +400,8 @@ type server struct {
 	drained   context.Context
 	decisions *RouteDecisions
 	log       *slog.Logger
+	// otherViews spaces the warning for a state request that names a view other than observed.
+	otherViews otherViewWarnings
 	// beforeForgetSessionHandle pauses the route's preflight in its concurrency regression test.
 	beforeForgetSessionHandle func()
 }
@@ -914,7 +917,8 @@ func (s *server) readSnapshot(w http.ResponseWriter, r *http.Request, reading co
 // and served through the one writer at the caller's contract: the observed view is the whole
 // state's members read through observedOf after the whole state's own bands and strips, so at
 // every contract its members are the whole state's (shaping.go's observedFor). A request with any
-// other `view` gets the whole state, and the daemon logs a warning for it (observedViewAsked).
+// other `view` gets the whole state, and the daemon logs a warning for it, at most once a minute
+// (observedViewAsked).
 func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	if s.observedViewAsked(r) {
 		view, claims, ok := s.observedState(w, r)
@@ -938,9 +942,10 @@ const observedView = "observed"
 // observedViewAsked is whether r asks the state route for the observed view: a request with the one
 // `view` value observedView does. A request with no `view` parameter asks for the whole state. A
 // request with any other `view` (another value, an empty value, or two values) also gets the whole
-// state, as a daemon without the view serves it. For that request the daemon logs one warning
+// state, as a daemon without the view serves it. For that request the daemon logs a warning
 // that names the values it was given and the one view the route serves, because a later version
-// may refuse such a request.
+// may refuse such a request. The route authenticates nobody and the values are the caller's, so
+// the warning is logged at most once in otherViewWarnEvery in all (otherViewWarnings.admit).
 func (s *server) observedViewAsked(r *http.Request) bool {
 	views, asked := r.URL.Query()["view"]
 	if !asked {
@@ -949,9 +954,40 @@ func (s *server) observedViewAsked(r *http.Request) bool {
 	if len(views) == 1 && views[0] == observedView {
 		return true
 	}
-	s.log.Warn("api: the request names no view of the state, so it gets the whole state; a later version may refuse such a request",
-		"views", views, "onlyView", observedView, "caller", r.RemoteAddr)
+	if skipped, logged := s.otherViews.admit(s.now()); logged {
+		s.log.Warn("api: the request names no view of the state, so it gets the whole state; a later version may refuse such a request",
+			"views", views, "onlyView", observedView, "caller", r.RemoteAddr, "skipped", skipped)
+	}
 	return false
+}
+
+// otherViewWarnEvery is the least time between two warnings for a request to the state route that
+// names a view other than observedView.
+const otherViewWarnEvery = time.Minute
+
+// otherViewWarnings spaces the warnings for requests to the state route that name a view other
+// than observedView (observedViewAsked): one line in all, whoever asks, each otherViewWarnEvery.
+// The zero value is ready for use.
+type otherViewWarnings struct {
+	mu sync.Mutex
+	// last is when the latest warning was logged, and the zero time before the first.
+	last time.Time
+	// skipped counts the requests since that warning whose own warning was not logged.
+	skipped int
+}
+
+// admit is called for each such request at now. It reports whether the request's warning is logged,
+// and then how many requests since the last warning were not logged, which the line names. A
+// request that is not logged is counted for the next line.
+func (o *otherViewWarnings) admit(now time.Time) (skipped int, logged bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.last.IsZero() && now.Sub(o.last) < otherViewWarnEvery {
+		o.skipped++
+		return 0, false
+	}
+	skipped, o.skipped, o.last = o.skipped, 0, now
+	return skipped, true
 }
 
 // statementBound is bound as PostgreSQL's statement_timeout takes it: whole milliseconds, and

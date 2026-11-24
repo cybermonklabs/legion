@@ -89,7 +89,7 @@ type intakeDelivery struct {
 // every message it wants, a pull request's, a workflow run's and a push's alike, so the envelope
 // is absent only when that decode failed and deliver reports the failure.
 //
-// It is instead work that is not a message when work is set (heldDurable.queue): the key's
+// It is instead work that is not a message when work is set (HeldDurable.Queue): the key's
 // goroutine runs it in its turn, under the delivery's handling context, and the item holds no
 // message.
 type intakeMessage struct {
@@ -284,7 +284,7 @@ func (d *heldDurable) StopDelivering(ctx context.Context) {
 func (d *intakeDelivery) stop(ctx context.Context) {
 	d.stopping.Store(true)
 	for _, waiting := range d.keys.stop() {
-		// Work queued on a key (heldDurable.queue) holds no message to give back: it is
+		// Work queued on a key (HeldDurable.Queue) holds no message to give back: it is
 		// dropped, and its owner queues it again at its next take-over.
 		if waiting.msg != nil {
 			d.giveBack(waiting.msg)
@@ -473,17 +473,22 @@ func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 // (mayAnswer), which needs !stopping. So the connected read in mayHandBack can withhold only
 // when a stop begins between the two checks. A handler makes it before or after any stop
 // begins, and the stop waits for that handler.
-func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
+//
+// It reports whether it handed the hand-back to NATS (publishHandBack). It returns false when it
+// withheld the hand-back, and then it logs one line that names the cause. A caller that logs the
+// hand-back it made logs it only when this returns true.
+func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) bool {
 	if !d.mayAnswer() {
-		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
+		slog.Warn("dispatch delivery: a stop began or the hold lapsed, so the message is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
-		return
+		return false
 	}
 	if !d.mayHandBack() {
-		slog.Info("dispatch delivery: the hand-back is withheld, so the envelope whose head row was not stored is left with the durable", "subject", msg.Subject)
-		return
+		slog.Info("dispatch delivery: a stop began and NATS did not confirm its connection, so the hand-back is withheld and the message is left with the durable",
+			"subject", msg.Subject)
+		return false
 	}
-	d.publishHandBack(msg, after)
+	return d.publishHandBack(msg, after)
 }
 
 // publishHandBack publishes msg's hand-back after after, waiting for NATS at most
@@ -501,14 +506,17 @@ func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 // (heldDurable.handBacksSettled): a socket that closes meanwhile -- at shutdown, or given up as stale
 // before a reconnect -- is reset, so bytes of the hand-back still in its kernel send queue are
 // discarded rather than sent after the release.
-func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
+//
+// It reports whether the hand-back was admitted, and so handed to NATS: false when the delivery was
+// sealed and the hand-back withheld (handBackSealed).
+func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) bool {
 	if hook := d.beforeHandBackPublish.Load(); hook != nil {
 		(*hook)()
 	}
 	written, admitted := d.admitHandBack()
 	if !admitted {
 		slog.Info(handBackSealed, "subject", msg.Subject)
-		return
+		return false
 	}
 	if hook := d.afterHandBackAdmitted.Load(); hook != nil {
 		(*hook)()
@@ -525,6 +533,7 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 		}()
 		return struct{}{}, msg.NakWithDelay(after)
 	}, "subject", msg.Subject, "delay", after)
+	return true
 }
 
 // handBackSealed is the line of a hand-back withheld because its delivery was sealed before the

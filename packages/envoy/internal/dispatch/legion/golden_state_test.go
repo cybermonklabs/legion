@@ -1,6 +1,7 @@
 package legion
 
 //ci:reads packages/contracts/fixtures/daemon-api/state.json os.ReadFile (daemonAPIFixture, ../../../../contracts/fixtures/daemon-api): the state document the daemon's own internal/api/state_golden_test.go writes, which a whole read's decode must read
+//ci:reads packages/contracts/fixtures/daemon-api/observed-state.json os.ReadFile (daemonAPIFixture, ../../../../contracts/fixtures/daemon-api): the observed view the daemon's own internal/api/state_golden_test.go writes, which a whole read's decode must read
 
 import (
 	"os"

@@ -258,8 +258,9 @@ const refusedLine = "legion intake: the database refuses a state message for goo
 // back before the read is due. It names the read the message calls for (reason, "" for none), how
 // many times this durable has delivered the message (delivery, which a take-over starts again at
 // 1), and which of the hold's hand-backs this is as the cursor counts them (handBack, which a
-// take-over keeps; stateMaxHolds). It is the one line of that delivery: such a message is not
-// logged as acknowledged unapplied (reportEvery) or as refused.
+// take-over keeps; stateMaxHolds). It is the one line of that delivery, and is logged only for a
+// hand-back made (delivery.HeldMessage.HandBackAfter): such a message is not logged as
+// acknowledged unapplied (reportEvery) or as refused.
 const heldLine = "legion intake: a state message goes back to the stream until its project's owed whole read is due"
 
 // writeReleasedLine is the log line of a message whose hold of its project's owed whole read a
@@ -693,7 +694,10 @@ const (
 // deliver applies one state message on its project's runner and acknowledges it (applyMessage),
 // or, where the message holds its project's owed whole read (cursor.readFor), hands it back to the
 // stream unacknowledged for the time left until the read is due, so its redelivery makes the read,
-// and logs that hand-back and nothing else (heldLine). A message that went back stateMaxHolds times
+// and logs that hand-back and nothing else (heldLine). A hand-back withheld because a stop began or
+// the hold lapsed is not made, so deliver logs no heldLine for it: the hand-back's own line is the
+// delivery's one line (delivery.HeldMessage.HandBackAfter), and the next holder's take-over
+// delivers the message again. A message that went back stateMaxHolds times
 // holds the read no more: it is acknowledged, and logged at WARN (releasedLine). A message whose
 // hold a write of the setting ended is acknowledged unapplied, and logged at INFO
 // (writeReleasedLine). A message on its project's crowded key is judged there and applies nothing
@@ -729,9 +733,10 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 	}
 	sequences := []any{"run", message.Run, "firstSeq", message.FirstSeq, "seq", message.Seq}
 	if attempt.back > 0 {
-		m.HandBackAfter(attempt.back)
-		slog.Info(heldLine, append([]any{"project", message.Project, "streamSeq", attempt.seq, "delivery", attempt.delivered,
-			"handBack", attempt.holds, "delay", attempt.back, "reason", attempt.reason}, sequences...)...)
+		if m.HandBackAfter(attempt.back) {
+			slog.Info(heldLine, append([]any{"project", message.Project, "streamSeq", attempt.seq, "delivery", attempt.delivered,
+				"handBack", attempt.holds, "delay", attempt.back, "reason", attempt.reason}, sequences...)...)
+		}
 		return
 	}
 	m.Ack()
