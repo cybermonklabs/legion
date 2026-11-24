@@ -78,7 +78,9 @@ func runProbeBound(args []string, stdout, stderr io.Writer) int {
 	address := os.Getenv("AIRLOCK_S_URL") + "/go"
 	request, err := http.NewRequest(http.MethodGet, address, nil)
 	if err != nil {
-		fmt.Fprintln(stdout, "error", err)
+		// net/url quotes the whole value it could not parse, the user information of the URL
+		// among it, so the failure prints by its class alone.
+		fmt.Fprintln(stdout, "error", redact.Class(err))
 		return 0
 	}
 	request.Header.Set("Authorization", "Bearer "+os.Getenv("AIRLOCK_DEMO_TOKEN"))
