@@ -46,6 +46,7 @@ func TestTheConfigFileFillsAnUnsetVariable(t *testing.T) {
 	path := writeClientConfig(t, "# the secrets broker\nAGENT_SECRETS_URL=https://secrets.example/\n\nAGENT_SECRETS_SIGNIN_CLIENT_ID = device-client\n")
 	unsetenv(t, "AGENT_SECRETS_URL")
 	unsetenv(t, "AGENT_SECRETS_SIGNIN_CLIENT_ID")
+	unsetenv(t, "AGENT_SECRETS_MACHINE_IDENTITY")
 	if err := loadClientConfig(); err != nil {
 		t.Fatalf("load %s: %v", path, err)
 	}
