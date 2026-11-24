@@ -3514,8 +3514,8 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 245: dispatch://INFRA-5208 -- each issue of `GET /legion/v1/state` (and the issue record, which
-// is one issue of that body) carries `podHold`, the standing hold of the issue's pod: why the
+// 245: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
+// body) carries `podHold`, the standing hold of the issue's pod: why the
 // idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
 // is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
 // spell it), `firstAt` the first pass of the hold's streak, `at` its newest pass, and `detail`

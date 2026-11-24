@@ -65,9 +65,9 @@ func servedHolds(t *testing.T, server *httptest.Server, keys ...string) map[stri
 	return holds
 }
 
-// Each issue of `GET /legion/v1/state` names its pod's standing hold (dispatch://INFRA-5208,
-// R1): the idle rule's word for it as idleHoldNames spells it, when its streak began, its last
-// pass, and its detail cut to the first 200 characters. A pod with no hold row carries no hold; a
+// Each issue of `GET /legion/v1/state` names its pod's standing hold: the idle rule's word for it
+// as idleHoldNames spells it, when its streak began, its last pass, and its detail cut to the
+// first 200 characters. A pod with no hold row carries no hold; a
 // pod whose hold the state showed carries none once the pod is released (RecordPodRelease ends
 // its streak) and none once a pass ends the streak (EndPodHoldStreaks); and a pass under another
 // reason leaves one standing hold, the new one, since RecordPodHold ends every other reason's

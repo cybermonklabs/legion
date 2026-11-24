@@ -3393,8 +3393,8 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		}
 	}
 	// The standing hold of each issue's pod, read from pod_holds in the same snapshot, one
-	// statement for the whole project (dispatch://INFRA-5208). The idle rule writes it to that
-	// table alone, so this is the one surface that says why a quiet pod still runs. pod_holds is
+	// statement for the whole project. The idle rule writes it to that table alone, so this is the
+	// one surface that says why a quiet pod still runs. pod_holds is
 	// keyed on the claim token's spelling of the project, as the idle pass writes it
 	// (releaseUnownedPods says why the two spellings differ).
 	holds, err := s.store.StandingPodHoldsTx(ctx, tx, s.projectToken)

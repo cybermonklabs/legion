@@ -323,9 +323,9 @@ func openPodHold(ctx context.Context, tx pgx.Tx, project, issue string) (bool, e
 
 // StandingPodHoldsTx is the standing hold of each pod of project, keyed by its issue, read
 // through the caller's transaction: the hold streak of that pod that no pass, release or other
-// reason has ended (dispatch://INFRA-5208). The state route reads it in its own snapshot, so
-// the holds it shows and every other fact of that state come from one moment, and it is one
-// statement for the whole project rather than one read per issue.
+// reason has ended. The state route reads it in its own snapshot, so the holds it shows and every
+// other fact of that state come from one moment, and it is one statement for the whole project
+// rather than one read per issue.
 //
 // A pod holds one running streak at most, because RecordPodHold ends every other reason's
 // streak in the transaction that records a reason. The rows that were running when

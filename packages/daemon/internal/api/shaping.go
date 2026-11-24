@@ -1056,8 +1056,8 @@ const assignmentPlanContract = 220
 const intakeGiveUpsContract = 228
 
 // podHoldContract is the daemon contract that added each issue's `podHold` to the state
-// (version.go's 245, dispatch://INFRA-5208): the standing hold of the issue's pod, which the
-// idle rule wrote only to its own table before. A plugin before it reads each issue with a
+// (version.go's 245): the standing hold of the issue's pod, which the idle rule wrote only to its
+// own table before. A plugin before it reads each issue with a
 // strict schema that names no `podHold` and refuses the whole body for it, so every caller below
 // it is served the issues without the key (withoutPodHold). intakeGiveUpsContract stands below
 // it with no row of stateNarrowings between the two, so a caller from that contract to 244 is
