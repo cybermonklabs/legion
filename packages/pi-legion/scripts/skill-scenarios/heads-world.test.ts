@@ -135,7 +135,7 @@ test("the test record a heads world seeds holds no implementerProof, failures or
   // The hook's ports and NATS, which restoreEnvironment puts back after each test.
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   for (const role of ["reviewer", "architect"]) {
     const { calls } = await world(role);
     const bodies = calls
@@ -219,7 +219,7 @@ test("heads-events refuses a world it records no results for, and records none",
   // The hook's ports and NATS, which restoreEnvironment puts back after each test.
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   const calls = stubFetch();
   const dir = dirOf("unknown");
   const file = path.join(dir, "fixture.json");
