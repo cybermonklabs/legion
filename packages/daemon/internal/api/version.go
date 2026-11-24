@@ -3871,9 +3871,9 @@ package api
 // head of each of the 488 open pull requests, 2026-11-24T17:55:43Z to 18:01:07Z; #5399's head
 // declares no number). The merge of main `c56ad6a1`, which declares 256 (#5349, the claim views'
 // cause times, the entry right above), moves this entry from 253 to 270: 253 is not above the
-// base's 256, so check-daemon-api-contract.sh would refuse it, and 270 is the number the architect
-// of dispatch://INFRA-3118 gave this change at 2026-11-24T18:27:55Z while #5399 is still open. No
-// open head declares 270 (read at the head of each of the 511 open pull requests,
+// base's 256, so check-daemon-api-contract.sh would refuse it, and 270 is the number this change
+// was given at 2026-11-24T18:27:55Z by the session that hands out these numbers while #5399 is
+// still open. No open head declares 270 (read at the head of each of the 511 open pull requests,
 // 2026-11-25T00:22:02Z to 00:28:44Z; 265 (#5285), 267 (#5168), 268 (#5384), 271 (#4173), 272
 // (#4049) and 274 (#3993) are other open pull requests'). Read the base's own number and every open
 // head again at the next merge rather than from this line.)
