@@ -263,10 +263,11 @@ func TestACheckSuiteIsStoredUnderTheIdGitHubGaveIt(t *testing.T) {
 }
 
 // TestAHeadWhoseShaIsNoShaPrintsNoCredential: GitHub names a head commit by words that are no sha
-// but quote a credential's URL. The reconcile's read of that head fails (read), and the verify
-// read's answer for it fails and its request is not deleted (verify); each line names the head's
-// sha only where it is a sha, and its error holds no credential either. Captures
-// cireconcile.head-sha/<case>.
+// but quote a credential's URL. The reconcile's read of that head fails (read); the verify read's
+// answer for it fails and its request is not deleted (verify); and the verify read gives the
+// head's episode up before any read of its commit, the App being installed on no repository, and
+// its request is not deleted (verify-uninstalled). Each line names the head's sha only where it
+// is a sha, and its error holds no credential either. Captures cireconcile.head-sha/<case>.
 func TestAHeadWhoseShaIsNoShaPrintsNoCredential(t *testing.T) {
 	t.Run("read", func(t *testing.T) {
 		client := remoteStandIn(t, failCommitReads(t))
@@ -287,6 +288,27 @@ func TestAHeadWhoseShaIsNoShaPrintsNoCredential(t *testing.T) {
 		r.Verify(t.Context())
 		lineOf(t, logs, "ci verify")
 		redacttest.RequireNone(t, "cireconcile.head-sha/verify", logs.String())
+	})
+	t.Run("verify-uninstalled", func(t *testing.T) {
+		_, pemText := githubapptest.Key(t)
+		client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: pemText}, githubtest.Server(t, githubtest.Spec{
+			Handle: func(w http.ResponseWriter, r *http.Request) {
+				// GitHub's answer to the installation lookup of a repository the App is not on.
+				writeJSON(t, w, http.StatusNotFound, map[string]any{"message": "Not Found"})
+			},
+		}))
+		if err != nil {
+			t.Fatalf("new client: %v", err)
+		}
+		r, logs := logged(client)
+		writer := &fieldWriter{doneFails: true, requests: []contracts.CIVerifyRequest{{
+			Head: contracts.CIHead{Owner: "acme", Repo: "web", Number: "7", SHA: redacttest.Words}, Revision: 3, Episode: 1,
+		}}}
+		r.Open = func() (Writer, error) { return writer, nil }
+		r.Verify(t.Context())
+		lineOf(t, logs, "ci verify gave up an episode")
+		lineOf(t, logs, "ci verify did not delete a verify request")
+		redacttest.RequireNone(t, "cireconcile.head-sha/verify-uninstalled", logs.String())
 	})
 }
 
