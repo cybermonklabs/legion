@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 const (
@@ -120,9 +121,18 @@ type Page struct {
 	signIn *oidc.CodeFlow
 }
 
+// signInCallbackPath is the route the provider returns the browser to, under the broker's public
+// URL: the pattern routes_table.go mounts ServeCallback at.
+const signInCallbackPath = "/signin/callback"
+
 // New builds the page from cfg, refusing a public URL that is not an absolute http(s) URL. It
 // reads nothing: the sign-in's code flow reads the provider's discovery document when the first
 // sign-in needs it.
+//
+// The sign-in's redirect URI is signInCallbackPath joined onto that URL's path (urljoin.JoinURL),
+// its query kept and its fragment dropped, which is what RFC 6749 section 3.1.2 says of a
+// redirection endpoint: the path appended to the URL's text would sit inside a query or a fragment
+// a deployment set, and the provider would be given a redirect URI naming another path.
 func New(cfg Config) (*Page, error) {
 	u, err := url.Parse(cfg.PublicURL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -131,8 +141,13 @@ func New(cfg Config) (*Page, error) {
 	if cfg.Store == nil || cfg.Machine == nil {
 		return nil, errors.New("approval: the page needs the store and the request machine")
 	}
+	redirect, err := urljoin.JoinURL(u, signInCallbackPath)
+	if err != nil {
+		// urljoin.ErrRef alone, which a path written here never draws.
+		return nil, errors.New("approval: the sign-in's redirect URI could not be built from the public URL")
+	}
 	return &Page{
-		cfg: cfg, origin: originOf(u), redirectURL: strings.TrimRight(cfg.PublicURL, "/") + "/signin/callback",
+		cfg: cfg, origin: originOf(u), redirectURL: redirect.String(),
 		signIn: oidc.NewCodeFlow(cfg.SignIn.Issuer, cfg.SignIn.ClientID, cfg.SignIn.ClientSecret, cfg.SignIn.Domain),
 	}, nil
 }
