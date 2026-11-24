@@ -597,10 +597,12 @@ plugin's turn-outcome report, which carries the HTTP status the provider answere
 turn `unprompted`. The same rule holds: a status that cannot clear fails the claim at once, with
 `why` reading `a provider error that cannot clear ended a turn this claim's agent ran with no
 prompt of the daemon's: <cause>`, holds the issue under the cause word `provider_error`, and so
-ends the plugin's reminders. Any other refusal, or one whose report carries no status, fails
-nothing and logs `supervise: a turn that ran no prompt of the daemon's ended in a provider error`;
-the reminders keep their pace of one every 5 minutes, and the turn counts in the claim's run of
-provider-error turns below. Nothing is sent again for such a turn: it carried no task.
+ends the plugin's reminders, unless a stop is held for the copy of that turn's end, which the
+refusal is then left to, failing nothing (supervise's `providerErrorTurnEnded`). Any other refusal,
+or one whose report carries no status, fails nothing and logs
+`supervise: a turn that ran no prompt of the daemon's ended in a provider error`; the reminders
+keep their pace of one every 5 minutes, and the turn counts in the claim's run of provider-error
+turns below. Nothing is sent again for such a turn: it carried no task.
 
 **After six turns of one claim in a row have ended in a provider error**, whether a prompt of the
 daemon's ran them or not, the project's controller is told once, as `provider-errors on <KEY>`,

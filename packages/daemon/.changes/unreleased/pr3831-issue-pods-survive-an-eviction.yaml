@@ -23,7 +23,8 @@ body: |-
   the copy and every start and says why. No role starts while a copy is owed to its pod
   and not in the launcher's hands: a take of the copies that the daemon's store does not answer is
   tried again at the probe interval with nothing charged, and the claim's `lastStartFailure` says
-  why it waits; a take the store answers with a definite error, and a copy that does not reach the
+  why it waits, as it now also does at each retry of a launch whose session hold the store did not
+  answer; a take the store answers with a definite error, and a copy that does not reach the
   launcher whole, fail the launch, charged, and the next launch asks again.
   A stop held for a turn's end, such as a project pause's, an operator's suspend or a linger,
   waits for that turn's copy, at most the copy's 4-minute budget and never past the stop's own

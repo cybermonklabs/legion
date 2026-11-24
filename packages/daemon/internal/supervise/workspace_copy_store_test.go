@@ -43,7 +43,7 @@ func TestALaunchTheWorkspaceCopyStoreHeldIsChargedNothingAndOneWhoseCopyDidNotRe
 		}
 		requireStartFailureNames(t, h, c, runtime.ErrWorkspaceCopyStore.Error())
 		h.wantCalls("Spawn", 1)
-		if lines := h.logs.lines("the daemon's store did not answer the take or the drop of the issue's saved workspace copies"); len(lines) != 1 {
+		if lines := h.logs.lines(runtime.ErrWorkspaceCopyStore.Error() + "; trying the launch again at the probe interval, charging nothing"); len(lines) != 1 {
 			t.Fatalf("logged %v, want the store's hold named once", lines)
 		}
 

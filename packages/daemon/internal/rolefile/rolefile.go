@@ -102,10 +102,11 @@ var directoryOpen = Openat
 
 // OpenDirectory is a descriptor of the directory name under dirfd (unix.AT_FDCWD for a path),
 // path being name as the errors print it, for a caller that writes or removes under it: a symlink
-// at name is refused in words rather than followed (O_NOFOLLOW, which answers ELOOP), a socket,
-// which open answers with ENXIO, is refused as "<path> is a socket", and anything else at name but
-// a directory, a fifo or a device among them, is opened without a wait (O_NONBLOCK, O_NOCTTY) and
-// refused by what its descriptor is, an error errors.Is matches to ENOTDIR.
+// at name is refused in words rather than followed (O_NOFOLLOW, which answers ELOOP), an error
+// errors.Is matches to ELOOP, a socket, which open answers with ENXIO, is refused as "<path> is a
+// socket", and anything else at name but a directory, a fifo or a device among them, is opened
+// without a wait (O_NONBLOCK, O_NOCTTY) and refused by what its descriptor is, an error errors.Is
+// matches to ENOTDIR.
 // O_DIRECTORY is deliberately not asked for: gVisor, the kernel this tree's pods run under, has
 // releases that follow a link at name when O_DIRECTORY and O_NOFOLLOW are both set (measured: the
 // open succeeds through the link under the pods' gVisor in 2026-11 and under runsc 20260112;
@@ -118,7 +119,7 @@ func OpenDirectory(dirfd int, name, path string) (int, error) {
 	case op == "":
 		return -1, notDirectory(path)
 	case op == "open" && errors.Is(err, unix.ELOOP):
-		return -1, fmt.Errorf("%s is a symlink", path)
+		return -1, symlink(path)
 	case op == "open" && errors.Is(err, unix.ENXIO):
 		return -1, fmt.Errorf("%s is a socket", path)
 	}
@@ -153,6 +154,15 @@ type notDirectory string
 func (path notDirectory) Error() string { return string(path) + " is no directory" }
 
 func (notDirectory) Unwrap() error { return unix.ENOTDIR }
+
+// symlink is OpenDirectory's refusal of a symbolic link: its words name the path, and errors.Is
+// matches it to ELOOP, the open's own answer, for a caller that words that refusal its own way
+// (internal/workspace's openJJ).
+type symlink string
+
+func (path symlink) Error() string { return string(path) + " is a symlink" }
+
+func (symlink) Unwrap() error { return unix.ELOOP }
 
 // RemoveTree removes path and everything under it, as os.RemoveAll does save for a ".." in path
 // (below), but follows no link and waits on nothing anywhere it walks, for a caller that removes

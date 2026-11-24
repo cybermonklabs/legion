@@ -11,39 +11,36 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testconn"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // daemonEnd is the daemon's end of a loopback listener that the code under test, a launcher,
-// dials, with the accept loop that reads every connection reaching it. A connection is the code
-// under test's only when its first line is the opening that code sends (opens says which).
-// Another process of the machine can reach the listener too, since the kernel can hand it a
-// loopback port that a client of another test binary still redials. Each connection's first line
-// is read on a goroutine of its own, so one that sends nothing holds up no other. One whose first
-// line is no modelled frame of the wire (shimwire's Raw, or no frame at all), or is the hello of a
-// shim, or of a launcher of another listener, is closed and logged, and fails nothing (read), and
-// so is one still silent when the case ends. The code under test's opening carries a token of this
-// listener's own (ownToken), so no launcher of another rig, this package's own included, opens as
-// this one's code. No code but the loop accepts from the listener (a case reads only its Addr), so
-// no case takes a connection past the loop.
+// dials, with the accept loop that reads every connection reaching it (testconn.Loop). A
+// connection is the code under test's only when its first line is the opening that code sends
+// (opens says which). Another process of the machine can reach the listener too, since the kernel
+// can hand it a loopback port that a client of another test binary still redials. Each
+// connection's first line is read on a goroutine of its own, so one that sends nothing holds up no
+// other. One whose first line is no modelled frame of the wire (shimwire's Raw, or no frame at
+// all), or is the hello of a shim, or of a launcher of another listener, is closed and logged, and
+// fails nothing (read), and so is one still silent when the case ends. The code under test's
+// opening carries a token of this listener's own (ownToken), so no launcher of another rig, this
+// package's own included, opens as this one's code. No code but the loop accepts from the listener
+// (a case reads only its Addr), so no case takes a connection past the loop.
 type daemonEnd struct {
 	listener net.Listener
+	loop     *testconn.Loop
 	t        *testing.T
 	// opens reports whether a connection's first frame is the opening of the code under test.
 	opens func(shimwire.Frame) bool
 	// arrivals carries each connection that opened as the code under test opens, in the order
-	// those openings were read, and the code's return once whatever runs it reports it.
+	// those openings were read, and the code's return once whatever runs it reports it. Only the
+	// loop's keeps and what runs under its lock (testconn.Loop.Locked) send on it.
 	arrivals chan arrival
-	mu       sync.Mutex
-	// done is set by the test's cleanup: from then on the loop logs nothing and closes what it reads.
-	done bool
-	// pending is each connection whose first line is still being read.
-	pending map[net.Conn]bool
 }
 
 // arrival is one thing next receives: a connection that opened as the code under test opens, with
@@ -90,42 +87,25 @@ func listenFor(t *testing.T, opens func(shimwire.Frame) bool) *daemonEnd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	end := &daemonEnd{listener: listener, t: t, opens: opens, arrivals: make(chan arrival, waitingArrivals), pending: map[net.Conn]bool{}}
+	end := &daemonEnd{listener: listener, t: t, opens: opens, arrivals: make(chan arrival, waitingArrivals)}
+	end.loop = testconn.Accept(listener, end.read)
 	t.Cleanup(end.stop)
-	go end.accept()
 	return end
 }
 
 // Addr is the address the code under test dials.
 func (end *daemonEnd) Addr() net.Addr { return end.listener.Addr() }
 
-// accept is the loop: it runs until the listener closes.
-func (end *daemonEnd) accept() {
-	for {
-		conn, err := end.listener.Accept()
-		if err != nil {
-			return
-		}
-		end.mu.Lock()
-		if end.done {
-			end.mu.Unlock()
-			_ = conn.Close()
-			continue
-		}
-		end.pending[conn] = true
-		end.mu.Unlock()
-		go end.read(conn)
-	}
-}
-
-// read reads conn's first line and hands the connection on when it is the code under test's
-// opening. It closes and logs any other connection, which fails nothing: one that sent nothing, a
-// line that is no modelled frame of the wire (shimwire's Raw, such as a stranger's JSON object, or
-// no frame at all), or the hello of a shim, or of a launcher under a token that is not this
-// listener's. A first frame that is a modelled frame and no hello fails the test, though, and ends
-// the wait for the code's next opening at once (next): the launcher opens with its hello, as does
-// any other process's launcher or shim, so such a frame is the code under test opening wrong.
-func (end *daemonEnd) read(conn net.Conn) {
+// read reads conn's first line, and its keep hands the connection on when it is the code under
+// test's opening. The loop closes any other connection, which the keep logs and which fails
+// nothing: one that sent nothing, a line that is no modelled frame of the wire (shimwire's Raw,
+// such as a stranger's JSON object, or no frame at all), or the hello of a shim, or of a launcher
+// under a token that is not this listener's. A first frame that is a modelled frame and no hello
+// fails the test, though, and ends the wait for the code's next opening at once (next): the
+// launcher opens with its hello, as does any other process's launcher or shim, so such a frame is
+// the code under test opening wrong. Once the loop has stopped, it closes what it read and runs no
+// keep, so nothing is logged then.
+func (end *daemonEnd) read(conn net.Conn) (keep func() bool) {
 	reader := bufio.NewReader(conn)
 	line, readErr := reader.ReadBytes('\n')
 	var frame shimwire.Frame
@@ -135,16 +115,11 @@ func (end *daemonEnd) read(conn net.Conn) {
 			frame, ours = decoded, end.opens(decoded)
 		}
 	}
-	end.mu.Lock()
-	defer end.mu.Unlock()
-	delete(end.pending, conn)
-	switch {
-	case end.done:
-		_ = conn.Close()
-	case ours:
-		end.deliver(arrival{conn: conn, reader: reader, frame: frame})
-	default:
-		_ = conn.Close()
+	return func() bool {
+		if ours {
+			end.deliver(arrival{conn: conn, reader: reader, frame: frame})
+			return true
+		}
 		switch frame.(type) {
 		case nil, shimwire.Raw, shimwire.Hello, shimwire.Hello2, shimwire.LauncherHello:
 			end.t.Logf("the daemon end closed a connection from %s that opened with no opening of the code under test (%.200q, %v)",
@@ -153,6 +128,7 @@ func (end *daemonEnd) read(conn net.Conn) {
 			end.t.Errorf("a connection from %s opened with a %T, a modelled frame that no launcher or shim sends first (%.200q)", conn.RemoteAddr(), frame, line)
 			end.deliver(arrival{frame: frame, misopened: true})
 		}
+		return false
 	}
 }
 
@@ -160,14 +136,14 @@ func (end *daemonEnd) read(conn net.Conn) {
 // ends now rather than at the test binary's deadline. Whatever runs the code calls it once the code
 // (Run, or the process running it) has returned.
 func (end *daemonEnd) codeReturned(err error) {
-	end.mu.Lock()
-	defer end.mu.Unlock()
-	if !end.done {
-		end.deliver(arrival{returned: true, err: err})
-	}
+	end.loop.Locked(func(stopped bool) {
+		if !stopped {
+			end.deliver(arrival{returned: true, err: err})
+		}
+	})
 }
 
-// deliver queues a for next; the caller holds mu.
+// deliver queues a for next; the caller runs under the loop's lock (a keep, or Locked).
 func (end *daemonEnd) deliver(a arrival) {
 	select {
 	case end.arrivals <- a:
@@ -181,17 +157,12 @@ func (end *daemonEnd) deliver(a arrival) {
 
 // stop ends the loop's logging and closes the listener and every connection the loop holds. A
 // connection whose first line is still being read sent nothing the whole case long; stop logs it,
-// once, as read logs any other connection it closes (read then closes nothing more and logs
-// nothing, since done is set).
+// once, as read logs any other connection it closes (the loop then runs no keep, so nothing more
+// is logged).
 func (end *daemonEnd) stop() {
-	_ = end.listener.Close()
-	end.mu.Lock()
-	defer end.mu.Unlock()
-	end.done = true
-	for conn := range end.pending {
-		_ = conn.Close()
+	end.loop.Stop(func(conn net.Conn) {
 		end.t.Logf("the daemon end closed a connection from %s that sent nothing by the end of the case", conn.RemoteAddr())
-	}
+	})
 	for {
 		select {
 		case untaken := <-end.arrivals:
@@ -448,13 +419,7 @@ func TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce(t *t
 			t.Fatal(err)
 		}
 		testwait.Eventually(t, "the daemon end to read the stray's first line and hold the connection no case took", func() bool {
-			end.mu.Lock()
-			defer end.mu.Unlock()
-			reading := false
-			for conn := range end.pending {
-				reading = reading || conn.RemoteAddr().String() == stray.LocalAddr().String()
-			}
-			return reading && len(end.arrivals) == 1
+			return end.loop.Reading(stray.LocalAddr().String()) && len(end.arrivals) == 1
 		})
 		return
 	}

@@ -3564,8 +3564,14 @@ package api
 // (internal/claim/wire.go): the same 409 and opening sentence as StalePluginContract, with a
 // remedy that names the held stop rather than a relaunch. A plugin of any release stops on that
 // 409 as on the other, so the second remedy raises nothing.
+// While a stop is held for the copy of a turn's end, an unprompted turn-outcome report refused
+// with a status that cannot clear fails nothing: by 232's rule it fails the claim at once
+// and the answer's `failed` is true, but here supervise's providerErrorTurnEnded leaves that
+// failure to the held stop, and unpromptedTurnEnded answers `failed` false. Its readers,
+// pi-legion's turn-outcome reporter (`turn-outcome.ts`) and the Claude bridge
+// (`claudebridge/turnoutcome.go`), only log it, so that exception raises nothing either.
 // From this entry the last number of answers.go's SupportedContracts is this change's own, after
-// `api.intakeGiveUpsContract`.
+// `api.intakeGiveUpsContract` with main's 232 between them (`intakeGiveUpsContract, 232, 244`).
 // (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of
 // this repository, 480 of them, taken between 2026-11-24T13:09:59Z and 13:24:12Z, after the
 // forward merge of main d2740571, read main's 232 (dispatch://INFRA-4508's turn outcome) and

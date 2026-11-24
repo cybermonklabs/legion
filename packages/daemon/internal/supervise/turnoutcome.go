@@ -142,12 +142,12 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // prompt's turn is. A refusal whose status cannot clear (holdsTheIssue) fails the claim at once
 // with CauseProviderError, so the workflow holds the issue for its architect, and the plugin's
 // reminders end: their record check drops every reminder of a failed claim. While a stop is held
-// for the copy of the turn's end (turnCopyHolds), it fails nothing and leaves that stop to end the
-// claim's process once the copy is over, as a prompt's refusal does (providerErrorTurnEnded), and
-// the report is answered as one that failed nothing. A refusal that can clear, or whose report
-// carries no status, fails nothing, and the reminders keep their pace; it counts in the claim's one
-// run of provider-error turns (ProviderErrorRun) beside refused prompts, so the project's
-// controller is told once when that run reaches providerErrorRunTold.
+// for the copy of the turn's end, it fails nothing and is left to that stop, as a prompt's refusal
+// is (the held-stop rule at providerErrorTurnEnded's guard), and the report is answered as one
+// that failed nothing. A refusal that can clear, or whose report carries no status, fails nothing,
+// and the reminders keep their pace; it counts in the claim's one run of provider-error turns
+// (ProviderErrorRun) beside refused prompts, so the project's controller is told once when that
+// run reaches providerErrorRunTold.
 //
 // A clean report ends that run whether or not it is marked unprompted (providerErrorRunOver), as
 // a clean prompt result does: the provider answered that turn either way. A turn the plugin reads

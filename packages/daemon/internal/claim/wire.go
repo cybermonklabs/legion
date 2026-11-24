@@ -202,12 +202,14 @@ func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
 //
 // Failed is whether this report failed the claim. A run of refused turns fails no claim
 // (dispatch://INFRA-4508), so only one report does: that of a turn that ran no prompt of the
-// daemon's (TurnOutcomeRequest.Unprompted) and that the provider refused with a status that
-// cannot clear, a 4xx other than 401, 403, 408 and 429, which fails the claim at once and holds
-// the issue for its architect, as such a prompt's result does. A daemon from before
-// dispatch://INFRA-4508 set it when the report took the run to the launch failure limit. This is
-// where the rule is stated, with its TypeScript mirror (LegionTurnOutcomeResponse in
-// packages/contracts/src/legion-api.ts); every other reader of Failed points here.
+// daemon's (TurnOutcomeRequest.Unprompted) and that the provider refused with a status that cannot
+// clear, a 4xx other than 401, 403, 408 and 429, which fails the claim at once and holds the issue
+// for its architect, as such a prompt's result does, unless a stop is held for the copy of the
+// turn's end: that refusal is then left to the stop and fails nothing (supervise's
+// providerErrorTurnEnded). A daemon from before dispatch://INFRA-4508 set it when the report took
+// the run to the launch failure limit. This is where the rule is stated, with its TypeScript mirror
+// (LegionTurnOutcomeResponse in packages/contracts/src/legion-api.ts); every other reader of Failed
+// points here.
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`

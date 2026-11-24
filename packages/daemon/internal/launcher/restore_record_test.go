@@ -268,6 +268,30 @@ func TestAnUnreadableRestoreRecordOnAWorkspaceInUseRefusesEverySliceAndEveryStar
 	g.stop(2)
 }
 
+// A start refused over a restore cut off has the next start read the records again
+// (bundleRestore.stillCutOff), and a record that by then cannot be read, on a workspace marked in
+// use, is a blocked workspace rather than a restore cut off: the mark there is the cut-off
+// restore's own, but a record that does not read proves nothing of whose restore it was. So the
+// next start is refused as one over a blocked workspace, naming the record, and runs no role.
+//
+// The control (the pull request records the run): stillCutOff without its arm of a blocked
+// workspace, which lets the next start run its role.
+func TestARestoreCutOffWhoseRecordIsThenDamagedRefusesTheNextStartAsBlocked(t *testing.T) {
+	dir := newWorkspace(t)
+	begun := workspace.RestoreRecord{Report: shimwire.LauncherRestored{ID: "restore-cut-off", Release: 11}}
+	if err := workspace.RecordRestore(dir, begun); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.MarkInUse(dir); err != nil {
+		t.Fatal(err)
+	}
+	g := newSessionRig(t, Config{Workspace: dir})
+	g.wantStartRefused(1, dir, "restore of release 11", dir, "cut off", "no copy of the work has been sent again")
+
+	damagedRecord(t, dir)
+	g.wantStartRefused(2, dir, "could not be read", "neither a restore nor a role start is safe", workspace.RestoreRecordPath(dir))
+}
+
 // A start whose in-use mark fails after it wrote the mark — the record created, its directory's
 // sync failed — leaves the restore's record begun on the disk, which is the order that keeps a
 // killed container's disk reading as a restore cut off: the begun record before the in-use one.

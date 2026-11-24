@@ -3190,7 +3190,7 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			return err
 		}
 		m.claim.LastStartFailure = storetext.FarSideError(err.Error())
-		if unanswered := unansweredStore(err); unanswered != "" {
+		if unanswered := unansweredStore(err); unanswered != nil {
 			// A store did not answer: the session's hold, or the daemon's own store of the issue's
 			// saved workspace copies for the pod's restore. That says nothing about the claim or
 			// its session: nothing started, no launcher_start having been sent, so nothing is
@@ -3199,7 +3199,7 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			// which its view serves as `lastStartFailure`. It is not the session store's wait
 			// (startWaitsForStore): no session is in question, and the issue is told nothing.
 			err = errors.Join(err, m.stopPrevious(starting))
-			m.log.Warn("supervise: "+unanswered+"; trying the launch again at the probe interval, charging nothing",
+			m.log.Warn("supervise: "+unanswered.Error()+"; trying the launch again at the probe interval, charging nothing",
 				"generation", m.claim.Generation, "error", err)
 			m.relaunchAtProbe(l)
 			return errors.Join(err, m.persist(starting))
@@ -3293,18 +3293,17 @@ func (m *Machine) relaunchAtProbe(l launchTry) {
 	m.relaunchLater(m.deps.Timeouts.Probe, m.launchFromTop(l))
 }
 
-// unansweredStore is the line launchTries logs, after "supervise: ", for a start err that failed
-// because a store did not answer, naming which store: the session's hold (errHoldUnanswered), or
-// the daemon's store of the issue's saved workspace copies (runtime.ErrWorkspaceCopyStore). It is
-// "" for every other start error.
-func unansweredStore(err error) string {
-	switch {
-	case errors.Is(err, errHoldUnanswered):
-		return "the store did not answer the session's hold"
-	case errors.Is(err, runtime.ErrWorkspaceCopyStore):
-		return "the daemon's store did not answer the take or the drop of the issue's saved workspace copies for the pod's restore"
+// unansweredStore is the sentinel of a start err that failed because a store did not answer,
+// which names that store: the session's hold (errHoldUnanswered), or the daemon's store of the
+// issue's saved workspace copies (runtime.ErrWorkspaceCopyStore). launchTries logs its words after
+// "supervise: ". It is nil for every other start error.
+func unansweredStore(err error) error {
+	for _, sentinel := range []error{errHoldUnanswered, runtime.ErrWorkspaceCopyStore} {
+		if errors.Is(err, sentinel) {
+			return sentinel
+		}
 	}
-	return ""
+	return nil
 }
 
 // launchFromTop is the launch l's tries belong to raised anew from the top: as no request's,

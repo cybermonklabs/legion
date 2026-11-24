@@ -38,6 +38,10 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   `New` builds a seeded remote, a pod's colocated clone and its issue workspace under an isolated environment, `Work` commits work no remote holds, and `Bundle` runs the shim's own bundler against that workspace over the worker stream's frames and answers what it built.
   The launcher's restore tests and the daemon's cadence test share it, so the bundle both read is the one production builds.
 
+- A test's stand-in for the daemon's end of a loopback listener that the code under test dials takes its accept loop from `packages/daemon/internal/testconn`.
+  `Accept` reads each accepted connection's first line on a goroutine of its own and runs the caller's keep of it under the loop's lock, closing every connection no keep hands on, and `Stop` closes the listener and every connection still silent, logging each through the caller's function; `Locked` and `Reading` serve what a caller hands on beside a connection and what it checks.
+  It takes no `*testing.T` and fails no test, since shimtest's `Bundle` runs on the daemon's cadence, so what a first line must say, what is logged and what fails stay the caller's: the launcher rig's daemon end and shimtest's `shimsConnection` are its two callers.
+
 - A fake GitHub server is the module's `internal/githubtest`: `Server` for a fake its caller reaches by URL, `Serve` where the caller needs the server itself, and `Unexpected` as the default arm of a fake for which an unplanned request is a failure.
   `Spec` carries the opt-in bearer gate and the opt-in request recorder.
   The `switch`, its `default:` arm and the fake's own state stay the caller's, because they are what each test proves: a fake that reads the per-owner token the daemon minted must answer a request it then reads, and a `default:` that logs, that answers 400 or that is the happy path says something a shared arm would take away.

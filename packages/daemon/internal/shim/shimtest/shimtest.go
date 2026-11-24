@@ -22,7 +22,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testconn"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -299,15 +299,15 @@ func (w *Workspace) ask(ctx context.Context, listener net.Listener, bootToken st
 }
 
 // shimsConnection takes the shim's connection off listener: the first connection it accepts whose
-// first line is the shim's hello under bootToken, with the reader that read that line. It reads
-// each accepted connection's first line on a goroutine of its own, so one that sends nothing holds
-// up no other, and closes every other connection it accepts: one that closes before it sends a
-// line, one whose first line is no frame or another frame, a hello under another boot token, and
-// one that is still silent when the wait ends. The shim's return (ran) ends the wait at once, as an
-// error carrying what shim.Run returned, and so does the end of ctx, whose deadline bounds each
-// first line's read too; an opening that never comes is an error naming that bound and ctx's cause.
-// Whatever the outcome, listener is closed, every connection but the shim's is closed, and no
-// goroutine of the wait is left running when it returns.
+// first line is the shim's hello under bootToken, with the reader that read that line. Its accept
+// loop (testconn.Loop) reads each accepted connection's first line on a goroutine of its own, so
+// one that sends nothing holds up no other, and closes every other connection it accepts: one that
+// closes before it sends a line, one whose first line is no frame or another frame, a hello under
+// another boot token, and one that is still silent when the wait ends. The shim's return (ran)
+// ends the wait at once, as an error carrying what shim.Run returned, and so does the end of ctx,
+// whose deadline bounds each first line's read too; an opening that never comes is an error naming
+// that bound and ctx's cause. Whatever the outcome, listener is closed, every connection but the
+// shim's is closed, and no goroutine of the wait is left running when it returns.
 func shimsConnection(ctx context.Context, listener net.Listener, bootToken string, ran *shimReturn) (net.Conn, *shimwire.Reader, error) {
 	deadline, _ := ctx.Deadline()
 	bound := time.Until(deadline)
@@ -316,50 +316,28 @@ func shimsConnection(ctx context.Context, listener net.Listener, bootToken strin
 		reader *shimwire.Reader
 	}
 	found := make(chan opened, 1)
-	var (
-		mu sync.Mutex
-		// done is set once the shim's connection is handed on or the wait has ended: from then on
-		// each read closes the connection it read.
-		done bool
-		// pending is each connection whose first line is still being read.
-		pending = map[net.Conn]bool{}
-		reads   sync.WaitGroup
-	)
-	accepting := make(chan struct{})
-	go func() {
-		defer close(accepting)
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			pending[conn] = true
-			mu.Unlock()
-			reads.Add(1)
-			go func() {
-				defer reads.Done()
-				_ = conn.SetReadDeadline(deadline)
-				reader := shimwire.NewReader(conn)
-				line, err := reader.ReadLine()
-				shims := false
-				if err == nil {
-					frame, err := shimwire.Decode(line)
-					hello, ok := frame.(shimwire.Hello2)
-					shims = err == nil && ok && hello.BootToken == bootToken
-				}
-				mu.Lock()
-				defer mu.Unlock()
-				delete(pending, conn)
-				if shims && !done {
-					done = true
-					found <- opened{conn: conn, reader: reader}
-					return
-				}
-				_ = conn.Close()
-			}()
+	// handed is set once the shim's connection is handed on; only the loop's keeps read and write
+	// it, one at a time.
+	handed := false
+	loop := testconn.Accept(listener, func(conn net.Conn) func() bool {
+		_ = conn.SetReadDeadline(deadline)
+		reader := shimwire.NewReader(conn)
+		line, err := reader.ReadLine()
+		shims := false
+		if err == nil {
+			frame, err := shimwire.Decode(line)
+			hello, ok := frame.(shimwire.Hello2)
+			shims = err == nil && ok && hello.BootToken == bootToken
 		}
-	}()
+		return func() bool {
+			if !shims || handed {
+				return false
+			}
+			handed = true
+			found <- opened{conn: conn, reader: reader}
+			return true
+		}
+	})
 	var got opened
 	var err error
 	select {
@@ -372,15 +350,7 @@ func shimsConnection(ctx context.Context, listener net.Listener, bootToken strin
 			listener.Addr(), bound.Round(time.Millisecond), context.Cause(ctx))
 	}
 	// Nothing accepts from listener from here, and every read still waiting for a first line ends.
-	_ = listener.Close()
-	<-accepting
-	mu.Lock()
-	done = true
-	for conn := range pending {
-		_ = conn.Close()
-	}
-	mu.Unlock()
-	reads.Wait()
+	loop.Stop(nil)
 	if err != nil {
 		// The shim's connection can have opened as ctx ended.
 		select {

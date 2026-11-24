@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
 )
@@ -27,51 +28,26 @@ var errLinkedJJ = errors.New("the workspace's .jj is a symbolic link")
 // with errLinkedJJ and one that is no other directory with ENOTDIR. A link there would carry the
 // records into a directory off the workspace's disk: a record read there says nothing of this
 // workspace, and one written there can be lost at a container restart while the workspace keeps
-// its work. The open follows no link on any kernel, gVisor's included, where issue pods run
-// (openJJDir). Every read and write of a record goes through the open directory (openat,
-// fstatat), so nothing after this open reads .jj by its path again. held, when set, runs once the
-// directory is open and before the record is read or written: a test's seam for a .jj swapped in
-// that window.
+// its work. The open is rolefile.OpenDirectory's, which follows no link on any kernel, gVisor's
+// included, where issue pods run, and waits on no special file planted at .jj; only its refusal
+// of a link is worded here. Every read and write of a record goes through the open directory
+// (openat, fstatat), so nothing after this open reads .jj by its path again. held, when set, runs
+// once the directory is open and before the record is read or written: a test's seam for a .jj
+// swapped in that window.
 func openJJ(dir string, held func()) (*os.File, error) {
 	path := filepath.Join(dir, ".jj")
-	jj, err := openJJDir(path)
-	if err != nil {
-		return nil, err
-	}
-	if held != nil {
-		held()
-	}
-	return jj, nil
-}
-
-// jjOpenFlags is the open of a workspace's .jj (openJJDir). O_NOFOLLOW, and deliberately no
-// O_DIRECTORY, so that a .jj that is a symbolic link is refused with ELOOP: under gVisor the two
-// flags together follow a link to a directory, and the fstat after the open is what makes it a
-// directory's (internal/launcher's volumeOpenFlags, measured there). O_NONBLOCK so that a FIFO
-// planted at .jj answers the open at once rather than block it.
-const jjOpenFlags = unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_CLOEXEC
-
-// openJJDir opens the directory at path, the workspace's .jj (openJJ), one way on every kernel:
-// one open with jjOpenFlags, which answers ELOOP for a link, refused as errLinkedJJ, then an fstat
-// of what that open reached, which is refused with ENOTDIR where it is no directory.
-func openJJDir(path string) (*os.File, error) {
-	fd, err := unix.Open(path, jjOpenFlags, 0)
+	fd, err := rolefile.OpenDirectory(unix.AT_FDCWD, path, path)
 	if errors.Is(err, unix.ELOOP) {
 		return nil, fmt.Errorf("%w: %s", errLinkedJJ, path)
 	}
 	if err != nil {
-		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+		return nil, err
 	}
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
-		_ = unix.Close(fd)
-		return nil, &fs.PathError{Op: "fstat", Path: path, Err: err}
+	jj := os.NewFile(uintptr(fd), path)
+	if held != nil {
+		held()
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
-		_ = unix.Close(fd)
-		return nil, &fs.PathError{Op: "open", Path: path, Err: unix.ENOTDIR}
-	}
-	return os.NewFile(uintptr(fd), path), nil
+	return jj, nil
 }
 
 // openIn opens name in the open directory jj with flags, adding O_NOFOLLOW and O_CLOEXEC, so a

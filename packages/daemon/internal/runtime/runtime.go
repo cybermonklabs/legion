@@ -354,23 +354,23 @@ type WorkspaceWork struct {
 // not hold.
 func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
 
-// SavedWorkspaceBundle answers what the daemon holds of an issue's workspace for the pod of
-// podUID to restore, and what that ask did to each copy it holds
-// (store.Store.TakeWorkspaceCopyForRestore, bound to the daemon's project where the daemon wires
-// it). An issue holds up to two: the bundle its last idle
-// release saved and the copy taken while its pod ran. It is the other half of WorkspaceBundler,
-// handed to the runtime so that the runtime, which alone knows when a replacement pod's launcher
-// is up, can carry the saved work back into the new workspace before any role of that pod starts.
+// SavedWorkspaceBundle answers what the daemon holds of an issue's workspace for the pod of podUID
+// to restore, and what that ask did to each copy it holds (store.Store.TakeWorkspaceCopyForRestore,
+// bound to the daemon's project where the daemon wires it). An issue holds up to two: the bundle
+// its last idle release saved and the copy taken while its pod ran. It is the other half of
+// WorkspaceBundler, handed to the runtime so that the runtime, which alone knows when a replacement
+// pod's launcher is up, can carry the saved work back into the new workspace before any role of
+// that pod starts. An ask the store did not answer is wrapped in ErrWorkspaceCopyStore, which the
+// sandbox relies on: an implementation's plain error there is charged as the claim's failure.
 //
 // It is one call, and the store answers it in one transaction, because the choice between the two
 // copies is one decision (DecideWorkspaceRestore): which copy is the newer, whether the running
 // copy is older than the newest push of the issue's branch the daemon recorded, whether either is
-// spent or came off the pod asking, and whether that pod first asked for a restore
-// before the copy it is offered was written. Made as several calls it could leave the store
-// half-changed — the older copy closed, the newer one's take failed, and the pod given neither.
-// The pod's first ask is the store's own record (the call records it the first time a pod asks),
-// so the caller passes nothing of the pod but its uid: every time the decision compares is the
-// store's clock.
+// spent or came off the pod asking, and whether that pod first asked for a restore before the copy
+// it is offered was written. Made as several calls it could leave the store half-changed — the
+// older copy closed, the newer one's take failed, and the pod given neither. The pod's first ask is
+// the store's own record (the call records it the first time a pod asks), so the caller passes
+// nothing of the pod but its uid: every time the decision compares is the store's clock.
 //
 // WorkspaceBundleNone, for a copy, is nothing sent and nothing recorded: an issue never released
 // and whose cadence took nothing, one whose release a wake cancelled, one whose copy is spent
@@ -433,22 +433,22 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string) (Works
 type WorkspaceBundleRestored func(ctx context.Context, issue, podUID string, restore int64) error
 
 // HeldWorkspaceCopiesDrop drops each copy of an issue's workspace that the pod of podUID holds on
-// its volume already: the pod's Sandbox owns the issue's kept volume and was created at
-// keptSince, and a copy taken after that, the bundle a release saved and the running copy alike,
-// came off that volume (DecideKeptVolumeDrop). So the pod is sent nothing of it. The launcher
-// would refuse every slice of a copy sent there as one to a workspace in use, since the earlier
-// pod's in-use mark stays in that volume's .jj, before any restore runs and with no notice, and a
-// release bundle refused so would hold the issue's pod (workflow.IdleHoldBundleUnrestored). The
-// drop answers what it did to each copy in the take's shape (WorkspaceRestore), never a body: the
-// restore id and the time of each copy it deleted, and the older copy it closed where it deleted
-// the newer. Where it deleted no copy, the runtime then takes the copies as SavedWorkspaceBundle
-// answers them. It deletes the rows of the copies (store.Store.DropHeldWorkspaceCopies, bound to
-// the daemon's project where the daemon wires it) under the take's own rules: the pod the work
-// came off drops nothing, a copy whose attempt is spent drops nothing, and a copy of an issue the
-// daemon's project does not record drops nothing. A copy taken before the Sandbox was created came
-// off an earlier volume, which a reset or a change of the disk's shape replaced, and its pod
-// restores it. So does a copy taken in the Sandbox's own second, which the rule cannot order
-// against the Sandbox.
+// its volume already: the pod's Sandbox owns the issue's kept volume and was created at keptSince,
+// and a copy taken after that, the bundle a release saved and the running copy alike, came off that
+// volume (DecideKeptVolumeDrop). So the pod is sent nothing of it. The launcher would refuse every
+// slice of a copy sent there as one to a workspace in use, since the earlier pod's in-use mark
+// stays in that volume's .jj, before any restore runs and with no notice, and a release bundle
+// refused so would hold the issue's pod (workflow.IdleHoldBundleUnrestored). The drop answers what
+// it did to each copy in the take's shape (WorkspaceRestore), never a body: the restore id and the
+// time of each copy it deleted, and the older copy it closed where it deleted the newer. Where it
+// deleted no copy, the runtime then takes the copies as SavedWorkspaceBundle answers them. It
+// deletes the rows of the copies (store.Store.DropHeldWorkspaceCopies, bound to the daemon's
+// project where the daemon wires it) under the take's own rules: the pod the work came off drops
+// nothing, a copy whose attempt is spent drops nothing, and a copy of an issue the daemon's project
+// does not record drops nothing. A copy taken before the Sandbox was created came off an earlier
+// volume, which a reset or a change of the disk's shape replaced, and its pod restores it. So does
+// a copy taken in the Sandbox's own second, which the rule cannot order against the Sandbox. A drop
+// the store did not answer is wrapped in ErrWorkspaceCopyStore, as SavedWorkspaceBundle's ask is.
 type HeldWorkspaceCopiesDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceRestore, error)
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
