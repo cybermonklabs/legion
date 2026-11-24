@@ -280,12 +280,19 @@ var displayCache = bytelru.New[displayCacheKey, json.RawMessage](DisplayCacheByt
 // displayCacheEntryBytes is what one entry costs beyond its tree's array and its key's own bytes:
 // bytelru's entry (which holds the key again, the tree's slice header and the charge), its list
 // element, and its slot in the cache's map with that slot's share of the map's empty slots.
-// A throwaway test on go1.27.3 linux/amd64 measured the live heap of caches whose entries all
-// share one one-byte value. Each entry, its key included, held 201.5-240.1 bytes in caches of
-// 10,000 to 262,144 entries that had not yet evicted. It held 215.7-324.2 bytes in caches of
-// 40,000 to 200,000 entries fed 2 to 16 times what they hold, since such a map keeps the slots
-// of deleted keys and splits its tables early. This is a round number above the worst of those,
-// less the key's 40 bytes.
+//
+// A copy of bytelru on go1.27.3 linux/amd64 was fed SHA-256 keys and trees within 200 bytes of one
+// length, each length from 1,000 to 8,000 bytes in steps of 200, until it had taken 60 times what
+// it holds. Each reading measured the live heap of an entry beyond its tree, its key included.
+// While bytelru never made its map afresh, the map kept the slots of evicted keys and split its
+// tables for them: an entry held about 200 to 250 bytes when the cache was first full and up to
+// 440 bytes after 60 turnovers, so at this charge 19 of the 36 lengths ended past the bound, by up
+// to 3.77 MB (trees of 1,000 bytes); after 210 turnovers an entry held up to 525 bytes. Now that
+// bytelru makes its map afresh each time it has evicted half as many entries as it holds, the most
+// an entry held at any reading was 287 bytes (trees of 5,200 bytes), every run ended 0.89 MB or
+// more under the bound, the cache's heap moved by at most 0.06 MB over its last 20 turnovers, and
+// runs of 200 turnovers held at most 284 bytes an entry. The charge, this and the key's 40 bytes,
+// is 360 bytes, 73 above the worst of those.
 const displayCacheEntryBytes = 320
 
 // keepDisplayTree puts tree into the display cache under key, charged what keeping it costs
