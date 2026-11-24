@@ -42,8 +42,8 @@ func ownText(err error, text string) bool {
 // quotes (each row's twin: that text holds it). A transport failure on the request's own host - a
 // refused connection, a deadline, a cancellation, a peer that closed the connection after a
 // redirect on the request's own origin - prints net/http's text of it, as it did. The call is
-// named shown, or the URL it asked as URL prints it; and errors.Is and errors.As find what they
-// found before, a deadline's net.Error timeout among them.
+// named shown, or the URL it asked by its scheme, host and path, its query dropped; and errors.Is
+// and errors.As find what they found before, a deadline's net.Error timeout among them.
 func TestUnansweredNamesTheCallAndKeepsOnlyATransportFailuresOwnWords(t *testing.T) {
 	refusing := redirects.Refused(&http.Client{})
 	sameOrigin := redirects.SameOrigin(&http.Client{})
@@ -74,7 +74,7 @@ func TestUnansweredNamesTheCallAndKeepsOnlyATransportFailuresOwnWords(t *testing
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, c := range []struct {
-		name, base, path, shown string
+		name, base, path, query, shown string
 		// want is the failure's whole text, its class; or with ownWords the end of the text of a
 		// transport failure, which must be the own text of an error net/http's error wraps.
 		want     string
@@ -98,7 +98,7 @@ func TestUnansweredNamesTheCallAndKeepsOnlyATransportFailuresOwnWords(t *testing
 		}), path: "/repos/acme/widgets", want: ClassRequestFailed, client: sameOrigin, twinLeaks: true, body: true},
 		{name: "followed-elsewhere", base: echo(func(credential string) string {
 			return redirectstest.To(dead, credential)
-		}), path: "/repos/acme/widgets?per_page=100", want: ClassRedirected, client: following, twinLeaks: true},
+		}), path: "/repos/acme/widgets", query: "?per_page=100", want: ClassRedirected, client: following, twinLeaks: true},
 		{name: "followed-on-origin", base: closing.URL, path: "/start", want: "EOF", ownWords: true, client: sameOrigin},
 		{name: "refused-connection", base: "http://" + dead, path: "/repos/acme/widgets", want: "connect: connection refused", ownWords: true, client: refusing},
 		{name: "deadline", base: "http://" + dead, path: "/repos/acme/widgets", want: "context deadline exceeded", ownWords: true, ctx: ended, client: sameOrigin},
@@ -109,7 +109,7 @@ func TestUnansweredNamesTheCallAndKeepsOnlyATransportFailuresOwnWords(t *testing
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+c.path, nil)
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+c.path+c.query, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -137,7 +137,7 @@ func TestUnansweredNamesTheCallAndKeepsOnlyATransportFailuresOwnWords(t *testing
 			}
 			name := c.shown
 			if name == "" {
-				name = URL(request.URL.String())
+				name = c.base + c.path
 			}
 			head := `Get "` + name + `": `
 			if c.body {
@@ -186,7 +186,7 @@ func TestUnansweredNamesTheCallAndKeepsOnlyATransportFailuresOwnWords(t *testing
 			t.Errorf("Unanswered = %q, want the call named and its class", printed)
 		}
 		if printed := Unanswered(err, nil, ""); printed.Error() != `parse "`+NotPrinted+`": `+ClassNotAURL {
-			t.Errorf("Unanswered = %q, want the URL as URL prints it and the class", printed)
+			t.Errorf("Unanswered = %q, want a URL that does not parse named as NotPrinted and the class", printed)
 		}
 	})
 	if Unanswered(nil, nil, "") != nil {
