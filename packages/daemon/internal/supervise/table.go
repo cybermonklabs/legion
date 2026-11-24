@@ -970,6 +970,9 @@ func GoneStates() []ClaimState {
 // IsGone is whether state is one of GoneStates: a claim in it has had its process let go.
 func IsGone(state ClaimState) bool { return slices.Contains(gone, state) }
 
+// FailedOrRetired is whether state is failed or retired: gone, and started again by a retry alone.
+func FailedOrRetired(state ClaimState) bool { return state == StateFailed || state == StateRetired }
+
 // TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
 // the table's own onCompact rows rather than from a second list of them: the api's refusals
 // name the states a compaction reaches, and this is what their test holds those words to

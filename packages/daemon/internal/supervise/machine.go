@@ -3080,21 +3080,35 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 	}
 }
 
-// pauseHeldTry is a try the project's pause meets after its write (launchTries): it stops the
-// process its launch let go, as a try that parks at its issue pod's gate does (askPod), and the
-// pause's gate holds the launch, which stops the claim for the pause in its next decision, a launch
-// owed (pauseGate, pauseStopDue). The held wake's run is a fresh try of the same launch, for a
-// let-out after a pause that ends before that stop (letOutHeldLaunch), and its again the launch
-// raised anew from the top, for that let-out's lifecycle recheck (launchFromTop). The launch passed
-// the wake gate before it reached here, its token taken and its line written (wake.ran).
-func (m *Machine) pauseHeldTry(ctx context.Context, l launchTry, pause int64) error {
+// heldTryWake is the wake that holds a try of launch l past the wake gate, its token paid and its
+// line written (wake.paid, wake.ran), in the claim's state as the try left it, launching: a try
+// parked at its issue pod's gate (askPod), which sets park, and a try the project's pause met
+// after its write (pauseHeldTry). Its run is the launch from the park's grant on while the wake
+// carries the hold, the grant starting with token, the boot token the try was written with; and a
+// fresh try of the same launch, asked of the gate anew, once it carries none, as a let-out after a
+// pause runs it (letOutHeldLaunch, runWake). Its again is the launch raised anew from the top, for
+// that let-out's lifecycle recheck (launchFromTop, relaunchRefused).
+func (m *Machine) heldTryWake(l launchTry, token string) *wake {
+	held := &wake{kind: WakeLaunch, state: m.claim.State, paid: true, ran: true, again: m.launchFromTop(l)}
+	held.run = func(ctx context.Context) error {
+		if held.park == nil {
+			return m.launchTries(ctx, l, nil)
+		}
+		return m.launchTries(ctx, l, &podGrant{token: token, hold: held.park})
+	}
+	return held
+}
+
+// stopLetGo is the stop a try that is held rather than started makes of the process its launch let
+// go (stopPrevious): a try parked at its issue pod's gate (askPod) and a try the project's pause
+// met (pauseHeldTry). A stop the runtime refuses, or that the try's own context cuts short, leaves
+// the try held all the same: the refusal is recorded (stopUnconfirmed) and logged at Warn, naming
+// what the launch waits for, and no error is answered, for the reason askPod gives.
+func (m *Machine) stopLetGo(ctx context.Context, waitsFor string) {
 	if stopped := m.stopPrevious(ctx); stopped != nil {
-		m.log.Warn("supervise: the runtime did not confirm the stop of the process this launch let go; the pause's gate holds the launch all the same",
+		m.log.Warn("supervise: the runtime did not confirm the stop of the process this launch let go; the launch waits for "+waitsFor+" all the same",
 			"generation", m.claim.Generation, "error", stopped)
 	}
-	return m.pauseGate(ctx, &wake{reserved: m.deps.Clock.Now(), kind: WakeLaunch, state: m.claim.State, ran: true,
-		run:   func(ctx context.Context) error { return m.launchTries(ctx, l, nil) },
-		again: m.launchFromTop(l)}, pause)
 }
 
 // writeTry is a fresh try of the launch (launchTries): the claim at the next generation with a
@@ -3138,9 +3152,9 @@ func (m *Machine) relaunchAtProbe(l launchTry) {
 
 // launchFromTop is the launch l's tries belong to raised anew from the top: as no request's,
 // letting no process go (noEnd), and as the lane whose intent it carried (retryHolding). The
-// retries of a try that started nothing take it (relaunchAtProbe), and so does a launch parked at
-// its issue pod's gate, for the lifecycle recheck of its let-out after a pause (askPod,
-// wake.again).
+// retries of a try that started nothing take it (relaunchAtProbe), and so does every try the
+// wake gate let past that a gate then holds, for the lifecycle recheck of its let-out after a
+// pause (heldTryWake, wake.again).
 func (m *Machine) launchFromTop(l launchTry) func(context.Context) error {
 	return m.retryHolding(l.intent, func(ctx context.Context) error {
 		return m.launchAfter(ctx, l.charged, l.exempt, false, noEnd)
@@ -3570,17 +3584,18 @@ func (m *Machine) spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Lo
 }
 
 // stopPrevious stops the process letGo moved into previous when a launch fails, or when a try of it
-// parks at its issue pod's gate (askPod): the claim no longer records it, so nothing else ends it.
+// is held rather than started — parked at its issue pod's gate, or held by the project's pause
+// (stopLetGo): the claim no longer records it, so nothing else ends it.
 // Machine owns it whichever step failed (persisting the launch, building its spec, Spawn, Resume);
 // a runtime stops only a process it started itself (runtime.Runtime's Spawn and Resume). Suspend
 // stops that one process alone, and does nothing for one already gone or replaced; previous is
 // kept, for the next launch to wait out.
 //
 // A refusal is recorded as well as returned, and a stop the runtime makes clears that record
-// (stopUnconfirmed): every caller goes on — to the retry, to the next try, to the park, or to the
-// failed claim — joining a refusal to an error of its own or returning it, but for the park, which
-// logs it at Warn and answers no error, for the reason askPod gives. So the process is left
-// possibly running, and the owner of a stalled worker is told that rather than that it was
+// (stopUnconfirmed): every caller goes on — to the retry, to the next try, to the hold, or to the
+// failed claim — joining a refusal to an error of its own or returning it, but for the hold, which
+// logs it at Warn and answers no error, for the reason askPod gives (stopLetGo). So the process is
+// left possibly running, and the owner of a stalled worker is told that rather than that it was
 // stopped. The tries of one launch stop one process, the one letGo moved into previous (launchTries
 // holds it until a start succeeds), so what the record answers is whether that process was seen
 // to stop, and the latest answer about it is the answer: a stop refused and then made is a process

@@ -4,9 +4,10 @@ body: |-
     starts its process during the pause. The pause's catch-up reads each claim as last published,
     which showed such a launch as the claim it relaunched until the launch's first write, so the
     catch-up asked it no stop. Each try of a launch now checks the pause again after that write;
-    one that finds the project paused starts nothing, and the pause stops the role, owed a launch
-    at the resume. A launch the pause holds this way, or at its issue pod's start, takes no second
-    pacing token and writes no second wake line when a pause that ends first lets it out.
+    one that finds the project paused stops the process it replaces and starts nothing, and the
+    pause stops the role, owed a launch at the resume. A launch the pause holds after it took its
+    pacing token (this way, at its issue pod's start, or at its turn in the pacing) takes no second
+    token when a pause that ends first lets it out, and writes one wake line.
 time: 2026-11-23T22:38:21Z
 custom:
     Issue: launch-pause-recheck
