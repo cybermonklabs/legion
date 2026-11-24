@@ -404,7 +404,7 @@ test("every Go-written fixture parses to a value equal to the file", () => {
 });
 
 // Each start that waits for the issue's pod, by its role and the token of the claim it starts
-// (`api.Issue.StartWaitsForPod`, contract 245): a plugin parses the state through `legionIssue`,
+// (`api.Issue.StartWaitsForPod`, contract 280): a plugin parses the state through `legionIssue`,
 // which strips a key it does not name, so a mirror without the line, or without a key of an
 // entry, would drop it in silence. Two claims of one issue can hold one role, so the role's own
 // start and a second agent's start of the role are two entries, told apart by their tokens.
@@ -986,7 +986,7 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 // Contract 221: a step of a role of the deployment runs as the phase `step`, and the issue names
 // the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step. An
 // issue whose pod was built before that role names the start of it in `startWaitsForPod`, by the
-// role and the token of the claim it starts (contract 245), and holds no claim of it; a held issue
+// role and the token of the claim it starts (contract 280), and holds no claim of it; a held issue
 // keeps the failed claim of that role as its worker.
 test("the state golden carries an issue at step and the role of the deployment that works it", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
@@ -2850,7 +2850,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the state golden's issues at step and its claims of a role of the deployment as a caller below
   // 221 reads them (`belowDeploymentRoles`), contract 222's, which serves each claim nothing will
   // wake and each claim view without its `token`, and each issue without its `otherClaims`
-  // (`withoutStrandedTokens`, `withoutClaimTokens`), and contract 245's, which serves each issue's
+  // (`withoutStrandedTokens`, `withoutClaimTokens`), and contract 280's, which serves each issue's
   // `startWaitsForPod` as the roles of its starts (`withoutStartWaitTokens`), a list the band of 221
   // already leaves off. So the narrowing changes this one block and, beside it, only what the bands
   // of 221 and 222 change. One value strip stands above 199 as well: `caches`, the source of the

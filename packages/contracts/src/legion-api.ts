@@ -932,7 +932,7 @@ const legionIssue = z.object({
   assignments: z.array(legionAssignment).optional(),
   /** `api.Issue.StartWaitsForPod`: each start that waits for the issue's pod, which runs no
    * process of the start's claim yet, by the role of its step and the token of the claim it
-   * starts (contract 245). Two claims of one issue can hold one role (`record.WorkerClaim`), so
+   * starts (contract 280). Two claims of one issue can hold one role (`record.WorkerClaim`), so
    * the role alone would name a second agent of the role, such as `implementer-2`, as the role's
    * own agent. Absent for an issue no start waits on. No plugin code reads an entry
    * (`LEGION_ANSWER_READS`), so both keys are optional. */
