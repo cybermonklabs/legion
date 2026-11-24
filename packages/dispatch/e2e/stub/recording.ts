@@ -162,12 +162,17 @@ function withoutFields<T extends Record<string, unknown>>(
  *  answer.
  *
  *  And of the entries that repeat one request's method, URL, body and headers, one is kept: the
- *  first that was answered (a status above 0), or the first of them when none was. Playwright
- *  picks among a URL's entries the one whose request headers match the most, the first of equals
- *  (`_harFindResponse`, playwright-core 1.64.1 coreBundle.js), so a later repeat can never be
- *  served, and a read the page cancelled (status -1, which the router passes over without an
- *  answer) would hide the answered one behind it. A row that loads one page at five widths would
- *  otherwise keep every read five times. */
+ *  first that was answered with its body, else the first that was answered (a status above 0),
+ *  or the first of them when none was. Playwright picks among a URL's entries the one whose
+ *  request headers match the most, the first of equals (`_harFindResponse`, playwright-core 1.64.1
+ *  coreBundle.js), so a later repeat can never be served. A read the page cancelled (status -1,
+ *  which the router passes over without an answer) would hide the answered one behind it, and an
+ *  answer whose body Playwright never read (`content.size` -1 and no text: the page that asked
+ *  went before the body arrived) is served as an empty body, which the page cannot parse - seen
+ *  in dispatch://INFRA-5200, where the Agents row's first load reloads at once and the sidebar's
+ *  pinned issues and projects were kept bodiless, so its replay drew "Could not load navigation."
+ *  at every wide width. A row that loads one page at five widths would otherwise keep every read
+ *  five times. */
 export function normalise(har: Har, from: string): Har {
   const entries = har.log.entries.map((entry, index) => ({ entry, index }));
   entries.sort((a, b) => {
@@ -214,13 +219,18 @@ export function normalise(har: Har, from: string): Har {
       request.postData?.text ?? "",
       request.headers.map(({ name, value }) => `${name.toLowerCase()}: ${value}`).sort(),
     ]);
+  // 2: answered with its body; 1: answered, its body never read; 0: cancelled.
+  const rank = ({ response }: HarEntry) =>
+    response.status <= 0
+      ? 0
+      : response.content.size === -1 && response.content.text === undefined
+        ? 1
+        : 2;
   const kept = new Map<string, HarEntry>();
   for (const entry of normalised.log.entries) {
     const key = keyOf(entry);
     const held = kept.get(key);
-    if (held === undefined || (held.response.status <= 0 && entry.response.status > 0)) {
-      kept.set(key, entry);
-    }
+    if (held === undefined || rank(entry) > rank(held)) kept.set(key, entry);
   }
   normalised.log.entries = normalised.log.entries.filter(
     (entry) => kept.get(keyOf(entry)) === entry

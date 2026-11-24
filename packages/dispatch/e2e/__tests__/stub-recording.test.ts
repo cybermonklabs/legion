@@ -14,6 +14,7 @@ import { describe, expect, test } from "bun:test";
 import { recordedOrigin } from "../stub/origin";
 import {
   type Har,
+  type HarEntry,
   normalise,
   refuseACredential,
   retargeted,
@@ -136,6 +137,28 @@ describe("a committed recording", () => {
     expect(statusesKept([200, -1])).toEqual([200]);
     // With no answered entry, the cancelled one stays, so a reader of the recording sees the race.
     expect(statusesKept([-1, -1])).toEqual([-1]);
+  });
+
+  test("keeps an answer whose body it holds over one whose body Playwright never read", () => {
+    // The page that asked went before the body arrived: Playwright writes the answer with
+    // `content.size` -1 and no text, and the router would serve it as an empty body the page
+    // cannot parse.
+    const bodiless = () => {
+      const entries = recorded({ time: 1000 }).log.entries;
+      for (const entry of entries)
+        entry.response.content = { mimeType: "application/json", size: -1 };
+      return entries;
+    };
+    const withBody = () => recorded({ body: '{"rows":[7]}', time: 1001 }).log.entries;
+    const textsKept = (...groups: HarEntry[][]) => {
+      const har = recorded({});
+      har.log.entries = groups.flat();
+      return normalise(har, from).log.entries.map((entry) => entry.response.content.text);
+    };
+    expect(textsKept(bodiless(), withBody())).toEqual(['{"rows":[7]}']);
+    expect(textsKept(withBody(), bodiless())).toEqual(['{"rows":[7]}']);
+    // With no answer whose body was read, the bodiless one stays: it is still the server's status.
+    expect(textsKept(bodiless(), bodiless())).toEqual([undefined]);
   });
 
   test("names no encoding of a body it holds decoded", () => {

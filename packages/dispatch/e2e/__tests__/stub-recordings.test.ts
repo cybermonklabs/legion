@@ -568,6 +568,23 @@ describe("every committed recording answers what the generated contract declares
   for (const file of files) {
     test(file, () => {
       const har = JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har;
+      // A layout row reads what the page draws, and a read answered with a body Playwright never
+      // read (`content.size` -1, no text) is replayed as an empty body the page cannot parse: the
+      // shell then draws "Could not load navigation." in place of its sidebar, and the reading
+      // measures that page (dispatch://INFRA-5200: 12 layout recordings held such answers for
+      // rounds, and 42 did once re-recorded, before `normalise` preferred an answer with a body).
+      if (file.startsWith("stub/layout-rule/")) {
+        const bodiless = har.log.entries.filter(
+          ({ response }) =>
+            response.status > 0 &&
+            response.content.size === -1 &&
+            response.content.text === undefined
+        );
+        expect(
+          bodiless.map(({ request }) => `${request.method} ${new URL(request.url).pathname}`),
+          `${file}: answers whose body the recording never read, which replay as an empty body`
+        ).toEqual([]);
+      }
       for (const entry of har.log.entries) {
         const url = new URL(entry.request.url);
         const where = `${entry.request.method} ${url.pathname} in ${file}`;
