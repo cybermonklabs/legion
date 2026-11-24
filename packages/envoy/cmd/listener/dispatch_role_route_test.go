@@ -598,18 +598,14 @@ func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T)
 	})
 
 	t.Run("(8) Dispatch resolved holder A and R's claim is gone before the send arrives: it is kept for R, answered 202 kept, and R's wake is reported", func(t *testing.T) {
-		const role = "route-released"
+		const role = "legion-acme-route-released"
 		holder := rig.register(t, "ses_route_released_a", "Holder A")
 		rig.claim(t, holder.id, role)
 		wakesCtx, stopWakes := context.WithCancel(context.Background())
 		t.Cleanup(stopWakes)
-		rig.cold.wakes = newWakeReporter(wakesCtx, rig.cold.client)
+		rig.cold.wakes = newWakeReporter(wakesCtx, rig.cold.client, knownSessionProjects(rig.cold.known))
 		t.Cleanup(func() { rig.cold.wakes = nil })
-		wakes, err := rig.cold.client.Conn.SubscribeSync(bus.LegionWakeTopic)
-		if err != nil {
-			t.Fatalf("subscribe to the wake reports: %v", err)
-		}
-		t.Cleanup(func() { _ = wakes.Unsubscribe() })
+		wakes := subscribeWakes(t, rig.cold.client.Conn)
 		claims, err := rig.warm.client.JS().KeyValue(bus.RoleClaimBucket)
 		if err != nil {
 			t.Fatalf("open the role bucket: %v", err)

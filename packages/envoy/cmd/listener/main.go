@@ -1595,7 +1595,7 @@ func main() {
 	wakesCtx, stopWakeReports := context.WithCancel(context.Background())
 	var wakes *wakeReporter
 	if edge == nil {
-		wakes = newWakeReporter(wakesCtx, client)
+		wakes = newWakeReporter(wakesCtx, client, knownSessionProjects(known))
 	}
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.

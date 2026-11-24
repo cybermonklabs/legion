@@ -356,7 +356,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 		// holder, says which the resolution read.
 		t.Run("surplus", func(t *testing.T) {
 			leaf(t)
-			const role = "act-sweep-surplus"
+			const role = "legion-acme-act-sweep-surplus"
 			rig := newRoleActRig(t)
 			rig.register(t, holder)
 			rig.keep(t, role, "act-sweep-surplus")
@@ -598,7 +598,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 					rig.requireNoForward(t, time.Second)
 				})
 				t.Run("sweep", func(t *testing.T) {
-					const role = "act-held-sweep"
+					const role = "legion-acme-act-held-sweep"
 					rig := newRoleActRig(t)
 					rig.claim(t, holder, role)
 					item := rig.keep(t, role, "act-held-sweep")

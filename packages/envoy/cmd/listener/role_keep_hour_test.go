@@ -1885,24 +1885,28 @@ func wakeStepShift(t *testing.T, kept time.Time) time.Duration {
 	return 0
 }
 
-// hourWake is one report on bus.LegionWakeTopic as these tests read it.
+// hourWake is one wake report as these tests read it.
 type hourWake struct {
 	key  string
 	kind string
 	role string
 }
 
-// wakes is every report the stream holds on bus.LegionWakeTopic, in stream order.
+// wakes is every report the stream holds on a project's wake subject, in stream order. A role
+// report stored on any subject but the one its role's name gives (legionRoleToken) fails the test.
 func (r *hourRig) wakes() []hourWake {
 	r.t.Helper()
 	var found []hourWake
-	for _, item := range r.envelopesOn(bus.LegionWakeTopic) {
+	for _, item := range r.envelopesOn("notifications.legion.*.wake") {
 		var report struct {
 			Kind string `json:"kind"`
 			Role string `json:"role"`
 		}
 		if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
 			r.t.Fatalf("decode the wake report %s: %v", item.Payload, err)
+		}
+		if want := contracts.LegionWakeSubject(legionRoleToken(report.Role)); report.Kind == wakeKindRole && item.Topic != want {
+			r.t.Fatalf("the wake report of role %s is on %s, want %s", report.Role, item.Topic, want)
 		}
 		found = append(found, hourWake{key: item.DedupeKey, kind: report.Kind, role: report.Role})
 	}
@@ -1942,10 +1946,10 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 	t.Run("f a kept copy wakes its role once in each interval of its first forty minutes until it is taken or ends", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (
-			routed = "hour-wake-routed"
-			laned  = "hour-wake-laned"
-			taken  = "hour-wake-taken"
-			outbox = "hour-wake-outbox"
+			routed = "legion-acme-hour-wake-routed"
+			laned  = "legion-acme-hour-wake-laned"
+			taken  = "legion-acme-hour-wake-taken"
+			outbox = "legion-acme-hour-wake-outbox"
 			taker  = "ses_hour_wake_taker"
 			sender = "ses_hour_wake_sender"
 		)
@@ -1953,7 +1957,7 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 		reporting, stopReporting := context.WithCancel(context.Background())
 		t.Cleanup(stopReporting)
 		// The route raises the keep's report through the reporter main.go gives it.
-		first.route.wakes = newWakeReporter(reporting, first.harness.client)
+		first.route.wakes = newWakeReporter(reporting, first.harness.client, nil)
 
 		stored := map[string]laneCopy{}
 		for _, role := range []string{routed, taken} {

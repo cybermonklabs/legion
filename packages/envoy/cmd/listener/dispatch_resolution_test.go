@@ -150,7 +150,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		// up with the agent wake it reports here. Every other copy in these tests is placed on
 		// its first delivery, which no window touches.
 		unplaceableRetryWindow: oneDeferralWindow,
-		wakes:                  newWakeReporter(lifetime, d.client),
+		wakes:                  newWakeReporter(lifetime, d.client, knownSessionProjects(d.known)),
 		// The set every handler built from one config shares; main.go builds one for the whole
 		// process and passes it through deliveryConfig, so a durable rebound after a flap draws on
 		// the budget its predecessor held rather than opening a second one.
@@ -725,10 +725,12 @@ func (rig *dispatchRig) claim(
 // record is gone, while its interest row, naming the listener it registered through, stays until
 // the reaper's pass. Dispatch stores on the session's own subject the envelope the listener's send
 // route would have stored. The listener's own delivery of that copy finds no record, holds it for
-// its window, and gives it up with the agent wake that brings the pod back. The session that
-// registers again under that id is then handed the copy by its consumer. Before, the attempt
-// failed "no live session", nothing was stored or woken, and the person had to send the message
-// again once the pod was back.
+// its window, and gives it up. With no known-session record, nothing lists the session's project,
+// so no agent wake goes out on any subject: the shared wake subject carries listener_ready alone,
+// and a wake on a project the session is not in would hand its id to that project's daemon. The
+// session that registers again under that id is then handed the copy by its consumer. Before,
+// the attempt failed "no live session", nothing was stored, and the person had to send the
+// message again once the pod was back.
 func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 	rig := newDispatchRig(t)
 	const released = "ses_released"
@@ -736,14 +738,7 @@ func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 	if _, err := rig.warm.registry.Upsert(store.Interest{SessionID: released, MachineID: rigMachineID}, []string{subject}); err != nil {
 		t.Fatalf("register %s's interest naming this listener: %v", released, err)
 	}
-	wakes, err := rig.warm.client.Conn.SubscribeSync(bus.LegionWakeTopic)
-	if err != nil {
-		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
-	}
-	t.Cleanup(func() { _ = wakes.Unsubscribe() })
-	if err := rig.warm.client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the wake subscription: %v", err)
-	}
+	wakes := subscribeWakes(t, rig.warm.client.Conn)
 
 	response := rig.asHuman(t, http.MethodPost, "/api/v1/agents/"+released+"/messages", map[string]any{
 		"body": "Pick the release back up.", "delivery": rigDeliveryMode,
@@ -785,8 +780,8 @@ func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 	if deferrals := recordsFor(deliveryRecords(t, logs, "listener agent delivery deferred"), released); len(deferrals) != 1 {
 		t.Fatalf("%d deferrals of the queued copy, want the one its window buys:\n%s", len(deferrals), logs)
 	}
-	if got := agentWakesFor(t, wakes, released, 10*time.Second, time.Second); got != 1 {
-		t.Fatalf("%d agent wake reports for %s, want the one beside the give-up:\n%s", got, released, logs)
+	if got := agentWakesFor(t, wakes, released, 5*time.Second, time.Second); got != 0 {
+		t.Fatalf("%d agent wake reports for %s, want none: no record lists its project:\n%s", got, released, logs)
 	}
 
 	returned := rig.registerSession(t, released, "Released planner")

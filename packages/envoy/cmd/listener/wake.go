@@ -8,13 +8,18 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"regexp"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 )
 
 // The kinds of wake report, as the daemon's decoder reads them
@@ -69,14 +74,91 @@ const (
 	wakeReportBudget   = 5 * time.Minute
 )
 
-// wakeReport is the wire shape of a report on bus.LegionWakeTopic. At is this listener's own
-// clock in epoch milliseconds, matching contracts.Envelope's KeptAt, because the stream's store
-// time is the NATS server's clock and the daemon measures a wake against its own.
+// wakeReport is the wire shape of a wake report. At is this listener's own clock in epoch
+// milliseconds, matching contracts.Envelope's KeptAt, because the stream's store time is the NATS
+// server's clock and the daemon measures a wake against its own.
+//
+// token is not on the wire: it is the project token of the one Legion deployment a role or agent
+// report is for (legionRoleToken, wakeReporter.agentWakeTokens), and the report is published on that project's
+// own wake subject, contracts.LegionWakeSubject(token), beside its controller lane, where only that
+// project's daemon reads. listener_ready names no project and stays on the one subject every daemon
+// shares, bus.LegionWakeTopic (wakeReport.subject), so that subject carries no project's role
+// name or session id, and a daemon held to its projects reads only its own wakes.
 type wakeReport struct {
 	Kind    string `json:"kind"`
 	Role    string `json:"role,omitempty"`
 	Session string `json:"session,omitempty"`
 	At      int64  `json:"at"`
+	token   string
+}
+
+// subject is the subject report is published on: its project's own wake subject, or the shared
+// one for a report of no project (listener_ready).
+func (report wakeReport) subject() string {
+	if report.token == "" {
+		return bus.LegionWakeTopic
+	}
+	return contracts.LegionWakeSubject(report.token)
+}
+
+// isLegionWakeTopic says whether topic is a wake subject: the shared one, or a project's own,
+// notifications.legion.<token>.wake. The publish route refuses both, since only the listener
+// reports a wake.
+func isLegionWakeTopic(topic string) bool {
+	if topic == bus.LegionWakeTopic {
+		return true
+	}
+	token, found := strings.CutPrefix(topic, "notifications.legion.")
+	if !found {
+		return false
+	}
+	token, found = strings.CutSuffix(token, ".wake")
+	return found && token != "" && !strings.ContainsAny(token, ".*>")
+}
+
+// legionRoleToken is the project token a Legion role names, its name's second part:
+// legion-<token>-…, the shape every Legion claim token and controller role has (the daemon's
+// claim.NewToken and claim.ControllerToken, whose token is claim.ProjectToken: lower-case letters
+// and digits). It is read from the role as written, never lowercased a second time, so the wake
+// subject is spelt as the project's controller lane is. A role of any other shape, a lead role
+// among them, is no Legion deployment's, and its token is empty.
+func legionRoleToken(role string) string {
+	rest, found := strings.CutPrefix(role, "legion-")
+	if !found {
+		return ""
+	}
+	token, after, found := strings.Cut(rest, "-")
+	if !found || after == "" || token == "" || strings.Trim(token, "abcdefghijklmnopqrstuvwxyz0123456789") != "" {
+		return ""
+	}
+	return token
+}
+
+// projectWakeToken is the wake subject's token of a project key, as claim.ProjectToken spells one,
+// its lower case, or empty for anything that is no project key (NoProject among them).
+func projectWakeToken(project string) string {
+	if !projectKeyPattern.MatchString(project) {
+		return ""
+	}
+	return strings.ToLower(project)
+}
+
+var projectKeyPattern = regexp.MustCompile(contracts.ProjectKeyPattern)
+
+// sessionProjects answers the projects a session's known-session record lists
+// (session.KnownSession.Projects), and whether a record was found at all.
+type sessionProjects func(sessionID string) (projects []string, recorded bool)
+
+// knownSessionProjects reads a session's projects from known, the known-session store, which
+// keeps a session's record after its entry is gone; a nil store answers no record.
+func knownSessionProjects(known *session.KnownSessions) sessionProjects {
+	return func(sessionID string) ([]string, bool) {
+		if known == nil {
+			return nil, false
+		}
+		record, recorded := known.Get(sessionID)
+		return record.Projects, recorded
+	}
 }
 
 // roleWakeInterval is the interval the sweep's repeated wake report of a role is named by
@@ -110,7 +192,7 @@ func wakeReportEnvelope(logger *logging.Logger, report wakeReport, eventID, dedu
 		EventID:        eventID,
 		Source:         "envoy",
 		SourceEventID:  eventID,
-		Topic:          bus.LegionWakeTopic,
+		Topic:          report.subject(),
 		DedupeKey:      dedupeKey,
 		IssuedAt:       report.At,
 		PayloadSummary: summary,
@@ -124,7 +206,7 @@ func wakeReportEnvelope(logger *logging.Logger, report wakeReport, eventID, dedu
 	return item, true
 }
 
-// publishWakeReport publishes one report on bus.LegionWakeTopic, retrying until the stream
+// publishWakeReport publishes one report on its subject (wakeReport.subject), retrying until the stream
 // acknowledges it, the server refuses it under the listener's grant (bus.ErrPublishDenied, which
 // the server gives again however often it is sent, so a retry would only hold one of
 // wakeReportsInFlight's slots until the budget ran out), the whole report's budget runs out, or ctx
@@ -202,14 +284,17 @@ func publishSweptRoleWake(lifetime context.Context, client *bus.Client, logger *
 		return
 	}
 	key := sweptRoleWakeID(role, now)
-	report := wakeReport{Kind: wakeKindRole, Role: role, At: now.UnixMilli()}
+	report := wakeReport{Kind: wakeKindRole, Role: role, At: now.UnixMilli(), token: legionRoleToken(role)}
+	if report.token == "" {
+		return
+	}
 	item, ok := wakeReportEnvelope(logger, report, keyedEventID(key), key)
 	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(lifetime, wakeReportAttempt)
 	defer cancel()
-	ack, err := client.PublishStoredAck(ctx, bus.LegionWakeTopic, item, key)
+	ack, err := client.PublishStoredAck(ctx, report.subject(), item, key)
 	switch {
 	case err != nil:
 		logger.Warn("legion wake report not published", slog.String("kind", report.Kind),
@@ -236,15 +321,46 @@ const wakeReportsInFlight = 64
 
 // wakeReporter publishes wake reports off the paths that raise them: under the listener's own
 // lifetime, so the shutdown ends every retry still running, and no more than
-// wakeReportsInFlight at a time.
+// wakeReportsInFlight at a time. projectsOf reads a session's projects for its agent reports
+// (agentWakeTokens); unlisted holds each session id whose report went nowhere for want of a
+// project, so that is logged once per session, not once per message.
 type wakeReporter struct {
-	lifetime context.Context
-	client   *bus.Client
-	slots    chan struct{}
+	lifetime   context.Context
+	client     *bus.Client
+	slots      chan struct{}
+	projectsOf sessionProjects
+	unlisted   sync.Map
 }
 
-func newWakeReporter(lifetime context.Context, client *bus.Client) *wakeReporter {
-	return &wakeReporter{lifetime: lifetime, client: client, slots: make(chan struct{}, wakeReportsInFlight)}
+func newWakeReporter(lifetime context.Context, client *bus.Client, projectsOf sessionProjects) *wakeReporter {
+	return &wakeReporter{lifetime: lifetime, client: client, slots: make(chan struct{}, wakeReportsInFlight), projectsOf: projectsOf}
+}
+
+// agentWakeTokens is the wake subject token of each project the record of sessionID lists
+// (projectsOf), each once. It is read from the target session's record, never from the message
+// that raised the wake: a sender chooses every field of its envelope, the project included, and a
+// wake on a project the session is not in would reach that project's daemon with a session id it
+// was never meant to read. A session whose record lists no project, or that has no record, has
+// none, and that is logged once per session at INFO: no Legion daemon is told of the message.
+func (r *wakeReporter) agentWakeTokens(logger *logging.Logger, sessionID string) []string {
+	var projects []string
+	recorded := false
+	if r.projectsOf != nil {
+		projects, recorded = r.projectsOf(sessionID)
+	}
+	var tokens []string
+	for _, project := range projects {
+		if token := projectWakeToken(project); token != "" && !slices.Contains(tokens, token) {
+			tokens = append(tokens, token)
+		}
+	}
+	if len(tokens) == 0 {
+		if _, logged := r.unlisted.LoadOrStore(sessionID, struct{}{}); !logged {
+			logger.Info("legion agent wake not reported: the session's record lists no project",
+				slog.String("session", sessionID), slog.Bool("recorded", recorded))
+		}
+	}
+	return tokens
 }
 
 // report publishes one report off the caller's path. The caller is writing a 404 the report
@@ -269,23 +385,28 @@ func (r *wakeReporter) report(logger *logging.Logger, report wakeReport) {
 	}()
 }
 
-// reportRoleWake reports that a message was published to role and no live session held it. The
-// role is the claim token a Legion role topic is named by, which is what the daemon matches its
-// own released claims on.
+// reportRoleWake reports that a message was published to role and no live session held it, on the
+// wake subject of the project the role names (legionRoleToken). The role is the claim token a
+// Legion role topic is named by, which is what the daemon matches its own released claims on. A
+// role that names no Legion project is reported nowhere: no daemon holds a claim on it.
 func reportRoleWake(d *listenerDeps, logger *logging.Logger, role string) {
-	if d == nil || role == "" {
+	token := legionRoleToken(role)
+	if d == nil || token == "" {
 		return
 	}
-	d.wakes.report(logger, wakeReport{Kind: wakeKindRole, Role: role})
+	d.wakes.report(logger, wakeReport{Kind: wakeKindRole, Role: role, token: token})
 }
 
-// reportAgentWake reports that a message was sent to the agent subject of sessionID and nothing
-// could place it.
+// reportAgentWake reports that a message for sessionID could not be placed, once on the wake
+// subject of each project the session's own record lists (agentWakeTokens). A session whose
+// record lists none is reported nowhere: the shared wake subject carries listener_ready alone.
 func reportAgentWake(wakes *wakeReporter, logger *logging.Logger, sessionID string) {
-	if sessionID == "" {
+	if wakes == nil || wakes.client == nil || sessionID == "" {
 		return
 	}
-	wakes.report(logger, wakeReport{Kind: wakeKindAgent, Session: sessionID})
+	for _, token := range wakes.agentWakeTokens(logger, sessionID) {
+		wakes.report(logger, wakeReport{Kind: wakeKindAgent, Session: sessionID, token: token})
+	}
 }
 
 // startListenerReadyReports publishes this listener's liveness report at once and every

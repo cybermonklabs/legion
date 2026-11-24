@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,29 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
+
+// testWakeProject is the project the wakes these tests raise are for: each role they wake is a
+// Legion role of it (legion-acme-…), and each session they wake has a record listing it. A wake of
+// it is reported on testWakeSubject.
+const testWakeProject = "ACME"
+
+var testWakeSubject = contracts.LegionWakeSubject("acme")
+
+// listedProjects is a reporter's project reader (sessionProjects) over a fixed map, as a
+// known-session store whose records list those projects: a session the map names has a record,
+// and any other has none.
+func listedProjects(records map[string][]string) sessionProjects {
+	return func(sessionID string) ([]string, bool) {
+		projects, recorded := records[sessionID]
+		return projects, recorded
+	}
+}
+
+// everySessionIn is a reporter's project reader that answers every session a record listing
+// projects.
+func everySessionIn(projects ...string) sessionProjects {
+	return func(string) ([]string, bool) { return projects, true }
+}
 
 // The wake report's wire shape is what the Legion daemon's decoder reads
 // (packages/daemon/internal/intake/decode.go, decodeListenerWake): a kind, the role token or the
@@ -81,7 +106,8 @@ func TestAWakeReportWithNoBusIsDropped(t *testing.T) {
 // listener_ready holds every daemon's release gate shut for ever (the daemon's
 // workflowRuntime.listenerLive). So this reads what actually crossed the bus, for each of the
 // three kinds, and checks every field contracts.Envelope.Validate requires — source_event_id,
-// the one that was missing, among them.
+// the one that was missing, among them — and the subject each crossed on: a role report and an
+// agent report on their project's own wake subject, and listener_ready on the shared one.
 func TestEveryWakeReportCrossesTheBusAsAValidEnvelope(t *testing.T) {
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
@@ -90,24 +116,31 @@ func TestEveryWakeReportCrossesTheBusAsAValidEnvelope(t *testing.T) {
 	t.Cleanup(client.Close)
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	subscription, err := conn.SubscribeSync(bus.LegionWakeTopic)
+	subscription, err := conn.SubscribeSync("notifications.legion.>")
 	if err != nil {
-		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
+		t.Fatalf("subscribe to the wake subjects: %v", err)
 	}
 	t.Cleanup(func() { _ = subscription.Unsubscribe() })
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 
-	for _, report := range []wakeReport{
-		{Kind: wakeKindRole, Role: "legion-legion-legion-208-implementer"},
-		{Kind: wakeKindAgent, Session: "session-1"},
-		{Kind: wakeKindReady},
+	for _, row := range []struct {
+		report  wakeReport
+		subject string
+	}{
+		{wakeReport{Kind: wakeKindRole, Role: "legion-legion-legion-208-implementer", token: "legion"}, "notifications.legion.legion.wake"},
+		{wakeReport{Kind: wakeKindAgent, Session: "session-1", token: "acme"}, "notifications.legion.acme.wake"},
+		{wakeReport{Kind: wakeKindReady}, bus.LegionWakeTopic},
 	} {
+		report := row.report
 		publishWakeReport(context.Background(), client, logging.New("test"), report)
 		message, err := subscription.NextMsg(10 * time.Second)
 		if err != nil {
-			t.Fatalf("the %s report never reached %s: %v", report.Kind, bus.LegionWakeTopic, err)
+			t.Fatalf("the %s report never reached a wake subject: %v", report.Kind, err)
+		}
+		if message.Subject != row.subject {
+			t.Errorf("the %s report crossed on %s, want %s", report.Kind, message.Subject, row.subject)
 		}
 		var item contracts.Envelope
 		if err := json.Unmarshal(message.Data, &item); err != nil {
@@ -133,9 +166,9 @@ func TestEveryWakeReportCrossesTheBusAsAValidEnvelope(t *testing.T) {
 		if item.IssuedAt == 0 {
 			t.Errorf("the %s report's envelope carries no issued_at", report.Kind)
 		}
-		if item.Source != "envoy" || item.Topic != bus.LegionWakeTopic {
+		if item.Source != "envoy" || item.Topic != row.subject {
 			t.Errorf("the %s report crossed as source %q on %q, want envoy on %s",
-				report.Kind, item.Source, item.Topic, bus.LegionWakeTopic)
+				report.Kind, item.Source, item.Topic, row.subject)
 		}
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(item.Payload), &payload); err != nil {
@@ -145,6 +178,114 @@ func TestEveryWakeReportCrossesTheBusAsAValidEnvelope(t *testing.T) {
 			t.Errorf("the %s report's payload says kind %v", report.Kind, payload["kind"])
 		}
 	}
+}
+
+// A role report goes on the wake subject of the project the role's own name gives
+// (legion-<token>-…), read as written; a role of any other shape is no Legion deployment's, and
+// its report goes nowhere.
+func TestARoleWakeIsForTheProjectItsNameGives(t *testing.T) {
+	for role, want := range map[string]string{
+		"legion-legion-legion-208-implementer": "legion",
+		"legion-priv-priv-7-architect":         "priv",
+		"legion-acme2-controller":              "acme2",
+		"lead-reviewer":                        "",
+		"legion-":                              "",
+		"legion-priv":                          "",
+		"legion-Priv-priv-7-architect":         "",
+		"legion-pr.v-x":                        "",
+	} {
+		if got := legionRoleToken(role); got != want {
+			t.Errorf("legionRoleToken(%q) = %q, want %q", role, got, want)
+		}
+	}
+}
+
+// An agent wake goes on the wake subject of each project the TARGET session's own record lists,
+// once each, and never on a project the message that raised it names: a sender chooses every field
+// of its envelope. A session whose record lists no project, or that has no record, gets no report
+// on any subject, and that is logged once per session, however many messages it misses.
+//
+// The control is in this file: the rejected rule, the project of the agent subject the message
+// was sent on (envelopeProjectTokens), named for the message sent on OTHER's subject a project its
+// target is not in, and the reports read here never reach OTHER's subject.
+func TestAnAgentWakeGoesOnTheProjectsOfTheTargetsRecord(t *testing.T) {
+	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the bus: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn := testnats.Connect(t, testnats.URL(t))
+	t.Cleanup(conn.Close)
+	subscription, err := conn.SubscribeSync("notifications.legion.>")
+	if err != nil {
+		t.Fatalf("subscribe to the wake subjects: %v", err)
+	}
+	t.Cleanup(func() { _ = subscription.Unsubscribe() })
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the subscription: %v", err)
+	}
+	logs := &lockedBuffer{}
+	logger := logging.NewWithWriter("test", logs)
+	lifetime, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	reporter := newWakeReporter(lifetime, client, listedProjects(map[string][]string{
+		"ses_two_projects": {"PRIV", "ACME", "PRIV"},
+		"ses_none":         nil,
+		"ses_odd":          {contracts.NoProject, "priv"},
+	}))
+
+	// The message that raised the wake was sent on OTHER's agent subject.
+	sentOn := contracts.AgentSubject("OTHER", "ses_two_projects")
+	if control := envelopeProjectTokens(sentOn); !slices.Equal(control, []string{"other"}) {
+		t.Fatalf("the control names %v for a message on %s, want [other], so it shows nothing", control, sentOn)
+	}
+	reportAgentWake(reporter, logger, "ses_two_projects")
+	reportAgentWake(reporter, logger, "ses_none")
+	reportAgentWake(reporter, logger, "ses_none")
+	reportAgentWake(reporter, logger, "ses_odd")
+	reportAgentWake(reporter, logger, "ses_unknown")
+
+	var got []string
+	for {
+		message, err := subscription.NextMsg(2 * time.Second)
+		if err != nil {
+			break
+		}
+		report := wakeReportIn(t, message)
+		got = append(got, message.Subject+" "+report.Kind+" "+report.Session)
+	}
+	slices.Sort(got)
+	want := []string{
+		"notifications.legion.acme.wake agent_message ses_two_projects",
+		"notifications.legion.priv.wake agent_message ses_two_projects",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("wake reports = %q, want %q: one per project the target's record lists, none on the envelope's OTHER, none for a record listing none", got, want)
+	}
+	unreported := map[string]int{}
+	for line := range strings.SplitSeq(logs.String(), "\n") {
+		if !strings.Contains(line, "legion agent wake not reported: the session's record lists no project") {
+			continue
+		}
+		for _, session := range []string{"ses_none", "ses_odd", "ses_unknown", "ses_two_projects"} {
+			if strings.Contains(line, `"session":"`+session+`"`) {
+				unreported[session]++
+			}
+		}
+	}
+	if want := map[string]int{"ses_none": 1, "ses_odd": 1, "ses_unknown": 1}; !maps.Equal(unreported, want) {
+		t.Errorf("no-project lines per session = %v, want %v, once per session that got no report:\n%s", unreported, want, logs.String())
+	}
+}
+
+// envelopeProjectTokens is the rule an agent wake does not take, kept as this file's control: the
+// project of the agent subject a message was sent on, which its sender chooses.
+func envelopeProjectTokens(topic string) []string {
+	project, _, ok := contracts.SubjectProject(topic)
+	if !ok || projectWakeToken(project) == "" {
+		return nil
+	}
+	return []string{projectWakeToken(project)}
 }
 
 // R3: a wake report is retried until the bus takes it. Losing one is not "one wake late": the
@@ -167,7 +308,7 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 	go func() {
 		defer close(reported)
 		publishWakeReport(context.Background(), client, logging.New("test"),
-			wakeReport{Kind: wakeKindAgent, Session: "session-released"})
+			wakeReport{Kind: wakeKindAgent, Session: "session-released", token: "acme"})
 	}()
 
 	// The stream arrives only once one whole attempt has run out, as a reconnect or a
@@ -183,9 +324,9 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 	// What the report is read from is the stream, not the subject: a publish the stream never
 	// acknowledged still reaches a core subscriber of that subject, and a wake the stream does
 	// not hold reaches no daemon's durable and survives no daemon restart (R3).
-	subscription, err := owner.JS().SubscribeSync(bus.LegionWakeTopic, nats.DeliverAll(), nats.OrderedConsumer())
+	subscription, err := owner.JS().SubscribeSync(testWakeSubject, nats.DeliverAll(), nats.OrderedConsumer())
 	if err != nil {
-		t.Fatalf("read %s from the stream: %v", bus.LegionWakeTopic, err)
+		t.Fatalf("read %s from the stream: %v", testWakeSubject, err)
 	}
 	t.Cleanup(func() { _ = subscription.Unsubscribe() })
 	message, err := subscription.NextMsg(60 * time.Second)
@@ -211,15 +352,15 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 // of the reports in flight held all that time: the grant refuses it again however often it is
 // sent.
 func TestAWakeReportTheGrantRefusesIsGivenUpAtOnce(t *testing.T) {
-	client := deniedGrantClient(t, bus.LegionWakeTopic)
+	client := deniedGrantClient(t, testWakeSubject)
 	logs := &lockedBuffer{}
 	lifetime, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	started := time.Now()
-	publishWakeReport(lifetime, client, logging.NewWithWriter("test", logs), wakeReport{Kind: wakeKindAgent, Session: "session-denied"})
+	publishWakeReport(lifetime, client, logging.NewWithWriter("test", logs), wakeReport{Kind: wakeKindAgent, Session: "session-denied", token: "acme"})
 	elapsed := time.Since(started)
 	output := logs.String()
-	if !strings.Contains(output, "legion wake report not published") || !strings.Contains(output, `bus: NATS denied the publish to \"`+bus.LegionWakeTopic) {
+	if !strings.Contains(output, "legion wake report not published") || !strings.Contains(output, `bus: NATS denied the publish to \"`+testWakeSubject) {
 		t.Fatalf("the refused report's log names no refusal:\n%s", output)
 	}
 	if strings.Contains(output, "retrying until the bus takes it") || elapsed > wakeReportAttempt+3*time.Second {
@@ -242,7 +383,7 @@ func TestWakeReportsEndWithTheListenerAndAreCappedInFlight(t *testing.T) {
 	client.Close()
 	lifetime, stopListener := context.WithCancel(context.Background())
 	t.Cleanup(stopListener)
-	reporter := newWakeReporter(lifetime, client)
+	reporter := newWakeReporter(lifetime, client, everySessionIn(testWakeProject))
 	logger := logging.NewWithWriter("test", io.Discard)
 
 	for i := range wakeReportsInFlight {
@@ -268,18 +409,34 @@ func TestWakeReportsEndWithTheListenerAndAreCappedInFlight(t *testing.T) {
 	}
 }
 
-// Security[untrusted-input]: the listener's own wake subject is refused to every caller of the
-// publish route. A Legion daemon acts on what it reads there — it wakes the pod a role token or
-// a session names, and holds its whole release gate open on a `listener_ready` report — and a
-// caller of this route chooses every field of the envelope and the payload, source "envoy"
-// included, so a session that could publish here could wake pods at will and keep that gate open
-// with a report dated in the future.
+// Security[untrusted-input]: every wake subject is refused to every caller of the publish route,
+// the shared one and each project's own. A Legion daemon acts on what it reads there — it wakes
+// the pod a role token or a session names, and holds its whole release gate open on a
+// `listener_ready` report — and a caller of this route chooses every field of the envelope and the
+// payload, source "envoy" included, so a session that could publish here could wake pods at will
+// and keep that gate open with a report dated in the future. The project's controller lane beside
+// it is no wake subject and is not refused for being one.
 func TestThePublishRouteRefusesTheLegionWakeTopic(t *testing.T) {
-	recorder, _ := publishThrough(&listenerDeps{}, `{"topic":"`+bus.LegionWakeTopic+`","message":"listener_ready","source":"envoy"}`)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("publishing %s answered %d; want it refused with 400, body %s", bus.LegionWakeTopic, recorder.Code, recorder.Body)
+	for _, topic := range []string{bus.LegionWakeTopic, contracts.LegionWakeSubject("acme")} {
+		recorder, _ := publishThrough(&listenerDeps{}, `{"topic":"`+topic+`","message":"listener_ready","source":"envoy"}`)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("publishing %s answered %d; want it refused with 400, body %s", topic, recorder.Code, recorder.Body)
+		}
+		if !strings.Contains(recorder.Body.String(), "the listener alone reports a Legion pod wake") {
+			t.Fatalf("the refusal of %s = %s, want it to say the listener alone reports a wake", topic, recorder.Body)
+		}
 	}
-	if !strings.Contains(recorder.Body.String(), "the listener alone reports a Legion pod wake") {
-		t.Fatalf("the refusal = %s, want it to say the listener alone reports a wake", recorder.Body)
+	for topic, want := range map[string]bool{
+		bus.LegionWakeTopic:                    true,
+		"notifications.legion.acme.wake":       true,
+		"notifications.legion.acme.controller": false,
+		"notifications.legion.*.wake":          false,
+		"notifications.legion.acme.extra.wake": false,
+		"notifications.legion..wake":           false,
+		"notifications.agent.ACME.ses_a":       false,
+	} {
+		if got := isLegionWakeTopic(topic); got != want {
+			t.Errorf("isLegionWakeTopic(%q) = %v, want %v", topic, got, want)
+		}
 	}
 }
