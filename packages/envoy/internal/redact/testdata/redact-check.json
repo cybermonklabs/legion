@@ -2708,6 +2708,261 @@
           "packages/envoy/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "loadtest.cloudsql-redirect/elsewhere"
+      },
+      {
+        "row": "githubapp-no-answer-mint-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "githubapp.no-answer/mint-unparsed"
+      },
+      {
+        "row": "githubapp-no-answer-mint-status-line",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "githubapp.no-answer/mint-status-line"
+      },
+      {
+        "row": "githubapp-no-answer-mint-unanswered",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "githubapp.no-answer/mint-unanswered"
+      },
+      {
+        "row": "githubapp-no-answer-branch-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "githubapp.no-answer/branch-unparsed"
+      },
+      {
+        "row": "githubapp-no-answer-branch-status-line",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "githubapp.no-answer/branch-status-line"
+      },
+      {
+        "row": "githubapp-no-answer-branch-unanswered",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/redirect_location_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "githubapp.no-answer/branch-unanswered"
+      },
+      {
+        "row": "redact-body-read-read-answer",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": ["packages/envoy/internal/redact/answer_body_read_test.go"],
+        "capture": "redact.body-read/read-answer"
+      },
+      {
+        "row": "redact-body-read-stream-answer",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": ["packages/envoy/internal/redact/answer_body_read_test.go"],
+        "capture": "redact.body-read/stream-answer"
+      },
+      {
+        "row": "files-s3-echo-head-object-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.s3-echo/head-object/unparsed"
+      },
+      {
+        "row": "files-s3-echo-put-object-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.s3-echo/put-object/unparsed"
+      },
+      {
+        "row": "files-s3-echo-get-object-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.s3-echo/get-object/unparsed"
+      },
+      {
+        "row": "files-s3-echo-get-object-answer",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.s3-echo/get-object/answer"
+      },
+      {
+        "row": "files-s3-echo-head-bucket-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.s3-echo/head-bucket/unparsed"
+      },
+      {
+        "row": "files-s3-echo-head-bucket-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.s3-echo/head-bucket/elsewhere"
+      },
+      {
+        "row": "files-gcs-echo-metadata-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.gcs-echo/metadata/unparsed"
+      },
+      {
+        "row": "files-gcs-echo-metadata-answer",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.gcs-echo/metadata/answer"
+      },
+      {
+        "row": "files-gcs-echo-insert-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.gcs-echo/insert/unparsed"
+      },
+      {
+        "row": "files-gcs-echo-download-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.gcs-echo/download/unparsed"
+      },
+      {
+        "row": "files-gcs-echo-download-answer",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.gcs-echo/download/answer"
+      },
+      {
+        "row": "files-gcs-echo-healthy-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.gcs-echo/healthy/unparsed"
+      },
+      {
+        "row": "files-gcs-echo-healthy-elsewhere",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/files/sdk_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "files.gcs-echo/healthy/elsewhere"
+      },
+      {
+        "row": "embed-bedrock-echo-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/embed/bedrock_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "embed.bedrock-echo/unparsed"
+      },
+      {
+        "row": "embed-bedrock-echo-answer",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/dispatch/embed/bedrock_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "embed.bedrock-echo/answer"
+      },
+      {
+        "row": "secrets-aws-echo-list-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/secrets/aws_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "secrets.aws-echo/list/unparsed"
+      },
+      {
+        "row": "secrets-aws-echo-describe-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/secrets/aws_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "secrets.aws-echo/describe/unparsed"
+      },
+      {
+        "row": "secrets-aws-echo-read-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/secrets/aws_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "secrets.aws-echo/read/unparsed"
+      },
+      {
+        "row": "secrets-aws-echo-read-answer",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/secrets/aws_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "secrets.aws-echo/read/answer"
+      },
+      {
+        "row": "secrets-aws-echo-aliases-unparsed",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/internal/cipher/secrets/aws_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "secrets.aws-echo/aliases/unparsed"
+      },
+      {
+        "row": "cipherd-rds-mint-echo",
+        "base": "cbebaf9543f50106a726ad67ed8f915c16c8321e",
+        "files": [
+          "packages/envoy/cmd/cipherd/rdsauth_echo_test.go",
+          "packages/envoy/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "cipherd.rds-mint-echo"
       }
     ],
     "boundary_fields": {
@@ -9410,6 +9665,412 @@
       "package": "./loadtest",
       "test": "TestALoopListenerFollowsNoRedirect/followed",
       "production": "loadtest newLoopListener: its client follows no redirect (redirects.Refused), so a publish's 3xx is the listener's refusal by its status and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "envoy-redact-unanswered",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestUnansweredNamesTheCallAndKeepsOnlyATransportFailuresOwnWords",
+      "production": "redact.Unanswered: a request that got no answer prints net/http's operation, the call's name or its URL as redact.URL prints it, and the failure: a Location, a status line, a header line or a trailer line net/http quotes, and a redirect followed to another host, print as their class; a transport failure, a deadline and a cancellation print their own words; errors.Is and errors.As find what they found"
+    },
+    {
+      "id": "githubapp-no-answer-twin-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/twin-unparsed",
+      "production": "the stand-in of the githubapp no-answer rows: its unparsed Location's echo of the token reaches net/http's own error, so the rows can see a leak"
+    },
+    {
+      "id": "githubapp-no-answer-twin-status-line",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/twin-status-line",
+      "production": "the stand-in of the githubapp no-answer rows: its malformed status line's echo of the token reaches net/http's own error"
+    },
+    {
+      "id": "githubapp-no-answer-twin-unanswered",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/twin-unanswered",
+      "production": "the stand-in of the githubapp no-answer rows: a following client's error names the Location to another host, with the token"
+    },
+    {
+      "id": "githubapp-no-answer-twin-followed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/twin-followed",
+      "production": "the counting target of the githubapp no-answer rows: a client that follows every redirect asks it, so the count can see one"
+    },
+    {
+      "id": "githubapp-no-answer-mint-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/mint-unparsed",
+      "production": "githubapp Client.send: a token mint whose Location does not parse names its target and the failure's class (redact.Unanswered), never net/http's text, which quotes the App JWT a stand-in echoed"
+    },
+    {
+      "id": "githubapp-no-answer-mint-status-line",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/mint-status-line",
+      "production": "githubapp Client.send: a token mint answered with a status line that does not parse prints the failure's class (redact.Unanswered), never the line, which echoes the App JWT"
+    },
+    {
+      "id": "githubapp-no-answer-mint-unanswered",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/mint-unanswered",
+      "production": "githubapp client: follows a redirect only on the API origin (redirects.SameOrigin), so a mint's Location to another host nothing listens at is GitHub's answer by its status, never net/http's error naming the Location"
+    },
+    {
+      "id": "githubapp-no-answer-mint-followed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/mint-followed",
+      "production": "githubapp client: follows a redirect only on the API origin (redirects.SameOrigin), so the stand-in a mint's Location names on another host is asked nothing and gets no JWT"
+    },
+    {
+      "id": "githubapp-no-answer-branch-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/branch-unparsed",
+      "production": "githubapp Client.send: a read whose Location does not parse names its target as ShownBody shows it and the failure's class (redact.Unanswered), never net/http's text, which quotes the installation token",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).send",
+      "capture": "githubapp.no-answer/branch-unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "redact.Unanswered(err, request, ShownBody(target))",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "githubapp-no-answer-branch-status-line",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/branch-status-line",
+      "production": "githubapp Client.send: a read answered with a status line that does not parse prints the failure's class (redact.Unanswered)"
+    },
+    {
+      "id": "githubapp-no-answer-branch-unanswered",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/branch-unanswered",
+      "production": "githubapp client: a read's Location to another host is GitHub's answer by its status (redirects.SameOrigin), never net/http's error naming it"
+    },
+    {
+      "id": "githubapp-no-answer-branch-followed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried/branch-followed",
+      "production": "githubapp client: the stand-in a read's Location names on another host is asked nothing (redirects.SameOrigin)"
+    },
+    {
+      "id": "githubapp-renamed-followed",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestARenamedRepositorysRedirectIsStillFollowed",
+      "production": "githubapp client: GitHub's 301 for a renamed repository, on the API origin, is still followed with the installation token and read"
+    },
+    {
+      "id": "githubapp-transport-cause-kept",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestATransportErrorAfterALongURLStillNamesItsCause",
+      "production": "githubapp Client.send: a transport failure (context deadline exceeded) still names its own words after the target as ShownBody shows it, through redact.Unanswered"
+    },
+    {
+      "id": "redact-body-read-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersBodyThatCannotBeReadPrintsNoLineOfIt/twin",
+      "production": "the stand-in of the body-read rows: net/http's error of a chunked body's malformed trailer line quotes the token it echoed, so the rows can see a leak"
+    },
+    {
+      "id": "redact-body-read-read-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersBodyThatCannotBeReadPrintsNoLineOfIt/read-answer",
+      "production": "redact.ReadAnswer: a body read that fails on a line the answer wrote answers the failure's class (unreadable), unwrapping to net/http's error",
+      "function": "github.com/sjawhar/envoy/internal/redact.ReadAnswer",
+      "capture": "redact.body-read/read-answer",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "return Answer{a}, unreadable(err)",
+        "replacement": "return Answer{a}, err"
+      }
+    },
+    {
+      "id": "redact-body-read-stream-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersBodyThatCannotBeReadPrintsNoLineOfIt/stream-answer",
+      "production": "redact.StreamAnswer's stream: a read that fails on a line the answer wrote answers the failure's class (unreadable)",
+      "function": "(*github.com/sjawhar/envoy/internal/redact.answerStream).Read",
+      "capture": "redact.body-read/stream-answer",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "return n, unreadable(err)",
+        "replacement": "return n, err"
+      }
+    },
+    {
+      "id": "redact-body-read-cut-read-answer",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersBodyThatCannotBeReadPrintsNoLineOfIt/cut-read-answer",
+      "production": "redact.ReadAnswer: a body cut short is io.ErrUnexpectedEOF itself, as before"
+    },
+    {
+      "id": "redact-body-read-cut-stream-answer",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersBodyThatCannotBeReadPrintsNoLineOfIt/cut-stream-answer",
+      "production": "redact.StreamAnswer's stream: a body cut short is io.ErrUnexpectedEOF itself, as before"
+    },
+    {
+      "id": "files-s3-echo-head-object-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAnS3CallPrintsNoEchoOfItsCredential/head-object/unparsed",
+      "production": "files S3.Put: a HeadObject whose Location does not parse and quotes the X-Amz-Security-Token, printed through redact.AWS (the operation, the status and a listed code), never the SDK's text, which quotes net/http's error and the answer's request id, host id and message",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/files.S3).Put",
+      "capture": "files.s3-echo/head-object/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/files/s3.go",
+        "preimage": "\"head file %s: %w\", sha, redact.AWS(err)",
+        "replacement": "\"head file %s: %w\", sha, err"
+      }
+    },
+    {
+      "id": "files-s3-echo-put-object-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAnS3CallPrintsNoEchoOfItsCredential/put-object/unparsed",
+      "production": "files S3.Put: a PutObject whose Location does not parse and quotes the X-Amz-Security-Token, printed through redact.AWS (the operation, the status and a listed code), never the SDK's text, which quotes net/http's error and the answer's request id, host id and message",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/files.S3).Put",
+      "capture": "files.s3-echo/put-object/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/files/s3.go",
+        "preimage": "\"put file %s: %w\", sha, redact.AWS(err)",
+        "replacement": "\"put file %s: %w\", sha, err"
+      }
+    },
+    {
+      "id": "files-s3-echo-get-object-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAnS3CallPrintsNoEchoOfItsCredential/get-object/unparsed",
+      "production": "files S3.Get: a GetObject whose Location does not parse and quotes the X-Amz-Security-Token, printed through redact.AWS (the operation, the status and a listed code), never the SDK's text, which quotes net/http's error and the answer's request id, host id and message",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/files.S3).Get",
+      "capture": "files.s3-echo/get-object/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/files/s3.go",
+        "preimage": "\"get file %s: %w\", sha, redact.AWS(err)",
+        "replacement": "\"get file %s: %w\", sha, err"
+      }
+    },
+    {
+      "id": "files-s3-echo-get-object-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAnS3CallPrintsNoEchoOfItsCredential/get-object/answer",
+      "production": "files S3.Get: a 403 whose request id, host id and message quote the X-Amz-Security-Token, printed through redact.AWS (the operation, the status and a listed code), never the SDK's text, which quotes net/http's error and the answer's request id, host id and message"
+    },
+    {
+      "id": "files-s3-echo-head-bucket-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAnS3CallPrintsNoEchoOfItsCredential/head-bucket/unparsed",
+      "production": "files S3.Healthy: a HeadBucket whose Location does not parse and quotes the X-Amz-Security-Token, printed through redact.AWS (the operation, the status and a listed code), never the SDK's text, which quotes net/http's error and the answer's request id, host id and message",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/files.S3).Healthy",
+      "capture": "files.s3-echo/head-bucket/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/files/s3.go",
+        "preimage": "\"head bucket %s: %w\", s.bucket, redact.AWS(err)",
+        "replacement": "\"head bucket %s: %w\", s.bucket, err"
+      }
+    },
+    {
+      "id": "files-s3-echo-head-bucket-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAnS3CallPrintsNoEchoOfItsCredential/head-bucket/elsewhere",
+      "production": "files S3.Healthy: a HeadBucket 307 the SDK follows to a dead host whose query quotes the X-Amz-Security-Token, printed through redact.AWS (the operation, the status and a listed code), never the SDK's text, which quotes net/http's error and the answer's request id, host id and message"
+    },
+    {
+      "id": "files-gcs-echo-metadata-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAGCSCallPrintsNoEchoOfItsBearer/metadata/unparsed",
+      "production": "files GCS.Put: the metadata read whose Location does not parse and quotes the bearer, printed through gcsFailure (the status, a missing bucket, a missing permission the store needs, or redact.Class), never the client's text, which quotes net/http's error and GCS's message or body",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/files.GCS).Put",
+      "capture": "files.gcs-echo/metadata/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/files/gcs.go",
+        "preimage": "\"read file %s's metadata: %w\", sha, gcsFailure(err)",
+        "replacement": "\"read file %s's metadata: %w\", sha, err"
+      }
+    },
+    {
+      "id": "files-gcs-echo-metadata-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAGCSCallPrintsNoEchoOfItsBearer/metadata/answer",
+      "production": "files GCS.Put: a 403 whose JSON message quotes the bearer, printed through gcsFailure (the status, a missing bucket, a missing permission the store needs, or redact.Class), never the client's text, which quotes net/http's error and GCS's message or body"
+    },
+    {
+      "id": "files-gcs-echo-insert-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAGCSCallPrintsNoEchoOfItsBearer/insert/unparsed",
+      "production": "files GCS.Put: the upload whose Location does not parse and quotes the bearer, printed through gcsFailure (the status, a missing bucket, a missing permission the store needs, or redact.Class), never the client's text, which quotes net/http's error and GCS's message or body",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/files.GCS).Put",
+      "capture": "files.gcs-echo/insert/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/files/gcs.go",
+        "preimage": "\"put file %s: %w\", sha, gcsFailure(err)",
+        "replacement": "\"put file %s: %w\", sha, err"
+      }
+    },
+    {
+      "id": "files-gcs-echo-download-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAGCSCallPrintsNoEchoOfItsBearer/download/unparsed",
+      "production": "files GCS.Get: a media download whose Location does not parse and quotes the bearer, printed through gcsFailure (the status, a missing bucket, a missing permission the store needs, or redact.Class), never the client's text, which quotes net/http's error and GCS's message or body",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/files.GCS).Get",
+      "capture": "files.gcs-echo/download/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/files/gcs.go",
+        "preimage": "\"get file %s: %w\", sha, gcsFailure(err)",
+        "replacement": "\"get file %s: %w\", sha, err"
+      }
+    },
+    {
+      "id": "files-gcs-echo-download-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAGCSCallPrintsNoEchoOfItsBearer/download/answer",
+      "production": "files GCS.Get: a 403 whose plain-text body quotes the bearer, printed through gcsFailure (the status, a missing bucket, a missing permission the store needs, or redact.Class), never the client's text, which quotes net/http's error and GCS's message or body"
+    },
+    {
+      "id": "files-gcs-echo-healthy-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAGCSCallPrintsNoEchoOfItsBearer/healthy/unparsed",
+      "production": "files GCS.Healthy: the probe whose Location does not parse and quotes the bearer, printed through gcsFailure (the status, a missing bucket, a missing permission the store needs, or redact.Class), never the client's text, which quotes net/http's error and GCS's message or body",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/files.GCS).Healthy",
+      "capture": "files.gcs-echo/healthy/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/files/gcs.go",
+        "preimage": "\"read an object's metadata in bucket %s: %w\", s.bucket, gcsFailure(err)",
+        "replacement": "\"read an object's metadata in bucket %s: %w\", s.bucket, err"
+      }
+    },
+    {
+      "id": "files-gcs-echo-healthy-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/files",
+      "test": "TestAGCSCallPrintsNoEchoOfItsBearer/healthy/elsewhere",
+      "production": "files GCS.Healthy: a 302 the client follows, bearer and all, to a dead host whose query quotes the bearer, printed through gcsFailure (the status, a missing bucket, a missing permission the store needs, or redact.Class), never the client's text, which quotes net/http's error and GCS's message or body"
+    },
+    {
+      "id": "embed-bedrock-echo-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestABedrockCallPrintsNoEchoOfItsCredential/unparsed",
+      "production": "embed BedrockClient.Embed: an InvokeModel whose Location does not parse and quotes the X-Amz-Security-Token, printed through redact.AWS, never the SDK's text, which quotes net/http's error and the answer's request id and message",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/embed.BedrockClient).Embed",
+      "capture": "embed.bedrock-echo/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/embed/bedrock.go",
+        "preimage": "\"embed: bedrock invoke model: %w\", redact.AWS(err)",
+        "replacement": "\"embed: bedrock invoke model: %w\", func() error { _ = redact.AWS; return err }()"
+      }
+    },
+    {
+      "id": "embed-bedrock-echo-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestABedrockCallPrintsNoEchoOfItsCredential/answer",
+      "production": "embed BedrockClient.Embed: a 403 whose request id and message quote the X-Amz-Security-Token, printed through redact.AWS, never the SDK's text, which quotes net/http's error and the answer's request id and message"
+    },
+    {
+      "id": "secrets-aws-echo-list-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAnAWSStoreCallPrintsNoEchoOfItsCredential/list/unparsed",
+      "production": "secrets AWS.List: a ListSecrets whose Location does not parse and quotes the X-Amz-Security-Token, printed through redact.AWS, never the SDK's text, which quotes net/http's error and the answer's request id and message",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/secrets.AWS).List",
+      "capture": "secrets.aws-echo/list/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/secrets/aws.go",
+        "preimage": "\"list secrets under %s: %w\", prefix, redact.AWS(err)",
+        "replacement": "\"list secrets under %s: %w\", prefix, err"
+      }
+    },
+    {
+      "id": "secrets-aws-echo-describe-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAnAWSStoreCallPrintsNoEchoOfItsCredential/describe/unparsed",
+      "production": "secrets AWS.Describe: a DescribeSecret whose Location does not parse and quotes the X-Amz-Security-Token, printed through redact.AWS, never the SDK's text, which quotes net/http's error and the answer's request id and message",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/secrets.AWS).Describe",
+      "capture": "secrets.aws-echo/describe/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/secrets/aws.go",
+        "preimage": "\"describe %s: %w\", id, redact.AWS(err)",
+        "replacement": "\"describe %s: %w\", id, err"
+      }
+    },
+    {
+      "id": "secrets-aws-echo-read-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAnAWSStoreCallPrintsNoEchoOfItsCredential/read/unparsed",
+      "production": "secrets AWS.Read: a GetSecretValue whose Location does not parse and quotes the X-Amz-Security-Token, printed through redact.AWS, never the SDK's text, which quotes net/http's error and the answer's request id and message",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/secrets.AWS).Read",
+      "capture": "secrets.aws-echo/read/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/secrets/aws.go",
+        "preimage": "\"secrets manager %s: %w\", source, redact.AWS(err)",
+        "replacement": "\"secrets manager %s: %w\", source, err"
+      }
+    },
+    {
+      "id": "secrets-aws-echo-read-answer",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAnAWSStoreCallPrintsNoEchoOfItsCredential/read/answer",
+      "production": "secrets AWS.Read: a 400 AccessDeniedException whose request id and message quote the X-Amz-Security-Token, printed through redact.AWS, never the SDK's text, which quotes net/http's error and the answer's request id and message"
+    },
+    {
+      "id": "secrets-aws-echo-aliases-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAnAWSStoreCallPrintsNoEchoOfItsCredential/aliases/unparsed",
+      "production": "secrets AWS.onKey: a KMS ListAliases whose Location does not parse and quotes the X-Amz-Security-Token, printed through redact.AWS, never the SDK's text, which quotes net/http's error and the answer's request id and message",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/secrets.AWS).onKey",
+      "capture": "secrets.aws-echo/aliases/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/secrets/aws.go",
+        "preimage": "\"list the aliases of %s: %w\", keys.arn, redact.AWS(err)",
+        "replacement": "\"list the aliases of %s: %w\", keys.arn, err"
+      }
+    },
+    {
+      "id": "cipherd-rds-mint-echo",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipherd",
+      "test": "TestAnRDSTokenMintPrintsNoEchoOfTheWebIdentityToken/mint",
+      "production": "cipherd rdsAuthTokens: a mint whose web identity sign-in (STS AssumeRoleWithWebIdentity) drew a Location that does not parse and quotes the web identity token prints through redact.AWS, never the SDK's text, which quotes net/http's error",
+      "function": "github.com/sjawhar/envoy/cmd/cipherd.rdsAuthTokens",
+      "capture": "cipherd.rds-mint-echo",
+      "mutation": {
+        "file": "packages/envoy/cmd/cipherd/rdsauth.go",
+        "preimage": "return token, redact.AWS(err)",
+        "replacement": "return token, func() error { _ = redact.AWS; return err }()"
+      }
     }
   ],
   "bun": [
@@ -11636,6 +12297,21 @@
       "site": "the redirect policy was kept twice: envoy's internal/redirects held a second Refused, with no test, beside the daemon's internal/redirects (Refused, SameOrigin, Status, their tests and the redirectstest stand-ins), each internal to its module, so an envoy client had no SameOrigin and no stand-in for its rows; the policy, its tests and the stand-ins now live once, in the public package github.com/sjawhar/envoy/redirects, which both modules import",
       "source": "the class search of round 8 over the envoy module",
       "guard": "redirects-refused"
+    },
+    {
+      "site": "githubapp Client.send: every call carries the App JWT or an installation token; the client followed every redirect and send handed net/http's error on through ShownErr, which only cuts its length, so an unparsed Location, a malformed status line or a followed Location quoted the credential into the error the callers log and GET /healthz serves",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "githubapp-no-answer-branch-unparsed"
+    },
+    {
+      "site": "redact.ReadAnswer and StreamAnswer's stream: net/http's error of a body it could not read quotes a chunked body's malformed trailer line, which can echo the request's credential, and every reader's caller printed it",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "redact-body-read-read-answer"
+    },
+    {
+      "site": "envoy's AWS and Google Cloud SDK calls handed the SDK's error on as it came, which quotes net/http's error (a Location that does not parse, or one the client followed) and the answer's request id, host id, message or body, so whatever answers at the service's address could put the call's X-Amz-Security-Token, bearer or web identity token into a log line or printed error: the S3 and GCS file stores, the Bedrock embedder, the broker's Secrets Manager and KMS store, and the RDS IAM token mint",
+      "source": "the class search of round 8 over the envoy module",
+      "guard": "files-s3-echo-head-bucket-unparsed"
     }
   ]
 }
