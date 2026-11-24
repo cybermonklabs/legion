@@ -1351,23 +1351,95 @@ test("a preview layer that arrives while a button is held on a link opens no car
 // layer's own boundary is what keeps the throw from the app's top boundary (`web/src/main.tsx`),
 // which would replace the page and unmount the sign-in with it. React reports a throw a boundary
 // caught in the commit that draws that boundary's fallback, so its report is the moment the page
-// is read. The layer stays mounted, so once its chunk can come down the reader's next move to
-// another address draws it afresh (`ChunkBoundary`'s `reset`), which asks for the chunk again,
-// and a hover there opens a card: the failure does not take the cards away for the life of the
-// page.
+// is read. The layer stays mounted, and a card the reader asks for asks for the chunk again
+// (`CardAsked` in `RefPreviewLayer.tsx`, which changes `ChunkBoundary`'s `reset`). A hover on a
+// reference asks while the chunk still fails, and that leaves the page as it was. A keyboard
+// focus on the reference asks once the chunk can come down. No event asks a second time, so the
+// layer that arrives opens the card of the reference that holds the focus (`attachTriggers`,
+// `web/src/features/refs/RefPreview.tsx`). The failure does not take the cards away for the life
+// of the page. The reference is in a comment, since a link in the live editor takes no focus.
 // SLOW(>=2s): two cold landings, the first only to spend the tab's reloads in its own storage.
-test("a preview layer whose chunk fails online with the tab's reloads spent leaves the page drawn and signed in, and the next address asks for it again", async ({
+test("a preview layer whose chunk fails online with the tab's reloads spent leaves the page drawn and signed in, and a hover or a keyboard focus on a reference asks for it again", async ({
   browser,
 }) => {
   await createProject({ key: "NOCARD", name: "No card" });
-  const other = await createIssue({ project: "NOCARD", title: "Card after the move" });
+  const target = await createIssue({ project: "NOCARD", title: "Card target" });
+  const source = await createIssue({ project: "NOCARD", title: "Card source" });
+  await createComment(source.key, { body: `See dispatch://${target.key} for context.` }, session);
+
+  await withAlice(browser, async (page) => {
+    const counts = await missEntryChunk(page, () => false, baseUrl);
+    await page.goto("/");
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    const failed = await failAssetWhen(page, REF_PREVIEW_CHUNK, async () => undefined);
+    const importFailure = (message: { text(): string; type(): string }) =>
+      message.type() === "error" && message.text().includes("dynamically imported module");
+    const caught = page.waitForEvent("console", importFailure);
+
+    await page.goto(`/issues/${source.key}/conversation`);
+    const link = page
+      .getByRole("list", { name: "Conversation turns" })
+      .getByRole("link", { name: "Card target" });
+    await expect(link).toBeVisible();
+    await caught;
+    expect(failed(), "the layer's chunk was asked for and failed").toBeGreaterThan(0);
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+
+    // A hover over the reference asks for the chunk again, and finds the page as it was: the
+    // download fails again, with no card to open.
+    const asked = failed();
+    const caughtAgain = page.waitForEvent("console", importFailure);
+    await link.hover();
+    await Promise.all([
+      caughtAgain,
+      expect
+        .poll(failed, "a hover on a reference did not ask for the chunk again")
+        .toBeGreaterThan(asked),
+    ]);
+    await expect(link).toBeVisible();
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    expect(counts.documents, "the failure reloaded nothing").toBe(2);
+    expect(await tabReloads(page)).toEqual(spent);
+
+    // The chunk can come down now. The pointer leaves the reference first, so a card that opens
+    // is the keyboard's and not the hover's. A Tab press makes the focus that follows a keyboard
+    // focus (`:focus-visible`), as a reader's Tab onto the link would.
+    await page.unroute(REF_PREVIEW_CHUNK);
+    await page.mouse.move(0, 0);
+    await page.keyboard.press("Tab");
+    await link.focus();
+    await expect(
+      page.getByRole("tooltip"),
+      "a keyboard focus after the failure opened no card"
+    ).toContainText("Card target");
+    expect(counts.documents, "asking again reloaded the page").toBe(2);
+  });
+});
+
+// A layer whose chunk failed asks for it again only when a card is asked for. A move to another
+// address asks for nothing, so it spends no recovery reload on a download no one waits on
+// (`web/src/features/refs/RefPreviewLayer.tsx`, `web/src/features/shell/DeploymentResilience.tsx`).
+// A hover on a reference does ask, and a reader is in front of that ask, so its failure spends a
+// reload as any chunk's does. The tab has one reload left here, so a reload that the move or the
+// hover spent would show in the tab's record and in its count of document loads. The chunk fails
+// until the row ends, so the one reload is the hover's to spend, and the load it brings finds the
+// tab's reloads spent.
+// SLOW(>=2s): two cold landings, the first only to spend the tab's reloads in its own storage.
+test("a preview layer whose chunk failed online asks for it again for a hover on a reference, which spends a reload, and for no move to another address", async ({
+  browser,
+}) => {
+  await createProject({ key: "ASKED", name: "Card asked" });
+  const other = await createIssue({ project: "ASKED", title: "Card after the move" });
   const target = await createIssue({
-    project: "NOCARD",
+    project: "ASKED",
     spec: `See [the other link](dispatch://${other.key}) for context.`,
     title: "Card target",
   });
   const source = await createIssue({
-    project: "NOCARD",
+    project: "ASKED",
     spec: `See [the card link](dispatch://${target.key}) for context.`,
     title: "Card source",
   });
@@ -1376,7 +1448,7 @@ test("a preview layer whose chunk fails online with the tab's reloads spent leav
     const counts = await missEntryChunk(page, () => false, baseUrl);
     await page.goto("/");
     await expect(page.getByText("Signed in as alice")).toBeVisible();
-    const spent = await recordTabReloads(page, [3, 2, 1]);
+    await recordTabReloads(page, [3, 2, 1]);
     const failed = await failAssetWhen(page, REF_PREVIEW_CHUNK, async () => undefined);
     const caught = page.waitForEvent(
       "console",
@@ -1385,29 +1457,34 @@ test("a preview layer whose chunk fails online with the tab's reloads spent leav
     );
 
     await page.goto(`/issues/${source.key}/spec`);
-    const link = documentEditor(page).getByRole("link", { name: "the card link" });
-    await expect(link).toBeVisible();
+    await expect(documentEditor(page).getByRole("link", { name: "the card link" })).toBeVisible();
     await caught;
     expect(failed(), "the layer's chunk was asked for and failed").toBeGreaterThan(0);
-    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
-    // A hover over the reference finds the page as it was, with no card to open.
-    await link.hover();
-    await expect(link).toBeVisible();
-    await expect(page.getByText("Signed in as alice")).toBeVisible();
-    expect(counts.documents, "the failure reloaded nothing").toBe(2);
-    expect(await tabReloads(page)).toEqual(spent);
 
-    await page.unroute(REF_PREVIEW_CHUNK);
+    // The landing's own ask failed with the tab's reloads spent, so it reloaded nothing. The
+    // tab's record is written again with one reload left, for the asks below to spend or not.
+    const left = await recordTabReloads(page, [3, 2]);
+    const asked = failed();
     await navigateInApp(page, `/issues/${target.key}/spec`);
     const otherLink = documentEditor(page).getByRole("link", { name: "the other link" });
     await expect(otherLink).toBeVisible();
+    expect(failed(), "a move to another address asked for the chunk").toBe(asked);
+    expect(counts.documents, "a move to another address reloaded the page").toBe(2);
+    expect(await tabReloads(page), "a move to another address spent a reload").toEqual(left);
+
+    const reloaded = page.waitForEvent("load");
     await otherLink.hover();
-    await expect(
-      page.getByRole("tooltip"),
-      "a hover after a move to another address opened no card"
-    ).toContainText("Card after the move");
-    expect(counts.documents, "asking again reloaded the page").toBe(2);
+    await Promise.all([
+      reloaded,
+      expect
+        .poll(failed, "a hover on a reference did not ask for the chunk again")
+        .toBeGreaterThan(asked),
+      expect.poll(() => counts.documents, "the hover's failed ask spent no reload").toBe(3),
+    ]);
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const reloads = await tabReloads(page);
+    expect(reloads, "the tab's record holds no reload for the hover").toHaveLength(3);
+    expect(reloads?.slice(0, 2), "the hover's reload rewrote the reloads before it").toEqual(left);
   });
 });
 

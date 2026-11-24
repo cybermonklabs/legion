@@ -293,8 +293,8 @@ function attachTriggers(): () => void {
     }
     refPreview.leave();
   };
-  const onFocusIn = (event: FocusEvent) => {
-    const trigger = triggerOf(event.target);
+  const onFocusIn = ({ target }: { target: EventTarget | null }) => {
+    const trigger = triggerOf(target);
     // `:focus-visible` is the browser's own keyboard-versus-pointer verdict: a mouse click or a
     // tap focuses a link without matching it, so only keyboard navigation opens the card.
     if (trigger === null || !trigger.matches(":focus-visible")) {
@@ -345,17 +345,27 @@ function attachTriggers(): () => void {
   document.addEventListener("wheel", onReaderInput, { capture: true, passive: true });
   document.addEventListener("keydown", onReaderInput, { capture: true, passive: true });
   document.addEventListener("pointerdown", onReaderInput, { capture: true, passive: true });
-  // The layer can arrive after the pointer has come to rest on a reference: on a landing that
-  // draws a live document, the shell loads it only once the document's first block is in the
-  // page (`features/shell/content-drawn.ts`), and a reader may already be over a link of that
-  // document. A pointer at rest sends no `pointerover` until it moves, so the trigger under it is
-  // read from `:hover` once, here, and its card opens after the usual delay. Only where the
-  // primary pointer can hover at all: a phone keeps `:hover` on the last element tapped, and a
-  // tap never opens a card. And not while the reader holds the primary button down, which the
-  // browser marks with `:active` on what it went down on: the reader's first press is one of the
-  // things that end the shell's hold, so the layer can arrive in the middle of a drag that began
-  // on a link, and `onPointerOver` opens no card while a button is held.
-  if (window.matchMedia?.("(hover: hover)").matches && document.querySelector(":active") === null) {
+  // The layer can arrive after the reader has asked for a card. On a landing that draws a live
+  // document, the shell loads it only once the document's first block is in the page
+  // (`features/shell/content-drawn.ts`). After a download that failed, the layer asks for it again
+  // only when the reader asks for a card (`CardAsked` in `RefPreviewLayer.tsx`), so that ask came
+  // before these listeners. No event asks a second time, so what asked is read once, here. A
+  // reference that holds keyboard focus opens its card at once, and so does the link the caret is
+  // in on a surface that opens no card on hover. Else the trigger under a resting pointer: a
+  // pointer at rest sends no `pointerover` until it moves, so the trigger is read from `:hover`,
+  // and its card opens after the usual delay. Only where the primary pointer can hover at all: a
+  // phone keeps `:hover` on the last element tapped, and a tap never opens a card. And not while
+  // the reader holds the primary button down, which the browser marks with `:active` on what it
+  // went down on: the reader's first press is one of the things that end the shell's hold, so the
+  // layer can arrive in the middle of a drag that began on a link, and `onPointerOver` opens no
+  // card while a button is held.
+  onFocusIn({ target: document.activeElement });
+  if (state === undefined) onSelectionChange();
+  if (
+    state === undefined &&
+    window.matchMedia?.("(hover: hover)").matches &&
+    document.querySelector(":active") === null
+  ) {
     const trigger = triggerOf([...document.querySelectorAll<HTMLElement>(":hover")].at(-1) ?? null);
     if (trigger !== null) startHover(trigger);
   }

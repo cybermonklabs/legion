@@ -13,13 +13,16 @@ interface ChunkBoundaryProps {
   /** For a host whose part draws with no reader action (the two lists of writes, the
    *  reference-preview layer): a value that changes whenever the part may be wanted again - a
    *  change of which writes a list shows or of where one stands, pressed by the reader or
-   *  answered by Dispatch (`features/writes/write-hosts.tsx`); a move to another address
-   *  (`features/refs/RefPreviewLayer.tsx`). A boundary that has caught a throw draws `children`
-   *  again once it changes, so the part mounts afresh and asks for its chunk again
-   *  (`chunkComponent` keeps no failed download), rather than drawing nothing for as long as its
-   *  host stays mounted: no recovery reload need follow the failure (the comment below says when
-   *  none does), and the reader can stay on that page for as long as they like. A boundary that
-   *  has not failed draws nothing anew for a change, so the value may change often. */
+   *  answered by Dispatch (`features/writes/write-hosts.tsx`); a card the reader asks for with a
+   *  pointer over a reference, a keyboard focus on one, or the caret entering a link of an
+   *  editable document where a hover opens no card (`features/refs/RefPreviewLayer.tsx`). Never
+   *  a move to another address: no one waits on the download that it would start. A boundary
+   *  that has caught a throw draws `children` again once the value changes, so the part mounts
+   *  afresh and asks for its chunk again (`chunkComponent` keeps no failed download), rather
+   *  than drawing nothing for as long as its host stays mounted: no recovery reload need follow
+   *  the failure (the comment below says when none does), and the reader can stay on that page
+   *  for as long as they like. A boundary that has not failed draws nothing anew for a change,
+   *  so the value may change often. */
   readonly reset?: unknown;
 }
 
@@ -59,7 +62,8 @@ type Failure = "none" | "chunk" | "render";
  * (`onCaughtError`). A render of a list of writes that throws draws an alert that says which list
  * could not be shown (`features/writes/write-hosts.tsx`): that is a fault the reader must be told
  * of, never silence. A surface a reader opened draws an alert that says it could not open, for
- * either throw (`askedSurface`). The reference-preview layer names nothing for either.
+ * either throw (`askedSurface`). The reference-preview layer draws nothing for either throw but
+ * listeners that hear the reader ask for a card, and each such ask changes its `reset`.
  */
 export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: Failure }> {
   state: { failed: Failure } = { failed: "none" };
