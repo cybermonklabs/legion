@@ -54,8 +54,11 @@ func TestADispatchReadGoesToTheRouteJoinedOntoTheDispatchURL(t *testing.T) {
 				t.Fatalf("a Dispatch URL ending %q was asked %v; want %v", c.suffix, got, want)
 			}
 			for i := range want {
-				if got[i].Path != want[i].Path || got[i].RawQuery != want[i].RawQuery {
-					t.Errorf("a Dispatch URL ending %q: read %d went to path %q, query %q; want path %q, query %q", c.suffix, i, got[i].Path, got[i].RawQuery, want[i].Path, want[i].RawQuery)
+				if got[i].url.Path != want[i].Path || got[i].url.RawQuery != want[i].RawQuery {
+					t.Errorf("a Dispatch URL ending %q: read %d went to path %q, query %q; want path %q, query %q", c.suffix, i, got[i].url.Path, got[i].url.RawQuery, want[i].Path, want[i].RawQuery)
+				}
+				if got[i].authorization != "Bearer projected-token" {
+					t.Errorf("a Dispatch URL ending %q: read %d presented %q; want the token its account reads", c.suffix, i, got[i].authorization)
 				}
 			}
 		})
@@ -114,11 +117,17 @@ func TestADispatchURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 }
 
 // joinStandIn answers the issue read, the spec read and the ask read wherever under its address
-// they come, and records the URL of every request it got.
+// they come, and records the URL and the Authorization header of every request it got.
 type joinStandIn struct {
 	server *httptest.Server
 	mu     sync.Mutex
-	asked  []url.URL
+	asked  []askedRead
+}
+
+// askedRead is one read the stand-in got: its URL and what it presented.
+type askedRead struct {
+	url           url.URL
+	authorization string
 }
 
 func newJoinStandIn(t *testing.T) *joinStandIn {
@@ -126,7 +135,7 @@ func newJoinStandIn(t *testing.T) *joinStandIn {
 	s := &joinStandIn{}
 	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
-		s.asked = append(s.asked, *r.URL)
+		s.asked = append(s.asked, askedRead{*r.URL, r.Header.Get("Authorization")})
 		s.mu.Unlock()
 		body := any(map[string]any{"key": testIssue, "title": "The broker's model judge", "status": "doing", "assignee": testApprover})
 		switch {
@@ -142,8 +151,8 @@ func newJoinStandIn(t *testing.T) *joinStandIn {
 	return s
 }
 
-func (s *joinStandIn) got() []url.URL {
+func (s *joinStandIn) got() []askedRead {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]url.URL(nil), s.asked...)
+	return append([]askedRead(nil), s.asked...)
 }

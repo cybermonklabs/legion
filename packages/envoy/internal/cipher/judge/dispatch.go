@@ -253,6 +253,8 @@ func (d Dispatch) get(ctx context.Context, token string, into any, route ...stri
 	if err != nil {
 		return 0, errors.New("the judge's Dispatch read could not be built: the URL it joined does not parse")
 	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/json")
 	answer, err := d.http.Do(request)
 	if err != nil {
 		return 0, fmt.Errorf("dispatch did not answer: %w", redact.Class(err))
