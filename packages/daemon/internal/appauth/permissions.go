@@ -327,6 +327,12 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		body := refusalBody(response)
+		// The sentence quotes GitHub's own words, the body of its refusal as the rule reads it
+		// (oauth2call.Answer.Words, refusalBody), with every credential the request carried
+		// redacted - here the App's JWT, which whatever answers in GitHub's place can echo back
+		// in that body. It is the second of the two refusals of this package that quote GitHub
+		// at all, the token exchange's being the first (exchange); the words this read names of
+		// a 2xx answer come from closed sets alone (shownGrant, shownSuspension).
 		failed := fmt.Errorf("GitHub App installation permissions read failed (%d): %s", response.StatusCode, body.Words())
 		if response.StatusCode == http.StatusNotFound {
 			return nil, fmt.Errorf("%w: %w", errInstallationGone, m.answered(request, response, body, "", failed))

@@ -140,6 +140,14 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		body := refusalBody(response)
+		// The sentence quotes GitHub's own words, the body of its refusal as the rule reads it
+		// (oauth2call.Answer.Words, refusalBody), with every credential the request carried
+		// redacted - here the App's JWT, which whatever answers in GitHub's place can echo back
+		// in that body. So a refusal of this package is not a sentence of closed words alone:
+		// this one and the permissions read's (grantedPermissions) carry GitHub's words through
+		// the rule, and only the rule keeps the JWT out of them. Every other word a mint's
+		// refusal names of GitHub's answer comes from a closed set (heldWords, shownGrant,
+		// shownSuspension).
 		failed := fmt.Errorf("GitHub App token exchange failed (%d): %s", response.StatusCode, body.Words())
 		if response.StatusCode == http.StatusNotFound {
 			return Lease{}, fmt.Errorf("%w: %w", errInstallationGone, m.answered(request, response, body, "", failed))
