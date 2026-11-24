@@ -172,11 +172,12 @@
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
  * runs record that id and their place in the order. A replay answers a reply's reads of skill
  * files (the case's skill from the arm, another skill of the profile from the copy its capture
- * installed, context.ts's `installedCopies` of the capture's record under `--cache-dir`, made again
- * before the replays where the cache lacks it, capture.ts's `restoreCopies`), and each
- * run records each answered round's reads (`skillReads`) and is judged on those rounds' read calls
- * and the reply after them. A run whose reply after the last answered round still only reads skill
- * files gets no verdict and is run again, its reason beginning `reads-past-last-round`; each case's
+ * installed, context.ts's `installedCopies` of the capture's record under `--cache-dir`).
+ * Before replay, `restoredCapture` makes each missing copy again from its repository at its
+ * commit. Each run records the answered rounds' reads (`skillReads`) and is judged on those
+ * rounds' read calls and the reply after them. A run whose reply after the last answered round
+ * still only reads skill files gets no verdict and is run again, its reason beginning
+ * `reads-past-last-round`; each case's
  * line and `report` count such runs by arm, and a stage left unscreened by an arm with such runs
  * drops its case under that reason, with the counts. A stage left unscreened in which the provider
  * refused, on a content policy (a stream error whose type ends in `_policy`, as `cyber_policy`),
@@ -272,9 +273,8 @@ import {
   captureBody,
   capturePaths,
   gatewayHints,
-  restoreCopies,
+  restoredCapture,
   type SessionFacts,
-  savedCapture,
   sessionFacts,
   sessionHeads,
   userTurnKey,
@@ -3059,12 +3059,11 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     source,
     capture: async (c, arm) => {
       const outDir = armCaptureDir(given.out, arm, texts);
-      const scratchDir = path.join(scratch, "captures");
-      const saved = savedCapture(capturePaths(outDir, c.id, arm.name), arm);
-      if (saved !== undefined) {
-        await restoreCopies(c, arm, saved, { source, cacheDir, scratchDir });
-        return saved;
-      }
+      const saved = await restoredCapture(c, arm, capturePaths(outDir, c.id, arm.name), {
+        source,
+        cacheDir,
+      });
+      if (saved !== undefined) return saved;
       if (models === undefined || omp === undefined) {
         throw new Error(
           `case ${c.id} has no capture of its ${arm.name} arm in ${outDir}, and no --models is given to make one`
@@ -3076,7 +3075,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       return captureBody({ ...c, model }, arm, {
         omp,
         outDir,
-        scratchDir,
+        scratchDir: path.join(scratch, "captures"),
         cacheDir,
         source,
         models,
