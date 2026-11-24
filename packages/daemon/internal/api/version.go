@@ -3399,19 +3399,23 @@ package api
 // `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
 // open pull request again at the next merge rather than from this line.)
 //
-// 221: the admission waiting line is ordered by Dispatch priority first (dispatch://INFRA-3576
+// 244: the admission waiting line is ordered by Dispatch priority first (dispatch://INFRA-3576
 // R1). `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` gain two keys: each issue
 // the workflow records carries `priority`, its own Dispatch priority as Dispatch sends it, a
 // number from 0 for P0 to 3 for P3 or null for none; and each member's `waitingLine` carries
 // `priority`, the priority that placed it in the line (its own, else its tree root's), null for a
 // member neither it nor its root has a priority for, whose band stands after P3. The records of
-// 221 hold `issues.*.priority` and `issues.*.waitingLine.priority`, and no record below 221 does:
-// a caller whose contract (the one it states, else its pod's) is below 221 is served every issue
+// 244 hold `issues.*.priority` and `issues.*.waitingLine.priority`, and no record below 244 does:
+// a caller whose contract (the one it states, else its pod's) is below 244 is served every issue
 // without either key (the band of shaping.go's stateNarrowings, `withoutPriority`). Two values
 // change meaning at every contract and move no shape: `waitingLine.partPlace` and `partLength`
 // count within the member's priority band and part rather than within the part across the whole
 // line, and `admission.waiting` and each member's `place` follow the new order, which no reader
-// enumerates. (221 is the lowest number above the base's 220; no reading of the numbers other
-// open pull requests declare was made for it. Read the base's own number and every open pull
-// request again at the next merge.)
-const DaemonAPIVersion = 221
+// enumerates. (This entry takes 244, above each number another open pull request declared. The
+// forward merge of 2026-11-24 brought main 9c3fe462, whose base number is 220. A reading of `const
+// DaemonAPIVersion` at the head commit of each of the 138 open pull requests of 500 that change
+// this file or whose file list GitHub cut short, made between 2026-11-24T09:14:34Z and 09:17:00Z,
+// found every number from 221 to 243 declared, 243 by #5349 alone, and nothing above 243. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+const DaemonAPIVersion = 244

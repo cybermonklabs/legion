@@ -1110,7 +1110,7 @@ func populatedState(t *testing.T) State {
 		state.Issues[key] = issue
 	}
 	// Every issue the workflow records carries its own Dispatch priority, null for none, and each
-	// member of the waiting line the priority that placed it (contract 221): LEGION-212 is P0 and
+	// member of the waiting line the priority that placed it (contract 244): LEGION-212 is P0 and
 	// waits at it, LEGION-211 has none of its own and waits at its tree root's P1 as the
 	// projection places it, and every other issue has none.
 	for key, issue := range state.Issues {

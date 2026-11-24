@@ -66,7 +66,7 @@ func TestTheStateServedBelowThePriorityContractCarriesNoPriority(t *testing.T) {
 // priorityContract is the contract whose entry in version.go added the two keys, and this
 // daemon's own contract is never below it.
 func TestThePriorityContractIsTheContractThatAddedTheKeys(t *testing.T) {
-	const addedPriority = 221
+	const addedPriority = 244
 	if priorityContract != addedPriority {
 		t.Fatalf("priorityContract = %d, want %d, the contract whose entry in version.go added each issue's priority", priorityContract, addedPriority)
 	}

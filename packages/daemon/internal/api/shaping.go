@@ -1036,11 +1036,11 @@ const cachesSourceContract = 213
 const assignmentPlanContract = 220
 
 // priorityContract is the daemon contract that added each issue's own Dispatch `priority` and
-// its waitingLine's `priority`, the priority that placed it in the line (version.go's 221,
+// its waitingLine's `priority`, the priority that placed it in the line (version.go's 244,
 // dispatch://INFRA-3576 R1). A plugin before it is served every issue without either key
 // (withoutPriority). It is a literal of its own and never DaemonAPIVersion, for the reason
 // assignmentPlanContract is, and it is the last number of answers.go's SupportedContracts.
-const priorityContract = 221
+const priorityContract = 244
 
 // withoutPriority is the issue with no `priority` and a waitingLine with no `priority`, the two
 // keys priorityContract added to the state; every other key stays. The waiting line's view is

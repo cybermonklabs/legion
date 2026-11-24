@@ -2717,7 +2717,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
   // above 199: the repositories block's; contract 220's, which takes `plan` off each assignment;
-  // and contract 221's, which takes `priority` off each issue and off its `waitingLine`. So the
+  // and contract 244's, which takes `priority` off each issue and off its `waitingLine`. So the
   // golden's issues are compared without those keys. One value strip stands above 199 as well:
   // `caches`, the source of the repository-cache-room row, arrived at contract 213, so that row is
   // served here without its `source`, every other field of it and every other row as the state
