@@ -225,8 +225,18 @@ ends, and is ended after 10 minutes (`AFTER_CASE_TIMEOUT_MS`). Captures are kept
 `<out>/captures/`; a capture that is not there yet is made with Oh My Pi and needs `--models`:
 `--omp`, else `$LEGION_OMP_PATH`, else the `omp` on PATH, taken as an
 absolute path; a command given `--models` when none of them names one is refused (exit 2), and
-`load` reads Oh My Pi the same way. The run stops above 1 GiB of peak resident memory, and no new
-model call starts once the replies cost `--budget-usd` at list price.
+`load` reads Oh My Pi the same way. A saved capture is read back and not made again; the
+installed copies of the profile's other skills that its record names, which its replays answer a
+read of such a skill from, are not in it but in the cache (`<cache-dir>/skills/<key>`), which is
+not kept with `--out`. So where the cache lacks one of them (on a new machine, say), the case's
+context is built again before the replays, as the capture built it, under a scratch directory of
+its own that is removed after: that makes each missing copy again from its repository at its
+commit. A saved capture whose copies are all in the cache builds nothing and reads no repository.
+One whose copies that build does not give again (the case's profile names another commit or
+another copy, or the record keeps a copy under another cache key) is refused (exit 2, or that
+task's failure in `load`), naming the case, the arm and the first copy that differs: make it again
+under a new `--out`. The run stops above 1 GiB of peak resident memory, and no new model call
+starts once the replies cost `--budget-usd` at list price.
 
 The gateway serves two routes, and each case runs on its own model's: the Anthropic Messages
 route (`/v1/messages`, `anthropic/<id>`) and the OpenAI Responses route (`/v1/responses`,
@@ -478,9 +488,10 @@ Oh My Pi `--out` made before this rule, or under another draw, is refused.
 
 Skill reads follow the behaviour replay's rule (the architect, 2026-11-22). On Oh My Pi, a reply
 whose every tool call reads a skill file is answered as `behaviour` answers one: a read of
-another skill the profile installs from that skill's installed copy, a read of a skill the
-profile does not install with Oh My Pi's unknown-skill answer, a read of another file of the
-tested skill from its directory. Then the request goes again with the answers, at most 3 rounds.
+another skill the profile installs from that skill's installed copy (made again first where the
+cache lacks it, as `behaviour` makes it), a read of a skill the profile does not install with Oh
+My Pi's unknown-skill answer, a read of another file of the tested skill from its directory. Then
+the request goes again with the answers, at most 3 rounds.
 Each run comes to one of four outcomes:
 
 - `loaded`: a reply reads the skill, the first message or one after answered rounds, before any
@@ -1470,6 +1481,7 @@ spend collector.
 call, a load test's task or an `--after-case` command that failed, or `behaviour` results that show
 a drop no stage makes); 2 refused before any model call or store read (among the refusals, an
 `--out` inside a git or jj checkout, from `behaviour`'s stage commands, `load` and `build-cases`),
-or as a case's capture installs a copy Oh My Pi would name otherwise than its profile does;
+or as a case's capture installs a copy Oh My Pi would name otherwise than its profile does, or
+as a saved capture's installed copies, made again, are not the ones its record names;
 3 stopped (the budget is spent, the peak memory passed 1 GiB, 1.5 GiB for `copies`, or the listing
 rule dropped more than half of a load's tasks); 4 stopped by build-cases' stop rule.
