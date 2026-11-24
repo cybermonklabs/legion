@@ -29,12 +29,11 @@ import (
 // Envoy sends a "secret request <state>" notification directly to the target session, presenting
 // the broker's own platform identity (its account, read afresh for each notice) as its bearer: the
 // listener admits the account that token names, as it admits every caller's, so no bearer is
-// shared between the broker and the listener's other callers. NewEnvoy builds one.
+// shared between the broker and the listener's other callers.
 type Envoy struct {
 	url     string
 	account ciphertoken.Account
-	// http sends the notice: the client NewEnvoy is given, as a copy that follows no redirect.
-	http *http.Client
+	http    *http.Client
 }
 
 // NewEnvoy is the notice to the listener at url (BROKER_ENVOY_URL), presenting the token account

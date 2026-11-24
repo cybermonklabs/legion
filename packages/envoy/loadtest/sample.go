@@ -574,10 +574,8 @@ func (s *sampler) all() []sample {
 var shortClient = &http.Client{Timeout: 10 * time.Second}
 
 // getOK GETs url with client, until ctx ends; an answer other than 200 is an error, its words
-// printed as the rule reads them, and a GET that got no answer fails as redact.Cause reads it,
-// never as net/http's text, which names url with the user name of its user information (a foreign
-// -pprof or -nats-mon may carry one) and quotes a Location that does not parse. A 200's body is
-// data the caller samples (redact.StreamAnswer), which closing the stream closes.
+// printed as the rule reads them. A 200's body is data the caller samples (redact.StreamAnswer),
+// which closing the stream closes.
 func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

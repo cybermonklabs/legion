@@ -49,13 +49,6 @@
 // githubapp client, so the sweep shows those errors as they are:
 //
 //   - A refusal's body is cut alone, with the body's size.
-//   - A value an answer could not decode prints none of itself: the client decodes each answer
-//     through redact.Answer.Decode, whose error names the member that did not decode and the types
-//     around it, quotes none of the value, whole or cut, and reaches none of the decoder's own
-//     errors.
-//   - A transport error names its target as githubapp.ShownBody shows it, with the target's size,
-//     and then the URL it asked and its failure by redact.Unanswered: a transport failure's own
-//     words or a fixed class.
 //   - githubapp.ShownErr answers no error longer than 4,414 bytes. An error whose text is still
 //     longer after the cuts above is cut whole, with the size of that text.
 //

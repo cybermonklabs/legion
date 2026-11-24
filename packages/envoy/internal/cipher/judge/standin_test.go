@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // testSecret is the key most tests ask for, with the guidance testGuidance; testIssue the issue
@@ -608,7 +607,7 @@ func testOptions(t *testing.T, d *dispatchStandIn, m *modelStandIn, r *fakeReque
 	t.Helper()
 	return Options{
 		Rules:    testRules(),
-		Dispatch: NewDispatch(d.server.URL, ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), d.server.Client()),
+		Dispatch: newDispatchClient(t, d, "projected-token"),
 		Model: Model{
 			ID: testModel,
 			Endpoint: agentloop.Endpoint{

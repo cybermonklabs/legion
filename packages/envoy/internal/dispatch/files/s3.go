@@ -22,10 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// S3 is a Store over one bucket. Each failure of an S3 call prints through redact.AWS, never as
-// the SDK's own text, which quotes net/http's error (a Location that does not parse, or one its
-// client followed, either of which whatever answers at the bucket's address can write the call's
-// X-Amz-Security-Token or signature into) and the answer's request id, host id and message.
+// S3 is a Store over one bucket.
 type S3 struct {
 	client *s3.Client
 	bucket string

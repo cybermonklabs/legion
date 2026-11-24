@@ -121,10 +121,7 @@ type bedrockEmbedResponse struct {
 }
 
 // Embed calls Bedrock once for up to BedrockMaxBatchTexts texts; a caller with more batches it
-// itself (embedqueue does, one batch at a time). A throttle comes back marked for IsThrottled. A
-// failed call prints through redact.AWS, never as the SDK's own text, which quotes net/http's error
-// (a Location whatever answers at Bedrock's address can write the call's credential into) and the
-// answer's request id and message.
+// itself (embedqueue does, one batch at a time). A throttle comes back marked for IsThrottled.
 func (c *BedrockClient) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
 	bounded, err := boundBatch(texts, BedrockMaxBatchTexts)
 	if err != nil || bounded == nil {

@@ -179,9 +179,7 @@ func (o *loadOptions) say(stdout io.Writer, result map[string]any) {
 // connect opens one tunnel to the bound host through the proxy and answers the connection the
 // CONNECT left behind. The answer is read with the CONNECT it answers (http.ReadResponse's req),
 // its Proxy-Authorization among it, so a print of a refusal's words redacts the credential the
-// CONNECT carried (redact.Carried), as ask's answer does its bearer. http.ReadResponse's error
-// quotes a status line or a header line it could not read, which whatever answers in the proxy's
-// place can write that credential into, so it prints through redact.Cause.
+// CONNECT carried (redact.Carried), as ask's answer does its bearer.
 func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	// url.Parse's error quotes the whole URL, the grant's proxy password with it, so the error names
 	// the flag the URL came from instead.
@@ -243,9 +241,7 @@ func (o *loadOptions) speak(timeout time.Duration) (net.Conn, *bufio.Reader, err
 
 // ask writes one HTTP/1.1 request on an open connection and reads its answer, which carries the
 // request it answers (http.ReadResponse's req), its bearer among it, so a print of the answer's
-// words redacts what the request carried (redact.Carried). A line of the answer
-// http.ReadResponse could not read prints as connect's does (redact.Cause), since its error
-// quotes the line, which can echo the bearer.
+// words redacts what the request carried (redact.Carried).
 func (o *loadOptions) ask(conn net.Conn, reader *bufio.Reader, method, path string, body []byte, extra string) (*http.Response, error) {
 	request := method + " " + path + " HTTP/1.1\r\nHost: " + o.host + "\r\n"
 	address := "https://" + o.host + path

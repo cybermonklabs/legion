@@ -67,10 +67,7 @@ type SecretsManagerAPI interface {
 }
 
 // AWS is the Store over AWS Secrets Manager: from Secrets Manager and KMS themselves in
-// production, from a Local in local development and tests. Each failure of a Secrets Manager or
-// KMS call prints through redact.AWS, never as the SDK's own text, which quotes net/http's error (a
-// Location whatever answers at the service's address can write the call's X-Amz-Security-Token or
-// signature into) and the answer's request id and message.
+// production, from a Local in local development and tests.
 type AWS struct {
 	// Client lists, describes and reads the secrets.
 	Client SecretsManagerAPI

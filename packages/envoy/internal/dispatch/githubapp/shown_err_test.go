@@ -30,8 +30,7 @@ func (longTimeout) Temporary() bool { return true }
 // error keeps its own type and every method a caller type-asserts. It cuts a longer error's text
 // as ShownBody cuts GitHub's, naming the size of the error's own text, and keeps the error in
 // reach of errors.Is. A cut timeout still answers Timeout and Temporary, also as the cause of a
-// url.Error, whose Timeout and Temporary type-assert the cause and do not read its chain. A
-// url.Error within the bound comes back as itself.
+// url.Error, whose Timeout and Temporary type-assert the cause and do not read its chain.
 func TestShownErrCutsOnlyAnErrorPastTheBound(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
 		if got := ShownErr(nil); got != nil {
@@ -190,12 +189,6 @@ func TestADecodeErrorOfALongValueIsCutToTheBound(t *testing.T) {
 	}
 }
 
-// No error ShownErr answers is longer than shownErrMost, whatever field of a url.Error, the one
-// type it cuts the fields of, is long. That holds for a field it cuts (the URL and the cause), for
-// the field it keeps (the Op), and for a field past ASCII. The url.Error gets 100,000 bytes in its
-// exported string fields and as the text of its exported error field: in every such field at
-// once, and then in each alone. The 100,000 bytes are ASCII, then a rune of two bytes, then a rune
-// of four. The answer still reaches a url.Error (errors.As).
 func TestShownErrIsNeverLongerThanShownErrMost(t *testing.T) {
 	errorType := reflect.TypeFor[error]()
 	newErr := func() *url.Error {

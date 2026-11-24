@@ -37,12 +37,6 @@ func newModelTransport(endpoint Endpoint) *modelTransport {
 // the token to whatever server the Location names. A redirect fails the call instead, with an
 // error client.Do returns above this transport, so the retry never sees it and the caller is
 // told the endpoint redirected rather than left to read an empty stream.
-//
-// That error names the redirecting status alone, and in words redact.Masked holds, which are what
-// redact.Cause prints of the call's failure. A Location is the answering party's own words, and it
-// can carry the credential the call sent, in its query and in its host alike; Go's client wraps
-// this error in a *url.Error that names the Location in full, which is why Run and Decide print a
-// failed call through redact.Cause and never as it came.
 func (t *modelTransport) client() *http.Client {
 	return &http.Client{Transport: t, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 		return redact.Masked(errRedirect, fmt.Sprintf("the %s endpoint answered %s, a redirect, which is never followed",
@@ -50,15 +44,8 @@ func (t *modelTransport) client() *http.Client {
 	}}
 }
 
-// errRedirect is the failure of a model call whose endpoint answered a redirect, which client
-// never follows.
 var errRedirect = errors.New("agentloop: the endpoint answered a redirect, which is never followed")
 
-// tokenFailure is a model call that never went out, since the endpoint's Token failed for its
-// attempt. It prints as "reading the <kind> token: " and the Token's error as the caller wrote it
-// (Endpoint.Token): no server has answered the call, so none of those words is the endpoint's,
-// and a Detail says them alone, never net/http's or the SDK's words around them (Run's
-// providerFailure, Decide).
 type tokenFailure struct {
 	kind Kind
 	err  error

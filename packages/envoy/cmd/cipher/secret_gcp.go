@@ -175,10 +175,6 @@ var gcpUserinfo = userinfoEmail
 // words: a Google error body has carried a token, and x/oauth2 keeps the token endpoint's body in
 // the error a refused refresh answers.
 //
-// The read follows no redirect (redirects.Refused), so a 3xx is refused by its status:
-// oauth2.Transport sets the bearer on every request it carries, a redirect's among them, whatever
-// host the Location names, and the endpoint answers no redirect the read must follow.
-//
 // The email is Google's text, or the text of whatever answers in Google's place, which can echo
 // the bearer the read carried: it is held as redact.RemoteText with the read's record (the answer
 // googleUserinfo) and answered only as RemoteText.SendBack answers it, since the form prints it and

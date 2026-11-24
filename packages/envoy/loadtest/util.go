@@ -41,10 +41,7 @@ func sleepUntil(ctx context.Context, t time.Time) bool {
 	}
 }
 
-// fetchTo saves the body of a GET of url to path; a failure is logged, not returned. The GET's
-// failure prints as redact.Cause reads it, never as net/http's text, which names url with the user
-// name of its user information (a foreign -pprof may carry one) and quotes a Location that does not
-// parse, which the answering party can write the password the GET carried into.
+// fetchTo saves the body of a GET of url to path; a failure is logged, not returned.
 func fetchTo(url, path string, timeout time.Duration, lg *log.Logger) {
 	resp, err := (&http.Client{Timeout: timeout}).Get(url)
 	if err != nil {

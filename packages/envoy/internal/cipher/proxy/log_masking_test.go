@@ -185,7 +185,7 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 	// A forwarded https request to a service whose certificate names the placeholder's host in
 	// its own case and a host made of the real value the swap puts in: the proxy's transport
 	// refuses the certificate, crypto/x509's error lists the names it holds with no quotation
-	// mark, and the upstream line and the 502 write redact's fixed words in its place.
+	// mark.
 	certLeaf, _, err := r.service.Authority().Leaf([]string{placeholderHost, workerValue + ".example.net"})
 	if err != nil {
 		t.Fatalf("the certificate naming the placeholder and the real value: %v", err)

@@ -474,8 +474,6 @@ func (rr *replayRun) do(ctx context.Context, base, token string, act *replayActi
 	}
 	tr := &http.Transport{DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, MaxIdleConnsPerHost: 4, IdleConnTimeout: replayActionDeadline}
 	defer tr.CloseIdleConnections()
-	// The action's requests carry the stack's bearer, so its client follows no redirect, as
-	// newAPI's does (redirects.Refused).
 	ac := &api{base: base, token: token, client: redirects.Refused(&http.Client{Transport: tr})}
 	var state replayActionState
 	ok := true

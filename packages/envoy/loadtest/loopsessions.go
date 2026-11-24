@@ -363,8 +363,7 @@ type natsSub struct{ sub *nats.Subscription }
 func (s natsSub) unsubscribe() error { return s.sub.Unsubscribe() }
 
 // newLoopListener is one loop session's listener: the endpoint it registers, heartbeats,
-// unsubscribes and publishes on, with the run's listener bearer, through a client that follows no
-// redirect (redirects.Refused), as listenerclient.Client asks. A refusal names the endpoint and
+// unsubscribes and publishes on, with the run's listener bearer. A refusal names the endpoint and
 // route it came from, the status and what the listener said (listenerclient.Refusal): five
 // endpoints and three routes share it, and the log lines that print it carry only the session id,
 // so the URL is what attributes a 401 to one of them.

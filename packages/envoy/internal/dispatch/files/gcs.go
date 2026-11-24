@@ -23,8 +23,7 @@ import (
 // GCS is a Store over one Google Cloud Storage bucket, through the JSON API. It needs exactly two
 // permissions on the bucket, storage.objects.create and storage.objects.get (roles/storage.objectCreator
 // and roles/storage.objectViewer cover them), and never overwrites or deletes an object: every
-// write carries a create-only precondition, and no call it makes deletes. Each failure of a call
-// prints through gcsFailure, never as the client's own text.
+// write carries a create-only precondition, and no call it makes deletes.
 type GCS struct {
 	objects *storage.ObjectsService
 	bucket  string
@@ -166,14 +165,15 @@ func isGCSNotFound(err error) bool {
 	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusNotFound {
 		return false
 	}
-	return !strings.Contains(apiErr.Message+" "+apiErr.Body, gcsBucketMissing)
+	return !gcsBucketIsMissing(apiErr)
 }
 
-// gcsBucketMissing is the words GCS's 404 says a missing bucket in, where a missing object's says
-// "No such object".
 const gcsBucketMissing = "bucket does not exist"
 
-// gcsPermissions are the permissions the store needs, the ones a refusal is named by.
+func gcsBucketIsMissing(apiErr *googleapi.Error) bool {
+	return strings.Contains(apiErr.Message+" "+apiErr.Body, gcsBucketMissing)
+}
+
 var gcsPermissions = []string{"storage.objects.get", "storage.objects.create"}
 
 // gcsFailure is err, the failure of a call to GCS through its client, as a message may print it:
@@ -185,20 +185,20 @@ var gcsPermissions = []string{"storage.objects.get", "storage.objects.create"}
 // drew no answer fails with net/http's error, which quotes a Location that does not parse and names
 // the one a followed redirect asked. The client follows every redirect, and its transport
 // (cloud.google.com/go/auth's) puts the bearer on each request it sends, so either Location can
-// carry it. It unwraps to err, so gcsStatus and isGCSNotFound still read googleapi.Error.
+// carry it.
 func gcsFailure(err error) error {
 	var apiErr *googleapi.Error
 	if !errors.As(err, &apiErr) || apiErr.Code == 0 {
 		return redact.Class(err)
 	}
 	text := "the server answered HTTP " + redact.StatusLine(apiErr.Code)
-	said := apiErr.Message + " " + apiErr.Body
 	switch apiErr.Code {
 	case http.StatusNotFound:
-		if strings.Contains(said, gcsBucketMissing) {
+		if gcsBucketIsMissing(apiErr) {
 			text += ": the bucket does not exist"
 		}
 	case http.StatusForbidden:
+		said := apiErr.Message + " " + apiErr.Body
 		for _, permission := range gcsPermissions {
 			if strings.Contains(said, "Permission '"+permission+"' denied") {
 				text += ": missing permission " + permission
