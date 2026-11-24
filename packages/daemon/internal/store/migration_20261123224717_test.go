@@ -31,7 +31,8 @@ const membersOwedRelease = "the release that brings a re-admitted tree's members
 // behind its gate, a root whose gate opened before its promotion while its tree's lifecycle stood
 // open, one whose spec opened while its Verification document waits, and one whose gate opened
 // while its tree's lifecycle was not open are all marked, since no promotion has brought their
-// members back. Its way back, the last
+// members back. Its way back, the last paragraph of the migration's header, drops the column and
+// deletes the migration's version row, and the roll-forward marks the same roots again.
 func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)

@@ -1894,11 +1894,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// come back here instead, after the releases, so that a root the releases took out of the
 	// workflow is not read as running, and before the line is promoted, so that a member's owed
 	// start stands in this pass's own line (returnMembersOfRunningTrees, dispatch://INFRA-5471).
-	returned, err := a.returnMembersOfRunningTrees(ctx, tx, issues, facts)
+	wrote, err := a.returnMembersOfRunningTrees(ctx, tx, issues, slots, facts, heldKeys)
 	if err != nil {
 		return 0, released, err
 	}
-	if returned {
+	if wrote {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
@@ -2183,20 +2183,8 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.engine.StartArchitect(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("start the architect of %s: %w", issue.Key, err)
 				}
-				if err := a.startMidPhaseMembers(ctx, tx, issue, issues, now); err != nil {
+				if err := a.returnOwedMembers(ctx, tx, issue, issues, now); err != nil {
 					return admitted, released, err
-				}
-				if err := a.reenterStrandedChildren(ctx, tx, issue, issues); err != nil {
-					return admitted, released, err
-				}
-				// The promotion is the first moment this generation's tree runs, so the return it
-				// has just made is the one a re-admission owed: once in the generation, and no pass
-				// after it brings the members back again (record.MembersReturnOwed). Only a root that
-				// carries the mark is written, so a fresh root's promotion costs no statement.
-				if issue.MembersOwed {
-					if err := a.store.ClearMembersOwed(ctx, tx, issue.Key); err != nil {
-						return admitted, released, err
-					}
 				}
 				opened = opened || facts.Gates[issue.Tree].Open()
 			case record.LineFirstPhase:
@@ -2710,40 +2698,80 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 	return own
 }
 
+// returnOwedMembers is the first run of a re-admitted tree: it brings back the members the
+// re-admission left mid-phase (startMidPhaseMembers) and those reopened at done
+// (reenterStrandedChildren), and clears root's mark (record.Issue.MembersOwed) in the same
+// transaction. Bringing the members back and clearing the mark together is what makes the return
+// once in the generation (dispatch://INFRA-5471), so both callers come through here: the promotion
+// of a queued root, which brings back the members of every tree it opens whatever its mark, and
+// the pass that finds a re-admitted tree running before any promotion
+// (returnMembersOfRunningTrees). Only a root that carries the mark is written, so a fresh root's
+// promotion costs no statement.
+func (a *Admission) returnOwedMembers(ctx context.Context, tx pgx.Tx, root record.Issue, issues []record.Issue, now time.Time) error {
+	if err := a.startMidPhaseMembers(ctx, tx, root, issues, now); err != nil {
+		return err
+	}
+	if err := a.reenterStrandedChildren(ctx, tx, root, issues); err != nil {
+		return err
+	}
+	if !root.MembersOwed {
+		return nil
+	}
+	return a.store.ClearMembersOwed(ctx, tx, root.Key)
+}
+
 // returnMembersOfRunningTrees brings back the members of each re-admitted tree that runs with no
 // promotion to come (record.MembersReturnOwed): its root's design gate opened while the root still
-// waited in the line, so the root stopped being a queued root and its promotion,
-// which brings a re-admitted tree's members back, will not run. The members come back here as
-// that promotion brings them (startMidPhaseMembers, reenterStrandedChildren), in the same pass as
-// the gate's opening and whatever path opened it, and the mark is cleared in the same transaction,
-// so this happens once in the generation (dispatch://INFRA-5471). It answers whether it brought
-// any tree's members back, so the caller reads the records again.
+// waited in the line, so the root stopped being a queued root and its promotion, which brings a
+// re-admitted tree's members back, will not run. The members come back here as that promotion
+// brings them (returnOwedMembers), in the same pass as the gate's opening and whatever path opened
+// it: register_gate, a person's approval or a carried copy all reach this pass, since every fact
+// runs it. It answers whether it wrote anything, so the caller reads the records again.
 //
-// The pass reads the state rather than the gate's event: the gate opens through register_gate, a
-// person's approval or a carried copy, and every fact runs this pass, so no path is missed. A
-// per-pass resume of every suspended mid-phase member was weighed and not chosen: the same state
-// matches claims suspended on purpose (an idle release, a tester between production-check looks,
-// an operator's suspension), and the mark is what tells a member the re-admission left from those.
-func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) (bool, error) {
-	returned := false
+// The mark is what says a member waits for its tree's first run: a suspended member is no sign of
+// it, since an idle release, a tester between production-check looks and an operator's suspension
+// leave the same state, and only the re-admission knows which trees it left mid-phase.
+//
+// heldKeys is the promotion's own hold (promoteHolds): a root the Dispatch consumer's pending
+// Reconcile summary or the boot's catch-up still holds is passed over, as the promotion stops at
+// it, because its record may still miss what Dispatch holds. The pass after the hold's release
+// brings its members back.
+//
+// A marked root that holds an admission slot, or carries the mark of the slot it gave back for a
+// wait (record.Issue.ReleasedForWaitAt), was promoted by a daemon of an earlier release that
+// shares this database: that release's promotion brought the members back and never names the
+// mark, so the mark outlived it. This release leaves no such root, since its promotion clears the
+// mark in the transaction that grants the slot, and the waiting line offers a marked root no first
+// phase of its own. So the mark is cleared there and nothing is started: that generation's members
+// came back already.
+func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
+	facts record.LineFacts, heldKeys func(string) bool,
+) (bool, error) {
+	slotted := make(map[string]struct{}, len(slots))
+	for _, slot := range slots {
+		slotted[slot.Issue] = struct{}{}
+	}
+	wrote := false
 	for _, root := range issues {
-		if !record.MembersReturnOwed(root, facts.Lifecycles[root.Key], facts.Gates[root.Key]) {
+		if !record.MembersReturnOwed(root, facts.Lifecycles[root.Key], facts.Gates[root.Key]) || heldKeys(root.Key) {
 			continue
 		}
-		if err := a.startMidPhaseMembers(ctx, tx, root, issues, a.now()); err != nil {
-			return returned, err
+		wrote = true
+		if _, holds := slotted[root.Key]; holds || root.ReleasedForWaitAt != nil {
+			if err := a.store.ClearMembersOwed(ctx, tx, root.Key); err != nil {
+				return wrote, err
+			}
+			a.logOnCommit(ctx, "admission clears the members' return an earlier release's promotion already made",
+				"issue", root.Key, "generation", root.Generation)
+			continue
 		}
-		if err := a.reenterStrandedChildren(ctx, tx, root, issues); err != nil {
-			return returned, err
-		}
-		if err := a.store.ClearMembersOwed(ctx, tx, root.Key); err != nil {
-			return returned, err
+		if err := a.returnOwedMembers(ctx, tx, root, issues, a.now()); err != nil {
+			return wrote, err
 		}
 		a.logOnCommit(ctx, "admission brings back the members of a re-admitted tree that runs before its promotion",
 			"issue", root.Key, "generation", root.Generation)
-		returned = true
 	}
-	return returned, nil
+	return wrote, nil
 }
 
 // startMidPhaseMembers brings back the roles that have run of every member of the tree promotion

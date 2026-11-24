@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -35,15 +36,9 @@ const (
 // first run brings back.
 var rmMembers = []string{rmImplementing, rmMerging, rmAccepting, rmReopened}
 
-// suspendedClaim records role's claim of key in root's tree as a tree's close leaves it: suspended
-// by the daemon's own suspend, the durable record that the role has run (midPhaseChild's insert).
-func suspendedClaim(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.Role) {
-	t.Helper()
-	putClaimRow(t, pool, root, key, role, 1, "suspended")
-}
-
 // putClaimRow records role's claim of key in root's tree at generation in state, the daemon's own
-// suspend standing for a suspended one, unless the claim already has a row.
+// suspend standing for a suspended one (the durable record that the role has run), unless the
+// claim already has a row. midPhaseChild seeds its phase role's claim through it.
 func putClaimRow(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.Role, generation int, state string) {
 	t.Helper()
 	project, err := claim.ProjectToken(testProject)
@@ -91,7 +86,7 @@ func readmittedTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, clea
 	midPhaseChild(t, pool, rmRoot, rmImplementing, phase.Implementing, "in_progress")
 	midPhaseChild(t, pool, rmRoot, rmMerging, phase.Merging, "in_progress")
 	midPhaseChild(t, pool, rmRoot, rmAccepting, phase.Accepting, "needs_review")
-	suspendedClaim(t, pool, rmRoot, rmAccepting, claim.RoleImplementer)
+	putClaimRow(t, pool, rmRoot, rmAccepting, claim.RoleImplementer, 1, "suspended")
 	parent := rmRoot
 	putIssue(t, pool, record.Issue{Key: rmReopened, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 		Title: rmReopened, Tree: rmRoot, Parent: &parent, Phase: phase.Done, Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: "B4", LastDispatchSeq: 1})
@@ -397,8 +392,9 @@ func TestReadmittedMembersOfATreePromotedBeforeTheChangeStartNothing(t *testing.
 
 // A re-admitted root whose label a person takes off while it waits in the line is no queued root,
 // and its tree's lifecycle still stands open, but nothing hands that tree's work to the daemon: the
-// opening of its gate brings no member back, as no promotion would. The mark stands, and the
-// members come back when the label does.
+// opening of its gate brings no member back, as no promotion would, and the line offers the root no
+// first phase of its own, which would take a slot and start its work before its members' return.
+// The mark stands, and the members come back when the label does.
 func TestReadmittedMembersOfARootWhoseLabelIsOffWaitForTheLabel(t *testing.T) {
 	pool := migratedPool(t)
 	admission, lines := readmittedAdmission(t, 1)
@@ -418,8 +414,70 @@ func TestReadmittedMembersOfARootWhoseLabelIsOffWaitForTheLabel(t *testing.T) {
 	if got := issue(t, pool, rmReopened); got.Phase != phase.Done {
 		t.Fatalf("the reopened %s while its root's label is off = %#v, want it still at done", rmReopened, got)
 	}
+	if line := waitingLine(t, pool, testProject, nil); slices.Contains(line, rmRoot) {
+		t.Fatalf("the waiting line while %s's label is off = %v, want no first phase offered to a root still owing its members their return", rmRoot, line)
+	}
 
 	apply(t, pool, admission, "label-on", intake.DispatchIssue{Key: rmRoot, ResolvedRepo: "acme/widgets", Seq: 5, Type: "issue.updated",
 		Status: "todo", Title: "root", Rank: "B", HandedOver: handed}, admission.engine)
 	assertMembersBack(t, pool, admission, lines)
+}
+
+// The return is the promotion's, and it waits for what the promotion waits for: a root the
+// Dispatch consumer's pending Reconcile summary still holds may miss what Dispatch holds, so the
+// pass that sees its gate open brings nothing back, and the pass after the consumer reaches that
+// summary's position brings the members back.
+func TestReadmittedMembersOfARootTheConsumerStillHoldsWaitForTheRelease(t *testing.T) {
+	pool := migratedPool(t)
+	admission, lines := readmittedAdmission(t, 1)
+	readmittedTree(t, pool, admission, false)
+	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
+		{Key: rmRoot, ResolvedRepo: "acme/widgets", Title: "root", Status: "todo", Rank: "B", HandedOver: handed, LastSeq: 4},
+	}, 10, 2, false)
+	if !admission.held(rmRoot) {
+		t.Fatalf("the boot listing holds no %s, want it held until the consumer reaches the listing's position: the case's premise", rmRoot)
+	}
+
+	registerApprovedSpec(t, pool, admission, "root-gate")
+	for _, key := range rmMembers {
+		if starts := memberStarts(t, pool, key); len(starts) != 0 {
+			t.Fatalf("the starts of %s while the consumer holds its root = %+v, want none", key, starts)
+		}
+	}
+	if got := issue(t, pool, rmRoot); !got.MembersOwed {
+		t.Fatalf("the held %s = %#v, want its members still owed their return", rmRoot, got)
+	}
+
+	applyFact(t, pool, admission, "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 10})
+	if admission.held(rmRoot) {
+		t.Fatalf("%s is still held once the consumer reached the listing's position", rmRoot)
+	}
+	assertMembersBack(t, pool, admission, lines)
+}
+
+// A daemon of the release before, sharing the database, promotes a root this release's migration
+// marked: its promotion brings the members back and never names the mark, so the root holds its
+// slot with the mark still standing. When its gate opens, the pass clears that mark and starts
+// nothing, since that generation's members came back already.
+func TestReadmittedMembersOfARootAnEarlierReleasePromotedComeBackNoSecondTime(t *testing.T) {
+	pool := migratedPool(t)
+	admission, _ := readmittedAdmission(t, 1)
+	readmittedTree(t, pool, admission, false)
+	if _, err := pool.Exec(context.Background(), `update issues set status = 'in_progress', dispatch_status = 'in_progress' where key = $1`, rmRoot); err != nil {
+		t.Fatalf("write the earlier release's promotion of %s: %v", rmRoot, err)
+	}
+	takeSlot(t, pool, rmRoot)
+	before := membersStarted(t, pool)
+	if got := issue(t, pool, rmRoot); !got.MembersOwed {
+		t.Fatalf("the root the earlier release promoted = %#v, want it still marked: the case's premise", got)
+	}
+
+	registerApprovedSpec(t, pool, admission, "root-gate")
+	applyFact(t, pool, admission, "tick", intake.ControllerTick{})
+	if got := membersStarted(t, pool); !reflect.DeepEqual(got, before) {
+		t.Fatalf("the members after the gate opened = %#v, want them as the earlier release's promotion left them, %#v", got, before)
+	}
+	if got := issue(t, pool, rmRoot); got.MembersOwed {
+		t.Fatalf("the root the earlier release promoted = %#v, want its stale mark cleared", got)
+	}
 }

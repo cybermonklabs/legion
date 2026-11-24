@@ -1190,14 +1190,20 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// unopened is the queued roots whose promotion has still to open their tree (AwaitsPromotion):
 	// nothing of such a tree starts before that promotion, which offers the root's own work and
 	// brings back its members (admit's startMidPhaseMembers), so the line offers none of its members
-	// a place. A queued root holding a row the daemon granted it in this tree has been promoted
-	// already, and its members stand in the line as the members of any tree that runs.
+	// a place (inUnopenedTree). A queued root holding a row the daemon granted it in this tree has
+	// been promoted already, and its members stand in the line as the members of any tree that
+	// runs. The ladder's tree_closed word reads the open-gate members of these trees
+	// (reopensAtPromotion), which is the same set of roots wherever their gate is open.
 	unopened := make(map[string]struct{}, len(queued))
 	for _, issue := range queued {
 		queuedKeys[issue.Key] = struct{}{}
 		if _, holds := slotted[issue.Key]; AwaitsPromotion(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key], holds) {
 			unopened[issue.Key] = struct{}{}
 		}
+	}
+	inUnopenedTree := func(issue Issue) bool {
+		_, unopenedTree := unopened[issue.Tree]
+		return unopenedTree
 	}
 	// Every drop site reports what it left behind through one ladder, built over the facts the
 	// line itself is judged on, so that the word an issue reads here and the word the assembly
@@ -1241,18 +1247,14 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 				at: later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())})
 			continue
 		}
-		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot {
-			// A root whose tree is not open yet is in the second part whatever rows it owes: its
-			// promotion opens the tree, and the starts of a run it carries are queued then.
-			hold(issue)
-			continue
-		}
-		// A member of a tree whose root waits for its promotion is not offered a slot either,
-		// whatever start it owes: the promotion starts the member's phase role, which a start it
-		// already owes stands for (workflow.StartFor), and only then does the tree run. Without
-		// this, a start a lease hid from finishFencedStarts through the tree's close would put the
-		// member in the line before its tree had opened (dispatch://INFRA-5471).
-		if _, waitsForTree := unopened[issue.Tree]; waitsForTree {
+		// A root whose tree is not open yet is in the second part whatever rows it owes: its
+		// promotion opens the tree, and the starts of a run it carries are queued then. A member of
+		// a tree whose root waits for that promotion is offered no slot either, whatever start it
+		// owes: the promotion starts the member's phase role, which a start it already owes stands
+		// for (workflow.StartFor), and only then does the tree run. Without that, a start a lease hid
+		// from finishFencedStarts through the tree's close would put the member in the line before
+		// its tree had opened (dispatch://INFRA-5471).
+		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || inUnopenedTree(issue) {
 			hold(issue)
 			continue
 		}
@@ -1333,7 +1335,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// above, QueuedRoot, WaitsForSlot and AwaitsPromotion, which reads it, each point here
 		// rather than repeating it.
 		_, holds := slotted[issue.Key]
-		if !AwaitsPromotion(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key], holds) {
+		if _, awaits := unopened[issue.Key]; !awaits {
 			hold(issue)
 			continue
 		}
@@ -1360,15 +1362,17 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || !runs(issue) {
-			hold(issue)
-			continue
-		}
 		// A member of a tree whose root waits for its promotion takes no first phase before that
-		// promotion opens the tree. Such a root's gate is shut but where a re-admitted root's tree has
-		// no open lifecycle to run in (ran) or a handed-over root carries an open gate, and those are
-		// the cases this holds a member for (dispatch://INFRA-5471).
-		if _, waitsForTree := unopened[issue.Tree]; waitsForTree {
+		// promotion opens the tree (inUnopenedTree). Such a root's gate is shut, and the gate's own
+		// skip below holds the member, but in two cases: a re-admitted root whose tree has no
+		// lifecycle open under the workflow, whose gate says nothing until its promotion (ran), and
+		// a root another tree handed over with an open gate (dispatch://INFRA-5471). A root whose
+		// re-admission still owes its members their return takes no first phase of its own before
+		// that return either: the admission pass brings them back before it judges the line
+		// (admit's returnMembersOfRunningTrees), so the one such root this meets is one whose label
+		// a person took off, which nothing hands to the daemon (record.MembersReturnOwed).
+		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || !runs(issue) || inUnopenedTree(issue) ||
+			(issue.MembersOwed && !issue.HandedOver) {
 			hold(issue)
 			continue
 		}

@@ -194,7 +194,12 @@ func liveAncestry(issue Issue, live map[string]struct{}) []string {
 // while its design gate stands open: a re-admitted root whose tree's lifecycle is not open under
 // the workflow, which the gate leaves queued (ran, dispatch://INFRA-5471), or a root another tree
 // handed over carrying an open gate. Such a tree is closed until that promotion opens it, and its
-// members wait for it: Waiting offers none of them a phase. Without this the ladder's gate word
+// members wait for it: Waiting's hold of an unopened tree's members (its unopened set, over
+// AwaitsPromotion) offers none of them a phase. It is written over QueuedRoot with no slot term,
+// and the two name the same roots wherever the gate is open: a queued root whose gate is open
+// holds no row the daemon granted it in this tree, since a promotion that granted one opened its
+// tree's lifecycle and cleared the re-admission's mark, and a root handed over awaits its promotion
+// whatever row it carries. Without this the ladder's gate word
 // would pass over them, the gate being open, and leave each at at_work or unclassified, which say
 // that its workers run or that no rule names its wait. A queued root whose gate is shut answers
 // false, and its members read design_gate as they always have.

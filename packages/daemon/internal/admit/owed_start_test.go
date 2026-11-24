@@ -114,17 +114,11 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 		t.Fatal(err)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		ctx := context.Background()
-		if err := record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: role, Claim: token}); err != nil {
+		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: role, Claim: token}); err != nil {
 			t.Fatalf("seed the %s's row of %s: %v", role, key, err)
 		}
-		if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
-			serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-			values ($1, $2, $3, $4, $5, 1, 'ses', '/sessions/ses.jsonl', 'suspended', 1, 0, 0, 0, 0, 'daemon')`,
-			string(token), project, root, key, string(role)); err != nil {
-			t.Fatalf("seed the %s of %s: %v", role, key, err)
-		}
 	})
+	putClaimRow(t, pool, root, key, role, 1, "suspended")
 	return token
 }
 

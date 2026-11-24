@@ -2,14 +2,14 @@
 -- come back (dispatch://INFRA-5471).
 --
 -- issues.members_owed is true on a root whose re-admission has started a generation and whose tree
--- has not yet run in it: admission's readmit sets it, and the first moment the root stops being a
--- queued root clears it, by the root's promotion from the waiting line or by its design gate
--- opening first. At that moment the daemon brings back the members the re-admission left mid-phase,
--- and the members reopened at done, as the promotion always has (admit's startMidPhaseMembers and
--- reenterStrandedChildren), once in the generation. While the mark stands and the tree's lifecycle
--- is not open under the workflow (its cleanup reserved, as after a linger that ended), the gate's
--- opening leaves the root queued, so the promotion that opens the tree's next epoch brings the
--- members back (record's ran).
+-- has not yet run in it. Admission's readmit sets it, and two writes clear it, each in the
+-- transaction that brings back the members the re-admission left mid-phase and those reopened at
+-- done, as the promotion always has (admit's returnOwedMembers): the root's promotion from the
+-- waiting line, and the first admission pass that finds its tree running before any promotion
+-- while the root is still handed to Legion and its design gate has opened. So the members come back
+-- once in the generation. While the mark stands and the tree's lifecycle is not open under the
+-- workflow (its cleanup reserved, as after a linger that ended), the gate's opening leaves the root
+-- queued, so the promotion that opens the tree's next epoch brings the members back (record's ran).
 --
 -- Every row takes the default, false, but the roots whose re-admitted generation no promotion has
 -- opened: a root of its own tree standing in todo at admitted on a generation past the first,
@@ -24,11 +24,16 @@
 -- them back once, as that release's promotion would have. A member whose phase worker the operator
 -- resumed meanwhile and that still runs is started no second time (workflow.StartFor), though each
 -- other role of it that ran is started again with no task. A marked root whose gate opened while
--- its tree's lifecycle was not open queues
--- again until the promotion that opens its tree.
+-- its tree's lifecycle was not open queues again until the promotion that opens its tree.
 --
 -- The release before this one names each column of the table it writes (record's PutIssue) and
--- reads none of this one, so every row it inserts takes the default.
+-- reads none of this one, so every row it inserts takes the default. Daemons of several projects
+-- that share the database may upgrade one after another: a daemon still on the release before
+-- promotes a root this statement marked without clearing the mark, and it re-admits a root without
+-- setting one. The first is caught by this release's pass, which clears the mark of a root holding
+-- a slot or the mark of a slot given back for a wait and starts nothing for it (admit's
+-- returnMembersOfRunningTrees); the second leaves that generation as the release before left it,
+-- its members brought back at its promotion only.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
