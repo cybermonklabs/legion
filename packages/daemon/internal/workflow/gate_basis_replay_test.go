@@ -18,9 +18,12 @@ import (
 // event opens and ends nothing itself: it queues the step's pending-basis seed, and only the
 // seed's read of Dispatch as it stands now (intake.PendingBasisRead) opens or ends the wait. Each
 // case here applies, after the pending registration, an event a later act undid, which queues one
-// seed and moves nothing (cueThenRead), and then that seed's read, and the step must not move;
-// each control applies an event and the read that shows its act, and the step must move. So the
-// cases fail where the engine acts on the event, and the controls where it acts on nothing.
+// seed and moves nothing (cueThenRead), and then that seed's read. The first three cases' reads
+// show the request still open, and the step must stay pending; the fourth's shows the changes
+// request that superseded the approval, so the step's wait ends on it, and that changes request,
+// applied after, adds nothing. Each control applies an event and the read that shows its act, and
+// the step must move. So the cases fail where the engine acts on the event, and the controls where
+// it acts on nothing.
 
 // stillPending fails t unless LEGION-208's spec step still waits on ask-100 at version 4 after
 // what, with nothing opened or ended, nobody told, and one pending-basis seed queued beside the

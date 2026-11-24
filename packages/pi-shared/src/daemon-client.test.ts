@@ -487,7 +487,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "gate-register.json",
     ],
     // A registration on an ancestor's basis carries the ancestor's document id, its version and
-    // the architect's reason beside the root's own document (contract 249).
+    // the architect's reason beside the root's own document (contract 276).
     [
       "gateRegister",
       "/legion/v1/gates/register",

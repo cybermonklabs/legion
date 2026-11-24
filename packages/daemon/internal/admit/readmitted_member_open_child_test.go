@@ -1,11 +1,13 @@
 package admit
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -188,7 +190,7 @@ func noWorkerLaunch(t *testing.T, pool *pgxpool.Pool, key string, role claim.Rol
 //
 // Each runs with the root's design gate opened before the promotion and with none open at it.
 // The control row has no open Dispatch child anywhere: the member's worker is launched at the
-// promotion beside the root's, and the pass after it moves neither.
+// promotion beside the root's, and the pass after it leaves the root in implementing, told nothing.
 func TestAPromotedCarriedRootStartsItsPhaseWhileAMemberUnderItWaitsOnItsChild(t *testing.T) {
 	for _, gate := range []struct {
 		name string
@@ -220,7 +222,7 @@ func TestAPromotedCarriedRootStartsItsPhaseWhileAMemberUnderItWaitsOnItsChild(t 
 
 				spPass(t, pool, admission)
 
-				// 1. The root's carried implementing starts despite the open child.
+				// 1. The root's carried implementing starts, open child or not.
 				root := issue(t, pool, crRoot)
 				if root.Phase != phase.Implementing || root.ChildrenWait != nil || root.HandedOverFrom != "" || !treeOpen(t, pool, crRoot) {
 					t.Fatalf("the promoted root = phase %s, held start %+v, handed over from %q, tree open %t; want implementing in a tree of its own, nothing held",
@@ -230,7 +232,8 @@ func TestAPromotedCarriedRootStartsItsPhaseWhileAMemberUnderItWaitsOnItsChild(t 
 					t.Fatalf("the root's worker starts = %+v, want the implementer's start of the phase it carries", starts)
 				}
 
-				// 2. The member under it waits on its open child, with no launch queued.
+				// 2. The member under it waits on its open child with no launch queued; in the control
+				// row it has its implementer's start.
 				member := issue(t, pool, crMember)
 				if !row.child {
 					if starts := pwWorkerStarts(t, pool, crMember); member.Phase != phase.Implementing || len(starts) != 1 || starts[0].role != claim.RoleImplementer {
@@ -247,8 +250,9 @@ func TestAPromotedCarriedRootStartsItsPhaseWhileAMemberUnderItWaitsOnItsChild(t 
 					t.Fatalf("phase-ended messages to the root at its promotion = %+v, want none", ended)
 				}
 
-				// 3. The outbox delivers the root's start, and the first pass after that stops the
-				// root that has an open child, its worker told that the phase ended.
+				// 3. The outbox delivers the root's start, and the first pass after that stops a root
+				// that has an open child, its worker told that the phase ended; the control row's root
+				// stays in implementing, told nothing.
 				token := putWorkerClaim(t, pool, crRoot, crRoot, claim.RoleImplementer, root.Generation, supervise.StateWorking, "")
 				pwDeliver(t, pool, token, pnWorkerStart(t, pool, crRoot, claim.RoleImplementer))
 				spPass(t, pool, admission)
@@ -274,5 +278,115 @@ func TestAPromotedCarriedRootStartsItsPhaseWhileAMemberUnderItWaitsOnItsChild(t 
 				noWorkerLaunch(t, pool, crMember, claim.RoleImplementer)
 			})
 		}
+	}
+}
+
+// dispatch://INFRA-3320 R9 over a re-admitted tree a daemon of the release before promoted
+// (promotedByEarlierRelease). Its promotion brought the members back and never cleared the mark of
+// their return, so the first pass of this release that finds the root's design gate open clears
+// the mark and starts no member. A member of that tree in the middle of implementing, with an open
+// Dispatch child under it, is a started parent with an open child on that same pass: the pass moves
+// it to awaiting_children holding its phase, with one phase-ended message to its worker (R10,
+// workflow's StopForChildren). The return that would have decided how to hold it starts nothing, so
+// the stop does not leave the member to it (startsMembersThisPass). The control row is the same
+// tree with no open child, whose member stays in implementing, told nothing.
+func TestAMemberOfARootAnEarlierReleasePromotedStopsOnItsOpenChildOnTheFirstPass(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		child bool
+	}{
+		{name: "an open child holds the member", child: true},
+		{name: "the control: no open child", child: false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := quiet(t, 1)
+			readmittedTree(t, pool, admission, false)
+			earlierReleasePromotes(t, pool, admission)
+			// The member's worker took the start that promotion queued, so it is in the middle of
+			// implementing when its child is filed.
+			workerTakesItsStart(t, pool, rmImplementing, claim.RoleImplementer)
+			takeSlot(t, pool, rmImplementing)
+			if row.child {
+				seedMirrorChild(t, pool, rmOpenChild, "backlog", rmImplementing)
+			}
+			if root := issue(t, pool, rmRoot); !root.MembersOwed || !holdsSlot(t, pool, rmRoot) {
+				t.Fatalf("the root the earlier release promoted = %#v, slots %+v; want it still marked and holding its slot: the case's premise", root, slots(t, pool))
+			}
+			if member, starts := issue(t, pool, rmImplementing), memberStarts(t, pool, rmImplementing); member.Phase != phase.Implementing || len(starts) != 0 {
+				t.Fatalf("the member %s before the pass = phase %s with starts %+v; want implementing with its start delivered: the case's premise", rmImplementing, member.Phase, starts)
+			}
+			openRootGate(t, pool)
+
+			spPass(t, pool, admission)
+
+			if issue(t, pool, rmRoot).MembersOwed {
+				t.Fatal("the root the earlier release promoted still owes its members' return after the pass, want its stale mark cleared")
+			}
+			member := issue(t, pool, rmImplementing)
+			ended := pwPayloads[record.PhaseEnded](t, pool, rmImplementing)
+			if !row.child {
+				if member.Phase != phase.Implementing || len(ended) != 0 {
+					t.Fatalf("the member %s with no open child after the first pass = phase %s with phase-ended messages %+v, want implementing with none",
+						rmImplementing, member.Phase, ended)
+				}
+				return
+			}
+			if member.Phase != phase.AwaitingChildren || member.ChildrenWait == nil || member.ChildrenWait.Start != phase.Implementing ||
+				!slices.Equal(member.ChildrenWait.Children, []string{rmOpenChild}) {
+				t.Fatalf("the member %s with an open child after the first pass = phase %s, wait %+v; want awaiting_children holding the start of implementing on %s: the pass that finds its tree running stops it",
+					rmImplementing, member.Phase, member.ChildrenWait, rmOpenChild)
+			}
+			if len(ended) != 1 || ended[0].Role != claim.RoleImplementer || ended[0].To != phase.AwaitingChildren {
+				t.Fatalf("phase-ended messages to the member %s = %+v, want one to its implementer, into awaiting_children", rmImplementing, ended)
+			}
+		})
+	}
+}
+
+// workerTakesItsStart leaves key's worker of role in the middle of its phase, as the outbox does
+// once it has run the starts that were queued for it: each of them is finished, and the role's
+// claim works, given the entry its phases row names.
+func workerTakesItsStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) {
+	t.Helper()
+	ctx := context.Background()
+	inTx(t, pool, func(tx pgx.Tx) {
+		rows, err := tx.Query(ctx, `select id from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
+			and payload->>'role' = $2 order by id`, key, string(role))
+		if err != nil {
+			t.Fatalf("list the starts of the %s of %s: %v", role, key, err)
+		}
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("scan a start of the %s of %s: %v", role, key, err)
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the starts of the %s of %s: %v", role, key, err)
+		}
+		if len(ids) == 0 {
+			t.Fatalf("the %s of %s has no start queued, want the one the promotion wrote", role, key)
+		}
+		for _, id := range ids {
+			if err := record.NewStore().FinishOutbox(ctx, tx, id, ""); err != nil {
+				t.Fatalf("finish the start %d of the %s of %s: %v", id, role, key, err)
+			}
+		}
+	})
+	project, err := claim.ProjectToken(testProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := claim.NewToken(project, key, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `update claims set state = $2, suspended_by = '', given_entry = $3 where token = $1`,
+		string(token), string(supervise.StateWorking), spPhaseRow(t, pool, key, role).Entry); err != nil {
+		t.Fatalf("set the %s of %s working: %v", role, key, err)
 	}
 }

@@ -1922,13 +1922,15 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 // whose pull request has merged, or whose phase's role stands on an entry a role's move back raised
 // out of retro or merging (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in
 // awaiting_children already, so it sends nothing again. The stop leaves a member alone when its
-// tree's return runs later in this pass: the return decides whether to hold a new start or stop a
-// worker already started (startMidPhaseMembers).
+// tree's return starts the tree's members later in this pass (startsMembersThisPass): that return
+// decides whether to hold a new start or stop a worker already started (startMidPhaseMembers). A
+// tree whose root an earlier release's promotion left is not one, since its return clears the mark
+// and starts nothing, so its members stop here as any started parent's does.
 //
 // It runs before the releases (promoteHolds), so the slot a stopped parent held is freed on this
 // very pass by the one rule for a phase that keeps none (releaseSlots, record.NeedsSlot), and the
 // start a returned parent owes stands in this pass's own line.
-func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts,
+func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot, facts record.LineFacts,
 	held func(string) bool,
 ) (bool, error) {
 	// The reads of the parents no longer held before their retro are dropped first, on every pass,
@@ -1949,11 +1951,14 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 	slices.SortFunc(parents, func(left, right record.Issue) int { return cmp.Compare(left.Key, right.Key) })
 	running := record.RunningRoots(issues, facts)
 	owed := owedStartsByIssue(facts.OwedRows)
-	// Let the return decide how to hold these members, but only if the pass will reach it. A
-	// root's catch-up hold does not keep a member's own queued start from being delivered.
+	// Let the return decide how to hold these members, but only if the pass will reach it and the
+	// return will start them. A root's catch-up hold does not keep a member's own queued start from
+	// being delivered. The slots are the pass's own as it holds them here, the same read the return
+	// makes of them.
+	slotted := slottedIssues(slots)
 	returning := make(map[string]bool)
 	for _, root := range issues {
-		if returnsMembersThisPass(root, facts, held) {
+		if startsMembersThisPass(root, facts, held, slotted) {
 			returning[root.Key] = true
 		}
 	}
@@ -2175,7 +2180,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// so a stopped parent's slot is freed on this pass by the release below (awaiting_children
 	// keeps none), and a returned parent's start stands in this pass's line among the issues whose
 	// work came back, at the moment its wait ended.
-	waited, err := a.childrenWaits(ctx, tx, issues, facts, heldKeys)
+	waited, err := a.childrenWaits(ctx, tx, issues, slots, facts, heldKeys)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -3080,10 +3085,32 @@ func (a *Admission) returnOwedMembers(ctx context.Context, tx pgx.Tx, root recor
 	return a.store.ClearMembersOwed(ctx, tx, root.Key)
 }
 
-// returnsMembersThisPass is the eligibility check shared by the member return and the stop that
-// leaves it to decide whether to hold those members.
+// returnsMembersThisPass says whether the pass's member return reads root's mark as a return it
+// owes and may run: the mark is on a root whose tree runs, its design gate has opened and nothing
+// holds it (heldKeys). Whether the return starts the members is startsMembersThisPass's.
 func returnsMembersThisPass(root record.Issue, facts record.LineFacts, held func(string) bool) bool {
 	return record.MembersReturnOwed(root, facts.Lifecycles[root.Key], facts.Gates[root.Key]) && !held(root.Key)
+}
+
+// startsMembersThisPass is the one reading of whether this pass's member return starts root's
+// members, shared by the return (returnMembersOfRunningTrees) and the stop that leaves it to
+// decide whether to hold those members (childrenWaits): the return runs for root
+// (returnsMembersThisPass) and root's promotion is not one an earlier release already made
+// (promotedByEarlierRelease), whose pass clears the mark and starts nothing. slotted is
+// slottedIssues of the pass's slots, which both read as the return does.
+func startsMembersThisPass(root record.Issue, facts record.LineFacts, held func(string) bool, slotted map[string]struct{}) bool {
+	_, holds := slotted[root.Key]
+	return returnsMembersThisPass(root, facts, held) && !promotedByEarlierRelease(root, holds)
+}
+
+// slottedIssues is the keys of the issues that hold one of slots, the read of the slots that
+// promotedByEarlierRelease takes its answer from.
+func slottedIssues(slots []record.Slot) map[string]struct{} {
+	slotted := make(map[string]struct{}, len(slots))
+	for _, slot := range slots {
+		slotted[slot.Issue] = struct{}{}
+	}
+	return slotted
 }
 
 // returnMembersOfRunningTrees brings back the members of each re-admitted tree that runs with no
@@ -3108,18 +3135,14 @@ func returnsMembersThisPass(root record.Issue, facts record.LineFacts, held func
 func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts, heldKeys func(string) bool,
 ) (bool, error) {
-	slotted := make(map[string]struct{}, len(slots))
-	for _, slot := range slots {
-		slotted[slot.Issue] = struct{}{}
-	}
+	slotted := slottedIssues(slots)
 	wrote := false
 	for _, root := range issues {
 		if !returnsMembersThisPass(root, facts, heldKeys) {
 			continue
 		}
 		wrote = true
-		_, holds := slotted[root.Key]
-		if promotedByEarlierRelease(root, holds) {
+		if !startsMembersThisPass(root, facts, heldKeys, slotted) {
 			if err := a.store.ClearMembersOwed(ctx, tx, root.Key); err != nil {
 				return wrote, err
 			}
@@ -3156,8 +3179,8 @@ func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, 
 // stands at admitted. A root that arrived from another tree carrying its phase there
 // (Issue.HandedOverFrom) stays a queued root until its promotion, which clears that mark, so it is
 // never one either. Once no daemon of an earlier release shares a database, this goes with its
-// branch in returnMembersOfRunningTrees, the slotted map it reads and that function's slots
-// parameter.
+// term in startsMembersThisPass, the slotted map that function reads (slottedIssues) and the
+// slots parameters of childrenWaits and returnMembersOfRunningTrees.
 func promotedByEarlierRelease(root record.Issue, holds bool) bool {
 	return holds || root.ReleasedForWaitAt != nil || (root.HandedOverFrom == "" && record.StandsAt(root) != phase.Admitted)
 }
