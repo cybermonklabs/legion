@@ -23,6 +23,7 @@ import (
 //
 // This test needs no database: `citedIssues` is a pure function of the body.
 func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
+	t.Parallel()
 	const repo = "acme/widgets"
 	const cited = "https://github.com/acme/widgets/issues/7"
 	for _, row := range []struct {
@@ -154,6 +155,7 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 // change's answer, and the comment above it says why. They are written out rather than described:
 // a reader comparing two implementations needs the answer, not a rule.
 func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
+	t.Parallel()
 	const repo = "acme/widgets"
 	const seven = "https://github.com/acme/widgets/issues/7"
 	const nine = "https://github.com/acme/widgets/issues/9"
@@ -212,6 +214,7 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 // the two bodies to the same counts: a count has no noise to allow for, so the bound is the claim
 // itself rather than a ratio.
 func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
+	t.Parallel()
 	const repo = "acme/widgets"
 	bySpace, byComma := citationsFarFromASpace()
 	var space, comma citebody.Reads
@@ -240,6 +243,7 @@ func citationsFarFromASpace() (bySpace, byComma string) {
 // the bytes before the path only by asking the Body for them, so holdToTheReader names it: here
 // over the comma body, where the scan needs the body back to its start at every path.
 func TestTheReaderCountsAScanBackFromEachPath(t *testing.T) {
+	t.Parallel()
 	_, byComma := citationsFarFromASpace()
 	var reads citebody.Reads
 	body := citebody.New(byComma, &reads)
@@ -289,6 +293,7 @@ func holdToTheReader(what, body string, reads citebody.Reads) []string {
 // that long is no host name. The bodies are built rather than written out, since a row of a
 // table cannot hold 65,533 bytes and still be read by a person.
 func TestCitedIssuesReadsAHostNameOfAHostNamesLength(t *testing.T) {
+	t.Parallel()
 	const repo = "acme/widgets"
 	const cited = "https://github.com/acme/widgets/issues/7"
 	t.Run("a citation after a word of 65,533 bytes", func(t *testing.T) {

@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/daemon-api/* TestPauseRouteGoldens (path from goldenPath, declared)
+
 import (
 	"bytes"
 	"context"
@@ -23,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -89,6 +92,7 @@ projects:
       - {repo: sjawhar/legion, workflow: .github/workflows/release.yaml, step: Apply}
   WIDGETS:
     production_check: off
+    default_steps: [implementer, reviewer]
 gates:
   design: root-issues
 github_apps:
@@ -285,9 +289,9 @@ func populatedState(t *testing.T) State {
 		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
 	}
 	// What the daemon last saw of the architect's turns and of its launches (contract 86): the
-	// turn it began and ended, the ready that dates the two causes beside them, the cause its
-	// process was last found gone under, and the failure its last start reported. One claim view
-	// of the fixture carries all five, so every record describes each key.
+	// turn it began and ended, the ready that dates the death's cause beside them, the cause its
+	// process was last found gone under, and the failure of a start since that ready. One claim
+	// view of the fixture carries all five, so every record describes each key.
 	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
 	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
 	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
@@ -363,9 +367,10 @@ func populatedState(t *testing.T) State {
 					UpdateState: UpdateStateNone,
 					Step:        StepViewOf(architectStep),
 					Wake:        &WakeView{Kind: supervise.WakeCatchUp, DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
-					// The turns this agent began and ended, the ready that dates what follows,
-					// and the two causes a start of it reported before the one running now
-					// (contract 86).
+					// The turns this agent began and ended, the ready that dates the death, and
+					// the two causes (contract 86). This view carries every key so each record
+					// describes it: a live claim carries a start failure only while its agent
+					// has not been ready since, which a ready claim never is.
 					LastTurnStart:    &architectTurnStart,
 					LastTurnEnd:      &architectTurnEnd,
 					LastReady:        &architectReady,
@@ -1021,7 +1026,9 @@ func populatedState(t *testing.T) State {
 	// tree on its own, so a root and its child stand in different arms of one experiment; and,
 	// on the root LEGION-210, a row a hand-over settled at no arm at all — an empty variant, an
 	// empty mode and no instant — which is how a reader tells a unit settled at no arm from a
-	// unit never drawn, which carries no row.
+	// unit never drawn, which carries no row; and, on the child LEGION-209, the row of an
+	// experiment that sets how its issues are done, `planning`, which carries the group its arm set
+	// at the draw (`plan`), here `default`.
 	memoryDrawn := AssignmentView{Experiment: "memory", Variant: "memory", Mode: string(config.ExperimentRandom), DrawnAt: &memoryDrawnAt}
 	root := state.Issues["LEGION-208"]
 	root.Assignments = []AssignmentView{
@@ -1046,6 +1053,7 @@ func populatedState(t *testing.T) State {
 		Assignments: []AssignmentView{
 			memoryDrawn,
 			{Experiment: "plan-length", Variant: "long", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt},
+			{Experiment: "planning", Variant: "b", Mode: string(config.ExperimentRandom), DrawnAt: &planDrawnAt, Plan: string(config.PlanGroupDefault)},
 		},
 		// The child the workflow holds at `admitted`: it stands in no line, and the Dispatch
 		// links `admission.blocked` names are what hold it where it stands, which is the
@@ -1132,8 +1140,9 @@ func TestStateGolden(t *testing.T) {
 // own state, asked through the route itself. The caller is served at the recorded contract at or
 // below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
 // block in the shape contract 152 gave it, written from the same entries
-// (withoutRepositoriesLive), and every other key as a caller at shapedAnswersContract is served
-// it, since no other row of stateNarrowings stands between shapedAnswersContract and
+// (withoutRepositoriesLive), each assignment without its `plan`, since assignmentPlanContract's
+// row stands above that contract too, and every other key as a caller at shapedAnswersContract is
+// served it, since no other row of stateNarrowings stands between shapedAnswersContract and
 // repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
 // contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
 // view's `updateState` and `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a
@@ -1766,6 +1775,23 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "signoff.json", SignOffResponse{})
 	golden(t, "root-close.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
+}
+
+// The two routes of the owner's plan (contract 219) each have a fixture, named for its route as
+// the routes above are. register_plan answers the plan it took, each task with the steps its block
+// names as the plan writes them (registeredPlan), and stop_task answers the empty object of a
+// fact route. `@legion/contracts` parses both, so a field the daemon adds to either is caught
+// there.
+func TestOwnerPlanRouteGoldens(t *testing.T) {
+	golden(t, "plan-register.json", PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
+		ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+		Version:    4,
+		Tasks: []plan.Task{{
+			ID:    "a",
+			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
+		}},
+	})})
+	golden(t, "task-stop.json", EmptyResponse{})
 }
 
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes

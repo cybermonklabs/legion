@@ -87,12 +87,13 @@ func TestAColdWriteLoadsNoRoom(t *testing.T) {
 // The room a cold write's settlement loads stays resident as any room does (roomIdleTimeout), and
 // the writes after it publish into it, so a run of writes to a document no browser holds, each
 // settled before the next, loads the document once. Only the room a late departure's settlement
-// loads is retired as that settlement ends (retireSettlementRoom). ygo's idle sweep is held off
-// for the test's run, so its result does not depend on how long the machine takes to settle.
+// loads is retired as that settlement ends (retireSettlementRoom). The test's rooms are held
+// resident (holdRoomsResident), so its result does not depend on how long the machine takes to
+// settle.
 func TestColdWritesSettledOneAfterAnotherLoadTheDocumentOnce(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = 20 * time.Millisecond
-	service.srv.RoomIdleTimeout = time.Hour
+	holdRoomsResident(t, service)
 	var loads atomic.Int32
 	service.bootstrapping = func(room string, _ []byte) {
 		if room == artifactID {

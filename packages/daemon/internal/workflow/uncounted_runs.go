@@ -48,7 +48,11 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 	booting := &factRuns{}
 	opened := 0
 	for _, issue := range issues {
-		step, ok := standingStep(issue)
+		w, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return 0, err
+		}
+		step, ok := standingStep(w, issue)
 		if !ok || counted[runAt{issue: issue.Key, place: step.place}] {
 			continue
 		}

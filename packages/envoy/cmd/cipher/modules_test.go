@@ -8,6 +8,9 @@
 // client, so that one test run holds both (ci_job_reads.py names this cross-build).
 package main
 
+//ci:builds packages/envoy ./cmd/cipher CGO_ENABLED=0 GOOS=darwin cmdtest.BuildCommand . CGO_ENABLED=0 GOOS=darwin
+//ci:builds packages/envoy ./cmd/cipherd CGO_ENABLED=0 GOOS=linux TestTheAgentSecretsBinaryBuildsWithoutThePrompt cmdtest.BuildCommand . in ../cipherd CGO_ENABLED=0 GOOS=linux
+
 import (
 	"debug/buildinfo"
 	"os"

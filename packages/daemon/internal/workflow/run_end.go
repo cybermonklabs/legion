@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -88,32 +89,45 @@ func (e *Engine) OpenFact(ctx context.Context) context.Context {
 	return record.WithIssueWrites(ctx)
 }
 
-// SettleFact ends each run the fact left over (runOver), once the fact's last handler has applied
-// it, in its transaction: the runs of each issue the fact touched, and of each member of a tree
-// whose root the fact wrote and which lingers, or whose linger it closed (intake.Settler). A
-// second settle of one fact settles nothing.
+// SettleFact settles the record the fact left, once its last handler has applied it, in its
+// transaction (intake.Settler): first each parent held before its retro whose tree the fact wrote
+// an issue of is released where nothing beneath it is open (releaseHeldParents), and then each run
+// the fact left over ends (runOver): the runs of each issue the fact touched, the released parents
+// among them, and of each member of a tree whose root the fact wrote and which lingers, or whose
+// linger it closed. A second settle of one fact settles nothing.
 func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 	runs, ok := ctx.Value(factRunsKey{}).(*factRuns)
 	if !ok || runs.settled {
 		return nil
 	}
 	runs.settled = true
+	if err := e.releaseHeldParents(ctx, tx, record.IssuesWritten(ctx)); err != nil {
+		return err
+	}
 	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil)
 }
 
-// nameMoveEnd names the end of the run issue stands in that a move on trigger into to ends: the
-// table's own result for the trigger, the step the work returns to, and the report handoff names
-// (endOfTransition). The move names it on the issue as it stood, before the write that moves it.
-func (e *Engine) nameMoveEnd(ctx context.Context, issue record.Issue, trigger TriggerKind, to phase.Phase, handoff record.PhaseRow) error {
-	step, ok := standingStep(issue)
+// nameMoveEnd names the end of the run issue stands in on w, the walk of its run, that a move on
+// trigger into to ends: the table's own result for the trigger, the step the work returns to, and
+// the report handoff names (endOfTransition). The move names it on the issue as it stood, before
+// the write that moves it.
+func (e *Engine) nameMoveEnd(ctx context.Context, w Walk, issue record.Issue, trigger TriggerKind, to phase.Phase, handoff record.PhaseRow) error {
+	step, ok := standingStep(w, issue)
 	if !ok {
 		return nil
 	}
+	return e.nameEnd(ctx, issue, step, endOfTransition(w, trigger, step.at, to, handoff))
+}
+
+// nameEnd names end as the end of the run of step, the step issue stands in, which the fact's
+// settle writes (settleRuns): a move of the table's (nameMoveEnd), and the stop of a task, which
+// ends its step as the stop says (stopTask).
+func (e *Engine) nameEnd(ctx context.Context, issue record.Issue, step standing, end StepEnd) error {
 	runs, err := factRunsOf(ctx)
 	if err != nil {
 		return err
 	}
-	runs.ends[runAt{issue: issue.Key, generation: issue.Generation, place: step.place}] = endOfTransition(trigger, step.at, to, handoff)
+	runs.ends[runAt{issue: issue.Key, generation: issue.Generation, place: step.place}] = end
 	return nil
 }
 
@@ -144,9 +158,11 @@ func (e *Engine) settleStart(ctx context.Context, tx pgx.Tx, issue string, place
 // or stopped. starting is the place a start of one issue is about to begin (its generation unread),
 // whose settle reads that issue alone (settleStart); nil is the fact's own settle (SettleFact),
 // which adds the members of each tree whose root among keys lingers, and of each tree whose linger
-// the fact closed. It is the one writer of a run's end (endStep). Every run it can end has an open
-// row: a start writes it, and the daemon's boot writes it for each run no start of this release
-// counted (OpenUncountedRuns), before any fact applies.
+// the fact closed. It alone ends a run (endStep, and endOffWalk for a run on no step of its walk,
+// which both write the end through endRun). Every run it can end has an open row: a start writes
+// it, and the daemon's boot writes it for each run no start of this release counted
+// (OpenUncountedRuns), before any fact applies. It ends each run whose end rule holds, so an issue
+// may have several runs open at once, each ended on its own.
 func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys []string, starting *runAt) error {
 	issues := map[string]*record.Issue{}
 	read := func(key string) (*record.Issue, error) {
@@ -218,16 +234,51 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		if !ended {
 			continue
 		}
-		at, _ := phaseAt(row.Place)
 		stood := record.Issue{Key: row.Issue}
 		if now != nil {
 			stood = *now
 		}
-		stood.Generation, stood.Phase, stood.Hold = row.Generation, at, nil
-		if err := e.endStep(ctx, tx, stood, runs.endOf(run)); err != nil {
+		// The run's own walk, at its generation, names the phase its place is the step of, so the
+		// end is written for the step of that run's plan, whichever run the issue stands in now.
+		stood.Generation, stood.Hold = row.Generation, nil
+		w, err := e.walk(ctx, tx, stood)
+		if err != nil {
+			return err
+		}
+		var onWalk bool
+		if stood.Phase, onWalk = phaseAt(w, row.Place); !onWalk {
+			if err := e.endOffWalk(ctx, tx, row, runs.endOf(run)); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := e.endStep(ctx, tx, stood, w, runs.endOf(run)); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// endOffWalk ends row, an open run that is over and whose place no step of the walk of its own
+// generation holds: the plan rows that named its step are gone, as the way back of a rollback
+// drops them while a task's step runs, so no standing names its step, and endStep, which writes
+// the end of the step a standing names, would write nothing and leave the run open for good. Its
+// end is the record its start kept (record.IssueStepRun.Kept), written by endRun, the writer of
+// endStep's ends too, so the two writes of the run agree. The log says why it ended. A row with no
+// kept start's record breaks the store invariant: every writer of a row keeps the write in its
+// transaction, so ending it without a record would mark it ended while Dispatch never learned it
+// started.
+func (e *Engine) endOffWalk(ctx context.Context, tx pgx.Tx, row record.IssueStepRun, end StepEnd) error {
+	if row.Kept.ID == "" {
+		return fmt.Errorf("end the off-walk run of %s %s/%s/%d: its open start row holds no kept record", row.Issue, row.Place.Task, row.Place.Kind, row.Place.Place)
+	}
+	ended, err := e.endRun(ctx, tx, row.Issue, row.Place, end, func(record.StepStart) record.StepRecord { return row.Kept })
+	if err != nil || !ended {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a run on no step of the walk of its run is ended", "issue", row.Issue, "generation", row.Generation,
+		"task", row.Place.Task, "kind", row.Place.Kind, "place", row.Place.Place, "result", end.Result,
+		"reason", "no step of the walk of its run holds its place: the plan rows that named its step are gone")
 	return nil
 }
 
@@ -237,20 +288,26 @@ type issueReader func(key string) (*record.Issue, error)
 
 // runOver is the end rule, the one answer to whether run is over. now is its issue as it stands
 // (nil for none), restarted whether a start of its place is about to begin, and read how its tree's
-// root is read. A run is over when its issue has no record, or stands at another place or in
-// another generation (standingStep); when a start of its place begins; or when its tree's root
-// lingers, unless it is a merge that can still land in that linger (mergeCanLand, whose closed
-// lingers runs holds).
+// root is read. A run is over when its issue has no record, or stands at another place on the walk
+// of its run or in another generation (standingStep, which an issue its plan holds stands in no
+// step of); when a start of its place begins; or when its tree's root lingers, unless it is a
+// merge that can still land in that linger (mergeCanLand, whose closed lingers runs holds).
 func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now *record.Issue, restarted bool, read issueReader) (bool, error) {
 	if restarted || now == nil {
 		return true, nil
 	}
-	if step, ok := standingStep(*now); !ok || step.place != run.place || now.Generation != run.generation {
+	if now.Generation != run.generation {
+		return true, nil
+	}
+	w, err := e.walk(ctx, tx, *now)
+	if err != nil {
+		return false, err
+	}
+	if step, ok := standingStep(w, *now); !ok || step.place != run.place {
 		return true, nil
 	}
 	root := now
 	if now.Tree != now.Key {
-		var err error
 		if root, err = read(now.Tree); err != nil {
 			return false, err
 		}
@@ -267,11 +324,15 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 
 // uncountedRunOpen is the boot's answer (OpenUncountedRuns) to whether issue, as read reads its
 // tree, stands in an open run that no start of this release counted, and that run: issue
-// stands in a step whose runs are recorded (standingStep), the end rule does not hold that run over
-// (runOver), its tree is not the operator's, which runs no step of the workflow
-// (record.OperatorHoldsTree), and its generation started a run (generationStarted).
+// stands in a step whose runs are recorded on the walk of its run (standingStep), the end rule does
+// not hold that run over (runOver), its tree is not the operator's, which runs no step of the
+// workflow (record.OperatorHoldsTree), and its generation started a run (generationStarted).
 func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns, issue record.Issue, read issueReader) (runAt, bool, error) {
-	step, ok := standingStep(issue)
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return runAt{}, false, err
+	}
+	step, ok := standingStep(w, issue)
 	if !ok {
 		return runAt{}, false, nil
 	}
@@ -338,11 +399,11 @@ func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, me
 	return handover != nil && handover.Tree == root.Tree && handover.Generation == root.Generation, nil
 }
 
-// phaseAt is the phase whose step runs at place: of the workflow's line (phase.Order), the phase
-// whose step (stepOf) is at place.
-func phaseAt(place record.StepPlace) (phase.Phase, bool) {
-	for _, p := range phase.Order {
-		if at, _, _, ok := stepOf(p); ok && at == place {
+// phaseAt is the phase whose step runs at place on w, the walk of the run: of its line (Walk.Line,
+// phase.Order for a run with no plan rows), the phase whose step (placeOnWalk) is at place.
+func phaseAt(w Walk, place record.StepPlace) (phase.Phase, bool) {
+	for _, p := range w.Line {
+		if at, _, _, ok := placeOnWalk(w, p); ok && at == place {
 			return p, true
 		}
 	}

@@ -38,6 +38,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -193,17 +195,20 @@ type workflowRuntime struct {
 	// record (tellReleaseWaits), and which leave with the repository's own marker where a pass
 	// stops reading GitHub for it (settleRecovery, tellLetGoWaits); recoveryHeldSince is when a
 	// recovery's listing was first found held with waits to tell (zero for none), so a hold past
-	// recoveryHoldBound tells them.
+	// recoveryHoldBound tells them, and recoveryBoundChecked whether a run of the recovery has begun
+	// with that bound passed (recoverRepositories), after which the refresher no longer cuts its wait
+	// to it.
 	// recheckAfter is the refresher's wait before it runs a job of its own (refreshRepositories),
 	// time.After when nil; a test sees each wait through it.
-	repositories      *repositories
-	installs          appauth.Installations
-	recoveringMu      sync.Mutex
-	recovering        map[string]bool
-	silenced          map[string]map[string]bool
-	releaseWaits      map[string]map[string]releaseWait
-	recoveryHeldSince time.Time
-	recheckAfter      func(time.Duration) <-chan time.Time
+	repositories         *repositories
+	installs             appauth.Installations
+	recoveringMu         sync.Mutex
+	recovering           map[string]bool
+	silenced             map[string]map[string]bool
+	releaseWaits         map[string]map[string]releaseWait
+	recoveryHeldSince    time.Time
+	recoveryBoundChecked bool
+	recheckAfter         func(time.Duration) <-chan time.Time
 	// rereadWake, recoverWake, heardWake, heldWake and liveWake are the refresher's wakes, one
 	// request held at most each (wake): a bad answer kept outside the refresher (its second job's
 	// clock), a repository left unread or answered again (its third, recoverRepositories), a
@@ -359,7 +364,11 @@ func appTransient(err error) bool {
 // (ErrCommandPending), the next attempt joins the run still going, and a run that finishes
 // between two attempts is kept for the next one (appauth's finishedRunKeep), so the command does
 // not run again for it. The logins read shares those runs; appauth's anyInstallation says why the
-// key proof never takes a release the logins read was answered with.
+// key proof never takes a release the logins read was answered with. The logins read keeps the
+// installation it took until it has read the App's login under it (appauth's loginRelease), and
+// an attempt of it reads only the Apps whose login no attempt before it read (appLoginsAtBoot):
+// each App's command runs again for the logins read only after a run of it failed, or once the
+// release it took has come within appauth's refreshWindow of its expiry.
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
@@ -512,16 +521,22 @@ func namesTime(limit githubrest.LimitHeaders, now time.Time) bool {
 // installation, so a daemon serving no repository yet still knows the review App's login, as one
 // attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError) and
 // after GitHub's rate limit, waited out on the start's waits (appAttempt); any other failure is
-// refused at once. It returns the review App's login: the engine tells the review App's reviews
-// from every other account's by the login that authored them, and the reviewer's own among those
-// by the session their Legion footer names, which must be the one the reviewer's claim records
-// (workflow's byReviewer), so one App configured for both roles would submit every role's review
-// under the one login, and is refused, as is a review App that names no login.
+// refused at once. An attempt after one App's login was read reads only the other's, as the key
+// proof skips an App it proved (proveAppKeys): in token mode each read of an App is a run of its
+// token_command, which may wait on a person's approval of a grant. It returns the review App's
+// login: the engine tells the review App's reviews from every other account's by the login that
+// authored them, and the reviewer's own among those by the session their Legion footer names,
+// which must be the one the reviewer's claim records (workflow's byReviewer), so one App
+// configured for both roles would submit every role's review under the one login, and is
+// refused, as is a review App that names no login.
 func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits, log *slog.Logger) (string, error) {
 	const call = "GitHub App logins read"
 	logins := map[appauth.AppRole]string{}
 	err := bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
+			if _, read := logins[role]; read {
+				continue
+			}
 			login, err := apps.AppLogin(ctx, role)
 			if err != nil {
 				return err
@@ -616,7 +631,11 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
 // runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
 // clock.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time) (opened *workflowRuntime, _ error) {
+//
+// source is the random source every `random` experiment is drawn with (overrides.experimentSource):
+// the engine holds it, and the admission draws with the engine's (workflow.Engine's
+// ExperimentSource). nil is the engine's own, experiment.CryptoSource.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error)) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -699,6 +718,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
+	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
 	// The project's declared experiments decide what each unit admission records is drawn for.
@@ -976,18 +996,47 @@ func (w *workflowRuntime) agentText(token claim.Token, field, text string) strin
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
 // login from its boot lease: its own project's production_check is the role that works the checks
-// a merge opens (empty, it opens none), and its own project's declared experiments are what each
-// issue the engine records is drawn for. hookPrompts are the words boot read for the hooks that
-// name a file (readBoot), which engineHooks puts in the place of each such hook's path.
+// a merge opens (empty, it opens none), its own project's default steps are what an issue whose
+// owner gives no plan runs, and its own project's declared experiments are what each issue the
+// engine records is drawn for. hookPrompts are the words boot read for the hooks that name a file
+// (readBoot), which engineHooks puts in the place of each such hook's path.
 func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[string]string) workflow.Config {
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
 		Project: cfg.Project, Steps: cfg.Gates.Steps(), ReviewRoundCap: cfg.ReviewRoundCap,
 		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
+		DefaultSteps:        project.RunsByDefault(),
 		ReviewAppLogin:      reviewAppLogin,
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
-		Experiments: cfg.ExperimentsDeclared(),
+		Experiments:  cfg.ExperimentsDeclared(),
+		WorkspaceDir: engineWorkspaceDir(cfg),
+	}
+}
+
+// engineWorkspaceDir is the directory the runtime cfg names starts an issue's role processes in,
+// which every task the engine composes names (workflow.Config.WorkspaceDir): each runtime's own
+// function that places the workspace, sandbox.WorkspaceDir under Kubernetes and tmux.WorkspaceDir
+// under the state directory under tmux, read for the repository the issue's record names, as the
+// launch reads it (issueRepository). An issue whose recorded repository does not parse, which no
+// launch can work either, names none, and its task names the branch alone.
+func engineWorkspaceDir(cfg config.Config) func(record.Issue) string {
+	place := func(repo ghrepo.Repository, issue string) (string, error) {
+		return tmux.WorkspaceDir(cfg.StateDir, repo, issue)
+	}
+	if cfg.Runtime.Name == "kubernetes" {
+		place = sandbox.WorkspaceDir
+	}
+	return func(issue record.Issue) string {
+		repo, err := issue.Repository()
+		if err != nil {
+			return ""
+		}
+		dir, err := place(repo, issue.Key)
+		if err != nil {
+			return ""
+		}
+		return dir
 	}
 }
 
@@ -1101,6 +1150,24 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 		return false, fmt.Errorf("read %s for the phase of its task: %w", key, err)
 	}
 	return record.PhaseHolds(issue, queuedFor, generation), nil
+}
+
+// phaseRole answers supervise's Deps.PhaseRole from the issue record: the worker of key's open
+// phase (workflow.OpenPhaseRole), which the pod start gate puts first among the starts no request
+// raised — deaths, a roles container's restart, a pod an update round replaced
+// (dispatch://INFRA-5297/spec R3). An issue in a phase the architect works (admitted, accepting)
+// has no phase worker, so the order falls back to claim.Roles there, and so does an issue the
+// daemon does not record, which has no phase: the answer is "" for both, as it is for a phase no
+// role works.
+func (w *workflowRuntime) phaseRole(ctx context.Context, key string) (claim.Role, error) {
+	issue, err := w.recordedIssue(ctx, key)
+	if err != nil {
+		return "", fmt.Errorf("read %s for the role of its phase: %w", key, err)
+	}
+	if issue == nil {
+		return "", nil
+	}
+	return workflow.OpenPhaseRole(issue.Phase), nil
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
@@ -1416,7 +1483,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	if err != nil {
 		return nil, fmt.Errorf("read notification stream target: %w", err)
 	}
-	position, err := w.consumers.DispatchPosition(ctx)
+	position, err := w.consumers.ReconcilePosition(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read Dispatch consumer position: %w", err)
 	}

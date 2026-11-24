@@ -86,6 +86,7 @@ const consumerCapWaitMargin = 30 * time.Second
 // exactly as it is and the refusal of the raise of a lower cap, and the hub's reconcile on the
 // image the deployment runs (stream_max_consumers_live_test.go).
 func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOrUnset(t *testing.T) {
+	t.Parallel()
 	t.Run("a deployed stream with no cap is raised to the compiled cap by the start", func(t *testing.T) {
 		uri, js := consumerCapFixture(t)
 		if deployed := deployStreamWithCap(t, js, 0); deployed != -1 && deployed != 0 {
