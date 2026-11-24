@@ -111,9 +111,9 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	response, err := v.http.Do(request)
 	if err != nil {
 		// The token is in the body, which http.Client puts in no error, but net/http's error can
-		// quote the answering party's words - a Location that does not parse, read before any
-		// redirect policy, or the one a followed redirect asked - so it prints as the broker's
-		// address allows (redact.Cause): a transport failure's own text, or its class.
+		// quote the answering party's words (a Location that does not parse, read before the
+		// client's redirect policy, which follows none), so it prints as the broker's address
+		// allows (redact.Cause): a transport failure's own text, or its class.
 		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, redact.Cause(err, v.brokerURL))
 	}
 	defer response.Body.Close()
