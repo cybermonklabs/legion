@@ -77,7 +77,8 @@ images:
     digest: sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 
   # NATS: the `services:` NATS of the pi-envoy and pi-legion jobs, both testnats.Image constants,
-  # the envoy-client job's pre-pull, nats-server.ts and scripts/e2e/lib/nats-stream.test.ts.
+  # the envoy-client and claude-envoy jobs' pre-pulls, packages/envoy-client/test/nats-server.ts
+  # and scripts/e2e/lib/nats-stream.test.ts.
   - upstream: docker.io/library/nats:2.10
     tag: nats-2.10-5498ba57
     digest: sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
@@ -86,6 +87,12 @@ images:
   - upstream: docker.io/library/nats:2.15.1-alpine@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6
     tag: nats-2.15.1-alpine-2ae57dfb
     digest: sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6
+
+  # The NATS the clustered hub runs, nats-server 2.15.3: testnats.ClusteredHubImage, which the
+  # natsgrant rows that hold a grant on both servers the deployment runs start beside HubImage.
+  - upstream: docker.io/library/nats:2.15.3-alpine@sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a
+    tag: nats-2.15.3-alpine-558394a2
+    digest: sha256:558394a23dd3c36f2d3a64b51865fd09908010e80a542cea5e75c2af543ed62a
 
   # The S3-compatible server the envoy-go job starts: tests3.Image. No dispatch job starts it:
   # a job inside a container cannot start a container it could reach, so

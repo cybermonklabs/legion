@@ -23,7 +23,11 @@ type Scope struct {
 	// refuses it.
 	Projects []string
 	// Identity is the account the token names: its sub, or a Google token's email. It names the
-	// reply prefix (InboxPrefix).
+	// reply prefix (InboxPrefix), which depends on the identity alone. So one identity must have
+	// one scope: two connections of one identity with different project lists would subscribe the
+	// same prefix, and the narrower would receive the wider one's pull deliveries. The auth
+	// service keeps this by taking one BROKER_NATS_SERVICES entry per account, so each account
+	// gets one project list.
 	Identity string
 }
 
@@ -63,7 +67,8 @@ func token(prefix, s string) string {
 }
 
 // daemonConsumerPrefix begins the name of every durable consumer a Legion daemon opens on the
-// notification stream, legion-go-<project>-<kind> (packages/daemon/internal/intake/consume.go).
+// notification stream, legion-go-<project>-<kind> (packages/daemon/internal/intake/consume.go),
+// and of its Dispatch probe, legion-go-<project>-dispatch-probe.
 const daemonConsumerPrefix = "legion-go-"
 
 // The entries of a grant WithinProjects rewrites, each the family's subjects under every project,
@@ -114,14 +119,32 @@ var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 //     token, so it could name a consumer per repository only from a list of the repositories,
 //     which no scope holds, and a wildcard in place of the consumer's name would reach every
 //     consumer of the stream, other projects' included.
+//     The create alone names a filter: the info, the pull and the acknowledgements name the
+//     consumer only, so the grant holds a daemon to its consumers by name, not by what they
+//     filter. A durable of one of those names that already exists with a wider filter is read
+//     whole through this grant: today's daemon opens legion-go-<P>-dispatch on every project's
+//     issue events (notifications.dispatch.issue.>) and legion-go-<P>-wake on the shared wake
+//     lane, so a held PUB daemon pulls PRIV's issue events through its own dispatch consumer
+//     (TestWithinProjectsReadsAWideConsumerWhole). The grant holds a daemon to its projects only
+//     once each of its consumers filters on the project's own lane, which the daemon that opens
+//     its consumers per project does in place at boot, and only while it stays so: a user holding
+//     today's daemon grant, or a listener, may widen it again.
 //     The shared wake lane is a project's own only once the listener publishes its role and agent
 //     wake reports on each project's lane (contracts.LegionWakeSubject) and keeps only
 //     listener_ready there: until then it carries every project's role names and session ids, and
 //     no daemon may take this grant before it opens these consumers;
+//   - beside them, each project's Dispatch probe, legion-go-<P>-dispatch-probe, is granted its
+//     create alone, on the project's issue events (notifications.dispatch.issue.<P>.>): the create
+//     of a short-lived consumer whose answer counts the project's issue events stored after a
+//     sequence (NumPending), from which the daemon reads that its Dispatch consumer is idle with
+//     no stream-wide read. Its subject names the probe's one filter, which nats-server holds the
+//     request's body to, and no name but the probe's: a wildcard there would admit another
+//     project's probe. The probe is none of the durables above, so its info, pull,
+//     acknowledgements and delete are not granted;
 //   - the notification stream's info and stored-message get are dropped: the info lists every
 //     stored subject with its count, the get reads any stored message, and a daemon held to its
-//     projects reads its consumers' info instead (today's daemon opens the stream and reads
-//     stored messages, so it cannot run under this grant).
+//     projects reads its consumers' info and its Dispatch probe's create instead (today's daemon
+//     opens the stream and reads stored messages, so it cannot run under this grant).
 //
 // Refused: a stored-message read of any other stream and a direct get of this one; a consumer
 // create whose subject cannot name a filter; any call on a KV bucket; notifications.>; and every
@@ -159,15 +182,17 @@ func WithinProjects(grant Permissions, scope Scope) (Permissions, error) {
 }
 
 // heldScope is a Scope checked and laid out for the rewrite: the identity that names its reply
-// prefix, its projects sorted with repeats taken out, and the daemon's consumers under them.
+// prefix, its projects sorted with repeats taken out, the daemon's consumers under them, and each
+// project's Dispatch probe, which is granted its create alone.
 type heldScope struct {
 	identity  string
 	projects  []string
 	consumers []daemonConsumer
+	probes    []daemonConsumer
 }
 
-// daemonConsumer is one durable consumer the Legion daemon opens on the notification stream: its
-// name and the one filter its create names.
+// daemonConsumer is one consumer the Legion daemon opens on the notification stream, a durable or
+// its Dispatch probe: its name and the one filter its create names.
 type daemonConsumer struct {
 	name, filter string
 }
@@ -187,12 +212,14 @@ func newHeldScope(scope Scope) (heldScope, error) {
 		named := func(kind, filter string) daemonConsumer {
 			return daemonConsumer{name: daemonConsumerPrefix + project + "-" + kind, filter: filter}
 		}
+		issues := contracts.DispatchIssueTopicPrefix + project + ".>"
 		held.consumers = append(held.consumers,
-			named("dispatch", contracts.DispatchIssueTopicPrefix+project+".>"),
+			named("dispatch", issues),
 			named("wake", contracts.LegionWakeSubject(strings.ToLower(project))),
 			named("ready", bus.LegionWakeTopic),
 			named("github", githubLanes),
 		)
+		held.probes = append(held.probes, named("dispatch-probe", issues))
 	}
 	return held, nil
 }
@@ -243,9 +270,12 @@ func (h heldScope) subjects(entry, subject string) ([]string, error) {
 	case strings.HasPrefix(subject, consumerCreate):
 		switch rest := strings.TrimPrefix(subject, consumerCreate); {
 		case rest == ">" || rest == "*.>":
-			return h.consumerCalls(func(c daemonConsumer) []string {
-				return []string{consumerCreate + c.name + "." + c.filter}
-			}), nil
+			create := func(c daemonConsumer) []string { return []string{consumerCreate + c.name + "." + c.filter} }
+			creates := h.consumerCalls(create)
+			for _, probe := range h.probes {
+				creates = append(creates, create(probe)...)
+			}
+			return creates, nil
 		case !strings.Contains(rest, "."):
 			return refuse("creates a consumer whose subject names no filter")
 		}

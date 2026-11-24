@@ -294,7 +294,7 @@
     },
     "/api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {
       "get": {
-        "description": "Download one version of an agent's conversation's file or image, as the issue form serves it: its bytes under its own content type, with Content-Disposition: attachment naming the file's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true the answer carries Content-Disposition: attachment with that name and Cache-Control: private, no-cache. A conversation holds no document, so no version here answers Markdown.",
+        "description": "Download one version of an agent's conversation's file or image, as the issue form serves it: its bytes under its own content type, with Content-Disposition: attachment naming the file's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true the answer carries Content-Disposition: attachment with that name and Cache-Control: private, no-cache. A conversation holds no document, so no version here answers Markdown. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION.",
         "operationId": "getApiV1AgentsBySessionIdArtifactsBySlugVersionsByNumber",
         "parameters": [
           {
@@ -323,6 +323,13 @@
           },
           {
             "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "blocks",
             "in": "query",
             "schema": {
               "type": "boolean"
@@ -1480,9 +1487,71 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/artifacts/{id}/changes": {
+      "get": {
+        "description": "What changed between two stored versions of one document, ?from=\u003cn\u003e\u0026to=\u003cm\u003e: {artifact_id, from, to, decision_only, unchanged, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. Exactly one of three holds: decision_only, true when the two stored texts differ and cut to the same text; unchanged, true when the two differ in nothing any section or block holds (the stored texts are the same, or the cut texts name nothing and are not decision-only); or sections and blocks name at least one item. sections and blocks are empty when decision_only or unchanged is true. sections is each top-level unit whose text differs, that moved, or that one version alone holds: a `##` section by heading and occurrence (the heading's text as a heading anchor reads it, without markdown's syntax and with a line break in it as a line feed; 0 for the first section of that heading, so a `##` heading with no words counts from occurrence 1), and a run of the text outside every `##` section (the title and what stands above the first `##`, or what follows a `#` heading up to the next `##`) under heading \"\" and occurrence 0 with its place: place before_first_section, or place after_section with after_heading and after_occurrence naming the `##` section directly before the run, in the later version for a changed, added or moved run and in the earlier for a removed one. A `#` or `##` heading that holds a line break, which is stored in setext form with no `#`, cuts the document as any heading of its level does. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each unit and block is marked changed, added or removed, and a unit whose text is the same is marked moved when its place among the document's top-level units is another: it stands outside one longest common subsequence of the two versions' orders of the units both hold, and of several that long the one kept holds the later version's earliest units, so of two units that swapped places the later version's second is moved. Both versions hold a run when both hold its text at the same place, and then, among the runs left in each version, the n-th run of one text in each is one run in both, so adding or removing one copy of a repeated run moves no other copy's match; a run the other version does not hold pairs with that version's unpaired run at the same place and is marked changed, and a run left unpaired is added or removed. A block is never marked moved. Each list holds the later version's items in its document order, a moved unit where the later version holds it, then what only the earlier holds, in its order. from and to must be positive, at most 2147483647 (the largest version number the store holds), and from below to (400 INVALID_VERSION); a version the document does not have is 404 NOT_FOUND, and a file or an image 400 NOT_DOCUMENT.",
+        "operationId": "getApiV1ArtifactsByIdChanges",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactChanges"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/artifacts/{id}/comments": {
@@ -1673,9 +1742,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     },
                     {
                       "$ref": "#/components/schemas/EditLostError"
@@ -1695,7 +1767,7 @@
     },
     "/api/v1/artifacts/{id}/events": {
       "get": {
-        "description": "Page a document's event log.",
+        "description": "Page a document's event log as an issue's is paged (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY.",
         "operationId": "getApiV1ArtifactsByIdEvents",
         "parameters": [
           {
@@ -2273,7 +2345,7 @@
     },
     "/api/v1/artifacts/{id}/versions/{number}": {
       "get": {
-        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it.",
+        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION. A version's author carries proven: true only when the credential of every write that author made to the version proved it. With ?blocks=true a document version's JSON carries that version's typed blocks, each under the id its opening line writes, with byte ranges into the markdown of the same answer: the version as this build renders it.",
         "operationId": "getApiV1ArtifactsByIdVersionsByNumber",
         "parameters": [
           {
@@ -2294,6 +2366,13 @@
           },
           {
             "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "blocks",
             "in": "query",
             "schema": {
               "type": "boolean"
@@ -3727,7 +3806,7 @@
     },
     "/api/v1/credential-grants": {
       "get": {
-        "description": "List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot.",
+        "description": "List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. A caller Dispatch calls a restricted member is listed the grants of the sessions that act for them alone; while the broker cannot ask Dispatch what kind of member the caller is, the list holds no other grant either.",
         "operationId": "getApiV1CredentialGrants",
         "parameters": [
           {
@@ -3776,7 +3855,7 @@
     },
     "/api/v1/credential-grants/{id}/revoke": {
       "post": {
-        "description": "Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put.",
+        "description": "Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the person its enrollment acts for: any other is 403 NOT_APPROVER, saying why. While Dispatch does not answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, 503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its approver ends it as an approver: every revoke through a group or as anyone then, whatever session holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a refused account, a kind the broker does not know, another code, a certificate or a name that does not resolve), is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be ended then by that person, who asks Dispatch nothing; a grant on a session that acts for no person (a service's pod, a person's pod the broker no longer maps, or a machine's own session) is ended through the broker by nobody but its named approver until Dispatch answers.",
         "operationId": "postApiV1CredentialGrantsByIdRevoke",
         "parameters": [
           {
@@ -3828,7 +3907,7 @@
     },
     "/api/v1/credential-requests": {
       "get": {
-        "description": "List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker.",
+        "description": "List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. A caller Dispatch calls a restricted member is no approver of a secret or of a service's machine login, so their list holds their own machine logins alone; while the broker cannot ask Dispatch what kind of member the caller is, it holds none of those other rows either.",
         "operationId": "getApiV1CredentialRequests",
         "parameters": [
           {
@@ -3999,7 +4078,7 @@
     },
     "/api/v1/credential-requests/{id}/deny": {
       "post": {
-        "description": "Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch.",
+        "description": "Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A service's machine login is denied by anyone signed in but a caller Dispatch calls a restricted member: 403 NOT_APPROVER, and 503 MEMBER_KIND_UNCHECKABLE while the broker cannot ask Dispatch what kind of member the caller is, denying nothing.",
         "operationId": "postApiV1CredentialRequestsByIdDeny",
         "parameters": [
           {
@@ -4060,7 +4139,7 @@
     },
     "/api/v1/credential-requests/{id}/dismiss": {
       "post": {
-        "description": "Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values.",
+        "description": "Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. A caller Dispatch calls a restricted member dismisses only their own machine logins: a secret request or a service's machine login is 403 NOT_APPROVER to them, saying why, and while the broker cannot ask Dispatch what kind of member the caller is, its dismissal is 503 MEMBER_KIND_UNCHECKABLE, dismissing nothing.",
         "operationId": "postApiV1CredentialRequestsByIdDismiss",
         "parameters": [
           {
@@ -4777,7 +4856,7 @@
     },
     "/api/v1/github/app-installation/{owner}/{repo}": {
       "get": {
-        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPO_PROJECT, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure.",
+        "description": "Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPOSITORY, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure.",
         "operationId": "getApiV1GithubAppInstallationByOwnerByRepo",
         "parameters": [
           {
@@ -5273,7 +5352,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -5343,7 +5422,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueDuplicateError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueDuplicateError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -5503,6 +5589,23 @@
                         }
                       },
                       "type": "object"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForeignChildOpenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     }
                   ]
                 }
@@ -5854,9 +5957,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     },
                     {
                       "$ref": "#/components/schemas/EditLostError"
@@ -6004,7 +6110,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/versions/{number}": {
       "get": {
-        "description": "One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown.",
+        "description": "One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION.",
         "operationId": "getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber",
         "parameters": [
           {
@@ -6033,6 +6139,13 @@
           },
           {
             "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "blocks",
             "in": "query",
             "schema": {
               "type": "boolean"
@@ -6267,7 +6380,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -6333,7 +6453,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -6611,7 +6738,7 @@
     },
     "/api/v1/issues/{key}/design-gates": {
       "put": {
-        "description": "Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND.",
+        "description": "Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id, holds}, step one of decisions, criteria and spec, artifact_id the document that step's gate recorded, and holds whether the deployment's gate holds the issue's tree on that step, or [] for an issue whose gates record none. An entry without holds, or with holds null, is stored as null, which the superseded_approval advice answers by the project's gated_steps. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyDesignGates",
         "parameters": [
           {
@@ -6669,7 +6796,7 @@
     },
     "/api/v1/issues/{key}/events": {
       "get": {
-        "description": "Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
+        "description": "Page an issue's event log (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
         "operationId": "getApiV1IssuesByKeyEvents",
         "parameters": [
           {
@@ -6923,6 +7050,53 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/issues/{key}/legion": {
+      "get": {
+        "description": "One issue's Legion state, from what the sampler recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is the daemon's object exactly as stored, or null. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run. Each write of a run that stores something new makes it larger, and a write sent again leaves it. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue.",
+        "operationId": "getApiV1IssuesByKeyLegion",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegionIssueResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/issues/{key}/messages": {
       "get": {
         "description": "List an issue's message threads: every root message, oldest first, each with its deliveries and its replies.",
@@ -7098,7 +7272,7 @@
     },
     "/api/v1/issues/{key}/plans/{id}": {
       "put": {
-        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it when the run's work starts, under the uuid it derives for the run's plan. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. Each field the plan does not hold yet is set and every field it holds is left, so a plan sent again changes nothing. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it under the uuid it derives for the run's plan, when the run's work starts and again at each later version of the owner's plan that Legion takes. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan or whose experiment's group takes none from its owner, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. source, artifact_id, version and tasks are one fact: a write whose version is above the one the plan holds replaces all four, and every other write leaves them, a default plan counting as version 0, so a write that arrives late, twice or out of order changes nothing. The generation is the first write's. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyPlansById",
         "parameters": [
           {
@@ -7164,7 +7338,7 @@
     },
     "/api/v1/issues/{key}/references": {
       "get": {
-        "description": "The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. The closure's walk runs under a 2 s statement_timeout, and a walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later.",
+        "description": "An issue's references, one hop in each direction: {links, linked_from, members, truncated}, under an ETag (If-None-Match answers 304). The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v1/references lists it. links is every node the issue's own content links to, and linked_from every node that links to the issue or to its own content, one row for each node, a block or a part counted as its document or item; the issue and its own content are in neither, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via}: the node as GET /api/v1/references names it, the words shown for it, the distinct kinds of its links in order, and the lowest of the issue's nodes at the near end; each list is in the order of the node's kind, then its id, and is [] when it has no row. members is the documents of links, each {artifact, depth, via} with the document's versions and its row's via, and truncated says whether the read was cut: depth is always 1 and truncated always false, since the read reads one hop, and both stay for the clients that read them. ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later.",
         "operationId": "getApiV1IssuesByKeyReferences",
         "parameters": [
           {
@@ -7273,7 +7447,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. The commit must be held by the repository the check's issue resolves to, or by a repository in which the external links of the check's issue name a GitHub pull request (https://github.com/\u003cowner\u003e/\u003crepo\u003e/pull/\u003cn\u003e) that is open or merged, in a repository Dispatch's GitHub App is installed on and can read; a commit no such repository holds is 400 RESULT_COMMIT_UNKNOWN, naming the commit, each owner/repo asked, each linked pull request Dispatch could not read as owner/repo#n (repository_unreadable), at most 10 and a count of the rest, and every linked pull request in whose repository it could not read the commit, named the same way, since each spent one of the record's 10 reads, with how to mend those: grant Dispatch's GitHub App that repository, or link a readable pull request. A link names a pull request only where its owner is a login GitHub serves and its name holds only letters, digits, ., - and _ and is not . or ..; any other link spends no read, and no refusal names it. A linked pull request whose repository's name GitHub's naming rule then refuses, such as one of acme/.git, which is empty once .git is trimmed, counts for nothing and spends one of the 10 reads, and the refusal names that repository as one whose links Dispatch set aside, which no grant of the App mends. One record reads at most 10 linked pull requests, and a refusal says how many it left unread past that bound. A linked repository the App is not installed on or cannot read (GitHub's 403 that is no rate limit) does not count. A read of a linked pull request or of a linked repository that does not answer (a rate limit, a 5xx, a transport failure), where no repository is shown to hold the commit, is 502 GITHUB_UNREADABLE naming that repository, the commit and GitHub's error, and stores nothing: record the result again, after the wait a rate limit names, which Retry-After carries too. No repository at all stores the result as before. A repository the check's issue resolves to that Dispatch cannot read stores the result as before only where every linked read answered and no linked repository holds the commit: a linked read that did not answer is the 502 GITHUB_UNREADABLE above, and stores nothing. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies: its reading keeps only plain words, every rune a visible letter, a digit or one of . , ; : ! ? ' \" - ( ) /, and of those leaves out every one that holds a link (://), a host below or ending in .internal, a Tailscale MagicDNS host (.ts.net), this Dispatch's own host, or an issue key of a project this Dispatch holds, in any case, and judges the 80-rune cut again, so the line carries no link to Dispatch, no private host, no issue key and no markup.",
+        "description": "Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and each count is from 0 to 2147483647 (the largest the store holds) and defaults to 0; a field outside these bounds is 400 RESULT_INPUT, and a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. The commit must be held by the repository the check's issue resolves to, or by a repository in which the external links of the check's issue name a GitHub pull request (https://github.com/\u003cowner\u003e/\u003crepo\u003e/pull/\u003cn\u003e) that is open or merged, in a repository Dispatch's GitHub App is installed on and can read; a commit no such repository holds is 400 RESULT_COMMIT_UNKNOWN, naming the commit, each owner/repo asked, each linked pull request Dispatch could not read as owner/repo#n (repository_unreadable), at most 10 and a count of the rest, and every linked pull request in whose repository it could not read the commit, named the same way, since each spent one of the record's 10 reads, with how to mend those: grant Dispatch's GitHub App that repository, or link a readable pull request. A link names a pull request only where its owner is a login GitHub serves and its name holds only letters, digits, ., - and _ and is not . or ..; any other link spends no read, and no refusal names it. A linked pull request whose repository's name GitHub's naming rule then refuses, such as one of acme/.git, which is empty once .git is trimmed, counts for nothing and spends one of the 10 reads, and the refusal names that repository as one whose links Dispatch set aside, which no grant of the App mends. One record reads at most 10 linked pull requests, and a refusal says how many it left unread past that bound. A linked repository the App is not installed on or cannot read (GitHub's 403 that is no rate limit) does not count. A read of a linked pull request or of a linked repository that does not answer (a rate limit, a 5xx, a transport failure), where no repository is shown to hold the commit, is 502 GITHUB_UNREADABLE naming that repository, the commit and GitHub's error, and stores nothing: record the result again, after the wait a rate limit names, which Retry-After carries too. No repository at all stores the result as before. A repository the check's issue resolves to that Dispatch cannot read stores the result as before only where every linked read answered and no linked repository holds the commit: a linked read that did not answer is the 502 GITHUB_UNREADABLE above, and stores nothing. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies: its reading keeps only plain words, every rune a visible letter, a digit or one of . , ; : ! ? ' \" - ( ) /, and of those leaves out every one that holds a link (://), a host below or ending in .internal, a Tailscale MagicDNS host (.ts.net), this Dispatch's own host, or an issue key of a project this Dispatch holds, in any case, and judges the 80-rune cut again, so the line carries no link to Dispatch, no private host, no issue key and no markup.",
         "operationId": "postApiV1IssuesByKeyResults",
         "parameters": [
           {
@@ -7944,7 +8118,7 @@
     },
     "/api/v1/machine-logins": {
       "get": {
-        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login.",
+        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. A caller Dispatch calls a restricted member is listed their own machines' and pods' logins alone, and so is any caller while the broker cannot ask Dispatch what kind of member the caller is.",
         "operationId": "getApiV1MachineLogins",
         "parameters": [
           {
@@ -7986,7 +8160,7 @@
     },
     "/api/v1/machine-logins/{id}/revoke": {
       "post": {
-        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person.",
+        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A caller Dispatch calls a restricted member revokes their own logins alone: a service's login is 404 to them, as an id no login has, and so it is to any caller while the broker cannot ask Dispatch what kind of member the caller is, who still revokes their own.",
         "operationId": "postApiV1MachineLoginsByIdRevoke",
         "parameters": [
           {
@@ -8600,7 +8774,7 @@
         ]
       },
       "put": {
-        "description": "Record the caller's last read version of a document {version}: the Spec tab marks each block that changed since it. Answers the stored read; a version that is missing or negative is 400 INVALID_STATE.",
+        "description": "Record the caller's last read version of a document {version}: the Spec tab marks each block that changed since it. Answers the stored read; a version that is missing, negative or above 2147483647 (the largest version number the store holds) is 400 INVALID_STATE.",
         "operationId": "putApiV1MeDocumentsByIdRead",
         "parameters": [
           {
@@ -8767,7 +8941,7 @@
     },
     "/api/v1/me/issues/{key}/state": {
       "put": {
-        "description": "Update the caller's read state for an issue.",
+        "description": "Update the caller's read state for an issue. last_read_seq is from 0 to 2147483647 (the largest event position the store holds); any other is 400 INVALID_STATE.",
         "operationId": "putApiV1MeIssuesByKeyState",
         "parameters": [
           {
@@ -8823,7 +8997,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UserStateStaleError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/UserStateStaleError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -9222,7 +9403,7 @@
     },
     "/api/v1/messages/{id}/deliveries/{attempt}/accept": {
       "post": {
-        "description": "The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending, sent or queued attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted.",
+        "description": "The attempt's session records that it took the message as its user's own turn; the session names itself in actor (403 ACCEPT_FORBIDDEN for another's attempt). An attempt the message does not have is 404 MESSAGE_NOT_FOUND, and so is one that is not a positive number of at most 2147483647 (the largest the store holds). One compare-and-set: only a direct message to that session, on no issue, neither a broadcast's copy nor a reply in a broadcast's thread, in a thread whose root targets it (409 ACCEPT_NOT_DIRECT), that a person wrote (409 ACCEPT_NOT_WRITTEN_BY_PERSON), sent as a Send or an Aside (409 ACCEPT_NOT_ASIDE_OR_STEER); only the message's latest attempt (409 ACCEPT_SUPERSEDED), when no attempt of it was accepted before (409 ACCEPT_ALREADY_ACCEPTED), which a person requested (409 ACCEPT_NOT_REQUESTED_BY_PERSON), that person being the message's author (409 ACCEPT_NOT_REQUESTED_BY_AUTHOR), which did not fail (409 ACCEPT_FAILED; a pending, sent or queued attempt is taken), within the last minute (409 ACCEPT_STALE). Answers the attempt with accepted_at and accepted_as and the message's stored body; leaves the attempt's state to the send, and appends message.accepted.",
         "operationId": "postApiV1MessagesByIdDeliveriesByAttemptAccept",
         "parameters": [
           {
@@ -9489,6 +9670,70 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/people/{login}/nodes": {
+      "get": {
+        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none.",
+        "operationId": "getApiV1PeopleByLoginNodes",
+        "parameters": [
+          {
+            "name": "login",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonNodes"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/priorities": {
       "get": {
         "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=\u003cKEY\u003e, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.",
@@ -9751,7 +9996,7 @@
     },
     "/api/v1/projects": {
       "get": {
-        "description": "List projects. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope.",
+        "description": "List projects. A project with a default repository carries it as default_repo, and a project with none carries no default_repo. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope.",
         "operationId": "getApiV1Projects",
         "parameters": [
           {
@@ -10638,9 +10883,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditPreconditionError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
                     },
                     {
                       "$ref": "#/components/schemas/EditLostError"
@@ -10843,7 +11091,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/versions/{number}": {
       "get": {
-        "description": "One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown.",
+        "description": "One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION.",
         "operationId": "getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber",
         "parameters": [
           {
@@ -10872,6 +11120,13 @@
           },
           {
             "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "blocks",
             "in": "query",
             "schema": {
               "type": "boolean"
@@ -10972,6 +11227,64 @@
           "person"
         ],
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/default-repository": {
+      "put": {
+        "description": "Set or clear a project's default repository {repo}: \"owner/name\" sets it and null clears it. An issue of the project resolves to it when neither the issue nor an issue above it names a repository. A write of the value the project holds already changes nothing and appends no event; a change appends project.updated with the project row. A body without repo, or a repo that is not a repository GitHub could hold, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. The default belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. It declares no personal scope: the credential the deployment configured writes it, and so does a person.",
+        "operationId": "putApiV1ProjectsByKeyDefaultRepository",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectDefaultRepositoryInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDefaultRepository"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
       }
     },
     "/api/v1/projects/{key}/gated-steps": {
@@ -12249,7 +12562,7 @@
     },
     "/api/v1/settings/repo-projects": {
       "get": {
-        "description": "List GitHub repository to project mappings, each marked whether it is its project's default and what repository it was renamed to, null for one that was never renamed.",
+        "description": "Read only: the GitHub repository to project mappings as the last release left them, each marked whether it is its project's default and what repository it was renamed to, null for one that was never renamed. Nothing writes them: PUT /api/v1/projects/{key}/default-repository sets a project's default repository. The route stays for the Legion daemons that read it at boot, and the next release removes it.",
         "operationId": "getApiV1SettingsRepoProjects",
         "parameters": [
           {
@@ -12287,128 +12600,6 @@
           }
         },
         "x-auth": "any"
-      }
-    },
-    "/api/v1/settings/repo-projects/{owner}/{repo}": {
-      "put": {
-        "description": "Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. The path's owner and name are held to the characters GitHub allows, and a name that is . or .. or empty or longer than 100 characters (a trailing .git trimmed) is refused: such a path is 400 INVALID_REPO_PROJECT. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair that is not an owner and a name of the characters GitHub allows, or whose name is . or .. or longer than 100 characters (a trailing .git trimmed), a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT.",
-        "operationId": "putApiV1SettingsRepoProjectsByOwnerByRepo",
-        "parameters": [
-          {
-            "name": "owner",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "repo",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PutRepoProjectInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RepoProject"
-                }
-              }
-            }
-          }
-        },
-        "x-auth": "any",
-        "x-write-scope": "deployment"
-      },
-      "delete": {
-        "description": "Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default. The path removes only the mapping stored under its own spelling, its two segments as unescaped and compared byte for byte: acme/x removes acme/x, and acme/x.git removes the mapping stored as acme/x.git and never acme/x, so the same DELETE sent again removes nothing more. A path naming no stored mapping removes nothing: 204, or 400 INVALID_ISSUE_REF where the path is no owner/name an issue reference takes.",
-        "operationId": "deleteApiV1SettingsRepoProjectsByOwnerByRepo",
-        "parameters": [
-          {
-            "name": "owner",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "repo",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "session",
-            "in": "query",
-            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ActorInput"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "204": {
-            "description": "No Content"
-          }
-        },
-        "x-auth": "any",
-        "x-write-scope": "deployment"
       }
     },
     "/api/v1/signins": {
@@ -14185,6 +14376,77 @@
         ],
         "type": "object"
       },
+      "ArtifactBlockChange": {
+        "properties": {
+          "change": {
+            "enum": [
+              "changed",
+              "added",
+              "removed"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "change"
+        ],
+        "type": "object"
+      },
+      "ArtifactChanges": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlockChange"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "decision_only": {
+            "type": "boolean"
+          },
+          "from": {
+            "type": "integer"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactSectionChange"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "to": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "from",
+          "to",
+          "decision_only",
+          "unchanged",
+          "sections",
+          "blocks"
+        ],
+        "type": "object"
+      },
       "ArtifactRebuildReport": {
         "properties": {
           "head": {
@@ -14388,6 +14650,44 @@
         ],
         "type": "object"
       },
+      "ArtifactSectionChange": {
+        "properties": {
+          "after_heading": {
+            "type": "string"
+          },
+          "after_occurrence": {
+            "type": "integer"
+          },
+          "change": {
+            "enum": [
+              "changed",
+              "added",
+              "removed",
+              "moved"
+            ],
+            "type": "string"
+          },
+          "heading": {
+            "type": "string"
+          },
+          "occurrence": {
+            "type": "integer"
+          },
+          "place": {
+            "enum": [
+              "before_first_section",
+              "after_section"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "heading",
+          "occurrence",
+          "change"
+        ],
+        "type": "object"
+      },
       "ArtifactText": {
         "properties": {
           "blocks": {
@@ -14454,6 +14754,12 @@
               "array",
               "null"
             ]
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlock"
+            },
+            "type": "array"
           },
           "created_at": {
             "format": "date-time",
@@ -17685,6 +17991,9 @@
             "type": "string"
           }
         },
+        "required": [
+          "project"
+        ],
         "type": "object"
       },
       "CreateMessageInput": {
@@ -17899,6 +18208,9 @@
             "type": "string"
           },
           "default_assignee": {
+            "type": "string"
+          },
+          "default_repo": {
             "type": "string"
           },
           "gated_steps": {
@@ -20557,6 +20869,50 @@
         ],
         "type": "object"
       },
+      "ForeignChildOpen": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "project",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ForeignChildOpenError": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ForeignChildOpen"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "issues"
+        ],
+        "type": "object"
+      },
       "GoingAction": {
         "properties": {
           "action": {
@@ -22272,6 +22628,39 @@
           "artifact_id": {
             "type": "string"
           },
+          "holds": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "step": {
+            "enum": [
+              "decisions",
+              "criteria",
+              "spec"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "artifact_id",
+          "holds"
+        ],
+        "type": "object"
+      },
+      "IssueDesignGateInput": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "holds": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
           "step": {
             "enum": [
               "decisions",
@@ -22322,7 +22711,7 @@
           },
           "gates": {
             "items": {
-              "$ref": "#/components/schemas/IssueDesignGate"
+              "$ref": "#/components/schemas/IssueDesignGateInput"
             },
             "type": [
               "null",
@@ -22942,6 +23331,24 @@
       },
       "IssueReferences": {
         "properties": {
+          "linked_from": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "members": {
             "items": {
               "$ref": "#/components/schemas/ReferenceMember"
@@ -22957,7 +23364,9 @@
         },
         "required": [
           "members",
-          "truncated"
+          "truncated",
+          "links",
+          "linked_from"
         ],
         "type": "object"
       },
@@ -23741,6 +24150,211 @@
           "kind",
           "since",
           "answered_at"
+        ],
+        "type": "object"
+      },
+      "LegionIssueRead": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "at",
+          "ok",
+          "error"
+        ],
+        "type": "object"
+      },
+      "LegionIssueResponse": {
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "read": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionIssueRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runs_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionIssueState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "issue",
+          "project",
+          "configured",
+          "state",
+          "read",
+          "runs_revision"
+        ],
+        "type": "object"
+      },
+      "LegionIssueState": {
+        "properties": {
+          "blocked_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "phase": {
+            "type": "string"
+          },
+          "phase_since": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "phase_start_seen": {
+            "type": "boolean"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/LegionRoleClaim"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "slot": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "waiting_line": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionIssueWaitingLine"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "description": "what the issue waits on from a person, the Legion daemon's waitingOn object exactly as Dispatch stored it; a field a later daemon adds is sent too",
+                "properties": {
+                  "answeredAt": {
+                    "description": "an RFC3339 timestamp",
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "answeredBy": {
+                    "description": "how the wait was answered, once it was, and not always by a person",
+                    "type": "string"
+                  },
+                  "artifactId": {
+                    "description": "for a gate, the id of the document whose version no person has reviewed",
+                    "type": "string"
+                  },
+                  "ask": {
+                    "description": "for an ask, the id of the oldest question of the issue's tree still with a person",
+                    "type": "string"
+                  },
+                  "gateVersion": {
+                    "description": "for a gate, the spec version no person has reviewed",
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "description": "the kind of wait: ask, gate, or a kind a later daemon names",
+                    "type": "string"
+                  },
+                  "since": {
+                    "description": "an RFC3339 timestamp",
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "phase",
+          "phase_since",
+          "phase_start_seen",
+          "roles",
+          "slot",
+          "waiting_line",
+          "blocked_by",
+          "waiting_on"
+        ],
+        "type": "object"
+      },
+      "LegionIssueWaitingLine": {
+        "properties": {
+          "length": {
+            "type": "integer"
+          },
+          "place": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "place",
+          "length"
+        ],
+        "type": "object"
+      },
+      "LegionRoleClaim": {
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "state"
         ],
         "type": "object"
       },
@@ -25038,6 +25652,77 @@
         },
         "type": "object"
       },
+      "PersonNode": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "href": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "relations": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "relations",
+          "title",
+          "created_at",
+          "href"
+        ],
+        "type": "object"
+      },
+      "PersonNodes": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "person": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/PersonNode"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "person",
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
       "PersonSignInResp": {
         "properties": {
           "created_at": {
@@ -25311,6 +25996,19 @@
           "description": {
             "type": "string"
           },
+          "description_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },
@@ -25458,6 +26156,19 @@
           "description": {
             "type": "string"
           },
+          "description_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },
@@ -25586,6 +26297,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "default_repo": {
+            "type": "string"
+          },
           "gated_steps": {
             "items": {
               "type": "string"
@@ -25637,6 +26351,53 @@
         },
         "required": [
           "assignee"
+        ],
+        "type": "object"
+      },
+      "ProjectDefaultRepository": {
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "repo": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "repo"
+        ],
+        "type": "object"
+      },
+      "ProjectDefaultRepositoryInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "description": "a GitHub repository as \"owner/name\"",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "repo"
         ],
         "type": "object"
       },
@@ -25753,39 +26514,6 @@
         },
         "required": [
           "state_url"
-        ],
-        "type": "object"
-      },
-      "PutRepoProjectInput": {
-        "properties": {
-          "actor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Actor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "default": {
-            "type": [
-              "null",
-              "boolean"
-            ]
-          },
-          "project": {
-            "type": "string"
-          },
-          "renamed_to": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
-        },
-        "required": [
-          "project"
         ],
         "type": "object"
       },
@@ -26051,6 +26779,35 @@
           "expires_at",
           "requested_at",
           "decided"
+        ],
+        "type": "object"
+      },
+      "ReferenceLink": {
+        "properties": {
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "node": {
+            "$ref": "#/components/schemas/GraphNode"
+          },
+          "via": {
+            "$ref": "#/components/schemas/ReferenceVia"
+          }
+        },
+        "required": [
+          "node",
+          "name",
+          "kinds",
+          "via"
         ],
         "type": "object"
       },
@@ -28162,6 +28919,9 @@
                 "type": "null"
               }
             ]
+          },
+          "refuse_open_foreign_children": {
+            "type": "boolean"
           },
           "repo": {
             "anyOf": [

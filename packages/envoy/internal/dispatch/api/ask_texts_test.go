@@ -76,6 +76,7 @@ func askWithEveryText() (model.Ask, model.AskEditPrevious) {
 // it and missed by one of them is caught by the two tests below rather than costing a parse on
 // every read or storing a tree no reader takes.
 func TestTheWalkOverAnAsksTextsAnswersEveryOneOfThem(t *testing.T) {
+	t.Parallel()
 	ask, previous := askWithEveryText()
 	walked := map[string]string{}
 	texttrees.VisitAskTexts(texttrees.AskContentOf(ask), func(text texttrees.AskText) {
@@ -108,6 +109,7 @@ func TestTheWalkOverAnAsksTextsAnswersEveryOneOfThem(t *testing.T) {
 // the dashboard reads it by. The payload is the one a write publishes, read as the event list and
 // a live frame read it.
 func TestAnAskEventCarriesEveryAskTextUnderItsPath(t *testing.T) {
+	t.Parallel()
 	ask, previous := askWithEveryText()
 	trees := eventDisplayTrees(model.Event{
 		Type:    "ask.edited",
@@ -122,6 +124,7 @@ func TestAnAskEventCarriesEveryAskTextUnderItsPath(t *testing.T) {
 // `options.0.label_tree` is the event's `payload.options.0.label`, and a text the shapes
 // registered nowhere has no such member at all.
 func TestTheAskReadShapesRegisterEveryAskText(t *testing.T) {
+	t.Parallel()
 	ask, previous := askWithEveryText()
 	reader := builtDisplayTrees(true)
 	asks := shapedAsks([]model.Ask{ask}, reader)

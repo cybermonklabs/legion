@@ -38,6 +38,8 @@ import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DispatchClient } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
+import { messageFor } from "./errors";
+import { parseFrameJSON } from "./frame-json";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 
@@ -69,6 +71,8 @@ export const InboundExpectsReplySchema = z
   .literal([...EXPECTS_REPLY_VALUES, "none"] as const)
   .transform((value): ExpectsReply => (value === "none" ? false : value));
 
+// Parsed only from `parseFrameJSON`'s value: this schema passes unknown keys through by
+// assignment, so a `__proto__` key that JSON.parse kept would become the envelope's prototype.
 const InboundEnvelopeSchema = z
   .object({
     event_id: z.string().optional(),
@@ -486,6 +490,11 @@ export type RenderInboundResult = {
    *  a host reads whole (`wholeCarriedBody`) before it renders the frame again with that body.
    *  Absent when the event carried the body whole, and from a render given that body. */
   readonly cutItem?: CarriedItem;
+  /** Why the card shows the payload as the text its sender sent rather than laid out: what the
+   *  card's encoder threw on the parsed value (one nested past the depth its recursion reaches).
+   *  Absent when the card lays the payload out. A host logs it once, with the message's id, for
+   *  a frame it shows. */
+  readonly payloadShownAsText?: string;
 };
 
 /** The pictures the text a Dispatch event brings embeds: a message's or comment's body, an opened
@@ -1002,7 +1011,7 @@ function withWholeBody(event: DispatchEvent, body: string | undefined): Dispatch
 function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFrame {
   let value: unknown;
   try {
-    value = JSON.parse(rawPayload);
+    value = parseFrameJSON(rawPayload);
   } catch {
     return { raw: rawPayload };
   }
@@ -1079,7 +1088,7 @@ export function renderInbound(
 ): RenderInboundResult {
   let value: unknown;
   try {
-    value = JSON.parse(raw);
+    value = parseFrameJSON(raw);
   } catch {
     return {
       skip: false,
@@ -1314,7 +1323,7 @@ export function renderInbound(
     (envelope.source === "github" || envelope.payload !== envelope.payload_summary)
   ) {
     try {
-      parsedPayload = JSON.parse(envelope.payload);
+      parsedPayload = parseFrameJSON(envelope.payload);
     } catch {
       parsedPayload = envelope.payload;
     }
@@ -1412,10 +1421,27 @@ export function renderInbound(
     ...(unrecognised === undefined ? {} : { unrecognised }),
   };
 
+  // The card's TOON encoder recurses once per level of a value, so a payload nested some
+  // thousands of levels deep overflows the stack (an object chain 7,000 deep does in Bun 1.4.4).
+  // A throw out of here throws in every host's render and in the consumer's give-up alike, so
+  // the frame would go back to the stream on every delivery and nobody would be told of it. The
+  // payload is the text its sender sent, so the card shows it as that text, as it shows a payload
+  // that is no JSON, and the host takes the frame. That text is bounded as every message's is:
+  // by the frame, at most the hub's 1 MiB. A throw the payload is not behind is thrown as before.
+  let card: string;
+  let payloadShownAsText: string | undefined;
+  try {
+    card = encode({ envoy: rendered });
+  } catch (error) {
+    const payloadKey = dispatchRendered ? "dispatch" : "message";
+    if (envelope.payload === undefined || !(payloadKey in rendered)) throw error;
+    card = encode({ envoy: { ...rendered, [payloadKey]: envelope.payload } });
+    payloadShownAsText = messageFor(error);
+  }
+
   return {
     skip: false,
-    content:
-      trailer === "" ? encode({ envoy: rendered }) : `${encode({ envoy: rendered })}\n\n${trailer}`,
+    content: trailer === "" ? card : `${card}\n\n${trailer}`,
     envelope,
     ...(dispatchActor === undefined ? {} : { dispatchActor }),
     ...(delivery === undefined ? {} : { delivery }),
@@ -1423,5 +1449,6 @@ export function renderInbound(
     ...(malformedDelivery ? { malformedDelivery: true as const } : {}),
     ...(pictures.length === 0 ? {} : { pictures }),
     ...(cutItem === undefined ? {} : { cutItem }),
+    ...(payloadShownAsText === undefined ? {} : { payloadShownAsText }),
   };
 }

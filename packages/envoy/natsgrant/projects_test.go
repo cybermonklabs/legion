@@ -71,9 +71,10 @@ func TestInboxPrefixIsOneTokenOfTheIdentity(t *testing.T) {
 }
 
 // The daemon's grant held to PUB: its reply prefix in place of _INBOX.>, the role-lane exceptions
-// of PUB alone, and for each of the four consumers the daemon opens under PUB (each create
-// subject naming its one filter) the create, info, pull and acknowledgement of that consumer and
-// no other. The GitHub consumer's one filter is every repository's events, notifications.github.>.
+// of PUB alone, for each of the four consumers the daemon opens under PUB (each create subject
+// naming its one filter) the create, info, pull and acknowledgement of that consumer and no other,
+// and the create alone of PUB's Dispatch probe, legion-go-PUB-dispatch-probe, on PUB's issue
+// events. The GitHub consumer's one filter is every repository's events, notifications.github.>.
 // The stream's info and stored-message get are gone. Written out in full, so the test reads the
 // subjects, not the code that builds them.
 func TestWithinProjectsHoldsTheDaemonGrantToItsProjects(t *testing.T) {
@@ -97,6 +98,7 @@ func TestWithinProjectsHoldsTheDaemonGrantToItsProjects(t *testing.T) {
 		api + "CREATE." + pre + "wake.notifications.legion.pub.wake",
 		api + "CREATE." + pre + "ready.notifications.legion.wake",
 		api + "CREATE." + pre + "github.notifications.github.>",
+		api + "CREATE." + pre + "dispatch-probe.notifications.dispatch.issue.PUB.>",
 	}
 	require.Equal(t, natsgrant.Permissions{
 		Publish: slices.Concat(info, creates, next, acks),
@@ -140,6 +142,59 @@ func TestWithinProjectsAdmitsItsGitHubConsumerOnEveryRepositorysLane(t *testing.
 	}
 }
 
+// Each project's Dispatch probe, legion-go-<P>-dispatch-probe, is granted one call: its create, on
+// that project's issue events, the subject nats-server holds the request's body to. The daemon
+// reads its confirmed idle from the create's answer, so the probe needs no info, pull,
+// acknowledgement or delete, and the grant holds none: one entry of the grant names the probe.
+// Another project's probe, a filter outside the project's issue events, a create that names no
+// filter, a consumer name beside the probe's and the probe's other calls are not admitted. Today's
+// grant, which reaches every consumer of the stream, is the control that admits each row the held
+// grant refuses but the two it never held, the legacy durable create and the delete.
+func TestWithinProjectsGrantsEachProjectItsDispatchProbesCreateAlone(t *testing.T) {
+	scope := natsgrant.Scope{Projects: []string{"PUB", "OTHER"}, Identity: "id"}
+	held, err := natsgrant.WithinProjects(natsgrant.Daemon(), scope)
+	require.NoError(t, err)
+	const (
+		stream = "ENVOY_NOTIFICATIONS."
+		create = "$JS.API.CONSUMER.CREATE." + stream
+		issues = "notifications.dispatch.issue."
+	)
+	probe := func(project string) string { return "legion-go-" + project + "-dispatch-probe" }
+	for _, project := range scope.Projects {
+		var naming []string
+		for _, entry := range slices.Concat(held.Publish, held.Subscribe) {
+			if slices.Contains(strings.Split(entry, "."), probe(project)) {
+				naming = append(naming, entry)
+			}
+		}
+		require.Equal(t, []string{create + probe(project) + "." + issues + project + ".>"}, naming, "the entries naming %s", probe(project))
+	}
+	for _, row := range []struct {
+		subject         string
+		admitted, today bool
+	}{
+		{create + probe("PUB") + "." + issues + "PUB.>", true, true},
+		{create + probe("PUB") + "." + issues + "PUB.PUB-1.>", true, true},
+		{create + probe("OTHER") + "." + issues + "OTHER.>", true, true},
+		{create + probe("PRIV") + "." + issues + "PRIV.>", false, true},
+		{create + probe("PRIV") + "." + issues + "PUB.>", false, true},
+		{create + probe("PUB") + "." + issues + "PRIV.>", false, true},
+		{create + probe("PUB") + "." + issues + "OTHER.>", false, true},
+		{create + probe("PUB") + ".notifications.github.>", false, true},
+		{create + probe("PUB") + ".notifications.>", false, true},
+		{create + probe("PUB"), false, true},
+		{create + probe("PUB") + "-2." + issues + "PUB.>", false, true},
+		{"$JS.API.CONSUMER.INFO." + stream + probe("PUB"), false, true},
+		{"$JS.API.CONSUMER.MSG.NEXT." + stream + probe("PUB"), false, true},
+		{"$JS.ACK." + stream + probe("PUB") + ".1.1.1.1.1", false, true},
+		{"$JS.API.CONSUMER.DURABLE.CREATE." + stream + probe("PUB"), false, false},
+		{"$JS.API.CONSUMER.DELETE." + stream + probe("PUB"), false, false},
+	} {
+		require.Equal(t, row.admitted, admits(held.Publish, row.subject), "the held grant admits %s", row.subject)
+		require.Equal(t, row.today, admits(natsgrant.Daemon().Publish, row.subject), "today's grant, the control, admits %s", row.subject)
+	}
+}
+
 // admits reports whether an entry of allow admits subject, each entry read as nats-server reads a
 // subject filter (server.SubjectMatchesFilter): a wildcard in subject is admitted only inside one
 // of the entry's.
@@ -166,6 +221,7 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-wake.notifications.legion.pub.wake",
 		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-ready.notifications.legion.wake",
 		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-github.notifications.github.>",
+		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-dispatch-probe.notifications.dispatch.issue.PUB.>",
 	}
 	for _, row := range []struct {
 		entry   string
@@ -209,6 +265,7 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		{entry: "$JS.API.CONSUMER.DURABLE.CREATE.KV_envoy_roles.watcher", refused: "KV bucket"},
 		{entry: "$JS.API.STREAM.MSG.DELETE.KV_envoy_roles", refused: "KV bucket"},
 		{entry: "$JS.FC.KV_envoy_roles.>", refused: "KV bucket"},
+		{entry: "$JS.ACK.KV_envoy_roles.>", refused: "KV bucket"},
 		// Every project's notifications at once.
 		{entry: "notifications.>", refused: "every project"},
 		{entry: "notifications.> example-queue", refused: "every project"},
@@ -226,6 +283,7 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		{entry: "$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS", refused: "cannot be held"},
 		{entry: "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.envoy-listener-example-host-a", refused: "cannot be held"},
 		{entry: "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-dispatch.notifications.dispatch.issue.PUB.>", refused: "cannot be held"},
+		{entry: "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-PUB-dispatch-probe.notifications.dispatch.issue.PUB.>", refused: "cannot be held"},
 		{entry: "$JS.ACK.ENVOY_NOTIFICATIONS.delivery-events.>", refused: "cannot be held"},
 		{entry: "$SYS.REQ.USER.AUTH", refused: "cannot be held"},
 		{entry: ">", refused: "cannot be held"},
@@ -282,16 +340,18 @@ func TestWithinProjectsTakesEveryProjectKeyShape(t *testing.T) {
 		require.NoError(t, err, project)
 		require.Contains(t, got.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-"+project+"-dispatch.notifications.dispatch.issue."+project+".>", project)
 		require.Contains(t, got.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-"+project+"-github.notifications.github.>", project)
+		require.Contains(t, got.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-"+project+"-dispatch-probe.notifications.dispatch.issue."+project+".>", project)
 		require.Contains(t, got.Subscribe, "notifications.envoy.exceptions.notifications.role."+project+".>", project)
 	}
 }
 
-// Two projects: every project's four consumers, each paired with its own project's filter, and
-// each project's GitHub consumer with every repository's events, written out in full.
+// Two projects: every project's four consumers, each paired with its own project's filter, each
+// project's GitHub consumer with every repository's events, and each project's Dispatch probe
+// with its own project's issue events, written out in full.
 func TestWithinProjectsHoldsEachProjectToItsOwnFilters(t *testing.T) {
 	got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"PUB", "OTHER"}, Identity: "id"})
 	require.NoError(t, err)
-	var info, creates, next, acks []string
+	var info, creates, probes, next, acks []string
 	for _, project := range []string{"OTHER", "PUB"} {
 		for _, consumer := range []struct{ kind, filter string }{
 			{"dispatch", "notifications.dispatch.issue." + project + ".>"},
@@ -305,9 +365,10 @@ func TestWithinProjectsHoldsEachProjectToItsOwnFilters(t *testing.T) {
 			next = append(next, "$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS."+name)
 			acks = append(acks, "$JS.ACK.ENVOY_NOTIFICATIONS."+name+".>")
 		}
+		probes = append(probes, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-go-"+project+"-dispatch-probe.notifications.dispatch.issue."+project+".>")
 	}
 	require.Equal(t, natsgrant.Permissions{
-		Publish: slices.Concat(info, creates, next, acks),
+		Publish: slices.Concat(info, creates, probes, next, acks),
 		Subscribe: []string{
 			"notifications.envoy.exceptions.notifications.role.OTHER.>",
 			"notifications.envoy.exceptions.notifications.role.PUB.>",
@@ -482,8 +543,9 @@ func TestWithinProjectsNamesOnlyItsScope(t *testing.T) {
 }
 
 // daemonConsumerName matches the name of a consumer a Legion daemon opens, legion-go-<P>-<kind>,
-// capturing the project and the kind.
-var daemonConsumerName = regexp.MustCompile(`^legion-go-([A-Z][A-Z0-9]+)-(dispatch|wake|ready|github)$`)
+// capturing the project and the kind. dispatch-probe is the Dispatch probe, whose create alone a
+// grant holds.
+var daemonConsumerName = regexp.MustCompile(`^legion-go-([A-Z][A-Z0-9]+)-(dispatch-probe|dispatch|wake|ready|github)$`)
 
 // githubFamily is every repository's GitHub events, the GitHub consumer's one filter.
 const githubFamily = contracts.GithubTopicPrefix + ">"
@@ -493,13 +555,20 @@ func requireInScope(t *testing.T, scope natsgrant.Scope, entry string) {
 	t.Helper()
 	subject, _, _ := strings.Cut(entry, " ")
 	// ownConsumer fails unless name is a consumer the daemon opens under a project of the scope,
-	// and answers its kind.
-	ownConsumer := func(name string) (kind string) {
+	// and answers its project and kind.
+	ownConsumer := func(name string) (project, kind string) {
 		t.Helper()
 		match := daemonConsumerName.FindStringSubmatch(name)
 		require.NotNil(t, match, "%q names consumer %q, which no daemon opens", entry, name)
 		require.Contains(t, scope.Projects, match[1], "%q names another project's consumer", entry)
-		return match[2]
+		return match[1], match[2]
+	}
+	// durable fails unless name is one of the daemon's durables: the Dispatch probe is granted its
+	// create and no other call.
+	durable := func(name string) {
+		t.Helper()
+		_, kind := ownConsumer(name)
+		require.NotEqual(t, "dispatch-probe", kind, "%q grants the Dispatch probe a call beside its create", entry)
 	}
 	inScope := func(subject string) {
 		t.Helper()
@@ -517,18 +586,21 @@ func requireInScope(t *testing.T, scope natsgrant.Scope, entry string) {
 	case strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE."+stream):
 		name, filter, found := strings.Cut(strings.TrimPrefix(subject, "$JS.API.CONSUMER.CREATE."+stream), ".")
 		require.True(t, found, "%q creates a consumer with no filter", entry)
-		if ownConsumer(name) == "github" {
+		switch project, kind := ownConsumer(name); kind {
+		case "github":
 			require.Equal(t, githubFamily, filter, "%q gives the GitHub consumer a filter other than every repository's events", entry)
+		case "dispatch", "dispatch-probe":
+			require.Equal(t, contracts.DispatchIssueTopicPrefix+project+".>", filter, "%q gives %s a filter other than its own project's issue events", entry, name)
 		}
 		inScope(filter)
 	case strings.HasPrefix(subject, "$JS.API.CONSUMER.INFO."+stream):
-		ownConsumer(strings.TrimPrefix(subject, "$JS.API.CONSUMER.INFO."+stream))
+		durable(strings.TrimPrefix(subject, "$JS.API.CONSUMER.INFO."+stream))
 	case strings.HasPrefix(subject, "$JS.API.CONSUMER.MSG.NEXT."+stream):
-		ownConsumer(strings.TrimPrefix(subject, "$JS.API.CONSUMER.MSG.NEXT."+stream))
+		durable(strings.TrimPrefix(subject, "$JS.API.CONSUMER.MSG.NEXT."+stream))
 	case strings.HasPrefix(subject, "$JS.ACK."+stream):
 		name, rest, _ := strings.Cut(strings.TrimPrefix(subject, "$JS.ACK."+stream), ".")
 		require.Equal(t, ">", rest, "%q", entry)
-		ownConsumer(name)
+		durable(name)
 	case strings.HasPrefix(subject, bus.NotificationTopicPrefix):
 		inScope(subject)
 	default:

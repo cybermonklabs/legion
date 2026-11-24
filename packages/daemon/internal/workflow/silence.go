@@ -124,7 +124,7 @@ type phaseWorkerReading struct {
 // risk. The phase's resume task would be the wrong prompt there: it says to carry the existing
 // phase work on, and the completion it answered with would be refused as behind that entry.
 //
-// A claim level with that entry is sent the phase's resume task (ResumePhaseTask) at entry 0,
+// A claim level with that entry is sent the phase's resume task (ResumeTask) at entry 0,
 // marked resumeTask, as readyWorkerTask's and the boot's level branches send it: entry 0 hands
 // the role no number the record does not already name and moves no phases row, and resumeTask
 // is what keeps the outbox from delivering a second prompt to a claim that holds its phase's
@@ -150,8 +150,14 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
 			return err
 		}
-	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
-		return err
+	} else {
+		resume, err := e.ResumeTask(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		if err := e.started(ctx, tx, issue, fact.Role, resume, 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
+			return err
+		}
 	}
 	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {

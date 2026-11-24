@@ -161,7 +161,7 @@ func (w *workflowRuntime) tellMissing(ctx context.Context, issue record.Issue, p
 		return
 	}
 	var rows []record.PhaseRow
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = w.records.Phases(ctx, tx, issue.Key)
 		return err
@@ -193,16 +193,19 @@ func (w *workflowRuntime) tellMissing(ctx context.Context, issue record.Issue, p
 // issueRecord is key's issue record and its pull request record, both nil for what is not
 // recorded, read in one transaction: what the per-issue read and the merge-state ladder read
 // before they read GitHub (issuePullRequest, readMergeState), and what the second read of a
-// conflict reads before it acts (outbox's conflictConfirm).
+// conflict reads before it acts (outbox's conflictConfirm). The pull request is its row alone
+// (record.Store.PullRequestRow), with none of what it remembers of its settled heads: each caller
+// reads its columns to decide what to read of GitHub and builds the facts it applies from them,
+// and none writes the record back.
 func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, key string) (*record.Issue, *record.PullRequest, error) {
 	var issue *record.Issue
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if issue, err = records.Issue(ctx, tx, key); err != nil || issue == nil {
 			return err
 		}
-		pr, err = records.PullRequest(ctx, tx, key)
+		pr, err = records.PullRequestRow(ctx, tx, key)
 		return err
 	}); err != nil {
 		return nil, nil, fmt.Errorf("read the record of %s: %w", key, err)
@@ -264,7 +267,7 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 func (w *workflowRuntime) issuesInWorkflow(ctx context.Context) ([]string, error) {
 	var open []record.PullRequest
 	var waiting []record.HandedOff
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if open, err = w.records.OpenPullRequests(ctx, tx, w.dispatchProject); err != nil {
 			return err

@@ -87,6 +87,10 @@ const context = {
   agent: { kind: "main" as const },
   sessionManager,
   isIdle: () => true,
+  // The real host says whether a message waits in its queue (`PiApi` context's
+  // `hasPendingMessages`); with neither, the extension never counts the host idle and holds every
+  // transcript notice (an outage, a refused topic, a gap) for good, so this client could see none.
+  hasPendingMessages: () => false,
   // The extension arms its heartbeat here. The smoke drives every pass itself, so the callback is
   // kept for `{"op":"heartbeat"}` rather than armed on a timer; a timer on any other period is
   // dropped, as every timer here was.

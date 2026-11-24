@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -8,10 +8,13 @@ import {
   dispatchToolSpecs,
   type GraphEdge,
   type GraphEdgeKind,
+  type GraphNode,
   type GraphReferences,
   type IssueComponents,
   overCapMessage,
   PROJECT_KEY_RULE,
+  type ReferenceLink,
+  type ReferenceVia,
   SEARCH_QUERY_MAX,
   type SearchResult,
   type TablePosition,
@@ -43,7 +46,6 @@ import {
   DispatchClient,
   DispatchWriteLandedError,
   type DispatchWriteRetry,
-  forgetKeyedLayerMemory,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
@@ -51,11 +53,6 @@ import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
-
-// What one test's Dispatch showed of its keyed layer is that test's: the process memory of it
-// (`KEYED_LAYER_SEEN`) would otherwise tell the next test's fake, which answers without the key as
-// a Dispatch without the layer does, that its 2xx is no answer of Dispatch's.
-beforeEach(forgetKeyedLayerMemory);
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -103,6 +100,34 @@ function deferred<T>() {
 /** GET /api/v1/references for a node nothing cites and that cites nothing. */
 function emptyGraph(kind: string): { node: { kind: string; id: string }; edges: never[] } {
   return { node: { kind, id: "node" }, edges: [] };
+}
+
+/** A graph node as a fixture writes it: its kind and id, and whichever other fields the case
+ *  reads. */
+type FixtureNode = Pick<GraphNode, "kind" | "id"> & Partial<GraphNode>;
+
+/**
+ * One row of `links` or `linked_from` in an issue's references answer (dispatch://INFRA-4704),
+ * the contract's `ReferenceLink`: the node at the other end of a link, as
+ * `GET /api/v1/references` names a node, written as a fixture writes a graph node; the words the
+ * graph read shows for it; the distinct kinds of its links; and its via, the issue's node at the
+ * near end.
+ */
+type ReferenceLinkRow = Omit<ReferenceLink, "node"> & { readonly node: FixtureNode };
+
+/** `GET /api/v1/issues/{key}/references` as a fixture answers it: `links` and `linked_from` are
+ *  absent from the answer of a Dispatch from before INFRA-4704. */
+interface ReferencesAnswer {
+  readonly members:
+    | readonly {
+        readonly artifact: Pick<Artifact, "project" | "slug" | "name">;
+        readonly depth: number;
+        readonly via: ReferenceVia;
+      }[]
+    | null;
+  readonly truncated: boolean;
+  readonly links?: readonly ReferenceLinkRow[] | null;
+  readonly linked_from?: readonly ReferenceLinkRow[] | null;
 }
 
 function repoExec(repo: string): ExecFn {
@@ -408,15 +433,18 @@ describe("executeDispatchTool", () => {
       "POST http://dispatch.test/api/v1/issues/DSP-1/messages answered 502 Bad Gateway with a body that is not Dispatch's error JSON"
     );
     expect(write).not.toContain("<");
-    // A 502 can come after Dispatch committed the write: with no ask left, the write ends
-    // unsettled (the transition table, write-outcome.ts) and says so.
+    // A 502 can come after Dispatch committed the write: the keyed retry reaches its attempt
+    // bound, then the write ends unsettled (the transition table, write-outcome.ts).
     expect(write).toEndWith(
-      "(its only attempt), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it."
+      "(the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it may or " +
+        "may not have taken effect. Dispatch finishes an attempt it received whatever this command " +
+        "does, so read the write back before you send it again: a new command sends it under a new key."
     );
     expect(write).not.toContain("a retry may succeed");
-    // Nothing here says this Dispatch runs the keyed layer: the gateway answers its /healthz too,
-    // so the write is asked once and reported, and the read goes once.
-    expect(requests).toEqual(["POST /api/v1/issues/DSP-1/messages", "GET /healthz"]);
+    // Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route, so the
+    // write is asked again under its key until its five attempts are spent, with no /healthz read,
+    // and the read goes once.
+    expect(requests).toEqual(Array.from({ length: 5 }, () => "POST /api/v1/issues/DSP-1/messages"));
     requests.length = 0;
 
     const read = await run("dispatch_read", { issue: "DSP-1" });
@@ -443,7 +471,10 @@ describe("executeDispatchTool", () => {
       [
         502,
         "Bad Gateway",
-        " (its only attempt), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it.",
+        " (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it " +
+          "may or may not have taken effect. Dispatch finishes an attempt it received whatever " +
+          "this command does, so read the write back before you send it again: a new command sends " +
+          "it under a new key.",
       ],
     ] as const) {
       const fetchImpl = async () =>
@@ -3952,48 +3983,32 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
-  test("checks the canonical project returned after Dispatch resolves an external reference", async () => {
-    const requests: string[] = [];
-    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const target = new URL(String(url));
-      requests.push(`${init?.method ?? "GET"} ${target.pathname}`);
-      if (target.pathname === "/api/v1/issues") {
-        expect(JSON.parse(String(init?.body))).toMatchObject({
-          project: "",
-          external: "owner/repo#42",
-        });
-        return response(
-          {
-            key: "LEGION-216",
-            title: "Architecture work",
-            project: "LEGION",
-            components: issueComponents("inherit", []),
-          },
-          201
-        );
-      }
-      if (target.pathname === "/api/v1/projects/LEGION/architecture-sources") {
-        return response([architectureSource("LEGION")]);
-      }
-      throw new Error(`unexpected request: ${target.pathname}`);
-    };
+  // Every create names its project, a create with external too, and the server refuses one that
+  // names none. So the executor refuses an empty project and sends nothing.
+  test("refuses an external create with an empty project before any request", async () => {
+    let requests = 0;
+    const fetchImpl = (() => {
+      requests += 1;
+      throw new Error("network must not be called");
+    }) as unknown as typeof fetch;
 
-    const result = await executeDispatchTool({
-      tool: "dispatch_issue",
-      args: { project: "", title: "Architecture work", external: "owner/repo#42" },
-      cwd: "/workspace",
-      host: "omp",
-      config,
-      env: {},
-      exec: repoExec("owner/repo"),
-      fetchImpl: fetchImpl as typeof fetch,
-    });
+    const error = await refusal(
+      executeDispatchTool({
+        tool: "dispatch_issue",
+        args: { project: "", title: "Architecture work", external: "owner/repo#42" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl,
+      })
+    );
 
-    expect(result.text).toContain(architectureComponentsGuidance);
-    expect(requests).toEqual([
-      "POST /api/v1/issues",
-      "GET /api/v1/projects/LEGION/architecture-sources",
+    expect(error.problems).toEqual([
+      "--project: Too small: expected string to have >=1 characters",
     ]);
+    expect(requests).toBe(0);
   });
 
   test("does not guide an unassigned new issue when its project has no source", async () => {
@@ -5052,10 +5067,11 @@ describe("executeDispatchTool", () => {
         writeRetry,
       })
     ).rejects.toThrow(
-      "INTERNAL: internal server error (its only attempt), and an attempt of the write may have " +
-        "reached Dispatch, so it may or may not have taken effect: check whether it did before " +
-        `retrying it. One of ${pullRequest} may already be linked from another issue (a URL links ` +
-        "exactly one issue)"
+      "INTERNAL: internal server error (the last of 5 attempts), and an attempt of the write may " +
+        "have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt " +
+        "it received whatever this command does, so read the write back before you send it again: a " +
+        `new command sends it under a new key. One of ${pullRequest} may already be linked from another ` +
+        "issue (a URL links exactly one issue)"
     );
   });
 
@@ -5098,9 +5114,10 @@ describe("executeDispatchTool", () => {
     expect(failure).toBe(
       "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 500 Internal Server " +
         'Error with a body that is not Dispatch\'s error JSON ("500 Internal Server Error"), which ' +
-        "looks like a proxy or gateway page rather than Dispatch's own answer (its only attempt), " +
-        "and an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect: check whether it did before retrying it."
+        "looks like a proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), " +
+        "and an attempt of the write may have reached Dispatch, so it may or may not have taken effect. " +
+        "Dispatch finishes an attempt it received whatever this command does, so read the write back " +
+        "before you send it again: a new command sends it under a new key."
     );
   });
 
@@ -5178,8 +5195,7 @@ describe("executeDispatchTool", () => {
   /**
    * Records every request; the messages route and the PATCH answer with the given responses, and
    * the issue read before the update answers `closedAt` (null: the issue is open). This
-   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key and its /healthz
-   * says `idempotency_keys`, so a write that fails without an answer of Dispatch's own is resent.
+   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key.
    */
   function closingServer(
     answers: { message: () => Response; patch: () => Response },
@@ -5189,7 +5205,6 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const pathname = new URL(String(url)).pathname;
       const method = init?.method ?? "GET";
-      if (pathname === "/healthz") return response({ status: "ok", idempotency_keys: true });
       requests.push({
         method,
         pathname,
@@ -5223,7 +5238,7 @@ describe("executeDispatchTool", () => {
     return { requests, fetchImpl: fetchImpl as typeof fetch };
   }
 
-  const refusal = (status: number, code: string, error: string) =>
+  const errorAnswer = (status: number, code: string, error: string) =>
     new Response(JSON.stringify({ code, error }), {
       status,
       headers: { "Content-Type": "application/json" },
@@ -5282,7 +5297,7 @@ describe("executeDispatchTool", () => {
 
   test("dispatch_issue_update leaves the issue open when the reason cannot be posted", async () => {
     const server = closingServer({
-      message: () => refusal(403, "FORBIDDEN", "token may not write to ACME"),
+      message: () => errorAnswer(403, "FORBIDDEN", "token may not write to ACME"),
       patch: () => {
         throw new Error("the close must not be sent");
       },
@@ -5345,7 +5360,8 @@ describe("executeDispatchTool", () => {
       (request: string) =>
         `${request} had no definitive answer when its deadline ended it (its only attempt), and ` +
         "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect: check whether it did before retrying it.",
+        "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
+        "the write back before you send it again: a new command sends it under a new key.",
       1,
     ],
     [
@@ -5400,7 +5416,7 @@ describe("executeDispatchTool", () => {
         5,
       ],
       [
-        () => refusal(500, "INTERNAL", "internal server error"),
+        () => errorAnswer(500, "INTERNAL", "internal server error"),
         `INTERNAL: internal server error (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
@@ -5469,7 +5485,7 @@ describe("executeDispatchTool", () => {
   test("dispatch_issue_update names the posted reason when the close fails after it", async () => {
     const server = closingServer({
       message: () => response({ id: "message-7", issue_key: "ACME-175" }),
-      patch: () => refusal(409, "ISSUE_CLAIMED", "claimed by session other"),
+      patch: () => errorAnswer(409, "ISSUE_CLAIMED", "claimed by session other"),
     });
 
     await expect(closeCall(server.fetchImpl)).rejects.toThrow(
@@ -5558,7 +5574,7 @@ describe("executeDispatchTool", () => {
           ] as const
       ),
       [
-        () => refusal(502, "HTTP_502", "Bad Gateway"),
+        () => errorAnswer(502, "HTTP_502", "Bad Gateway"),
         `HTTP_502: Bad Gateway (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
@@ -5594,7 +5610,7 @@ describe("executeDispatchTool", () => {
   // a step before it, the close was never sent, so the call fails and says the reason is there.
   test("dispatch_issue_update reads KEY_COMMITTED as a landing on the close, and a failure on the reason", async () => {
     const committed = () =>
-      refusal(409, "KEY_COMMITTED", "the write landed and its answer was lost");
+      errorAnswer(409, "KEY_COMMITTED", "the write landed and its answer was lost");
     const closed = closingServer({
       message: () => response({ id: "message-7", issue_key: "ACME-175" }),
       patch: committed,
@@ -5631,12 +5647,12 @@ describe("executeDispatchTool", () => {
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
       "since retrying this call posts its reason again";
-    // This Dispatch runs the keyed layer, so each message also says that it finishes the close.
+    // This Dispatch runs the keyed layer.
     const keyedTail =
       ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
       "back before you send it again: a new command sends it under a new key.";
     const inFlight = () =>
-      refusal(409, "KEY_IN_FLIGHT", "an earlier request with this key is still running");
+      errorAnswer(409, "KEY_IN_FLIGHT", "an earlier request with this key is still running");
     // A KEY_IN_FLIGHT says Dispatch may still be running the close, so it is asked every 3 s at
     // most until 55 s rather than five times: 20 attempts.
     for (const [first, then, expected, attempts] of [
@@ -11954,7 +11970,7 @@ describe("executeDispatchTool", () => {
     expect(failure).toBeInstanceOf(ToolInputError);
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     expect(failure.problems).toEqual([
-      'Dispatch stores this text under another spelling: line 3 reads "* one" and is stored as "- one".' +
+      'Dispatch stores this text under another spelling: line 3 reads the word "*" at character 1, where Dispatch stores the word "-".' +
         " Send the text Dispatch stores, which is between the two marker lines below." +
         "\n--- the text Dispatch stores ---\n# Notes\n\n- one\n- two\n" +
         "--- end of the text Dispatch stores ---",
@@ -11993,7 +12009,7 @@ describe("executeDispatchTool", () => {
     expect(failure).toBeInstanceOf(ToolInputError);
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     expect(failure.problems).toEqual([
-      'Dispatch stores this text under another spelling: line 1 reads "* one" and is stored as "- one".' +
+      'Dispatch stores this text under another spelling: line 1 reads the word "*" at character 1, where Dispatch stores the word "-".' +
         " Send the text Dispatch stores, which is between the two marker lines below." +
         " To keep the text as you wrote it, send it as a file with path (--path <file>), which" +
         " stores a file whose path does not end in .md or .markdown as its bytes, unchanged." +
@@ -12037,7 +12053,9 @@ describe("executeDispatchTool", () => {
       /--- the text Dispatch stores ---\n([\s\S]*)--- end of the text Dispatch stores ---$/.exec(
         problem
       )?.[1] ?? "";
-    expect(problem).toContain('line 3 reads "* one" and is stored as "- one".');
+    expect(problem).toContain(
+      'line 3 reads the word "*" at character 1, where Dispatch stores the word "-".'
+    );
     expect(printed.length).toBeGreaterThan(0);
     expect(printed.length).toBeLessThan(stored.length);
     // Whole lines only, and the start of the stored text, so what is printed reads as it stores.
@@ -12048,9 +12066,12 @@ describe("executeDispatchTool", () => {
     );
   });
 
-  // One line can be as long as the document, so the quote of the line that differs is bounded
-  // as the stored text below it is, and names its own cut (review round 2, finding G).
-  test("cuts a long quoted line in the refusal and says what it cut", async () => {
+  // One line can be as long as the document, so the refusal never quotes a line that changed:
+  // it names the word that differs, whole while it is 200 characters or fewer, and the character
+  // it starts at (review round 2, finding G; INFRA-4678 R1). A longer word is named by a window
+  // from its first character that differs, and a line the store adds or drops is quoted, cut at
+  // 200 characters with the cut named (the tests below).
+  test("names the word that differs in a long line, not the line", async () => {
     const items = "one two three ".repeat(40);
     const long = `* ${items}`;
     const content = `# Notes\n\n${long}\n`;
@@ -12084,14 +12105,357 @@ describe("executeDispatchTool", () => {
     expect(failure).toBeInstanceOf(ToolInputError);
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     const problem = failure.problems[0] ?? "";
-    expect(problem).toContain(
-      `${JSON.stringify(long.slice(0, 200))} (cut after 200 of its ${long.length} characters)`
-    );
-    expect(problem).toContain(
-      `${JSON.stringify(storedLine.slice(0, 200))} (cut after 200 of its ${storedLine.length} characters)`
+    expect(problem).toStartWith(
+      'Dispatch stores this text under another spelling: line 3 reads the word "*" at character 1, where Dispatch stores the word "-".'
     );
     // The whole line never reaches the refusal.
     expect(problem).not.toContain(long);
+  });
+
+  /** The fetch a `dispatch artifact` of new inline text makes, the owner holding no document and
+   *  the round trip answering `stored`. Each upload's body is pushed onto `posts`. */
+  const storedSpellingFetch =
+    (stored: string, posts: Array<Record<string, unknown>>) =>
+    async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/markdown/round-trip") return response({ markdown: stored });
+      if (pathname === "/api/v1/issues/DSP-42/artifacts") {
+        if ((init?.method ?? "GET") === "GET") return response([]);
+        posts.push(JSON.parse(String(init?.body)));
+        return response({
+          artifact: {
+            id: "artifact-42",
+            issue_key: "DSP-42",
+            name: "verification.md",
+            slug: "verification-md",
+          },
+          version: { number: 1 },
+        });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+  // INFRA-4678 R1: an attribute's position carries no meaning, so a typed block whose attributes
+  // differ from Dispatch's spelling only in their order is stored in Dispatch's order, and the
+  // answer names the block and that order. The order is the stored line's own, here the one
+  // pmdoc's renderTypedAttributes writes for a check (schema/blocks.json): ci_check comes last.
+  // The answer names the block by its id as it reads: an id Dispatch writes `id="…"`, its `&` as
+  // `&amp;` (typedBlockIdAttribute), is named with the `&`.
+  test.each([
+    ["#c-attribute-order", "c-attribute-order"],
+    ['id="R&amp;D"', "R&D"],
+  ])("uploads a block whose attributes differ only in order, in the order Dispatch stores (id %s)", async (id, named) => {
+    const serves = 'serves="dispatch://DSP-42/spec#b-r-attribute-order"';
+    const control =
+      'negative_control="A check block that names ci_check before when is refused, and each spelling is cut after 200 characters."';
+    const ciCheck = 'ci_check="lint / private-names"';
+    const document = (opener: string) =>
+      `# Verification\n\n${opener}\nThe block is stored with its attributes in Dispatch's order.\n:::\n`;
+    const content = document(
+      `:::check{${id} ${serves} surface="cli" ${ciCheck} when="before_merge" ${control}}`
+    );
+    const stored = document(
+      `:::check{${id} ${serves} surface="cli" when="before_merge" ${control} ${ciCheck}}`
+    );
+    const posts: Array<Record<string, unknown>> = [];
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "verification.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(stored, posts) as typeof fetch,
+    });
+
+    // The upload sends the text Dispatch stores, and the answer names the block and the order.
+    expect(posts.map((body) => body.content)).toEqual([stored]);
+    const lines = result.text.split("\n");
+    expect(lines[0]).toStartWith("Uploaded verification.md as version 1");
+    expect(lines[1]).toBe(
+      `This upload put the attributes of check block ${named} (line 3) in the order Dispatch stores: id, serves, surface, when, negative_control, ci_check.`
+    );
+  });
+
+  // Dispatch's grammar gives a backslash in a quoted value no meaning (pmdoc's
+  // parseDirectiveAttributes), and the store writes it as it is (escapeDirectiveAttribute), so a
+  // value that ends in one ends at the quote after it, and its block is read as any other.
+  test("uploads a reordered block one of whose values ends in a backslash, in the order Dispatch stores", async () => {
+    const serves = 'serves="dispatch://DSP-42/spec#b-r-one"';
+    const run = 'run="C:\\dir\\"';
+    const document = (opener: string) => `# Verification\n\n${opener}\nThe check.\n:::\n`;
+    const content = document(
+      `:::check{#c-backslash ${serves} surface="cli" when="before_merge" ${run}}`
+    );
+    const stored = document(
+      `:::check{#c-backslash ${serves} surface="cli" ${run} when="before_merge"}`
+    );
+    const posts: Array<Record<string, unknown>> = [];
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "verification.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(stored, posts) as typeof fetch,
+    });
+
+    expect(posts.map((body) => body.content)).toEqual([stored]);
+    expect(result.text.split("\n")[1]).toBe(
+      "This upload put the attributes of check block c-backslash (line 3) in the order Dispatch stores: id, serves, surface, run, when."
+    );
+  });
+
+  // INFRA-4678 R1: Dispatch writes U+2028 and U+2029 in a value unescaped, so a value may hold
+  // either, and a block whose value holds one is read as any other: its reorder goes up.
+  test.each([
+    ["U+2028", "\u2028"],
+    ["U+2029", "\u2029"],
+  ])("uploads a reordered block one of whose values holds %s, in the order Dispatch stores", async (_, separator) => {
+    const serves = 'serves="dispatch://DSP-42/spec#b-r-one"';
+    const control = `negative_control="One line${separator}and the next."`;
+    const document = (opener: string) => `# Verification\n\n${opener}\nThe check.\n:::\n`;
+    const content = document(
+      `:::check{#c-separator ${serves} surface="cli" ${control} when="before_merge"}`
+    );
+    const stored = document(
+      `:::check{#c-separator ${serves} surface="cli" when="before_merge" ${control}}`
+    );
+    const posts: Array<Record<string, unknown>> = [];
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "verification.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(stored, posts) as typeof fetch,
+    });
+
+    expect(posts.map((body) => body.content)).toEqual([stored]);
+    expect(result.text.split("\n")[1]).toBe(
+      "This upload put the attributes of check block c-separator (line 3) in the order Dispatch stores: id, serves, surface, when, negative_control."
+    );
+  });
+
+  // INFRA-4678 R1: the refusal names the first difference by the attribute or the word that
+  // differs, whole. A quote of each line cut at 200 characters hid a difference past the cut: on
+  // 2026-11-19 both quotes ended before it, and a writer read the cut as an attribute dropped.
+  test("names a difference past character 200 of its line whole", async () => {
+    const control = `negative_control="${"Without the check, a reordered block is refused. ".repeat(5)}The count of refusals goes from 0 to > 0."`;
+    // The store writes a `>` in an attribute's value as `&gt;` (escapeDirectiveAttribute).
+    const storedControl = control.replaceAll(">", "&gt;");
+    const opener = (attribute: string) =>
+      `:::check{#c-long serves="dispatch://DSP-42/spec#b-r-one" surface="cli" when="before_merge" ${attribute}}`;
+    const document = (attribute: string) =>
+      `# Verification\n\n${opener(attribute)}\nThe check.\n:::\n`;
+    expect(opener(control).indexOf(">")).toBeGreaterThan(200);
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "verification.md", content: document(control) },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(document(storedControl), posts) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems[0]).toStartWith(
+      `Dispatch stores this text under another spelling: line 3 holds the attribute ${control}, which Dispatch stores as ${storedControl}.` +
+        " Send the text Dispatch stores, which is between the two marker lines below."
+    );
+    expect(posts).toEqual([]);
+  });
+
+  // A block whose attributes stand in another order is no difference the refusal names: once the
+  // other difference is fixed, the upload puts them in Dispatch's order itself.
+  test("refuses a reordered block beside another difference, naming that difference", async () => {
+    const serves = 'serves="dispatch://DSP-42/spec#b-r-one"';
+    const content = `# Notes\n\n:::check{#c-one surface="cli" ${serves} when="before_merge"}\nThe check.\n:::\n\n* one\n`;
+    const stored = `# Notes\n\n:::check{#c-one ${serves} surface="cli" when="before_merge"}\nThe check.\n:::\n\n- one\n`;
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(stored, posts) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems[0]).toStartWith(
+      'Dispatch stores this text under another spelling: line 7 reads the word "*" at character 1, where Dispatch stores the word "-".'
+    );
+    expect(failure.problems[0]).toContain(`--- the text Dispatch stores ---\n${stored}`);
+    expect(posts).toEqual([]);
+  });
+
+  // A text written with CR LF line ends holds a carriage return at the end of each line, which
+  // the store does not keep. The written opener then reads as no typed block's opener, and the
+  // stored one does, so both lines are cut as plain words: the refusal names the carriage
+  // return, not a word that only the two ways of cutting the lines made.
+  test("names the carriage return of a CR LF opener, not a word the two cuts made", async () => {
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: {
+        issue: "DSP-42",
+        name: "notes.md",
+        content: ':::check{#c serves="x"}\r\nThe check.\r\n:::\r\n',
+      },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(
+        ':::check{#c serves="x"}\nThe check.\n:::\n',
+        posts
+      ) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems[0]).toStartWith(
+      'Dispatch stores this text under another spelling: line 1 reads the space "\\r" at character 24, where Dispatch ends the line.'
+    );
+    expect(posts).toEqual([]);
+  });
+
+  // A line the store adds or drops is itself the difference, so a quote of it cut at 200
+  // characters hides nothing, and a refusal nobody can read to the end is one nobody acts on: the
+  // quote is cut and the cut named (review round 2, finding G).
+  test("quotes a long line the store drops cut at 200 characters, and says what it cut", async () => {
+    const line = " ".repeat(5000);
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: `# Notes\n\n${line}\n` },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch("# Notes\n", posts) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    const problem = failure.problems[0] ?? "";
+    expect(problem).toStartWith(
+      `Dispatch stores this text under another spelling: the store drops line 3, ${JSON.stringify(" ".repeat(200))} (cut after 200 of its 5000 characters).`
+    );
+    expect(problem.length).toBeLessThan(line.length);
+    expect(posts).toEqual([]);
+  });
+
+  // A word with no space in it (a URL, a data URI, a table's separator row) is bounded only by its
+  // line, so one longer than 200 characters is named by a window of each spelling from the first
+  // character where the two differ, with the cut named. The stored text before it fills the part
+  // of the stored text the refusal prints, so the refusal holds neither spelling whole.
+  test("names a long word by a window from the character where its spellings differ", async () => {
+    const word = (differs: string) => `${"a".repeat(399)}${differs}${"a".repeat(200)}`;
+    const document = (line: string) =>
+      `# Notes\n\n${"A paragraph of the design.\n\n".repeat(100)}${line}\n`;
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: document(word("b")) },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(document(word("c")), posts) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    const problem = failure.problems[0] ?? "";
+    const cut = "(cut before and after 200 of its 600 characters)";
+    expect(problem).toStartWith(
+      `Dispatch stores this text under another spelling: line 203 reads the word ${JSON.stringify(`b${"a".repeat(199)}`)} ${cut} at character 400, where Dispatch stores the word ${JSON.stringify(`c${"a".repeat(199)}`)} ${cut}.`
+    );
+    expect(problem).not.toContain(word("b"));
+    expect(problem).not.toContain(word("c"));
+    expect(posts).toEqual([]);
+  });
+
+  // A long word one spelling of which is the start of the other has nothing of the shorter from
+  // the character where the longer goes on, so the shorter is quoted up to its end, never as an
+  // empty word, and the refusal says which of the two ends there.
+  test.each([
+    [
+      "the written word",
+      250,
+      260,
+      `ends the word ${JSON.stringify("a".repeat(200))} (cut before the last 200 of its 250 characters) after character 250, where Dispatch goes on with the word ${JSON.stringify("a".repeat(10))} (cut before the last 10 of its 260 characters).`,
+    ],
+    [
+      "the stored word",
+      260,
+      250,
+      `reads the word ${JSON.stringify("a".repeat(10))} (cut before the last 10 of its 260 characters) at character 251, where Dispatch ends the word ${JSON.stringify("a".repeat(200))} (cut before the last 200 of its 250 characters).`,
+    ],
+  ])("names a long word whose other spelling goes on past %s by where it ends", async (_, written, held, difference) => {
+    const document = (length: number) => `# Notes\n\n${"a".repeat(length)}\n`;
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: document(written) },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(document(held), posts) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems[0]).toStartWith(
+      `Dispatch stores this text under another spelling: line 3 ${difference}`
+    );
+    expect(posts).toEqual([]);
   });
 
   // INFRA-1522 R15: the store ends every document it holds with a line feed, so text written
@@ -12185,7 +12549,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([]);
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       if (pathname === "/api/v1/markdown/round-trip") {
         trips += 1;
         return trips === 1
@@ -12196,15 +12559,12 @@ describe("executeDispatchTool", () => {
             );
       }
       posts.push(pathname);
-      // The upload's answer is Dispatch's own, whose keyed layer the 503's /healthz named, so it
-      // carries the request's key back.
-      const key = (init?.headers as Record<string, string> | undefined)?.["Idempotency-Key"] ?? "";
       return new Response(
         JSON.stringify({
           artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
           version: { number: 1 },
         }),
-        { headers: { "Content-Type": "application/json", "Idempotency-Key": key } }
+        { headers: { "Content-Type": "application/json" } }
       );
     };
 
@@ -12242,7 +12602,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return new Response(page, { status, headers: { "content-type": "text/html" } });
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
@@ -12290,7 +12649,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name, slug: "notes-md" },
@@ -12341,9 +12699,6 @@ describe("executeDispatchTool", () => {
         return response([]);
       }
       if (pathname === "/api/v1/markdown/round-trip") return response({ error, code }, status);
-      // A failed write asks /healthz whether the server keeps idempotency keys. Only the upload
-      // route is counted here.
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
@@ -14685,6 +15040,8 @@ describe("executeDispatchTool", () => {
         });
       }
       if (target.pathname === "/api/v1/issues/DSP-42/events") return response([]);
+      // An answer without `links` and `linked_from`, as a Dispatch from before INFRA-4704 gives:
+      // the read prints its members with their depth, as it always did (spec R3).
       if (target.pathname === "/api/v1/issues/DSP-42/references") {
         return response({
           members: [
@@ -14852,6 +15209,435 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain("References:\n- unavailable");
     expect(result.text).toContain("Referenced by:\n- unavailable\nLinks:\n- unavailable");
     expect(result.details).toEqual({ issue: "DSP-42" });
+  });
+
+  // dispatch://INFRA-4704: an issue's references read answers one hop each way, `links` (every
+  // node the issue's own content links to) and `linked_from` (every node that links to the issue
+  // or to its own content), and the read prints each related node once (spec R2). `References:`
+  // prints the rows of `links`, less the nodes under `Links:` and the sources of a structural edge
+  // into the issue; `Referenced by:` prints the rows of `linked_from` not in `links`, then the
+  // structural edges of the graph read into the issue node. An answer without `links` comes from
+  // a Dispatch built before the change, and the read prints it as it did (R3). A read refused at
+  // the server's bound prints one line, and the client sends the route once (R4).
+  describe("an issue read's references, one hop each way", () => {
+    const ownComment = "cccccccc-0000-4000-8000-000000000042";
+    const theirComment = "dddddddd-0000-4000-8000-000000000050";
+    const picture = "dispatch://DSP-42/artifact/chart-png@v3";
+    const refusal =
+      "the issue's reference closure ran past its 2s bound, so no reference was read; try again later";
+    const issueNode = {
+      kind: "issue",
+      id: "DSP-42",
+      ref: "dispatch://DSP-42",
+      issue_key: "DSP-42",
+      project: "DSP",
+      made_by: [{ kind: "user", id: "alice@example.com" }],
+      made_at: "2026-09-01T09:00:00Z",
+      changed_by: [{ kind: "session", id: "s1" }],
+      changed_at: "2026-09-12T09:00:00Z",
+      parent: null,
+      parent_version: null,
+    } satisfies GraphNode;
+    const issueOf = (key: string): FixtureNode => ({
+      kind: "issue",
+      id: key,
+      ref: `dispatch://${key}`,
+      issue_key: key,
+      project: "DSP",
+    });
+    const nodes = {
+      a: {
+        kind: "artifact",
+        id: "artifact-a",
+        project: "CORE",
+        ref: "dispatch://CORE/artifact/a-md",
+      },
+      c: {
+        kind: "artifact",
+        id: "artifact-c",
+        project: "CORE",
+        ref: "dispatch://CORE/artifact/c-md",
+      },
+      e: {
+        kind: "artifact",
+        id: "artifact-e",
+        project: "CORE",
+        ref: "dispatch://CORE/artifact/e-md",
+      },
+      notes: {
+        kind: "artifact",
+        id: "artifact-notes",
+        project: "OPS",
+        ref: "dispatch://OPS/artifact/design-notes",
+      },
+      // A document of the issue's parent.
+      r: {
+        kind: "artifact",
+        id: "artifact-r",
+        issue_key: "DSP-40",
+        project: "DSP",
+        ref: "dispatch://DSP-40/artifact/r-md",
+      },
+      // The issue's own documents: its spec and its checks.
+      spec: {
+        kind: "artifact",
+        id: "artifact-spec",
+        issue_key: "DSP-42",
+        project: "DSP",
+        ref: "dispatch://DSP-42/spec",
+      },
+      checks: {
+        kind: "artifact",
+        id: "artifact-checks",
+        issue_key: "DSP-42",
+        project: "DSP",
+        ref: "dispatch://DSP-42/artifact/checks-md",
+      },
+      parent: issueOf("DSP-40"),
+      child: issueOf("DSP-43"),
+      waiting: issueOf("DSP-45"),
+      other: issueOf("DSP-50"),
+      theirs: {
+        kind: "comment",
+        id: theirComment,
+        issue_key: "DSP-50",
+        project: "DSP",
+        ref: `dispatch://DSP-50/comment/${theirComment}`,
+      },
+    } satisfies Record<string, FixtureNode>;
+    const edgeIn = (
+      kind: string,
+      node: FixtureNode,
+      excerpt: { readonly block_id?: string; readonly text: string },
+      at: string
+    ) => ({ kind, direction: "in", node, excerpt, created_at: at, source_seq: null });
+
+    // The edges into the issue node, as `GET /api/v1/references?to=dispatch://DSP-42` answers
+    // them, each beside its line as the read prints an edge (`edgeLine`): two documents that
+    // mention the issue; the issue's own content, its spec mentioning it from a block and its two
+    // documents' `attached_to`; and the structural edges, a child's `child_of` and the
+    // `blocked_by` of an issue that waits on it.
+    const mentionsIn = [
+      edgeIn(
+        "mentions",
+        nodes.notes,
+        { block_id: "b7", text: "The plan lives in dispatch://DSP-42." },
+        "2026-09-11T10:00:00Z"
+      ),
+      edgeIn(
+        "mentions",
+        nodes.c,
+        { block_id: "b2", text: "Tracked in dispatch://DSP-42." },
+        "2026-09-11T11:00:00Z"
+      ),
+    ];
+    const mentionsInLines = [
+      "- mentions artifact dispatch://OPS/artifact/design-notes (The plan lives in dispatch://DSP-42. · 2026-09-11T10:00:00Z)",
+      "- mentions artifact dispatch://CORE/artifact/c-md (Tracked in dispatch://DSP-42. · 2026-09-11T11:00:00Z)",
+    ];
+    const ownContentIn = [
+      edgeIn(
+        "mentions",
+        nodes.spec,
+        { block_id: "b3", text: "This issue ships the parser." },
+        "2026-09-05T10:00:00Z"
+      ),
+      edgeIn("attached_to", nodes.spec, { text: "spec.md" }, "2026-09-01T10:00:00Z"),
+      edgeIn("attached_to", nodes.checks, { text: "checks.md" }, "2026-09-02T10:00:00Z"),
+    ];
+    const ownContentInLines = [
+      "- mentions artifact dispatch://DSP-42/spec (This issue ships the parser. · 2026-09-05T10:00:00Z)",
+      "- attached_to artifact dispatch://DSP-42/spec (spec.md · 2026-09-01T10:00:00Z)",
+      "- attached_to artifact dispatch://DSP-42/artifact/checks-md (checks.md · 2026-09-02T10:00:00Z)",
+    ];
+    const structuralIn = [
+      edgeIn("child_of", nodes.child, { text: "Child work" }, "2026-09-10T10:00:00Z"),
+      edgeIn("blocked_by", nodes.waiting, { text: "Waiting work" }, "2026-09-12T10:00:00Z"),
+    ];
+    const structuralInLines = [
+      "- child_of issue dispatch://DSP-43 (Child work · 2026-09-10T10:00:00Z)",
+      "- blocked_by issue dispatch://DSP-45 (Waiting work · 2026-09-12T10:00:00Z)",
+    ];
+    const edgesIn = [...mentionsIn, ...ownContentIn, ...structuralIn];
+    const edgesInLines = [...mentionsInLines, ...ownContentInLines, ...structuralInLines];
+
+    const viaComment: ReferenceVia = { kind: "comment", id: ownComment };
+    const row = (
+      node: FixtureNode,
+      name: string,
+      kinds: string[],
+      via: ReferenceVia
+    ): ReferenceLinkRow => ({ node, name, kinds, via });
+    const member = (project: string, slug: string, depth: number, via: ReferenceVia) => ({
+      artifact: { project, slug, name: slug },
+      depth,
+      via,
+    });
+    // What the issue's own content links to, in the order of the node's kind and then its id: its
+    // comment mentions two documents, the issue's parent, its child and another issue, and both
+    // that comment and a check of its checks document (`serves`) point at a document of the parent.
+    const links = [
+      row(nodes.a, "a.md", ["mentions"], viaComment),
+      row(nodes.c, "c.md", ["mentions"], viaComment),
+      row(nodes.r, "r.md", ["mentions", "serves"], { kind: "artifact", id: "artifact-checks" }),
+      row(nodes.parent, "Parent work", ["mentions"], viaComment),
+      row(nodes.child, "Child work", ["mentions"], viaComment),
+      row(nodes.other, "Other work", ["mentions"], viaComment),
+    ];
+    // What links to the issue or to its own content: c.md and a project's notes mention the issue,
+    // e.md mentions its checks document, and a comment on another issue mentions its comment.
+    const linkedFrom = [
+      row(nodes.c, "c.md", ["mentions"], { kind: "issue", id: "DSP-42" }),
+      row(nodes.e, "e.md", ["mentions"], { kind: "artifact", id: "DSP-42/checks-md" }),
+      row(nodes.notes, "Design notes", ["mentions"], { kind: "issue", id: "DSP-42" }),
+      row(nodes.theirs, "See the parser's plan.", ["mentions"], viaComment),
+    ];
+
+    // The lines between `References:` and `Referenced by:`, which no case changes: the events,
+    // the pictures the issue's texts show and the issue node's own line.
+    const between = [
+      "Events:",
+      "- none",
+      "Pictures:",
+      `- not shown: ${picture} (chart.png has no version 3)`,
+      "Node: issue dispatch://DSP-42 · made by user alice@example.com at 2026-09-01T09:00:00Z · changed by session s1 at 2026-09-12T09:00:00Z",
+    ];
+    const linksSection = [
+      "Links:",
+      "- child_of issue dispatch://DSP-40 (Parent work · 2026-09-01T10:00:00Z)",
+    ];
+
+    /** `dispatch read --issue DSP-42` against a Dispatch whose references route gives
+     *  `references`, and whose graph read of the issue node lists `edgesInto` into it and its
+     *  `child_of` to its parent out of it: the paths it requested, and the read from
+     *  `References:` to its end. */
+    async function readIssue(references: () => Response, edgesInto: readonly unknown[] = edgesIn) {
+      const requests: string[] = [];
+      const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+        const target = new URL(String(url));
+        requests.push(target.pathname);
+        if (target.pathname === "/api/v1/issues/DSP-42") {
+          return response({
+            key: "DSP-42",
+            title: "Ship the parser",
+            status: "open",
+            priority: null,
+            assignee: null,
+            claim: null,
+            components: {
+              mode: "inherit",
+              ids: [],
+              unknown: [],
+              reason: null,
+              inherited_from: null,
+            },
+            route: null,
+            repo: null,
+            resolved_repo: null,
+            artifacts: [
+              { id: "artifact-spec", slug: "spec", name: "spec.md", kind: "doc", primary: true },
+              {
+                id: "artifact-checks",
+                slug: "checks-md",
+                name: "checks.md",
+                kind: "doc",
+                primary: false,
+              },
+            ],
+            open_asks: [
+              {
+                id: "ask-1",
+                question: `Which chart do we keep? ![chart.png](${picture})`,
+                created_at: "2026-09-12T12:00:00Z",
+              },
+            ],
+            last_seq: 0,
+            external_links: [],
+            labels: [],
+            advances: [],
+            advances_revision: 0,
+          });
+        }
+        if (target.pathname === "/api/v1/issues/DSP-42/events") return response([]);
+        if (target.pathname === "/api/v1/issues/DSP-42/references") return references();
+        if (target.pathname === "/api/v1/issues/DSP-42/coverage") {
+          return response({
+            issue: "DSP-42",
+            spec_artifact_id: "artifact-spec",
+            has_plan: false,
+            requirements: [],
+            gaps: [],
+          });
+        }
+        if (target.pathname === "/api/v1/issues/DSP-42/artifacts/chart-png") {
+          return response({
+            id: "chart-1",
+            issue_key: "DSP-42",
+            project: "DSP",
+            slug: "chart-png",
+            name: "chart.png",
+            kind: "image",
+            versions: [{ number: 1, mime: "image/png", size: 32 }],
+          });
+        }
+        if (target.pathname === "/api/v1/references") {
+          if (target.searchParams.get("to") === "dispatch://DSP-42") {
+            return response({ node: issueNode, edges: edgesInto });
+          }
+          if (target.searchParams.get("from") === "dispatch://DSP-42") {
+            return response({
+              node: issueNode,
+              edges: [
+                {
+                  kind: "child_of",
+                  direction: "out",
+                  node: nodes.parent,
+                  excerpt: { text: "Parent work" },
+                  created_at: "2026-09-01T10:00:00Z",
+                  source_seq: null,
+                },
+              ],
+            });
+          }
+        }
+        throw new Error(`unexpected request: ${target.pathname}${target.search}`);
+      };
+      const result = await executeDispatchTool({
+        tool: "dispatch_read",
+        args: { issue: "DSP-42" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      return {
+        requests,
+        sections: result.text.slice(result.text.indexOf("\nReferences:\n") + 1),
+      };
+    }
+
+    // The issue's comment mentions its parent, which is under `Links:`, and its child, the source
+    // of the `child_of` into the issue: neither prints under `References:`, and the child's edge
+    // prints under `Referenced by:`. c.md, which the comment mentions and which mentions the
+    // issue, prints once, under `References:`. `Referenced by:` prints no edge whose source is the
+    // issue's own content (its spec's mention, its documents' `attached_to`), and no mention the
+    // rows of `linked_from` already name. A one-hop read reaches no 8th hop, so no line says one
+    // was cut, though the answer says `truncated`.
+    test("prints each node the issue links to under References and each node that links to it under Referenced by, each once", async () => {
+      const answer: ReferencesAnswer = {
+        members: [
+          member("CORE", "a-md", 1, viaComment),
+          member("CORE", "c-md", 1, viaComment),
+          member("DSP", "r-md", 1, { kind: "artifact", id: "artifact-checks" }),
+        ],
+        truncated: true,
+        links,
+        linked_from: linkedFrom,
+      };
+
+      const { sections } = await readIssue(() => response(answer));
+
+      expect(sections).toBe(
+        [
+          "References:",
+          `- mentions artifact dispatch://CORE/artifact/a-md · via comment ${ownComment}`,
+          `- mentions artifact dispatch://CORE/artifact/c-md · via comment ${ownComment} · also references this issue`,
+          "- mentions,serves artifact dispatch://DSP-40/artifact/r-md · via artifact artifact-checks",
+          `- mentions issue dispatch://DSP-50 · via comment ${ownComment}`,
+          ...between,
+          "Referenced by:",
+          "- mentions artifact dispatch://CORE/artifact/e-md · to artifact DSP-42/checks-md",
+          "- mentions artifact dispatch://OPS/artifact/design-notes · to issue DSP-42",
+          `- mentions comment dispatch://DSP-50/comment/${theirComment} · to comment ${ownComment}`,
+          ...structuralInLines,
+          ...linksSection,
+        ].join("\n")
+      );
+    });
+
+    // The answer's type lets either list be null, which this build never writes: a null reads as a
+    // list with no row, not as the answer of a Dispatch from before the change (plan D8). So no
+    // member prints, and with no structural edge into the issue each section says none.
+    test("reads links and linked_from of null as lists with no row", async () => {
+      const answer: ReferencesAnswer = {
+        members: null,
+        truncated: false,
+        links: null,
+        linked_from: null,
+      };
+
+      const { sections } = await readIssue(
+        () => response(answer),
+        [...mentionsIn, ...ownContentIn]
+      );
+
+      expect(sections).toBe(
+        ["References:", "- none", ...between, "Referenced by:", "- none", ...linksSection].join(
+          "\n"
+        )
+      );
+    });
+
+    // A Dispatch from before the change answers `members` and `truncated` alone. The read prints
+    // what it printed before (spec R3): each member with its depth, the line that says the walk
+    // was cut, and every edge of the graph read into the issue node, its own content's among them.
+    test("prints an answer without links as before: members with their depth, the cut walk's line and every edge in", async () => {
+      const answer: ReferencesAnswer = {
+        members: [
+          member("CORE", "a-md", 1, viaComment),
+          member("CORE", "b-md", 2, { kind: "artifact", id: "artifact-a" }),
+        ],
+        truncated: true,
+      };
+
+      const { sections } = await readIssue(() => response(answer));
+
+      expect(sections).toBe(
+        [
+          "References:",
+          `- CORE/a-md · depth 1 via comment ${ownComment}`,
+          "- CORE/b-md · depth 2 via artifact artifact-a",
+          "- more references beyond 8 hops",
+          ...between,
+          "Referenced by:",
+          ...edgesInLines,
+          ...linksSection,
+        ].join("\n")
+      );
+    });
+
+    // A references read cut at the server's 2 s bound answers 503 REFERENCES_TIMEOUT. The issue
+    // read still answers: `References:` names the refusal in one line, and `Referenced by:`
+    // prints the graph read's edges into the issue node as before, or says none (spec R2 and R4,
+    // plan D16). The client asks the route once: asking again would load the database again.
+    const refusedCases: [string, readonly unknown[], readonly string[]][] = [
+      ["edges into the issue", edgesIn, edgesInLines],
+      ["no edge into the issue", [], ["- none"]],
+    ];
+    test.each(
+      refusedCases
+    )("after a refused references read prints the refusal and Referenced by from the graph read (%s), asking the route once", async (_case, edgesInto, referencedBy) => {
+      const { requests, sections } = await readIssue(
+        () => response({ code: "REFERENCES_TIMEOUT", error: refusal }, 503),
+        edgesInto
+      );
+
+      expect(sections).toBe(
+        [
+          "References:",
+          `- unavailable: REFERENCES_TIMEOUT: ${refusal}`,
+          ...between,
+          "Referenced by:",
+          ...referencedBy,
+          ...linksSection,
+        ].join("\n")
+      );
+      expect(requests.filter((path) => path === "/api/v1/issues/DSP-42/references")).toEqual([
+        "/api/v1/issues/DSP-42/references",
+      ]);
+    });
   });
 
   // An agent asked about an issue answers with its link, so the summary names the issue's page:

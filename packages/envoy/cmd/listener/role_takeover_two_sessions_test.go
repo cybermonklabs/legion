@@ -166,11 +166,16 @@ func takeBack(t *testing.T, suffix string) (read, unread contracts.Envelope, bef
 			before = frame
 		}
 	}
-	first.conn.Close()
+	first.close()
 	awaitNoRelaySubscriber(t, rig.url, a)
 	rig.gone(b)
 	rig.claim(rig.away, b, role)
 	rig.awaitStored(contracts.LegacyAgentSubject(b), unread.EventID, "the walk's forward of the copy to "+b)
+	// A's new epoch restarts its relay at its floor, which deletes the consumer holding the frame
+	// A received alone and creates it again, so the row waits for the server to take A's done for
+	// the first frame and then for the consumer's stored state (awaitSessionConsumerStored).
+	awaitAckState(t, rig.consumers, a, 1, rig.seqOn(agent, read.EventID))
+	awaitSessionConsumerStored(t, rig.lane, a)
 	back := startSessionStandIn(t, rig.url, a, answerDone)
 	rig.register(rig.mux, a, "epoch-2")
 	awaitAcked(t, rig.consumers, a, rig.seqOn(agent, unread.EventID))

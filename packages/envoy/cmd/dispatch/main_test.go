@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/internal/dispatch/store/migrations/* TestHealthzReportsAnUnstampedCommitAsNull
+
 import (
 	"bytes"
 	"context"
@@ -21,10 +23,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -32,10 +36,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -315,17 +322,26 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 
 // A setting a release removed is refused, never silently ignored.
 func TestResolveBootConfigRefusesRemovedSettings(t *testing.T) {
-	for _, name := range []string{"DISPATCH_ALLOWED_LOGINS", "DISPATCH_APP_CLIENT_SECRET", "COHERE_API_KEY", "DISPATCH_AGENT_SECRETS_TOKEN", "DISPATCH_AGENT_SECRETS_TOKEN_FILE", "DISPATCH_ASSET_STORE_BUCKET"} {
+	for _, name := range []string{"DISPATCH_ALLOWED_LOGINS", "DISPATCH_APP_CLIENT_SECRET", "COHERE_API_KEY", "DISPATCH_AGENT_SECRETS_TOKEN", "DISPATCH_AGENT_SECRETS_TOKEN_FILE", "DISPATCH_ASSET_STORE_BUCKET", "DISPATCH_REPO_PROJECTS", "DISPATCH_DEFAULT_PROJECT"} {
 		_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{name: "value"})))
 		if err == nil || !strings.Contains(err.Error(), name+" is no longer read") {
 			t.Errorf("%s set: err = %v, want a refusal naming it", name, err)
 		}
 	}
-	// Meaning search reaches Cohere through either place, and the refusal names both.
-	_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{"COHERE_API_KEY": "value"})))
-	for _, want := range []string{"AWS Bedrock", "Azure AI Foundry", "DISPATCH_EMBEDDER"} {
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("COHERE_API_KEY set: err = %v, want it to name %q", err, want)
+	// Each refusal says what replaced the setting.
+	for name, wants := range map[string][]string{
+		// Meaning search reaches Cohere through either place, and the refusal names both.
+		"COHERE_API_KEY": {"AWS Bedrock", "Azure AI Foundry", "DISPATCH_EMBEDDER"},
+		// A project's default repository replaced the mapping the boot seeded.
+		"DISPATCH_REPO_PROJECTS": {"PUT /api/v1/projects/{key}/default-repository", "Settings → Projects"},
+		// An import names its own project: no project is found from a repository.
+		"DISPATCH_DEFAULT_PROJECT": {"an import names its project in the create's `project`"},
+	} {
+		_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{name: "value"})))
+		for _, want := range wants {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s set: err = %v, want it to name %q", name, err, want)
+			}
 		}
 	}
 }
@@ -379,31 +395,6 @@ func TestDevSignInRefusesTheSignInSettings(t *testing.T) {
 	}
 }
 
-func TestResolveBootConfigAllowsRepositorySettingsWithoutDefaultProject(t *testing.T) {
-	boot, err := resolveBootConfig(envGetter(map[string]string{
-		"DATABASE_URL":                     "postgres://dispatch",
-		"DISPATCH_AGENT_TOKEN":             "agent-token",
-		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
-		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
-	}))
-	if err != nil || boot.DefaultProject != "" {
-		t.Fatalf("resolve boot config: boot=%#v err=%v", boot, err)
-	}
-}
-
-func TestResolveBootConfigAcceptsDefaultProjectWithoutRepoMapping(t *testing.T) {
-	_, err := resolveBootConfig(envGetter(map[string]string{
-		"DATABASE_URL":                     "postgres://dispatch",
-		"DISPATCH_AGENT_TOKEN":             "agent-token",
-		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
-		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
-		"DISPATCH_DEFAULT_PROJECT":         "TEST",
-	}))
-	if err != nil {
-		t.Fatalf("resolve boot config: %v", err)
-	}
-}
-
 func TestResolveBootConfigDisablesNATS(t *testing.T) {
 	boot, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
@@ -411,7 +402,6 @@ func TestResolveBootConfigDisablesNATS(t *testing.T) {
 		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
 		"DISPATCH_NATS_DISABLED":           "1",
-		"DISPATCH_REPO_PROJECTS":           "owner/repo=TEST",
 	}))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
@@ -1050,11 +1040,11 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	}
 }
 
-// /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the agents' client
-// reads before it retries a write under its key: an earlier Dispatch ignores the header and would
-// run the retry again. It is the binary's fact, so a probe that answers 503 - its database down,
-// closed or never configured - carries it in its body as a 200 does: a client that reads the body
-// whatever the status resends a write its outage refused.
+// /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the deploy check
+// reads (scripts/e2e/lib/dispatch-keyed-comment.ts): an earlier Dispatch ignores the header and
+// would run a retried write again. It is the binary's fact, so a probe that answers 503 - its
+// database down, closed or never configured - carries it in its body as a 200 does, and the check
+// reads the body whatever the status.
 func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 	closed := storetest.Open(t)
 	closed.Pool.Close()
@@ -1370,7 +1360,7 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(cmdtest.Run(func() int { return storetest.Main(m) }))
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
@@ -1451,11 +1441,11 @@ func TestRunSubcommandRefusesAnUnknownSubcommand(t *testing.T) {
 func TestCensusSubcommandExitCodes(t *testing.T) {
 	ctx := context.Background()
 	var out, errOut bytes.Buffer
-	if code := census(ctx, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
+	if code := census(ctx, nil, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
 		t.Errorf("no URL: exit %d, stderr %q", code, errOut.String())
 	}
 	errOut.Reset()
-	if code := census(ctx, "postgres://nobody:nothing@127.0.0.1:1/none?sslmode=disable&connect_timeout=1", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "census: connect") {
+	if code := census(ctx, nil, "postgres://nobody:nothing@127.0.0.1:1/none?sslmode=disable&connect_timeout=1", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "census: connect") {
 		t.Errorf("unreachable: exit %d, stderr %q", code, errOut.String())
 	}
 	if out.Len() != 0 {
@@ -1464,7 +1454,7 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 	database := storetest.Open(t)
 	out.Reset()
 	errOut.Reset()
-	if code := census(ctx, database.Pool.Config().ConnString(), &out, &errOut); code != 0 {
+	if code := census(ctx, nil, database.Pool.Config().ConnString(), &out, &errOut); code != 0 {
 		t.Fatalf("migrated database: exit %d, stderr %q, stdout %q", code, errOut.String(), out.String())
 	}
 	if !strings.Contains(out.String(), "no pending migration") || !strings.HasSuffix(strings.TrimSpace(out.String()), "census: ok") {
@@ -1477,7 +1467,7 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
 	database := storetest.Open(t)
 	var out, errOut bytes.Buffer
-	if code := census(context.Background(), database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
+	if code := census(context.Background(), nil, database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
 		t.Fatalf("exit %d, want 2; stderr %q", code, errOut.String())
 	}
 	const want = "census: the connection's search_path names no schema that exists, so current_schema() is null: the census would find neither schema_migrations nor any table, and the runner can create neither; name an existing schema in the search_path\n"
@@ -1507,7 +1497,7 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 		t.Fatalf("seed a database at 52 with a row 0053 refuses: %v", err)
 	}
 	var out, errOut bytes.Buffer
-	if code := census(ctx, database.Pool.Config().ConnString(), &out, &errOut); code != 1 {
+	if code := census(ctx, nil, database.Pool.Config().ConnString(), &out, &errOut); code != 1 {
 		t.Fatalf("exit %d, want 1; stderr %q, stdout:\n%s", code, errOut.String(), out.String())
 	}
 	for _, want := range []string{
@@ -2029,9 +2019,11 @@ func TestBackfillFilesRefusesWhileAProcessWithoutABucketIsLive(t *testing.T) {
 	ctx := context.Background()
 	seedBackfillFile(t, database)
 	var bucketless, older string
+	// The bucketless process is this build's, started without DISPATCH_FILE_STORE_BUCKET, so its
+	// row names this build's owner lock protocol; the older one's, like its build, names none.
 	if err := database.Pool.QueryRow(ctx, `
-		insert into server_processes (instance, commit, signing_keys, schema_version, schema_creatable, file_store)
-		values (gen_random_uuid(), 'bucketless0commit', '{fingerprint}', 1, 1, false) returning instance::text`).Scan(&bucketless); err != nil {
+		insert into server_processes (instance, commit, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol)
+		values (gen_random_uuid(), 'bucketless0commit', '{fingerprint}', 1, 1, false, $1) returning instance::text`, store.OwnerLockProtocol).Scan(&bucketless); err != nil {
 		t.Fatalf("add a bucketless server process: %v", err)
 	}
 	if err := database.Pool.QueryRow(ctx, `
@@ -2095,5 +2087,384 @@ func TestExplainMigrateErrorPassesThroughAnUnrelatedMigrationFailure(t *testing.
 	}
 	if explainMigrateError(nil) != nil {
 		t.Error("explainMigrateError(nil) is not nil")
+	}
+}
+
+// ───── the keyword fill ─────────────────────────────────────────────────────
+
+// The lines the keyword fill (textversions.Run) logs as it takes its hold and as it stands by for
+// the hold of another process, and the line a process logs at boot when DISPATCH_SEARCH_FILL=off
+// keeps it from starting the fill. This file and the multiprocess rows (multiprocess_test.go) read
+// them. The deferral is written out here rather than taken from main.go's searchFillDeferredLine,
+// so the test holds the text an operator reads in the boot log.
+const (
+	keywordFillTookLine     = `msg="dispatch: the keyword fill took its hold; this process fills the keyword table"`
+	keywordFillStandbyLine  = `msg="dispatch: another process holds the keyword fill's hold; standing by"`
+	keywordFillDeferredLine = `msg="dispatch: the keyword fill is deferred; this process fills no keyword table" setting=DISPATCH_SEARCH_FILL value=off`
+)
+
+// A process that the registry of live server processes refuses writes no keyword version. A live
+// peer does not share the signing keys of the process, so the process waits for admission
+// (processes.Register: until a live window and a heartbeat after its first refusal), serves
+// nothing and exits 1. Its keyword fill starts only after the registry admits it: the pause of the
+// fill reads the answers reads that this process serves, and a process that is not admitted serves
+// none. So for the whole wait, and after the exit, the fill has no hold, no row and no cursor,
+// although 200 events wait for their rows.
+func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
+	database := storetest.Open(t)
+	textversionstest.SeedIssue(t, database)
+	writeKeywordFillComments(t, database, 200)
+	// The heartbeat of the peer is an hour ahead of the database's clock, so the peer stays live
+	// (processes.Live) for the whole test with no heartbeat of its own. The peer has the owner
+	// lock protocol of this build, as a peer of this build registers it (processes.admit), so the
+	// process does not find an earlier build in the fleet.
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into server_processes (instance, commit, signing_keys, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), 'peer0commit', '{a-fingerprint-this-process-does-not-hold}', now() + interval '1 hour', $1)`,
+		store.OwnerLockProtocol); err != nil {
+		t.Fatalf("add a live peer that does not share the keys of the process: %v", err)
+	}
+
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{SigningKey: "a-key-the-peer-does-not-share"})
+	process.waitForLog(t, 30*time.Second, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
+	refused := time.Now()
+	// The test reads the database every 250 ms until the process exits, so it sees each moment of
+	// the wait in which a fill could take the hold and write.
+	stillRunning := refused.Add(processes.LiveWindow + processes.HeartbeatInterval + 30*time.Second)
+	for waiting := true; waiting; {
+		requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v into the wait for admission", time.Since(refused).Round(time.Millisecond)))
+		select {
+		case <-process.Exited:
+			waiting = false
+		case <-time.After(250 * time.Millisecond):
+			if time.Now().After(stillRunning) {
+				t.Fatalf("the refused process still runs %v after its first refusal:\n%s", time.Since(refused).Round(time.Millisecond), process.Output.String())
+			}
+		}
+	}
+	if waited := time.Since(refused); waited < processes.LiveWindow {
+		t.Fatalf("the refused process exited %v after its first refusal; the test needs the whole wait of %v:\n%s",
+			waited.Round(time.Millisecond), processes.LiveWindow+processes.HeartbeatInterval, process.Output.String())
+	}
+
+	if code := process.Cmd.ProcessState.ExitCode(); code != 1 ||
+		!process.logged(`msg="dispatch: register this server process"`, "signing key set does not match a live server process") {
+		t.Fatalf("the refused process exited %d; want 1, with the refusal of the registry logged:\n%s", code, process.Output.String())
+	}
+	requireNoKeywordFillWrite(t, database, "after the refused process exited")
+	for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
+		if process.logged(line) {
+			t.Fatalf("the refused process logged %s; want a keyword fill that never started:\n%s", line, process.Output.String())
+		}
+	}
+}
+
+// requireNoKeywordFillWrite fails the test when the keyword fill took its hold or wrote: a
+// duty_holds row of the hold of the fill, a row of the keyword table, or a cursor row, whatever
+// event the cursor row names (a row at event 0 is a write as much as one at event 50). when says
+// at which moment the test reads them.
+func requireNoKeywordFillWrite(t *testing.T, database *store.Store, when string) {
+	t.Helper()
+	if writes := readKeywordFillWrites(t, database); writes != (keywordFillWrites{}) {
+		t.Fatalf("%s, the keyword fill has %d holds, %d rows and %d cursor rows; want none of each", when, writes.holds, writes.rows, writes.cursors)
+	}
+}
+
+// keywordFillWrites counts what the keyword fill takes and writes: the duty_holds rows of its hold
+// (search-text-versions-fill), the rows of search_text_versions, and the rows of
+// search_text_versions_fill, the table of its cursor.
+type keywordFillWrites struct{ holds, rows, cursors int }
+
+// readKeywordFillWrites reads keywordFillWrites in one statement.
+func readKeywordFillWrites(t *testing.T, database *store.Store) keywordFillWrites {
+	t.Helper()
+	var writes keywordFillWrites
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select count(*) from duty_holds where name = 'search-text-versions-fill'),
+		       (select count(*) from search_text_versions),
+		       (select count(*) from search_text_versions_fill)`).Scan(&writes.holds, &writes.rows, &writes.cursors); err != nil {
+		t.Fatalf("read the hold, the rows and the cursor row of the keyword fill: %v", err)
+	}
+	return writes
+}
+
+// writeKeywordFillComments commits count comment.created events of textversionstest.Issue, each a
+// new comment and so one version, appended through the broker as the routes append them, at most
+// 500 to a transaction of their own (textversionstest.CommitEvents), and answers their ids in
+// order.
+func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []int64 {
+	t.Helper()
+	broker := events.NewBroker()
+	issue := textversionstest.Issue
+	actor := model.Actor{Kind: "user", ID: "alice"}
+	ids := make([]int64, 0, count)
+	for written := 0; written < count; {
+		inThisOne := min(count-written, 500)
+		comments := make([]model.Event, 0, inThisOne)
+		for n := range inThisOne {
+			body := fmt.Sprintf("The signing keys of region %d rotate on Monday.", written+n)
+			comments = append(comments, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
+				Payload: map[string]any{"id": uuid.NewString(), "issue_key": issue, "body": body}})
+		}
+		ids = append(ids, textversionstest.CommitEvents(t, database, broker, comments...)...)
+		written += inThisOne
+	}
+	return ids
+}
+
+// keywordFillDeferredWatch is how long a process booted with DISPATCH_SEARCH_FILL=off is watched,
+// from its admission to the registry of live server processes, for a keyword fill that started
+// anyway: longer than the 10 s a standby waits between its tries for the hold, where a fill that
+// started takes the hold the moment its process serves and writes the waiting events' rows.
+const keywordFillDeferredWatch = 15 * time.Second
+
+// keywordFillTablesEmpty is the end of the deferral line of a process booted with
+// DISPATCH_SEARCH_FILL=off on a database where neither table the keyword fill writes holds a row
+// (searchFillTableRows).
+const keywordFillTablesEmpty = "search_text_versions_rows=none search_text_versions_fill_rows=none"
+
+// DISPATCH_SEARCH_FILL decides whether a serving process starts the keyword fill. Booted with it
+// off, a process that the registry of live server processes admitted, and so serves, logs once
+// that the fill is deferred, saying that neither table the fill writes holds a row, and for
+// keywordFillDeferredWatch takes no hold of the fill's and writes no row and no cursor row, though
+// 50 events wait for their rows and 50 more are written while it serves. Booted with it on, on a
+// database of its own holding the same events, a process takes the hold, writes every event's row
+// and the cursor row, and logs no deferral; the same read that finds none of them in the off row
+// counts each of them there.
+func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
+	t.Run("off", func(t *testing.T) {
+		database := storetest.Open(t)
+		textversionstest.SeedIssue(t, database)
+		writeKeywordFillComments(t, database, 50)
+		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+		process.waitHealthy(t)
+		awaitRegistryAdmission(t, database, process)
+		writeKeywordFillComments(t, database, 50)
+		admitted := time.Now()
+		for time.Since(admitted) < keywordFillDeferredWatch {
+			requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v after the process was admitted", time.Since(admitted).Round(time.Millisecond)))
+			time.Sleep(250 * time.Millisecond)
+		}
+		requireNoKeywordFillWrite(t, database, "at the end of the watch")
+		if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 {
+			t.Fatalf("the process logged the deferral %d times; want once:\n%s", len(lines), process.Output.String())
+		}
+		if !process.logged(keywordFillDeferredLine + " " + keywordFillTablesEmpty) {
+			t.Fatalf("the deferral does not end with %s, though neither table holds a row:\n%s", keywordFillTablesEmpty, process.Output.String())
+		}
+		for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
+			if process.logged(line) {
+				t.Fatalf("the process logged %s; want a keyword fill that never started:\n%s", line, process.Output.String())
+			}
+		}
+	})
+	t.Run("on", func(t *testing.T) {
+		database := storetest.Open(t)
+		textversionstest.SeedIssue(t, database)
+		before := writeKeywordFillComments(t, database, 50)
+		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "on"}})
+		process.waitHealthy(t)
+		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
+		after := writeKeywordFillComments(t, database, 50)
+		textversionstest.AwaitRowsUntil(t, database, append(before, after...), nil)
+		if writes := readKeywordFillWrites(t, database); writes.holds == 0 || writes.rows == 0 || writes.cursors == 0 {
+			t.Fatalf("the fill wrote every event's row, and the read counts %d holds, %d rows and %d cursor rows; want each above 0", writes.holds, writes.rows, writes.cursors)
+		}
+		if process.logged(keywordFillDeferredLine) {
+			t.Fatalf("the process logged the deferral with DISPATCH_SEARCH_FILL=on:\n%s", process.Output.String())
+		}
+	})
+}
+
+// searchFillTableRows answers the deferral line's fields, one read per table the keyword fill
+// writes. On a migrated database that no fill has written, both say none. A row of the keyword
+// table makes its field some and leaves the cursor's none, and the cursor's row alone does the
+// reverse. A table the read cannot read, here the keyword table dropped, makes its field unknown
+// with the read's error, and the cursor's field still reads. The steps run in order on one
+// database, each on what the one before left.
+func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	for _, step := range []struct {
+		name       string
+		statements []string
+		want       string
+	}{
+		{"no row in either table", nil, keywordFillTablesEmpty},
+		{"a row of the keyword table", []string{`
+			insert into search_text_versions (kind, id, project_key, event_id, event_seq, started_at, body, body_from, search)
+			values ('comment', 'a-comment', 'PROJ', 1, 1, now(), 'the signing keys rotate', 'event', to_tsvector('simple', 'the signing keys rotate'))`},
+			"search_text_versions_rows=some search_text_versions_fill_rows=none"},
+		{"the cursor's row alone", []string{
+			`delete from search_text_versions`,
+			`insert into search_text_versions_fill (id, event_id, rules) values (1, 0, 1)`},
+			"search_text_versions_rows=none search_text_versions_fill_rows=some"},
+		{"the keyword table dropped", []string{`drop table search_text_versions`},
+			`search_text_versions_rows=unknown search_text_versions_rows_error=ERROR: relation "public.search_text_versions" does not exist (SQLSTATE 42P01) search_text_versions_fill_rows=some`},
+	} {
+		for _, statement := range step.statements {
+			if _, err := database.Pool.Exec(ctx, statement); err != nil {
+				t.Fatalf("%s: %s: %v", step.name, statement, err)
+			}
+		}
+		if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != step.want {
+			t.Errorf("%s: the deferral's fields are\n  %s\nwant\n  %s", step.name, got, step.want)
+		}
+	}
+}
+
+// A failed read of a table the keyword fill writes does not stop the boot. Booted with
+// DISPATCH_SEARCH_FILL=off on a database whose keyword table was dropped and whose cursor holds its
+// row, a process logs the deferral once, saying the keyword table is unknown with the read's error
+// and the cursor holds a row, and then serves: it answers its health check and the registry of
+// live server processes admits it.
+func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) {
+	database := storetest.Open(t)
+	for _, statement := range []string{
+		`insert into search_text_versions_fill (id, event_id, rules) values (1, 0, 1)`,
+		`drop table search_text_versions`,
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+	process.waitHealthy(t)
+	awaitRegistryAdmission(t, database, process)
+	want := keywordFillDeferredLine + ` search_text_versions_rows=unknown search_text_versions_rows_error="ERROR: relation \"public.search_text_versions\" does not exist (SQLSTATE 42P01)" search_text_versions_fill_rows=some`
+	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
+	}
+}
+
+// A lock on a table the keyword fill writes ends the read at the server, and the boot goes on.
+// Another connection holds ACCESS EXCLUSIVE on search_text_versions_fill in a transaction it keeps
+// open for the whole test. searchFillTableRows then gives the cursor's table unknown with
+// Postgres's own lock timeout (55P03) and the keyword table still none, and a read of the cursor's
+// table alone ends with 55P03 before the client's deadline could end it; once it returned, no
+// backend of the database waits for a lock on the cursor's table, though the lock is still held.
+// A process booted with DISPATCH_SEARCH_FILL=off under the same lock logs the same fields once,
+// then serves: it answers its health check and the registry of live server processes admits it,
+// and still no backend waits for the lock.
+func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction that holds the lock: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, `lock table public.search_text_versions_fill in access exclusive mode`); err != nil {
+		t.Fatalf("lock search_text_versions_fill: %v", err)
+	}
+	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)`
+
+	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
+		t.Errorf("under the lock, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
+	}
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03")
+	requireNoKeywordFillCursorLockWait(t, database, "after the reads returned")
+
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+	process.waitHealthy(t)
+	awaitRegistryAdmission(t, database, process)
+	want := keywordFillDeferredLine + ` search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error="ERROR: canceling statement due to lock timeout (SQLSTATE 55P03)"`
+	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
+	}
+	requireNoKeywordFillCursorLockWait(t, database, "after the booted process logged the deferral")
+}
+
+// A read of a table the keyword fill writes that runs on with no lock to wait for is ended by
+// Postgres's statement timeout, and the boot goes on. search_text_versions_fill is replaced with a
+// view whose select sleeps 30 s, past the client's deadline. searchFillTableRows then gives that
+// table unknown with Postgres's own statement timeout (57014) and the keyword table still none,
+// and a read of that table alone ends with 57014 before the client's deadline could end it. A
+// process booted with DISPATCH_SEARCH_FILL=off on that database logs the same fields once, then
+// serves: it answers its health check and the registry of live server processes admits it.
+func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	for _, statement := range []string{
+		`drop table public.search_text_versions_fill`,
+		`create view public.search_text_versions_fill as select 1 as id from pg_sleep(30)`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	const fields = `search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error=ERROR: canceling statement due to statement timeout (SQLSTATE 57014)`
+	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
+		t.Errorf("with a read that runs on, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
+	}
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014")
+
+	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+	process.waitHealthy(t)
+	awaitRegistryAdmission(t, database, process)
+	want := keywordFillDeferredLine + ` search_text_versions_rows=none search_text_versions_fill_rows=unknown search_text_versions_fill_rows_error="ERROR: canceling statement due to statement timeout (SQLSTATE 57014)"`
+	if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 || !strings.Contains(lines[0], want) {
+		t.Fatalf("the process logged the deferral %d times; want once, holding\n  %s\nin:\n%s", len(lines), want, process.Output.String())
+	}
+}
+
+// requireTheServerEndsTheRead reads table alone, as searchFillTableRows reads each table, and fails
+// the test unless Postgres itself ended the read: an error of the SQLSTATE code, before
+// searchFillTableReadTimeout, the client's own deadline, could end it. It judges the server's end
+// of the read by its error, not by a time that a slow box or a slow dial would stretch.
+func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code string) {
+	t.Helper()
+	started := time.Now()
+	_, err := searchFillTableHoldsRow(context.Background(), database.Pool, table)
+	took := time.Since(started)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code {
+		t.Errorf("the read of %s ended after %v with %v; want Postgres's own error %s", table, took.Round(time.Millisecond), err, code)
+	}
+	if took >= searchFillTableReadTimeout {
+		t.Errorf("the read of %s took %v; want less than the client's deadline, %v", table, took.Round(time.Millisecond), searchFillTableReadTimeout)
+	}
+}
+
+// requireNoKeywordFillCursorLockWait fails the test when a backend of the database waits for a
+// lock on search_text_versions_fill. when says at which moment the test reads it.
+func requireNoKeywordFillCursorLockWait(t *testing.T, database *store.Store, when string) {
+	t.Helper()
+	var waiting int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pg_locks
+		 where database = (select oid from pg_database where datname = current_database())
+		   and relation = 'public.search_text_versions_fill'::regclass
+		   and not granted`).Scan(&waiting); err != nil {
+		t.Fatalf("read the lock waits on search_text_versions_fill: %v", err)
+	}
+	if waiting != 0 {
+		t.Fatalf("%s, %d backends still wait for a lock on search_text_versions_fill; want none", when, waiting)
+	}
+}
+
+// deferralFields writes the fields searchFillTableRows answers as `key=value` pairs, one space
+// between, in their order.
+func deferralFields(fields []any) string {
+	pairs := make([]string, 0, len(fields)/2)
+	for i := 0; i+1 < len(fields); i += 2 {
+		pairs = append(pairs, fmt.Sprintf("%v=%v", fields[i], fields[i+1]))
+	}
+	return strings.Join(pairs, " ")
+}
+
+// awaitRegistryAdmission waits up to 30 s for the registry of live server processes to hold a row,
+// which on a database no other process serves is the process's own: once it is admitted, the
+// process serves, and a keyword fill it started takes its hold.
+func awaitRegistryAdmission(t *testing.T, database *store.Store, process *dispatchProcess) {
+	t.Helper()
+	if !testwait.Holds(30*time.Second, 50*time.Millisecond, func() bool {
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from server_processes`).Scan(&rows); err != nil {
+			t.Fatalf("read the registry of live server processes: %v", err)
+		}
+		return rows > 0
+	}) {
+		t.Fatalf("the registry of live server processes admitted no process within 30 s:\n%s", process.Output.String())
 	}
 }

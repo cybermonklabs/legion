@@ -539,8 +539,9 @@ describe("renderInbound dispatch events", () => {
         const key = request.headers.get("Idempotency-Key");
         keys.push(key);
         answers += 1;
-        // Dispatch's keyed layer echoes the key on every answer to a keyed request, which is what
-        // tells the client a repeat is answered from the key rather than run again.
+        // The stand-in sends the key back as Dispatch's keyed layer does. The client asks again
+        // under the same key whatever the answer carries, and reads the echo only to settle a
+        // fresh 4xx refusal that echoes exactly its key.
         const headers: Record<string, string> = key === null ? {} : { "Idempotency-Key": key };
         if (answers === 1)
           return Response.json({ code: "UNAVAILABLE", error: "down" }, { status: 503, headers });
@@ -1865,6 +1866,51 @@ describe("renderInbound non-dispatch envelopes", () => {
         "    number: 42",
       ].join("\n")
     );
+  });
+
+  // The card's TOON encoder recurses once per level of a value, so a payload nested some
+  // thousands of levels deep overflowed the stack and threw out of `renderInbound`, in every host
+  // and on every delivery. Such a payload is the text its sender sent, and the card shows it so.
+  describe("a payload the card cannot lay out", () => {
+    const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+
+    test("a message whose JSON payload is nested 9,999 deep is shown as the text its sender sent", () => {
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "evt-deep", payload_summary: "deep", payload: nested })
+        ),
+        reader
+      );
+
+      // The card is TOON this renderer wrote, read back as the other rows read theirs.
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toContain("Maximum call stack size exceeded");
+      expect(card.envoy).toMatchObject({ id: "evt-deep", summary: "deep", message: nested });
+    });
+
+    test("a Dispatch frame whose payload is nested 9,999 deep is shown as its text", () => {
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "dispatch-deep", source: "dispatch", payload: nested })
+        ),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toContain("Maximum call stack size exceeded");
+      expect(card.envoy).toMatchObject({ id: "dispatch-deep", dispatch: nested });
+    });
+
+    // The control: the encoder lays out a value it can reach the bottom of as before. An array
+    // chain 7,000 deep is one; an object chain 7,000 deep is not (Bun 1.4.4).
+    test("a message whose JSON payload is an array chain 7,000 deep is laid out as before", () => {
+      const arrays = `${"[".repeat(7_000)}${"]".repeat(7_000)}`;
+      const rendered = renderInbound(JSON.stringify(envelope({ payload: arrays })), reader);
+
+      expect(rendered.payloadShownAsText).toBeUndefined();
+      expect(rendered.content).toContain("\n  message[1]:\n    - [1]:\n      - [1]:\n");
+      expect(rendered.content).not.toContain('message: "[');
+    });
   });
 
   test("renders direct agent metadata with a one-line summary and no payload", () => {

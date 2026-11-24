@@ -286,6 +286,71 @@ const DispatchItemBlocks = 32768
 // GET /api/v1/limits.
 const DispatchEventBodyMax = 32000
 
+// DispatchEventTypes is every event type Dispatch writes to its log, sorted: the members of the
+// DispatchEvent union. Generated from DISPATCH_EVENT_TYPES in packages/contracts, which the
+// TypeScript compiler holds to that union, so a Go reader that sorts every type, as the keyword
+// fill's inventory test (internal/dispatch/textversions) does, learns of a new type from it.
+var DispatchEventTypes = []string{
+	"architecture.sync_failed",
+	"architecture.synced",
+	"artifact.approved",
+	"artifact.changes_requested",
+	"artifact.created",
+	"artifact.human_edited",
+	"artifact.removed",
+	"artifact.renamed",
+	"artifact.version",
+	"ask.anchor_refreshed",
+	"ask.answered",
+	"ask.asked_of",
+	"ask.edited",
+	"ask.follower_added",
+	"ask.follower_removed",
+	"ask.handed_back",
+	"ask.opened",
+	"ask.resolved",
+	"block.invalid",
+	"block.repaired",
+	"child.added",
+	"child.removed",
+	"child.status",
+	"comment.anchor_refreshed",
+	"comment.answered",
+	"comment.created",
+	"comment.delivery",
+	"comment.edited",
+	"comment.reopened",
+	"comment.resolved",
+	"decision.kept",
+	"handoff.recorded",
+	"issue.claimed",
+	"issue.closed",
+	"issue.created",
+	"issue.deployed",
+	"issue.pull_request_attribution_changed",
+	"issue.released",
+	"issue.updated",
+	"message.accepted",
+	"message.answered",
+	"message.created",
+	"message.delivery",
+	"priority.updated",
+	"project.created",
+	"project.updated",
+	"result.recorded",
+	"result.retracted",
+	"settings.architecture_source.updated",
+	"settings.project_default_assignee.updated",
+	"settings.repo_project.updated",
+	"subscription.remove_requested",
+	"subscription.removed",
+	"suggestion.accepted",
+	"suggestion.rejected",
+	"user_agent_state.updated",
+	"user_state.updated",
+	"user_thread_state.updated",
+}
+
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
 // packages/contracts so the server's 413 and the `dispatch handoff-write` command's pre-send

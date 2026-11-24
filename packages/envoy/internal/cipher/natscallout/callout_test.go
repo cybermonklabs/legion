@@ -27,19 +27,12 @@ import (
 // stopped when the test ends, and returns once its subscription has reached the server.
 func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps, decide decideFunc) *Service {
 	t.Helper()
-	dir := t.TempDir()
-	write := func(name, seed string) string {
-		path := filepath.Join(dir, name)
-		require.NoError(t, os.WriteFile(path, []byte(seed+"\n"), 0o600))
-		return path
-	}
-	settings := Settings{
-		URLs:           []string{url},
-		SeedFile:       write("service.seed", keys.ServiceSeed),
-		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
-		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
-		Services:       exampleServices,
-	}
+	return startServiceWith(t, serviceSettings(t, url, keys), deps, decide)
+}
+
+// startServiceWith is startService with settings of the test's own.
+func startServiceWith(t *testing.T, settings Settings, deps Deps, decide decideFunc) *Service {
+	t.Helper()
 	service, err := start(t.Context(), settings, deps, decide)
 	require.NoError(t, err)
 	t.Cleanup(service.Close)
@@ -47,6 +40,25 @@ func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps
 	defer cancel()
 	require.NoError(t, service.Ready(ctx), "the auth service's subscription never reached the server")
 	return service
+}
+
+// serviceSettings are the settings of an auth service that connects to the server at url with
+// keys' seeds, each written to a file of the test's own, and admits exampleServices.
+func serviceSettings(t *testing.T, url string, keys testnats.CalloutKeys) Settings {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, seed string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(seed+"\n"), 0o600))
+		return path
+	}
+	return Settings{
+		URLs:           []string{url},
+		SeedFile:       write("service.seed", keys.ServiceSeed),
+		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
+		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
+		Services:       exampleServices,
+	}
 }
 
 // connectSession connects to url as s, presenting its token and its proof over the nonce the
@@ -134,6 +146,59 @@ func TestTheHubAdmitsASessionThroughTheService(t *testing.T) {
 	awaitViolation(t, errs, bus.DeliverSubject(b.id))
 	if served, err := other.NextMsg(500 * time.Millisecond); err == nil {
 		t.Fatalf("ses_a received %q on session ses_b's channel", served.Data)
+	}
+}
+
+// Through the service, a session answers a request asked on a reply subject naming it
+// (bus.SessionReplySubject), as every relay frame, connection probe and agent stream replay asks,
+// and the server refuses the same answer on another session's reply
+// subject and on a requester's own plain inbox, by name. The watcher, a static user subscribed to
+// every reply inbox, hears the one admitted answer and none of the refused ones.
+func TestASessionThroughTheServiceAnswersOnlyUnderItsOwnReplyPrefix(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	static, staticSeed := publisher(t)
+	url := testnats.StartWithCallout(t, keys, static)
+	a, b := newSession(t, "ses_a", 15*time.Minute), newSession(t, "ses_b", 15*time.Minute)
+	startService(t, url, keys, Deps{Introspect: introspector(a, b)}, Decide)
+
+	watcher, err := testnats.ConnectSeed(t, url, staticSeed)
+	require.NoError(t, err)
+	defer watcher.Close()
+	heard, err := watcher.SubscribeSync(nats.InboxPrefix + ">")
+	require.NoError(t, err)
+	require.NoError(t, watcher.Flush())
+
+	errs := make(chan error, 16)
+	nc, err := connectSession(t, url, a, errs)
+	require.NoError(t, err, "session ses_a was not admitted")
+	inbox := nats.NewInbox()
+	own := bus.SessionReplySubject(inbox, a.id)
+	refused := []string{bus.SessionReplySubject(inbox, b.id), inbox, inbox + ".1"}
+	for _, subject := range append([]string{own}, refused...) {
+		require.NoError(t, nc.Publish(subject, []byte("done")))
+	}
+	require.NoError(t, nc.Flush())
+
+	msg, err := heard.NextMsg(5 * time.Second)
+	require.NoError(t, err, "the watcher heard nothing of ses_a's answer on its own reply subject %s", own)
+	require.Equal(t, own, msg.Subject)
+	for _, subject := range refused {
+		want := `Permissions Violation for Publish to "` + subject + `"`
+		deadline := time.After(10 * time.Second)
+	wait:
+		for {
+			select {
+			case err := <-errs:
+				if strings.Contains(err.Error(), want) {
+					break wait
+				}
+			case <-deadline:
+				t.Fatalf("no %s: the server served ses_a's answer on %s", want, subject)
+			}
+		}
+	}
+	if extra, err := heard.NextMsg(500 * time.Millisecond); err == nil {
+		t.Fatalf("the watcher heard ses_a's answer on %s, which its grant should refuse", extra.Subject)
 	}
 }
 

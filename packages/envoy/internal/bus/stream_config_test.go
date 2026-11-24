@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // capsAnUnsetStream is what a test tells a start (ensureStreamWithConfig) or a keeper pass
@@ -77,20 +78,36 @@ func (js *streamInfoJetStream) ConsumerNames(_ string, _ ...nats.JSOpt) <-chan s
 	return names
 }
 
+// silentServers is how many listeners TestConnectWithContextBoundsMultipleUnresponsiveServers
+// walks: each accepts and never answers, so nats.go waits its whole per-server timeout at each,
+// the 5 s the outer deadline cuts connectTimeout to, and a walk of them all takes about 30 s.
+const silentServers = 6
+
+// A connect whose outer deadline passes while nats.go walks silent servers returns that deadline,
+// and returns it while the walk is still under way. The row tells the two apart by the order of two
+// facts, not by a time: the connect's return against the walk reaching the last of silentServers
+// listeners. A connect that waited out its attempt, as one that no longer selects on its context
+// during the attempt does, returns only after the walk has dialed every server, the last of them
+// about 25 s after the first, and then still returns context.DeadlineExceeded from its later
+// checks; so the deadline's error alone cannot tell it from a bounded one.
 func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
-	accepted := make(chan net.Conn, 32)
-	urls := make([]string, 0, 2)
-	for range 2 {
+	accepted := make(chan net.Conn, 4*silentServers)
+	var reached atomic.Int32
+	urls := make([]string, 0, silentServers)
+	for range silentServers {
 		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("listen: %v", err)
 		}
 		t.Cleanup(func() { _ = listener.Close() })
 		go func() {
-			for {
+			for first := true; ; first = false {
 				conn, err := listener.Accept()
 				if err != nil {
 					return
+				}
+				if first {
+					reached.Add(1)
 				}
 				accepted <- conn
 			}
@@ -108,31 +125,38 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 		}
 	})
 
+	// The outer deadline is the one under test, and the dial it bounds reaches real sockets: the
+	// connect is given it as a real context, and the row asserts it ended with that deadline
+	// rather than with its ten attempts run out.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result := make(chan error, 1)
-	started := time.Now()
+	type ended struct {
+		err     error
+		reached int32
+	}
+	result := make(chan ended, 1)
 	go func() {
 		conn, err := connectWithContext(ctx, "deadline-test", urls, nil, nil, nil, nil, nil, nil, nil)
+		reachedAtReturn := reached.Load()
 		if conn != nil {
 			conn.Close()
 		}
-		result <- err
+		result <- ended{err, reachedAtReturn}
 	}()
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("connect unexpectedly succeeded against unresponsive servers")
-		}
-		if elapsed := time.Since(started); elapsed > 6*time.Second {
-			t.Fatalf("connect returned after %s, want the outer five-second deadline", elapsed)
-		}
-	case <-time.After(6 * time.Second):
-		t.Fatal("connect exceeded the outer deadline while walking NATS URLs")
+	got := testwait.Receive(t, "the connect against unresponsive servers to end at its deadline", result)
+	if got.err == nil {
+		t.Fatal("connect unexpectedly succeeded against unresponsive servers")
+	}
+	if !errors.Is(got.err, context.DeadlineExceeded) {
+		t.Fatalf("connect against unresponsive servers = %v, want its outer deadline", got.err)
+	}
+	if got.reached >= silentServers {
+		t.Fatalf("connect returned its deadline only once the walk had reached all %d silent servers: it waited out the attempt, not its outer deadline", silentServers)
 	}
 }
 
 func TestConnectWithContextDoesNotPoisonAutomaticReconnect(t *testing.T) {
+	t.Parallel()
 	baseCtx := context.Background()
 	uri := testnats.URL(t)
 
@@ -163,6 +187,7 @@ func TestConnectWithContextDoesNotPoisonAutomaticReconnect(t *testing.T) {
 }
 
 func TestEnsureStreamWithConfig_updatesMaxAgeWhenExistingStreamDiffers(t *testing.T) {
+	t.Parallel()
 	// Given
 	oldConfig := *streamCfg
 	oldConfig.MaxAge = time.Minute
@@ -182,6 +207,7 @@ func TestEnsureStreamWithConfig_updatesMaxAgeWhenExistingStreamDiffers(t *testin
 }
 
 func TestConnectOwningStreamMigratesExistingStreamDuplicatesWindow(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	legacyConn := testnats.Connect(t, uri)
 	t.Cleanup(legacyConn.Close)
@@ -210,6 +236,7 @@ func TestConnectOwningStreamMigratesExistingStreamDuplicatesWindow(t *testing.T)
 }
 
 func TestEnsureStreamWithConfigPurgesLegacyRoleMessages(t *testing.T) {
+	t.Parallel()
 	oldConfig := *streamCfg
 	oldConfig.Subjects = []string{"notifications.>"}
 	js := &streamInfoJetStream{config: oldConfig}
@@ -230,6 +257,7 @@ func TestEnsureStreamWithConfigPurgesLegacyRoleMessages(t *testing.T) {
 }
 
 func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *testing.T) {
+	t.Parallel()
 	oldConfig := *streamCfg
 	oldConfig.Subjects = []string{"notifications.>"}
 	js := &streamInfoJetStream{
@@ -341,6 +369,7 @@ func TestConnectOwningStreamPurgesLegacyRoleMessagesBeforeDurableConsumerRestart
 }
 
 func TestStreamConfigExcludesRoleLanes(t *testing.T) {
+	t.Parallel()
 	wantSubjects := []string{
 		"notifications.agent.>",
 		"notifications.dispatch.>",
@@ -473,6 +502,7 @@ var streamGenerations = map[int]struct {
 // The stream this build ensures has exactly the settings pinned for its generation: a change to
 // them without a new generation and a new row fails here.
 func TestTheStreamConfigEqualsItsGenerationsPinnedRow(t *testing.T) {
+	t.Parallel()
 	row, ok := streamGenerations[streamConfigGeneration]
 	if !ok {
 		t.Fatalf("generation %d has no pinned row; add one with the settings it ships", streamConfigGeneration)
@@ -492,6 +522,7 @@ func TestTheStreamConfigEqualsItsGenerationsPinnedRow(t *testing.T) {
 // subject added to the stream without one fails here, one in both lists fails, and a private
 // subject the stream does not carry is a stale classification and fails too.
 func TestEveryStreamSubjectIsClassifiedForInterestRegistration(t *testing.T) {
+	t.Parallel()
 	notPrivate := []string{
 		// Dispatch's outbox: an issue's, a document's or a project's events
 		// (internal/dispatch/outbox envelope), each readable on its owner in Dispatch, and
@@ -533,6 +564,7 @@ func TestEveryStreamSubjectIsClassifiedForInterestRegistration(t *testing.T) {
 // The legacy notifications.> catch-all captured the role lanes, so it is the one deployed subject
 // start-up replaces outright with the binary's own list.
 func TestEnsureStreamWithConfigReplacesTheLegacyRoleLaneCatchAll(t *testing.T) {
+	t.Parallel()
 	oldConfig := *streamCfg
 	oldConfig.Subjects = []string{"notifications.>"}
 	js := &streamInfoJetStream{config: oldConfig}
@@ -551,6 +583,7 @@ func TestEnsureStreamWithConfigReplacesTheLegacyRoleLaneCatchAll(t *testing.T) {
 // separately, and a rollback or a restart during a rollout starts a binary compiled with a
 // different subject list. Whichever starts must leave every subject the other still needs.
 func TestConnectOwningStreamKeepsTheSubjectsAnotherDeploymentOfTheStreamNeeds(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	// The other deployment was compiled before notifications.legion.> existed and carries a
 	// subject this binary does not know.
@@ -623,6 +656,7 @@ func assertStreamSubjectsInclude(t *testing.T, js nats.JetStreamContext, want []
 // directory is empty. The deleted stream's own directory is not what a recreate races:
 // nats-server renames it aside and removes the renamed copy, which a recreate never meets.
 func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testing.T) {
+	t.Parallel()
 	shaped := func(legion string) nats.StreamConfig {
 		cfg := *streamCfg
 		cfg.Subjects = nil
@@ -733,6 +767,7 @@ func captureLogs(t *testing.T) *capturedLogs {
 // Every subject that can capture a role lane leaves the stream, whichever role it names: the role
 // lanes travel over core NATS and a retained copy would be delivered twice.
 func TestEnsureStreamWithConfigDropsEveryRoleLaneSubject(t *testing.T) {
+	t.Parallel()
 	for _, roleSubject := range []string{
 		"notifications.role.sre",
 		"notifications.role.*",
@@ -847,6 +882,7 @@ func deployedStream(t *testing.T, js nats.JetStreamContext) *nats.StreamInfo {
 // A stream a start creates carries an id of its own: two streams, each in an account of its own,
 // get different ones.
 func TestEnsureStreamWithConfigCreatesTheStreamWithAFreshID(t *testing.T) {
+	t.Parallel()
 	var ids []string
 	for _, name := range []string{"first stream", "second stream"} {
 		t.Run(name, func(t *testing.T) {
@@ -873,6 +909,7 @@ func TestEnsureStreamWithConfigCreatesTheStreamWithAFreshID(t *testing.T) {
 // byte limit, with no limit of its own set) or already matches (DiscardNew, the replicas). The
 // start stamps its generation beside the id.
 func TestEnsureStreamWithConfigGivesADeployedStreamWithoutAnIDOne(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	deployed := *streamCfg
 	deployed.Description = "deployed by operations"
@@ -912,6 +949,7 @@ func TestEnsureStreamWithConfigGivesADeployedStreamWithoutAnIDOne(t *testing.T) 
 // A start that changes the deployed stream's subjects and retention writes the stream's whole
 // configuration, and keeps its id and the rest of its metadata in it.
 func TestEnsureStreamWithConfigKeepsTheIDAndMetadataWhenItReconcilesTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	deployed := *streamCfg
 	deployed.MaxAge = time.Hour
@@ -941,6 +979,7 @@ func TestEnsureStreamWithConfigKeepsTheIDAndMetadataWhenItReconcilesTheStream(t 
 // another deployment's start that changes the stream's subjects, and not by a start that found no
 // stream and created it after another start already had.
 func TestEnsureStreamWithConfigNeverReplacesTheStreamsID(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	client, err := ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -1020,6 +1059,7 @@ func (js *staleStreamInfoJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...na
 // Two starts that both find the deployed stream without an id, before either writes one, write the
 // same id, so the later write does not replace the earlier one.
 func TestEnsureStreamWithConfigRacingStartsWriteOneID(t *testing.T) {
+	t.Parallel()
 	js := &staleStreamInfoJetStream{read: nats.StreamInfo{
 		Config:  *streamCfg,
 		Created: time.Date(2026, 10, 27, 9, 30, 0, 123456789, time.UTC),
@@ -1043,6 +1083,7 @@ func TestEnsureStreamWithConfigRacingStartsWriteOneID(t *testing.T) {
 // that sets none, the default the hub's stream filled, after which every new session was refused
 // its own consumer and fell back to core delivery.
 func TestTheCompiledStreamCarriesTheConsumerCap(t *testing.T) {
+	t.Parallel()
 	if streamCfg.MaxConsumers != 24000 {
 		t.Fatalf("streamCfg.MaxConsumers = %d, want 24000", streamCfg.MaxConsumers)
 	}
@@ -1056,6 +1097,7 @@ func TestTheCompiledStreamCarriesTheConsumerCap(t *testing.T) {
 // topic under no lane is named "". A notification topic, and a wildcard wider than any lane, are
 // no lane of the listener's.
 func TestListenerOwnLaneCoversEveryLaneTheListenerOwns(t *testing.T) {
+	t.Parallel()
 	lanes := ListenerOwnLanes()
 	if len(lanes) != len(listenerOwnStreamLanes) {
 		t.Fatalf("ListenerOwnLanes() = %q, want one entry for each of %q", lanes, listenerOwnStreamLanes)

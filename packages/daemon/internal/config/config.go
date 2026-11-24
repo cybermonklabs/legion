@@ -15,7 +15,8 @@
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
-// then reads them as boot does (daemon.CheckStart).
+// then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
+// at each launch, so an edit of one needs no restart.
 package config
 
 import (
@@ -67,9 +68,14 @@ const (
 // Config is the daemon's settled configuration: the file, the environment, and the defaults
 // resolved into the values the daemon runs on.
 type Config struct {
-	Project string
-	Port    int
-	Bind    string
+	// Revision is the commit this binary was built from (cmd/legion's revision, which the worker
+	// image and the release link in), "" for a build nothing stamped. It is not read from the file:
+	// `legion start` sets it, and the daemon names it after its NATS connection's name
+	// (natsauth.ConnectionName).
+	Revision string
+	Project  string
+	Port     int
+	Bind     string
 	// AdvertiseHost is `advertise_host`: the host every pod's shim dials the worker stream at in
 	// Bind's place, so Bind can be the unspecified address a daemon running as a pod listens on; ""
 	// (the default) has pods dial Bind. Only runtime: kubernetes accepts it, and readAdvertiseHost
@@ -153,6 +159,14 @@ type Config struct {
 	// authenticates with, never handed to a pane, "" when the file names none (natsauth.DaemonSeed
 	// then reads NATS_DAEMON_NKEY_SEED_FILE or NATS_DAEMON_NKEY_SEED from the daemon's environment).
 	NatsDaemonNkeySeedFile string
+	// NotificationStreamMaxAge is how long the notification stream keeps a message
+	// (`notification_stream_max_age_hours`), the stream's own MaxAge as the deployment renders it
+	// from the stream owner's source (envoy's notificationstream.MaxAge, 72 hours), and 0 for
+	// `unlimited`, a stream that keeps every message. A file that configures the workflow must set
+	// it: the intake gives a failing message up before the stream would delete it
+	// (intake.ConsumerSpec.StreamMaxAge), and a daemon held to its projects may not read the
+	// stream's own MaxAge, so no value is guessed for a file that leaves the key out.
+	NotificationStreamMaxAge time.Duration
 
 	// Stage 3's workflow dependencies. DispatchTokenFile remains a pointer here: boot reads the
 	// bearer only after every local configuration refusal has passed.
@@ -170,11 +184,11 @@ type Config struct {
 	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
-	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
-	// round before it once no turn runs and no claim's activity report holds it (internal/daemon's
-	// roundEnd.holding), and no answer, turn or background work holds the round past it. It is a
-	// decimal number of minutes, as `worker_silence_minutes` is, so a live proof can drive the
-	// bound inside one run.
+	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal number of minutes, as `worker_silence_minutes` is, so a live proof
+	// can drive the bound inside one run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
@@ -330,6 +344,12 @@ const (
 	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
+
+	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
+	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
+	// alone (packages/contracts/src/legion-api.ts), so a pane's `legion` tool refuses every state
+	// read of a daemon whose cap is 0.
+	DefaultReviewRoundCap = 3
 )
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
@@ -395,8 +415,11 @@ type fileConfig struct {
 	OperatorTokenFile    *string
 	EnvoyURL             *string
 	NatsURLs             []string
-	EnvoyTokenFile       *string
-	NatsNkeySeedFile     *string
+	// NotificationStreamMaxAge is `notification_stream_max_age_hours`: nil for a file that leaves
+	// the key out, which a workflow refuses, and a pointer to 0 for `unlimited`.
+	NotificationStreamMaxAge *time.Duration
+	EnvoyTokenFile           *string
+	NatsNkeySeedFile         *string
 	// NatsDaemonNkeySeedFile is `nats_daemon_nkey_seed_file`.
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
@@ -925,6 +948,26 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 	return &duration, nil
 }
 
+// NotificationStreamUnlimited is the word `notification_stream_max_age_hours` takes for a stream
+// that keeps every message, a MaxAge of 0.
+const NotificationStreamUnlimited = "unlimited"
+
+// readStreamMaxAge is `notification_stream_max_age_hours`: a positive number of hours, a decimal
+// among them, up to the longest a duration holds, or NotificationStreamUnlimited, read as 0. A key
+// written with no value, a zero, a negative number and any other word are refused: 0 would be
+// read as a stream that keeps nothing, and the word is how a file says the stream keeps
+// everything, so no number stands for it.
+func readStreamMaxAge(value *yaml.Node, key string) (*time.Duration, error) {
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!str" && value.Value == NotificationStreamUnlimited {
+		unlimited := time.Duration(0)
+		return &unlimited, nil
+	}
+	if value.Tag == "!!null" || (value.Tag != "!!int" && value.Tag != "!!float") {
+		return nil, fmt.Errorf("%s must be a positive number of hours, or %s", key, NotificationStreamUnlimited)
+	}
+	return readUnit(value, key, time.Hour, int(math.MaxInt64/int64(time.Hour)))
+}
+
 // validURL is the shipped `validateUrl` (config.ts) for the URLs this daemon dials or
 // hands out: a scheme and a host, or the key is refused.
 func validURL(value, key string) (*url.URL, error) {
@@ -1003,7 +1046,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
-		ReviewRoundCap:       3,
+		ReviewRoundCap:       DefaultReviewRoundCap,
 		Warnings:             file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {

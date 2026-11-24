@@ -18,10 +18,7 @@
 package proxyrules
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -36,30 +33,19 @@ type Allow struct {
 }
 
 // SecretRule is one secret's entry: where its value may go and in which headers, and who decides
-// a request for it. An entry with no host binds the value nowhere — the broker releases it to the
-// command, as it releases a name with no entry — and carries only its judge and guidance.
+// a request for it. An entry is a proxy block, so it binds its value to at least one host:
+// Validate refuses an entry that names none.
 type SecretRule struct {
 	Name    string   `json:"name"`
 	Hosts   []string `json:"hosts"`
 	Headers []string `json:"headers"` // nil: the default ["authorization"]; empty: no header
 	Allow   []Allow  `json:"allow"`   // nil: any method and path; empty: nothing allowed
-	Kind    string   `json:"kind"`    // "", "aws" or "azure"
+	Kind    string   `json:"kind"`    // "", "aws", "azure" or "dpop"
 	Judge   *uint32  `json:"judge"`   // the judge's longest lifetime, in seconds
 	// Guidance is what the model judge reads, as the key owner's instruction, when it decides a
 	// request for this key: when to grant it. It is no part of the Lean model, which decides
 	// nothing a request for the key may become, and no part of Digest's fingerprint.
 	Guidance string `json:"guidance,omitempty"`
-}
-
-// Bound is the entry the airlock holds this name's value back by — one that binds at least one
-// host — or nil. It is the one reader of "is this value behind the airlock": an entry with no
-// host says who decides a request for the key and nothing about where its value may go, so its
-// value is released to the command as a name with no entry is.
-func (r Rules) Bound(name string) *SecretRule {
-	if s := r.Lookup(name); s != nil && len(s.Hosts) > 0 {
-		return s
-	}
-	return nil
 }
 
 // Guidance is the judge's guidance for this name, "" when the file names no such secret or its
@@ -76,9 +62,9 @@ func (r Rules) Guidance(name string) string {
 // names no header at all, and this answers that empty list.
 //
 // It is the one place the default lives. Rewrite swaps in these headers and nothing else, and
-// `broker airlock-check` reports what a file adds and removes against them, so the report says
-// what the swap does rather than what a second copy of the default says it does. The slice an
-// entry names points into that entry, as Rules.Lookup's does; the default is a fresh slice.
+// `envoy-broker profiles check` reports what a file adds and removes against them, so the report
+// says what the swap does rather than what a second copy of the default says it does. The slice
+// an entry names points into that entry, as Rules.Lookup's does; the default is a fresh slice.
 func (s SecretRule) HeaderNames() []string {
 	if s.Headers == nil {
 		return []string{"authorization"}
@@ -86,17 +72,21 @@ func (s SecretRule) HeaderNames() []string {
 	return s.Headers
 }
 
-// KindAWS and KindAzure are the two kinds a rules entry may name (SecretRule.Kind), beside the
-// empty kind of a value a header simply carries. Validate allows no other, and each of them
-// says what the value behind the name is rather than where it may go: an AWS key pair, which
-// the proxy signs a call again with, and an azure-login secret, whose federated token is
-// exchanged for an access token. They are here rather than private to each reader because
-// three packages - the proxy's aws.go and azure.go and the broker's own release
-// (internal/cipher/requests) - each held a constant of the same string, and a kind is one
-// wire word for all of them.
+// KindAWS, KindAzure and KindDPoP are the three kinds a rules entry may name (SecretRule.Kind),
+// beside the empty kind of a value a header simply carries. Validate allows no other, and each
+// of them says what the value behind the name is rather than where it may go: an AWS key pair,
+// which the proxy signs a call again with; an azure-login secret, whose federated token is
+// exchanged for an access token; and a capability the broker mints for a grant of its own and
+// holds. They are here rather than private to each reader because three packages - the proxy's
+// aws.go and azure.go and the broker's own release (internal/cipher/requests) - each held a
+// constant of the same string, and a kind is one wire word for all of them.
 const (
 	KindAWS   = "aws"
 	KindAzure = "azure"
+	// KindDPoP is a capability the broker mints for a grant of its own and holds; the proxy swaps
+	// it in, signs a DPoP proof of the pod's key, and takes a request to its host only with the
+	// placeholder.
+	KindDPoP = "dpop"
 )
 
 // Rules is the whole airlock.json file.
@@ -131,11 +121,12 @@ const maxJudgeSeconds = 900
 
 // Validate reports why the file is not valid, naming the entry by its secret name and its
 // index. It reads the entries in order and reports the first failure: a repeated name, a judge
-// above 900 seconds, a kind other than "", "aws" or "azure", or a host that binds the secret
-// nowhere (HostShapeOK). An entry with no host is valid: it binds the value nowhere and says who
-// decides a request for the key, and Decide refuses every proxy request for it ("secret not
-// behind airlock"). Whether it answers nil is the same answer as the Lean model's validate, so a
-// new refusal here is a new refusal there.
+// above 900 seconds, a kind other than "", "aws", "azure" or "dpop", an entry that names no host,
+// or a host that binds the secret nowhere (HostShapeOK). An entry is a proxy block, and one that
+// binds its value to no host would hold the value back and carry it nowhere, so it is refused here
+// (theorem T4 of the model) rather than left to Decide, which still refuses every proxy request
+// for one ("secret not behind airlock"). Whether it answers nil is the same answer as the Lean
+// model's validate, so a new refusal here is a new refusal there.
 func Validate(rules Rules) error {
 	seen := make(map[string]bool, len(rules.Secrets))
 	for i, s := range rules.Secrets {
@@ -144,12 +135,13 @@ func Validate(rules Rules) error {
 			return fmt.Errorf("%s: the name is repeated", entry(i, s))
 		case s.Judge != nil && *s.Judge > maxJudgeSeconds:
 			return fmt.Errorf("%s: judge %d is above %d seconds", entry(i, s), *s.Judge, maxJudgeSeconds)
-		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
-			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
+		case s.Kind != "" && s.Kind != KindAWS && s.Kind != KindAzure && s.Kind != KindDPoP:
+			return fmt.Errorf("%s: kind %q is not %q, %q, %q or %q", entry(i, s), s.Kind, "", KindAWS, KindAzure, KindDPoP)
+		case len(s.Hosts) == 0:
+			return fmt.Errorf("%s: the entry names no host", entry(i, s))
 		}
 		// A host HostShapeOK refuses binds the secret nowhere although the entry names it to bind
-		// one: the command gets its placeholder and no call of it is ever swapped. An entry meant to
-		// bind nowhere names no host at all.
+		// one: the command gets its placeholder and no call of it is ever swapped.
 		for _, h := range s.Hosts {
 			if !HostShapeOK(h) {
 				return fmt.Errorf("%s: host %q is not a DNS name or a %q suffix, so the airlock binds the secret nowhere", entry(i, s), h, "*.")
@@ -165,8 +157,10 @@ func entry(i int, s SecretRule) string {
 	return fmt.Sprintf("secrets[%d] %q", i, s.Name)
 }
 
-// Lookup finds a secret's entry, or nil. The entry points into r, so a caller that keeps it
-// keeps the rules it came from.
+// Lookup finds a secret's entry, or nil. Every entry of a valid file binds at least one host
+// (Validate), so the broker holds back the value of a name that has one, and releases the value
+// of a name that has none. The entry points into r, so a caller that keeps it keeps the rules it
+// came from.
 func (r Rules) Lookup(name string) *SecretRule {
 	for i := range r.Secrets {
 		if r.Secrets[i].Name == name {
@@ -190,31 +184,6 @@ func (r Rules) JudgeSeconds(name string) (uint32, bool) {
 		return 0, false
 	}
 	return *s.Judge, true
-}
-
-// Digest is the fingerprint of one secret's entry, "" when the file has none for it. It is the
-// SHA-256, in hex, of the entry's JSON as encoding/json marshals a SecretRule with its guidance
-// left out: every other field is in the fingerprint, in the struct's own field order, and only
-// guidance carries omitempty, so an entry with none fingerprints as it did before the field
-// existed. The broker folds it into its policy version, so a change to one secret's entry ends
-// the grants that entry affects and no others. Guidance is left out because it tells the judge
-// how to decide requests to come and changes nothing a live grant may do: writing it ends no
-// grant.
-//
-// Digest is no part of the Lean model: it fingerprints a rules file the model says nothing
-// about, and no decision of Decide or Rewrite reads it.
-func (r Rules) Digest(name string) string {
-	s := r.Lookup(name)
-	if s == nil {
-		return ""
-	}
-	fingerprinted := *s
-	fingerprinted.Guidance = ""
-	// Marshal cannot fail for a SecretRule: every field is a string, a slice of strings or of
-	// Allow, or a *uint32, and encoding/json refuses none of those.
-	encoded, _ := json.Marshal(fingerprinted)
-	sum := sha256.Sum256(encoded)
-	return hex.EncodeToString(sum[:])
 }
 
 // HostBound reports whether host matches one of hosts: the same name, or a "*.suffix"

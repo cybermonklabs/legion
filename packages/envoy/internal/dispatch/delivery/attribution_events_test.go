@@ -77,6 +77,7 @@ func attributedHeadRow(number int, issue *string, source attributionSource) Pull
 // against the heads attributed to it (HeadsAttributedTo), so a move changes what both issues are
 // measured against, and R8 of INFRA-1522 asks that neither change without a record of it.
 func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	left := seedHeadIssue(t, ctx, pool, 70)
 	reached := seedHeadIssue(t, ctx, pool, 71)
@@ -133,9 +134,11 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 
 // TestAnAttributionThatStaysIsRecordedNowhere: a write that stores the issue the row already
 // holds appends nothing, and neither does a write that carries no issue at all. The reconcile
-// re-reads every open row every five minutes, so an event per write would bury each issue's
-// timeline under the pass's own heartbeat.
+// re-reads every open row at every pass of one process, each starting at most five minutes after
+// the one before it ended, and as PullRequestHeadStaleAfter says with several, so an event per
+// write would bury each issue's timeline under the pass's own heartbeat.
 func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 72)
 	broker := events.NewBroker()
@@ -171,6 +174,7 @@ func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
 // took the rows credited to nobody alone, which would have left a child's pull request on its
 // parent for good — and a row this rule has already judged is not taken again.
 func TestTheMergedArmTakesARowAnOlderRuleCredited(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	parent := seedHeadIssue(t, ctx, pool, 73)
 	eventAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -215,6 +219,7 @@ func TestTheMergedArmTakesARowAnOlderRuleCredited(t *testing.T) {
 // open row five minutes ago — so without the bound the backfill fills every pass until it drains
 // and no open head is re-read meanwhile.
 func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 75)
 	eventAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -261,6 +266,7 @@ func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
 // it, would hold that lock while it waited for the one the test holds, and Postgres would break
 // the cycle as a deadlock.
 func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	first, second := seedHeadIssue(t, ctx, pool, 72), seedHeadIssue(t, ctx, pool, 73)
 	var firstSortsFirst bool

@@ -64,7 +64,7 @@ var (
 // the relation read, the inheritance walk it climbs and the columns' join, and answers the three
 // columns as the constants an issue with no relation reads as, so one scan and one argument list
 // serve both texts. Its one caller is the speed test that holds the relation read to twice the
-// time of the same page without it; every text the server runs passes true. The `advances`
+// work of the same page without it; every text the server runs passes true. The `advances`
 // filter term stays in both, because it is a filter rather than a read: a request that names no
 // `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
@@ -833,10 +833,11 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // a statement of its own for the listener's stored answer (storedRouteRoster), and a shared listener
 // fetch only when that answer is stale, so a routed issue's read is one round trip more.
 func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
-	read, err := s.readIssue(r.Context(), r.PathValue("key"), wantsDisplayTrees(r))
+	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -867,10 +868,11 @@ type issueDetail struct {
 	OpenAsks  []issueOpenAsk      `json:"open_asks"`
 	Children  []model.IssueChild  `json:"children"`
 	// DesignGates is the document each of this issue's Legion design-gate steps records
-	// (design_gates, PUT /api/v1/issues/{key}/design-gates), in the order a gate runs the
-	// steps. An issue whose gates record nothing carries [], as the route's own answer does:
-	// the record Dispatch holds is part of the issue, and a missing list would say the read
-	// never asked rather than that no gate names a document here.
+	// (design_gates, PUT /api/v1/issues/{key}/design-gates), with whether the deployment's gate
+	// holds the issue's tree on that step (null where the daemon that published it said nothing
+	// of it), in the order a gate runs the steps. An issue whose gates record nothing carries [],
+	// as the route's own answer does: the record Dispatch holds is part of the issue, and a
+	// missing list would say the read never asked rather than that no gate names a document here.
 	DesignGates []issueDesignGate `json:"design_gates"`
 	// ReferencedByCount is what the header's `Referenced by (N)` control names. The page
 	// pays for it here, with the detail it already reads, instead of a graph request of
@@ -883,7 +885,7 @@ type issueDetail struct {
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
 // the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
 // the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
-func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
+func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
 	var artifacts []model.Artifact
@@ -927,7 +929,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		read.DesignGates = scanned
 		return err
 	})
-	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
+	if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
 		return issueDetail{}, err
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
@@ -939,7 +941,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
 
-	if err := s.readIssueDetails(ctx, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
+	if err := s.readIssueDetails(ctx, who, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
 	// The approvals are read by the second batch, so their reasons are registered after it,
@@ -957,10 +959,10 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 // into the artifacts and asks it read, by the one queue-and-apply each of them has
 // (queueArtifactDetails, queueAskDetails). An issue with no artifact and no open ask names
 // nothing, so it queues nothing and sends no batch.
-func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
+func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
 	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, asks)
+	applyAsks := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -1118,8 +1120,8 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key strin
 
 // issueChildrenStatement reads the issue's direct children, $1 its key, each with a rollup over
 // its whole subtree (the child itself included, every status): done/total counts and the newest
-// updated_at. The recursive walk uses `union` with parentDepthCap like refs.Closure, so it
-// terminates even if a raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
+// updated_at. The recursive walk uses `union` with parentDepthCap, so it terminates even if a
+// raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
 //
 // The walk reads each subtree issue's row already, so it carries that row's status and
 // updated_at and the rollup counts them where it stands. Joining the walk's keys back to issues
@@ -1193,15 +1195,15 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 	return children, rows.Err()
 }
 
-// issueDesignGatesStatement reads the documents an issue's design-gate steps record, $1 the
-// issue's key and $2 the steps in the order a gate runs them, which is the order the read
-// answers them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
-// (issue_design_gates.go). The order is a parameter rather than a case expression built into
-// the text, so model.GatedStepsKnown stays the one place that order is written. A key no issue
-// carries returns no row, which is what the issue read's first batch requires of every
-// statement beside the issue row's.
+// issueDesignGatesStatement reads the documents an issue's design-gate steps record and whether
+// each holds the issue's tree, $1 the issue's key and $2 the steps in the order a gate runs them,
+// which is the order the read answers them in and the order PUT /api/v1/issues/{key}/design-gates
+// answers its own write in (issue_design_gates.go). The order is a parameter rather than a case
+// expression built into the text, so model.GatedStepsKnown stays the one place that order is
+// written. A key no issue carries returns no row, which is what the issue read's first batch
+// requires of every statement beside the issue row's.
 const issueDesignGatesStatement = `
-		select step, artifact_id from design_gates where issue = $1
+		select step, artifact_id, holds from design_gates where issue = $1
 		order by array_position($2::text[], step)
 	`
 
@@ -1211,7 +1213,7 @@ func scanIssueDesignGates(rows pgx.Rows) ([]issueDesignGate, error) {
 	gates := []issueDesignGate{}
 	for rows.Next() {
 		var gate issueDesignGate
-		if err := rows.Scan(&gate.Step, &gate.ArtifactID); err != nil {
+		if err := rows.Scan(&gate.Step, &gate.ArtifactID, &gate.Holds); err != nil {
 			return nil, err
 		}
 		gates = append(gates, gate)

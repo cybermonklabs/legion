@@ -131,7 +131,7 @@ func TestAPullRequestKeepsItsConflictReadAndMergeForwardFrom20261119003157(t *te
 	read := func(issue string) *record.PullRequest {
 		t.Helper()
 		var pr *record.PullRequest
-		if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			pr, err = record.NewStore().PullRequest(ctx, tx, issue)
 			return err
@@ -171,7 +171,7 @@ func TestAPullRequestKeepsItsConflictReadAndMergeForwardFrom20261119003157(t *te
 		ConflictRead: &record.ConflictRead{Head: "h7", Base: "main", At: firstRead},
 		MergeForward: &record.MergeForward{Head: "h6", Base: "main", Phase: phase.Accepting, Why: "merge-next",
 			AskedAt: firstRead.Add(-time.Hour), Landed: "h7", ReviewAsked: true}}
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, written)
 	}); err != nil {
 		t.Fatalf("write a pull request with a first conflicting read and an ask to merge forward: %v", err)
@@ -184,7 +184,7 @@ func TestAPullRequestKeepsItsConflictReadAndMergeForwardFrom20261119003157(t *te
 	t.Logf("written and read back: first read %+v, ask %+v", *got.ConflictRead, *got.MergeForward)
 
 	written.ConflictRead, written.MergeForward = nil, nil
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, written)
 	}); err != nil {
 		t.Fatalf("write the pull request with neither: %v", err)

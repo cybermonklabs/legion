@@ -29,8 +29,8 @@ const ghCheckedOnlyVisibility = "checked-only"
 // rows; then write its tag here and the sha256 of its public_leak_check.py, `git show
 // <tag>:leak-check/public_leak_check.py | sha256sum` in the shared check's own repository.
 var ghReadsProvenCheck = struct{ tag, sha256 string }{
-	tag:    "leak-check-v21",
-	sha256: "5e5e0e00e4932ac307b79f53ac43e7cb156ed9dd38f01780022e69c18cce6354",
+	tag:    "leak-check-v33",
+	sha256: "2e9049bfe5969e039878ae88d72dbc844a843f2d7a4819124456f3dd6c2dd1c3",
 }
 
 // leakguardCurl is the curl the leak guard's curl reads run in this binary, the one every guard

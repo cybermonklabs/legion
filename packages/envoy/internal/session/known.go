@@ -81,8 +81,11 @@ const (
 // that registered within KnownSessionRetention, whether it is registered now or not. Its Topics
 // are the topics the session's interest row stores (store.Interest.Topics), which are the topics
 // its session consumer's filter holds: a registration drops every topic that reaches no session,
-// one no stream subject captures and no role lane (splitUncapturedTopics, cmd/listener/api.go),
-// so a record counts exactly the sessions a stored publish reaches.
+// one no stream subject captures and no role lane (splitUncapturedTopics, cmd/listener/api.go).
+// A record can still name a topic that filter's rule drops since it was written, the notice lane
+// of a controller role its session no longer holds among them, which no write rewrites while the
+// session is stopped, so a publish's count judges each record's topics by that rule
+// (cmd/listener's recipientCounts, store.LaneHolders.Keeps).
 //
 // Projects is the projects the session's registration lists (the projects of the token that made
 // it), sorted, each once, as the live session entry holds them; nil when the registration listed

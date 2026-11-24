@@ -34,7 +34,8 @@ import (
 // pull with Consume and Fetch, and the acknowledgements; it receives none of PRIV's messages, and
 // the server refuses each call that would reach PRIV. Its one GitHub consumer receives every
 // repository's GitHub events, a repository only PRIV's issues resolve to among them: a GitHub
-// event is a message of no project, which every daemon is granted.
+// event is a message of no project, which every daemon is granted. Its Dispatch probe's create
+// is held on both servers the deployment runs (TestWithinProjectsHoldsTheDispatchProbeOnBothHubs).
 
 const (
 	livePUBIdentity  = "legion-daemon-PUB"
@@ -62,21 +63,10 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 		"empty-publish": {Subscribe: []string{natsgrant.InboxPrefix("empty-publish") + ".>"}},
 	}
 
-	keys := testnats.NewCalloutKeys(t)
-	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: natscallout's own tests test the sealing
-	adminSeed, adminPublic := testnats.User(t)
-	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
-	answers := serveCallout(t, url, keys, grants)
-
-	admin, err := testnats.ConnectSeed(t, url, adminSeed)
-	require.NoError(t, err)
-	t.Cleanup(admin.Close)
-	adminJS, err := jetstream.New(admin)
-	require.NoError(t, err)
+	hub := startLiveHub(t, testnats.HubImage, grants)
+	url, admin, adminJS, answers := hub.url, hub.admin, hub.js, hub.answers
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	_, err = adminJS.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects()})
-	require.NoError(t, err)
 	publish := func(subject string, bodies ...string) {
 		t.Helper()
 		for _, body := range bodies {
@@ -301,6 +291,376 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	stream, err := emptyJS.Stream(ctx, bus.Stream)
 	require.NoError(t, err, "a grant with no publish entry was refused the stream's info; the server now restricts it")
 	t.Logf("a user JWT with no publish allow list read the stream's info: %d messages stored", stream.CachedInfo().State.Msgs)
+}
+
+// The boundary of WithinProjects, which its doc names: the grant holds a daemon to its consumers
+// by name, not by what they filter. A legion-go-PUB-dispatch durable that already exists on every
+// project's issue events, as today's daemon opens it (packages/daemon/internal/intake/consume.go),
+// is read whole through PUB's held grant: the held PUB daemon reads the consumer's info and pulls
+// PRIV's issue event through its own consumer, whose info, pull and acknowledgements name the
+// consumer only. Once the held daemon updates that durable in place to PUB's own lane, as the
+// daemon that opens its consumers per project does at boot, it pulls PUB's events alone. This row
+// pins the boundary rather than a protection: a read that refuses to hold a daemon while any of
+// its consumers is wider than its own lane belongs to the step that lists daemon entries held to
+// projects.
+func TestWithinProjectsReadsAWideConsumerWhole(t *testing.T) {
+	const identity = "legion-daemon-PUB-wide"
+	consumer := "legion-go-PUB-dispatch"
+	hub := startLiveHub(t, testnats.HubImage, map[string]natsgrant.Permissions{"held-pub": within(t, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})})
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	// Today's daemon's dispatch consumer, on every project's issue events.
+	_, err := hub.js.CreateOrUpdateConsumer(ctx, bus.Stream, jetstream.ConsumerConfig{
+		Durable: consumer, FilterSubjects: []string{"notifications.dispatch.issue.>"}, AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	require.NoError(t, err)
+	publish := func(subject, body string) {
+		t.Helper()
+		_, err := hub.js.Publish(ctx, subject, []byte(body))
+		require.NoError(t, err, "publish %s", subject)
+	}
+	publish("notifications.dispatch.issue.PUB.PUB-1.created", "PUB-1")
+	publish("notifications.dispatch.issue.PRIV.PRIV-1.created", "PRIV-1")
+
+	held := connectAs(t, hub.url, "held-pub", natsgo.CustomInboxPrefix(natsgrant.InboxPrefix(identity)))
+	js, err := jetstream.New(held.conn)
+	require.NoError(t, err)
+	pull := func() []string {
+		t.Helper()
+		wide, err := js.Consumer(ctx, bus.Stream, consumer)
+		require.NoError(t, err, "the held PUB daemon's info of %s; the server reported %v", consumer, held.reported())
+		batch, err := wide.Fetch(2, jetstream.FetchMaxWait(liveRefusalWait))
+		require.NoError(t, err)
+		var bodies []string
+		for msg := range batch.Messages() {
+			bodies = append(bodies, string(msg.Data()))
+			require.NoError(t, msg.DoubleAck(ctx))
+		}
+		require.NoError(t, batch.Error())
+		return bodies
+	}
+	require.ElementsMatch(t, []string{"PUB-1", "PRIV-1"}, pull(),
+		"the held PUB daemon did not read the wide %s whole: the grant now holds the consumer's filter, and its doc must say so", consumer)
+	t.Logf("the held PUB daemon pulled PRIV-1 through the wide %s", consumer)
+
+	narrowed := openConsumer(ctx, t, js, consumer, "notifications.dispatch.issue.PUB.>")
+	require.Equal(t, "notifications.dispatch.issue.PUB.>", narrowed.CachedInfo().Config.FilterSubject,
+		"the held PUB daemon could not update %s in place to PUB's lane", consumer)
+	publish("notifications.dispatch.issue.PUB.PUB-2.created", "PUB-2")
+	publish("notifications.dispatch.issue.PRIV.PRIV-2.created", "PRIV-2")
+	require.Equal(t, []string{"PUB-2"}, pull(), "the held PUB daemon's %s, narrowed in place to PUB's lane", consumer)
+}
+
+// liveHubs are the two servers the deployment runs: the VM hub's nats-server 2.15.1
+// (testnats.HubImage) and the clustered hub's 2.15.3 (testnats.ClusteredHubImage), each with the
+// version its server reports, so a row run on another image fails rather than passes.
+var liveHubs = []struct{ name, image, version string }{
+	{"the VM hub's nats-server 2.15.1", testnats.HubImage, "2.15.1"},
+	{"the clustered hub's nats-server 2.15.3", testnats.ClusteredHubImage, "2.15.3"},
+}
+
+// The Dispatch probe on both servers the deployment runs. WithinProjects grants a daemon one call
+// on legion-go-<P>-dispatch-probe: its create on the project's issue events, whose answer the
+// daemon reads its confirmed idle from. A PUB daemon on WithinProjects(Daemon(), PUB):
+//   - (a) creates its probe, a direct ephemeral push consumer on PUB's filter with no delivery
+//     interest, as the daemon makes it, and the server's answer counts PUB's issue events stored
+//     from the start sequence (NumPending) and none of PRIV's;
+//   - (b) is answered the server's own error for a create on the same subject whose body asks for
+//     another filter: PRIV's, none, or a list of filters;
+//   - (c) is refused another project's probe, by its name or by its filter;
+//   - (d) is refused the probe's info, pull and delete.
+//
+// Each row has a control the server answers: the held grant without the probe's create is refused
+// (a)'s create; with a wildcard in place of the probe's name it creates (c)'s PRIV probe on PUB's
+// filter; today's grant creates the probes on PRIV's filter and reads PRIV's count; and with the
+// probe held as a durable, its info and pull beside its create, (d)'s info and pull are answered,
+// as the admin's delete is.
+func TestWithinProjectsHoldsTheDispatchProbeOnBothHubs(t *testing.T) {
+	for _, hub := range liveHubs {
+		t.Run(hub.name, func(t *testing.T) {
+			t.Parallel()
+			dispatchProbeRows(t, hub.image, hub.version)
+		})
+	}
+}
+
+// dispatchProbeRows are TestWithinProjectsHoldsTheDispatchProbeOnBothHubs' rows on the server
+// image runs, which must report version, each row a subtest of its own on the one hub, run in
+// order, so a failed row names itself and the rows after it still run.
+func dispatchProbeRows(t *testing.T, image, version string) {
+	const (
+		identity  = "legion-daemon-PUB-probe"
+		probe     = "legion-go-PUB-dispatch-probe"
+		privProbe = "legion-go-PRIV-dispatch-probe"
+		api       = "$JS.API.CONSUMER."
+		create    = api + "CREATE." + bus.Stream + "."
+		pubIssues = contracts.DispatchIssueTopicPrefix + "PUB.>"
+	)
+	privIssues := contracts.DispatchIssueTopicPrefix + "PRIV.>"
+	pubCreate := create + probe + "." + pubIssues
+	held := within(t, natsgrant.Scope{Projects: []string{"PUB"}, Identity: identity})
+	// The controls, each the held grant with the probe's create changed: taken out; its name a
+	// wildcard; and kept beside the info, pull and acknowledgements a durable of the daemon's holds,
+	// as if the probe were one. Each row runs before its control, which then asserts it changed the
+	// grant, so a held grant that lacks the probe's create fails the row, not the control's setup.
+	noProbe, noProbeErr := replaceEntry(held, pubCreate)
+	wildcardName, wildcardErr := replaceEntry(held, pubCreate, create+"*."+pubIssues)
+	probeDurable, durableErr := replaceEntry(held, pubCreate, pubCreate,
+		api+"INFO."+bus.Stream+"."+probe, api+"MSG.NEXT."+bus.Stream+"."+probe, "$JS.ACK."+bus.Stream+"."+probe+".>")
+	grants := map[string]natsgrant.Permissions{
+		"held": held, "no-probe": noProbe, "wildcard-name": wildcardName, "probe-durable": probeDurable,
+		"today": natsgrant.Daemon(),
+	}
+	hub := startLiveHub(t, image, grants)
+	require.Equal(t, version, hub.admin.ConnectedServerVersion(), "the hub's image runs another nats-server")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	seq := map[string]uint64{}
+	for _, body := range []string{"PUB-1", "PRIV-1", "PUB-2", "PRIV-2", "PUB-3"} {
+		project, _, _ := strings.Cut(body, "-")
+		ack, err := hub.js.Publish(ctx, contracts.DispatchIssueTopicPrefix+project+"."+body+".comment.created", []byte(body))
+		require.NoError(t, err)
+		seq[body] = ack.Sequence
+	}
+	inbox := natsgrant.InboxPrefix(identity)
+	daemon := connectAs(t, hub.url, "held", natsgo.CustomInboxPrefix(inbox))
+
+	t.Run("(a) its probe's create", func(t *testing.T) {
+		// From PUB-2, PUB's events are PUB-2 and PUB-3; PUB-1 is before the start, PRIV-2 another
+		// project's.
+		answer, err := requestProbe(ctx, daemon, pubCreate, probeCreate(t, probe, pubIssues, seq["PUB-2"], inbox, nil))
+		require.NoError(t, err, "the held PUB daemon's probe create; the server reported %v", daemon.reported())
+		require.Nil(t, answer.Error, "the probe create: %+v", answer.Error)
+		require.Equal(t, probe, answer.Name)
+		require.Equal(t, pubIssues, answer.Config.FilterSubject)
+		require.Equal(t, uint64(2), answer.NumPending, "the probe's count of PUB's events from PUB-2")
+		daemon.requireNotRefused(t, pubCreate)
+		// The control: without the probe's create the server refuses it.
+		require.NoError(t, noProbeErr, "the control")
+		control := connectAs(t, hub.url, "no-probe", natsgo.CustomInboxPrefix(inbox))
+		_, err = requestProbe(ctx, control, pubCreate, probeCreate(t, probe, pubIssues, seq["PUB-2"], inbox, nil))
+		require.Error(t, err, "the control, the held grant without the probe's create, was answered")
+		control.requireRefused(t, "publish", pubCreate)
+		t.Logf("%s: the held PUB daemon created %s from sequence %d, NumPending %d; without its create the server refused it",
+			version, probe, seq["PUB-2"], answer.NumPending)
+	})
+
+	t.Run("(b) a body that asks for another filter", func(t *testing.T) {
+		// The subject names PUB's filter, and the server refuses a body that asks for another; (a),
+		// the body that asks for PUB's, is the control.
+		for _, row := range []struct {
+			name    string
+			change  func(config map[string]any)
+			errCode int
+		}{
+			{"PRIV's filter", func(c map[string]any) { c["filter_subject"] = privIssues }, 10131},
+			{"no filter", func(c map[string]any) { delete(c, "filter_subject") }, 10131},
+			{"a list of filters", func(c map[string]any) {
+				delete(c, "filter_subject")
+				c["filter_subjects"] = []string{pubIssues, privIssues}
+			}, 10137},
+		} {
+			answer, err := requestProbe(ctx, daemon, pubCreate, probeCreate(t, probe, pubIssues, seq["PUB-1"], inbox, row.change))
+			require.NoError(t, err, row.name)
+			require.NotNil(t, answer.Error, "the server took a probe create whose body has %s", row.name)
+			require.Equal(t, row.errCode, answer.Error.ErrCode, "%s: %+v", row.name, answer.Error)
+			t.Logf("%s: a create naming PUB's filter with %s in its body: %d %s", version, row.name, answer.Error.ErrCode, answer.Error.Description)
+		}
+		daemon.requireNotRefused(t, pubCreate)
+	})
+
+	t.Run("(d) the probe's info, pull and delete", func(t *testing.T) {
+		info := api + "INFO." + bus.Stream + "." + probe
+		next := api + "MSG.NEXT." + bus.Stream + "." + probe
+		del := api + "DELETE." + bus.Stream + "." + probe
+		for _, subject := range []string{info, next, del} {
+			callCtx, cancel := context.WithTimeout(ctx, liveRefusalWait)
+			_, err := daemon.conn.RequestWithContext(callCtx, subject, []byte(`{"batch":1,"no_wait":true}`))
+			cancel()
+			require.Error(t, err, "%s was answered", subject)
+			daemon.requireRefused(t, "publish", subject)
+		}
+		// The control holds the probe as a durable: the server answers its info and pull, and the
+		// admin's delete removes it.
+		require.NoError(t, durableErr, "the control")
+		control := connectAs(t, hub.url, "probe-durable", natsgo.CustomInboxPrefix(inbox))
+		reply, err := control.conn.Request(info, nil, liveWait)
+		require.NoError(t, err, "the control's info of %s", probe)
+		var probeInfo struct {
+			Name string `json:"name"`
+		}
+		require.NoError(t, json.Unmarshal(reply.Data, &probeInfo), string(reply.Data))
+		require.Equal(t, probe, probeInfo.Name, "the control's info: %s", reply.Data)
+		reply, err = control.conn.Request(next, []byte(`{"batch":1,"no_wait":true}`), liveWait)
+		require.NoError(t, err, "the control's pull of %s", probe)
+		// nats.go keeps the status header's name, "Status", unexported.
+		require.Equal(t, "409", reply.Header.Get("Status"), "the control's pull of a push consumer")
+		control.requireNotRefused(t, info)
+		control.requireNotRefused(t, next)
+		require.True(t, deleteConsumer(t, hub.admin, probe), "the admin's delete of %s found no consumer", probe)
+		t.Logf("%s: the held PUB daemon was refused the probe's info, pull and delete; held as a durable, its info and pull were answered", version)
+	})
+
+	t.Run("(c) another project's probe", func(t *testing.T) {
+		// By its name or by its filter. Each control creates it and the admin deletes it, so the
+		// next row's create is a fresh one.
+		today := connectAs(t, hub.url, "today")
+		for _, row := range []struct {
+			name, filter string
+			control      string
+			controlErr   error
+			pending      uint64
+		}{
+			{privProbe, pubIssues, "wildcard-name", wildcardErr, 2},
+			{privProbe, privIssues, "today", nil, 1},
+			{probe, privIssues, "today", nil, 1},
+		} {
+			subject := create + row.name + "." + row.filter
+			_, err := requestProbe(ctx, daemon, subject, probeCreate(t, row.name, row.filter, seq["PUB-2"], inbox, nil))
+			require.Error(t, err, "the held PUB daemon was answered %s", subject)
+			daemon.requireRefused(t, "publish", subject)
+			require.NoError(t, row.controlErr, "the control of %s", subject)
+			control, deliver := today, "_INBOX"
+			if row.control != "today" {
+				control, deliver = connectAs(t, hub.url, row.control, natsgo.CustomInboxPrefix(inbox)), inbox
+			}
+			deleteConsumer(t, hub.admin, row.name) // a row before this one that failed may have left it
+			answer, err := requestProbe(ctx, control, subject, probeCreate(t, row.name, row.filter, seq["PUB-2"], deliver, nil))
+			require.NoError(t, err, "the control's create %s; the server reported %v", subject, control.reported())
+			require.Nil(t, answer.Error, "the control's create %s: %+v", subject, answer.Error)
+			require.Equal(t, row.pending, answer.NumPending, "the control's count on %s", row.filter)
+			control.requireNotRefused(t, subject)
+			require.True(t, deleteConsumer(t, hub.admin, row.name), "the admin's delete of %s found no consumer", row.name)
+			t.Logf("%s: refused %s; the control (%s) created it, NumPending %d", version, subject, row.control, answer.NumPending)
+		}
+	})
+}
+
+// probeAnswer is what nats-server answers a consumer create: the consumer's name, filter and
+// pending count, or its error.
+type probeAnswer struct {
+	Name   string `json:"name"`
+	Config struct {
+		FilterSubject string `json:"filter_subject"`
+	} `json:"config"`
+	NumPending uint64 `json:"num_pending"`
+	Error      *struct {
+		Code        int    `json:"code"`
+		ErrCode     int    `json:"err_code"`
+		Description string `json:"description"`
+	} `json:"error"`
+}
+
+// probeCreate is the body of a Dispatch probe's create as the daemon sends one: a direct ephemeral
+// push consumer named name on filter from the start sequence, delivering under deliver, where its
+// connection subscribes to nothing, so no message is sent; with no acknowledgements, headers only,
+// in memory, and gone a minute after it has no interest. Its description and delivery subject are
+// fresh for each create, and the create makes the consumer or fails, never changes one. change, when
+// given, edits the config before it is sent.
+func probeCreate(t *testing.T, name, filter string, start uint64, deliver string, change func(config map[string]any)) []byte {
+	t.Helper()
+	fresh := natsgo.NewInbox()[len(natsgo.InboxPrefix):]
+	config := map[string]any{
+		"name":               name,
+		"description":        "probe " + fresh,
+		"filter_subject":     filter,
+		"deliver_policy":     "by_start_sequence",
+		"opt_start_seq":      start,
+		"direct":             true,
+		"deliver_subject":    deliver + ".probe." + fresh,
+		"ack_policy":         "none",
+		"headers_only":       true,
+		"mem_storage":        true,
+		"inactive_threshold": time.Minute,
+	}
+	if change != nil {
+		change(config)
+	}
+	body, err := json.Marshal(map[string]any{"stream_name": bus.Stream, "config": config, "action": "create"})
+	require.NoError(t, err)
+	return body
+}
+
+// requestProbe sends body on subject from client and answers the server's answer, or the error of
+// a request it sent no answer to: the server answers no call it refused, so the request ends at
+// liveRefusalWait.
+func requestProbe(ctx context.Context, client *liveClient, subject string, body []byte) (probeAnswer, error) {
+	callCtx, cancel := context.WithTimeout(ctx, liveRefusalWait)
+	defer cancel()
+	reply, err := client.conn.RequestWithContext(callCtx, subject, body)
+	if err != nil {
+		return probeAnswer{}, err
+	}
+	var answer probeAnswer
+	if err := json.Unmarshal(reply.Data, &answer); err != nil {
+		return probeAnswer{}, fmt.Errorf("%s: %w", reply.Data, err)
+	}
+	return answer, nil
+}
+
+// deleteConsumer deletes the consumer name of the notification stream as admin, and reports
+// whether there was one; any answer but the delete or the server's "consumer not found" (10014)
+// fails the test.
+func deleteConsumer(t *testing.T, admin *natsgo.Conn, name string) (deleted bool) {
+	t.Helper()
+	reply, err := admin.Request("$JS.API.CONSUMER.DELETE."+bus.Stream+"."+name, nil, liveWait)
+	require.NoError(t, err, "the admin's delete of %s", name)
+	var answer struct {
+		Success bool `json:"success"`
+		Error   *struct {
+			ErrCode int `json:"err_code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(reply.Data, &answer), string(reply.Data))
+	if answer.Error != nil && answer.Error.ErrCode == 10014 {
+		return false
+	}
+	require.True(t, answer.Success, "the admin's delete of %s: %s", name, reply.Data)
+	return true
+}
+
+// replaceEntry is grant with its one publish entry entry replaced by with, or taken out when with
+// is empty, and an error when the grant holds no such entry: a control that changes nothing proves
+// nothing, and the row the control is for asserts the error after the row itself has run.
+func replaceEntry(grant natsgrant.Permissions, entry string, with ...string) (natsgrant.Permissions, error) {
+	at := slices.Index(grant.Publish, entry)
+	if at < 0 {
+		return grant, fmt.Errorf("the grant holds no publish entry %s", entry)
+	}
+	out := grant
+	out.Publish = slices.Concat(grant.Publish[:at], with, grant.Publish[at+1:])
+	return out, nil
+}
+
+// liveHub is a hub on a server image the deployment runs behind a stand-in auth callout
+// (serveCallout), with a static admin user that may publish and subscribe anything, and the
+// notification stream made.
+type liveHub struct {
+	url     string
+	admin   *natsgo.Conn
+	js      jetstream.JetStream
+	answers *calloutAnswers
+}
+
+// startLiveHub starts a liveHub on image whose auth callout admits each user of grants with its
+// grant.
+func startLiveHub(t *testing.T, image string, grants map[string]natsgrant.Permissions) liveHub {
+	t.Helper()
+	keys := testnats.NewCalloutKeys(t)
+	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: natscallout's own tests test the sealing
+	adminSeed, adminPublic := testnats.User(t)
+	url := testnats.StartImageWithCalloutOn(t, image, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
+	answers := serveCallout(t, url, keys, grants)
+	admin, err := testnats.ConnectSeed(t, url, adminSeed)
+	require.NoError(t, err)
+	t.Cleanup(admin.Close)
+	js, err := jetstream.New(admin)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: bus.StreamCarriedSubjects()})
+	require.NoError(t, err)
+	return liveHub{url: url, admin: admin, js: js, answers: answers}
 }
 
 // within is WithinProjects(Daemon(), scope), which must not refuse.

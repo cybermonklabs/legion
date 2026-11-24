@@ -1,0 +1,80 @@
+{
+  "id": 508978,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 15,
+  "type": "ask.opened",
+  "actor": {
+    "kind": "session",
+    "id": "01a19f54-6e05-7371-bece-ed4663896f7f",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit amet ",
+      "cwd": "lorem ipsum",
+      "tmux": "lorem i",
+      "pane": "lore",
+      "session_title": "lorem ipsu"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-14T00:56:37.883716Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": null,
+    "asked_of": null,
+    "asked_of_at": null,
+    "asked_of_by": null,
+    "author": {
+      "id": "01a1d779-dceb-7628-9e63-499ac3a3a7d5",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lo",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit amet ",
+        "pane": "lore",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum d",
+        "tmux": "lorem i"
+      },
+      "owner": "alice@example.com"
+    },
+    "block_artifact": {
+      "id": "61aff72e-40cb-4c88-9f58-d1f239239210",
+      "primary": false,
+      "slug": "lorem ipsum dolor sit"
+    },
+    "block_id": "lorem ips",
+    "created_at": "2026-11-14T00:54:55.386861Z",
+    "edited_at": null,
+    "id": "24ba0bc9-5231-4905-a445-32a7aadf196d",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 508896,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+        "id": "b2",
+        "label": "lorem ipsum dolor sit amet lorem ipsum dolor sit"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do",
+        "id": "b3",
+        "label": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+        "id": "b4",
+        "label": "lorem ipsum dolor sit amet lorem ipsum dolo"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+    "referenced_by_count": 2,
+    "revision": 1,
+    "state": "open",
+    "thread_logins": [],
+    "urgency": "med"
+  }
+}

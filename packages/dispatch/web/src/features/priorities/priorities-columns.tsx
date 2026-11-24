@@ -75,7 +75,7 @@ function OrderCell({ actions, item }: { actions: PriorityRowActions; item: Prior
 
 function TitleCell({ actions, item }: { actions: PriorityRowActions; item: PriorityItem }) {
   const open = actions.openId === item.priority.id;
-  const { description, title } = item.priority;
+  const { description, description_tree: descriptionTree, title } = item.priority;
   return (
     <div className="flex min-w-0 items-start gap-1">
       <button
@@ -101,6 +101,7 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
           <PriorityDescription
             canWrite={actions.canWrite}
             description={description}
+            descriptionTree={descriptionTree}
             label={`Description of ${item.order}`}
             onSave={(next) => actions.onDescribe(item, next)}
             rows={6}

@@ -52,10 +52,9 @@ func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.
 		t.Fatalf("log %s in: %v", host, err)
 	}
 	id := rig.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(20 * time.Second)
 	for !b.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's login never issued: %+v", host, b.LoginStatus())
+		if waitsGaveUp(t) {
+			t.Fatalf("%s's login never issued, %s before the test binary's deadline: %+v", host, waitMargin, b.LoginStatus())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -161,7 +160,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := "grant-box-" + t.Name()
-	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: thumbprint}, 10*time.Second)
+	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: thumbprint}, untilGiveUp(t))
 	if err != nil || !enrolled.OK {
 		t.Fatalf("enroll-session-key: %+v %v", enrolled, err)
 	}
@@ -191,7 +190,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	if stdout, stderr, exit := grant("revoke", grantID); exit != 0 || stdout != "revoked "+grantID+" at "+brokerSource(cipheraddr.New(rig.URL)).String()+"\n" || stderr != "" {
 		t.Fatalf("grant revoke: exit %d, stdout %q, stderr %q", exit, stdout, stderr)
 	}
-	if _, err := newClient(cipheraddr.New(rig.URL)).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, nil, releaseCall{}); err == nil {
+	if _, err := newClient(cipheraddr.New(rig.URL)).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, releaseCall{}); err == nil {
 		t.Fatal("the box read the revoked grant's values")
 	}
 	if stdout, _, _ := grant("list"); strings.Contains(stdout, grantID) {
@@ -298,7 +297,7 @@ func startGrantSession(t *testing.T, binary, sock, url string) *grantSession {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(binary, "register", "--exec", "--wait", "5", "--", self, "-test.run", "^TestGrantSessionHelper$")
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(), hostIsolation(t)...),
 		"AGENT_SECRETS_GRANT_HELPER=1",
 		"AGENT_SECRETS_GRANT_BINARY="+binary,
 		"AGENT_SECRETS_GRANT_RESULTS="+results,
@@ -341,7 +340,6 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 		s.t.Fatalf("sending %v to the session: %v", args, err)
 	}
 	s.seen++
-	deadline := time.Now().Add(30 * time.Second)
 	for {
 		data, _ := os.ReadFile(s.resultsPath)
 		if len(data) > 0 {
@@ -354,8 +352,8 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 				return res
 			}
 		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("the session never reported a result for %v", args)
+		if waitsGaveUp(s.t) {
+			s.t.Fatalf("the session never reported a result for %v, %s before the test binary's deadline", args, waitMargin)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

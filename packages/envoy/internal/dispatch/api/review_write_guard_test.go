@@ -5,6 +5,8 @@
 
 package api
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, event_insert_guard_test.go:46, review_order_guard_test.go:49, TestOnlyQueueReviewWritesReviews, one_expression_guard_test.go:72, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
+
 import (
 	"go/ast"
 	"go/parser"
@@ -48,6 +50,7 @@ var (
 // previous release's insert, a row recorded before the column -- so test sources are outside it,
 // as are the migrations, which are SQL files the scan does not read.
 func TestOnlyQueueReviewWritesReviews(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -124,6 +127,7 @@ func reviewTableIdentifiers(file *ast.File, positions *token.FileSet) []int {
 // The patterns read the table under every name a statement can give it, and refuse no other
 // table whose name starts the same way.
 func TestTheReviewWriterPatternsReadEveryNameOfTheTable(t *testing.T) {
+	t.Parallel()
 	for _, statement := range []string{
 		`insert into artifact_reviews (id) values ($1)`,
 		`INSERT INTO public.artifact_reviews (id) values ($1)`,
@@ -153,6 +157,7 @@ func TestTheReviewWriterPatternsReadEveryNameOfTheTable(t *testing.T) {
 // A pgx.Identifier literal naming artifact_reviews, which a CopyFrom writes rows into, is found by
 // its line, and one naming another table is not.
 func TestTheReviewWriterScanFindsAnIdentifierNamingTheTable(t *testing.T) {
+	t.Parallel()
 	positions := token.NewFileSet()
 	file, err := parser.ParseFile(positions, "copy.go", `package x
 

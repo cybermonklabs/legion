@@ -89,6 +89,7 @@ func runDocumentRoomSyncDialing(
 // the request - a client that has hung up included - can keep a room taking edits from the
 // browsers connected to it.
 func TestClosingAnIssueClosesItsRoomsFromItsCommit(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{
@@ -147,6 +148,7 @@ const slowWithdrawal = 4 * time.Second
 // read-only, holding the keystroke. Here the close holds its transaction open for longer than
 // closeMargin after writing the withdrawn block, and the browser types then.
 func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
+	t.Parallel()
 	wrapper := &peerInsertDocs{}
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {

@@ -1,5 +1,8 @@
 package prompts
 
+//ci:reads packages/pi-legion/agents/*.md TestEveryTaskAgentARolePromptDispatchesIsShipped stats agents/<name>.md for each task agent
+//ci:reads skills/legion-worker/references/tools.md TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI reads the skill the headless fragment sends a role to, by relative path
+
 import (
 	"embed"
 	"io/fs"
@@ -11,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -35,11 +39,11 @@ var (
 	}
 	repoSpecific = []string{
 		"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga",
-		// A deployment's own name for itself, for the repository it runs the daemon from, for the
-		// runbook it sends a heavy run to, and for the bucket it keeps one's output in. The match
-		// is case-sensitive, so the deployment's name stands here in both the forms a part could
-		// write it in, the slug and the prose one, as `Inspect` and `inspect_ai` already do.
-		"theorem", "Theorem", "agent-infra", "running-heavy-jobs", "gs://",
+		// The runbook a deployment sends a heavy run to, and the bucket it keeps one's output in.
+		// A deployment's own names are not listed here: this repository is public, so a test of it
+		// cannot hold them. check-private-names refuses those the deployment's own term list holds,
+		// in every file it reads, role parts included.
+		"running-heavy-jobs", "gs://",
 	}
 )
 
@@ -61,6 +65,16 @@ func rolePart(t *testing.T, name string) string {
 	return string(body)
 }
 
+// goPart is one embedded daemon prompt part, by its path under go/.
+func goPart(t *testing.T, name string) string {
+	t.Helper()
+	body, err := goParts.ReadFile("go/" + name)
+	if err != nil {
+		t.Fatalf("read the daemon part go/%s: %v", name, err)
+	}
+	return string(body)
+}
+
 func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 	for _, file := range modeNeutral {
 		text := rolePart(t, file)
@@ -77,21 +91,29 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 // and every go/ part, because the pod memory rule tells a role where its deployment's instructions
 // send a heavy run, and the next hand to write that rule down can spell a deployment's own route
 // out in the architect parts, which this test read nothing of before.
+//
+// Each part is held to two checks: the generic names of repoSpecific, and the rules leakguard
+// ports from .github/scripts/check-private-names.sh's built-in rules. Of a deployment's own names,
+// check-private-names refuses those the deployment's own term list holds, in every file it reads.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
-	for _, file := range reusableParts {
-		text := rolePart(t, file)
+	// leakguard's rules are embedded in it (private-names.toml) and read no input, so this check
+	// runs the same wherever the test runs.
+	guard := leakguard.New(leakguard.Options{})
+	check := func(name, text string) {
 		for _, needle := range repoSpecific {
 			if strings.Contains(text, needle) {
-				t.Errorf("%s contains %q", file, needle)
+				t.Errorf("%s contains %q", name, needle)
 			}
+		}
+		if err := guard.Rules(t.Context(), leakguard.Record{Label: name, Text: text}); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
+	for _, file := range reusableParts {
+		check(file, rolePart(t, file))
+	}
 	err := eachPart(goParts, "go", func(name string, body []byte) error {
-		for _, needle := range repoSpecific {
-			if strings.Contains(string(body), needle) {
-				t.Errorf("go/%s contains %q", name, needle)
-			}
-		}
+		check("go/"+name, string(body))
 		return nil
 	})
 	if err != nil {
@@ -324,6 +346,79 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
+// A pull request in one of GitHub's stacks takes neither of the merger's calls (GitHub refuses
+// `gh pr merge` and `enqueuePullRequest` for it, measured on cybermonklabs/legion#4961 on
+// 2026-11-22), and the stack's own asynchronous merge refuses a GitHub App on a merge-queue base
+// ("Enqueuer is not authorized to merge", github/gh-stack#497, measured on the same pull request
+// with the merge App's token). That merge would also land every open pull request below, which
+// the base holds to its reviews and checks alone and not to its issue's acceptance, retro or
+// design gate. So the merger waits while every pull request below lands through its own issue,
+// then takes the stack apart, after which its pull request merges as any other.
+func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"gh api repos/<o>/<r>/pulls/<n> --jq .stack",
+		"gh api 'repos/<o>/<r>/stacks?pull_request=<n>'",
+		"Where one below yours is open, merge nothing",
+		"gh api -X POST repos/<o>/<r>/stacks/<stack number>/unstack",
+		"yours is now a pull request like any other",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	if strings.Contains(merger, "merge-async") {
+		t.Errorf("roles/merger.md names merge-async, which refuses the App the merger acts as on a merge-queue base")
+	}
+}
+
+// Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
+// merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
+// base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
+// before it merges it, may ask the other workers, and sends the issue back only for a change to the
+// change's own logic. Its part says so, and no longer tells it to hand the conflict to the
+// implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
+func TestTheMergerResolvesAConflictItself(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"## A head that conflicts with its base",
+		"A conflict with the base, and a check the base's newer code breaks, are yours",
+		"Merge; do not rebase.",
+		"git show --remerge-diff <merge>",
+		"so that both sides keep their intent",
+		"adapt the change in the same merge commit",
+		"Merge or enqueue the new head only once the reviewer's approval of it by SHA is on the pull request",
+		"You may ask the implementer, the tester or the reviewer what they know",
+		"Run again what the merge can reach",
+		"so ask each of them, on their role topics, to record their results at the new head",
+		"Where it has none, no approval holds the new head",
+		"### A check that failed",
+		"Read its log, and the same check on the base branch, and decide its cause.",
+		"re-run it, or wait for the base's fix",
+		"Send the issue back with `request_backward_move` only when the fix is a change to the change's own logic that no merge of the base resolves",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	for _, gone := range []string{
+		"the daemon asks the implementer to merge the base forward while the issue stays in `merging`",
+		"That is work to fix. Send the issue back with `request_backward_move`",
+		"You push nothing.",
+	} {
+		if strings.Contains(merger, gone) {
+			t.Errorf("roles/merger.md still says %q", gone)
+		}
+	}
+	goMerger, err := goParts.ReadFile("go/merger.md")
+	if err != nil {
+		t.Fatalf("read go/merger.md: %v", err)
+	}
+	if want := "the daemon sends you a merge-forward message on your role topic"; !strings.Contains(string(goMerger), want) {
+		t.Errorf("go/merger.md does not say %q", want)
+	}
+}
+
 // Every update round a part describes is one a daemon of this release can open. The stale-plugin
 // lane replaces a stale process at a paced wake and asks its worker nothing, so nothing builds a
 // plugin round id any more (supervise's PluginRoundPrefix has no constructor beside PodRound's),
@@ -527,16 +622,15 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 }
 
-// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth and
+// dispatch://INFRA-332's role-prompt rules R1, R2 and R4, dispatch://INFRA-924's fifth and
 // dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
 // when a later edit deletes the rule; it does not show that an agent follows it, which each
-// issue's session runs measure. Each of the first four sentences sits in the core its role
-// composes, so the rule reaches that role and no other: the simplify pass and the class search are
-// the implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
-// planner's, and the planner's WAITING line is phase mechanics, so it lives in its residue rather
-// than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
-// beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
-// would copy from.
+// issue's session runs measure. Each INFRA-332 sentence sits in the core its role composes, so the
+// rule reaches that role and no other: the simplify pass is the implementer's, the procedure and
+// can-fail rules the tester's, the open-decision rule the planner's, and the planner's WAITING line
+// is phase mechanics, so it lives in its residue rather than its core. R5 is the exception: Compose
+// names core/oracle.md for no role, and it is pinned beside core/common.md to keep one wording of
+// that rule in the prompt tree, which a later core would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	// The phrase every part below carries for that rule. Outside these parts,
 	// packages/pi-legion/src/skills-guard.test.ts counts it once, in go/worker-common.md.
@@ -548,15 +642,10 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// R2: the tester runs the procedure, and records only checks that can fail.
 		{"core/tester.md", "A documented procedure is passed only by running it."},
 		{"core/tester.md", "Every check you record must be able to fail"},
-		// R3: after a fix or a forward merge, search the new head for each earlier finding's class.
-		{"core/implementer.md", "search the head you are about to push for the class of every finding of every earlier review round"},
-		{"core/tester.md", "A forward merge still gets the class search"},
-		{"implementer.md", "`classSearch`, one entry per finding of every earlier review round"},
-		{"tester.md", "`classSearch`, one entry per finding of every earlier review round"},
 		// R4: the planner completes no phase with an open decision.
 		{"core/planner.md", "A decision only whoever owns the plan can make is never left open in the plan"},
 		{"core/planner.md", "do not complete the phase, and do not choose for them so the plan can be finished"},
-		{"core/planner.md", "An open decision in a finished plan is a gap the implementation inherits."},
+		{"core/planner.md", "An open decision in a finished plan is a gap the steps after yours inherit."},
 		{"planner.md", "end the turn with a line that begins WAITING, naming the decision"},
 		// R5: a claim cites the file and the symbol or the text it was read at, never a line, in the
 		// core every phase worker but the merger composes and in the oracle core the composer joins for

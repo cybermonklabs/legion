@@ -59,6 +59,7 @@ operator_token_file: ./operator-token
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: ./dispatch-token
 nats_urls: [nats://nats.internal.example:4222]
+notification_stream_max_age_hours: 72
 worker_boot_timeout_seconds: 300
 projects:
   %[1]s: {}
@@ -127,6 +128,7 @@ func controllerSweepKindSpec(project, bootToken, prompt string) runtime.SpawnSpe
 // standing in for the kind cluster, and its controller launch passes the spawn-spec checks. Every
 // step is the one the driver takes before it reaches the cluster.
 func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	server := httptest.NewServer(newIssueSandboxAPI())
 	t.Cleanup(func() { cancel(); server.Close() })

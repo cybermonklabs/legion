@@ -222,19 +222,37 @@ func (c *lagClock) advance(by time.Duration) {
 	c.now = c.now.Add(by)
 }
 
-// lagStandIn is the test's NATS server whose consumers' info reads fail with info when it is set;
-// everything else is the real server's. The test sets it only while no consumer runs, so nothing
-// reads it concurrently.
+// lagStandIn is the test's NATS server whose consumers' info reads fail with info when it is set,
+// and, with uncounted set, count nothing pending and nothing awaiting an ack, as nats-server's do
+// between storing a message and counting it (DispatchPosition); everything else is the real
+// server's. The test sets them only while no consumer runs, so nothing reads them concurrently.
 type lagStandIn struct {
 	jetstream.JetStream
-	info error
+	info      error
+	uncounted bool
 }
 
 func (s *lagStandIn) Consumer(ctx context.Context, stream, name string) (jetstream.Consumer, error) {
 	if s.info != nil {
 		return nil, s.info
 	}
-	return s.JetStream.Consumer(ctx, stream, name)
+	consumer, err := s.JetStream.Consumer(ctx, stream, name)
+	if err != nil || !s.uncounted {
+		return consumer, err
+	}
+	return uncountedConsumer{Consumer: consumer}, nil
+}
+
+// uncountedConsumer is a consumer handle whose info counts nothing pending and nothing awaiting an
+// ack, whatever the server counted (lagStandIn's uncounted).
+type uncountedConsumer struct {
+	jetstream.Consumer
+}
+
+func (c uncountedConsumer) CachedInfo() *jetstream.ConsumerInfo {
+	info := *c.Consumer.CachedInfo()
+	info.NumPending, info.NumAckPending = 0, 0
+	return &info
 }
 
 func lagNames(lags []ConsumerLag) []string {

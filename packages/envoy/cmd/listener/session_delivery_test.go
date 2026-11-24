@@ -895,6 +895,30 @@ func TestSessionConsumerRegistrationTellsTheRelayWhenTheEpochChanges(t *testing.
 	}
 }
 
+// TestAHubRoleClaimSendsNoRelayResume: the resume a role claim's refresh sends is gated to the edge
+// (sessionDelivery.resumeHeld, heldProjects). On a hub heldProjects is false, so a claim tells the
+// relay nothing, and nothing is lost: a hub run ends for want of a consumer or a grant
+// (restartFailed), which a claim cannot cure, and a session the claim moves here has no run, which
+// apply starts on the entry's change. The edge side, where the resume does fire, is
+// TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission.
+func TestAHubRoleClaimSendsNoRelayResume(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	relay := &recordingRelay{}
+	rig.deps.consumers.relay = relay
+	const sessionID = "ses_hub_claim"
+	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],"delivery":{"consumer":true,"epoch":"first"}}`)
+	// The registration told the relay; forget it, so the claim below is weighed alone.
+	relay.mu.Lock()
+	relay.calls = nil
+	relay.mu.Unlock()
+	rig.post(t, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"hub-claim-role"}`)
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	if len(relay.calls) != 0 {
+		t.Fatalf("a hub role claim told the relay %v, want nothing (the resume is gated to the edge)", relay.calls)
+	}
+}
+
 // lockUsers is how many callers hold or wait for sessionID's consumer lock.
 func lockUsers(locks *sessionLocks, sessionID string) int {
 	locks.mu.Lock()
@@ -967,6 +991,12 @@ func TestSessionConsumerRegistrationWritesTheTopicsStoredWhenItHoldsTheLock(t *t
 	const sessionID = "ses_register_stale"
 	const followed = "notifications.dispatch.issue.REGISTERSTALE.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	// The test holds the session's consumer lock while it stores a newer row and writes its
+	// filter (followWhileLocked), two bus calls of its own: the registration waiting for the lock
+	// is given the test's deadline (budgetsUntilTheDeadline), or the hold spends the route's 3.5 s
+	// and the registration answers 503 for the machine's speed, as main did in 5 of 40 runs at a
+	// load of 1,262.
+	budgetsUntilTheDeadline(t, rig)
 
 	unlock := rig.deps.consumers.locks.lock(sessionID)
 	answered := postAsync(rig, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))

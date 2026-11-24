@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -182,6 +184,147 @@ func TestParseBodyRefusesAnyEditedLine(t *testing.T) {
 			mutated[i] = string(b)
 			if _, err := ParseBody(strings.Join(mutated, "\n")); err == nil {
 				t.Fatalf("edited line %d (%q) parsed without error", i, line)
+			}
+		})
+	}
+}
+
+// targetDetail is one agent_secret detail for GITHUB_READ whose locations are locations.
+func targetDetail(locations ...string) AuthorizationDetail {
+	return AuthorizationDetail{Type: KindAgentSecret, Identifier: "GITHUB_READ", Actions: []string{"inject"}, Locations: locations}
+}
+
+// TestARequestRefusesEachTargetItCannotHold: a request object's locations are its target, one
+// GitHub account or repositories of one account, on its one agent_secret detail
+// (validateDetails). Each row breaks one rule, and the refusal names that rule, so a row cannot
+// pass on another row's refusal.
+func TestARequestRefusesEachTargetItCannotHold(t *testing.T) {
+	key, _ := proof.NewKey()
+	now := time.Now()
+	tooMany := make([]string, 101)
+	for i := range tooMany {
+		tooMany[i] = "https://github.com/example-org/repository-" + strconv.Itoa(i)
+	}
+	for _, row := range []struct {
+		name    string
+		details []AuthorizationDetail
+		says    string
+	}{
+		{"on a launcher_credential detail", []AuthorizationDetail{{Type: KindLauncherCredential, Identifier: "box.example", Locations: []string{"https://github.com/example-org"}}}, "launcher_credential"},
+		{"on a request with more than one detail", []AuthorizationDetail{targetDetail("https://github.com/example-org"), {Type: KindAgentSecret, Identifier: "DEEL_API_KEY", Actions: []string{"inject"}}}, "more than one"},
+		{"past 100 entries", []AuthorizationDetail{targetDetail(tooMany...)}, "100"},
+		{"naming two accounts", []AuthorizationDetail{targetDetail("https://github.com/example-org/proofs", "https://github.com/acme/proofs")}, "two accounts"},
+		{"mixing the account form with repository forms", []AuthorizationDetail{targetDetail("https://github.com/example-org", "https://github.com/example-org/proofs")}, "mix the account form"},
+		{"the account form twice", []AuthorizationDetail{targetDetail("https://github.com/example-org", "https://github.com/example-org")}, "mix the account form"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			compact, err := Sign(key, "https://secrets.test", row.details, "read", "", nil, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = VerifyRequestObject(compact, "https://secrets.test", time.Minute, now)
+			if !errors.Is(err, ErrRequestInvalid) || !strings.Contains(err.Error(), row.says) {
+				t.Fatalf("VerifyRequestObject = %v; want ErrRequestInvalid saying %q", err, row.says)
+			}
+		})
+	}
+}
+
+// TestARequestRefusesALocationThatIsNoGitHubTarget: an entry of locations is
+// https://github.com/<account> or https://github.com/<account>/<repository>, the account a GitHub
+// login in lowercase and the repository a name GitHub can hold, and nothing else: no other scheme
+// or host, no deeper path, no query or fragment, no empty name and no rune a name cannot hold, a
+// bidi override among them, which the approval page would otherwise print. Anything else is
+// refused rather than read as a target it does not spell.
+func TestARequestRefusesALocationThatIsNoGitHubTarget(t *testing.T) {
+	key, _ := proof.NewKey()
+	now := time.Now()
+	for _, location := range []string{
+		"",
+		"example-org",
+		"http://github.com/example-org",
+		"https://example.com/example-org",
+		"https://github.com",
+		"https://github.com/",
+		"https://github.com//proofs",
+		"https://github.com/example-org/",
+		"https://github.com/Example-Org",
+		"https://github.com/example-org/proofs/tree",
+		"https://github.com/example-org?tab=repositories",
+		"https://github.com/example-org/proofs#readme",
+		"https://user@github.com/example-org",
+		"https://github.com:443/example-org",
+		"https://github.com/-example-org",
+		"https://github.com/" + strings.Repeat("a", 40),
+		"https://github.com/example-org/..",
+		"https://github.com/example-org/pro ofs",
+		"https://github.com/example-org/proofs\u202e",
+		"https://github.com/example-org/" + strings.Repeat("r", 101),
+	} {
+		t.Run(location, func(t *testing.T) {
+			compact, err := Sign(key, "https://secrets.test", []AuthorizationDetail{targetDetail(location)}, "read", "", nil, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = VerifyRequestObject(compact, "https://secrets.test", time.Minute, now)
+			if !errors.Is(err, ErrRequestInvalid) || !strings.Contains(err.Error(), "is no GitHub target") {
+				t.Fatalf("VerifyRequestObject(%q) = %v; want ErrRequestInvalid saying it is no GitHub target", location, err)
+			}
+		})
+	}
+}
+
+// TestATargetIsReadBackFromItsLocations: a verified request keeps the locations it signed, and
+// Target reads them as the one account and its repositories, sorted and each once, or as the zero
+// Target for a detail that signs none. Target.Locations builds the signed locations back, sorted
+// and each once, which is what a release answers; String names the target as a refusal and the
+// approval page do, its account or each repository as account/name; and Equal holds a target
+// equal to the same account and repositories, and not to another account's.
+func TestATargetIsReadBackFromItsLocations(t *testing.T) {
+	key, _ := proof.NewKey()
+	now := time.Now()
+	for _, row := range []struct {
+		name         string
+		locations    []string
+		account      string
+		repositories []string
+		rebuilt      []string
+		words        string
+	}{
+		{"no target", nil, "", nil, nil, ""},
+		{"an account", []string{"https://github.com/example-org"}, "example-org", nil, []string{"https://github.com/example-org"}, "example-org"},
+		{"repositories of one account", []string{"https://github.com/example-org/proofs", "https://github.com/example-org/lean", "https://github.com/example-org/proofs"}, "example-org", []string{"lean", "proofs"}, []string{"https://github.com/example-org/lean", "https://github.com/example-org/proofs"}, "example-org/lean, example-org/proofs"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			compact, err := Sign(key, "https://secrets.test", []AuthorizationDetail{targetDetail(row.locations...)}, "read", "", nil, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			obj, err := VerifyRequestObject(compact, "https://secrets.test", time.Minute, now)
+			if err != nil {
+				t.Fatalf("VerifyRequestObject: %v", err)
+			}
+			if !slices.Equal(obj.Details[0].Locations, row.locations) {
+				t.Fatalf("the verified detail's locations = %q, want the signed %q", obj.Details[0].Locations, row.locations)
+			}
+			target := obj.Details[0].Target()
+			if target.Account != row.account || !slices.Equal(target.Repositories, row.repositories) {
+				t.Fatalf("Target() = %+v; want %q, %q", target, row.account, row.repositories)
+			}
+			if rebuilt := target.Locations(); !slices.Equal(rebuilt, row.rebuilt) {
+				t.Fatalf("Target().Locations() = %q, want %q", rebuilt, row.rebuilt)
+			}
+			if words := target.String(); words != row.words {
+				t.Fatalf("Target().String() = %q, want %q", words, row.words)
+			}
+			same := Target{Account: row.account, Repositories: slices.Clone(row.repositories)}
+			for _, other := range []Target{
+				{Account: "acme", Repositories: row.repositories},
+				{Account: row.account, Repositories: append(slices.Clone(row.repositories), "site")},
+			} {
+				if !target.Equal(same) || target.Equal(other) {
+					t.Fatalf("Target().Equal: %+v equals %+v %t and %+v %t; want true and false", target, same, target.Equal(same), other, target.Equal(other))
+				}
 			}
 		})
 	}
@@ -383,7 +526,7 @@ func TestAnyoneApproverAdmitsEveryLoginButItself(t *testing.T) {
 		{"Agent_Secret", shared, "bob@example.com", ""},
 		{KindLauncherCredential, owned, "Sami@Example.com", "sami@example.com"},
 	} {
-		got, err := c.body.ApproverLogin(c.kind, "", c.login)
+		got, err := c.body.ApproverLogin(c.kind, "", c.login, nil)
 		if c.want == "" && !errors.Is(err, ErrNotApprover) || c.want != "" && (err != nil || got != c.want) {
 			t.Errorf("ApproverLogin(%s, approver %q, login %q) = %q, %v; want %q", c.kind, c.body.Approver, c.login, got, err, c.want)
 		}
@@ -464,7 +607,7 @@ func TestAServiceLoginIsDecidedByAnyoneAndAPersonsByThemAlone(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: VerifyRequestObject: %v", c.name, err)
 		}
-		got, err := c.body.ApproverLogin(KindLauncherCredential, obj.Service(), c.login)
+		got, err := c.body.ApproverLogin(KindLauncherCredential, obj.Service(), c.login, nil)
 		if c.want == "" && !errors.Is(err, ErrNotApprover) || c.want != "" && (err != nil || got != c.want) {
 			t.Errorf("%s: ApproverLogin(login %q) = %q, %v; want %q", c.name, c.login, got, err, c.want)
 		}
@@ -727,10 +870,10 @@ func TestNoJudgeActorDecidesARecordAsAPerson(t *testing.T) {
 		{KindLauncherCredential, AnyoneApprover, "legion-daemon"},
 		{KindLauncherCredential, judge, "legion-daemon"},
 	} {
-		if MayDecide(c.kind, c.approver, c.service, judge) {
+		if MayDecide(c.kind, c.approver, c.service, judge, nil) {
 			t.Errorf("MayDecide(%s, approver %q, service %q, login %q) admitted the judge as a person", c.kind, c.approver, c.service, judge)
 		}
-		if !MayDecide(c.kind, c.approver, c.service, "sami@example.com") && c.approver != judge {
+		if !MayDecide(c.kind, c.approver, c.service, "sami@example.com", nil) && c.approver != judge {
 			t.Errorf("MayDecide(%s, approver %q, service %q) refused a person too", c.kind, c.approver, c.service)
 		}
 	}

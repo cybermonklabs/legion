@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"unicode"
 )
 
 // DevSignInOrigin returns the host:port of serverURL, the dashboard origin, when it names this
@@ -71,7 +72,9 @@ var forwardingHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Ho
 // authDevSignIn is the local workflow's sign-in: authCallback's recording of the person and
 // issueSession, with the pool's exchange and group check left out. The person is named as the
 // production identities name them, trimmed and lowercased. Only a loopback peer that no proxy
-// forwarded is served, and every mint is logged at WARN.
+// forwarded is served, and every mint is logged at WARN. The browser is sent to the page `next`
+// names on the dashboard origin (devSignInReturn), the dashboard's root without one, and a next
+// off that origin is refused before anyone is recorded or any cookie minted.
 func (r *router) authDevSignIn(w http.ResponseWriter, req *http.Request) {
 	if !LoopbackHostPort(req.RemoteAddr) {
 		writeCodeError(w, http.StatusForbidden, fmt.Sprintf("dev sign-in serves loopback peers only, not %s", req.RemoteAddr), "DEV_SIGNIN_FORBIDDEN")
@@ -88,6 +91,11 @@ func (r *router) authDevSignIn(w http.ResponseWriter, req *http.Request) {
 		writeCodeError(w, http.StatusBadRequest, "login query parameter required", "DEV_SIGNIN_INPUT")
 		return
 	}
+	page, ok := devSignInReturn(req.URL.Query().Get("next"), r.ctx.devSignInOrigin)
+	if !ok {
+		writeCodeError(w, http.StatusBadRequest, "next must name a page of the dashboard origin "+r.ctx.devSignInOrigin, "DEV_SIGNIN_INPUT")
+		return
+	}
 	if err := r.ctx.People.Record(req.Context(), email); err != nil {
 		slog.Error("dispatch: dev sign-in could not record the person", "email", email, "error", err)
 		writeError(w, http.StatusInternalServerError, "record person")
@@ -98,7 +106,48 @@ func (r *router) authDevSignIn(w http.ResponseWriter, req *http.Request) {
 	}
 	slog.Warn("dispatch: dev sign-in minted a session cookie", "email", email, "remote_addr", req.RemoteAddr)
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, req, sanitizeNext(req.URL.Query().Get("next")), http.StatusFound)
+	// The origin is the configured dashboard origin, never anything the request sent, and the "/"
+	// after it ends the authority: whatever page holds, the browser stays on that origin.
+	http.Redirect(w, req, r.ctx.devSignInOrigin+"/"+strings.TrimPrefix(page, "/"), http.StatusFound)
+}
+
+// devSignInReturn is the page, a path with its query and fragment, that next names on origin, the
+// dashboard's scheme://host:port: a path-absolute reference, or an absolute URL of that origin in
+// any case, whose empty path is the root. An empty next is the root. It refuses everything else,
+// so the sign-in sends a browser nowhere but its own origin: another origin, a network-path
+// reference (//host, ///host) and a path that reads as one once unescaped, userinfo, a relative
+// path, and a backslash or control character anywhere, which browsers read as a slash or drop.
+func devSignInReturn(next, origin string) (string, bool) {
+	if next == "" {
+		return "/", true
+	}
+	if strings.HasPrefix(next, "//") || strings.Contains(next, `\`) || strings.IndexFunc(next, unicode.IsControl) >= 0 {
+		return "", false
+	}
+	parsed, err := url.Parse(next)
+	if err != nil || parsed.Opaque != "" || parsed.User != nil {
+		return "", false
+	}
+	page := parsed.EscapedPath()
+	if parsed.Scheme != "" || parsed.Host != "" {
+		if parsed.Scheme == "" || !strings.EqualFold(parsed.Scheme+"://"+parsed.Host, origin) {
+			return "", false
+		}
+		if page == "" {
+			page = "/"
+		}
+	}
+	if !strings.HasPrefix(page, "/") || strings.HasPrefix(parsed.Path, "//") ||
+		strings.Contains(parsed.Path, `\`) || strings.IndexFunc(parsed.Path, unicode.IsControl) >= 0 {
+		return "", false
+	}
+	if parsed.RawQuery != "" {
+		page += "?" + parsed.RawQuery
+	}
+	if parsed.Fragment != "" {
+		page += "#" + parsed.EscapedFragment()
+	}
+	return page, true
 }
 
 // requireHost refuses every request whose Host is not host, the dashboard origin's host:port,

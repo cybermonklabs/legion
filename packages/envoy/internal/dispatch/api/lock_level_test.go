@@ -23,6 +23,8 @@
 
 package api
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources:, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, one_expression_guard_test.go:72, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
+
 import (
 	"path/filepath"
 	"regexp"
@@ -99,11 +101,11 @@ var (
 // makes.
 //
 // Row locks elsewhere are untouched: doc_checkpoints is read plainly under the document lock, and
-// message_deliveries, comment_mentions, comment_deliveries, repo_projects and
-// architecture_sources still use `for update`. A targeted message's own row is taken `for no key
-// update` (message_delivery.go), so the session's reply, whose foreign key takes it `for key
-// share`, never waits on it. The viewer's own state row takes none: its route serialises on the
-// project's advisory owner lock (state.go, store.LockOwner).
+// message_deliveries, comment_mentions, comment_deliveries and architecture_sources still use
+// `for update`. A targeted message's own row is taken `for no key update` (message_delivery.go),
+// so the session's reply, whose foreign key takes it `for key share`, never waits on it. The
+// viewer's own state row takes none: its route serialises on the project's advisory owner lock
+// (state.go, store.LockOwner).
 //
 // The match is statement-scoped and conservative, and it prints the statement rather than naming
 // a table, because which row a statement locks is a property of the whole statement. A lock
@@ -119,6 +121,7 @@ var (
 // strings.Repeat("issues", 0) prints `... for update issues`: the tell is a word the statement
 // did not spell, an owner table outside its `from` or a lock clause the query never assembles.
 func TestNoForUpdateOnOwnerTables(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {

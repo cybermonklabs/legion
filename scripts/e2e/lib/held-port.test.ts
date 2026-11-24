@@ -1,13 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
-import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { isAbsolute, join } from "node:path";
+import { hostGate, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
 // this branch, which serves on it through ENVOY_LISTEN_FD. They read /proc, so they run on Linux,
-// and they build the listener with go; a host that is neither skips them, naming what it lacks.
+// and they build the listener with go; a host that is neither skips them outside CI, naming what
+// it lacks, and fails them by name under GITHUB_ACTIONS (hostGate).
 
 const helper = join(import.meta.dir, "held-port.py");
 const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
@@ -15,6 +16,27 @@ const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
 const work = temporaryDirectory("held-port");
 const listener = join(work, "envoy-listener");
 const O_CLOEXEC = 0o2000000;
+
+// The interpreter python3 reports as sys.executable, resolved once with the caller's environment
+// and run directly, as claude-backend-guards.test.ts's unreadable-environment row runs it: the
+// first python3 on PATH can be a version manager's shim (mise's), which runs the helper with a
+// PATH of its own, so the --pass row read the shim's PATH back from env(1), not the one it gave,
+// and passed or failed by which python3 the machine put first. Without python3 a row fails naming
+// it (requireHostTools).
+let resolvedPython: string | undefined;
+function python(): string {
+  if (resolvedPython !== undefined) return resolvedPython;
+  requireHostTools("python3");
+  const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
+  const path = resolved.stdout.toString().trim();
+  if (resolved.exitCode !== 0 || !isAbsolute(path)) {
+    throw new Error(
+      `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
+    );
+  }
+  resolvedPython = path;
+  return path;
+}
 
 type Running = {
   name: string;
@@ -30,19 +52,18 @@ let nats: Server | undefined;
 const natsClients: Socket[] = [];
 let natsUrl = "";
 
-const onLinux = process.platform === "linux";
-if (!onLinux) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path}. They read /proc, which this host's ` +
-      `${process.platform} does not have; they run on linux.`
-  );
-}
 // Both gates are read, so a host that has neither says so about both.
-const withoutGo = skipWithout("go");
-const skip = !onLinux || withoutGo;
+const host = hostGate({
+  programs: ["go"],
+  reason:
+    process.platform === "linux"
+      ? ""
+      : `They read /proc, which this host's ${process.platform} does not have; they run on linux.`,
+});
+const gated = host.describe;
 
 beforeAll(async () => {
-  if (skip) return;
+  if (host.missing) return;
   const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {
     cwd: envoy,
     stdout: "pipe",
@@ -131,7 +152,7 @@ function start(name: string, argv: string[], stdin: "ignore" | "pipe" = "ignore"
 
 function exec(name: string, portFile: string, command: string[], from?: string): Running {
   return start(name, [
-    "python3",
+    python(),
     helper,
     "exec",
     ...(from ? ["--from", from] : []),
@@ -264,7 +285,7 @@ function closeOnExec(pid: number, fd: number): boolean {
   return (Number.parseInt(flags[1], 8) & O_CLOEXEC) !== 0;
 }
 
-describe.skipIf(skip)("held-port.py exec", () => {
+gated("held-port.py exec", () => {
   test("the listener serves the handed socket on the port in the port file, in the helper's own process", async () => {
     const portFile = join(work, "serves.port");
     const running = exec("exec of the listener", portFile, [listener]);
@@ -284,7 +305,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
     const running = start(
       "exec of a shell that waits, then the listener",
       [
-        "python3",
+        python(),
         helper,
         "exec",
         "--port-file",
@@ -341,12 +362,12 @@ describe.skipIf(skip)("held-port.py exec", () => {
   }, 60_000);
 });
 
-describe.skipIf(skip)("held-port.py keep", () => {
+gated("held-port.py keep", () => {
   test("two listeners started from one keeper serve its port, which stays held between them", async () => {
     const portFile = join(work, "kept.port");
     const socket = join(work, "keeper.sock");
     const keeper = start("the keeper", [
-      "python3",
+      python(),
       helper,
       "keep",
       "--port-file",
@@ -377,4 +398,59 @@ describe.skipIf(skip)("held-port.py keep", () => {
     expect(existsSync(socket)).toBe(false);
     expect(await bindOutcome(port)).toBe("bound");
   }, 120_000);
+});
+
+// --pass needs neither /proc nor the listener: the command is env(1), which prints the environment
+// it was executed with and exits.
+describe("held-port.py exec --pass", () => {
+  // passExec runs held-port.py exec with environment as its own, each name in names given to
+  // --pass, executing env(1), and answers env's exit code, its lines sorted, the helper's stderr
+  // and the port file's path.
+  function passExec(label: string, names: string[], environment: Record<string, string>) {
+    const portFile = join(work, `${label}.port`);
+    const run = Bun.spawnSync(
+      [
+        python(),
+        helper,
+        "exec",
+        "--port-file",
+        portFile,
+        "--fd-env",
+        "LISTEN_FD",
+        "--env",
+        "PORT={port}",
+        ...names.flatMap((name) => ["--pass", name]),
+        "--",
+        "env",
+      ],
+      { env: environment, stdout: "pipe", stderr: "pipe" }
+    );
+    const lines = run.stdout.toString().split("\n").filter(Boolean).sort();
+    return { code: run.exitCode, lines, stderr: run.stderr.toString(), portFile };
+  }
+
+  test("the command's environment is exactly the variables --pass names, the --env pairs and the descriptor's name", () => {
+    const path = Bun.env.PATH ?? "";
+    const url = "postgres://tester:not-a-secret@127.0.0.1:5999/dispatch";
+    const { code, lines, stderr, portFile } = passExec("pass", ["PATH", "DATABASE_URL"], {
+      PATH: path,
+      DATABASE_URL: url,
+      NOT_PASSED: "left behind",
+    });
+    expect(code, stderr).toBe(0);
+    const port = readFileSync(portFile, "utf8").trim();
+    expect(lines).toEqual(
+      [`DATABASE_URL=${url}`, "LISTEN_FD=3", `PATH=${path}`, `PORT=${port}`].sort()
+    );
+  });
+
+  test("a name --pass gives that the environment lacks is refused before the command runs", () => {
+    const { code, lines, stderr, portFile } = passExec("pass-missing", ["PATH", "NOT_SET"], {
+      PATH: Bun.env.PATH ?? "",
+    });
+    expect(code).toBe(1);
+    expect(stderr).toContain("--pass names variables this process's environment lacks: NOT_SET");
+    expect(lines).toEqual([]);
+    expect(existsSync(portFile)).toBe(false);
+  });
 });

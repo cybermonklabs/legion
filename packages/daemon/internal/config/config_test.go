@@ -35,6 +35,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 `
 
 // The five `gates.design` shapes the configuration check drives `legion config check`
@@ -59,6 +60,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 gates:
   design: [decisions, criteria]
 `
@@ -79,6 +81,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 gates:
   design: []
 `
@@ -99,6 +102,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 `
 
 const gatesUnknownWordFile = `project: DEMO
@@ -117,6 +121,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 gates:
   design: sometimes
 `
@@ -137,6 +142,7 @@ github_apps:
     app_id: "2"
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
+notification_stream_max_age_hours: 72
 gates:
   design: [spec, criteria, spec]
 `
@@ -225,6 +231,7 @@ func defaultsFor(port int) Config {
 		WorkerWakeBurst:                         1,
 		EnvoyURL:                                "http://127.0.0.1:9020",
 		NatsURLs:                                []string{"nats://127.0.0.1:4222"},
+		NotificationStreamMaxAge:                72 * time.Hour,
 		DispatchURL:                             "http://127.0.0.1:8080",
 		DispatchTokenFile:                       "/var/run/legion/DISPATCH_TOKEN",
 		Projects:                                map[string]Project{"DEMO": {ProductionCheck: claim.RoleTester}},
@@ -1554,8 +1561,8 @@ func TestLoadRefuses(t *testing.T) {
 		},
 		{
 			name: "a hook naming a move the daemon does not count",
-			body: aHook("{name: stuck, on: work_back, every: 1, moves: [planning-merging], roles: [tester], prompt: Words.}"),
-			want: `hooks[0].moves names "planning-merging", which is no move back the daemon counts: a move is written "<from>-<to>", both of them workflow phases, and the phase it goes to before the phase it leaves`,
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: [testing-testing], roles: [tester], prompt: Words.}"),
+			want: `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two different workflow phases`,
 		},
 		{
 			name: "a hook with both prompt and prompt_file",
@@ -1744,6 +1751,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "nats_nkey_seed_file", line: "nats_nkey_seed_file: /var/run/legion/NATS_NKEY_SEED", class: modelled},
 		{key: "nats_daemon_nkey_seed_file", line: "nats_daemon_nkey_seed_file: /var/run/legion/NATS_DAEMON_NKEY_SEED", class: modelled},
 		{key: "nats_urls", line: "nats_urls: [nats://127.0.0.1:4222]", class: modelled},
+		{key: "notification_stream_max_age_hours", class: modelled},
 		{key: "operator_token_file", line: "operator_token_file: /var/run/legion/OPERATOR_TOKEN", class: modelled},
 		{key: "worker_wakes_per_minute", line: "worker_wakes_per_minute: 8", class: modelled},
 		{key: "worker_wake_burst", line: "worker_wake_burst: 1", class: modelled},
@@ -1977,8 +1985,8 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 		}
 	})
 	for _, tc := range []struct{ name, line, want string }{
-		{"a name that is no deployment capability", `capabilities: {decided: {nonsense: "because"}}`, "unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity"},
-		{"an image row, which no decision covers", `capabilities: {decided: {browser: "no Chromium"}}`, "unknown key capabilities.decided.browser: a decision may name secrets, model-fallback, resource-limits or pool-capacity"},
+		{"a name that is no deployment capability", `capabilities: {decided: {nonsense: "because"}}`, "unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room"},
+		{"an image row, which no decision covers", `capabilities: {decided: {browser: "no Chromium"}}`, "unknown key capabilities.decided.browser: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room"},
 		{"a blank reason", `capabilities: {decided: {secrets: "  "}}`, "capabilities.decided.secrets must not be empty"},
 		{"a null reason", `capabilities: {decided: {secrets: }}`, "capabilities.decided.secrets must not be empty"},
 		{"a reason that is not a string", `capabilities: {decided: {secrets: [a, b]}}`, "capabilities.decided.secrets must be a string"},

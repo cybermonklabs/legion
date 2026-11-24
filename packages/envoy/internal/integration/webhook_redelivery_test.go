@@ -30,7 +30,7 @@ const redeliverySecret = "redelivery-secret"
 
 func TestWebhookRedelivery_AGitHubRedeliveryLandsOnceAndAnotherDeliveryLands(t *testing.T) {
 	env := setupTestEnv(t)
-	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", env.client, refusingRecorder{t})
+	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	body := `{
 		"action": "submitted",
 		"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"},
@@ -53,7 +53,7 @@ func TestWebhookRedelivery_AGitHubRedeliveryLandsOnceAndAnotherDeliveryLands(t *
 // trigger): each copy lands once, and the redelivery adds none.
 func TestWebhookRedelivery_AGitHubFanOutLandsOncePerTopic(t *testing.T) {
 	env := setupTestEnv(t)
-	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", env.client, refusingRecorder{t})
+	handler := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	body := `{
 		"action": "created",
 		"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"},
@@ -78,7 +78,7 @@ func TestWebhookRedelivery_AGitHubFanOutLandsOncePerTopic(t *testing.T) {
 
 func TestWebhookRedelivery_ASlackRetryLandsOnceAndAnotherEventLands(t *testing.T) {
 	env := setupTestEnv(t)
-	handler := webhook.SlackHandler(redeliverySecret, env.client)
+	handler := webhook.SlackHandler(redeliverySecret, env.client, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	event := func(eventID string) string {
 		return fmt.Sprintf(`{"type":"event_callback","team_id":"T1","event_id":%q,"event":{"type":"message","channel":"C1","user":"U1","text":"hello","ts":"1700000000.000100"}}`, eventID)
 	}
@@ -98,7 +98,7 @@ func TestWebhookRedelivery_ASlackRetryLandsOnceAndAnotherEventLands(t *testing.T
 // words at all. End to end, over a signed post, those words must reach the stream.
 func TestSlackAttachmentWordsReachTheStream(t *testing.T) {
 	env := setupTestEnv(t)
-	handler := webhook.SlackHandler(redeliverySecret, env.client)
+	handler := webhook.SlackHandler(redeliverySecret, env.client, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	body := `{"type":"event_callback","team_id":"T1","event_id":"Ev_attachment_1","event":{"type":"message","subtype":"bot_message","channel":"C1","bot_id":"B1","username":"datadog","ts":"1700000000.000100","text":"","attachments":[{"title":"[Triggered] CPU load high","text":"host web-1 is at 97% for 10 minutes","fallback":"[Triggered] CPU load high"}]}}`
 
 	postSlack(t, handler, body)
@@ -121,7 +121,7 @@ func TestSlackAttachmentWordsReachTheStream(t *testing.T) {
 
 func TestWebhookRedelivery_AGhostWisprRedeliveryLandsOnceAndAnotherDeliveryLands(t *testing.T) {
 	env := setupTestEnv(t)
-	handler := webhook.GhostWisprHandler(redeliverySecret, env.client)
+	handler := webhook.GhostWisprHandler(redeliverySecret, env.client, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	body := `{"event_type":"summary_ready","payload":{"session_id":"20260326041629","type":"summary_ready"}}`
 
 	postGhostWispr(t, handler, "gw-1", body)
@@ -275,7 +275,7 @@ func TestWebhookRedelivery_AFanOutThatFailedPartWayIsCompletedByTheRedelivery(t 
 
 	// The first attempt publishes the first topic and fails on the second.
 	failing := &failAfter{inner: env.client, after: 1}
-	partial := webhook.GitHubHandler(redeliverySecret, "@legion", "", failing, refusingRecorder{t})
+	partial := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", failing, refusingRecorder{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	postGitHubExpecting(t, partial, "issue_comment", "delivery-partial", body, http.StatusServiceUnavailable)
 	if failing.published != 1 {
 		t.Fatalf("the first attempt published %d envelopes, want the one before the failure", failing.published)
@@ -290,7 +290,7 @@ func TestWebhookRedelivery_AFanOutThatFailedPartWayIsCompletedByTheRedelivery(t 
 	}
 
 	// GitHub redelivers the failed delivery, now against a listener whose publishes all succeed.
-	whole := webhook.GitHubHandler(redeliverySecret, "@legion", "", env.client, refusingRecorder{t})
+	whole := webhook.GitHubHandler(redeliverySecret, "@legion", "", "", env.client, refusingRecorder{t}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	postGitHub(t, whole, "issue_comment", "delivery-partial", body)
 
 	for _, topic := range topics {
@@ -308,11 +308,11 @@ type failAfter struct {
 	published int
 }
 
-func (p *failAfter) PublishWithin(ctx context.Context, item contracts.Envelope) error {
+func (p *failAfter) PublishEachWithin(ctx context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
 	if p.published >= p.after {
 		return fmt.Errorf("publish refused after %d envelopes", p.after)
 	}
-	if err := p.inner.PublishWithin(ctx, item); err != nil {
+	if err := p.inner.PublishEachWithin(ctx, item, published); err != nil {
 		return err
 	}
 	p.published++

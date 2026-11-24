@@ -15,6 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -77,22 +78,42 @@ func (n *NATS) Subscribe(sessionID string, deliver func(Frame)) (func(), error) 
 	return func() { _ = subscription.Unsubscribe() }, nil
 }
 
+// Replay asks on a reply subject that names the session (bus.SessionReplySubject under a new
+// inbox): a session's own grant (natsgrant.Session) publishes bus.SessionReplies, its replies
+// under its own id alone, in place of every _INBOX. subject, so a session on that grant cannot
+// answer nats.go's own request inbox, and no other session on such a grant can answer this one. A
+// holder of the shared session user or of a host user subscribes every session's control subject
+// and may publish to every _INBOX. subject, so it still can, and Replay returns whatever history
+// it sends. The answer is taken over a channel subscription of this request's own, as
+// bus.Client.RequestCore takes the connection probe's.
 func (n *NATS) Replay(ctx context.Context, sessionID string) (Frame, error) {
-	reply, err := n.conn.RequestWithContext(ctx, contracts.AgentStreamControlSubject(sessionID), []byte(controlReplay))
-	switch {
-	case err == nil:
-		frame := make(Frame, len(reply.Data))
-		copy(frame, reply.Data)
-		return frame, nil
-	case errors.Is(err, nats.ErrNoResponders):
-		// Nobody is listening on the session's control subject.
-		return nil, ErrNoResponder
-	case errors.Is(err, nats.ErrTimeout), errors.Is(err, context.DeadlineExceeded):
-		// Somebody may well be there and slow: the viewer gets the live stream with no history
-		// behind it, which is what a session that just started offers anyway.
-		return nil, nil
-	default:
+	reply := bus.SessionReplySubject(nats.NewInbox(), sessionID)
+	replies := make(chan *nats.Msg, nats.RequestChanLen)
+	subscription, err := n.conn.ChanSubscribe(reply, replies)
+	if err != nil {
 		return nil, fmt.Errorf("request agent stream replay: %w", err)
+	}
+	defer func() { _ = subscription.Unsubscribe() }()
+	if err := n.conn.PublishRequest(contracts.AgentStreamControlSubject(sessionID), reply, []byte(controlReplay)); err != nil {
+		return nil, fmt.Errorf("request agent stream replay: %w", err)
+	}
+	select {
+	case answer := <-replies:
+		if len(answer.Data) == 0 && answer.Header.Get("Status") == "503" {
+			// Nobody is listening on the session's control subject: the server's no-responders
+			// status.
+			return nil, ErrNoResponder
+		}
+		frame := make(Frame, len(answer.Data))
+		copy(frame, answer.Data)
+		return frame, nil
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// Somebody may well be there and slow: the viewer gets the live stream with no history
+			// behind it, which is what a session that just started offers anyway.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("request agent stream replay: %w", ctx.Err())
 	}
 }
 
