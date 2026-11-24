@@ -576,20 +576,28 @@ func (r *conflictMergerLive) pullRequest() record.PullRequest {
 // makes, once the move commits (workflow's arrive), naming the phase it left (`from`) and the
 // phase it entered (`to`). A parent held before its retro (holdBeforeRetro) is logged with its
 // retro as `to` while it stands held. No other write of an issue's phase logs the line: a failed
-// claim's hold and its release (retryPhase); a stopped task's hold (stopTask), its restart at its
-// first step (restartTask) and its wait for that step again (waitForFirstStep); a held parent's
-// start of its retro (startHeldRetro); a lingering tree's member closed at its merge
-// (closeMerged); a leave that writes done (endTaskWithLeave) and a member an adoption parks at
-// done (AdoptMember); a root's move into awaiting_person (enterAwaiting) and admission's move of
-// it back to admitted once its wait is answered; and the record of an issue at admitted: a new
-// root's, a re-admitted root's and the record of a child that enters its tree (enterChild).
+// claim's hold (claimFailed) and its release (retryPhase); a stopped task's hold (stopTask), its
+// restart at its first step (restartTask) and its wait for that step again (waitForFirstStep); a
+// held parent's start of its retro (startHeldRetro); a lingering tree's member closed at its merge
+// (closeMerged); a leave that writes done (endTaskWithLeave) and a member an adoption parks at done
+// (moveIntoTree); a root's move into awaiting_person (enterAwaiting) and admission's move of it
+// back to admitted once its wait is answered; and the record of an issue at admitted: a new root's,
+// a re-admitted root's and the record of a child that enters its tree (enterChild).
 //
-// The proof meets none of them. Its root is seeded in accepting with no child, and the driver
-// sends no stop, plan, retry, adoption or Dispatch event. GitHub's merge closes the root through
-// the table, because its tree lingers only once the root has left, and the leave that follows
-// finds it done already. The driver scripts no failure of the fake runtime. A claim that failed
-// anyway would hold the issue, and nothing in the run releases a hold: one before merging stops
-// the driver's next step, and step 5's check of the watch refuses every read that shows held.
+// The run moves no phase through any of them. Its root is seeded in accepting with no child, and
+// the driver sends no stop, plan, retry, adoption or Dispatch event. GitHub's merge closes the root
+// through the table, because its tree lingers only once the root has left. The root's leave that
+// follows does reach one of them: beginLinger runs endTaskWithLeave, which writes done over the
+// done the move wrote and so changes no phase. The driver scripts no failure of the fake runtime
+// either. A claim that failed anyway holds the issue only where its role works the issue's phase
+// and is not an architect (claimFailed): here the implementer's in retro and the merger's in
+// merging. A failed claim of any other role holds nothing. A hold in retro fails the driver before
+// retro ends, since the daemon refuses the retro completion of a held issue, and a hold from
+// merging before step 4's last read of the issue fails a read that wants merging. The one release
+// of a hold in the run is GitHub's merge of an issue held from merging (closeMerged), which the
+// daemon logs as merging to done. So a hold from merging after step 4's last read leaves the three
+// moves in the log, and step 5's check of the watch refuses it only where one of the watch's reads
+// fell inside it.
 const phaseChangedLine = "workflow: phase changed"
 
 // phaseMoves is each move of the issue the daemon logged (phaseChangedLine), oldest first, as
