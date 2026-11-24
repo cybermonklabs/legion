@@ -212,7 +212,7 @@ func TestTheRunAClaimServes(t *testing.T) {
 			name: "a phase task on a claim left serving a look: the look goes with the phase work",
 			claim: Claim{ServingGeneration: 5, ServedEntry: 4, ServingCheckLook: look, Pending: &Delivery{
 				Generation: 6, Entry: 6, Phase: phase.Testing, DeliveredAt: at, ConfirmedAt: at}},
-			serving: 6, entry: 6,
+			serving: 6, entry: 6, look: look,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
