@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 244, which adds to the state each issue's own Dispatch
+  The plugin speaks daemon API contract 250, which adds to the state each issue's own Dispatch
   `priority` and the priority that placed an issue in the admission waiting line. The
   controller's admission reference says the line is ordered by priority first, and by its
   earlier order within one priority.

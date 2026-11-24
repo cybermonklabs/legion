@@ -790,7 +790,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The band from pauseContract to below shapedAnswersContract: the project's pause is served
 		// too, and the claim views' keys of contract 193, the repositories block this daemon
 		// writes, which is served in contract 152's shape, each assignment's `plan`, the state's
-		// `intakeGiveUps` of contract 228 and each issue's `priority` of contract 244 are the five
+		// `intakeGiveUps` of contract 228 and each issue's `priority` of contract 250 are the five
 		// bands left above it. The repository caches' row is served without its `source` here as
 		// in every band below, the value cachesSourceContract added.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},

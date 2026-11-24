@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  The daemon API schemas describe contract 244: each issue carries `priority`, its own Dispatch
+  The daemon API schemas describe contract 250: each issue carries `priority`, its own Dispatch
   priority (0 for P0 to 3 for P3, or null for none), and the issue's place in the waiting line
   carries `priority`, the priority that placed it (its own, else its tree root's, or null for one
   that waits after P3). The line is ordered by that priority first, and `partPlace` and

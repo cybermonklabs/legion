@@ -2758,7 +2758,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
   // Four bands stand above 199: the repositories block's at 202, contract 220's, which takes
   // `plan` off each assignment, the intake's give-ups' at 228, so the narrowing leaves
-  // `intakeGiveUps` off, and contract 244's, which takes `priority` off each issue and off its
+  // `intakeGiveUps` off, and contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`, so the golden's issues are compared without `plan` and `priority`. One value
   // strip stands above 199 as well: `caches`, the source of the repository-cache-room row, arrived
   // at contract 213, so that row is served here without its `source`, every other field of it and

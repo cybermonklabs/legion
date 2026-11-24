@@ -525,7 +525,7 @@ const legionSlotView = z.object({
  * its own part alone, so a returned member names no rank and a starting member no `since`; and a
  * caller below the contract that brought `partPlace` and the rest of them, contract 85, is served
  * `place` and `length` alone, with no field of theirs on the wire at all; `priority` came with
- * contract 244, and a caller below it is served every member without it.
+ * contract 250, and a caller below it is served every member without it.
  *
  * `part` and `kind` are written as the enums they are, which is how `LEGION_WAIT_ANSWERS` writes
  * the acts that end a root's wait: a `z.enum` refuses a value it does not name rather than dropping
@@ -792,11 +792,11 @@ const legionIssue = z.object({
   ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
   /** The issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for an issue with none
-   * (contract 244): the priority Dispatch sends on the issue itself. The admission line places an
+   * (contract 250): the priority Dispatch sends on the issue itself. The admission line places an
    * issue at this priority, else at its tree root's, and the line's own `priority` says which.
    * Present on every issue the workflow records; absent on an issue it does not record (phase
    * `unrecorded`, an operator's claim), and from every issue of the body the route serves a
-   * caller below 244. */
+   * caller below 250. */
   priority: z.number().int().min(0).max(3).nullable().optional(),
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   pullRequest: legionPullRequestView.optional(),
