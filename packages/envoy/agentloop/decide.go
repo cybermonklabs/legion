@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"net/url"
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // decidePath is the path a decision is posted to, under the endpoint's base URL.
@@ -262,17 +262,15 @@ func readDecisions(answer redact.Answer) (map[string]Decision, *systemOneUsage, 
 }
 
 // decideURL is the URL a decision is posted to: base, the endpoint's base URL, with decidePath
-// joined onto its path (url.URL.JoinPath), its query kept and its fragment, which no request
-// sends, dropped, where decidePath appended to base's text would sit inside a query or a fragment
-// and the endpoint would be asked another path. A base URL that does not parse is refused in
-// fixed words: url.Parse's error quotes it whole, user information and query included.
+// joined onto its path (urljoin.Join), its query kept and its fragment, which no request sends,
+// dropped, where decidePath appended to base's text would sit inside a query or a fragment and the
+// endpoint would be asked another path. A base URL that does not parse or names no host is refused
+// in fixed words: url.Parse's error quotes it whole, user information and query included.
 func decideURL(base string) (string, error) {
-	parsed, err := url.Parse(base)
+	joined, err := urljoin.Join(base, decidePath)
 	if err != nil {
 		return "", fmt.Errorf("agentloop: the %s endpoint's base URL does not parse", SystemOne)
 	}
-	joined := parsed.JoinPath(decidePath)
-	joined.Fragment, joined.RawFragment = "", ""
 	return joined.String(), nil
 }
 

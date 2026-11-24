@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -175,11 +176,11 @@ func (p *PoolIdentity) federate(ctx context.Context, subject, subjectType string
 // iamURL, or Google's own service where it is empty. Every error names the account as named
 // says. A workload identity pool spends its federated token here, and an external_account
 // credential the access token it mints. The call's URL is iamURL with the resource's path joined
-// onto its path (url.URL.JoinPath), its query kept and its fragment, which no request sends,
-// dropped: the path appended to iamURL's text would sit inside a query or a fragment, and IAM
-// Credentials would be asked another path. An iamURL that does not parse is refused by its class
-// (redact.Class), as postGoogle refuses a request it could not build: url.Parse's error quotes the
-// URL whole, user information and query included.
+// onto its path (urljoin.Join), its query kept and its fragment, which no request sends, dropped:
+// the path appended to iamURL's text would sit inside a query or a fragment, and IAM Credentials
+// would be asked another path. An iamURL that does not parse or names no host is refused by its
+// class, "not a valid URL" (redact.ClassNotAURL), as postGoogle refuses a request it could not
+// build: url.Parse's error quotes the URL whole, user information and query included.
 func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAccount, named, audience, bearer string) (string, error) {
 	origin := iamURL
 	if origin == "" {
@@ -188,12 +189,10 @@ func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAc
 	// The endpoint's path holds the account, whose `@` internal/redact's allow-list never prints,
 	// so a message names the service by its origin and the account beside it, as named says.
 	at := "IAM Credentials' generateIdToken at " + redact.URL(origin) + " for " + named
-	base, err := url.Parse(origin)
+	call, err := urljoin.Join(origin, "v1/projects/-/serviceAccounts/"+url.PathEscape(serviceAccount)+":generateIdToken")
 	if err != nil {
-		return "", fmt.Errorf("mint this machine's identity token with %s: %w", at, redact.Class(err))
+		return "", fmt.Errorf("mint this machine's identity token with %s: %w", at, redact.Masked(err, redact.ClassNotAURL))
 	}
-	call := base.JoinPath("v1/projects/-/serviceAccounts", url.PathEscape(serviceAccount)+":generateIdToken")
-	call.Fragment, call.RawFragment = "", ""
 	body, err := json.Marshal(map[string]any{"audience": audience, "includeEmail": true})
 	if err != nil {
 		return "", fmt.Errorf("build the generateIdToken request: %w", err)

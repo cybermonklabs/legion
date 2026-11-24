@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -16,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // reportTimeout bounds one report's call. A turn's outcome is a few hundred bytes to a daemon on
@@ -61,20 +61,20 @@ type turnReports struct {
 // startTurnReports is the reporter for cfg, or nil when the environment the bridge was given names
 // no daemon, no boot token file or no generation: a bridge run by hand reports to nobody. A boot
 // token file it cannot read is the same, said once, since nothing it could report would
-// authenticate, and so is a LEGION_DAEMON_URL that does not parse, said once in the bridge's own
-// words: url.Parse's error quotes the URL whole, its user information and query included. The
-// report's URL is the daemon's with the route joined onto its path (url.URL.JoinPath), its query
-// kept and its fragment, which no request sends, dropped: the route appended to the URL's text
-// would sit inside a query or a fragment, and the report would go to the wrong path. Its client
-// follows no redirect (redirects.Refused): every report carries the boot token in its body, which
-// a followed 307 or 308 would send to the host the Location names, and the daemon's turn-outcome
-// route answers none. A 3xx is the daemon's answer, refused by its status (post).
+// authenticate, and so is a LEGION_DAEMON_URL that does not parse or names no host, said once in
+// the bridge's own words: url.Parse's error quotes the URL whole, its user information and query
+// included. The report's URL is the daemon's with the route joined onto its path (urljoin.Join),
+// its query kept and its fragment, which no request sends, dropped: the route appended to the
+// URL's text would sit inside a query or a fragment, and the report would go to the wrong path. Its
+// client follows no redirect (redirects.Refused): every report carries the boot token in its body,
+// which a followed 307 or 308 would send to the host the Location names, and the daemon's
+// turn-outcome route answers none. A 3xx is the daemon's answer, refused by its status (post).
 func startTurnReports(cfg Config, logger *log.Logger) *turnReports {
 	if cfg.DaemonURL == "" || cfg.BootTokenFile == "" || cfg.Generation == 0 {
 		logger.Printf("reporting no turn outcomes: this pane names %s", missingReportInputs(cfg))
 		return nil
 	}
-	daemon, err := url.Parse(cfg.DaemonURL)
+	report, err := urljoin.Join(cfg.DaemonURL, "legion/v1/claims/turn-outcome")
 	if err != nil {
 		logger.Printf("reporting no turn outcomes: LEGION_DAEMON_URL does not parse as a URL (its value is not printed)")
 		return nil
@@ -84,8 +84,6 @@ func startTurnReports(cfg Config, logger *log.Logger) *turnReports {
 		logger.Printf("reporting no turn outcomes: the boot token the daemon would recognise this claim by could not be read: %v", err)
 		return nil
 	}
-	report := daemon.JoinPath("legion/v1/claims/turn-outcome")
-	report.Fragment, report.RawFragment = "", ""
 	return &turnReports{
 		url:        report.String(),
 		bootToken:  strings.TrimSpace(string(token)),
