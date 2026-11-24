@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestAnswerBlockAskWritesItsServerStateIntoTheDocument(t *testing.T) {
@@ -72,43 +73,43 @@ func TestSearchAskBlockOptionDescription(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	// The settle of the block into the inbox ends the wait, bounded only by the test binary's
+	// deadline (testwait.UntilPolling): a loaded machine delays it without anything being wrong,
+	// and a span of one second failed the row in a parallel run of the package's tests.
+	ask := testwait.UntilPolling(t, 10*time.Millisecond, "the typed ask block to settle into the inbox", func() (model.Ask, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID == nil || *ask.BlockID != "agent-ask" {
-				continue
+			if ask.BlockID != nil && *ask.BlockID == "agent-ask" {
+				return ask, true
 			}
-			if ask.Question != "Should we ship?" || ask.State != "open" || ask.Urgency != "high" ||
-				ask.BlockArtifact == nil || ask.BlockArtifact.ID != issue.PrimaryArtifactID || !ask.BlockArtifact.Primary {
-				t.Fatalf("inbox ask = %#v", ask)
-			}
-			search := searchResponse(t, handler, "q=ship")
-			if len(search.Results) == 0 || search.Results[0].Kind != "ask" ||
-				search.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
-				t.Fatalf("ask search results = %#v", search.Results)
-			}
-			optionSearch := searchResponse(t, handler, "q=review")
-			if len(optionSearch.Results) != 1 || optionSearch.Results[0].Kind != "ask" ||
-				optionSearch.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
-				t.Fatalf("option-label search results = %#v", optionSearch.Results)
-			}
-			text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
-			if text.Code != http.StatusOK || strings.Contains(text.Body.String(), `state=\"answered\"`) {
-				t.Fatalf("agent-owned server state survived in document: status=%d body=%s", text.Code, text.Body.String())
-			}
-			events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
-			if events.Code != http.StatusOK || strings.Contains(events.Body.String(), `"type":"block.repaired"`) {
-				t.Fatalf("agent write emitted a repair event: status=%d body=%s", events.Code, events.Body.String())
-			}
-			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		return model.Ask{}, false
+	})
+	if ask.Question != "Should we ship?" || ask.State != "open" || ask.Urgency != "high" ||
+		ask.BlockArtifact == nil || ask.BlockArtifact.ID != issue.PrimaryArtifactID || !ask.BlockArtifact.Primary {
+		t.Fatalf("inbox ask = %#v", ask)
 	}
-	t.Fatal("typed ask block did not settle into the inbox")
+	search := searchResponse(t, handler, "q=ship")
+	if len(search.Results) == 0 || search.Results[0].Kind != "ask" ||
+		search.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
+		t.Fatalf("ask search results = %#v", search.Results)
+	}
+	optionSearch := searchResponse(t, handler, "q=review")
+	if len(optionSearch.Results) != 1 || optionSearch.Results[0].Kind != "ask" ||
+		optionSearch.Results[0].Href != "/issues/"+issue.Key+"/spec#b-agent-ask" {
+		t.Fatalf("option-label search results = %#v", optionSearch.Results)
+	}
+	text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
+	if text.Code != http.StatusOK || strings.Contains(text.Body.String(), `state=\"answered\"`) {
+		t.Fatalf("agent-owned server state survived in document: status=%d body=%s", text.Code, text.Body.String())
+	}
+	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
+	if events.Code != http.StatusOK || strings.Contains(events.Body.String(), `"type":"block.repaired"`) {
+		t.Fatalf("agent write emitted a repair event: status=%d body=%s", events.Code, events.Body.String())
+	}
 }
 
 func TestAskBlockWithoutOptionsSettles(t *testing.T) {
@@ -131,17 +132,16 @@ func TestAskBlockWithoutOptionsSettles(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write no-option ask: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	// The settle ends the wait, as in TestSearchAskBlockOptionDescription.
+	testwait.UntilPolling(t, 10*time.Millisecond, "the no-option ask to settle into the inbox", func() (struct{}, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
 			if ask.BlockID != nil && *ask.BlockID == "no-options" {
-				return
+				return struct{}{}, true
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("no-option ask did not settle")
+		return struct{}{}, false
+	})
 }
 
 func TestDocumentRetypeRejectsUnknownTypeAndInvalidAttributes(t *testing.T) {
