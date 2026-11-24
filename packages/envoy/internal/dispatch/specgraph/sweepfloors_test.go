@@ -84,7 +84,7 @@ func sweepFloors() map[string]map[string]sweepFloor {
 			"carry with m2's failure and a later pass of m2":                             {read: 201, refused: 374},
 			"carry with c2's failure between c1's pass and c1's failing example":         {read: 201, refused: 374},
 			"carry with its failing example planted by no step":                          {read: 201, refused: 374},
-			"earlier-text":           {read: 107, refused: 193},
+			"earlier-text":           {read: 108, refused: 192},
 			"one-commit-two-answers": {read: 208, refused: 302},
 			"production-and-graph":   {read: 77, refused: 129},
 			"production-and-graph with CI's refusal at c1 of its check of the graph as a query of production":                 {read: 77, refused: 129},

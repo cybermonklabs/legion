@@ -70,10 +70,10 @@ const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_c
 // removed or partly_checked, since false is a value of each, a node with no version, version
 // numbers that do not go up from 1, a version with no time or with one older than the one before
 // it, a block that is not its node's one block as Print writes it or whose id is no id
-// (versionText), a block that names at a relation no node of the approved spec of the kind that
-// the relation needs (relationFault), naming the version, and a loop of parent and serves
-// relations among the current statements, as Validate's loop rule writes it. It reads the whole
-// file, with no bound on its size.
+// (versionText), a block that names at a relation no node of the approved spec, or, as the current
+// text of a node that the approved spec keeps, a node of a kind that the relation may not name
+// (relationFault), naming the version, and a loop of parent and serves relations among the current
+// statements, as Validate's loop rule writes it. It reads the whole file, with no bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -131,8 +131,9 @@ func (f ApprovedFile) approved() (Approved, error) {
 // each node an id that a node before it has too, or a fault of its id or of its texts
 // (ApprovedNode.texts), then of each node a member that it does not set
 // (ApprovedNode.unsetMemberFault); then a fault between two nodes, of each node a relation of one
-// of its texts that names no node of the approved spec of a kind that it may name (relationFault),
-// kept or removed; and last a loop of parent and serves relations among the current statements
+// of its texts that names no node of the approved spec, kept or removed, or, of its current text
+// where the approved spec keeps it, a node of a kind that the relation may not name
+// (relationFault); and last a loop of parent and serves relations among the current statements
 // (R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a
 // change that makes one"), the first that findLoops gives. The kind of a node is the kind of its
 // newest text. The derivation reads the tree of each statement down its relations, so a statement
@@ -158,7 +159,7 @@ func approvedFault(nodes []ApprovedNode) error {
 	var current []Statement
 	for i, n := range nodes {
 		for j, text := range texts[i] {
-			if detail := relationFault(text.node, kinds); detail != "" {
+			if detail := relationFault(text.node, kinds, j == len(texts[i])-1 && !n.removed()); detail != "" {
 				return fmt.Errorf("specgraph: approved node %s version %d: %s (line %d of its block)", quoted(n.ID), n.Versions[j].Version, detail, text.pos.Line)
 			}
 		}
@@ -264,7 +265,7 @@ func (a Approved) Current() (Tree, []Problem) {
 		}
 	}
 	for _, k := range kept {
-		if detail := relationFault(k.node, kinds); detail != "" {
+		if detail := relationFault(k.node, kinds, true); detail != "" {
 			problems = append(problems, idProblem(k.pos, k.id, detail))
 			continue
 		}
@@ -327,23 +328,30 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 }
 
 // relationFault is the refusal of the first relation of node, the one node of an approved block,
-// that names no node of the approved spec of a kind that the relation may name (relationKinds),
-// or "". kinds is the kind of each node of the approved spec, kept or removed (kindOf). The
-// derivation reads a relation only to a node of its kind, so another would read as no relation: a
-// statement at the top of the tree in place of under its parent, or a supporter that supports
-// nothing, which can make a statement met. R22: "Dispatch refuses the approval of a change request
-// that puts a statement under a parent that the approved spec does not hold", so the approved spec
-// holds no such relation, and Validate refuses one in the files by the same kinds. A value that is
-// no id names no node, since the id of each node is an id (versionText). A node that the approved
-// spec removed is one that it holds, so a relation to it is taken: the derivation reads the current
-// tree, which leaves the removed node out.
-func relationFault(node any, kinds map[string]string) string {
+// that names no node of the approved spec, or, where current, a node of a kind that the relation
+// may not name (relationKinds), or "". kinds is the kind of each node of the approved spec, kept or
+// removed (kindOf). current is whether node is the current text of a node that the approved spec
+// keeps, the text that Current, the derivation and Validate read. The derivation reads a relation
+// only to a node of its kind, so another would read as no relation: a statement at the top of the
+// tree in place of under its parent, or a supporter that supports nothing, which can make a
+// statement met. R22: "Dispatch refuses the approval of a change request that puts a statement
+// under a parent that the approved spec does not hold", so the approved spec holds no such
+// relation, and Validate refuses one in the files by the same kinds. An older text, or the text of
+// a removed node, is judged only by the nodes that it names: the derivation reads none of its
+// relations, and R15: "An interface is a component marked as an interface", so a component that
+// such a text names as its parent can be an interface now. Dispatch keeps each text that the
+// approved spec held (R2), so a node that a text named is in the approved spec still, and a
+// relation of any text to no node is refused. A value that is no id names no node, since the id of
+// each node is an id (versionText). A node that the approved spec removed is one that it holds, so
+// a relation to it is taken: the derivation reads the current tree, which leaves the removed node
+// out.
+func relationFault(node any, kinds map[string]string, current bool) string {
 	for _, r := range relationsOf(node) {
 		kind, held := kinds[r.id]
 		switch {
 		case !held:
 			return fmt.Sprintf("bad-approved-block: %s %s names no node of the approved spec", r.member, quoted(r.id))
-		case !slices.Contains(r.kinds, kind):
+		case current && !slices.Contains(r.kinds, kind):
 			wanted := make([]string, len(r.kinds))
 			for i, k := range r.kinds {
 				wanted[i] = withArticle(k)

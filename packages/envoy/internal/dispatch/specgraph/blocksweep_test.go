@@ -21,9 +21,10 @@ import (
 // names (relationKinds); and each attribute of the opening line of each block of approved.json
 // left out, in approved.json alone and in the spec files that hold the same line too
 // (leftOutAttributes). No such input may move a state toward true: the reader refuses a relation
-// of an approved block that names no node of the approved spec of its kind (relationFault), a
-// check's serves left out among them, and Validate refuses one in the files by the same kinds. One
-// right: a parent left out (parentLeftOut). Each write is read back against the text that the input
+// of an approved block that names no node of the approved spec, or, in the current text of a node
+// that the approved spec keeps, one of another kind (relationFault), a check's serves left out
+// among them, and Validate refuses one in the files by the same kinds. One right: a parent left
+// out (parentLeftOut). Each write is read back against the text that the input
 // names, which the read back builds from the base before the writer runs: a text inside a block of
 // approved.json by its place and its form (blockTextChange, changedFile); a text inside a spec file
 // by its file, its place and its form (textMeant, filesWritten); and an attribute left out by its

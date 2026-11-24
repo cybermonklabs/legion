@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -486,14 +487,20 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 	}
 }
 
-// approvedFault judges the relations of each version of a node, the older ones too, though no state
-// reads an older version (the derivation reads Current), and it judges each by the kind of the
-// newest text of the node that it names, the kind that Current gives that node. R15: "An interface
-// is a component marked as an interface", so a component of one version can be an interface of the
-// next under the same id. Each row is an approved spec of pages, a statement, and dispatch and
-// envoy, two components, with the row's nodes, each version approved a day after the one before:
-// the controls are taken, and each other row is refused with its line.
-func TestEachVersionOfANodeIsJudgedByTheNewestKindOfTheNodesThatItNames(t *testing.T) {
+// approvedFault judges by the kind of the nodes that it names only the current text of each node
+// that the approved spec keeps, the text that Current, the derivation and Validate read, and by the
+// kind of the newest text of each node that it names, the kind that Current gives that node. R15:
+// "An interface is a component marked as an interface", so a component of one version can be an
+// interface of the next under the same id, and an older text, or the text of a removed node, that
+// named it as a parent then names an interface now. The derivation reads none of the relations of
+// such a text, so it is judged only by whether each of them names a node of the approved spec:
+// Dispatch keeps each text that the approved spec held (R2), so a node that a text once named is in
+// the approved spec still.
+// Each row is an approved spec of pages, a statement, and dispatch and envoy, two components, with
+// the row's nodes, each version approved a day after the one before: approvedFault and ReadApproved
+// read the controls, and Current holds each node of them that the approved spec keeps, with no
+// problem; each other row is refused with its line, by approvedFault and ReadApproved alike.
+func TestOnlyTheCurrentTextOfANodeIsJudgedByTheKindOfTheNodesThatItNames(t *testing.T) {
 	t.Parallel()
 	statement := func(parent string) Statement {
 		return Statement{ID: "a-page-shows-it", Text: "The pages show each order.", Kind: KindBehavior, Parent: parent}
@@ -513,6 +520,10 @@ func TestEachVersionOfANodeIsJudgedByTheNewestKindOfTheNodesThatItNames(t *testi
 			n.ID = nodesOf(mustParse(t, block))[0].id
 			n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: time.Date(2026, 11, 10+i, 0, 0, 0, 0, time.UTC), Block: block})
 		}
+		return n
+	}
+	removed := func(n ApprovedNode) ApprovedNode {
+		n.Removed = new(true)
 		return n
 	}
 	interfaceOfTheNewestText := func(t *testing.T) ApprovedNode {
@@ -535,16 +546,46 @@ func TestEachVersionOfANodeIsJudgedByTheNewestKindOfTheNodesThatItNames(t *testi
 		{"the current text of a component is under a component that its newest text marks as an interface", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"))}
 		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
-		{"version 1 of a component is under a component that the newest text of that one marks as an interface", func(t *testing.T) []ApprovedNode {
+		{"control: version 1 of a component is under a component that the newest text of that one marks as an interface, and version 2 under envoy", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"), component("envoy-delivery", "envoy"))}
-		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+		}, ""},
+		{"version 2 of a component, its current text, is under a component that its newest text marks as an interface, and version 1 under envoy", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy"), component("envoy-delivery", "envoy-to-dispatch"))}
+		}, `specgraph: approved node "envoy-delivery" version 2: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+		{"control: a removed component is under a component that its newest text marks as an interface", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), removed(versions(t, component("envoy-delivery", "envoy-to-dispatch")))}
+		}, ""},
+		{"a removed component is under no node", func(t *testing.T) []ApprovedNode {
+			return []ApprovedNode{interfaceOfTheNewestText(t), removed(versions(t, component("envoy-delivery", "no-such-component")))}
+		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "no-such-component" names no node of the approved spec (line 1 of its block)`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			nodes := append([]ApprovedNode{versions(t, Statement{ID: "pages", Text: "The pages show each order.", Kind: KindBehavior}),
 				versions(t, component("dispatch", "")), versions(t, component("envoy", ""))}, row.nodes(t)...)
 			if err := approvedFault(nodes); err == nil && row.want != "" || err != nil && err.Error() != row.want {
-				t.Errorf("the approved spec gives %v; want %q", err, row.want)
+				t.Errorf("approvedFault gives %v; want %q", err, row.want)
+			}
+			file, err := json.Marshal(ApprovedFile{Nodes: nodes})
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := ReadApproved(bytes.NewReader(file))
+			if err == nil && row.want != "" || err != nil && err.Error() != row.want {
+				t.Errorf("ReadApproved gives %v; want %q", err, row.want)
+			}
+			if row.want != "" || err != nil {
+				return
+			}
+			current, problems := a.Current()
+			held := idsOf(current)
+			for _, n := range nodes {
+				if !n.removed() && !held[n.ID] || n.removed() && held[n.ID] {
+					t.Errorf("Current holds %s %t; want %t", n.ID, held[n.ID], !n.removed())
+				}
+			}
+			if len(problems) != 0 {
+				t.Errorf("Current gives the problems %+v; want none", problems)
 			}
 		})
 	}

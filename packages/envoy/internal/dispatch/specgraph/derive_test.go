@@ -552,7 +552,12 @@ func approveText(in *Input, change func(s *Statement)) {
 // together form no cycle, and Dispatch refuses a change that makes one." A change of the approved
 // spec is a new version of a node, so the loop rule reads the newest text of each node: a loop that
 // version 2 of a node of two versions makes is refused, and one that its version 1 alone made is
-// taken (the control).
+// taken (the control). The kind rule reads the newest text of each node that the approved spec
+// keeps, the text that the derivation reads, too. R15: "An interface is a component marked as an
+// interface", so envoy-to-dispatch, a component at version 1, is an interface at version 2: a
+// component whose version 1 or whose removed text is under it is taken (the controls), and one
+// whose current text is under it is refused; an older text that names no node is refused, since
+// Dispatch keeps each text that the approved spec held (R2).
 func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *testing.T) {
 	t.Parallel()
 	const survives, late = "a-message-survives-a-restart", "a-message-reaches-a-late-session"
@@ -582,6 +587,40 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 			nodes[id] = n
 		}
 	}
+	// components adds dispatch and envoy, two components, envoy-to-dispatch, a component at version 1
+	// and the interface between them at version 2, and envoy-delivery, a component under first at
+	// version 1, and under second at version 2 where second is not "", removed where it is; each
+	// version approved a day after the one before, from the approval of envoy-delivers-messages.
+	components := func(first, second string) func(nodes map[string]ApprovedNode) {
+		return func(nodes map[string]ApprovedNode) {
+			at := nodes["envoy-delivers-messages"].Versions[0].At
+			node := func(texts ...Component) ApprovedNode {
+				n := ApprovedNode{ID: texts[0].ID, Removed: new(false), PartlyChecked: new(false)}
+				for i, c := range texts {
+					block, err := c.Print()
+					if err != nil {
+						panic(err)
+					}
+					n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: at.AddDate(0, 0, i), Block: block})
+				}
+				return n
+			}
+			component := func(id, parent string, joins ...string) Component {
+				return Component{ID: id, Name: "Envoy", Purpose: "It delivers each stored message.", Parent: parent, Interface: len(joins) > 0, Joins: joins}
+			}
+			for _, n := range []ApprovedNode{node(component("dispatch", "")), node(component("envoy", "")),
+				node(component("envoy-to-dispatch", ""), component("envoy-to-dispatch", "", "dispatch", "envoy"))} {
+				nodes[n.ID] = n
+			}
+			delivery := node(component("envoy-delivery", first))
+			if second == "" {
+				delivery.Removed = new(true)
+			} else {
+				delivery = node(component("envoy-delivery", first), component("envoy-delivery", second))
+			}
+			nodes[delivery.ID] = delivery
+		}
+	}
 	for _, row := range []struct {
 		name    string
 		changes []func(nodes map[string]ApprovedNode)
@@ -608,6 +647,18 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 			want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
 		{name: "control: version 1 of a statement of two versions made it its own parent, and version 2 is as written",
 			changes: []func(map[string]ApprovedNode){twoVersions(survives, survives, "")}},
+		{name: "control: version 1 of a component under a component that is an interface at its version 2, and version 2 under envoy",
+			changes: []func(map[string]ApprovedNode){components("envoy-to-dispatch", "envoy")}},
+		{name: "control: a removed component under a component that is an interface at its version 2",
+			changes: []func(map[string]ApprovedNode){components("envoy-to-dispatch", "")}},
+		{name: "version 2 of a component, its current text, under a component that is an interface at its version 2",
+			changes: []func(map[string]ApprovedNode){components("envoy", "envoy-to-dispatch")},
+			want:    `specgraph: approved node "envoy-delivery" version 2: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+		{name: "a removed component under no node", changes: []func(map[string]ApprovedNode){components("no-such-component", "")},
+			want: `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "no-such-component" names no node of the approved spec (line 1 of its block)`},
+		{name: "version 1 of a statement of two versions under no node, and version 2 as written",
+			changes: []func(map[string]ApprovedNode){twoVersions(survives, "no-such-statement", "")},
+			want:    `specgraph: approved node "a-message-survives-a-restart" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
 		{name: "two statements each the parent of the other", changes: []func(map[string]ApprovedNode){parentOf(survives, late), parentOf(late, survives)},
 			want: "specgraph: approved spec: loop: a-message-reaches-a-late-session -[parent]-> a-message-survives-a-restart -[parent]-> a-message-reaches-a-late-session"},
 		{name: "a statement that serves the statement under it", changes: []func(map[string]ApprovedNode){func(nodes map[string]ApprovedNode) {
