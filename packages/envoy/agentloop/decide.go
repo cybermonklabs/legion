@@ -175,11 +175,11 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	}
 	callCtx, cancel := context.WithTimeout(ctx, req.Bounds.Time)
 	defer cancel()
-	url, err := decideURL(req.Model.Endpoint.BaseURL)
+	endpoint, err := decideURL(req.Model.Endpoint.BaseURL)
 	if err != nil {
 		return DecideResult{}, err
 	}
-	post, err := http.NewRequestWithContext(callCtx, http.MethodPost, url, bytes.NewReader(body))
+	post, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, err)
 	}

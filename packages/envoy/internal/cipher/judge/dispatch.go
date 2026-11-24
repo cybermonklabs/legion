@@ -87,7 +87,6 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 	if err != nil {
 		return Issue{}, err
 	}
-	route := issueRoute(key)
 	// Only these three fields of the issue read are decoded. The route answers the whole
 	// issue with its artifacts, children and open asks (api.issueDetail), and the judge reads
 	// none of that, nor the assignee, which Assignee decodes on its own so the shape of one
@@ -105,7 +104,7 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 	var doc struct {
 		Markdown string `json:"markdown"`
 	}
-	switch status, err := d.get(ctx, token, &doc, append(route, "artifacts/spec/text")...); {
+	switch status, err := d.get(ctx, token, &doc, append(issueRoute(key), "artifacts/spec/text")...); {
 	case err != nil:
 		return Issue{}, err
 	case status == http.StatusOK:
