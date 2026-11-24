@@ -39,7 +39,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -177,27 +176,6 @@ func collectOnSignal() {
 			}
 		}
 	}()
-}
-
-// serverSlots holds one token for each Dispatch server running in this test binary, at most
-// testlimits.MaxProcessesAtOnce: the most the lane's Postgres is sized to serve at once, which
-// requireConnectionCeiling refuses a start past. A start past it waits here for a server to exit
-// instead, so tests that run at the same time share the servers the lane can serve.
-var serverSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
-
-// takeServerSlot waits for a slot of serverSlots and answers the call that gives it back, which
-// the test's cleanup also runs, for a start that never ran a process; only the first call counts.
-// A test holds a slot for each of its servers that is running, so a test that waits for one while
-// it holds another (TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound's reader beside its
-// writer) waits for a server of another test, which never waits for a slot while it holds one:
-// every other test stops its server before it starts the next.
-func takeServerSlot(t *testing.T) (release func()) {
-	t.Helper()
-	serverSlots <- struct{}{}
-	var once sync.Once
-	release = func() { once.Do(func() { <-serverSlots }) }
-	t.Cleanup(release)
-	return release
 }
 
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that

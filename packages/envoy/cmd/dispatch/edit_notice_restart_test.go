@@ -19,6 +19,8 @@ import (
 // second minted in its own data dir would hold its start up to a live window, until that row
 // lapsed (processes.Register).
 func TestEditNoticeRestart(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break
+	// (edit_notice_restart_test.go:23).
 	database := storetest.Open(t)
 	options := dispatchOptions{SigningKey: "edit-notice-restart-key", Env: map[string]string{"DISPATCH_TEST_EDIT_NOTICE_QUIET": "3s"}}
 	first := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)

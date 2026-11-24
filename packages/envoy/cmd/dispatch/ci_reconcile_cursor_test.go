@@ -53,6 +53,7 @@ const (
 // the repository's open pull requests listed page by page and each head read with two requests
 // of its own. That is the read a cursor is needed for, and the one this test bounds.
 func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
+	t.Parallel()
 	github := startCIReconcileCursorGitHub(t)
 	process, natsURL := startCIReconcileCursorProcess(t, github)
 
@@ -163,6 +164,7 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 // query until the first pass's bound gives it up, so the first pass lists nothing and the starved
 // pass is never the first, as a machine too slow to start a pass within its second leaves it.
 func TestTheCIReconcileCursorResumesInTheDispatchProcessAfterAPassThatReadNoHead(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// firstQuery holds the process's first GraphQL query until its pass's bound gives it up.

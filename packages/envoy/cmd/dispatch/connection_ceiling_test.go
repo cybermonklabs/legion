@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,6 +43,83 @@ import (
 // which is what it holds connections for, so a row that restarts a process one after another asks
 // for one process's worth.
 var dispatchProcessesRunning atomic.Int64
+
+// serverSlots holds one token for each Dispatch server running in this test binary, at most
+// testlimits.MaxProcessesAtOnce: the most the lane's Postgres is sized to serve at once, which
+// requireConnectionCeiling refuses a start past. A start past it waits here for a server to exit
+// instead, so tests that run at the same time share the servers the lane can serve.
+var serverSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
+
+// takeServerSlot waits for a slot of serverSlots and answers the call that gives it back, which
+// the test's cleanup also runs, for a start that never ran a process; only the first call counts.
+// A test holds a slot for each of its servers that is running, so a test that waits for one while
+// it holds another (TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound's reader beside its
+// writer) waits for a server of another test, which never waits for a slot while it holds one:
+// every other test stops its server before it starts the next.
+func takeServerSlot(t *testing.T) (release func()) {
+	t.Helper()
+	serverSlots <- struct{}{}
+	var once sync.Once
+	release = func() { once.Do(func() { <-serverSlots }) }
+	t.Cleanup(release)
+	return release
+}
+
+// slotsHeld counts, by root test, the slots of serverSlots its Dispatch processes hold
+// (takeProcessSlot). A root test's subtests share its count: a subtest that waited for a slot while
+// its parent's process held another would be the hold-and-wait takeProcessSlot rules out.
+var slotsHeld = struct {
+	sync.Mutex
+	byRoot map[string]int
+}{byRoot: map[string]int{}}
+
+// takeProcessSlot is the slot of serverSlots a Dispatch process of startDispatchProcessWith holds
+// from its start until it exits, and answers the call that gives it back (cleanup runs it too).
+// A test whose processes hold no slot waits for one, so the package's parallel tests share the
+// servers the lane can serve, as the memory tests do (takeServerSlot). A test that already holds
+// one takes another only if one is free and otherwise fails by name: waiting while holding one is
+// how every slot ends up held by a test waiting for another. A test that runs two processes at once
+// therefore does not call t.Parallel: it runs before the parallel tests start, when every slot it
+// wants is free.
+func takeProcessSlot(t *testing.T) (release func()) {
+	t.Helper()
+	root, _, _ := strings.Cut(t.Name(), "/")
+	slotsHeld.Lock()
+	held := slotsHeld.byRoot[root]
+	slotsHeld.Unlock()
+	if held == 0 {
+		select {
+		case serverSlots <- struct{}{}:
+		case <-t.Context().Done():
+			t.Fatalf("the test ended while its Dispatch process waited for one of the %d server slots", testlimits.MaxProcessesAtOnce)
+		}
+	} else {
+		select {
+		case serverSlots <- struct{}{}:
+		default:
+			t.Fatalf("this start would run a second Dispatch process in %s while its first runs, and all %d "+
+				"server slots are held: a test that runs two processes at once must not call t.Parallel, "+
+				"since waiting for a slot while holding one can leave every slot held by a test waiting "+
+				"for another", root, testlimits.MaxProcessesAtOnce)
+		}
+	}
+	slotsHeld.Lock()
+	slotsHeld.byRoot[root]++
+	slotsHeld.Unlock()
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			slotsHeld.Lock()
+			if slotsHeld.byRoot[root]--; slotsHeld.byRoot[root] == 0 {
+				delete(slotsHeld.byRoot, root)
+			}
+			slotsHeld.Unlock()
+			<-serverSlots
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
 
 // requireConnectionCeiling counts one more Dispatch process running in this test binary and
 // refuses its start when the count is over testlimits.MaxProcessesAtOnce or the server cannot serve

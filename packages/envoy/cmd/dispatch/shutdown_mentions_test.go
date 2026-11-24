@@ -34,6 +34,7 @@ const sweepMargin = deliverySweepInterval + 15*time.Second
 // Dispatch waits for the send in flight to settle before it closes its pool, so the outcome the
 // listener answered is recorded rather than lost with the process.
 func TestSIGTERMSettlesTheMentionSendInFlightAndLeavesTheQueuedOnePending(t *testing.T) {
+	t.Parallel()
 	var sends atomic.Int32
 	arrived := make(chan struct{}, 2)
 	answer := make(chan struct{})
