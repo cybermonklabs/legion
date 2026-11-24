@@ -522,9 +522,11 @@ func describe(n ast.Node) string {
 	return fmt.Sprintf("a %T", n)
 }
 
-// reflectionMethods are reflect's struct-field access.
+// reflectionMethods are reflect's struct-field access: each method of reflect.Value that answers a
+// struct's field, Fields, go 1.27's iterator over them, among them.
 var reflectionMethods = map[string]bool{
 	"(reflect.Value).Field":           true,
+	"(reflect.Value).Fields":          true,
 	"(reflect.Value).FieldByName":     true,
 	"(reflect.Value).FieldByIndex":    true,
 	"(reflect.Value).FieldByIndexErr": true,
