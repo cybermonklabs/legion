@@ -60,7 +60,9 @@ echo "went on"`,
   };
 }
 
-for (const script of ["claude-backend-tmux.sh", "claude-backend-sandbox.sh"]) {
+const scripts = ["claude-backend-tmux.sh", "claude-backend-sandbox.sh"];
+
+for (const script of scripts) {
   describe(`${script}'s read of the smoke repository prints no word of gh's`, () => {
     const read = (gh: string) =>
       proof(script, "require_smoke_repo_read", "require_smoke_repo_read", gh);
@@ -90,7 +92,7 @@ for (const script of ["claude-backend-tmux.sh", "claude-backend-sandbox.sh"]) {
   });
 }
 
-for (const script of ["claude-backend-tmux.sh"]) {
+for (const script of scripts) {
   describe(`${script}'s check of the implementer's commit prints no path gh answered`, () => {
     const files = `api repos/sjawhar/legion-smoke/commits/${commit} --jq .files[].filename`;
     const check = (paths: string) =>
