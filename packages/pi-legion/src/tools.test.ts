@@ -1087,6 +1087,21 @@ const stateAt = (phase: LegionPhase) => ({
   },
 });
 
+test("a named look's report leaves the phase open and a step's completion closes it", async () => {
+  let completed = 0;
+  const { calls, daemon } = recordingDaemon({ state: stateAt("testing") });
+  const tool = createLegionTool({ pi, daemon, controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => { completed++; }, onUpdateAnswered: () => undefined,
+    handoffReport: async () => ({ commit: TIP, handoffId: RECORD.id, handoffVersion: 2 }),
+    branchHead: noBranchHead, resolveDocument: noDocumentLookup, session: () => claimSession("tester") });
+  const report = await tool.execute("", { op: "handoff_complete", summary: "looked", verdict: "pass", check_opened_at: "2026-10-19T06:00:00.123456Z" }, undefined, undefined, context());
+  expect(report).not.toHaveProperty("isError", true);
+  expect(completed).toBe(0);
+  expect(calls.at(-1)).toEqual(["handoffComplete", { grantId: "grant-208", summary: "looked", verdict: "pass", checkOpenedAt: "2026-10-19T06:00:00.123456Z" }]);
+  await tool.execute("", { op: "handoff_complete", summary: "tested", verdict: "pass" }, undefined, undefined, context());
+  expect(completed).toBe(1);
+});
+
 test("handoff_complete finds the phase's handoff record and the pushed tip, posts them with a fresh grant, and closes the phase on success", async () => {
   const completed: string[] = [];
   const reads: string[] = [];

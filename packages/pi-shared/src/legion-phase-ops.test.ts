@@ -22,6 +22,7 @@ import {
   phaseOpParameters,
   STALE_ENTRY_INSTRUCTION,
 } from "./legion-phase-ops";
+import * as phaseOps from "./legion-phase-ops";
 
 /** The contract the build under test speaks, which its client states on every request. */
 const CONTRACT = 60;
@@ -140,6 +141,59 @@ function runtime(
   };
   return { ops, routes, bytes, posted, lookups };
 }
+
+const CHECK_OPENED = "2026-10-19T06:00:00.123456Z";
+
+test("a look's report names its check and is posted as it is, with no record read", async () => {
+  for (const phase of ["implementing", "done"] as const) {
+    const state = stateAtPhase(phase);
+    const { ops, routes, posted, lookups } = runtime({ ...implementer, role: "tester" }, state);
+    await expect(executePhaseOp(ops, { op: "handoff_complete", summary: "still checking", verdict: "pending", wake_at: NEXT_LOOK, check_opened_at: CHECK_OPENED })).resolves.toEqual({});
+    expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/handoff/complete"]);
+    expect(lookups).toEqual([]);
+    expect(posted.at(-1)).toEqual({ grantId: "grant-for-one-command", summary: "still checking", verdict: "pending", wakeAt: NEXT_LOOK, checkOpenedAt: CHECK_OPENED });
+  }
+});
+
+test("a call without check_opened_at is a step's completion on every phase", async () => {
+  const state = stateAtPhase("done", checkRecord());
+  const { ops, lookups, posted } = runtime({ ...implementer, role: "tester" }, state);
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "tests pass", verdict: "pass" });
+  expect(lookups).toEqual(["done tester"]);
+  expect(posted.at(-1)).toEqual({ grantId: "grant-for-one-command", summary: "tests pass", verdict: "pass", ...REPORT });
+  for (const input of [{ verdict: "pending" }, { verdict: "pass", wake_at: NEXT_LOOK }]) {
+    const fresh = runtime({ ...implementer, role: "tester" }, state);
+    await expect(executePhaseOp(fresh.ops, { op: "handoff_complete", summary: "waiting", ...input })).rejects.toThrow("check_opened_at");
+    expect(fresh.routes).toEqual([]);
+  }
+});
+
+test("a look's report refuses here only what no state decides", async () => {
+  for (const fields of [{}, { verdict: "fail", return_to: 1 }, { verdict: "pass", wake_at: NEXT_LOOK }]) {
+    const { ops, routes } = runtime();
+    await expect(executePhaseOp(ops, { op: "handoff_complete", summary: "looked", check_opened_at: CHECK_OPENED, ...fields })).rejects.toThrow();
+    expect(routes).toEqual([]);
+  }
+  const { ops, posted } = closedRuntime(implementer, checkRecord({ last: true }), { status: 400, code: "CHECK_WAKE_UNEXPECTED", error: "no next look" });
+  await expect(executePhaseOp(ops, { op: "handoff_complete", summary: "looked", verdict: "pending", wake_at: NEXT_LOOK, check_opened_at: CHECK_OPENED })).rejects.toThrow("CHECK_WAKE_UNEXPECTED");
+  expect(posted.at(-1)).toMatchObject({ checkOpenedAt: CHECK_OPENED, wakeAt: NEXT_LOOK });
+});
+
+test("a tester's step completion beside an open check of its role sends its report and return_to", async () => {
+  const state = stateAtPhase("testing", checkRecord({ role: "tester" }));
+  const { ops, posted, lookups } = runtime({ ...implementer, role: "tester" }, state);
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "failed", verdict: "fail", return_to: 1 });
+  expect(lookups).toEqual(["testing tester"]);
+  expect(posted.at(-1)).toEqual({ grantId: "grant-for-one-command", summary: "failed", verdict: "fail", ...REPORT, returnTo: 1 });
+});
+
+test("phaseInputAfter closes the phase only on a step's completion", () => {
+  expect(phaseOps.phaseInputAfter("handoff_complete", { check_opened_at: CHECK_OPENED })).toBeUndefined();
+  expect(phaseOps.phaseInputAfter("handoff_complete", {})).toBe("phase-closed");
+  expect(phaseOps.phaseInputAfter("request_backward_move", {})).toBe("phase-closed");
+  expect(phaseOps.phaseInputAfter("ready_for_update", {})).toBe("update-answered");
+  expect(phaseOps.phaseInputAfter("read_record", {})).toBeUndefined();
+});
 
 test("the phase ops' fields, as a host declares them, are every field of every op, each optional, from the host's Zod", () => {
   const declared = z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) }));
