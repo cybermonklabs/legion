@@ -217,6 +217,12 @@ jobs:
       # first with the check, and both texts are built from the same list. So are the backend
       # count's tests of cmd/cipher and internal/cipher/api, which the count step above runs in
       # this same job and env (BACKEND_COUNT_TESTS).
+      # THROWAWAY MEASURE (INFRA-1075, not for merge): the runner's /proc/stat every 5 s through
+      # the unit step, to tell test-binary occupancy from CPU busy.
+      - name: Start sampling the runner's CPU (throwaway)
+        run: |
+          nohup bash -c 'while :; do echo "$(date +%s.%N) $(head -1 /proc/stat)"; sleep 5; done' > "$RUNNER_TEMP/cpu-samples.txt" 2>&1 &
+          echo "start $(date +%s.%N) nproc $(nproc)" > "$RUNNER_TEMP/cpu-marks.txt"
       - name: Unit test envoy Go package
         timeout-minutes: 45
         run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --module-except '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$'
@@ -225,6 +231,39 @@ jobs:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
+      - name: Report the runner's CPU over the unit step (throwaway)
+        if: always()
+        run: |
+          echo "end $(date +%s.%N)" >> "$RUNNER_TEMP/cpu-marks.txt"
+          python3 - "$RUNNER_TEMP/cpu-marks.txt" "$RUNNER_TEMP/cpu-samples.txt" <<'PY'
+          import statistics, sys
+          marks = dict((l.split()[0], float(l.split()[1])) for l in open(sys.argv[1]))
+          rows = []
+          for line in open(sys.argv[2]):
+              f = line.split()
+              if len(f) < 10 or f[1] != "cpu":
+                  continue
+              t = float(f[0]); v = [int(x) for x in f[2:10]]
+              if marks["start"] <= t <= marks["end"]:
+                  rows.append((t, sum(v), v[3] + v[4], v[0] + v[1], v[2] + v[5] + v[6], v[4], v[7]))
+          if len(rows) < 2:
+              print(f"UNKNOWN: {len(rows)} samples inside the step")
+              sys.exit(0)
+          busy, user, sysirq, iow, steal = [], [], [], [], []
+          for a, b in zip(rows, rows[1:]):
+              dt = b[1] - a[1]
+              if dt <= 0:
+                  continue
+              busy.append(1 - (b[2] - a[2]) / dt); user.append((b[3] - a[3]) / dt)
+              sysirq.append((b[4] - a[4]) / dt); iow.append((b[5] - a[5]) / dt); steal.append((b[6] - a[6]) / dt)
+          wall = marks["end"] - marks["start"]
+          tot_busy = 1 - (rows[-1][2] - rows[0][2]) / (rows[-1][1] - rows[0][1])
+          print(f"unit step wall {wall:.0f} s; {len(busy)} intervals of 5 s")
+          print(f"CPU busy over the step {tot_busy:.3f}; p50 {statistics.median(busy):.3f}; p10 {sorted(busy)[len(busy)//10]:.3f}; p90 {sorted(busy)[len(busy)*9//10]:.3f}")
+          print(f"share of intervals above 90% busy: {sum(1 for x in busy if x > 0.9)}/{len(busy)} = {sum(1 for x in busy if x > 0.9)/len(busy):.3f}")
+          print(f"user+nice p50 {statistics.median(user):.3f}; system+irq p50 {statistics.median(sysirq):.3f}; iowait p50 {statistics.median(iow):.3f}; steal p50 {statistics.median(steal):.3f}")
+          PY
+          cat "$RUNNER_TEMP/cpu-marks.txt"
       - name: Vet agentloop's live proof (no model call)
         run: go vet -tags modellive ./agentloop/
         working-directory: packages/envoy
