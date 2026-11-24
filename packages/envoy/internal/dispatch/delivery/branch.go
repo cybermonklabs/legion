@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // branch.go owns every answer about whether one branch of one repository carries one commit,
@@ -299,7 +300,7 @@ func (c *Branches) CommitOnBranch(
 	}
 	stored, found, err := readBranchCommit(ctx, pool, repoFull, branch, sha)
 	if err != nil {
-		slog.Warn("dispatch: read a commit's branch answer", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
+		slog.Warn("dispatch: read a commit's branch answer", branchLine(repoFull, branch, sha, err)...)
 	}
 	if found && (stored.OnBranch || now.Sub(stored.CheckedAt) < BranchCommitStaleAfter) {
 		if stored.OnBranch {
@@ -327,7 +328,7 @@ func (c *Branches) CommitOnBranch(
 	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
 	if err != nil {
 		if !cannotSeeRepository(err) {
-			slog.Warn("dispatch: ask whether a commit is on a branch", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
+			slog.Warn("dispatch: ask whether a commit is on a branch", branchLine(repoFull, branch, sha, err)...)
 			return BranchUnknown
 		}
 		if holdable {
@@ -339,12 +340,19 @@ func (c *Branches) CommitOnBranch(
 		c.markSeen(pair, now)
 	}
 	if err := writeBranchCommit(ctx, pool, repoFull, branch, sha, answer, now); err != nil {
-		slog.Warn("dispatch: record a commit's branch answer", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
+		slog.Warn("dispatch: record a commit's branch answer", branchLine(repoFull, branch, sha, err)...)
 	}
 	if answer {
 		return BranchCarries
 	}
 	return BranchDoesNotCarry
+}
+
+// branchLine is the fields a line about sha on branch of repoFull names them by, and err. The
+// branch prints as the rule reads it (redact.Field), since a repository's default branch is
+// GitHub's words (branchOf), or a stand-in's.
+func branchLine(repoFull, branch, sha string, err error) []any {
+	return []any{"repo", repoFull, "branch", redact.Field(branch), "commit", sha, "error", err}
 }
 
 // branchOf is the default branch this process holds for repoFull and whether the newest read of
@@ -549,7 +557,8 @@ func cannotSeeRepository(err error) bool {
 // wants none, since `repo = lower($1)` is an exact lookup on the primary key.
 //
 // The branch is not lowercased with it. Git's branch names are case-sensitive, so `Release`
-// and `release` are two branches and a compare read of one says nothing about the other.
+// and `release` are two branches and a compare read of one says nothing about the other. Its
+// error names the branch as the rule reads it (branchLine says why).
 func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, sha string) (BranchCommit, bool, error) {
 	var answer BranchCommit
 	err := pool.QueryRow(ctx, `
@@ -560,7 +569,7 @@ func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, s
 		return BranchCommit{}, false, nil
 	}
 	if err != nil {
-		return BranchCommit{}, false, fmt.Errorf("read whether %s@%s is on %s: %w", repoFull, sha, branch, err)
+		return BranchCommit{}, false, fmt.Errorf("read whether %s@%s is on %s: %w", repoFull, sha, redact.Field(branch), err)
 	}
 	return answer, true, nil
 }
@@ -571,7 +580,8 @@ func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, s
 //
 // It takes a refs.Execer rather than the pool, so the same statement runs on the pool for a
 // compare read's answer (CommitOnBranch) and inside a transaction for a merge's permanent yes,
-// which commits with the head row it was learned from or not at all (UpsertPullRequestHead).
+// which commits with the head row it was learned from or not at all (UpsertPullRequestHead). Its
+// error names the branch as the rule reads it, as readBranchCommit's does.
 func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sha string, onBranch bool, now time.Time) error {
 	_, err := db.Exec(ctx, `
 		insert into branch_commits (repo, branch, sha, on_branch, checked_at)
@@ -579,7 +589,7 @@ func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sh
 		on conflict (repo, branch, sha) do update set on_branch = excluded.on_branch, checked_at = excluded.checked_at
 	`, repoFull, branch, sha, onBranch, now)
 	if err != nil {
-		return fmt.Errorf("record whether %s@%s is on %s: %w", repoFull, sha, branch, err)
+		return fmt.Errorf("record whether %s@%s is on %s: %w", repoFull, sha, redact.Field(branch), err)
 	}
 	return nil
 }
