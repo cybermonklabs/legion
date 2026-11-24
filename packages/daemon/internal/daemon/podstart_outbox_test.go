@@ -135,19 +135,26 @@ func (p podPair) testerLines(t *testing.T, logs *testlog.Buffer, msg string) int
 	return n
 }
 
-// wantStopped is the tester after its stop: in state, suspended by by where state is suspended,
-// its process never asked of the runtime and its start taken out of the gate, which its launch
-// writes once; and the implementer still loading, on the process the gate let start.
+// wantStopped is wantNeverStarted with the tester's start taken out of the pod's gate, which its
+// launch writes once.
 func (p podPair) wantStopped(t *testing.T, rt *fake.Runtime, logs *testlog.Buffer, state supervise.ClaimState, by supervise.SuspendSource) {
+	t.Helper()
+	p.wantNeverStarted(t, rt, state, by)
+	if cut := p.testerLines(t, logs, cutShortLine); cut != 1 {
+		t.Fatalf("the tester's lines that its launch was cut short at the gate = %d, want 1; log:\n%s", cut, logs.String())
+	}
+}
+
+// wantNeverStarted is the tester after its stop: in state, suspended by by where state is
+// suspended, and its process never asked of the runtime; and the implementer still loading, on the
+// process the gate let start.
+func (p podPair) wantNeverStarted(t *testing.T, rt *fake.Runtime, state supervise.ClaimState, by supervise.SuspendSource) {
 	t.Helper()
 	if c := p.waiting.View().Claim; c.State != state || state == supervise.StateSuspended && c.SuspendedBy != by {
 		t.Fatalf("the tester is %s by %s after its stop, want %s by %s", c.State, c.SuspendedBy, state, by)
 	}
 	if launched := launchesOf(rt, p.waitingToken); len(launched) != 0 {
 		t.Fatalf("the tester was launched %d times, want none: its process is never asked of the runtime", len(launched))
-	}
-	if cut := p.testerLines(t, logs, cutShortLine); cut != 1 {
-		t.Fatalf("the tester's lines that its launch was cut short at the gate = %d, want 1; log:\n%s", cut, logs.String())
 	}
 	if c := p.loading.View().Claim; c.State != supervise.StateLaunching || c.Locator == nil {
 		t.Fatalf("the implementer is %s recording %+v after the tester's stop, want it still loading", c.State, c.Locator)

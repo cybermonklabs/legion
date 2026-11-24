@@ -18,6 +18,9 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
     forced_order_run("daemon-go", DAEMON_FORCED_ORDER_STEP, DAEMON, DAEMON_FORCED_ORDER_PKGS),
+    # daemon-go-race sizes its Postgres for the Dispatch processes internal/daemon's
+    # scratch-Dispatch tests start; the job is the file's second, which the citation names.
+    ceiling_run("daemon-go-race", job_file("daemon-go")),
 ], exact=[
     # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
     # pinned, as the envoy-go unit step's is - and it carries a -skip besides, which is no
@@ -73,7 +76,7 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
                                             f"consts Image, SkippingImage"),
     (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                            f"const HubImage"),
-) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP)
+) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP) + ceiling_reads("daemon-go-race", job_file("daemon-go"))
   + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod"))
 GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter daemon_go_tests held packages/daemon/** by hand before the filters were computed: it selected 171 file(s) no other read of this gate declares", but=('**/*_test.go',)),

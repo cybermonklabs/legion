@@ -497,7 +497,8 @@ What each part is for:
   in its `PI_CONFIG_FILES`, after the operator's own and the role's own, and at least one is
   required while the mode is not `off`.
   `instructions` is optional and names one markdown file on the daemon's own disk, which the daemon
-  reads at boot and appends to such a role's system prompt after the deployment's own instructions.
+  reads at boot, and again at each launch, and appends to such a role's system prompt after the
+  deployment's own instructions.
   Both keys take absolute paths, and under `runtime: kubernetes` each overlay must be a file one of
   the operator's pod mounts carries.
   The draw is made once, when the tree's lifecycle row is first created, and is kept on the tree's
@@ -558,8 +559,9 @@ What each part is for:
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi settings overlays
   a role of a unit drawn into it names where the experiment reaches that role,
-  `instructions`, one markdown file on the daemon's own disk that the daemon reads at boot and
-  appends to that role's system prompt, and `plan`, how the issues drawn into it are done (below).
+  `instructions`, one markdown file on the daemon's own disk that the daemon reads at boot, and
+  again at each launch, and appends to that role's system prompt, and `plan`, how the issues drawn
+  into it are done (below).
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
   A role of a drawn unit that the experiment reaches names each arm's `config_files` in its
@@ -682,7 +684,10 @@ What each part is for:
   `gated_steps`.
 - **`instructions`** (optional) names a Markdown file of your standing rules (required checks,
   deploy and smoke commands, scope) that is appended to every agent's system prompt. It must hold no
-  secret.
+  secret. The daemon reads it at boot, and again before every launch, so an edit reaches the next
+  launch with no restart; a role already running keeps what it launched with. An edit that leaves
+  the file missing, unreadable or blank stops no launch: launches carry the text last read, and
+  the daemon logs a warning naming the file.
 - **`hooks`** (optional) is the list of prompts the daemon puts in front of the workers of an
   issue whose work keeps going back. Each entry carries `name`, its own and named once in the
   file; `on`, the event, and `work_back`, a move to an earlier phase, is the one event the daemon
@@ -701,11 +706,10 @@ What each part is for:
   counts, added up, are then a whole multiple of its `every`
   ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
   hook by its place in the list and the key at fault, as `hooks[0].every`. The daemon reads every
-  `prompt_file` at boot, as it reads `instructions`, so an edited file reaches the workers at the
-  next start of the daemon and the daemon does not come up while one of them is missing,
-  unreadable or blank. A file that names no `hooks:` key runs one shipped hook: `work-back`, over
-  any move, every 5 of them, to the implementer, the tester and the reviewer. `hooks: []` runs
-  none.
+  `prompt_file` at boot, so an edited file reaches the workers at the next start of the daemon and
+  the daemon does not come up while one of them is missing, unreadable or blank. A file that names
+  no `hooks:` key runs one shipped hook: `work-back`, over any move, every 5 of them, to the
+  implementer, the tester and the reviewer. `hooks: []` runs none.
 - **`provider_keys`** (optional) maps a variable Oh My Pi reads to a key of the providers Secret
   ([below](#secrets-and-files)); each pod gets those keys alone, in Oh My Pi's environment.
 - **`runtime.kubernetes.pod.env`** (and **`runtime.tmux.pane_env`** under the tmux runtime) holds
