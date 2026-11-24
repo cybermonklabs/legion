@@ -797,9 +797,9 @@ RULES = {
          "internal/workflow/waiting_line_band_test.go:62 reads every file of its list under ../../../..")),
     # --- envoy
     f"{ENVOY}/cmd/cipher/modules_test.go": [
-        run(ENVOY, ["./cmd/cipher"], "cmd/cipher/modules_test.go:179 cmdtest.BuildCommand . CGO_ENABLED=0 GOOS=darwin",
+        run(ENVOY, ["./cmd/cipher"], "cmd/cipher/modules_test.go:226 go list -deps . CGO_ENABLED=0 GOOS=darwin (TestTheAgentSecretsBinaryLinksItsListedModules, :190)",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "darwin"}),
-        run(ENVOY, ["./cmd/cipherd"], "cmd/cipher/modules_test.go:199 cmdtest.BuildCommand . in ../cipherd CGO_ENABLED=0 GOOS=linux",
+        run(ENVOY, ["./cmd/cipherd"], "cmd/cipher/modules_test.go:226 go list -deps . in ../cipherd CGO_ENABLED=0 GOOS=linux (TestTheBrokerBinaryLinksItsListedModules, :210)",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"})],
     f"{ENVOY}/cmd/architecture-check/main_test.go": reads(
         (f"{ENVOY}/internal/dispatch/architecture/notes/testdata/**",
