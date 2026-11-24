@@ -9,10 +9,10 @@ import (
 func TestADefaultBranchResultOfUnmergedWorkCountsAnyTrunkCommit(t *testing.T) {
 	t.Parallel()
 	rig := newAfterMergeRig(t)
-	issue := rig.issue(t, "An unmerged default-branch check", "<check id=\"c9\" when=\"default_branch\">\nThe trunk still works.\n</check>\n")
+	issue := rig.issue(t, "An unmerged default-branch check", afterMergeAndDefaultChecks)
 	rig.github.carry("main", afterMergeC0)
-	result := rig.record(t, issue, "c9", "tester", "pass", afterMergeC0)
-	check := readAfterMerge(t, rig.handler, issue)["c9"]
+	result := rig.record(t, issue, "k5", "tester", "pass", afterMergeC0)
+	check := readAfterMerge(t, rig.handler, issue)["k5"]
 	wantBases(t, "an unmerged default-branch check", check, branchBasis("main", ""))
 	placed := check.result(t, result).CommitStands
 	if placed == nil || placed.Answer != "at_basis" || placed.Basis == nil || placed.Basis.Branch != "main" ||
