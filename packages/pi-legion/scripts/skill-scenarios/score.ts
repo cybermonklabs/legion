@@ -138,24 +138,31 @@ const TEST_HANDOFF_KEYS = {
  * of per check. The record holds the issue (`issue_key`) and the phase, and Dispatch records when
  * each handoff was written and versions it, so the body holds no stamp, no time and no
  * `previousHandoff`.
- * The body is held to those keys on purpose. Each key outside TEST_HANDOFF_KEYS is an issue at
- * that key, `a test handoff holds no <key>`, which `z.prettifyError` prints by name: the object
- * is loose and the refinement names each key, where `z.strictObject` would give one issue for all
- * of them. So a base checkout's body, whose prompt still gives `schemaVersion`, `phase` and
- * `issue` (and, in older prompts, `previousHandoff`, a `completed` time, `proof` or
- * `classSearch`), is refused, and that refusal is what the negative control of INFRA-4942's
- * `d-scenario` check reads.
+ * The body is held to those keys on purpose. The check reads the own keys of the input, the object
+ * that `JSON.parse` made, before an object schema copies it: the output of an object schema never
+ * holds a `__proto__` key. A loose object assigns that key, which sets the output's prototype (so a
+ * `failures` in it would reach testerProof unchecked), and a plain object drops it. Each own key
+ * outside TEST_HANDOFF_KEYS, `__proto__` and inherited names such as `constructor` included, is one
+ * issue at that key, `a test handoff holds no <key>`, which `z.prettifyError` prints by name and
+ * which the tests read. The pipe runs the object schema only when the check refuses no key. So a
+ * base checkout's body, whose prompt still gives `schemaVersion`, `phase` and `issue` (and, in
+ * older prompts, `previousHandoff`, a `completed` time, `proof` or `classSearch`), is refused, and
+ * that refusal is what the negative control of INFRA-4942's `d-scenario` check reads.
  * Nothing stamps a handoff for the tester: it writes the whole body and records it with
  * `dispatch handoff-write`. */
-export const TestHandoff = z.looseObject(TEST_HANDOFF_KEYS).superRefine((body, context) => {
-  for (const key of Object.keys(body))
-    if (!Object.hasOwn(TEST_HANDOFF_KEYS, key))
-      context.addIssue({
-        code: "custom",
-        path: [key],
-        message: `a test handoff holds no ${key}`,
-      });
-});
+export const TestHandoff = z
+  .unknown()
+  .superRefine((input, context) => {
+    if (typeof input !== "object" || input === null || Array.isArray(input)) return;
+    for (const key of Object.keys(input))
+      if (!Object.hasOwn(TEST_HANDOFF_KEYS, key))
+        context.addIssue({
+          code: "custom",
+          path: [key],
+          message: `a test handoff holds no ${key}`,
+        });
+  })
+  .pipe(z.object(TEST_HANDOFF_KEYS));
 
 function lines(file: string): string[] {
   if (!existsSync(file)) return [];

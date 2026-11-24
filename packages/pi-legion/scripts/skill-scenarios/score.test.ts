@@ -3266,6 +3266,23 @@ test("a test handoff that holds a field of an older prompt, previousHandoff, com
     ]);
 });
 
+// testerProof reads the body that `JSON.parse` made of the record, where `"__proto__"` is an own
+// key. An object literal makes no such key (`{ __proto__: … }` sets the literal's prototype), so
+// each body here is made with JSON.parse. The schema refuses the key by name, whatever it holds:
+// an object, null, or `failures`, which the prototype of a loose object's output would give to
+// testerProof unchecked.
+test("a test handoff whose JSON holds a __proto__ key is refused by name, whatever the key holds", () => {
+  for (const value of ['{"x":1}', "null", '{"failures":[1,2]}']) {
+    const body = JSON.parse(
+      `{"head":"${head}","implementerProof":{"verdict":"verified","how":"x"},"__proto__":${value}}`
+    );
+    expect(Object.keys(body)).toContain("__proto__");
+    expect(handoffRefusals(body)).toEqual([
+      { path: ["__proto__"], message: "a test handoff holds no __proto__" },
+    ]);
+  }
+});
+
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {
   expect(out).toContain(
     "tester-proof-cross-1\trig error: a bash call reads base's checkout: /checkouts/base/skills/legion-worker/SKILL.md"
