@@ -3822,6 +3822,24 @@
         "base": "76b1a57f7dac0938ac8274d52ff557344c94447e",
         "files": ["packages/daemon/internal/daemon/kubeconfig_redirect_test.go"],
         "capture": "daemon.kube-redirect-authorization/kubeconfig"
+      },
+      {
+        "row": "ciphertoken-iam-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/ciphertoken/googleaccount_url_join_test.go"],
+        "capture": "ciphertoken.iam-url/unparsed"
+      },
+      {
+        "row": "secrets-google-base-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/cipher/secrets/googleserviceaccount_url_join_test.go"],
+        "capture": "secrets.google-base-url/unparsed"
+      },
+      {
+        "row": "groups-directory-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/cipher/groups/reader_url_join_test.go"],
+        "capture": "groups.directory-url/unparsed"
       }
     ],
     "boundary_fields": {
@@ -14100,6 +14118,238 @@
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestTheKubeconfigsBearerGoesToItsClustersOriginAlone/ordinary",
       "production": "daemon kubeClient through the boot's cluster check: the reads of an installed Agent Sandbox's CRD and controller Deployment, which the stand-in answers only to the bearer, succeed with the wrap in place and the check passes"
+    },
+    {
+      "id": "ciphertoken-iam-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAMintGoesToTheResourceJoinedOntoTheIAMURL/query",
+      "production": "ciphertoken GoogleAccount.generateIDToken: an IAM Credentials URL with a path and a query (http://host/iam?key=...) mints at that path joined with the resource's, the query kept (urljoin.Join: /iam/v1/projects/-/serviceAccounts/<account>:generateIdToken?key=...), where the path appended to the URL's text sat inside the query and IAM Credentials was asked /iam"
+    },
+    {
+      "id": "ciphertoken-iam-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAMintGoesToTheResourceJoinedOntoTheIAMURL/query-trailing-slash",
+      "production": "ciphertoken GoogleAccount.generateIDToken: an IAM Credentials URL whose path ends in a slash and that has a query (http://host/iam/?key=...) mints at /iam/v1/...:generateIdToken?key=..., where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "ciphertoken-iam-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAMintGoesToTheResourceJoinedOntoTheIAMURL/fragment",
+      "production": "ciphertoken GoogleAccount.generateIDToken: an IAM Credentials URL with a fragment (http://host/iam#...) mints at /iam/v1/...:generateIdToken and the call's URL holds no fragment, which no request sends, where the path appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "ciphertoken-iam-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAMintGoesToTheResourceJoinedOntoTheIAMURL/no-query",
+      "production": "ciphertoken GoogleAccount.generateIDToken: an IAM Credentials URL with a path and no query (http://host/iam) mints at /iam/v1/...:generateIdToken, as before the join"
+    },
+    {
+      "id": "ciphertoken-iam-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIAMCredentialsURLWithACredentialPrintsNoneOfIt/unparsed-twin",
+      "production": "the probe of the unparsed IAM-URL row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "ciphertoken-iam-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIAMCredentialsURLWithACredentialPrintsNoneOfIt/unparsed",
+      "production": "ciphertoken GoogleAccount.generateIDToken: an IAM Credentials URL that url.Parse refuses fails the mint in the reader's own fixed words, never url.Parse's error, which http.NewRequest's carried into the judge's audit row and which quotes the URL whole, its user information and query included",
+      "capture": "ciphertoken.iam-url/unparsed"
+    },
+    {
+      "id": "ciphertoken-iam-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIAMCredentialsURLWithACredentialPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed IAM-URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "ciphertoken-iam-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIAMCredentialsURLWithACredentialPrintsNoneOfIt/reparsed",
+      "production": "ciphertoken GoogleAccount.generateIDToken: an IAM Credentials URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the mint in the reader's own fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "capture": "ciphertoken.iam-url/reparsed"
+    },
+    {
+      "id": "secrets-google-base-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAServiceAccountMintGoesToTheResourceJoinedOntoTheBaseURL/query",
+      "production": "secrets GoogleServiceAccount.Mint: a base URL with a path and a query (http://host/iam?key=...) mints at that path joined with the resource's, the query kept (urljoin.Join: /iam/v1/projects/-/serviceAccounts/<account>:generateAccessToken?key=...), where the path appended to the URL's text sat inside the query and IAM was asked /iam"
+    },
+    {
+      "id": "secrets-google-base-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAServiceAccountMintGoesToTheResourceJoinedOntoTheBaseURL/query-trailing-slash",
+      "production": "secrets GoogleServiceAccount.Mint: a base URL whose path ends in a slash and that has a query (http://host/iam/?key=...) mints at /iam/v1/...:generateAccessToken?key=..., where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "secrets-google-base-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAServiceAccountMintGoesToTheResourceJoinedOntoTheBaseURL/fragment",
+      "production": "secrets GoogleServiceAccount.Mint: a base URL with a fragment (http://host/iam#...) mints at /iam/v1/...:generateAccessToken and the request's URL holds no fragment, which no request sends, where the path appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "secrets-google-base-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAServiceAccountMintGoesToTheResourceJoinedOntoTheBaseURL/no-query",
+      "production": "secrets GoogleServiceAccount.Mint: a base URL with a path and no query (http://host/iam) mints at /iam/v1/...:generateAccessToken, as before the join"
+    },
+    {
+      "id": "secrets-google-base-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestABaseURLWithACredentialPrintsNoneOfIt/unparsed-twin",
+      "production": "the probe of the unparsed base-URL row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "secrets-google-base-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestABaseURLWithACredentialPrintsNoneOfIt/unparsed",
+      "production": "secrets GoogleServiceAccount.Mint: a base URL that url.Parse refuses fails the mint in the minter's own fixed words under ErrMintUpstream, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included",
+      "capture": "secrets.google-base-url/unparsed"
+    },
+    {
+      "id": "secrets-google-base-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestABaseURLWithACredentialPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed base-URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "secrets-google-base-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestABaseURLWithACredentialPrintsNoneOfIt/reparsed",
+      "production": "secrets GoogleServiceAccount.Mint: a base URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the mint in the minter's own fixed words under ErrMintUpstream, never http.NewRequest's error, which quotes that URL whole",
+      "capture": "secrets.google-base-url/reparsed"
+    },
+    {
+      "id": "groups-iam-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestTheDirectoryTokenMintGoesToTheResourceJoinedOntoTheIAMURL/query",
+      "production": "groups directoryToken.Token: an IAM Credentials URL with a path and a query (http://host/iam?key=...) mints the reader account's token at that path joined with the resource's, the query kept (urljoin.Join: /iam/v1/projects/-/serviceAccounts/<account>:generateAccessToken?key=...), where the path appended to the URL's text sat inside the query and IAM was asked /iam"
+    },
+    {
+      "id": "groups-iam-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestTheDirectoryTokenMintGoesToTheResourceJoinedOntoTheIAMURL/query-trailing-slash",
+      "production": "groups directoryToken.Token: an IAM Credentials URL whose path ends in a slash and that has a query (http://host/iam/?key=...) mints at /iam/v1/...:generateAccessToken?key=..., where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "groups-iam-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestTheDirectoryTokenMintGoesToTheResourceJoinedOntoTheIAMURL/fragment",
+      "production": "groups directoryToken.Token: an IAM Credentials URL with a fragment (http://host/iam#...) mints at /iam/v1/...:generateAccessToken and the mint's URL holds no fragment, which no request sends, where the path appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "groups-iam-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestTheDirectoryTokenMintGoesToTheResourceJoinedOntoTheIAMURL/no-query",
+      "production": "groups directoryToken.Token: an IAM Credentials URL with a path and no query (http://host/iam) mints at /iam/v1/...:generateAccessToken, as before the join"
+    },
+    {
+      "id": "groups-iam-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestADirectoryTokenIAMURLWithACredentialPrintsNoneOfIt/unparsed-twin",
+      "production": "the probe of the unparsed directory-token IAM-URL row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "groups-iam-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestADirectoryTokenIAMURLWithACredentialPrintsNoneOfIt/unparsed",
+      "production": "groups directoryToken.Token: an IAM Credentials URL that url.Parse refuses fails the mint in the source's own fixed words, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included",
+      "capture": "groups.iam-url/unparsed"
+    },
+    {
+      "id": "groups-iam-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestADirectoryTokenIAMURLWithACredentialPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed directory-token IAM-URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "groups-iam-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestADirectoryTokenIAMURLWithACredentialPrintsNoneOfIt/reparsed",
+      "production": "groups directoryToken.Token: an IAM Credentials URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the mint in the source's own fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "capture": "groups.iam-url/reparsed"
+    },
+    {
+      "id": "groups-directory-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestAMembersReadGoesToTheRouteJoinedOntoTheDirectoryURL/query",
+      "production": "groups Reader.list: a Directory URL with a path and a query (http://host/dir?key=...) reads every page at that path joined with the members route, the configured query kept ahead of the page's parameters (urljoin.Join: /dir/admin/directory/v1/groups/<group>/members?key=...&includeDerivedMembership=true&maxResults=200, the second page's pageToken after them), where the route appended to the URL's text and the parameters' own '?' sat inside the query and the Directory was asked /dir"
+    },
+    {
+      "id": "groups-directory-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestAMembersReadGoesToTheRouteJoinedOntoTheDirectoryURL/query-trailing-slash",
+      "production": "groups Reader.list: a Directory URL whose path ends in a slash and that has a query (http://host/dir/?key=...) reads /dir/admin/directory/v1/groups/<group>/members?key=...&..., where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "groups-directory-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestAMembersReadGoesToTheRouteJoinedOntoTheDirectoryURL/fragment",
+      "production": "groups Reader.list: a Directory URL with a fragment (http://host/dir#...) reads /dir/admin/directory/v1/groups/<group>/members with its parameters as a query, and the read's URL holds no fragment, which no request sends, where the route and the parameters sat inside the fragment and the Directory was asked /dir with no query at all"
+    },
+    {
+      "id": "groups-directory-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestAMembersReadGoesToTheRouteJoinedOntoTheDirectoryURL/no-query",
+      "production": "groups Reader.list: a Directory URL with a path and no query (http://host/dir) reads /dir/admin/directory/v1/groups/<group>/members?includeDerivedMembership=true&maxResults=200, as before the join, the second page's pageToken after them"
+    },
+    {
+      "id": "groups-directory-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestADirectoryURLWithACredentialPrintsNoneOfIt/unparsed-twin",
+      "production": "the probe of the unparsed Directory-URL row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "groups-directory-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestADirectoryURLWithACredentialPrintsNoneOfIt/unparsed",
+      "production": "groups Reader.list: a Directory URL that url.Parse refuses fails the read in the reader's own fixed words, which its log line carries as the read's result, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included",
+      "capture": "groups.directory-url/unparsed"
+    },
+    {
+      "id": "groups-directory-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestADirectoryURLWithACredentialPrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed Directory-URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "groups-directory-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/groups",
+      "test": "TestADirectoryURLWithACredentialPrintsNoneOfIt/reparsed",
+      "production": "groups Reader.list: a Directory URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the read in the reader's own fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "capture": "groups.directory-url/reparsed"
     }
   ],
   "bun": [
@@ -16853,6 +17103,26 @@
       "site": "the boot's cluster check over runtime.kubernetes' kubeconfig (kubeClient, sandbox.CheckInstalled) sent the kubeconfig user's bearer on the CRD read's redirect to another port of the cluster's host",
       "source": "the round-9 decisions of #4368",
       "guard": "daemon-kubeconfig-redirect-authorization"
+    },
+    {
+      "site": "ciphertoken GoogleAccount.generateIDToken: the mint's URL was IAMCredentialsURL's text with the resource's path appended, so a configured query took that path into its last value and IAM Credentials was asked the configured path, and a URL that does not parse printed http.NewRequest's error, which quotes it whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "ciphertoken-iam-url-query"
+    },
+    {
+      "site": "secrets GoogleServiceAccount.Mint: the mint's URL was BaseURL's text with the resource's path appended, so a configured query took that path into its last value and IAM was asked the configured path, and a URL that does not parse printed http.NewRequest's error, which quotes it whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "secrets-google-base-url-query"
+    },
+    {
+      "site": "groups directoryToken.Token: the mint's URL was IAMCredentialsURL's text with the resource's path appended, so a configured query took that path into its last value and IAM was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "groups-iam-url-query"
+    },
+    {
+      "site": "groups Reader.list: each page's URL was BROKER_DIRECTORY_URL's text with the members route appended and the page's parameters after a second '?', so a configured query took both into its last value and the Directory was asked the configured path, and a URL that does not parse logged http.NewRequest's error, which quotes it whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "groups-directory-url-query"
     }
   ]
 }
