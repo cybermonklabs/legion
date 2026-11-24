@@ -1,0 +1,31 @@
+kind: Fixed
+body: |-
+  The leak guard now refuses a push to a public repository that moves a ref to a blob or a tree,
+  or to an annotated tag of one however many tags deep, as a setup error (`LEAK CHECK SETUP
+  ERROR: … the push's commits could not be read: git rev-list exited 128: error:
+  <sha>^{commit}: expected commit type, but the object dereferences to blob type …`). Before,
+  its private-name pass listed the push's commits with `git rev-list`, which lists none for such
+  an object and exits 0, so the pass read nothing of it and passed the push while git sent the
+  object. The shared leak check already refuses such a push; the guard now refuses it on its own
+  as well. A push of a ref to a commit, directly or through annotated tags, is read as before.
+
+  The pass also reads every file a pushed commit adds as text. Before, a file that holds a NUL
+  byte, or one a `-diff` attribute (from any attributes source) or a diff driver with `binary =
+  true` covers, came out of the diff as "Binary files … differ" with no line, so its text reached
+  the destination unread. The pass now reads it with `--text --no-textconv --no-ext-diff`. A
+  merge's combined diff prints such a file as binary whatever `--text` says, so each file a merge's
+  combined diff prints so is read again as text from its blobs, the merge's first parent's and the
+  merge's own, which the combined diff's index line names; no pathspec is used, so neither the
+  path's bytes nor the pusher's `GIT_*_PATHSPECS` can make the read miss it. A file whose blob the
+  merge keeps from its first parent, changing only its mode or making it a symlink, and a
+  submodule's entry publish no new text and are not read. A diff that still prints a file as
+  binary, or a read of two blobs that differ that finds nothing, refuses the push as a setup error.
+
+  `legion leak-check pre-push` refuses an update line whose sha is not the 40 or 64 lowercase hex
+  digits git writes, without quoting it.
+
+  A leak guard answer runs its URL rule again after escaping its control bytes, so a credential in
+  a URL that a tab, a no-break space, a U+202E or a control byte split in two is not printed.
+time: 2026-11-22T18:23:29Z
+custom:
+  Issue: leak-guard-non-commit-push

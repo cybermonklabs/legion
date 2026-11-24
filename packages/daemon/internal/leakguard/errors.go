@@ -47,7 +47,9 @@ type Refusal struct {
 // command's stderr through the URL rule too (cmd/legion's newRoot), but an in-process caller can
 // write an answer anywhere, so each answer applies both itself. A backslash is written as it is,
 // so the shared check's report lines, already escaped by its own printer, pass unchanged. A
-// remote's name that is no URL ("origin") reads as written.
+// remote's name that is no URL ("origin") reads as written. Each part is read alone, since the rule
+// ends a URL only at white space: read whole, a query would take the `:` the answer writes after
+// it.
 func (r *Refusal) Error() string {
 	var b strings.Builder
 	b.WriteString("LEAK CHECK: refusing ")
@@ -119,9 +121,13 @@ func notFoundText(repo string) string {
 }
 
 // shown is s, a part of an answer that is not this file's own words, as an answer writes it: every
-// URL in it without its userinfo and its query (redact.URLCredentials), and then each control byte
-// escaped (termsafe.Escaped), uncut. The URL rule runs first, on the text as it is: it ends a URL at
-// white space, which the escaping would write as letters.
+// URL in it without its userinfo and its query (redact.URLCredentials), then each control byte
+// escaped (termsafe.Escaped), uncut, and then the URL rule once more. The URL rule runs first, on
+// the text as it is: it ends a URL at white space, which the escaping would write as letters, so a
+// URL followed by a tab and the rest of a line keeps that rest. It runs again after, because the
+// escaping writes a tab, a no-break space, a U+202E or a control byte inside a URL as letters, and
+// that joins into one URL what the first pass read as two pieces neither of which held a
+// credential it could see.
 func shown(s string) string {
-	return termsafe.Escaped(redact.URLCredentials(s), 0)
+	return redact.URLCredentials(termsafe.Escaped(redact.URLCredentials(s), 0))
 }

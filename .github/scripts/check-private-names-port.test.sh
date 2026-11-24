@@ -583,7 +583,11 @@ git -C "$root" add -A -- docs/image.bin
 git -C "$root" commit -q -m "chore: add a binary"
 push_door "$root"
 frozen_tree "$root"
-agree skipped-binary
+check "the frozen script skips a binary file" "$(is "$frozen_status" 0)"
+check "the engine refuses the line a binary file added" "$(is "$door_status" 3)"
+note "binary" "skips a binary file (grep -I), one with a NUL byte among them" \
+  "reads every file a commit adds as text (diff-tree --text), a NUL byte or a -diff attribute notwithstanding" \
+  "a tightening: git still sends a binary file, so a name in it would otherwise reach a public repository unread; its cost is a false refusal where a binary's bytes happen to spell one of these names"
 
 # ---------------------------------------------------------------------------------------------
 # The 13 argument-handling cases of check-private-names.test.sh. They are the frozen script's own

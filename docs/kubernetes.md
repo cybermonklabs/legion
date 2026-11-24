@@ -121,6 +121,9 @@ It carries:
 
 - a deployment that names no check, which runs none:
   the daemon logs once at boot that the deployment leak check is not configured, naming the two variables; it pushes no check to any launcher, whatever pin its hello names; its roles are told neither `PUBLIC_LEAK_CHECK` nor the checker, so each shim reads no install and starts its agent; and a write with no check named anywhere is not refused for the check's absence, the guard's visibility read and this repository's own private-name rules still running over it.
+  There, a push to a public repository that moves a ref to a blob or a tree, bare or behind annotated tags, is refused by the guard itself, whatever the object holds:
+  the rules read a push's ref names and the commits it adds, and git pushes such an object with no commit for them to read, so the guard asks git for the ref's commit (`<sha>^{commit}`, `Guard.commits`, `internal/leakguard/push.go`) and git refuses, `LEAK CHECK SETUP ERROR: the push to <remote>: the push's commits could not be read: git rev-list exited 128: error: <sha>^{commit}: expected commit type, but the object dereferences to blob type …`.
+  Each file a commit adds is read as text, one that holds a NUL byte or that a `-diff` attribute from any attributes source covers included, with no textconv and no external diff; a file a merge's combined diff prints as binary, which that diff does whatever `--text` says, is read again as text from the blobs the combined diff's index line names, the merge's first parent's and the merge's own, with no pathspec, except a file whose blob the merge keeps from its first parent (a mode change, or a symlink of the same blob) and a submodule's entry, which publish no new text; a diff that still prints a file as binary, or a read of two blobs that differ that finds nothing, refuses the push (`Guard.addedLines`).
 
 - the check's launches, rollbacks and tmux panes:
   a launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
@@ -137,6 +140,7 @@ It carries:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write;
   `<the write>: GitHub answers 404 for <repo>, …`, a wrong name or a credential that cannot see it;
   or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
+  In a pod, a push that moves a ref to a blob or a tree, bare or behind annotated tags, gets that setup error from the shared check, which runs first and refuses every such push whatever the object holds, `LEAK CHECK SETUP ERROR: the push to <remote>: the shared public leak check could not finish (exit 2): LEAK CHECK ERROR: push root <sha> does not resolve to a commit; …`, so the guard's own rules never reach it; where no check is named the guard refuses it itself (the bullet above).
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 

@@ -403,25 +403,46 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 
 // ParseUpdates reads git's own pre-push lines, which is how a `legion leak-check` standing in for
 // a pre-push hook reads what the push would move, and refuses a line of another shape rather than
-// guessing at it.
+// guessing at it: a line of three fields, and a line whose sha is not the 40 or 64 lowercase hex
+// digits git writes. A sha of other bytes is refused without being quoted, so a control byte in it
+// never reaches the report, and one that begins with "-" never reaches a git as an option.
 func TestParseUpdates(t *testing.T) {
-	lines := "refs/heads/main abc refs/heads/main def\n\nrefs/heads/work 123 refs/heads/work " + noSHA + "\n"
+	sha1, sha256 := strings.Repeat("a1", 20), strings.Repeat("b2", 32)
+	lines := "refs/heads/main " + sha1 + " refs/heads/main " + sha1 + "\n\nrefs/heads/work " + sha256 + " refs/heads/work " + noSHA + "\n"
 	updates, err := ParseUpdates(strings.NewReader(lines))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	want := []Update{
-		{LocalRef: "refs/heads/main", LocalSHA: "abc", RemoteRef: "refs/heads/main", RemoteSHA: "def"},
-		{LocalRef: "refs/heads/work", LocalSHA: "123", RemoteRef: "refs/heads/work", RemoteSHA: noSHA},
+		{LocalRef: "refs/heads/main", LocalSHA: sha1, RemoteRef: "refs/heads/main", RemoteSHA: sha1},
+		{LocalRef: "refs/heads/work", LocalSHA: sha256, RemoteRef: "refs/heads/work", RemoteSHA: noSHA},
 	}
 	if !slices.Equal(updates, want) {
 		t.Errorf("read %v, want %v", updates, want)
 	}
-	if updates[0].Line() != "refs/heads/main abc refs/heads/main def" {
+	if updates[0].Line() != "refs/heads/main "+sha1+" refs/heads/main "+sha1 {
 		t.Errorf("the line is %q", updates[0].Line())
 	}
-	if _, err := ParseUpdates(strings.NewReader("refs/heads/main abc\n")); err == nil {
+	if _, err := ParseUpdates(strings.NewReader("refs/heads/main " + sha1 + "\n")); err == nil {
 		t.Error("a line of three fields was read as a pre-push line")
+	}
+	for _, tc := range []struct{ name, local, remote string }{
+		{"a local sha holding an escape byte", "\x1b[31m" + strings.Repeat("a", 35), noSHA},
+		{"a local sha shaped as an option", "-x", noSHA},
+		{"a remote sha shaped as an option", sha1, "--output=" + strings.Repeat("a", 31)},
+		{"a short sha", "a1b2c3d", noSHA},
+		{"a sha in capitals", strings.ToUpper(sha1), noSHA},
+		{"a sha of 41 digits", sha1 + "a", noSHA},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseUpdates(strings.NewReader("refs/heads/main " + tc.local + " refs/heads/main " + tc.remote + "\n"))
+			if err == nil {
+				t.Fatalf("the line was read as a pre-push line")
+			}
+			if want := "pre-push line 1 holds a sha that is not the 40 or 64 lowercase hex digits git writes"; err.Error() != want {
+				t.Errorf("the refusal is %q, want %q, which quotes no field", err, want)
+			}
+		})
 	}
 }
 
@@ -476,4 +497,274 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 			t.Errorf("gitSaid = %d bytes, want %d: the count of 10 and the last %d bytes", len(said), len(want), gitErrorBytes)
 		}
 	})
+}
+
+// A push to a public destination that moves a ref to a blob or a tree, or to a tag of one however
+// many tags deep, is refused as a setup failure. git sends the object, and a rev-list given its
+// sha bare lists no commit for it and exits 0, so the rules, which read a push's commits, would
+// read nothing of it and pass the push: a blob or a file of a tree that names a host would reach
+// the destination unread. The guard reads the sha as `<sha>^{commit}`, which git refuses for such
+// an object, and that refusal is the setup failure, whether the ref is new or the destination
+// holds it at a commit already. The shared check here is the stand-in that passes every push
+// (leakguardtest.Passes), so each refusal is the guard's own. The controls show the read takes
+// nothing from a push the rules can read: a tag chain that ends at a commit is read as that commit
+// is, its added line refused by the rules and a clean one passed.
+func TestAPushOfARefToNoCommitIsRefused(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(t *testing.T, path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(t *testing.T, name, content string) string {
+		t.Helper()
+		write(t, filepath.Join(repo, name), content)
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.Run(repo, "git", "commit", "--quiet", "-m", "a message of no interest")
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
+	base := commit(t, "README.md", "one\n")
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+
+	const named, clean = "the runner answers at " + theHost + "\n", "a line of ordinary prose\n"
+	// blob is a blob of content in the repository's object store, on no commit.
+	blob := func(t *testing.T, content string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "notes.md")
+		write(t, path, content)
+		return strings.TrimSpace(fixture.Out(repo, "git", "hash-object", "-w", "--no-filters", path))
+	}
+	// tree is a tree of one file, notes.md, holding content, on no commit. It is written from an
+	// index of its own, so the repository's index is left as it was.
+	tree := func(t *testing.T, content string) string {
+		t.Helper()
+		index := fixture.With("GIT_INDEX_FILE=" + filepath.Join(t.TempDir(), "index"))
+		index.Run(repo, "git", "update-index", "--add", "--cacheinfo", "100644,"+blob(t, content)+",notes.md")
+		return strings.TrimSpace(index.Out(repo, "git", "write-tree"))
+	}
+	// annotated is an annotated tag named name on object, whose message names nothing, and its sha.
+	annotated := func(t *testing.T, name, object string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "-c", "advice.nestedTag=false", "tag", "-a", "-m", "a tag of no interest", name, object)
+		return fixture.Run(repo, "git", "rev-parse", "refs/tags/"+name)
+	}
+	push := func(t *testing.T, name, local, remote string) error {
+		t.Helper()
+		ref := "refs/tags/" + name
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+		return guard.Push(bound(t), PushRequest{
+			Dir:     repo,
+			Remote:  "origin",
+			URL:     "https://github.com/invented-org/invented-repo.git",
+			Updates: []Update{{LocalRef: ref, LocalSHA: local, RemoteRef: ref, RemoteSHA: remote}},
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		// local is the sha the ref is pushed at, made under the tag name name.
+		local func(t *testing.T, name string) string
+		// remote is the sha the destination holds the ref at: none, for a ref the push creates.
+		remote string
+		// kind is the type of the object at the end of the ref's tags.
+		kind string
+	}{
+		{
+			name:   "a lightweight tag on a blob that names a host",
+			local:  func(t *testing.T, _ string) string { return blob(t, named) },
+			remote: noSHA,
+			kind:   "blob",
+		},
+		{
+			name:   "an annotated tag on a blob that names a host",
+			local:  func(t *testing.T, name string) string { return annotated(t, name, blob(t, named)) },
+			remote: noSHA,
+			kind:   "blob",
+		},
+		{
+			name:   "a lightweight tag on a tree whose file names a host",
+			local:  func(t *testing.T, _ string) string { return tree(t, named) },
+			remote: noSHA,
+			kind:   "tree",
+		},
+		{
+			name: "a tag of a tag on a blob that names a host",
+			local: func(t *testing.T, name string) string {
+				return annotated(t, name, annotated(t, name+"-inner", blob(t, named)))
+			},
+			remote: noSHA,
+			kind:   "blob",
+		},
+		{
+			name:   "a blob that names a host over a ref the destination holds at a commit",
+			local:  func(t *testing.T, _ string) string { return blob(t, named) },
+			remote: base,
+			kind:   "blob",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := strings.ReplaceAll(tc.name, " ", "-")
+			local := tc.local(t, name)
+			if got := fixture.Run(repo, "git", "cat-file", "-t", local+"^{}"); got != tc.kind {
+				t.Fatalf("the fixture's object is a %s once its tags are peeled, want a %s", got, tc.kind)
+			}
+			failed := setupFailure(t, push(t, name, local, tc.remote))
+			says(t, failed, "the push's commits", "git rev-list exited 128: error: "+local+"^{commit}: expected commit type, but the object dereferences to "+tc.kind+" type")
+			if strings.Contains(failed.Error(), theHost) {
+				t.Fatalf("the setup failure holds the text it refused: %v", failed)
+			}
+			t.Log(failed)
+		})
+	}
+
+	t.Run("a tag of a tag on a commit whose added line names a host", func(t *testing.T) {
+		fixture.Run(repo, "git", "checkout", "--quiet", "-B", "named", base)
+		head := commit(t, "chain.md", named)
+		local := annotated(t, "named-outer", annotated(t, "named-inner", head))
+		want := []string{"chain.md: " + theClass}
+		if refused := refusal(t, push(t, "named-outer", local, noSHA)); refused.By != byRules || !slices.Equal(refused.Lines, want) {
+			t.Errorf("the refusal is by %q with the report %q, want this repository's own rules and %q", refused.By, refused.Lines, want)
+		}
+	})
+	t.Run("an annotated tag on a commit that names nothing", func(t *testing.T) {
+		fixture.Run(repo, "git", "checkout", "--quiet", "-B", "clean", base)
+		head := commit(t, "clean.md", clean)
+		if err := push(t, "clean-tag", annotated(t, "clean-tag", head), noSHA); err != nil {
+			t.Fatalf("a push of a tag on a commit that names nothing: %v", err)
+		}
+	})
+}
+
+// Each file a pushed commit adds is read as text, whatever git would otherwise make of it. A diff
+// prints "Binary files … differ" and no line at all for a file that holds a NUL byte, or whose
+// path a `-diff` attribute covers (from the commit's own .gitattributes, from .git/info/attributes
+// or from core.attributesFile) or a diff driver with `binary = true`; the destination still gets
+// the file, so a line in it that names a host would pass the rules unread. A driver's textconv
+// and an external diff command would change the text read rather than drop it, and diff-tree runs
+// neither unless asked: those cases hold the read to that. Each case's commit adds one file that
+// names a host, with the working tree at that commit as a push leaves it, and the rules must
+// refuse that file. Each case's control shows its mechanism is live, that the read the case is
+// about (git's default, or the textconv or external diff turned on) prints no line naming the host.
+func TestAPushedCommitsFilesAreReadAsText(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(t *testing.T, path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(repo, "README.md"), "one\n")
+	fixture.Run(repo, "git", "add", "-A")
+	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the commit the destination holds")
+	base := fixture.Run(repo, "git", "rev-parse", "HEAD")
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+	const named = "the runner answers at " + theHost + "\n"
+	// config sets key to value in the repository's own configuration for the rest of the case.
+	config := func(t *testing.T, key, value string) {
+		t.Helper()
+		fixture.Run(repo, "git", "config", key, value)
+		t.Cleanup(func() { fixture.Run(repo, "git", "config", "--unset", key) })
+	}
+	globalAttributes := filepath.Join(t.TempDir(), "attributes")
+	write(t, globalAttributes, "*.af -diff\n")
+
+	for _, tc := range []struct {
+		name string
+		// path is the file the commit adds and the record the report names.
+		path, content string
+		// setup writes what the case adds besides the file: attributes, configuration.
+		setup func(t *testing.T)
+		// env is the environment the guard and the control run under, on top of the fixture's.
+		env []string
+		// hides is the diff-tree option that engages the case's mechanism in the control: none
+		// for a mechanism git applies by default.
+		hides []string
+	}{
+		{name: "a file that holds a NUL byte", path: "nul.bin", content: "a\x00b\n" + named},
+		{
+			name: "a file a -diff in the commit's .gitattributes covers", path: "deps.lock", content: named,
+			setup: func(t *testing.T) { write(t, filepath.Join(repo, ".gitattributes"), "*.lock -diff\n") },
+		},
+		{
+			name: "a file a -diff in .git/info/attributes covers", path: "info.dat", content: named,
+			setup: func(t *testing.T) {
+				info := filepath.Join(repo, ".git", "info", "attributes")
+				write(t, info, "*.dat -diff\n")
+				t.Cleanup(func() { write(t, info, "") })
+			},
+		},
+		{
+			name: "a file a -diff in core.attributesFile covers", path: "g.af", content: named,
+			setup: func(t *testing.T) { config(t, "core.attributesFile", globalAttributes) },
+		},
+		{
+			name: "a file whose diff driver is binary", path: "b.bn", content: named,
+			setup: func(t *testing.T) {
+				write(t, filepath.Join(repo, ".gitattributes"), "*.bn diff=bn\n")
+				config(t, "diff.bn.binary", "true")
+			},
+		},
+		{
+			name: "a file whose diff driver has a textconv", path: "conv.tc", content: named,
+			setup: func(t *testing.T) {
+				write(t, filepath.Join(repo, ".gitattributes"), "*.tc diff=tc\n")
+				config(t, "diff.tc.textconv", "true")
+			},
+			hides: []string{"--textconv"},
+		},
+		{
+			name: "a file whose diff driver has an external command", path: "ext.ex", content: named,
+			setup: func(t *testing.T) {
+				write(t, filepath.Join(repo, ".gitattributes"), "*.ex diff=ex\n")
+				config(t, "diff.ex.command", "true")
+			},
+			hides: []string{"--ext-diff"},
+		},
+		{
+			name: "a file under an external diff the environment names", path: "env.md", content: named,
+			env:   []string{"GIT_EXTERNAL_DIFF=true"},
+			hides: []string{"--ext-diff"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := strings.ReplaceAll(tc.name, " ", "-")
+			fixture.Run(repo, "git", "checkout", "--quiet", "-B", branch, base)
+			if tc.setup != nil {
+				tc.setup(t)
+			}
+			write(t, filepath.Join(repo, tc.path), tc.content)
+			fixture.Run(repo, "git", "add", "-A")
+			fixture.Run(repo, "git", "commit", "--quiet", "-m", "a message of no interest")
+			head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+			control := append(append([]string{"git", "diff-tree", "-r", "-p", "--no-commit-id"}, tc.hides...), head)
+			if out := fixture.With(tc.env...).Out(repo, control...); strings.Contains(out, theHost) {
+				t.Fatalf("%s prints the host, so the case's mechanism hides nothing and the case proves nothing:\n%s", strings.Join(control, " "), out)
+			}
+			ref := "refs/heads/" + branch
+			err := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, tc.env...).Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{{LocalRef: ref, LocalSHA: head, RemoteRef: ref, RemoteSHA: noSHA}},
+			})
+			want := []string{tc.path + ": " + theClass}
+			if refused := refusal(t, err); refused.By != byRules || !slices.Equal(refused.Lines, want) {
+				t.Errorf("the refusal is by %q with the report %q, want this repository's own rules and %q", refused.By, refused.Lines, want)
+			}
+		})
+	}
 }

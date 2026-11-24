@@ -109,3 +109,43 @@ func TestAnAnswerWritesNeitherACredentialNorAControlByte(t *testing.T) {
 		})
 	}
 }
+
+// A credential that the URL rule does not see as one in the text as it is, because a tab, a
+// no-break space, a U+202E or a control byte stands inside the URL and ends it there, is not
+// written either: the escaping writes that character as letters, which joins the URL back up, and
+// the URL rule runs again on what the escaping wrote. No four bytes in a row of the planted token
+// (partOf) reach any answer's Error(), wherever the part stands: the write's name, a refusal's
+// line, a setup failure's reason or the failure beneath it. The control is a URL with no
+// credential, followed by a tab and the rest of a line, which keeps that rest.
+func TestAnAnswerWritesNoCredentialItsEscapingJoinsIntoAURL(t *testing.T) {
+	const token = "FAKEtok3nZQ9x"
+	parts := []struct{ name, part string }{
+		{name: "a tab inside the userinfo", part: "https://x-access-token:" + token + "\ttok@github.com/a/b"},
+		{name: "a no-break space inside the userinfo", part: "https://x-access-token:" + token + "\u00a0tok@github.com/a/b"},
+		{name: "a U+202E inside the scheme", part: "https\u202e://u:" + token + "@github.com/a"},
+		{name: "a control byte inside the scheme", part: "https\x01://u:" + token + "@github.com/a"},
+	}
+	answers := func(part string) []error {
+		return []error{
+			&Refusal{What: PushName(part), By: bySharedCheck, Lines: []string{"the remote " + part + " refused"}},
+			&SetupFailure{What: PushName(part), Why: "--body-file " + part + " could not be read", Err: errors.New("fatal: unable to access '" + part + "'")},
+			&NotFound{What: PushName(part), Repo: "acme/widgets"},
+		}
+	}
+	for _, tc := range parts {
+		for _, answer := range answers(tc.part) {
+			t.Run(tc.name+": "+fmt.Sprintf("%T", answer), func(t *testing.T) {
+				if printed := answer.Error(); partOf(printed, token) != "" {
+					t.Errorf("Error() holds %q of the token: %s", partOf(printed, token), strings.ReplaceAll(printed, token, "<the token>"))
+				}
+			})
+		}
+	}
+	t.Run("control: a URL with no credential, then a tab and the rest of the line", func(t *testing.T) {
+		for _, answer := range answers("https://github.com/a.git\tthe rest of the line") {
+			if printed := answer.Error(); !strings.Contains(printed, "the rest of the line") {
+				t.Errorf("%T Error() = %q, want it to keep the rest of the line", answer, printed)
+			}
+		}
+	})
+}

@@ -7,7 +7,11 @@
 //     is named skips it rather than being refused for its absence (Guard.sharedCheck).
 //   - This repository's own private-name rules, the embedded private-names.toml, run in process
 //     over the records the write is made of, and only when the destination repository is one
-//     GitHub reports public.
+//     GitHub reports public. A push's records are its ref names and the commits it adds
+//     (Guard.Push), every file a commit adds read as text whatever its bytes or its attributes
+//     (Guard.addedLines); a push that moves a ref to a blob or a tree, bare or behind annotated
+//     tags, adds no commit to read, and is refused as a setup failure rather than passed unread
+//     (Guard.commits).
 //
 // A call site reaches the guard through one of four entry points — Push, GhCall, Text and Rules —
 // and reads one of three answers from a refused write: a *Refusal, which is about the text the
