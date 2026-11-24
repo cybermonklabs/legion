@@ -1,10 +1,11 @@
 //go:build !race
 
 // A ninth static check beside the eight source guards, under the tag they carry and for the same
-// saving: it reads text - the api package's parsed declarations, and the bytes of every non-test
-// .go file of the module - and opens no database and starts no goroutine, so the race detector
-// has nothing here to watch. Behind the tag the race build neither compiles it nor walks
-// packages/envoy a second time to run it (lock_level_test.go's header weighs that walk).
+// saving: it reads text - the api package's parsed declarations, the bytes of every non-test .go
+// file of the module and the SQL of every .sql file of it - and opens no database and starts no
+// goroutine, so the race detector has nothing here to watch. Behind the tag the race build neither
+// compiles it nor walks packages/envoy a second time to run it (lock_level_test.go's header weighs
+// that walk).
 //
 // The tag is also what puts this check in the job its subject asks for. R15 of
 // dispatch://INFRA-1066's spec has a test whose subject is a file's words run in a text-check job
@@ -37,12 +38,15 @@ package api
 // nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
 // and the line below is the declaration that holds that job's filter to what it reads.
 //ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources: lock_level_test.go:91, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, TestOneExpressionDecidesWhoWaitsInOneSpelling, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
+//ci:reads packages/envoy/**/*.sql sqlRuleCopies, which TestOneExpressionDecidesWhoWaitsInOneSpelling calls, walks packages/envoy and reads every .sql file it finds, its comments blanked, for a copy of the rule
 
 import (
 	"fmt"
 	"go/ast"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -64,10 +68,159 @@ func namesTheExpression(node ast.Node) bool {
 	return named
 }
 
+// sqlCode is a SQL text with its comments blanked, read by PostgreSQL's lexical rules, so that no
+// text a statement runs is blanked with them:
+//   - a quoted string ('…') and a quoted identifier ("…"), in each of which a doubled quote stands
+//     for one, are kept whole, so a `--` or a `/*` in one starts no comment; in an escape string (E'…')
+//     a backslash escapes the character after it, a quote among them;
+//   - a block comment nests, and ends at the `*/` that closes its outermost `/*`;
+//   - a dollar-quoted string ($$…$$ or $tag$…$tag$) has no escapes and ends at its first closing
+//     tag. It is the body of a function or of a DO block, which PostgreSQL runs as SQL or as
+//     PL/pgSQL, so it is read as SQL of its own: its comments are blanked and each ends at the
+//     body's end at the latest, and its code and its strings are kept.
+//
+// Each comment becomes one space, so that two tokens it stood between stay apart.
+func sqlCode(text string) string {
+	var code strings.Builder
+	code.Grow(len(text))
+	for at := 0; at < len(text); {
+		rest := text[at:]
+		switch {
+		case strings.HasPrefix(rest, "--"):
+			end := strings.IndexByte(rest, '\n')
+			if end < 0 {
+				end = len(rest)
+			}
+			code.WriteByte(' ')
+			at += end
+		case strings.HasPrefix(rest, "/*"):
+			depth, end := 1, 2
+			for end < len(rest) && depth > 0 {
+				switch {
+				case strings.HasPrefix(rest[end:], "/*"):
+					depth, end = depth+1, end+2
+				case strings.HasPrefix(rest[end:], "*/"):
+					depth, end = depth-1, end+2
+				default:
+					end++
+				}
+			}
+			code.WriteByte(' ')
+			at += end
+		case rest[0] == '\'' || rest[0] == '"':
+			escapes := rest[0] == '\'' && at > 0 && (text[at-1] == 'E' || text[at-1] == 'e') &&
+				(at < 2 || !sqlIdentifierByte(text[at-2]))
+			end := quotedEnd(rest, escapes)
+			code.WriteString(rest[:end])
+			at += end
+		case rest[0] == '$' && (at == 0 || !sqlIdentifierByte(text[at-1])) && sqlDollarTag(rest) != "":
+			tag := sqlDollarTag(rest)
+			body := rest[len(tag):]
+			end := strings.Index(body, tag)
+			closed := end >= 0
+			if !closed {
+				end = len(body)
+			}
+			code.WriteString(tag)
+			code.WriteString(sqlCode(body[:end]))
+			at += len(tag) + end
+			if closed {
+				code.WriteString(tag)
+				at += len(tag)
+			}
+		default:
+			code.WriteByte(rest[0])
+			at++
+		}
+	}
+	return code.String()
+}
+
+// quotedEnd is the length of the quoted string or identifier rest starts with, its closing quote
+// included, or all of rest when it never closes. A doubled quote is a quote in it; with escapes, a
+// backslash escapes the byte after it.
+func quotedEnd(rest string, escapes bool) int {
+	quote := rest[0]
+	for end := 1; end < len(rest); end++ {
+		switch {
+		case escapes && rest[end] == '\\':
+			end++
+		case rest[end] == quote && end+1 < len(rest) && rest[end+1] == quote:
+			end++
+		case rest[end] == quote:
+			return end + 1
+		}
+	}
+	return len(rest)
+}
+
+// sqlDollarTag is the opening tag of the dollar-quoted string rest starts with ($$ or $tag$, a tag
+// being an identifier with no `$`), or "" when rest starts none, as `$1`, a parameter, does not.
+func sqlDollarTag(rest string) string {
+	for end := 1; end < len(rest); end++ {
+		switch c := rest[end]; {
+		case c == '$':
+			return rest[:end+1]
+		case end == 1 && c >= '0' && c <= '9', !sqlIdentifierByte(c):
+			return ""
+		}
+	}
+	return ""
+}
+
+// sqlIdentifierByte is whether c may stand in an unquoted SQL identifier: a letter, a digit, `_`,
+// `$`, or a byte of a character past ASCII.
+func sqlIdentifierByte(c byte) bool {
+	return c == '_' || c == '$' || c >= 0x80 || (c >= '0' && c <= '9') || (c|0x20 >= 'a' && c|0x20 <= 'z')
+}
+
+// ruleNeedle is the rule's needle, `coalesce(a.asked_of`, in every spelling SQL takes for it: any
+// qualifier or none (an alias, a table, a schema, a quoted name), a quoted column, any case, any
+// space. The count of the module's Go and the count of its .sql files both read it.
+var ruleNeedle = regexp.MustCompile(`(?i)\bcoalesce\s*\(\s*(?:(?:\w+|"[^"]*")\s*\.\s*)*(?:asked_of\b|"asked_of")`)
+
+// goRuleCopies is the number of copies of the rule in the text of a Go source.
+func goRuleCopies(text string) int {
+	return len(ruleNeedle.FindAllStringIndex(text, -1))
+}
+
+// sqlRuleCopies is each .sql file of the module that spells the rule, read with its comments
+// blanked (sqlCode), as its path with the number of copies in it. A walk that read no migration
+// would answer none for a reason other than there being none, so it fails the test instead.
+func sqlRuleCopies(t *testing.T) []string {
+	t.Helper()
+	copies := []string{}
+	read, migrations := 0, 0
+	migrationDir := filepath.Join(moduleRoot, "internal", "dispatch", "store", "migrations")
+	if err := filepath.WalkDir(moduleRoot, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".sql") {
+			return err
+		}
+		text, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		read++
+		if filepath.Dir(path) == migrationDir {
+			migrations++
+		}
+		if spelled := len(ruleNeedle.FindAllStringIndex(sqlCode(string(text)), -1)); spelled > 0 {
+			copies = append(copies, fmt.Sprintf("%s (%d)", filepath.ToSlash(path), spelled))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk %s for .sql files: %v", moduleRoot, err)
+	}
+	if migrations == 0 {
+		t.Fatalf("read %d .sql files and none of %s: the migrations this check holds were not seen", read, migrationDir)
+	}
+	return copies
+}
+
 // TestOneExpressionDecidesWhoWaitsInOneSpelling holds the six reads that name a person to the
 // one constant: each of the six names it, and the SQL it holds - the expression and the three
-// joins it reads over - is spelled once in the module. The precedent for reading the source
-// rather than the behaviour is api/lock_level_test.go.
+// joins it reads over - is spelled once in the module's Go and never in its .sql files. The
+// precedent for reading the source rather than the behaviour is api/lock_level_test.go.
 func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	t.Parallel()
 	sources := moduleSources(t)
@@ -110,10 +263,11 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	// Two spellings are each counted across the module, with _test.go files skipped by
 	// moduleSources, so the needles below are not found in this file's own literals.
 	//
-	// The rule's needle is the prefix `coalesce(a.asked_of` rather than the whole expression: a
-	// read that reintroduced the two-step `coalesce(a.asked_of, i.assignee)`, the spelling that
-	// sends a question standing on an issue nobody holds to nobody, is what this count exists to
-	// catch, and the whole expression would count it zero times and pass.
+	// The rule's needle is the prefix `coalesce(a.asked_of` in any of its spellings (ruleNeedle)
+	// rather than the whole expression: a read that reintroduced the two-step
+	// `coalesce(asked_of, assignee)`, under any alias, the spelling that sends a question standing
+	// on an issue nobody holds to nobody, is what this count exists to catch, and the whole
+	// expression would count it zero times and pass.
 	//
 	// The joins the rule needs are counted by the one that makes them its own, the project reached
 	// through either owner: the other two left joins are ordinary beside any ask.
@@ -124,7 +278,7 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", source.path, err)
 		}
-		if spelled := strings.Count(string(text), "coalesce(a.asked_of"); spelled > 0 {
+		if spelled := goRuleCopies(string(text)); spelled > 0 {
 			copies = append(copies, fmt.Sprintf("%s (%d)", filepath.ToSlash(source.path), spelled))
 		}
 		joined := strings.Count(string(text), "left join projects p on p.key = coalesce(i.project_key, ar.project_key)")
@@ -139,5 +293,58 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	}
 	if want := []string{"../../../internal/dispatch/api/ask_rows.go (1)"}; !slices.Equal(joins, want) {
 		t.Fatalf("the joins the rule reads are spelled in %v, want them written once, in %v", joins, want)
+	}
+
+	// No .sql file of the module spells the rule at all. The counts above read Go, and a migration
+	// is SQL Postgres runs as it stands - a view, a function, a backfill - so a copy of the rule
+	// there, the two-step `coalesce(a.asked_of, i.assignee)` above all, answers a reader another
+	// person while both counts above pass. Comments are blanked first (sqlCode): an applied
+	// migration says what the rule was when it ran, and is never edited. The needle and the
+	// blanking are first held to what they must and must not count, a Go spelling and a SQL one, so
+	// a needle or a blanking that missed a copy fails here.
+	for _, planted := range []struct {
+		source  string
+		spelled int
+	}{
+		{`const q = "select coalesce(asked_of, assignee) from asks"`, 1},
+		{`const q = "select coalesce( a.asked_of , i.assignee ) from asks a"`, 1},
+	} {
+		if got := goRuleCopies(planted.source); got != planted.spelled {
+			t.Errorf("the Go count finds %d copies of the rule in %q, want %d", got, planted.source, planted.spelled)
+		}
+	}
+	for _, planted := range []struct {
+		sql     string
+		spelled int
+	}{
+		{"select coalesce(a.asked_of, i.assignee) from asks a", 1},
+		{"SELECT COALESCE( asks.asked_of , issues.assignee ) FROM asks", 1},
+		{"select '--', coalesce(asked_of, assignee) from asks", 1},
+		{"select coalesce(a.\"asked_of\", i.assignee) from asks a", 1},
+		{"select coalesce(public.asks.asked_of, i.assignee) from asks", 1},
+		// An escape string's backslash escapes the quote after it, so its `--` is text.
+		{`select E'it\'s -- text', coalesce(a.asked_of, i.assignee) from asks a`, 1},
+		// A quoted identifier is no comment either.
+		{`select "a--b", coalesce(asked_of, assignee) from asks`, 1},
+		{"-- coalesce(a.asked_of, i.assignee)\nselect 1", 0},
+		{"/* coalesce(a.asked_of, i.assignee) */ select 1", 0},
+		// A block comment nests, and ends at the `*/` of its outermost `/*`.
+		{"/* outer /* inner */ coalesce(a.asked_of, i.assignee) */ select 1", 0},
+		// A dollar-quoted body is SQL the function runs: its comments are blanked, its code read,
+		// and a comment in it ends at the body's end.
+		{"create function f() returns void language plpgsql as $$ begin -- coalesce(a.asked_of, i.assignee)\nend $$", 0},
+		{"create function f() returns text language sql as $body$ select coalesce(a.asked_of, i.assignee) from asks a $body$", 1},
+		{"select $q$ -- $q$, coalesce(a.asked_of, i.assignee) from asks a", 1},
+	} {
+		if got := len(ruleNeedle.FindAllStringIndex(sqlCode(planted.sql), -1)); got != planted.spelled {
+			t.Errorf("the needle counts %d copies of the rule in %q, want %d", got, planted.sql, planted.spelled)
+		}
+	}
+	if t.Failed() {
+		return
+	}
+	if sqlCopies := sqlRuleCopies(t); len(sqlCopies) > 0 {
+		t.Fatalf("the rule is spelled in the SQL of %v, want it in no .sql file: %s names it once, in ask_rows.go",
+			sqlCopies, askedOfPersonExpressionName)
 	}
 }

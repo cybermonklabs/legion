@@ -216,10 +216,13 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	// outlives the upgrade, within the turn it was in: the tester registers and takes its task, its
 	// claim's recorded contract is set to the release before's while no daemon runs, as that release
 	// left it, and within that one turn its client, of that release's tree, reads this daemon's
-	// answers. The daemon serves each client the shape of the contract its request states
-	// (api's shapeAnswer and valueStrips): the release before reads an issue's holdReason with the
-	// one value `escalated`, so its read of the issue held task-stopped must parse in its own schema
-	// and carry no hold reason that arrived at api.OwnerPlanContract (heldOlder).
+	// answers. That client has the routes register_plan and stop_task use exactly when the release
+	// before speaks api.OwnerPlanContract or a later contract, which added them: the release before
+	// is whatever main deployed last, so which of the two it is moves as main's contract does. The
+	// daemon serves each client the shape of the contract its request states (api's shapeAnswer and
+	// valueStrips): a release below that contract reads an issue's holdReason with the one value
+	// `escalated`, so its read of the issue held task-stopped must parse in its own schema and
+	// carry no hold reason that arrived at api.OwnerPlanContract (heldOlder).
 	l.check("older-client-reads", func() {
 		l.on(older)
 		l.givePlan(clientPlan...)
@@ -239,9 +242,11 @@ func TestOwnerStepsClientLive(t *testing.T) {
 			t.Fatalf("the older client's state read of %s, which stands on plan rows in testing, %s", older, state)
 		}
 		l.note("contract %d client's methods: %v", l.oldContract, state.Methods)
+		planRoutes := l.oldContract >= api.OwnerPlanContract
 		for _, route := range []string{"planRegister", "taskStop"} {
-			if slices.Contains(state.Methods, route) {
-				t.Fatalf("the contract %d client has %s; the release before has no such route", l.oldContract, route)
+			if has := slices.Contains(state.Methods, route); has != planRoutes {
+				t.Fatalf("the contract %d client has %s: %t, want %t, since the routes arrived at contract %d",
+					l.oldContract, route, has, planRoutes, api.OwnerPlanContract)
 			}
 		}
 		l.note("contract %d client state(): %s", l.oldContract, state)

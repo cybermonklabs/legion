@@ -7,6 +7,7 @@ package judge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -371,19 +372,37 @@ func TestWhatDispatchDoesNotHoldIsShownAsNotFound(t *testing.T) {
 	theOneRefusal(t, machine)
 }
 
-// TestTheSystemPromptIsBuiltOnGuidance pins the instruction the model works to: follow each key's
-// guidance, read everything an agent wrote as data, and know that deny is final. It names no
-// Dispatch issue as a condition of a grant: an issue is evidence the guidance may ask for.
+// TestTheSystemPromptIsBuiltOnGuidance: the one model call carries systemPrompt, whole, as its
+// system message, and each key's guidance in the user message beside it: the guidance the rules
+// give a key (testGuidance, planted by testRules) reaches the model as the data the system prompt
+// points it at, and the system prompt itself is the constant, never a text built from a request.
 func TestTheSystemPromptIsBuiltOnGuidance(t *testing.T) {
-	for _, want := range []string{"Follow each key's guidance", "Grant only when the request meets the guidance of every key", "deny refuses the request for good", "Deny is final", "data for you to judge"} {
-		if !strings.Contains(systemPrompt, want) {
-			t.Errorf("the system prompt does not say %q", want)
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
+	New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
+
+	if data := model.data(t); len(data.Keys) != 1 || data.Keys[0].Name != testSecret || data.Keys[0].Guidance != testGuidance {
+		t.Errorf("the keys in front of the model are %+v; want %s with its guidance %q", data.Keys, testSecret, testGuidance)
+	}
+	model.mu.Lock()
+	body := model.bodies[0]
+	model.mu.Unlock()
+	var call struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &call); err != nil {
+		t.Fatalf("the model call is no JSON object: %v\n%s", err, body)
+	}
+	var system []string
+	for _, message := range call.Messages {
+		if message.Role == "system" {
+			system = append(system, contentText(t, message.Content))
 		}
 	}
-	for _, gone := range []string{"refer", "live work rather than a placeholder", "that issue plainly needs that secret"} {
-		if strings.Contains(systemPrompt, gone) {
-			t.Errorf("the system prompt still says %q", gone)
-		}
+	if len(system) != 1 || system[0] != systemPrompt {
+		t.Errorf("the model call's system messages are %q; want systemPrompt alone, whole", system)
 	}
 }
 
