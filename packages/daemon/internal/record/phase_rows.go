@@ -365,10 +365,10 @@ func WorkerClaimOf(project, issue string, role claim.Role, entries map[PhaseRole
 
 // StartClaim is the claim a start row of role on issue acts on: the claim the row names
 // (SuperviseRequest.Claim), the one a phase worker's start was queued for, or, for a row that names
-// none, one the release before wrote, the claim WorkerClaim gives role's step over rows. It is the
-// one rule of that claim: the outbox's start acts on it, and the served state and the idle
-// release's notice name a start that waits for its pod by it, so all three name one claim. Its
-// error is WorkerClaim's, for a role or an issue no token spells.
+// none, one the release before wrote, the claim WorkerClaim gives role's step over rows. The
+// outbox's start, its served pod wait and the idle release's pod-wait notice read it, so these
+// three name one claim. Other claim readers, and non-start outbox operations, have their own
+// error handling. Its error is WorkerClaim's, for a role or an issue no token spells.
 func StartClaim(project, issue string, role claim.Role, named claim.Token, rows []PhaseRow) (claim.Token, error) {
 	if named != "" {
 		return named, nil
@@ -376,19 +376,26 @@ func StartClaim(project, issue string, role claim.Role, named claim.Token, rows 
 	return WorkerClaim(project, issue, role, rows)
 }
 
+// StartTarget is the role and claim a waiting start acts on, after StartClaim resolved the raw
+// row. It is distinct from pods.WaitingStart, whose Claim is merely the token the row names.
+type StartTarget struct {
+	Role  claim.Role
+	Claim claim.Token
+}
+
 // StartClaims is each of starts, starts of issue that wait for its pod (pods.WaitingStart), with
 // the claim it starts in its Claim (StartClaim over rows), each once and in the order of starts: a
 // row that names a claim and a row of its role that names none can start one claim, and two rows
 // can be one start queued twice. The readers of those rows keep each row (Store.StartsWaitingForPod,
 // pods.IdleView.StartsWaitingForPod), so this is the one place they are made distinct.
-func StartClaims(project, issue string, starts []pods.WaitingStart, rows []PhaseRow) ([]pods.WaitingStart, error) {
-	claims := make([]pods.WaitingStart, 0, len(starts))
+func StartClaims(project, issue string, starts []pods.WaitingStart, rows []PhaseRow) ([]StartTarget, error) {
+	claims := make([]StartTarget, 0, len(starts))
 	for _, start := range starts {
 		token, err := StartClaim(project, issue, start.Role, start.Claim, rows)
 		if err != nil {
 			return nil, fmt.Errorf("the claim of %s's start of %s that waits for its pod: %w", issue, start.Role, err)
 		}
-		if started := (pods.WaitingStart{Role: start.Role, Claim: token}); !slices.Contains(claims, started) {
+		if started := (StartTarget{Role: start.Role, Claim: token}); !slices.Contains(claims, started) {
 			claims = append(claims, started)
 		}
 	}

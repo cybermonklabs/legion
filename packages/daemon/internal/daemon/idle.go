@@ -350,7 +350,7 @@ func operatorSuspended(view pods.IdleView) []string {
 // `legion state` names a claim (api.ClaimNameInIssue): by its role where it starts the role's own
 // claim, and by its role with the claim's token beside it for any other claim of the role, since
 // the role alone would name a second agent's start as a start of the role's own agent.
-func podWaitHeldWords(issue string, starts []pods.WaitingStart, suspended []string, idle time.Duration) string {
+func podWaitHeldWords(issue string, starts []record.StartTarget, suspended []string, idle time.Duration) string {
 	names := make([]string, len(starts))
 	for i, start := range starts {
 		names[i] = api.ClaimNameInIssue(start.Role, start.Claim)

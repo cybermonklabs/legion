@@ -8,10 +8,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
-// KeySessions is what NameAgents keeps of the stored claims of one issue (KeySessionsOf), by the
+// StoredClaims is what NameAgents keeps of the stored claims of one issue (StoredClaimsOf), by the
 // name each claim's token ends in: the role the claim holds and the key whose agent's session it
 // holds (NameClaim).
-type KeySessions map[claim.Agent]NameClaim
+type StoredClaims map[claim.Agent]NameClaim
 
 // NameClaim is what the stored claim of a name holds, for NameAgents: Role, the role the claim
 // holds, and Key, the key whose agent's session the claim holds (supervise.Claim.SessionAgent,
@@ -24,11 +24,11 @@ type NameClaim struct {
 	Key  string
 }
 
-// KeySessionsOf is the KeySessions of claims, the stored claims of one issue (Store.IssueClaims):
+// StoredClaimsOf is the StoredClaims of claims, the stored claims of one issue (Store.IssueClaims):
 // each claim by the name its token ends in, with its role, and with the key whose agent's session
 // it holds where that key is not the key owner's.
-func KeySessionsOf(claims []IssueClaim) KeySessions {
-	sessions := KeySessions{}
+func StoredClaimsOf(claims []IssueClaim) StoredClaims {
+	sessions := StoredClaims{}
 	for _, c := range claims {
 		_, name, ok := c.Token.Cut()
 		if !ok {
@@ -47,7 +47,7 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 // rule of a name, which reads no store of its own. earlier is every plan_steps row of the issue, of
 // every generation (PlanStepsOf), read before the version's steps are written, since the write
 // deletes the steps of each task it gives. sessions is the stored claims of the issue by name
-// (KeySessionsOf), read with earlier. Every writer of steps names them from both: a version an
+// (StoredClaimsOf), read with earlier. Every writer of steps names them from both: a version an
 // owner gives and the project's default steps a run with no plan takes. It names in four passes,
 // in this order, so that a key the version names never changes its name and no new name can take
 // that key's. A name a key held stays that key's while a version leaves the key out: no other
@@ -55,7 +55,7 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 // and the agent that would have taken the name takes one of its own (`implementer-2`) and so a slot
 // of its own. A key holds the name an earlier row of it held, and, since a version replaces the
 // rows of each task it gives and so can leave no row that names the key, the name whose claim holds
-// its session (KeySessionsOf). That holds whatever release wrote the rows: a claim of a release
+// its session (StoredClaimsOf). That holds whatever release wrote the rows: a claim of a release
 // before the claim recorded its session's agent records, once 20261124172711 has run, the agent
 // that ran on it last where that release kept its latest start, else the agent the rows gave its
 // name last, so where that agent is a key's, the name stays the key's after the last row that said
@@ -104,7 +104,7 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 //     pass 2 names it first.
 //
 // The steps of one key are one agent (PlanStep.PlanAgent), so they share one name in every task.
-func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []PlanStep {
+func NameAgents(earlier []PlanStep, sessions StoredClaims, steps []PlanStep) []PlanStep {
 	named := slices.Clone(steps)
 	keyNames := map[string]claim.Agent{}
 	// lastHolder is the key that holds each name a key holds: the key of the latest earlier row of

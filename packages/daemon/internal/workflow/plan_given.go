@@ -75,7 +75,7 @@ type givenVersion struct {
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
 // steps of each task it gives, and from the issue's claims whose sessions are a key's agent's
-// (keySessions), which keep a key's name once no row names the key: so a key keeps its name, and
+// (storedClaims), which keep a key's name once no row names the key: so a key keeps its name, and
 // a fresh agent that would need the name a key holds gets a name of its own.
 func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (givenVersion, *intake.Refusal, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
@@ -131,9 +131,9 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	if err != nil {
 		return givenVersion{}, nil, err
 	}
-	var sessions record.KeySessions
+	var sessions record.StoredClaims
 	if issue != nil {
-		if sessions, err = e.keySessions(ctx, tx, *issue); err != nil {
+		if sessions, err = e.storedClaims(ctx, tx, *issue); err != nil {
 			return givenVersion{}, nil, err
 		}
 	}
@@ -141,21 +141,21 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	return given, nil, nil
 }
 
-// keySessions is issue's stored claims by name, each with its role and the key whose agent's
-// session it holds (record.KeySessionsOf), read in tx with the rows a version is named from: the
+// storedClaims is issue's stored claims by name, each with its role and the key whose agent's
+// session it holds (record.StoredClaimsOf), read in tx with the rows a version is named from: the
 // claim of a key's name and the session it holds wait for the key whatever the rows still name, and
 // a name whose claim holds another role is no name for an agent of a role (record.NameAgents).
-func (e *Engine) keySessions(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.KeySessions, error) {
+func (e *Engine) storedClaims(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.StoredClaims, error) {
 	_, claims, err := e.issueClaims(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
-	return record.KeySessionsOf(claims), nil
+	return record.StoredClaimsOf(claims), nil
 }
 
 // issueClaims is the claims' token of issue's project (claim.ProjectToken) and every stored claim
 // of issue under it, in any state (record.Store's IssueClaims): the one read of an issue's claims
-// the workflow makes, which the names a key holds (keySessions) and the claims a request reaches
+// the workflow makes, which the names a key holds (storedClaims) and the claims a request reaches
 // (claimTargets) read.
 func (e *Engine) issueClaims(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, []record.IssueClaim, error) {
 	project, err := claim.ProjectToken(issue.Project)

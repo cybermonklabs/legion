@@ -152,7 +152,7 @@ func TestTheStartsThatWaitForAPodAreEachTheClaimTheyStartOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []pods.WaitingStart{
+	want := []StartTarget{
 		{Role: claim.RoleImplementer, Claim: keyAToken},
 		{Role: claim.RoleImplementer, Claim: keyBToken},
 		{Role: claim.RoleTester, Claim: "legion-legion-legion-208-tester"},

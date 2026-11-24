@@ -214,7 +214,7 @@ func TestARegivenTaskKeepsTheNamesOfItsKeys(t *testing.T) {
 
 // The project's default steps are named from their own steps when the first step of a run with no
 // owner's plan writes them: each agent has a name, the steps of a key share it. A name whose claim
-// holds the session of a key an earlier plan gave (record.KeySessions) is that key's, and so is a
+// holds the session of a key an earlier plan gave (record.StoredClaims) is that key's, and so is a
 // name an earlier row of a key held, so the default steps' implementer takes implementer-2 beside
 // either; a name an earlier row with no key held is free.
 func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
@@ -222,11 +222,11 @@ func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
 	engine.cfg.DefaultSteps = []plan.Step{{Role: "implementer"}, {Role: "tester", Key: "r"}, {Role: "reviewer", Key: "r"}}
 	for _, tc := range []struct {
 		earlier  []record.PlanStep
-		sessions record.KeySessions
+		sessions record.StoredClaims
 		want     []claim.Agent
 	}{
 		{want: []claim.Agent{"implementer", "tester", "tester"}},
-		{sessions: record.KeySessions{"implementer": {Role: "implementer", Key: "k"}}, want: []claim.Agent{"implementer-2", "tester", "tester"}},
+		{sessions: record.StoredClaims{"implementer": {Role: "implementer", Key: "k"}}, want: []claim.Agent{"implementer-2", "tester", "tester"}},
 		{earlier: []record.PlanStep{{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k", Agent: "implementer"}},
 			want: []claim.Agent{"implementer-2", "tester", "tester"}},
 		{earlier: []record.PlanStep{{Generation: 1, Task: "a", Position: 1, Role: "implementer", Agent: "implementer"}},

@@ -25,7 +25,7 @@ import (
 // name key a, so its implementer takes implementer-2, and its write replaces those rows. Version 3,
 // `planner implementer reviewer`, finds no row of key a, and its implementer is a new agent: it
 // takes implementer-2 again, never implementer, since 20261124172711 recorded key a on the claim
-// implementer, from version 1's rows (record.KeySessionsOf). Version 4, `implementer:a reviewer`,
+// implementer, from version 1's rows (record.StoredClaimsOf). Version 4, `implementer:a reviewer`,
 // gives key a implementer again. The fault: version 3's implementer took implementer.
 //
 // A start the release before queued for a key's first step makes that step's claim when it runs,
@@ -63,13 +63,13 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 			if err != nil {
 				return err
 			}
-			var sessions record.KeySessions
+			var sessions record.StoredClaims
 			if withSessions {
 				claims, err := records.IssueClaims(ctx, tx, "legion", issue)
 				if err != nil {
 					return err
 				}
-				sessions = record.KeySessionsOf(claims)
+				sessions = record.StoredClaimsOf(claims)
 			}
 			steps = record.NameAgents(earlier, sessions, steps)
 			v := record.PlanVersion{Issue: issue, Generation: 1, Version: version, ArtifactID: "plan-artifact",
@@ -162,7 +162,7 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 // out the owner's rows and rows that hold no name, `key:<key>` where that row names a key and
 // `step:<place>:<task>` where it names none. Where that row names a key, it is the key
 // record.NameAgents keeps the name for, so the names the rows alone give an issue's agents are the
-// names its claims alone give them (record.KeySessionsOf), and a write that deletes the rows takes
+// names its claims alone give them (record.StoredClaimsOf), and a write that deletes the rows takes
 // no name from a key. On LEGION-208, key a's generation 1 row and key b's later generation 2 row
 // both hold implementer: the claim records key b, as NameAgents gives key b the name and key a
 // implementer-2. On LEGION-212, a row with no key holds implementer and key e's later row holds it
@@ -284,7 +284,7 @@ func TestTheSessionAgentMigrationRecordsTheAgentTheRowsGiveAClaimsNameLast(t *te
 			for _, step := range record.NameAgents(earlier, nil, steps) {
 				byRows = append(byRows, step.Agent)
 			}
-			for _, step := range record.NameAgents(nil, record.KeySessionsOf(claims), steps) {
+			for _, step := range record.NameAgents(nil, record.StoredClaimsOf(claims), steps) {
 				byClaims = append(byClaims, step.Agent)
 			}
 			if !slices.Equal(byRows, want.byRows) || !slices.Equal(byClaims, want.byClaims) {
@@ -371,7 +371,7 @@ func TestANewAgentGivenTheNameOfAClaimFromBeforeTheUpgradeStartsASessionOfItsOwn
 		if err != nil {
 			return err
 		}
-		named = record.NameAgents(earlier, record.KeySessionsOf(claims), []record.PlanStep{
+		named = record.NameAgents(earlier, record.StoredClaimsOf(claims), []record.PlanStep{
 			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 1, Role: "planner"},
 			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 2, Role: "implementer"},
 			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 3, Role: "reviewer"},

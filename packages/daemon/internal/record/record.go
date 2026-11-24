@@ -2219,7 +2219,7 @@ type Store interface {
 	// IssueClaims is every stored claim of issue in project (the claims' project token), in any
 	// state, with its stored role and the agent of its session, ordered by token: what a walk over
 	// every claim of an issue reads, so each row it writes names one stored claim, and what keeps a
-	// key's name for it once no row names the key (KeySessionsOf, NameAgents).
+	// key's name for it once no row names the key (StoredClaimsOf, NameAgents).
 	IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error)
 	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
 	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
