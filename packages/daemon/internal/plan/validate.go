@@ -43,11 +43,10 @@ const MostQuotedBytes = 128
 // route writes into `reasons` as it came and into `error` through the same rule (api's
 // writeRefusal).
 func quoted(word string) string {
-	kept, cut := redact.Bytes(word, MostQuotedBytes)
-	if !cut {
-		return kept
+	if len(word) <= MostQuotedBytes {
+		return redact.URLCredentials(word)
 	}
-	return fmt.Sprintf("%s… (cut from %d bytes)", kept, len(redact.URLCredentials(word)))
+	return fmt.Sprintf("%s… (cut from %d bytes)", redact.URLCredentials(word[:MostQuotedBytes]), len(word))
 }
 
 // listed is ids as a reason lists them: the first MostReasons, joined by ", ", and past them a
