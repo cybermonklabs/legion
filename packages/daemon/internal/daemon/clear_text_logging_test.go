@@ -348,7 +348,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/rules/branches/main": sinkRefusal(http.StatusNotFound)})
 				w := &workflowRuntime{log: log.logger()}
 				if rules := w.readBaseRules(context.Background(), sinkClient(github), record.PullRequest{Repo: "acme/widgets", Number: 86},
-					githubText{Name: "main", Said: oauth2calltest.Said("main")}); rules.Unread == "" {
+					newGitHubText("main", oauth2calltest.Said("main"))); rules.Unread == "" {
 					t.Fatalf("the rules read came to %+v, want them unread", rules)
 				}
 				return plantedToken, github
@@ -363,7 +363,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/rules/branches/main": sinkPlanRefusal()})
 				w := &workflowRuntime{log: log.logger()}
 				if rules := w.readBaseRules(context.Background(), sinkClient(github), record.PullRequest{Repo: "acme/widgets", Number: 86},
-					githubText{Name: "main", Said: oauth2calltest.Said("main")}); rules.Unread != "" || len(rules.Required) != 0 {
+					newGitHubText("main", oauth2calltest.Said("main"))); rules.Unread != "" || len(rules.Required) != 0 {
 					t.Fatalf("the rules read came to %+v, want no rules, read", rules)
 				}
 				return plantedToken, github
