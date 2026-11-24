@@ -117,8 +117,9 @@ func (e *Error) Error() string {
 type AccountTokenError = ciphertoken.AccountTokenError
 
 // do sends a request relaying body (nil for a bodyless GET) and returns the broker's response
-// body verbatim, or *Error for a non-2xx response, an *AccountTokenError for a token it could not
-// read, which stops the call before it is built, or a plain wrapped error for a transport failure.
+// body with no run of Dispatch's account token in it, or *Error for a non-2xx response, an
+// *AccountTokenError for a token it could not read, which stops the call before it is built, or a
+// plain wrapped error for a transport failure.
 func (c *Client) do(ctx context.Context, method, path string, body json.RawMessage) (json.RawMessage, error) {
 	token, err := c.Account.Read()
 	if err != nil {
@@ -145,9 +146,13 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets: read %s %s response: %w", method, path, err)
 	}
-	// The answer is data the page shows, relayed as it came (redact.Answer.StreamTo). A refusal's
-	// body is relayed with every credential the request carried redacted (redact.Carried): an
-	// answer in the broker's place can echo Dispatch's own account token, which no browser may see.
+	// The answer is data the page shows, relayed as it came (redact.Answer.StreamTo) but for
+	// Dispatch's own account token, which no browser may see: an answer in the broker's place can
+	// echo it in a 2xx as well as in a refusal, so every run of it is redacted from both
+	// (redact.Tokens). A refusal's body is relayed with every other credential the call carried
+	// redacted too (redact.Carried). A 2xx keeps those: they are words of the page's own person
+	// that the broker's data names back (the approver Dispatch's session resolved, the states a
+	// list asks for, as a row's "state":"pending"), and redacting them would blank the rows.
 	var raw bytes.Buffer
 	_, _ = answer.StreamTo(&raw)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -161,7 +166,7 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 		}
 		return nil, brokerErr
 	}
-	return json.RawMessage(raw.Bytes()), nil
+	return json.RawMessage(redact.Tokens(raw.String(), -1, token)), nil
 }
 
 // Pending lists the credential requests awaiting the named approver's decision, and the expired
