@@ -151,11 +151,9 @@ const pauseWords = (id: number, since: string, by: string, reason: string): stri
  * issue lines name a claim by (`stateSummary`): its issue and role, and its token beside them where
  * the issue and the role do not reach it, so a tool reaches it by its token alone. The issue and the
  * role reach the claim `fresh_session` and `compact` act on when they name the two: the claim the
- * issue's `architect` or `workers` shows for the role, and, where the state shows none or shows it
- * without its token, the role's own claim, whose token ends in the issue and the role. So a second
- * agent of one role such as `implementer-2` beside the claim that works the role's step is named
- * with its token, and so is the role's own claim while a second agent works it; a claim served
- * without its token is named by its issue and role. */
+ * issue's `architect` or `workers` shows for the role (record.WorkerClaim on the daemon). No
+ * shown claim means no held claim is known to be reached, not that the role's own claim is
+ * reached. A stop served without a token is named by issue and role. */
 function pausedClaimName(
   state: LegionState,
   issue: string,
@@ -164,9 +162,9 @@ function pausedClaimName(
 ): string {
   const served = state.issues[issue];
   const shown = (role === "architect" ? served?.architect : served?.workers?.[role]?.claim)?.token;
-  const reached =
-    shown === undefined ? token?.endsWith(`-${issue.toLowerCase()}-${role}`) : token === shown;
-  return token === undefined || reached ? `${issue} ${role}` : `${issue} ${role} (claim ${token})`;
+  return token === undefined || token === shown
+    ? `${issue} ${role}`
+    : `${issue} ${role} (claim ${token})`;
 }
 
 /**
