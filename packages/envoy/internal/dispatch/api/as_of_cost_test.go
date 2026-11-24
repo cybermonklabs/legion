@@ -293,7 +293,7 @@ func TestAsOfCostOnACorpusCopy(t *testing.T) {
 			"(TestAsOfCostOnACorpusCopy's doc comment says how); the test times reads at a cut on it")
 	}
 	ctx := t.Context()
-	database, err := store.Open(ctx, databaseURL)
+	database, err := store.Open(ctx, asOfMeasurementURL(t, databaseURL))
 	if err != nil {
 		t.Fatalf("open the corpus copy: %v", err)
 	}
@@ -392,6 +392,28 @@ func asOfCostReads(targets asOfCostTargets) []asOfCostTimed {
 			"/api/v1/events/log?after=" + strconv.FormatInt(max(targets.newestEventID-asOfCostPage, 0), 10)},
 		{"event log GET /api/v1/events/log?after=0: the first page", "/api/v1/events/log?after=0"},
 	}
+}
+
+// asOfMeasurementURL is databaseURL with jit off on each connection, as production runs: Cloud SQL
+// does not support PostgreSQL's LLVM JIT (benchtime.Open says the same), and under the default
+// jit = on a measurement of these statements times their compilation, which production never pays.
+// On TestAsOfMeaningCostOnASyntheticCorpus's corpus, with jit on, EXPLAIN ANALYZE of a search with
+// meaning at a cut put 7.5 s of 8.3 s in compiling it. A URL that sets jit itself is kept as it is.
+func asOfMeasurementURL(t *testing.T, databaseURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(databaseURL)
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
+		if strings.Contains(databaseURL, "jit=") {
+			return databaseURL
+		}
+		return databaseURL + " jit=off"
+	}
+	values := parsed.Query()
+	if values.Get("jit") == "" {
+		values.Set("jit", "off")
+	}
+	parsed.RawQuery = values.Encode()
+	return parsed.String()
 }
 
 // asOfCorpusHoldsTheCopy reports whether database holds a copy of the event log: rows in

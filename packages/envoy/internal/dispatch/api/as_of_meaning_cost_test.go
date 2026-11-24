@@ -278,7 +278,7 @@ func TestAsOfMeaningCostOnASyntheticCorpus(t *testing.T) {
 		}
 	}
 	ctx := t.Context()
-	database, err := store.Open(ctx, databaseURL)
+	database, err := store.Open(ctx, asOfMeasurementURL(t, databaseURL))
 	if err != nil {
 		t.Fatalf("open the synthetic corpus's database: %v", err)
 	}
