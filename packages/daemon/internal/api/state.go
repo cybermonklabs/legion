@@ -1049,7 +1049,8 @@ type ClaimView struct {
 	// Each is absent until it happens. The two causes are separate because they answer separate
 	// questions. LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside
 	// each (causeTimesContract), set and cleared only with it, as supervise.Claim.LastDeathAt
-	// states; each is absent beside a cause an earlier release recorded, which wrote no time.
+	// states; each is absent beside a cause an earlier release recorded, which wrote no time,
+	// except after a rollback (the migration's header, 20261124073512_claim_cause_times).
 	// LastDeathAt dates the death: a LastDeathAt before LastReady is a death the agent running now
 	// has survived. The claim drops its start failure, with its time, when its agent says it is
 	// ready (supervise.Claim.LastStartFailure says which older claims can still hold one from

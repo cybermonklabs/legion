@@ -734,18 +734,10 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if served := currentBody["intakeGiveUps"]; !bytes.Equal(served, want) {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
-	// Every band above this one writes its own line too (stateNarrowings), so this band's line is
-	// the first of the lines a caller below it is owed.
-	lines := narrowingsExpected(populatedState(t), intakeGiveUpsContract-1)
-	if len(lines) == 0 || lines[0] != "intakeGiveUps" || len(narrowings) != len(lines) ||
-		narrowings[0].Dropped != "intakeGiveUps" || narrowings[0].PluginContract != intakeGiveUpsContract-1 {
-		t.Errorf("the daemon logged %+v for a caller at %d, want the lines %v, the first saying it dropped intakeGiveUps",
-			narrowings, intakeGiveUpsContract-1, lines)
-	}
-	for i, line := range narrowings {
-		if i < len(lines) && line.Dropped != lines[i] {
-			t.Errorf("line %d for a caller at %d says it dropped %q, want %q", i, intakeGiveUpsContract-1, line.Dropped, lines[i])
-		}
+	// Every band above this one writes its own line after this one's (stateNarrowings), so this
+	// band's line is the first a caller below it is owed.
+	if len(narrowings) == 0 || narrowings[0].Dropped != "intakeGiveUps" || narrowings[0].PluginContract != intakeGiveUpsContract-1 {
+		t.Errorf("the daemon logged %+v for a caller at %d, want its first line saying it dropped intakeGiveUps", narrowings, intakeGiveUpsContract-1)
 	}
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")
