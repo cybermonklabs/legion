@@ -36,6 +36,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
@@ -53,7 +54,9 @@ const maxAnswerBytes = 16 << 20
 // feature is off; the api's pending list answers null then, and every other api handler 404
 // FEATURE_OFF.
 type Client struct {
-	URL string
+	// URL is the broker's address (DISPATCH_AGENT_SECRETS_URL) without its trailing slash: every
+	// call is built from its Raw, and every error names it only as the Address prints it (Cause).
+	URL configaddr.Address
 	// Account reads Dispatch's own projected Kubernetes ServiceAccount token
 	// (DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE), the credential the broker resolves its caller
 	// from. The reader is internal/ciphertoken's, the same one the token introspection there
@@ -75,14 +78,14 @@ func WithTimeout(timeout time.Duration) Option {
 	return func(c *Client) { c.HTTP.Timeout = timeout }
 }
 
-// New returns a client for the secrets broker's named-caller API. tokenFile names the file
-// holding Dispatch's own projected Kubernetes ServiceAccount token, which every call presents:
-// the broker reads the calling service's identity from it (BROKER_API_ACCOUNTS) and then takes a
-// machine login's approver, and a revoke's, from the login Dispatch sends — resolved by
-// Dispatch's own session, not read from an env var here.
-func New(baseURL, tokenFile string, options ...Option) *Client {
+// New returns a client for the secrets broker's named-caller API at baseURL. tokenFile names the
+// file holding Dispatch's own projected Kubernetes ServiceAccount token, which every call
+// presents: the broker reads the calling service's identity from it (BROKER_API_ACCOUNTS) and
+// then takes a machine login's approver, and a revoke's, from the login Dispatch sends — resolved
+// by Dispatch's own session, not read from an env var here.
+func New(baseURL configaddr.Address, tokenFile string, options ...Option) *Client {
 	client := &Client{
-		URL:     strings.TrimSuffix(baseURL, "/"),
+		URL:     configaddr.New(baseURL.Setting(), strings.TrimSuffix(baseURL.Raw(), "/")),
 		Account: ciphertoken.NewAccountToken(tokenFile),
 		// The client follows no redirect: every call carries Dispatch's own token, and a Location
 		// is the answering party's words (redirects.Refused).
@@ -128,9 +131,12 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, c.URL+path, reader)
+	request, err := http.NewRequestWithContext(ctx, method, c.URL.Raw()+path, reader)
 	if err != nil {
-		return nil, fmt.Errorf("agent-secrets: build %s %s request: %w", method, path, err)
+		// The URL is the configured address followed by a route; net/http's error quotes it whole,
+		// so it prints as the address allows (Cause): its class, beside an address that is not
+		// clean.
+		return nil, fmt.Errorf("agent-secrets: build %s %s request: %w", method, path, c.URL.Cause(err))
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
@@ -139,9 +145,9 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	response, err := c.HTTP.Do(request)
 	if err != nil {
 		// net/http's error can quote the answering party's words (a Location that does not parse,
-		// read before any redirect policy), so it prints as the broker's address allows
-		// (redact.Cause): a transport failure's own text, or its class.
-		return nil, fmt.Errorf("agent-secrets: %s %s: %w", method, path, redact.Cause(err, c.URL))
+		// read before any redirect policy), so it prints as the broker's address allows (Cause): a
+		// transport failure's own text, or its class.
+		return nil, fmt.Errorf("agent-secrets: %s %s: %w", method, path, c.URL.Cause(err))
 	}
 	defer response.Body.Close()
 	answer, err := redact.ReadAnswer(response, maxAnswerBytes)

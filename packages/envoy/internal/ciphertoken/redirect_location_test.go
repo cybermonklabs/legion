@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -60,7 +61,7 @@ func TestARedirectOfAnIntrospectionPrintsNoLocationOfIt(t *testing.T) {
 	}
 	broker := unparsedEcho(t)
 	rig := newRig(t, func(o *ciphertoken.Options) {
-		o.BrokerURL = broker
+		o.BrokerURL = configaddr.New("DISPATCH_AGENT_SECRETS_URL", broker)
 		o.Account = ciphertoken.NewAccountToken(file)
 	})
 	_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, "a-token-asked-about-at-a-redirect"))

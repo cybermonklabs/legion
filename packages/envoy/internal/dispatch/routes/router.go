@@ -32,6 +32,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -117,7 +118,9 @@ type AppContextOptions struct {
 	NewIssueSession string
 	ServerURL       string
 	InsecureCookie  bool
-	EnvoyURL        string
+	// EnvoyURL is ENVOY_URL, the Envoy listener every mention and message is delivered through;
+	// the empty Address builds no listener client. See api.DepsInput.
+	EnvoyURL configaddr.Address
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
@@ -157,8 +160,8 @@ type AppContextOptions struct {
 	// api.DepsInput.
 	Renames refs.Renames
 	// AgentSecretsURL/AgentSecretsTokenFile configure the credential-request UI's secrets broker
-	// client; empty URL means the feature is off. See api.DepsInput.
-	AgentSecretsURL       string
+	// client; an empty URL means the feature is off. See api.DepsInput.
+	AgentSecretsURL       configaddr.Address
 	AgentSecretsTokenFile string
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.

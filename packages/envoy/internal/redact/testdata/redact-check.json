@@ -1,7 +1,7 @@
 {
   "about": "The inventory packages/envoy/scripts/check-redact-remote-text.sh and cmd/redact-gate run: each row a requirement of the redaction of remote text, a test, and for a print-site row its function, the name its test captures the production output under, and its mutation. A Go row's package is relative to packages/envoy; a Bun row's file and every mutation's file are relative to the repository root, and a Bun row's test is its full name in Bun's JUnit report.",
   "gate": {
-    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing. The box's and the answer's own printers - (redact.Answer).Words, redact.Header, (cipheraddr.Address).WordsOf and a RemoteText printed - are not in rule: each prints the rule's reading and holds no text a call of it could hand out raw, so no one replacement of such a call leaks, and a mutation row could bind none of them; a site that prints through them is held by its print-site row and by its holder's print row instead. row_timeout, in whole seconds, is the time the test of one row may take, its own budget: twice the longest correct row the gate measured on the shared box under its load, 24s (daemon-answer-words-rate-limit) in the full check of 2026-11-21 at 20:21Z-21:05Z, load about 900-1000 on 288 CPUs. No run is bounded by it alone: each run's bound adds four times its start-up run, which the same run measures (cmd/redact-gate's runTest for a row; check-redact-remote-text.sh for a package, whose budget is row_timeout once per top-level test it runs).",
+    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing. The box's and the answer's own printers - (redact.Answer).Words, redact.Header, (configaddr.Address).WordsOf and a RemoteText printed - are not in rule: each prints the rule's reading and holds no text a call of it could hand out raw, so no one replacement of such a call leaks, and a mutation row could bind none of them; a site that prints through them is held by its print-site row and by its holder's print row instead. row_timeout, in whole seconds, is the time the test of one row may take, its own budget: twice the longest correct row the gate measured on the shared box under its load, 24s (daemon-answer-words-rate-limit) in the full check of 2026-11-21 at 20:21Z-21:05Z, load about 900-1000 on 288 CPUs. No run is bounded by it alone: each run's bound adds four times its start-up run, which the same run measures (cmd/redact-gate's runTest for a row; check-redact-remote-text.sh for a package, whose budget is row_timeout once per top-level test it runs).",
     "base": "origin/main",
     "rule": [
       "github.com/sjawhar/envoy/internal/redact.Remote",
@@ -12,9 +12,9 @@
       "github.com/sjawhar/envoy/internal/redact.Tokens",
       "github.com/sjawhar/envoy/oauth2call.Field",
       "github.com/sjawhar/envoy/oauth2call.Tokens",
-      "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
-      "(github.com/sjawhar/envoy/cipheraddr.Address).Cause",
-      "(github.com/sjawhar/envoy/cipheraddr.Address).Error"
+      "(github.com/sjawhar/envoy/configaddr.Address).Words",
+      "(github.com/sjawhar/envoy/configaddr.Address).Cause",
+      "(github.com/sjawhar/envoy/configaddr.Address).Error"
     ],
     "printers": [
       "github.com/sjawhar/envoy/internal/redact.ruled",
@@ -2361,6 +2361,18 @@
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": ["packages/envoy/internal/oidc/redirect_location_test.go"],
         "capture": "oidc.revoke-redirect"
+      },
+      {
+        "row": "configured-url-envoy-shape",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/cmd/dispatch/configured_url_words_test.go"],
+        "capture": "dispatch.configured-url/envoy-shape"
+      },
+      {
+        "row": "configured-url-envoy-dev-fence",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/cmd/dispatch/configured_url_words_test.go"],
+        "capture": "dispatch.configured-url/envoy-dev-fence"
       }
     ],
     "boundary_fields": {
@@ -2627,9 +2639,9 @@
     {
       "id": "r4-withheld-beside-credential",
       "requirement": "r4-unchanged",
-      "package": "./cipheraddr",
+      "package": "./configaddr",
       "test": "TestAnAnswersWordsPrintOnlyBesideACleanAddress",
-      "production": "cipheraddr.Address.Words"
+      "production": "configaddr.Address.Words"
     },
     {
       "id": "e2e-brokerclient-renewal-log",
@@ -2643,7 +2655,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/helper",
       "test": "TestTheStoppedTradeLogsTheBrokersWordsAsTheRuleReadsThem",
-      "production": "helper.Broker.Start: the ERROR line prints through cipheraddr.Address.Error; the sentence's and sanitized's rows each hold one of the two"
+      "production": "helper.Broker.Start: the ERROR line prints through configaddr.Address.Error; the sentence's and sanitized's rows each hold one of the two"
     },
     {
       "id": "e2e-helper-login",
@@ -2725,16 +2737,156 @@
     {
       "id": "brokeraddr-words",
       "requirement": "r3-each-site",
-      "package": "./cipheraddr",
+      "package": "./configaddr",
       "test": "TestEachMarkerNamesItsOwnCase",
-      "production": "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
-      "function": "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
-      "capture": "cipheraddr.Words",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Words",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Words",
+      "capture": "configaddr.Words",
       "mutation": {
-        "file": "packages/envoy/cipheraddr/brokeraddr.go",
+        "file": "packages/envoy/configaddr/address.go",
         "preimage": "redact.Field(text)",
         "replacement": "text"
       }
+    },
+    {
+      "id": "configaddr-string",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/String",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).String: the address as redact.URL prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).String",
+      "capture": "configaddr.String",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.URL(a.Raw())",
+        "replacement": "a.Raw()"
+      }
+    },
+    {
+      "id": "configaddr-format",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Format",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Format: String under every verb, directly and in an unexported field",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Format",
+      "capture": "configaddr.Format",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "a.String()",
+        "replacement": "a.Raw()"
+      }
+    },
+    {
+      "id": "configaddr-logvalue",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/LogValue",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).LogValue: String, as a slog value and in a slog line",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).LogValue",
+      "capture": "configaddr.LogValue",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "slog.StringValue(a.String())",
+        "replacement": "slog.StringValue(a.Raw())"
+      }
+    },
+    {
+      "id": "configaddr-call",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Call",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Call: a request URL built from the address, as redact.Call prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Call",
+      "capture": "configaddr.Call",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.Call(a.Raw(), callURL)",
+        "replacement": "callURL"
+      }
+    },
+    {
+      "id": "configaddr-error",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Error",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Error: the error of a request built from the address, as redact.Error prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Error",
+      "capture": "configaddr.Error",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.Error(err, a.Raw())",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "configaddr-cause",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Cause",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Cause: the failure of a request built from the address, as redact.Cause prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Cause",
+      "capture": "configaddr.Cause",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.Cause(err, a.Raw())",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "configaddr-named",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestEachPrinterOfAnAddressPrintsNoneOfItsCredentials/Named",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Named: a request's failure named in the caller's words, as redact.Named prints it",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Named",
+      "capture": "configaddr.Named",
+      "mutation": {
+        "file": "packages/envoy/configaddr/address.go",
+        "preimage": "redact.Named(err, a.Raw(), name)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "configaddr-credential-prints-nothing",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestAnAddressCarryingACredentialPrintsNoPartOfIt",
+      "production": "configaddr.Address String, every verb (through a pointer too) and LogValue of addresses carrying a user name, a password, a query or a fragment, none of them written or hex-encoded"
+    },
+    {
+      "id": "configaddr-format-flags",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestFormatKeepsTheFlagsWidthAndPrecision",
+      "production": "configaddr.Address.Format under flags, width and precision"
+    },
+    {
+      "id": "configaddr-slog-field",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestASlogFieldPrintsTheAddressAsAMessageMay",
+      "production": "configaddr.Address.LogValue under slog's text and JSON handlers"
+    },
+    {
+      "id": "configaddr-request-error",
+      "requirement": "r2-held",
+      "package": "./configaddr",
+      "test": "TestARequestsURLAndErrorPrintAsTheRedactorPrintsThem",
+      "production": "configaddr.Address Call, Error and Cause of a refused request, each still unwrapping to the failure"
+    },
+    {
+      "id": "configaddr-setting",
+      "requirement": "r4-unchanged",
+      "package": "./configaddr",
+      "test": "TestAnAddressNamesTheSettingItWasReadFrom",
+      "production": "configaddr.Address.Setting: the name New was given, kept by an empty address"
+    },
+    {
+      "id": "configaddr-words-not-printed",
+      "requirement": "r4-unchanged",
+      "package": "./configaddr",
+      "test": "TestAnAddressNamesTheSettingItWasReadFrom",
+      "production": "configaddr.Address.WordsNotPrinted: what Words and WordsOf print beside an address that is not clean, worded with its setting and not the broker, and no word of the answer"
     },
     {
       "id": "agent-secrets-error-withheld",
@@ -2907,7 +3059,7 @@
       "capture": "envoy.build-unsubscribe",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: build %s request: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "preimage": "\"%w: build %s request: %v\", ErrUnavailable, route, c.baseURL.Cause(err)",
         "replacement": "\"%w: build %s request: %v\", ErrUnavailable, route, err"
       }
     },
@@ -2921,7 +3073,7 @@
       "capture": "envoy.Client.Unsubscribe",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: %s: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "preimage": "\"%w: %s: %v\", ErrUnavailable, route, c.baseURL.Cause(err)",
         "replacement": "\"%w: %s: %v\", ErrUnavailable, route, err"
       }
     },
@@ -2935,7 +3087,7 @@
       "capture": "envoy.build-get",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: build GET %s request: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "preimage": "\"%w: build GET %s request: %v\", ErrUnavailable, route, c.baseURL.Cause(err)",
         "replacement": "\"%w: build GET %s request: %v\", ErrUnavailable, route, err"
       }
     },
@@ -2949,7 +3101,7 @@
       "capture": "envoy.Client.Sessions",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "\"%w: GET %s: %v\", ErrUnavailable, route, redact.Cause(err, c.baseURL)",
+        "preimage": "\"%w: GET %s: %v\", ErrUnavailable, route, c.baseURL.Cause(err)",
         "replacement": "\"%w: GET %s: %v\", ErrUnavailable, route, err"
       }
     },
@@ -2970,7 +3122,7 @@
       "capture": "envoy.build-send",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "send request: %v\", ErrUnavailable, redact.Cause(err, c.baseURL)",
+        "preimage": "send request: %v\", ErrUnavailable, c.baseURL.Cause(err)",
         "replacement": "send request: %v\", ErrUnavailable, err"
       }
     },
@@ -2984,7 +3136,7 @@
       "capture": "envoy.Client.Send",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/envoy/client.go",
-        "preimage": "sendTransportError(redact.Cause(err, c.baseURL), written.Load())",
+        "preimage": "sendTransportError(c.baseURL.Cause(err), written.Load())",
         "replacement": "sendTransportError(err, written.Load())"
       }
     },
@@ -4876,7 +5028,7 @@
       "requirement": "r4-unchanged",
       "package": "./internal/cipherclient",
       "test": "TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords",
-      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post: the refusal through the address's Error (cipheraddr.Address.Error), which withholds its words beside an address that is not clean",
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post: the refusal through the address's Error (configaddr.Address.Error), which withholds its words beside an address that is not clean",
       "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post",
       "capture": "brokerclient.refusal-beside-credential",
       "mutation": {
@@ -4890,7 +5042,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/fragment",
-      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: the code as the address lets the answer's text print (cipheraddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: the code as the address lets the answer's text print (configaddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
       "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade",
       "capture": "brokerclient.retried-trade/fragment",
       "mutation": {
@@ -4904,14 +5056,14 @@
       "requirement": "r4-unchanged",
       "package": "./internal/cipherclient",
       "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/user-information",
-      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with user information the code prints as cipheraddr.WordsNotPrinted, as the trade's error withholds it"
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with user information the code prints as configaddr.Address.WordsNotPrinted, as the trade's error withholds it"
     },
     {
       "id": "brokerclient-retried-trade-query",
       "requirement": "r4-unchanged",
       "package": "./internal/cipherclient",
       "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/query",
-      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with a query the code prints as cipheraddr.WordsNotPrinted, as the trade's error withholds it"
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with a query the code prints as configaddr.Address.WordsNotPrinted, as the trade's error withholds it"
     },
     {
       "id": "brokerclient-retried-trade-clean",
@@ -4960,7 +5112,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher-devrelay",
       "test": "TestALookedUpStatePrintsAsTheAddressLetsItPrint/fragment",
-      "production": "agent-secrets-devrelay cmdMachineApprove: the looked-up state as the address lets the answer's text print (cipheraddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
+      "production": "agent-secrets-devrelay cmdMachineApprove: the looked-up state as the address lets the answer's text print (configaddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
       "function": "github.com/sjawhar/envoy/cmd/cipher-devrelay.cmdMachineApprove",
       "capture": "devrelay.machine-approve-state/fragment",
       "mutation": {
@@ -4974,7 +5126,7 @@
       "requirement": "r4-unchanged",
       "package": "./cmd/cipher-devrelay",
       "test": "TestALookedUpStatePrintsAsTheAddressLetsItPrint/user-information",
-      "production": "agent-secrets-devrelay cmdMachineApprove: beside an address with user information the state prints as cipheraddr.WordsNotPrinted, as the call's refusal withholds its words"
+      "production": "agent-secrets-devrelay cmdMachineApprove: beside an address with user information the state prints as configaddr.Address.WordsNotPrinted, as the call's refusal withholds its words"
     },
     {
       "id": "devrelay-machine-approve-state-clean",
@@ -5492,21 +5644,21 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/request",
-      "production": "agent-secrets cmdRequest: request_id, state and detail held as redact.RemoteText with the request's record, printed through idWordsOf and cipheraddr.Address.WordsOf (printDetail)"
+      "production": "agent-secrets cmdRequest: request_id, state and detail held as redact.RemoteText with the request's record, printed through idWordsOf and configaddr.Address.WordsOf (printDetail)"
     },
     {
       "id": "agentsecrets-answer-words-request-pending",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/request-pending",
-      "production": "agent-secrets cmdRequest and waitingOn: the approver and approve_url held as redact.RemoteText with the request's record, printed through cipheraddr.Address.WordsOf"
+      "production": "agent-secrets cmdRequest and waitingOn: the approver and approve_url held as redact.RemoteText with the request's record, printed through configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-status",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/status",
-      "production": "agent-secrets cmdStatus: state, grant_id, decision.by and detail held as redact.RemoteText with the read's record, printed through cipheraddr.Address.WordsOf and idWordsOf"
+      "production": "agent-secrets cmdStatus: state, grant_id, decision.by and detail held as redact.RemoteText with the read's record, printed through configaddr.Address.WordsOf and idWordsOf"
     },
     {
       "id": "agentsecrets-answer-words-status-pending",
@@ -5520,14 +5672,14 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/self",
-      "production": "agent-secrets cmdSelf: enrollment_id, kind, operator and each grant's ids held as redact.RemoteText with the read's record, printed through idWordsOf and cipheraddr.Address.WordsOf"
+      "production": "agent-secrets cmdSelf: enrollment_id, kind, operator and each grant's ids held as redact.RemoteText with the read's record, printed through idWordsOf and configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-exec-denied",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-denied",
-      "production": "agent-secrets cmdExec and deniedBecause: the request id and the detail held as redact.RemoteText with the request's record, printed through idWordsOf and cipheraddr.Address.WordsOf"
+      "production": "agent-secrets cmdExec and deniedBecause: the request id and the detail held as redact.RemoteText with the request's record, printed through idWordsOf and configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-exec-pending",
@@ -5576,7 +5728,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-left-out",
-      "production": "agent-secrets reportLeftOut: each github_left_out entry and account as the rule reads it with the release's credentials redacted (Answer.Decode, Answer.Said, cipheraddr.Address.WordsOf), and a profile only where this run asked for it (releasedName)"
+      "production": "agent-secrets reportLeftOut: each github_left_out entry and account as the rule reads it with the release's credentials redacted (Answer.Decode, Answer.Said, configaddr.Address.WordsOf), and a profile only where this run asked for it (releasedName)"
     },
     {
       "id": "agentsecrets-answer-words-ttl-revoke",
@@ -5597,14 +5749,14 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/grant-list",
-      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record, printed through idWordsOf and cipheraddr.Address.Words of the rule's reading"
+      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record, printed through idWordsOf and configaddr.Address.Words of the rule's reading"
     },
     {
       "id": "agentsecrets-answer-words-machine-list",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/machine-list",
-      "production": "agent-secrets machineRow: the credential id, host and approver held as redact.RemoteText with the list's record, printed through idWordsOf and cipheraddr.Address.WordsOf"
+      "production": "agent-secrets machineRow: the credential id, host and approver held as redact.RemoteText with the list's record, printed through idWordsOf and configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-login",
@@ -5632,7 +5784,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestARereadAnswerPrintsNoProofItEchoes/reread-reason",
-      "production": "agent-secrets reread: the reread's reason held as redact.RemoteText (Reread) with the signed reread's record, printed through cipheraddr.Address.WordsOf"
+      "production": "agent-secrets reread: the reread's reason held as redact.RemoteText (Reread) with the signed reread's record, printed through configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-reread-type",
@@ -5646,7 +5798,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestARereadAnswerPrintsNoProofItEchoes/retag-type",
-      "production": "agent-secrets rereadRetag and servedTypeName: the reread's type held as redact.RemoteText (Reread), compared as it came and printed through cipheraddr.Address.WordsOf"
+      "production": "agent-secrets rereadRetag and servedTypeName: the reread's type held as redact.RemoteText (Reread), compared as it came and printed through configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-userinfo-email",
@@ -8796,13 +8948,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/cipher",
       "test": "TestABrokerRedirectPrintsNoLocationOfIt/unparsed",
-      "production": "Dispatch agent-secrets Client.do: a call whose Location does not parse prints its failure as the broker's address allows (redact.Cause)",
+      "production": "Dispatch agent-secrets Client.do: a call whose Location does not parse prints its failure as the broker's address allows (configaddr.Address.Cause)",
       "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
       "capture": "dispatch-agentsecrets.redirect/unparsed",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/cipher/client.go",
-        "preimage": "redact.Cause(err, c.URL)",
-        "replacement": "err"
+        "preimage": "\"agent-secrets: %s %s: %w\", method, path, c.URL.Cause(err)",
+        "replacement": "\"agent-secrets: %s %s: %w\", method, path, err"
       }
     },
     {
@@ -8817,13 +8969,27 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/wake",
       "test": "TestANoticeRedirectLogsNoLocationOfIt/unparsed",
-      "production": "wake Envoy.Notify: a notice whose Location does not parse is logged as Envoy's address allows (redact.Cause)",
+      "production": "wake Envoy.Notify: a notice whose Location does not parse is logged as Envoy's address allows (configaddr.Address.Cause)",
       "function": "(github.com/sjawhar/envoy/internal/cipher/wake.Envoy).Notify",
       "capture": "wake.redirect/unparsed",
       "mutation": {
         "file": "packages/envoy/internal/cipher/wake/envoy.go",
-        "preimage": "redact.Cause(err, e.URL)",
-        "replacement": "func() error { _ = redact.Cause; return err }()"
+        "preimage": "\"wake envoy: send\", \"session\", sessionID, \"request\", requestID, \"error\", e.URL.Cause(err)",
+        "replacement": "\"wake envoy: send\", \"session\", sessionID, \"request\", requestID, \"error\", err"
+      }
+    },
+    {
+      "id": "wake-build",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeTheBrokerCannotBuildLogsNoCredentialTheEnvoyURLCarries",
+      "production": "wake Envoy.Notify: a notice that cannot be built from BROKER_ENVOY_URL is logged as the address allows (configaddr.Address.Cause), never net/http's error, which quotes the URL whole",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/wake.Envoy).Notify",
+      "capture": "wake.build",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/wake/envoy.go",
+        "preimage": "\"wake envoy: build request\", \"session\", sessionID, \"request\", requestID, \"error\", e.URL.Cause(err)",
+        "replacement": "\"wake envoy: build request\", \"session\", sessionID, \"request\", requestID, \"error\", err"
       }
     },
     {
@@ -8894,13 +9060,97 @@
       "requirement": "r3-each-site",
       "package": "./internal/ciphertoken",
       "test": "TestARedirectOfAnIntrospectionPrintsNoLocationOfIt",
-      "production": "ciphertoken Verifier.introspect: an introspection whose Location does not parse is ErrBrokerUnreachable printed as the broker's address allows (redact.Cause)",
+      "production": "ciphertoken Verifier.introspect: an introspection whose Location does not parse is ErrBrokerUnreachable printed as the broker's address allows (configaddr.Address.Cause)",
       "function": "(*github.com/sjawhar/envoy/internal/ciphertoken.Verifier).introspect",
       "capture": "brokertoken.introspect-redirect",
       "mutation": {
         "file": "packages/envoy/internal/ciphertoken/introspect.go",
-        "preimage": "redact.Cause(err, v.brokerURL)",
-        "replacement": "err"
+        "preimage": "\"%w: %w\", ErrBrokerUnreachable, v.brokerURL.Cause(err)",
+        "replacement": "\"%w: %w\", ErrBrokerUnreachable, err"
+      }
+    },
+    {
+      "id": "brokertoken-introspect-build",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestAnIntrospectionTheVerifierCannotBuildNamesNoCredentialTheBrokerURLCarries",
+      "production": "ciphertoken Verifier.introspect: an introspection request that cannot be built from the broker's address is ErrBrokerUnreachable printed as the address allows (configaddr.Address.Cause), never net/http's error, which quotes the URL whole",
+      "function": "(*github.com/sjawhar/envoy/internal/ciphertoken.Verifier).introspect",
+      "capture": "brokertoken.introspect-build",
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/introspect.go",
+        "preimage": "\"%w: build the introspection request: %w\", ErrBrokerUnreachable, v.brokerURL.Cause(err)",
+        "replacement": "\"%w: build the introspection request: %w\", ErrBrokerUnreachable, err"
+      }
+    },
+    {
+      "id": "dispatch-agentsecrets-build",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestARequestTheClientCannotBuildNamesNoCredentialTheConfiguredURLCarries",
+      "production": "Dispatch agent-secrets Client.do: a call that cannot be built from DISPATCH_AGENT_SECRETS_URL prints its failure as the address allows (configaddr.Address.Cause), never net/http's error, which quotes the URL whole",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
+      "capture": "dispatch-agentsecrets.build",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cipher/client.go",
+        "preimage": "\"agent-secrets: build %s %s request: %w\", method, path, c.URL.Cause(err)",
+        "replacement": "\"agent-secrets: build %s %s request: %w\", method, path, err"
+      }
+    },
+    {
+      "id": "configured-url-envoy-shape",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestABootRefusalNamesNoCredentialItsAddressCarries/envoy-shape",
+      "production": "dispatch resolveBootConfig: the refusal of an ENVOY_URL that is not an absolute http(s) URL names it as its configaddr.Address prints (Format)",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.configured-url/envoy-shape",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "\"ENVOY_URL=%q (expected an absolute http(s) URL)\", envoyURL)",
+        "replacement": "\"ENVOY_URL=%q (expected an absolute http(s) URL)\", envoyURL.Raw())"
+      }
+    },
+    {
+      "id": "configured-url-envoy-dev-fence",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestABootRefusalNamesNoCredentialItsAddressCarries/envoy-dev-fence",
+      "production": "dispatch devSignInFence: the refusal of an ENVOY_URL that names another machine beside the dev sign-in names it as its configaddr.Address prints (Format)",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.devSignInFence",
+      "capture": "dispatch.configured-url/envoy-dev-fence",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost\", boot.EnvoyURL)",
+        "replacement": "ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost\", boot.EnvoyURL.Raw())"
+      }
+    },
+    {
+      "id": "configured-url-agent-secrets-shape",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestABootRefusalNamesNoCredentialItsAddressCarries/agent-secrets-shape",
+      "production": "dispatch resolveBootConfig: the refusal of a DISPATCH_AGENT_SECRETS_URL that is not an absolute http(s) URL with no path names it as its configaddr.Address prints (Format)",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.configured-url/agent-secrets-shape",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "(expected an absolute http(s) URL with no path)\", agentSecretsURL)",
+        "replacement": "(expected an absolute http(s) URL with no path)\", agentSecretsURL.Raw())"
+      }
+    },
+    {
+      "id": "configured-url-agent-secrets-dev-fence",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestABootRefusalNamesNoCredentialItsAddressCarries/agent-secrets-dev-fence",
+      "production": "dispatch devSignInFence: the refusal of a DISPATCH_AGENT_SECRETS_URL that names another machine beside the dev sign-in names it as its configaddr.Address prints (Format)",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.devSignInFence",
+      "capture": "dispatch.configured-url/agent-secrets-dev-fence",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "DISPATCH_AGENT_SECRETS_URL=%q must name 127.0.0.1, [::1] or localhost\", boot.AgentSecretsURL)",
+        "replacement": "DISPATCH_AGENT_SECRETS_URL=%q must name 127.0.0.1, [::1] or localhost\", boot.AgentSecretsURL.Raw())"
       }
     },
     {
@@ -11231,6 +11481,31 @@
       "site": "envoy's credential-carrying clients handed on net/http's error as it came, so a Location that did not parse (net/http quotes it before CheckRedirect is asked), or one a following client asked, put the request's credential into a log line or an error: the listener's broker read, Dispatch's agent-secrets client, the broker's wake notice, judge read and Dispatch read, the generateIdToken mint, Dispatch's introspection, the Azure embeddings call and Entra exchange, and the OIDC revocation",
       "source": "the class search of round 7's third must-fix over the envoy module",
       "guard": "listener-edge-redirect-unparsed"
+    },
+    {
+      "site": "cmd/dispatch/main.go resolveBootConfig: the ENVOY_URL refusal printed the configured URL with %q, its user information, query and fragment included",
+      "source": "the second pull request's site census",
+      "guard": "configured-url-envoy-shape"
+    },
+    {
+      "site": "cmd/dispatch/main.go devSignInFence: the ENVOY_URL refusal beside the dev sign-in printed the configured URL with %q",
+      "source": "the second pull request's site census",
+      "guard": "configured-url-envoy-dev-fence"
+    },
+    {
+      "site": "internal/dispatch/cipher/client.go Client.do: a request that could not be built from DISPATCH_AGENT_SECRETS_URL handed on net/http's error, which quotes the URL whole",
+      "source": "the second pull request's site census",
+      "guard": "dispatch-agentsecrets-build"
+    },
+    {
+      "site": "internal/ciphertoken/introspect.go Verifier.introspect: an introspection that could not be built from the broker's URL handed on net/http's error, which quotes the URL whole",
+      "source": "the second pull request's site census",
+      "guard": "brokertoken-introspect-build"
+    },
+    {
+      "site": "internal/cipher/wake/envoy.go Envoy.Notify: a notice that could not be built from BROKER_ENVOY_URL logged net/http's error, which quotes the URL whole",
+      "source": "the second pull request's site census",
+      "guard": "wake-build"
     }
   ]
 }

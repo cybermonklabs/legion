@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 )
 
@@ -62,7 +63,7 @@ func heldRosterServer(t *testing.T) (served *server, calls *atomic.Int32, releas
 func heldRosterMux(t *testing.T, mux *http.ServeMux, deps Deps) (served *server, calls *atomic.Int32, release func()) {
 	t.Helper()
 	listenerURL, calls, release := heldRosterListener(t)
-	deps.Envoy = envoy.New(listenerURL, envoy.WithTimeout(time.Minute))
+	deps.Envoy = envoy.New(configaddr.New("ENVOY_URL", listenerURL), envoy.WithTimeout(time.Minute))
 	served = register(mux, t.Context(), deps)
 	served.rosters.ttl, served.rosters.timeout = time.Minute, time.Minute
 	return served, calls, release

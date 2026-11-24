@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 )
 
@@ -99,15 +99,15 @@ func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T
 				t.Fatal(err)
 			}
 			credentialed.User = url.UserPassword("demouser7q", password)
-			err = decoder.run(newClient(cipheraddr.New(credentialed.String())))
+			err = decoder.run(newClient(configaddr.New("AGENT_SECRETS_URL", credentialed.String())))
 			if err == nil {
 				t.Fatal("the answer was read")
 			}
 			wantNamedNotPrinted(t, "the error", err.Error(), []string{named}, password, "demouser7q")
 		})
 		t.Run("control: "+decoder.call+", beside a clean address", func(t *testing.T) {
-			err := decoder.run(newClient(cipheraddr.New(answer.URL)))
-			if err == nil || !strings.Contains(err.Error(), decoder.call+": ") || strings.Contains(err.Error(), cipheraddr.WordsNotPrinted) {
+			err := decoder.run(newClient(configaddr.New("AGENT_SECRETS_URL", answer.URL)))
+			if err == nil || !strings.Contains(err.Error(), decoder.call+": ") || strings.Contains(err.Error(), brokerWordsNotPrinted) {
 				t.Fatalf("the error %v does not name the call beside a clean address", err)
 			}
 			wantNamedNotPrinted(t, "the error", err.Error(), []string{named}, password)

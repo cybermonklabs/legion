@@ -36,7 +36,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
@@ -270,9 +270,9 @@ func finalRefusal(err error) bool {
 type Config struct {
 	// BrokerURL is the broker's base URL, with or without the slashes it ends in: New drops
 	// every one of them (WithoutTrailingSlashes), and an address that is nothing but slashes
-	// counts as no broker URL at all. It is a cipheraddr.Address so that no log line or error of
+	// counts as no broker URL at all. It is a configaddr.Address so that no log line or error of
 	// this client can print the credential such an address may carry.
-	BrokerURL cipheraddr.Address
+	BrokerURL configaddr.Address
 	// Key is this process's own DPoP key, whose public half alone reaches the broker. A person's
 	// sign-in proves the box key `agent-secrets login` made; every other caller proves a key it
 	// made at start.
@@ -319,7 +319,7 @@ type Config struct {
 
 // Client trades Config's identity for the broker's access tokens and keeps one live.
 type Client struct {
-	brokerURL cipheraddr.Address
+	brokerURL configaddr.Address
 	key       *ecdsa.PrivateKey
 	subject   Source
 	actor     Source
@@ -354,7 +354,7 @@ func WithoutTrailingSlashes(raw string) string { return strings.TrimRight(raw, "
 // New is the client Config describes. It refuses a configuration that could never trade — no
 // broker, no key, no identity — rather than failing at the first call.
 func New(cfg Config) (*Client, error) {
-	brokerURL := cipheraddr.New(WithoutTrailingSlashes(strings.TrimSpace(cfg.BrokerURL.Raw())))
+	brokerURL := configaddr.New(cfg.BrokerURL.Setting(), WithoutTrailingSlashes(strings.TrimSpace(cfg.BrokerURL.Raw())))
 	switch {
 	case brokerURL.Empty():
 		return nil, errors.New("brokerclient: no broker URL")
@@ -512,10 +512,10 @@ func (c *Client) RenewalAt(token *Token) time.Time {
 }
 
 // retriedTrade is what a log line says of a trade the renewal retries, and its fields: a refusal's
-// status and its code as the broker's address lets its answer print (cipheraddr.Address.WordsOf),
-// as the trade's error prints it - the rule's reading beside a clean address, and
-// cipheraddr.WordsNotPrinted beside any other, where whoever answers can repeat the credential the
-// address carries in the code - or the failure alone.
+// status and its code as the broker's address lets its answer print (configaddr.Address.WordsOf),
+// as the trade's error prints it - the rule's reading beside a clean address, and the address's
+// WordsNotPrinted beside any other, where whoever answers can repeat the credential the address
+// carries in the code - or the failure alone.
 func (c *Client) retriedTrade(err error) (string, []any) {
 	var refused *RefusedError
 	if errors.As(err, &refused) {
@@ -665,7 +665,7 @@ type tokenAnswer struct {
 // not this grant's — is an error a renewal may ask about again.
 //
 // The endpoint is built from the address's Raw, since the request must reach the broker as
-// configured; every error names it as shown, cipheraddr's Call of it, and wraps a failure of the
+// configured; every error names it as shown, configaddr's Call of it, and wraps a failure of the
 // request itself through the address's Error, so no error of a trade carries a user name,
 // password, query or fragment the configured address holds.
 func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
@@ -709,7 +709,7 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// control character, that answer's own quoted text; on one that is not clean it
 		// prints the status alone, since a broker, or anyone answering for it, can repeat
 		// the credential the address carries in the words it answers with; any other
-		// answer prints its words as the address lets them (cipheraddr.Address.WordsOf).
+		// answer prints its words as the address lets them (configaddr.Address.WordsOf).
 		said, described := answer.Error, answer.ErrorDescription
 		if resp.StatusCode/100 == 4 && !said.IsEmpty() {
 			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, said, described))
@@ -722,7 +722,7 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 // read is the answer as a Token, refusing one that is not this grant's: no access token, a token
 // type that is not DPoP, no expiry, or a refresh token — the exchange issues none, and a client
 // that kept one would hold a credential this contract says is never minted. shown is the token
-// endpoint as a message may print it (cipheraddr.Address.Call), never the endpoint as built.
+// endpoint as a message may print it (configaddr.Address.Call), never the endpoint as built.
 //
 // A refusal here quotes no value the broker wrote, as the TypeScript client's quotes none
 // (packages/cipher-client, TokenClient's read): whatever answers for the broker can put in them the

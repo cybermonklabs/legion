@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -24,7 +24,7 @@ func tradeAt(t *testing.T, status int, body string) (*Token, error) {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	})
-	client, err := New(Config{BrokerURL: cipheraddr.New(base), Key: testKey(t), Subject: projectedStub(), HTTP: HTTPClient()})
+	client, err := New(Config{BrokerURL: configaddr.New("AGENT_SECRETS_URL", base), Key: testKey(t), Subject: projectedStub(), HTTP: HTTPClient()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

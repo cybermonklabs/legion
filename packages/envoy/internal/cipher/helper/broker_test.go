@@ -24,7 +24,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -669,7 +669,7 @@ func machineFilePath(t *testing.T) string {
 // without exercising Login itself.
 func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	t.Helper()
-	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, operator), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: operatorFile(t, operator), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatalf("login: %v", err)
@@ -694,7 +694,7 @@ func waitFor(t *testing.T, cond func() bool) {
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
 	f := newFakeBroker(t) // records the login request object; issues on the first poll
-	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	code, err := b.Login(context.Background(), "example-host-devbox")
 	if err != nil || !regexp.MustCompile(`^[A-Z2-9]{4}-[A-Z2-9]{4}$`).MatchString(code) {
@@ -728,7 +728,7 @@ func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	f := newFakeBroker(t)
-	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 
@@ -793,7 +793,7 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 	waitFor(t, func() bool { return b.cred.Load() != old && b.LoginStatus().State == "issued" })
 	fresh := b.cred.Load()
 
-	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
+	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), "")
 	if err := b.clearOnInvalid(context.Background(), old, rejected); err != rejected {
 		t.Fatalf("a rejection of a replaced credential reached its caller as %v; want the broker's refusal as it came", err)
 	}
@@ -835,7 +835,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
+	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), "")
 	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
@@ -859,7 +859,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatal(err)
 	}
-	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
+	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), "")
 	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
@@ -883,7 +883,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 // fresh rather than reusing the denied/expired attempt's key.
 func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
 	f := newFakeBroker(t)
-	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 
 	f.mu.Lock()
@@ -971,7 +971,7 @@ func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
 }
 
 func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
-	b := &Broker{URL: cipheraddr.New("http://127.0.0.1:1"), OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", "http://127.0.0.1:1"), OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 	_, _, err := b.EnrollIdentity(context.Background(), sess.identity())
 	if err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
@@ -989,11 +989,11 @@ func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
 		err  *BrokerError
 		want string
 	}{
-		{newBrokerError(502, redact.NewRemoteText(""), redact.NewRemoteText(""), false), "broker 502"},
+		{newBrokerError(502, redact.NewRemoteText(""), redact.NewRemoteText(""), ""), "broker 502"},
 		{&BrokerError{Status: 502}, "broker 502"},
-		{newBrokerError(502, redact.NewRemoteText("DATABASE"), redact.NewRemoteText(""), false), "broker 502 DATABASE"},
-		{newBrokerError(502, redact.NewRemoteText(""), redact.NewRemoteText("postgres unreachable"), false), "broker 502: postgres unreachable"},
-		{newBrokerError(403, redact.NewRemoteText("SESSION_HELD"), redact.NewRemoteText("the session s belongs to another principal"), false),
+		{newBrokerError(502, redact.NewRemoteText("DATABASE"), redact.NewRemoteText(""), ""), "broker 502 DATABASE"},
+		{newBrokerError(502, redact.NewRemoteText(""), redact.NewRemoteText("postgres unreachable"), ""), "broker 502: postgres unreachable"},
+		{newBrokerError(403, redact.NewRemoteText("SESSION_HELD"), redact.NewRemoteText("the session s belongs to another principal"), ""),
 			"broker 403 SESSION_HELD: the session s belongs to another principal"},
 	} {
 		if got := tc.err.Error(); got != tc.want {

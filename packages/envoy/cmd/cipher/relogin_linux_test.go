@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -85,7 +85,7 @@ func TestLoginStatusFollowsTheCredentialTheHelperHolds(t *testing.T) {
 	if stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, nil, "self"); exit != 0 || !strings.Contains(stdout, wantGrant) {
 		t.Fatalf("self after the grant: exit %d, stdout %q, stderr %q; want a line starting %q", exit, stdout, stderr, wantGrant)
 	}
-	values, err := newClient(cipheraddr.New(rig.URL)).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, *granted.GrantID, releaseCall{})
+	values, err := newClient(configaddr.New("AGENT_SECRETS_URL", rig.URL)).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, *granted.GrantID, releaseCall{})
 	if err != nil || values.Values["TEST_AUTO_SECRET"] != "test-auto-secret-v1" {
 		t.Fatalf("grant values of the agent-tier secret: %+v %v; want TEST_AUTO_SECRET released", values, err)
 	}

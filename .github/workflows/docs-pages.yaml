@@ -135,7 +135,7 @@ on:
       - 'packages/daemon/internal/wakepace/*'
       - 'packages/daemon/internal/workflow/*'
       - 'packages/daemon/internal/workspace/*'
-      - 'packages/envoy/cipheraddr/*'
+      - 'packages/envoy/configaddr/*'
       - 'packages/envoy/cipherclient/*'
       - 'packages/envoy/dispatchbody/*'
       - 'packages/envoy/internal/cipherclient/*'

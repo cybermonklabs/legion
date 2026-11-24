@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -21,7 +21,7 @@ import (
 // split at its ": " into the broker's code and message (the "<CODE>: <message>" form the split is
 // for). The designated assertion is helper.split-refusal/<row>.
 func TestASplitRefusalPrintsNoCredentialItsWordsQuote(t *testing.T) {
-	addr := cipheraddr.New("https://broker.example")
+	addr := configaddr.New("AGENT_SECRETS_URL", "https://broker.example")
 	for name, description := range map[string]string{
 		"user-info": "see https://" + redacttest.User + ": " + redacttest.Password + "@issuer.example/p",
 		"query":     "https://issuer.example/cb?token=: " + redacttest.Token,

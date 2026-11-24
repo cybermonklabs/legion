@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -365,7 +366,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		GitHubAPIBase:    options.githubAPIBase,
 		TestHooksEnabled: options.testHooks,
 		StreamHeartbeat:  options.streamHeartbeat,
-		EnvoyURL:         options.envoyURL,
+		EnvoyURL:         configaddr.New("ENVOY_URL", options.envoyURL),
 		EnvoyTimeout:     options.envoyTimeout,
 		// Dispatch presents an identity of its own to the listener, as a deployment does: without
 		// one it refuses every send for a role (envoy.ErrNoListenerIdentity). The tests' stand-in listeners
@@ -380,7 +381,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		HorizonWarnEvery:       horizontest.StallWarning,
 		OIDC:                   options.oidc,
 		BrokerTokens:           brokerTokens,
-		AgentSecretsURL:        options.agentSecretsURL,
+		AgentSecretsURL:        configaddr.New("DISPATCH_AGENT_SECRETS_URL", options.agentSecretsURL),
 		AgentSecretsTokenFile:  agentSecretsTokenFile,
 		AgentStream:            options.agentStream,
 		AgentPublisher:         agentPublisher,

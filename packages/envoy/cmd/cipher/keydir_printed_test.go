@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -518,7 +518,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(dir, googleAudienceFile), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		err := checkGoogleAudience(cipheraddr.New("https://broker.example"), "agent-secrets-vm")
+		err := checkGoogleAudience(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), "agent-secrets-vm")
 		if err == nil {
 			t.Fatal("checkGoogleAudience read an audience from a directory")
 		}
@@ -529,7 +529,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(dir, googleAudienceFile+".lock"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		err := keepGoogleAudience(cipheraddr.New("https://broker.example"), "agent-secrets-vm")
+		err := keepGoogleAudience(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), "agent-secrets-vm")
 		if err == nil {
 			t.Fatal("keepGoogleAudience kept an audience under a lock it could not open")
 		}
@@ -537,7 +537,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 	})
 	t.Run("another Google audience than the one kept", func(t *testing.T) {
 		useCache(t)
-		base := cipheraddr.New("https://broker.example")
+		base := configaddr.New("AGENT_SECRETS_URL", "https://broker.example")
 		if err := keepGoogleAudience(base, "agent-secrets-vm"); err != nil {
 			t.Fatal(err)
 		}
@@ -549,7 +549,7 @@ func TestTheMachineCacheIsNamedByWhereItIsNeverItsPath(t *testing.T) {
 	})
 	t.Run("control: a kept Google audience the broker still names", func(t *testing.T) {
 		useCache(t)
-		base := cipheraddr.New("https://broker.example")
+		base := configaddr.New("AGENT_SECRETS_URL", "https://broker.example")
 		for range 2 {
 			if err := keepGoogleAudience(base, "agent-secrets-vm"); err != nil {
 				t.Fatal(err)

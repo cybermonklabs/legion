@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -295,7 +295,7 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RequestObject: "eyJ.fake.request"})
 	signer := &helperSigner{sock: sock}
 	lifetime := 120
-	ro, err := signer.SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"DEEL_API_KEY", "OTHER_KEY"}, "why", &lifetime, nil)
+	ro, err := signer.SignRequestObject(configaddr.New("AGENT_SECRETS_URL", "https://secrets.test"), []string{"DEEL_API_KEY", "OTHER_KEY"}, "why", &lifetime, nil)
 	if err != nil || ro != "eyJ.fake.request" {
 		t.Fatalf("sign-request: %q %v", ro, err)
 	}
@@ -309,7 +309,7 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	}
 
 	sock2, _ := fakeHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
-	if _, err := (&helperSigner{sock: sock2}).SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"DEEL_API_KEY"}, "why", nil, nil); err == nil ||
+	if _, err := (&helperSigner{sock: sock2}).SignRequestObject(configaddr.New("AGENT_SECRETS_URL", "https://secrets.test"), []string{"DEEL_API_KEY"}, "why", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), helper.CodeNotASession) {
 		t.Fatalf("the helper's code reaches the caller: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestHelperSignerSignsTheTargetAndRefusesAHelperThatDropsIt(t *testing.T) {
 
 	carried := signed(locations)
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RequestObject: carried})
-	ro, err := (&helperSigner{sock: sock}).SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"GITHUB_READ"}, "why", nil, locations)
+	ro, err := (&helperSigner{sock: sock}).SignRequestObject(configaddr.New("AGENT_SECRETS_URL", "https://secrets.test"), []string{"GITHUB_READ"}, "why", nil, locations)
 	if err != nil || ro != carried {
 		t.Fatalf("sign-request of a target the helper signed: %v; want the helper's object back", err)
 	}
@@ -353,7 +353,7 @@ func TestHelperSignerSignsTheTargetAndRefusesAHelperThatDropsIt(t *testing.T) {
 	}
 
 	older, _ := fakeHelper(t, helper.Response{OK: true, RequestObject: signed(nil)})
-	_, err = (&helperSigner{sock: older}).SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"GITHUB_READ"}, "why", nil, locations)
+	_, err = (&helperSigner{sock: older}).SignRequestObject(configaddr.New("AGENT_SECRETS_URL", "https://secrets.test"), []string{"GITHUB_READ"}, "why", nil, locations)
 	var notSent *refusedBeforeCall
 	if !errors.As(err, &notSent) || !strings.Contains(err.Error(), "agent-secrets-helper at "+older) || !strings.Contains(err.Error(), "without its --target") {
 		t.Fatalf("a helper that signed no target = %v; want a refusal before anything is sent, naming the helper and --target", err)

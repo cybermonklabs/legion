@@ -22,7 +22,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/tlsalert"
 )
@@ -45,7 +45,7 @@ type unreachableError struct {
 	// Error prints base as the Address prints and url through callWords, so a credential the
 	// variable carries never prints, while an id the call path-escaped still does, unless route
 	// names the call with the id a person typed left out (withoutTypedID).
-	base        cipheraddr.Address
+	base        configaddr.Address
 	method, url string
 	// cause is the transport's own error through base.Cause: without net/http's *url.Error
 	// wrapper, which repeats the URL, or its class alone where its text may not print.
@@ -66,7 +66,7 @@ func (e *unreachableError) Unwrap() error { return e.cause }
 // which leaves the id out, and redact.NotPrinted beside an address that is not clean. The broker
 // never accepted that id, and an argument that is no id is where a credential pasted in the wrong
 // place lands.
-func callWords(base cipheraddr.Address, callURL, route string) string {
+func callWords(base configaddr.Address, callURL, route string) string {
 	if route == "" {
 		return base.Call(callURL)
 	}
@@ -123,7 +123,7 @@ func (e *cutOffError) withRoute(route string) error {
 // error, EOF, or a reset once the connection existed - is "answered but the exchange failed",
 // which TLS or a proxy fixes. An error that fits none says no more than that the request failed,
 // rather than name a layer it cannot prove.
-func unreachable(base cipheraddr.Address, method, callURL string, err error) error {
+func unreachable(base configaddr.Address, method, callURL string, err error) error {
 	cause := base.Cause(err)
 	host := brokerHost(base)
 	failed := func(what string) error { return &unreachableError{what, base, method, callURL, cause, ""} }
@@ -171,7 +171,7 @@ func peerAnswered(err error) bool {
 // call's URL as unreachableError prints it (callWords), then "read response:", then the
 // transport's own cause.
 type cutOffError struct {
-	base        cipheraddr.Address
+	base        configaddr.Address
 	method, url string
 	cause       error
 	// route is the call's path with the id the person typed left out, as unreachableError's is.

@@ -101,7 +101,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -717,24 +717,24 @@ func signInSigner(record cipherclient.SignInRecord, key *ecdsa.PrivateKey) (*fil
 // subcommand (renew, request, status, cancel, revoke, self, and the exec form) needs, plus the
 // enrollment id buildSigner read (empty in helper mode). A missing broker URL is a settingError.
 // stderr is the command's, which buildSigner's wait for a launcher still enrolling speaks on.
-func sessionContext(stderr io.Writer) (base cipheraddr.Address, enrollmentID string, signer Signer, err error) {
+func sessionContext(stderr io.Writer) (base configaddr.Address, enrollmentID string, signer Signer, err error) {
 	return chainSessionContext(stderr, true)
 }
 
 // renewContext is sessionContext for renew, whose chain never passes over a person's sign-in
 // (signerChain): renew reports an enrollment the broker no longer holds rather than renew another.
-func renewContext(stderr io.Writer) (base cipheraddr.Address, enrollmentID string, signer Signer, err error) {
+func renewContext(stderr io.Writer) (base configaddr.Address, enrollmentID string, signer Signer, err error) {
 	return chainSessionContext(stderr, false)
 }
 
-func chainSessionContext(stderr io.Writer, passOver bool) (base cipheraddr.Address, enrollmentID string, signer Signer, err error) {
+func chainSessionContext(stderr io.Writer, passOver bool) (base configaddr.Address, enrollmentID string, signer Signer, err error) {
 	base = brokerBaseURL()
 	if base.Empty() {
-		return cipheraddr.Address{}, "", nil, &settingError{fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)}
+		return configaddr.Address{}, "", nil, &settingError{fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)}
 	}
 	enrollmentID, signer, err = buildChainSigner(stderr, passOver)
 	if err != nil {
-		return cipheraddr.Address{}, "", nil, err
+		return configaddr.Address{}, "", nil, err
 	}
 	return base, enrollmentID, signer, nil
 }
@@ -749,7 +749,7 @@ func writeVerbatim(w io.Writer, answer *redact.Answer) {
 
 // jsonFlag is --json's usage line wherever a form prints the broker's answer: the body as the
 // broker wrote it, every field, where the form's own lines print each value as the broker's
-// address lets its answer print (cipheraddr.Address.Words). The flag asks for the body by name.
+// address lets its answer print (configaddr.Address.Words). The flag asks for the body by name.
 const jsonFlag = "print the broker's response body verbatim: every field as the broker wrote it, none withheld, even beside an AGENT_SECRETS_URL that is not a plain http(s) URL"
 
 // nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling
@@ -964,7 +964,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 		writeVerbatim(stdout, raw)
 	} else {
 		// Every value on these lines is the broker's, so each prints as the broker's address
-		// lets its answer print (cipheraddr.Address.WordsOf): on one line beside a clean
+		// lets its answer print (configaddr.Address.WordsOf): on one line beside a clean
 		// address, as the rule reads it with the credentials the request carried redacted (each
 		// is held as redact.RemoteText with the answer's record), and not at all beside one that
 		// carries a credential, which whoever answers there can repeat in any value. --json
@@ -1128,7 +1128,8 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	// No operator prints as the empty field does, as it always has: nothing beside a clean address,
-	// and cipheraddr.WordsNotPrinted beside one that is not clean (WordsOf of the zero RemoteText).
+	// and the address's WordsNotPrinted beside one that is not clean (WordsOf of the zero
+	// RemoteText).
 	var operatorField redact.RemoteText
 	if result.Operator != nil {
 		operatorField = *result.Operator
@@ -1318,7 +1319,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	default:
 		// The state prints as the rule reads it, quoted beside a clean address, and as
-		// cipheraddr.WordsNotPrinted beside one that is not (WordsOf).
+		// configaddr.Address.WordsNotPrinted beside one that is not (WordsOf).
 		shownState := c.baseURL.WordsOf(state)
 		if c.baseURL.Clean() {
 			shownState = strconv.Quote(shownState)
@@ -1422,12 +1423,12 @@ func projectHint(stderr io.Writer, detail *redact.RemoteText) {
 // does not hold them (values.GitHubLeftOut, the values answer's github_left_out), one line each;
 // none of them is a token. Every word is the broker's, or the words of whatever answers in its
 // place, which can echo the release's Proof header, so each prints as base lets the broker's words
-// print (cipheraddr.Address.WordsOf): beside a clean address on one line as the rule reads it, with
+// print (configaddr.Address.WordsOf): beside a clean address on one line as the rule reads it, with
 // the credentials the release carried redacted, and beside any other not at all. An entry is held
 // as redact.RemoteText with that record (Answer.Decode), and an account, a key the decode holds in
 // no box, as values.LeftOutAccounts holds it (Answer.Said). A profile is a key too, named only
 // where this run asked for it (releasedName).
-func reportLeftOut(stderr io.Writer, base cipheraddr.Address, asked []string, values GrantValues) {
+func reportLeftOut(stderr io.Writer, base configaddr.Address, asked []string, values GrantValues) {
 	for _, name := range slices.Sorted(maps.Keys(values.GitHubLeftOut)) {
 		accounts := values.GitHubLeftOut[name]
 		for _, account := range slices.Sorted(maps.Keys(accounts)) {

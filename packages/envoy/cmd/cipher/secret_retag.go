@@ -541,7 +541,7 @@ func typeName(secretType string) string {
 
 // servedTypeName is t, the type the broker's reread answer says it serves a secret as, as a line
 // names it: "a stored secret" for none (typeName), and otherwise the broker's text as its address
-// lets its answer print (cipheraddr.Address.WordsOf), with the reread's proof redacted.
+// lets its answer print (configaddr.Address.WordsOf), with the reread's proof redacted.
 func servedTypeName(s *secretSession, t redact.RemoteText) string {
 	if t.IsEmpty() {
 		return typeName("")

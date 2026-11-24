@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -69,7 +70,7 @@ func TestNotifyPresentsTheAccountToken(t *testing.T) {
 	defer srv.Close()
 
 	account := &accountTokens{tokens: []string{"account-token-1", "account-token-2"}}
-	e := Envoy{URL: srv.URL, Account: account, HTTP: srv.Client()}
+	e := Envoy{URL: configaddr.New("BROKER_ENVOY_URL", srv.URL), Account: account, HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 	if gotAuth != "Bearer account-token-1" {
 		t.Fatalf("authorization: got %q, want the account's token", gotAuth)
@@ -122,7 +123,7 @@ func TestNotifySwallowsServerErrorAndLogsIt(t *testing.T) {
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
+	e := Envoy{URL: configaddr.New("BROKER_ENVOY_URL", srv.URL), Account: staticAccount("tok"), HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -142,7 +143,7 @@ func TestNotifySwallowsNotFoundAndLogsIt(t *testing.T) {
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
+	e := Envoy{URL: configaddr.New("BROKER_ENVOY_URL", srv.URL), Account: staticAccount("tok"), HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -155,7 +156,7 @@ func TestNotifySwallowsUnreachableServerAndLogsIt(t *testing.T) {
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
 	// A port the test holds and nothing listens on: the connection fails.
-	e := Envoy{URL: "http://" + testport.Refused(t), Account: staticAccount("tok"), HTTP: &http.Client{}}
+	e := Envoy{URL: configaddr.New("BROKER_ENVOY_URL", "http://"+testport.Refused(t)), Account: staticAccount("tok"), HTTP: &http.Client{}}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -175,7 +176,7 @@ func TestNotifySendsNothingWithoutTheAccountToken(t *testing.T) {
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: &accountTokens{err: errors.New("the token file is missing")}, HTTP: srv.Client()}
+	e := Envoy{URL: configaddr.New("BROKER_ENVOY_URL", srv.URL), Account: &accountTokens{err: errors.New("the token file is missing")}, HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 	if sent {
 		t.Fatal("a notice went out with no account token")

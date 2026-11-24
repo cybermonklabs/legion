@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -258,7 +259,7 @@ func queueingDispatchMux(
 		Identity:    caller,
 		AgentTokens: tokens,
 		ServerURL:   "https://dispatch.example",
-		EnvoyURL:    envoyURL,
+		EnvoyURL:    configaddr.New("ENVOY_URL", envoyURL),
 		Docs:        documents,
 		Events:      broker,
 	}

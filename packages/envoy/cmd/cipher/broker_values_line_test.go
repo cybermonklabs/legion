@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -180,11 +180,11 @@ func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 	plain := OperatorGrant{GrantID: box("grant-1"), Granted: box("approved"), Names: []redact.RemoteText{box("A"), box("B")},
 		Approver: boxOf("ada@example.com"), DecidedBy: boxOf("judge:model-1"),
 		Enrollment: OperatorGrantEnrollment{Kind: box("session"), RuntimeID: box("h:1:1"), Operator: box("ada@example.com")}, ExpiresAt: &at}
-	if got, want := grantRow(cipheraddr.New("https://broker.example"), plain), []string{"grant-1", "A,B", "approved", "ada@example.com", "judge:model-1", "session/h:1:1", "ada@example.com", "2026-11-17T09:00:00Z"}; strings.Join(got, "|") != strings.Join(want, "|") {
+	if got, want := grantRow(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), plain), []string{"grant-1", "A,B", "approved", "ada@example.com", "judge:model-1", "session/h:1:1", "ada@example.com", "2026-11-17T09:00:00Z"}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("grantRow of plain values = %q, want %q", got, want)
 	}
 	tabbed := "a\tb"
-	row := grantRow(cipheraddr.New("https://broker.example"), OperatorGrant{GrantID: box(forged), Granted: box(forged), Names: []redact.RemoteText{box(forged)}, Approver: boxOf(slot), DecidedBy: boxOf(tabbed),
+	row := grantRow(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), OperatorGrant{GrantID: box(forged), Granted: box(forged), Names: []redact.RemoteText{box(forged)}, Approver: boxOf(slot), DecidedBy: boxOf(tabbed),
 		Enrollment: OperatorGrantEnrollment{Kind: box(forged), RuntimeID: box("h:1:1"), Operator: box(forged), Slot: boxOf(slot)}})
 	for i, cell := range row {
 		if strings.ContainsAny(cell, "\t\r\n\x1b") {
@@ -195,11 +195,11 @@ func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 		t.Errorf("grantRow = %q, want the grant id %s and the decider %s", row, quotedForged, strconv.Quote(tabbed))
 	}
 
-	if got, want := machineRow(cipheraddr.New("https://broker.example"), OperatorMachine{CredentialID: box("lcred-1"), Host: box("box"), ApprovedBy: box("ada@example.com"), IssuedAt: at, ExpiresAt: at}),
+	if got, want := machineRow(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), OperatorMachine{CredentialID: box("lcred-1"), Host: box("box"), ApprovedBy: box("ada@example.com"), IssuedAt: at, ExpiresAt: at}),
 		[]string{"lcred-1", "box", "ada@example.com", "2026-11-17T09:00:00Z", "2026-11-17T09:00:00Z", "ok"}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("machineRow of plain values = %q, want %q", got, want)
 	}
-	cells := machineRow(cipheraddr.New("https://broker.example"), OperatorMachine{CredentialID: box(forged), Host: box(forged), ApprovedBy: box(tabbed), IssuedAt: at, ExpiresAt: at, Expired: true})
+	cells := machineRow(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), OperatorMachine{CredentialID: box(forged), Host: box(forged), ApprovedBy: box(tabbed), IssuedAt: at, ExpiresAt: at, Expired: true})
 	if cells[0] != quotedForged || cells[1] != quotedForged || cells[2] != strconv.Quote(tabbed) || cells[5] != "expired" {
 		t.Errorf("machineRow = %q, want the credential and the host %s and the approver %s", cells, quotedForged, strconv.Quote(tabbed))
 	}
@@ -207,9 +207,9 @@ func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 
 // TestTheBrokersValuesPrintNothingBesideACredentialedAddress: request, status, self, the exec
 // form, a --ttl the broker did not give, and the grant and machine tables print each value of the
-// broker's answer as the address lets it print (cipheraddr.Address.Words): beside an
+// broker's answer as the address lets it print (configaddr.Address.Words): beside an
 // AGENT_SECRETS_URL that carries a credential, which whoever answers there can repeat in any
-// value, each prints as cipheraddr.WordsNotPrinted. Control: beside a clean address the same
+// value, each prints as configaddr.Address.WordsNotPrinted. Control: beside a clean address the same
 // values print, so the check sees them.
 func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
 	planted := "hunter2pw-" + "brokervalue-" + "51c7"
@@ -224,19 +224,19 @@ func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
 	}{
 		{"request, pending", map[string]any{"POST /v1/requests": map[string]any{
 			"request_id": planted, "state": "pending", "approver": planted, "approve_url": "https://broker.example/approve/" + planted, "detail": planted,
-		}}, []string{"request", "--reason", "need it", "SOME_SECRET"}, "request_id: " + cipheraddr.WordsNotPrinted},
+		}}, []string{"request", "--reason", "need it", "SOME_SECRET"}, "request_id: " + brokerWordsNotPrinted},
 		{"status", map[string]any{"GET /v1/requests/": map[string]any{
 			"state": "granted", "grant_id": planted, "decision": map[string]any{"by": planted, "at": time.Now()}, "detail": planted,
-		}}, []string{"status", "req-1"}, "grant_id: " + cipheraddr.WordsNotPrinted},
+		}}, []string{"status", "req-1"}, "grant_id: " + brokerWordsNotPrinted},
 		{"self", map[string]any{"GET /v1/enrollments/self": map[string]any{
 			"enrollment_id": planted, "kind": planted, "operator": planted, "lease_expires_at": time.Now(),
 			"grants": []any{map[string]any{"grant_id": planted, "request_id": planted}},
-		}}, []string{"self"}, "enrollment_id: " + cipheraddr.WordsNotPrinted},
+		}}, []string{"self"}, "enrollment_id: " + brokerWordsNotPrinted},
 		{"the exec form, denied", map[string]any{"POST /v1/requests": map[string]any{"request_id": planted, "state": "denied", "detail": planted}},
-			[]string{"--reason", "need it", "SOME_SECRET", "--", "true"}, "was denied: " + cipheraddr.WordsNotPrinted},
+			[]string{"--reason", "need it", "SOME_SECRET", "--", "true"}, "was denied: " + brokerWordsNotPrinted},
 		{"a lifetime the broker did not give", map[string]any{"POST /v1/requests": map[string]any{
 			"request_id": planted, "state": "granted", "grant_id": planted, "record_id": "record-1",
-		}}, []string{"request", "--reason", "need it", "--ttl", "60s", "SOME_SECRET"}, "the broker gave request " + cipheraddr.WordsNotPrinted},
+		}}, []string{"request", "--reason", "need it", "--ttl", "60s", "SOME_SECRET"}, "the broker gave request " + brokerWordsNotPrinted},
 	} {
 		for _, clean := range []bool{false, true} {
 			name := row.name + ", beside a credentialed address"
@@ -262,12 +262,12 @@ func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
 		}
 	}
 	t.Run("the grant and machine tables", func(t *testing.T) {
-		base := cipheraddr.New("http://demouser7q:demopass9z-not-a-secret@broker.example")
+		base := configaddr.New("AGENT_SECRETS_URL", "http://demouser7q:demopass9z-not-a-secret@broker.example")
 		at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 		grant := grantRow(base, OperatorGrant{GrantID: box(planted), Granted: box(planted), Names: []redact.RemoteText{box(planted)}, Approver: boxOf(planted),
 			Enrollment: OperatorGrantEnrollment{Kind: box(planted), RuntimeID: box(planted), Operator: box(planted)}, ExpiresAt: &at})
 		machine := machineRow(base, OperatorMachine{CredentialID: box(planted), Host: box(planted), ApprovedBy: box(planted), IssuedAt: at, ExpiresAt: at})
-		wantNamedNotPrinted(t, "the rows", strings.Join(grant, "|")+"|"+strings.Join(machine, "|"), []string{cipheraddr.WordsNotPrinted}, planted)
+		wantNamedNotPrinted(t, "the rows", strings.Join(grant, "|")+"|"+strings.Join(machine, "|"), []string{brokerWordsNotPrinted}, planted)
 	})
 }
 
@@ -375,14 +375,14 @@ func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testin
 		{"an id of the broker's shape", shaped,
 			[]string{"request " + shaped + " to ", "nothing was run. Check it with: agent-secrets status " + shaped}, nil},
 		{"32 hex digits, which no id the broker makes is", hex32,
-			[]string{"request " + cipheraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}, []string{hex32}},
+			[]string{"request " + brokerWordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}, []string{hex32}},
 		{"an id of another shape", planted,
-			[]string{"request " + cipheraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}, []string{planted}},
+			[]string{"request " + brokerWordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}, []string{planted}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			srv := forgedBroker(t, map[string]any{"POST /v1/requests": map[string]any{"request_id": row.id, "state": "pending"}})
 			unclean := strings.Replace(srv.URL, "127.0.0.1", "localhost.", 1)
-			if cipheraddr.New(unclean).Clean() {
+			if configaddr.New("AGENT_SECRETS_URL", unclean).Clean() {
 				t.Fatalf("%s is clean; the test needs an address Clean refuses", unclean)
 			}
 			t.Setenv("AGENT_SECRETS_URL", unclean)
@@ -451,19 +451,19 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 		says           []string
 	}{
 		{"the request form, a UUID password echoed", uuidPassword, same, credentialed(uuidPassword), request,
-			[]string{"request_id: " + cipheraddr.WordsNotPrinted}},
+			[]string{"request_id: " + brokerWordsNotPrinted}},
 		{"the exec form, a UUID password echoed", uuidPassword, same, credentialed(uuidPassword), exec,
-			[]string{"request " + cipheraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}},
+			[]string{"request " + brokerWordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}},
 		{"the request form, a 32-hex password echoed as a UUID", hexPassword, dashed, credentialed(hexPassword), request,
-			[]string{"request_id: " + cipheraddr.WordsNotPrinted}},
+			[]string{"request_id: " + brokerWordsNotPrinted}},
 		{"the request form, a 32-hex id the address does not hold, which is no shape the broker makes", uuidPassword, func(string) string { return hexPassword }, credentialed(uuidPassword), request,
-			[]string{"request_id: " + cipheraddr.WordsNotPrinted}},
+			[]string{"request_id: " + brokerWordsNotPrinted}},
 		{"the request form, a percent-escaped UUID password beside a malformed query escape, echoed decoded", escPassword, same, escaped, request,
-			[]string{"request_id: " + cipheraddr.WordsNotPrinted}},
+			[]string{"request_id: " + brokerWordsNotPrinted}},
 		{"the exec form, a UUID the address does not hold, beside an address with a credential", uuidPassword, func(string) string { return other }, credentialed(uuidPassword), exec,
-			[]string{"request " + cipheraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}},
+			[]string{"request " + brokerWordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}},
 		{"the request form, a UUID in the path of an address a '+' makes unclean, echoed", "", func(string) string { return uuidPassword }, pathed("/b+x/" + uuidPassword), request,
-			[]string{"request_id: " + cipheraddr.WordsNotPrinted}},
+			[]string{"request_id: " + brokerWordsNotPrinted}},
 		{"control: the request form, a UUID the '+' address does not hold", "", func(string) string { return other }, pathed("/b+x"), request,
 			[]string{"request_id: " + other}},
 		{"control: the request form beside a clean address", "", nil, clean, request,
@@ -488,7 +488,7 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 			address := row.address(srv.URL)
-			if row.echo != nil && cipheraddr.New(address).Clean() {
+			if row.echo != nil && configaddr.New("AGENT_SECRETS_URL", address).Clean() {
 				t.Fatalf("control: %q is clean, so the row does not test an id beside an address Clean refuses", address)
 			}
 			t.Setenv("AGENT_SECRETS_URL", address)
@@ -517,27 +517,28 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 	}
 	t.Run("the grant and machine tables", func(t *testing.T) {
 		at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
-		cells := func(base cipheraddr.Address, id string) string {
+		cells := func(base configaddr.Address, id string) string {
 			grant := grantRow(base, OperatorGrant{GrantID: box(id), Names: []redact.RemoteText{box("SOME_SECRET")}, ExpiresAt: &at})
 			machine := machineRow(base, OperatorMachine{CredentialID: box(id), IssuedAt: at, ExpiresAt: at})
 			return grant[0] + "|" + machine[0]
 		}
-		withPassword := cipheraddr.New("http://tokuser:" + uuidPassword + "@broker.example")
-		wantNamedNotPrinted(t, "the id cells of the password", cells(withPassword, uuidPassword), []string{cipheraddr.WordsNotPrinted + "|" + cipheraddr.WordsNotPrinted}, uuidPassword)
+		passwordURL := "http://tokuser:" + uuidPassword + "@broker.example"
+		withPassword := configaddr.New("AGENT_SECRETS_URL", passwordURL)
+		wantNamedNotPrinted(t, "the id cells of the password", cells(withPassword, uuidPassword), []string{brokerWordsNotPrinted + "|" + brokerWordsNotPrinted}, uuidPassword)
 		// The hosts the id exception exists for, a trailing dot and an underscore, each refused by
 		// Clean for its host alone: a UUID the address does not hold prints whole, and one its path
 		// holds, which only addressHolds keeps out, prints as Words.
 		for _, host := range []string{"http://broker.example.", "http://broker_x.example"} {
-			plain := cipheraddr.New(host)
+			plain := configaddr.New("AGENT_SECRETS_URL", host)
 			if plain.Clean() {
 				t.Fatalf("control: %s is clean; the row needs an address Clean refuses for its host alone", host)
 			}
 			if got := cells(plain, other); got != other+"|"+other {
 				t.Errorf("control: beside %s, the id cells of a UUID it does not hold are %q, want it whole in both, as self prints a grant's id", host, got)
 			}
-			pathed := cipheraddr.New(host + "/" + uuidPassword)
+			pathed := configaddr.New("AGENT_SECRETS_URL", host+"/"+uuidPassword)
 			wantNamedNotPrinted(t, "the id cells of a UUID "+host+"'s path holds", cells(pathed, uuidPassword),
-				[]string{cipheraddr.WordsNotPrinted + "|" + cipheraddr.WordsNotPrinted}, uuidPassword)
+				[]string{brokerWordsNotPrinted + "|" + brokerWordsNotPrinted}, uuidPassword)
 		}
 	})
 }

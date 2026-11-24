@@ -20,17 +20,18 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
-	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // Envoy sends a "secret request <state>" notification directly to the target session, presenting
 // the broker's own platform identity (Account, read afresh for each notice) as its bearer: the
 // listener admits the account that token names, as it admits every caller's, so no bearer is
-// shared between the broker and the listener's other callers.
+// shared between the broker and the listener's other callers. URL is BROKER_ENVOY_URL, which
+// builds each notice and which every warning names only as the Address prints it (Cause).
 type Envoy struct {
-	URL     string
+	URL     configaddr.Address
 	Account ciphertoken.Account
 	HTTP    *http.Client
 }
@@ -68,9 +69,11 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 		slog.Warn("wake envoy: marshal body", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.URL+"/v1/messages/send", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.URL.Raw()+"/v1/messages/send", bytes.NewReader(body))
 	if err != nil {
-		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", err)
+		// net/http's error quotes the URL it could not parse whole, so it is logged as Envoy's
+		// address allows (Cause): its class, beside an address that is not clean.
+		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", e.URL.Cause(err))
 		return
 	}
 	bearer, err := e.Account.Read()
@@ -84,8 +87,8 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 	if err != nil {
 		// net/http's error can quote the answering party's words (a Location that does not parse,
 		// read before any redirect policy), so it is logged as Envoy's address allows
-		// (redact.Cause): a transport failure's own text, or its class.
-		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", redact.Cause(err, e.URL))
+		// (Cause): a transport failure's own text, or its class.
+		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", e.URL.Cause(err))
 		return
 	}
 	defer resp.Body.Close()

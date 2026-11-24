@@ -102,9 +102,11 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, err)
 	}
 	form := url.Values{"token": []string{token}}.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, v.brokerURL+IntrospectPath, strings.NewReader(form))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, v.brokerURL.Raw()+IntrospectPath, strings.NewReader(form))
 	if err != nil {
-		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, err)
+		// net/http's error quotes the URL it could not parse whole, so it prints as the broker's
+		// address allows (Cause): its class, beside an address that is not clean.
+		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, v.brokerURL.Cause(err))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Authorization", "Bearer "+account)
@@ -113,8 +115,8 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 		// The token is in the body, which http.Client puts in no error, but net/http's error can
 		// quote the answering party's words - a Location that does not parse, read before any
 		// redirect policy, or the one a followed redirect asked - so it prints as the broker's
-		// address allows (redact.Cause): a transport failure's own text, or its class.
-		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, redact.Cause(err, v.brokerURL))
+		// address allows (Cause): a transport failure's own text, or its class.
+		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, v.brokerURL.Cause(err))
 	}
 	defer response.Body.Close()
 	read, err := redact.ReadAnswer(response, maxIntrospectionBytes)

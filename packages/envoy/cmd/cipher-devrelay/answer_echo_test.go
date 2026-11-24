@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -30,7 +30,7 @@ func TestAListedCallersRefusalPrintsNoBearerItsAnswerEchoes(t *testing.T) {
 				fmt.Fprint(w, strings.ReplaceAll(c.body, "{auth}", r.Header.Get("Authorization")))
 			}))
 			defer server.Close()
-			client := &apiClient{base: cipheraddr.New(server.URL), http: &http.Client{}, token: redacttest.Token}
+			client := &apiClient{base: configaddr.New("AGENT_SECRETS_URL", server.URL), http: &http.Client{}, token: redacttest.Token}
 			_, err := client.do(context.Background(), http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": "ABCD-EFGH"})
 			if err == nil {
 				t.Fatal("the call answered no error")
@@ -47,16 +47,16 @@ func TestAListedCallersRefusalPrintsNoBearerItsAnswerEchoes(t *testing.T) {
 // TestALookedUpStatePrintsAsTheAddressLetsItPrint: whatever answers at --broker accepts the lookup
 // of the typed code and names a state that is not pending and repeats a credential. machine-approve
 // refuses to decide it, and its line names the state as the address lets the answer's text print
-// (cipheraddr.Address.WordsOf), as the call's refusals print theirs: beside an address that carries
-// a credential in its user information or its fragment, cipheraddr.WordsNotPrinted, since whoever
+// (configaddr.Address.WordsOf), as the call's refusals print theirs: beside an address that carries
+// a credential in its user information or its fragment, configaddr.Address.WordsNotPrinted, since whoever
 // answers there can repeat that credential in any text of its answer, and a fragment, which no
 // request sends, is a credential the request's record cannot redact; beside a clean address, the
 // state as the rule reads it. Captures devrelay.machine-approve-state/<case>.
 func TestALookedUpStatePrintsAsTheAddressLetsItPrint(t *testing.T) {
 	token := tokenFile(t, "caller-token")
 	for _, c := range []struct{ name, suffix, state, want string }{
-		{"user-information", "", redacttest.Password, cipheraddr.WordsNotPrinted},
-		{"fragment", "#access_token=" + redacttest.Token, redacttest.Token, cipheraddr.WordsNotPrinted},
+		{"user-information", "", redacttest.Password, configaddr.New("--broker", "").WordsNotPrinted()},
+		{"fragment", "#access_token=" + redacttest.Token, redacttest.Token, configaddr.New("--broker", "").WordsNotPrinted()},
 		{"clean", "", redacttest.Code, redacttest.CodeShown},
 	} {
 		t.Run(c.name, func(t *testing.T) {

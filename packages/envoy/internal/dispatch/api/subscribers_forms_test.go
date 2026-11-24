@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 )
 
@@ -37,7 +38,7 @@ func TestASubscriberFollowingTheNewIssueFormIsListedAndRemovable(t *testing.T) {
 		{"session_id": "old-form", "last_seen": 1800000000000},
 		{"session_id": "new-form", "last_seen": 1800000000001},
 	})
-	s := &server{deps: Deps{Envoy: envoy.New(envoyURL)}}
+	s := &server{deps: Deps{Envoy: envoy.New(configaddr.New("ENVOY_URL", envoyURL))}}
 
 	response := httptest.NewRecorder()
 	s.writeSubscribers(response, httptest.NewRequest(http.MethodGet, "/api/v1/issues/TEST-1/subscribers", nil), issueSubscriberBase("TEST-1"))

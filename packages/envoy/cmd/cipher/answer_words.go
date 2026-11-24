@@ -2,7 +2,7 @@
 //
 // How the request, status and exec forms word a broker's answer about a request: who decides it and
 // where, the broker's sentence about it, and its id, each as the broker's address lets its answer
-// print (cipheraddr.Address.WordsOf), and the command that reads it again. Each member is held as
+// print (configaddr.Address.WordsOf), and the command that reads it again. Each member is held as
 // redact.RemoteText, which Answer.Decode holds with the record of the request it answers, so beside
 // a clean address it prints as the rule reads it with that request's credentials redacted.
 package main
@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -26,7 +26,7 @@ import (
 // the model judge while it holds the request — where the secrets it would inject come from (src),
 // and on which page of the broker a person decides it when its answer names one (waitingOn).
 // shownID is the request's id as the exec form prints it.
-func reportPending(stderr io.Writer, base cipheraddr.Address, shownID string, approver *redact.RemoteText, brokerPage redact.RemoteText, judging bool, wait time.Duration, src source) {
+func reportPending(stderr io.Writer, base configaddr.Address, shownID string, approver *redact.RemoteText, brokerPage redact.RemoteText, judging bool, wait time.Duration, src source) {
 	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", shownID, src, wait)
 	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(base, approver, brokerPage, judging))
 }
@@ -44,7 +44,7 @@ func reportPending(stderr io.Writer, base cipheraddr.Address, shownID string, ap
 // opens the broker themselves. The broker names an approver for every pending request; one from
 // before it did names none, and the sentence says so rather than guessing. The page and the
 // approver are the broker's, so each prints as the broker's address base lets its answer print
-// (cipheraddr.Address.WordsOf): on one line beside a clean address, Go-quoted where a control
+// (configaddr.Address.WordsOf): on one line beside a clean address, Go-quoted where a control
 // character in it would start a line of its own, with the credentials the request carried
 // redacted, and not at all beside one that carries a credential. The approver is told apart from
 // anyone as it came (RemoteText.Equal).
@@ -53,7 +53,7 @@ func reportPending(stderr io.Writer, base cipheraddr.Address, shownID string, ap
 // keys are ones the judge decides, so the sentence says the judge is deciding it and that nobody
 // is asked, and never that its approver must approve it. If the judge cannot decide it, a later
 // answer carries the page, and the exec form says so.
-func waitingOn(base cipheraddr.Address, approver *redact.RemoteText, brokerPage redact.RemoteText, judging bool) string {
+func waitingOn(base configaddr.Address, approver *redact.RemoteText, brokerPage redact.RemoteText, judging bool) string {
 	if judging {
 		return "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
 	}
@@ -77,8 +77,8 @@ func waitingOn(base cipheraddr.Address, approver *redact.RemoteText, brokerPage 
 // line on stderr then knows which secret it may not have and that asking again will not help,
 // rather than only that something was denied. A broker that recorded no detail, and one from
 // before the field, adds nothing, so such a denial reads exactly as it always has. The sentence
-// prints as the broker's address base lets its answer print (cipheraddr.Address.WordsOf).
-func deniedBecause(base cipheraddr.Address, detail *redact.RemoteText) string {
+// prints as the broker's address base lets its answer print (configaddr.Address.WordsOf).
+func deniedBecause(base configaddr.Address, detail *redact.RemoteText) string {
 	if detail == nil {
 		return ""
 	}
@@ -87,10 +87,10 @@ func deniedBecause(base cipheraddr.Address, detail *redact.RemoteText) string {
 
 // printDetail writes the broker's own sentence about a request, the one the request row keeps as
 // its decision_detail, as the "detail: <text>" line the request and status forms both end with,
-// as the broker's address base lets its answer print (cipheraddr.Address.WordsOf). A broker that
+// as the broker's address base lets its answer print (configaddr.Address.WordsOf). A broker that
 // recorded none, and one from before the field, writes no line at all, so such an answer reads
 // exactly as it always has.
-func printDetail(stdout io.Writer, base cipheraddr.Address, detail *redact.RemoteText) {
+func printDetail(stdout io.Writer, base configaddr.Address, detail *redact.RemoteText) {
 	if detail == nil {
 		return
 	}
@@ -124,7 +124,7 @@ var brokerIDShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 
 // idWords is id, a request's, grant's, enrollment's or launcher credential's id the broker
 // answered, as a message prints it: as base lets the broker's words print
-// (cipheraddr.Address.Words), and beside an address that does not let them print, still whole where
+// (configaddr.Address.Words), and beside an address that does not let them print, still whole where
 // it has the shape of an id the broker makes (brokerIDShape), the address could carry no
 // credential (plainAddress) and it does not hold the id (addressHolds). Such an id is no
 // credential, and a person needs it to follow the request (statusHint) beside an address Clean
@@ -133,7 +133,7 @@ var brokerIDShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 // UUID, as many API tokens are - so it prints as Words. id is text this client keeps: an id
 // RemoteText.SendBack answered, which is the rule's reading of the id with its request's
 // credentials redacted; an id held as the box prints through idWordsOf.
-func idWords(base cipheraddr.Address, id string) string {
+func idWords(base configaddr.Address, id string) string {
 	if !base.Clean() && brokerIDShape.MatchString(id) && plainAddress(base) && !addressHolds(base, id) {
 		return id
 	}
@@ -143,9 +143,9 @@ func idWords(base cipheraddr.Address, id string) string {
 // idWordsOf is idWords of id, an id held as the broker answered it: the id as RemoteText.SendBack
 // answers it, where the rule prints it as it came, by idWords' rule, so its UUID exception beside
 // an address that is not clean is judged on that text; and any other id as base lets the broker's
-// words print (cipheraddr.Address.WordsOf) - beside a clean address as the rule reads it, with the
+// words print (configaddr.Address.WordsOf) - beside a clean address as the rule reads it, with the
 // credentials its request carried redacted.
-func idWordsOf(base cipheraddr.Address, id redact.RemoteText) string {
+func idWordsOf(base configaddr.Address, id redact.RemoteText) string {
 	if text, sent := id.SendBack(); sent {
 		return idWords(base, text)
 	}
@@ -153,9 +153,9 @@ func idWordsOf(base cipheraddr.Address, id redact.RemoteText) string {
 }
 
 // projectsWordsOf is the projects a session named when it enrolled, as the broker's self answers
-// them: each as base lets the broker's words print (cipheraddr.Address.WordsOf), joined as
+// them: each as base lets the broker's words print (configaddr.Address.WordsOf), joined as
 // oauthwire.JoinProjects joins them, or "-" for none.
-func projectsWordsOf(base cipheraddr.Address, projects []redact.RemoteText) string {
+func projectsWordsOf(base configaddr.Address, projects []redact.RemoteText) string {
 	if len(projects) == 0 {
 		return "-"
 	}
@@ -170,7 +170,7 @@ func projectsWordsOf(base cipheraddr.Address, projects []redact.RemoteText) stri
 // percent sign: the places a credential goes, and the one escape that would let the text this
 // checks differ from what the client sends (url.Parse takes a malformed escape in a query, and
 // net/http sends the decoded user info). The hosts the id exception is for carry none of these.
-func plainAddress(base cipheraddr.Address) bool {
+func plainAddress(base configaddr.Address) bool {
 	raw := base.Raw()
 	parsed, err := url.Parse(raw)
 	return err == nil && parsed.User == nil && parsed.RawQuery == "" && !parsed.ForceQuery &&
@@ -180,7 +180,7 @@ func plainAddress(base cipheraddr.Address) bool {
 // addressHolds reports whether id, a UUID, occurs in the address's own text (base.Raw, its path
 // among it), in any case and with or without its dashes: the forms in which an answerer there
 // could echo a part of the address as an id.
-func addressHolds(base cipheraddr.Address, id string) bool {
+func addressHolds(base configaddr.Address, id string) bool {
 	bare := strings.ReplaceAll(id, "-", "")
 	return strings.Contains(strings.ReplaceAll(strings.ToLower(base.Raw()), "-", ""), bare)
 }
@@ -191,7 +191,7 @@ func addressHolds(base cipheraddr.Address, id string) bool {
 // it print it - Go-quoted for a control character, a credential its request carried redacted; and
 // beside an address that is not clean, for an id that does not print, the form to run and that its
 // id is not printed, since a command with no id would not run.
-func statusHint(base cipheraddr.Address, requestID redact.RemoteText) string {
+func statusHint(base configaddr.Address, requestID redact.RemoteText) string {
 	id, sent := requestID.SendBack()
 	shown := idWordsOf(base, requestID)
 	switch {

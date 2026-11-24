@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // TestSelfPrintsNoPartOfTheBrokerURLCredential: `agent-secrets self` on a machine that proves an
@@ -78,7 +78,7 @@ func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
 			}))
 			defer broker.Close()
 
-			c := newClient(cipheraddr.New(broker.URL))
+			c := newClient(configaddr.New("AGENT_SECRETS_URL", broker.URL))
 			_, _, _ = c.doStatus(context.Background(), http.MethodGet, broker.URL+"/v1/enrollments/self", nil, map[string]string{"Proof": "the-session-proof"})
 			if got := targetCalls.Load(); got != 0 {
 				t.Errorf("the redirect's target received %d requests, want none", got)
@@ -97,7 +97,7 @@ func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
 // holds any of them. Beside a clean address the broker's words, code and answer id are what a
 // person acts on, and print. Whether a refusal's text is withheld is decided from the address
 // where the refusal is built, and never read back from what the refusal says: a clean broker
-// whose words are cipheraddr.WordsNotPrinted itself is a clean broker still, so its code and its
+// whose words are configaddr.Address.WordsNotPrinted itself is a clean broker still, so its code and its
 // answer id print on `agent-secrets status`'s stderr and in the client's error, and its code in a
 // pod login's refusal line.
 func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
@@ -132,7 +132,7 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 		if asked.Load() == before {
 			t.Fatalf("status never reached the broker\nstderr: %s", stderr.String())
 		}
-		_, err := newClient(cipheraddr.New(address)).do(context.Background(), http.MethodGet, address+"/v1/requests/req-1", nil, nil)
+		_, err := newClient(configaddr.New("AGENT_SECRETS_URL", address)).do(context.Background(), http.MethodGet, address+"/v1/requests/req-1", nil, nil)
 		if err == nil {
 			t.Fatal("the client took the broker's refusal as an answer")
 		}
@@ -173,7 +173,7 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	})
 
 	t.Run("a clean address whose words are the marker", func(t *testing.T) {
-		words = cipheraddr.WordsNotPrinted
+		words = brokerWordsNotPrinted
 		stderr, err := status(t, srv.URL)
 		for what, text := range map[string]string{"stderr": stderr, "the error": err.Error()} {
 			for _, want := range []string{"REQUEST_INVALID", answerID} {
@@ -224,7 +224,7 @@ func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testi
 		"an address carrying a credential": strings.Replace(srv.URL, "://", "://demouser7q:demopass9z-not-a-secret@", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			c := newClient(cipheraddr.New(address))
+			c := newClient(configaddr.New("AGENT_SECRETS_URL", address))
 			refusal := func(path string) error {
 				t.Helper()
 				_, err := c.do(context.Background(), http.MethodPost, address+path, nil, nil)
@@ -251,12 +251,12 @@ func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testi
 // exchange audience other than the one this machine kept, and both audiences are text a broker's
 // settings answer wrote. Beside an address that carries a credential the refusal prints neither
 // of them, so an answer that repeats the credential prints none of it; beside a clean address it
-// quotes both, as it did before the address was held as a cipheraddr.Address.
+// quotes both, as it did before the address was held as a configaddr.Address.
 func TestAnAudienceRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	const audience = "//iam.googleapis.com/projects/1/demopass9z-not-a-secret"
 	const kept = "//iam.googleapis.com/projects/1/the-kept-one"
 	t.Run("an address carrying a credential", func(t *testing.T) {
-		err := sameGoogleAudience(cipheraddr.New("https://demouser7q:demopass9z-not-a-secret@secrets.example"), audience, kept)
+		err := sameGoogleAudience(configaddr.New("AGENT_SECRETS_URL", "https://demouser7q:demopass9z-not-a-secret@secrets.example"), audience, kept)
 		if err == nil {
 			t.Fatal("a changed audience was taken")
 		}
@@ -266,12 +266,12 @@ func TestAnAudienceRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 				t.Errorf("the refusal printed %q: %s", marker, printed)
 			}
 		}
-		if !strings.Contains(err.Error(), cipheraddr.WordsNotPrinted) {
-			t.Errorf("the refusal = %q; want %q in place of each audience", err, cipheraddr.WordsNotPrinted)
+		if !strings.Contains(err.Error(), brokerWordsNotPrinted) {
+			t.Errorf("the refusal = %q; want %q in place of each audience", err, brokerWordsNotPrinted)
 		}
 	})
 	t.Run("a clean address", func(t *testing.T) {
-		err := sameGoogleAudience(cipheraddr.New("https://secrets.example"), audience, kept)
+		err := sameGoogleAudience(configaddr.New("AGENT_SECRETS_URL", "https://secrets.example"), audience, kept)
 		if err == nil {
 			t.Fatal("a changed audience was taken")
 		}

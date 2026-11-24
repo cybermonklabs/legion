@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -566,7 +566,7 @@ func TestASecondRestartBeforeTheLoginStillRevokesThePriorEnrollment(t *testing.T
 	pid := recordPrior(t, state, "enr-prior")
 
 	// The first restart: Recover re-pins and saves, and the helper exits before any login.
-	first := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: cipheraddr.New("http://127.0.0.1:1"), OperatorFile: operatorFile(t, "ada@example.com")},
+	first := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: configaddr.New("AGENT_SECRETS_URL", "http://127.0.0.1:1"), OperatorFile: operatorFile(t, "ada@example.com")},
 		Hostname: "testhost", PeerOf: PeerOf, Log: slog.New(slog.NewTextHandler(os.Stderr, nil)), MinRenew: time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
 	first.Recover(ctx)

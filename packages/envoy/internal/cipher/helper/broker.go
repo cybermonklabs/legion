@@ -23,7 +23,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -134,10 +134,10 @@ type loginState struct {
 // sign-in of its own user, and the rule a session acts under is the spec's — a session acts for
 // a person only after that person's own sign-in on the box.
 type Broker struct {
-	// URL is the broker's base URL (AGENT_SECRETS_URL), held as a cipheraddr.Address so that no
+	// URL is the broker's base URL (AGENT_SECRETS_URL), held as a configaddr.Address so that no
 	// log line or error of the helper prints a credential it carries. Its Raw builds each
 	// request and the audience and htu each proof names; nothing else reads it.
-	URL          cipheraddr.Address
+	URL          configaddr.Address
 	OperatorFile string // login_hint source; read per login, as before
 	// MachineFile is where the helper keeps its machine login across restarts (AGENT_SECRETS_MACHINE_FILE).
 	MachineFile string
@@ -257,22 +257,33 @@ type SignIns interface {
 // on and reads (HasCode, says) and which prints only the rule's reading of them, under every verb,
 // in JSON and in a log field. Beside an address that is not clean they print not at all: whoever
 // answers there can repeat the credential the address carries in any text it answers, so do and
-// oauthBrokerError set withheld, and the refusal prints as its status and
-// cipheraddr.WordsNotPrinted, without its code. A log line that names a code names one the helper
-// matched against its own (isLauncherInvalid, enrollmentNotLive, revokeOnce).
+// oauthBrokerError set withheld, and the refusal prints as its status and the address's
+// WordsNotPrinted, without its code. A log line that names a code names one the helper matched
+// against its own (isLauncherInvalid, enrollmentNotLive, revokeOnce).
 type BrokerError struct {
 	Status int
 	code   redact.RemoteText
 	said   redact.RemoteText
-	// withheld is whether the answer came from an address that is not clean, so that none of
-	// its text prints: the decision do or oauthBrokerError made, read by Error.
-	withheld bool
+	// withheld is what prints in place of every text of the answer where it came from an address
+	// that is not clean (configaddr.Address.WordsNotPrinted), and "" where its text prints: the
+	// decision do or oauthBrokerError made, read by Error.
+	withheld string
 }
 
-// newBrokerError is a refusal with status and the broker's code and words; withheld is whether it
-// came from an address that is not clean.
-func newBrokerError(status int, code, words redact.RemoteText, withheld bool) *BrokerError {
+// newBrokerError is a refusal with status and the broker's code and words; withheld is what
+// prints in place of them where it came from an address that is not clean, and "" otherwise
+// (withheldBy).
+func newBrokerError(status int, code, words redact.RemoteText, withheld string) *BrokerError {
 	return &BrokerError{Status: status, code: code, said: words, withheld: withheld}
+}
+
+// withheldBy is what a refusal from addr prints in place of its text: addr's WordsNotPrinted
+// where addr is not clean, and "" where the text prints.
+func withheldBy(addr configaddr.Address) string {
+	if addr.Clean() {
+		return ""
+	}
+	return addr.WordsNotPrinted()
 }
 
 // Error names only the fields it has: the status always, then the code where there is one, then
@@ -280,20 +291,19 @@ func newBrokerError(status int, code, words redact.RemoteText, withheld bool) *B
 // not "broker 502 : ", and an unknown outcome's answer shows that text to an operator
 // (mayHaveReachedCause, server.go). With both fields set it reads "broker 403 SESSION_HELD: the
 // session … belongs to …", which nocredential_test.go matches as a prefix ("broker 401
-// LAUNCHER_INVALID"). A refusal whose text is withheld names no code, and cipheraddr.WordsNotPrinted
-// for its words. The code and the words are the broker's, so each prints as it prints itself
-// (redact.Field): ordinary words as they came, a URL with no user information and no query or
-// fragment value, redact.WordsNotReadable in place of a field the rule cannot read, and on one
-// line, Go-quoted where a line break or an escape sequence would start a line of its own where
-// this error prints.
+// LAUNCHER_INVALID"). A refusal whose text is withheld names no code, and withheld for its words.
+// The code and the words are the broker's, so each prints as it prints itself (redact.Field):
+// ordinary words as they came, a URL with no user information and no query or fragment value,
+// redact.WordsNotReadable in place of a field the rule cannot read, and on one line, Go-quoted
+// where a line break or an escape sequence would start a line of its own where this error prints.
 func (e *BrokerError) Error() string {
 	s := fmt.Sprintf("broker %d", e.Status)
-	if !e.code.IsEmpty() && !e.withheld {
+	if !e.code.IsEmpty() && e.withheld == "" {
 		s += " " + e.code.String()
 	}
 	switch {
-	case e.withheld:
-		s += ": " + cipheraddr.WordsNotPrinted
+	case e.withheld != "":
+		s += ": " + e.withheld
 	case !e.said.IsEmpty():
 		s += ": " + e.said.String()
 	}
@@ -414,7 +424,7 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // error_uri, and one with no error code - is still the broker's refusal, a BrokerError of its
 // status alone: no code and no word of its description, which are the very text the redactor
 // withheld, so no BrokerError holds a part of the credential either. Its words read
-// cipheraddr.WordsNotPrinted beside an address that is not clean, and are empty beside a clean
+// the address's WordsNotPrinted beside an address that is not clean, and are empty beside a clean
 // one, so a machine login's device authorization prints it as "broker <n>" and those words
 // (BrokerError.Error). requestReach.settle reads its status, so a 4xx refusal is reported as one
 // and not as an unknown outcome, and any other status, a 3xx or a 5xx, stays unknown; an answer
@@ -428,7 +438,7 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // (redact.AnswerText), not the answer's raw text (its Error). That holds under a caller's %w too,
 // whose words it drops while it still prints the answer, which is why this asks the text and not
 // whether Error answered err itself.
-func oauthBrokerError(err error, addr cipheraddr.Address) error {
+func oauthBrokerError(err error, addr configaddr.Address) error {
 	shown := addr.Error(err)
 	re, ok := redact.BrokerAnswer(err)
 	if !ok {
@@ -442,7 +452,7 @@ func oauthBrokerError(err error, addr cipheraddr.Address) error {
 		if status == 0 {
 			return shown
 		}
-		return newBrokerError(status, redact.RemoteText{}, redact.RemoteText{}, !addr.Clean())
+		return newBrokerError(status, redact.RemoteText{}, redact.RemoteText{}, withheldBy(addr))
 	}
 	code, message := redact.NewOAuthRefusal(re.ErrorCode, re.ErrorDescription)
 	var answer *redact.OAuthAnswer
@@ -451,7 +461,7 @@ func oauthBrokerError(err error, addr cipheraddr.Address) error {
 			code, message = answer.Refusal()
 		}
 	}
-	return newBrokerError(status, code, message, false)
+	return newBrokerError(status, code, message, "")
 }
 
 // machineFileFrom is the machine login a token answer issues for key: the refresh token and the
@@ -1725,7 +1735,7 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *cipherclient.Author
 
 // do sends req and decodes the broker's answer, which it reads through redact.ReadAnswer. A failed
 // exchange - the request, or the read of its answer - goes through the address's Error
-// (cipheraddr.Address.Error). A refusal is a BrokerError with the answer's status and code, which
+// (configaddr.Address.Error). A refusal is a BrokerError with the answer's status and code, which
 // the helper acts on, and with the broker's own words (the answer's error) as the address lets
 // them print: beside an address that is not clean, the broker, or whoever answers for that address,
 // can repeat the credential back in any text of its answer, so the refusal prints as its status
@@ -1748,7 +1758,7 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 			Error redact.RemoteText `json:"error"`
 		}
 		_ = answer.Decode(&e)
-		return newBrokerError(answer.Status(), e.Code, e.Error, !b.URL.Clean())
+		return newBrokerError(answer.Status(), e.Code, e.Error, withheldBy(b.URL))
 	}
 	if out != nil && !answer.Words().IsEmpty() {
 		if err := answer.Decode(out); err != nil {

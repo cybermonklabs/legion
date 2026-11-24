@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -87,7 +88,7 @@ func TestAListenersSessionAnswerKeepsNoWordItEchoes(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(read.answer(c.id(echoed), c.title(echoed)))
 				}))
 				t.Cleanup(listener.Close)
-				session, err := read.read(New(listener.URL, WithToken(bearer)))
+				session, err := read.read(New(configaddr.New("ENVOY_URL", listener.URL), WithToken(bearer)))
 				printed := fmt.Sprintf("%v | %+v | %#v | %+v", session, session, session, err)
 				redacttest.RequireNoPiece(t, "envoy.answer-words/"+read.name+"/"+c.name, printed, bearer)
 				if !c.kept {

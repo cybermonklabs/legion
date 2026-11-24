@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -104,7 +105,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	broker := ciphertokentest.NewStubBroker(t)
 	tick := newClock()
 	opts := ciphertoken.Options{
-		BrokerURL: broker.Server.URL,
+		BrokerURL: configaddr.New("DISPATCH_AGENT_SECRETS_URL", broker.Server.URL),
 		Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
 		Origin:    dispatchOrigin,
 		Replay:    store.NewDPoPProofs(database.Pool),
@@ -774,7 +775,7 @@ func TestARefusedAddressIsNeverTheBrokersVerdict(t *testing.T) {
 func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
 	// A broker at a port the test holds and nothing listens on.
 	url := "http://" + testport.Refused(t)
-	rig := newRig(t, func(o *ciphertoken.Options) { o.BrokerURL = url })
+	rig := newRig(t, func(o *ciphertoken.Options) { o.BrokerURL = configaddr.New("DISPATCH_AGENT_SECRETS_URL", url) })
 	caller := newSigner(t)
 
 	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-token-nobody-can-be-asked-about"))
@@ -874,7 +875,7 @@ func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ciphertoken.New(ciphertoken.Options{
-				BrokerURL: "https://broker.test",
+				BrokerURL: configaddr.New("DISPATCH_AGENT_SECRETS_URL", "https://broker.test"),
 				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
 				Origin:    origin,
 				Replay:    store.NewDPoPProofs(database.Pool),
@@ -895,7 +896,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 	database := storetest.Open(t)
 	options := func() ciphertoken.Options {
 		return ciphertoken.Options{
-			BrokerURL: "https://broker.test",
+			BrokerURL: configaddr.New("DISPATCH_AGENT_SECRETS_URL", "https://broker.test"),
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
 			Origin:    dispatchOrigin,
 			Replay:    store.NewDPoPProofs(database.Pool),

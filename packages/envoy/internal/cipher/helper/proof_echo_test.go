@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -40,7 +40,7 @@ func TestABrokerErrorPrintsNoProofItsAnswerEchoes(t *testing.T) {
 		t.Fatal(err)
 	}
 	signIns := &stubSignIns{authority: &cipherclient.Authority{Key: key, CredentialID: "credential-1", Operator: "ada@example.com"}}
-	b := &Broker{URL: cipheraddr.New(srv.URL), HTTP: srv.Client(), SignIns: signIns}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", srv.URL), HTTP: srv.Client(), SignIns: signIns}
 	t.Cleanup(b.Close)
 	_, err = b.renewIdentity(context.Background(), identity{EnrollmentID: "enrollment-1", Key: key})
 	if err == nil {

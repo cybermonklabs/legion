@@ -34,14 +34,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 type client struct {
-	baseURL cipheraddr.Address
+	baseURL configaddr.Address
 	http    *http.Client
 }
 
@@ -77,7 +77,7 @@ const enrollmentEndedCode = "ENROLLMENT_NOT_LIVE"
 // Redirects are refused (redirects.Refused): every call this client makes carries a Proof header
 // of this session's own (doProof), and a 3xx answered for the broker - by the broker, or by
 // anyone who can answer for it - must not hand that proof to a host the deployment never named.
-func newClient(baseURL cipheraddr.Address) *client {
+func newClient(baseURL configaddr.Address) *client {
 	return &client{baseURL: baseURL, http: redirects.Refused(&http.Client{Timeout: leasetime.RenewClientTimeout})}
 }
 
@@ -98,8 +98,8 @@ func (c *client) route(path string) string { return c.baseURL.Raw() + path }
 // rule's reading of them, under every verb, in JSON and in a log field. Error, Format, LogValue
 // and answered print them only as the address lets them print: beside an address that is not
 // clean, whoever answers can repeat the credential the address carries in any text it answers, so
-// withheld is set where doStatus builds the refusal, and the refusal prints as its status and
-// cipheraddr.WordsNotPrinted alone, with neither its code nor its answer id, as the token client
+// withheld is set where doStatus builds the refusal, and the refusal prints as its status and the
+// address's WordsNotPrinted alone, with neither its code nor its answer id, as the token client
 // prints such an answer (internal/cipherclient). The one line that names a code whatever the
 // address, renew's exit on a terminal refusal, names one of terminalRenewal's, which this client
 // matched it against (terminalCode).
@@ -108,31 +108,32 @@ type apiError struct {
 	code     redact.RemoteText
 	said     redact.RemoteText
 	answerID redact.RemoteText
-	// withheld is whether the answer came from an address that is not clean, so that none of
-	// its text prints: the decision doStatus made, read by Error and answered.
-	withheld bool
+	// withheld is what prints in place of every text of the answer where it came from an address
+	// that is not clean (configaddr.Address.WordsNotPrinted), and "" where its text prints: the
+	// decision doStatus made, read by Error and answered.
+	withheld string
 }
 
 // newAPIError is a refusal with status and the answer's code, words and answer id; withheld is
-// whether it came from an address that is not clean.
-func newAPIError(status int, code, words, answerID redact.RemoteText, withheld bool) *apiError {
+// what prints in place of them where it came from an address that is not clean, and "" otherwise.
+func newAPIError(status int, code, words, answerID redact.RemoteText, withheld string) *apiError {
 	return &apiError{Status: status, code: code, said: words, answerID: answerID, withheld: withheld}
 }
 
-// words is field as the refusal prints it: cipheraddr.WordsNotPrinted where the answer's text is
-// withheld, and otherwise as the field prints itself (redact.Field).
+// words is field as the refusal prints it: withheld where the answer's text is withheld, and
+// otherwise as the field prints itself (redact.Field).
 func (e *apiError) words(field redact.RemoteText) string {
-	if e.withheld {
-		return cipheraddr.WordsNotPrinted
+	if e.withheld != "" {
+		return e.withheld
 	}
 	return field.String()
 }
 
 // Error is the broker's words and code, and the answer id to quote when it named one; where the
-// answer's text is withheld, the status and cipheraddr.WordsNotPrinted alone. Each of the three is
-// the broker's, so each prints as the rule for remote text reads it, on one line.
+// answer's text is withheld, the status and withheld alone. Each of the three is the broker's, so
+// each prints as the rule for remote text reads it, on one line.
 func (e *apiError) Error() string {
-	if e.withheld {
+	if e.withheld != "" {
 		return fmt.Sprintf("HTTP %d: %s", e.Status, e.words(e.said))
 	}
 	var text string
@@ -148,10 +149,10 @@ func (e *apiError) Error() string {
 }
 
 // answered is the refusal as the lines that name its status first print it: the status, the code
-// (UNKNOWN where the broker named none) and the words, or the status and
-// cipheraddr.WordsNotPrinted where the answer's text is withheld.
+// (UNKNOWN where the broker named none) and the words, or the status and withheld where the
+// answer's text is withheld.
 func (e *apiError) answered() string {
-	if e.withheld {
+	if e.withheld != "" {
 		return fmt.Sprintf("HTTP %d: %s", e.Status, e.words(e.said))
 	}
 	code := "UNKNOWN"
@@ -279,7 +280,11 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		}
 		// Beside an address that is not clean, whoever answers can repeat its credential in
 		// any text of its answer: the refusal prints as its status alone (apiError.withheld).
-		return resp.StatusCode, nil, newAPIError(resp.StatusCode, code, said, answerID, !c.baseURL.Clean())
+		var withheld string
+		if !c.baseURL.Clean() {
+			withheld = c.baseURL.WordsNotPrinted()
+		}
+		return resp.StatusCode, nil, newAPIError(resp.StatusCode, code, said, answerID, withheld)
 	}
 	return resp.StatusCode, &answer, nil
 }

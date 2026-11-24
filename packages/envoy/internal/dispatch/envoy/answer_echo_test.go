@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -60,7 +61,7 @@ func TestAListenerRefusalPrintsNoBearerItsAnswerEchoes(t *testing.T) {
 					fmt.Fprint(w, c.body(r.Header.Get("Authorization")))
 				}))
 				defer listener.Close()
-				err := run(New(listener.URL, WithToken(redacttest.Token)))
+				err := run(New(configaddr.New("ENVOY_URL", listener.URL), WithToken(redacttest.Token)))
 				if err == nil {
 					t.Fatalf("the %s answered no error", call)
 				}

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -65,7 +66,7 @@ func TestPendingSendsBearerApproverAndBothStates(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"requests":[]}`)
 	defer server.Close()
 
-	body, err := New(server.URL, tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
+	body, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
 	if err != nil {
 		t.Fatalf("Pending: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestDecisionsSendBearerPathAndTheApproverDispatchNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server, captured := serveCapturing(t, http.StatusOK, `{"ok":true}`)
 			defer server.Close()
-			if _, err := tc.decide(New(server.URL, tokenFile(t, "account-token"))); err != nil {
+			if _, err := tc.decide(New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token"))); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
 			}
 			if captured.Method != http.MethodPost || captured.Path != tc.wantPath {
@@ -120,7 +121,7 @@ func TestMachineLookupSendsBearerAndPath(t *testing.T) {
 	defer server.Close()
 
 	requestBody := json.RawMessage(`{"public_key":"ssh-ed25519 AAAA..."}`)
-	if _, err := New(server.URL, tokenFile(t, "account-token")).MachineLookup(context.Background(), requestBody); err != nil {
+	if _, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token")).MachineLookup(context.Background(), requestBody); err != nil {
 		t.Fatalf("MachineLookup: %v", err)
 	}
 	if captured.Method != http.MethodPost || captured.Path != "/v1/machine-logins/lookup" {
@@ -138,7 +139,7 @@ func TestGrantsSendsBearerAndApproverQuery(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"grants":[]}`)
 	defer server.Close()
 
-	if _, err := New(server.URL, tokenFile(t, "account-token")).Grants(context.Background(), "sjawhar"); err != nil {
+	if _, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token")).Grants(context.Background(), "sjawhar"); err != nil {
 		t.Fatalf("Grants: %v", err)
 	}
 	if captured.Method != http.MethodGet || captured.Path != "/v1/grants?approver=sjawhar" {
@@ -153,7 +154,7 @@ func TestRevokeByApproverSendsBearerPathAndTheApprover(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"ok":true}`)
 	defer server.Close()
 
-	if _, err := New(server.URL, tokenFile(t, "account-token")).RevokeByApprover(context.Background(), "grant-1", "sjawhar"); err != nil {
+	if _, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token")).RevokeByApprover(context.Background(), "grant-1", "sjawhar"); err != nil {
 		t.Fatalf("RevokeByApprover: %v", err)
 	}
 	if captured.Method != http.MethodPost || captured.Path != "/v1/grants/grant-1/revoke-by-approver" {
@@ -173,7 +174,7 @@ func TestDismissSendsBearerPathAndTheApprover(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"record_id":"rec-1"}`)
 	defer server.Close()
 
-	body, err := New(server.URL, tokenFile(t, "account-token")).Dismiss(context.Background(), "rec-1", "sjawhar")
+	body, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token")).Dismiss(context.Background(), "rec-1", "sjawhar")
 	if err != nil {
 		t.Fatalf("Dismiss: %v", err)
 	}
@@ -199,7 +200,7 @@ func TestNonTwoXXResponseReturnsTypedErrorWithStatusCodeAndBody(t *testing.T) {
 	server, _ := serveCapturing(t, http.StatusForbidden, responseBody)
 	defer server.Close()
 
-	_, err := New(server.URL, tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
+	_, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
 	var brokerErr *Error
 	if !errors.As(err, &brokerErr) {
 		t.Fatalf("err = %v (%T), want *Error", err, err)
@@ -222,7 +223,7 @@ func TestNonTwoXXResponseWithUnparsableBodyPreservesBodyWithEmptyCode(t *testing
 	server, _ := serveCapturing(t, http.StatusInternalServerError, "not json at all")
 	defer server.Close()
 
-	_, err := New(server.URL, tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
+	_, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
 	var brokerErr *Error
 	if !errors.As(err, &brokerErr) {
 		t.Fatalf("err = %v (%T), want *Error", err, err)
@@ -243,7 +244,7 @@ func TestNonTwoXXResponseWithUnparsableBodyPreservesBodyWithEmptyCode(t *testing
 // and a transport failure wrongly typed as *Error would forward a fabricated status/code to the
 // browser.
 func TestTransportFailureIsNotATypedError(t *testing.T) {
-	_, err := New("http://"+testport.Refused(t), tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
+	_, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", "http://"+testport.Refused(t)), tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
 	if err == nil {
 		t.Fatal("Pending against a port nothing listens on: got nil error")
 	}
@@ -260,7 +261,7 @@ func TestARewrittenTokenFileReachesTheBrokerOnceTheCacheLapses(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"requests":[]}`)
 	defer server.Close()
 	path := tokenFile(t, "first-token")
-	client := New(server.URL, path)
+	client := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), path)
 
 	if _, err := client.Pending(context.Background(), "sjawhar"); err != nil {
 		t.Fatalf("the first call: %v", err)
@@ -303,7 +304,7 @@ func TestAMissingOrEmptyTokenFileFailsNamingItAndSendsNothing(t *testing.T) {
 			defer server.Close()
 			path := tc.path(t)
 
-			_, err := New(server.URL, path).Pending(context.Background(), "sjawhar")
+			_, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), path).Pending(context.Background(), "sjawhar")
 			if err == nil || !strings.Contains(err.Error(), path) {
 				t.Fatalf("Pending with a %s token file: err = %v, want a refusal naming %s", tc.name, err, path)
 			}
@@ -322,7 +323,7 @@ func TestSignInsSendsBearerAndPersonQuery(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"signins":[]}`)
 	defer server.Close()
 
-	if _, err := New(server.URL, tokenFile(t, "account-token")).SignIns(context.Background(), "sjawhar"); err != nil {
+	if _, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token")).SignIns(context.Background(), "sjawhar"); err != nil {
 		t.Fatalf("SignIns: %v", err)
 	}
 	if captured.Method != http.MethodGet || captured.Path != "/v1/person-signins?person=sjawhar" {
@@ -337,7 +338,7 @@ func TestRevokeSignInSendsBearerPathAndThePerson(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"state":"revoked","tokens_ended":2}`)
 	defer server.Close()
 
-	_, err := New(server.URL, tokenFile(t, "account-token")).RevokeSignIn(context.Background(), "signin-1", "sjawhar")
+	_, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token")).RevokeSignIn(context.Background(), "signin-1", "sjawhar")
 	if err != nil {
 		t.Fatalf("RevokeSignIn: %v", err)
 	}
@@ -367,7 +368,7 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 			_, _ = w.Write([]byte(body))
 		}))
 		defer server.Close()
-		client := New(server.URL, tokenFile(t, "account-token"))
+		client := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token"))
 
 		if !client.ServesDeviceGrant(context.Background()) {
 			t.Fatalf("the first ask answered false, want true: the document names the device code")
@@ -398,7 +399,7 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 			_, _ = w.Write([]byte(withoutDevice))
 		}))
 		defer server.Close()
-		client := New(server.URL, tokenFile(t, "account-token"))
+		client := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token"))
 
 		if client.ServesDeviceGrant(context.Background()) {
 			t.Fatalf("the first ask answered true, want false: the document names no device code")
@@ -411,7 +412,7 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 	})
 
 	t.Run("a broker never read at all keeps the page", func(t *testing.T) {
-		if !New("http://"+testport.Refused(t), tokenFile(t, "account-token")).ServesDeviceGrant(context.Background()) {
+		if !New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", "http://"+testport.Refused(t)), tokenFile(t, "account-token")).ServesDeviceGrant(context.Background()) {
 			t.Fatalf("an unreadable broker answered false; a page that vanishes on one failed read is worse than one that lingers")
 		}
 	})
@@ -419,7 +420,7 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 	t.Run("a document that is not the broker's is a failed read", func(t *testing.T) {
 		server, _ := serveCapturing(t, http.StatusOK, `not json`)
 		defer server.Close()
-		client := New(server.URL, tokenFile(t, "account-token"))
+		client := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, "account-token"))
 
 		if !client.ServesDeviceGrant(context.Background()) {
 			t.Fatalf("an unreadable document answered false, want the never-read answer")

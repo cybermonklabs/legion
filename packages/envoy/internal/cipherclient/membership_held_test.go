@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -119,7 +119,7 @@ func TestARefusalNamesTheIdentityItRefused(t *testing.T) {
 			broker := newStubBroker(t, func(int, url.Values) (int, map[string]any) {
 				return 400, map[string]any{"error": "invalid_grant", "error_description": "no entry lists this identity"}
 			})
-			client, err := New(Config{BrokerURL: cipheraddr.New(broker.URL()), Key: testKey(t), Subject: tc.source})
+			client, err := New(Config{BrokerURL: configaddr.New("AGENT_SECRETS_URL", broker.URL()), Key: testKey(t), Subject: tc.source})
 			if err != nil {
 				t.Fatal(err)
 			}

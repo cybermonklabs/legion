@@ -35,7 +35,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/natscred"
@@ -188,7 +188,7 @@ func credential(getenv func(string) string, tokenFile, googleAudience string, no
 		return nil, "", err
 	}
 	client, err := cipherclient.New(cipherclient.Config{
-		BrokerURL: cipheraddr.New(getenv(cipherclient.BrokerURLVar)), Key: key, Subject: subject, Session: session,
+		BrokerURL: configaddr.New(cipherclient.BrokerURLVar, getenv(cipherclient.BrokerURLVar)), Key: key, Subject: subject, Session: session,
 		Projects: projects, NoLauncherCredential: true, HTTP: cipherclient.HTTPClient(),
 	})
 	if err != nil {

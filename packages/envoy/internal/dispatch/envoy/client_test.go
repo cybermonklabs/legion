@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -43,7 +44,7 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 		listener.Close()
 	}()
 
-	_, err := New(listener.URL, WithTimeout(150*time.Millisecond)).Send(context.Background(), SendInput{
+	_, err := New(configaddr.New("ENVOY_URL", listener.URL), WithTimeout(150*time.Millisecond)).Send(context.Background(), SendInput{
 		TargetSession: "s1", Message: "held past the window", IdempotencyKey: "held:steer",
 	})
 	if !errors.Is(err, ErrReceiptTimeout) {
@@ -53,7 +54,7 @@ func TestSendDistinguishesAReceiptTimeoutFromARefusal(t *testing.T) {
 		t.Fatalf("a receipt timeout is still a listener failure: %v", err)
 	}
 
-	_, err = New(listener.URL, WithTimeout(5*time.Second)).Send(context.Background(), SendInput{
+	_, err = New(configaddr.New("ENVOY_URL", listener.URL), WithTimeout(5*time.Second)).Send(context.Background(), SendInput{
 		TargetSession: "s1", Message: "refused outright", IdempotencyKey: "refused:steer",
 	})
 	if err == nil || errors.Is(err, ErrReceiptTimeout) {
@@ -87,7 +88,7 @@ func TestSendCarriesTheListenersDuplicateVerdict(t *testing.T) {
 	}))
 	defer listener.Close()
 
-	duplicate, err := New(listener.URL).Send(context.Background(), SendInput{
+	duplicate, err := New(configaddr.New("ENVOY_URL", listener.URL)).Send(context.Background(), SendInput{
 		TargetSession: "s1", Message: "the stream already had this", IdempotencyKey: "already-held:steer",
 	})
 	if err != nil {
@@ -97,7 +98,7 @@ func TestSendCarriesTheListenersDuplicateVerdict(t *testing.T) {
 		t.Fatalf("send result = %#v, want the listener's duplicate verdict carried", duplicate)
 	}
 
-	fresh, err := New(listener.URL).Send(context.Background(), SendInput{
+	fresh, err := New(configaddr.New("ENVOY_URL", listener.URL)).Send(context.Background(), SendInput{
 		TargetSession: "s1", Message: "the stream did not have this", IdempotencyKey: "fresh:steer",
 	})
 	if err != nil {
@@ -116,7 +117,7 @@ func TestSendDoesNotCallAConnectFailureAReceiptTimeout(t *testing.T) {
 	// 203.0.113.0/24 is TEST-NET-3: reserved, routed nowhere. The dial either times out or is
 	// refused outright; both mean nothing was written, and neither may read as a receipt
 	// timeout.
-	_, err := New("http://203.0.113.1:9", WithTimeout(200*time.Millisecond)).Send(
+	_, err := New(configaddr.New("ENVOY_URL", "http://203.0.113.1:9"), WithTimeout(200*time.Millisecond)).Send(
 		context.Background(), SendInput{
 			TargetSession: "s1", Message: "never left the building", IdempotencyKey: "m1:steer",
 		},
@@ -142,7 +143,7 @@ func TestSessionsMapsListenerRowsAndDefaultsMissingSlices(t *testing.T) {
 	}))
 	defer listener.Close()
 
-	sessions, err := New(listener.URL + "/").Sessions(context.Background())
+	sessions, err := New(configaddr.New("ENVOY_URL", listener.URL+"/")).Sessions(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +183,7 @@ func TestSessionsSendsEnvoyToken(t *testing.T) {
 	}))
 	defer listener.Close()
 
-	sessions, err := New(listener.URL, WithToken("listener-token")).Sessions(context.Background())
+	sessions, err := New(configaddr.New("ENVOY_URL", listener.URL), WithToken("listener-token")).Sessions(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,13 +198,13 @@ func TestSessionsReportsUnavailableListener(t *testing.T) {
 	}))
 	defer failing.Close()
 
-	if _, err := New(failing.URL).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
+	if _, err := New(configaddr.New("ENVOY_URL", failing.URL)).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("500: err = %v, want ErrUnavailable", err)
 	}
 
 	// A port the test holds and nothing listens on: every dial to it is refused.
 	closed := "http://" + testport.Refused(t)
-	if _, err := New(closed).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
+	if _, err := New(configaddr.New("ENVOY_URL", closed)).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("refused: err = %v, want ErrUnavailable", err)
 	}
 }
@@ -218,7 +219,7 @@ func TestListInterestsMapsListenerRowsAndDefaultsMissingTopics(t *testing.T) {
 	}))
 	defer listener.Close()
 
-	interests, err := New(listener.URL).ListInterests(context.Background())
+	interests, err := New(configaddr.New("ENVOY_URL", listener.URL)).ListInterests(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +242,7 @@ func TestListInterestsReportsUnavailableListener(t *testing.T) {
 	}))
 	defer failing.Close()
 
-	if _, err := New(failing.URL).ListInterests(context.Background()); !errors.Is(err, ErrUnavailable) {
+	if _, err := New(configaddr.New("ENVOY_URL", failing.URL)).ListInterests(context.Background()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("500: err = %v, want ErrUnavailable", err)
 	}
 }
@@ -276,7 +277,7 @@ func TestListReadsTellARefillingListenerFromAnUnavailableOne(t *testing.T) {
 	for name, read := range reads {
 		t.Run(name, func(t *testing.T) {
 			for retryAfter, want := range map[string]string{"7": "7", "": ""} {
-				err := read(New(answer(retryAfter, refilling).URL))
+				err := read(New(configaddr.New("ENVOY_URL", answer(retryAfter, refilling).URL)))
 				var refused *RefillingError
 				if !errors.Is(err, ErrRefilling) || errors.Is(err, ErrUnavailable) || !errors.As(err, &refused) {
 					t.Fatalf("refilling 503: err = %v, want ErrRefilling and not ErrUnavailable", err)
@@ -290,7 +291,7 @@ func TestListReadsTellARefillingListenerFromAnUnavailableOne(t *testing.T) {
 				`{"error":"envoy: the message bus did not answer: no responders"}`,
 				"listener restarting\n",
 			} {
-				if err := read(New(answer("1", body).URL)); !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrRefilling) {
+				if err := read(New(configaddr.New("ENVOY_URL", answer("1", body).URL))); !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrRefilling) {
 					t.Fatalf("503 %q: err = %v, want ErrUnavailable and not ErrRefilling", body, err)
 				}
 			}
@@ -308,7 +309,7 @@ func TestInterestReturnsOneSessionsTopics(t *testing.T) {
 	}))
 	defer listener.Close()
 
-	interest, err := New(listener.URL).Interest(context.Background(), "s1")
+	interest, err := New(configaddr.New("ENVOY_URL", listener.URL)).Interest(context.Background(), "s1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +335,7 @@ func TestInterestReportsNotFoundForAnUnknownSession(t *testing.T) {
 		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(tc.status)
 		}))
-		_, err := New(listener.URL).Interest(context.Background(), tc.session)
+		_, err := New(configaddr.New("ENVOY_URL", listener.URL)).Interest(context.Background(), tc.session)
 		listener.Close()
 		if !errors.Is(err, ErrNotFound) {
 			t.Fatalf("%d for %s: err = %v, want ErrNotFound", tc.status, tc.session, err)
@@ -359,7 +360,7 @@ func TestUnsubscribePostsSessionAndTopicsAndReturnsRemoved(t *testing.T) {
 	}))
 	defer listener.Close()
 
-	removed, err := New(listener.URL).Unsubscribe(
+	removed, err := New(configaddr.New("ENVOY_URL", listener.URL)).Unsubscribe(
 		context.Background(), "s1", []string{"notifications.dispatch.issue.T-1.>"},
 	)
 	if err != nil {
@@ -379,7 +380,7 @@ func TestUnsubscribeReportsUnavailableListener(t *testing.T) {
 	}))
 	defer failing.Close()
 
-	if _, err := New(failing.URL).Unsubscribe(context.Background(), "s1", []string{"t"}); !errors.Is(err, ErrUnavailable) {
+	if _, err := New(configaddr.New("ENVOY_URL", failing.URL)).Unsubscribe(context.Background(), "s1", []string{"t"}); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("500: err = %v, want ErrUnavailable", err)
 	}
 }
@@ -406,7 +407,7 @@ func TestRoleAndSendPreserveTheListenerDeliveryContract(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	client := New(listener.URL, WithToken("listener-token"))
+	client := New(configaddr.New("ENVOY_URL", listener.URL), WithToken("listener-token"))
 
 	holder, err := client.Role(context.Background(), "legion-planner")
 	if err != nil {
@@ -495,7 +496,7 @@ func TestASendsAnswerReadsExpectsReplyInEachSpellingAListenerWritesBack(t *testi
 		t.Run(test.name, func(t *testing.T) {
 			listener := answering(t, test.raw)
 			for target, envelope := range map[string]string{"s1": "envelope-1", "kept": "kept-envelope"} {
-				result, err := New(listener.URL).Send(context.Background(), SendInput{
+				result, err := New(configaddr.New("ENVOY_URL", listener.URL)).Send(context.Background(), SendInput{
 					TargetSession: target, Message: "m", IdempotencyKey: "k", ExpectsReply: test.want.Value,
 				})
 				if err != nil || result.EnvelopeID != envelope || result.Recipient != target {
@@ -519,7 +520,7 @@ func TestASendsAnswerReadsExpectsReplyInEachSpellingAListenerWritesBack(t *testi
 	t.Run("a value no listener writes back", func(t *testing.T) {
 		listener := answering(t, `"later"`)
 		for _, target := range []string{"s1", "kept"} {
-			result, err := New(listener.URL).Send(context.Background(), SendInput{TargetSession: target, Message: "m", IdempotencyKey: "k"})
+			result, err := New(configaddr.New("ENVOY_URL", listener.URL)).Send(context.Background(), SendInput{TargetSession: target, Message: "m", IdempotencyKey: "k"})
 			if !errors.Is(err, ErrUnavailable) || strings.Contains(err.Error(), "later") {
 				t.Errorf("send to %s = %+v, %v; want ErrUnavailable quoting nothing of the answer", target, result, err)
 			}
@@ -534,7 +535,7 @@ func TestRolePreservesListenerNotFoundText(t *testing.T) {
 	}))
 	defer listener.Close()
 
-	_, err := New(listener.URL).Role(context.Background(), "legion-planner")
+	_, err := New(configaddr.New("ENVOY_URL", listener.URL)).Role(context.Background(), "legion-planner")
 	if err == nil || err.Error() != "no holder for role legion-planner" {
 		t.Fatalf("role error = %v, want listener error text", err)
 	}
@@ -572,7 +573,7 @@ func TestARoleRefusedForAnUnresponsiveHolderResolvesToThatHolder(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	client := New(listener.URL)
+	client := New(configaddr.New("ENVOY_URL", listener.URL))
 
 	holder, err := client.Role(context.Background(), "legion-planner")
 	if err != nil {
@@ -622,7 +623,7 @@ func TestARoleRefusalsHolderIsSentBackOnlyAsTheRulePrintsIt(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	client := New(listener.URL)
+	client := New(configaddr.New("ENVOY_URL", listener.URL))
 
 	if holder, err := client.Role(context.Background(), "plain"); err != nil || holder.SessionID != "ses:bad" {
 		t.Fatalf("a holder the rule prints as it came: %+v, %v; want it read", holder, err)
@@ -676,7 +677,7 @@ func TestRoleAndSendReportAStartingListenerAsUnavailable(t *testing.T) {
 			_, _ = w.Write([]byte(tc.body))
 		}))
 		for name, call := range calls {
-			err := call(New(listener.URL))
+			err := call(New(configaddr.New("ENVOY_URL", listener.URL)))
 			if err == nil || errors.Is(err, ErrUnavailable) != tc.unavailable || !strings.Contains(err.Error(), tc.reason) {
 				t.Errorf("%s answered %d %s: err = %v, want ErrUnavailable %v carrying %q", name, tc.status, tc.body, err, tc.unavailable, tc.reason)
 			}
@@ -741,7 +742,7 @@ func TestSessionDecodesTheListenerRowAndFillsWhatItOmits(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		session, err := New(listener.URL, WithToken("listener-token")).Session(context.Background(), "s1")
+		session, err := New(configaddr.New("ENVOY_URL", listener.URL), WithToken("listener-token")).Session(context.Background(), "s1")
 		listener.Close()
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
@@ -779,7 +780,7 @@ func TestSessionSeparatesNoRecordFromNoAnswer(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		_, err := New(listener.URL).Session(context.Background(), "s1")
+		_, err := New(configaddr.New("ENVOY_URL", listener.URL)).Session(context.Background(), "s1")
 		listener.Close()
 		if !errors.Is(err, tc.want) {
 			t.Fatalf("%s (%d): err = %v, want %v", tc.name, tc.status, err, tc.want)
@@ -795,7 +796,7 @@ func TestSessionSeparatesNoRecordFromNoAnswer(t *testing.T) {
 func TestSessionReportsAnUnreachableListenerAsUnavailable(t *testing.T) {
 	closed := "http://" + testport.Refused(t)
 
-	if _, err := New(closed).Session(context.Background(), "s1"); !errors.Is(err, ErrUnavailable) {
+	if _, err := New(configaddr.New("ENVOY_URL", closed)).Session(context.Background(), "s1"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("refused: err = %v, want ErrUnavailable", err)
 	} else if errors.Is(err, ErrNotFound) {
 		t.Fatalf("refused: err = %v, want it not to read as a missing session", err)
@@ -833,7 +834,7 @@ func TestEverySessionReadAsksForTheUnresponsiveSessionsToo(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	client := New(listener.URL)
+	client := New(configaddr.New("ENVOY_URL", listener.URL))
 
 	sessions, err := client.Sessions(context.Background())
 	if err != nil {
@@ -886,7 +887,7 @@ func TestOnlyTheDeliveryReadAsksForStoppedSessions(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	client := New(listener.URL)
+	client := New(configaddr.New("ENVOY_URL", listener.URL))
 	ctx := context.Background()
 
 	if sessions, err := client.Sessions(ctx); err != nil || len(sessions) != 0 {
@@ -945,7 +946,7 @@ func TestSendCarriesTheListenersStateAndAsksConnectedOnlyWhenSet(t *testing.T) {
 				_, _ = w.Write([]byte(tc.answer))
 			}))
 			defer listener.Close()
-			result, err := New(listener.URL).Send(context.Background(), SendInput{
+			result, err := New(configaddr.New("ENVOY_URL", listener.URL)).Send(context.Background(), SendInput{
 				TargetSession: "s1", Message: "body", IdempotencyKey: "k", ConnectedOnly: tc.connectedOnly,
 			})
 			if err != nil {
@@ -992,7 +993,7 @@ func TestAgentDecodesTheRegistryEntry(t *testing.T) {
 		_, _ = w.Write([]byte(legionAgentRow))
 	}))
 	defer listener.Close()
-	agent, err := New(listener.URL, WithToken("listener-token")).Agent(context.Background(), "ses-old")
+	agent, err := New(configaddr.New("ENVOY_URL", listener.URL), WithToken("listener-token")).Agent(context.Background(), "ses-old")
 	if err != nil {
 		t.Fatalf("agent: %v", err)
 	}
@@ -1021,7 +1022,7 @@ func TestAgentSeparatesNoEntryFromNoAnswer(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		_, err := New(listener.URL).Agent(context.Background(), "ses-old")
+		_, err := New(configaddr.New("ENVOY_URL", listener.URL)).Agent(context.Background(), "ses-old")
 		listener.Close()
 		if !errors.Is(err, tc.want) {
 			t.Fatalf("%s: err = %v, want %v", tc.name, err, tc.want)
@@ -1061,7 +1062,7 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 				}
 				_, _ = w.Write([]byte(listing.body))
 			}))
-			agents, err := tc.call(New(listener.URL, WithToken("listener-token")))
+			agents, err := tc.call(New(configaddr.New("ENVOY_URL", listener.URL), WithToken("listener-token")))
 			listener.Close()
 			if err != nil || agents == nil || len(agents) != listing.want {
 				t.Fatalf("%s: agents = %#v, %v; want %d", tc.name, agents, err, listing.want)
@@ -1100,7 +1101,7 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 			_, _ = w.Write([]byte(tc.body))
 		}))
 		for name, call := range calls {
-			agents, err := call(New(listener.URL))
+			agents, err := call(New(configaddr.New("ENVOY_URL", listener.URL)))
 			if !errors.Is(err, ErrUnavailable) || agents != nil {
 				t.Fatalf("%s (%d): %v, %v; want ErrUnavailable", name, tc.status, agents, err)
 			}
@@ -1112,7 +1113,7 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 	}
 	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
-		if _, err := call(New(closed)); !errors.Is(err, ErrUnavailable) {
+		if _, err := call(New(configaddr.New("ENVOY_URL", closed))); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("%s on an unreachable listener: %v, want ErrUnavailable", name, err)
 		}
 	}
@@ -1140,7 +1141,7 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 	}
 	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
-		err := call(New(closed))
+		err := call(New(configaddr.New("ENVOY_URL", closed)))
 		if !errors.Is(err, ErrUnreachable) || !errors.Is(err, ErrUnavailable) ||
 			!strings.HasPrefix(err.Error(), "envoy listener unavailable: ") {
 			t.Errorf("%s refused: err = %v, want ErrUnreachable and ErrUnavailable with ErrUnavailable's text", name, err)
@@ -1165,7 +1166,7 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			_, _ = w.Write([]byte(tc.body))
 		}))
 		for name, call := range calls {
-			err := call(New(listener.URL))
+			err := call(New(configaddr.New("ENVOY_URL", listener.URL)))
 			if err == nil || errors.Is(err, ErrUnreachable) != tc.unreachable {
 				t.Errorf("%s answered %d %s: err = %v, want ErrUnreachable %v", name, tc.status, tc.body, err, tc.unreachable)
 			}

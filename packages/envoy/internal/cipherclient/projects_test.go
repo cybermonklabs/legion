@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
@@ -59,7 +59,7 @@ func TestATradeSendsTheProjectsItWasGiven(t *testing.T) {
 			return 200, map[string]any{"access_token": "a-token", "token_type": "DPoP", "expires_in": 600}
 		})
 		client, err := New(Config{
-			BrokerURL: cipheraddr.New(broker.URL()), Key: testKey(t), Session: "ada-box-1", Projects: c.projects,
+			BrokerURL: configaddr.New("AGENT_SECRETS_URL", broker.URL()), Key: testKey(t), Session: "ada-box-1", Projects: c.projects,
 			Subject: &scriptedSource{token: "person.token", tokenType: oauthwire.SubjectTokenTypePerson, describe: "a person's sign-in"},
 		})
 		if err != nil {
@@ -79,7 +79,7 @@ func TestATradeSendsTheProjectsItWasGiven(t *testing.T) {
 // refuses at every trade.
 func TestNewRefusesProjectsThatAreNoList(t *testing.T) {
 	_, err := New(Config{
-		BrokerURL: cipheraddr.New("http://broker.test"), Key: testKey(t), Projects: []string{"PUB", "PRIV"},
+		BrokerURL: configaddr.New("AGENT_SECRETS_URL", "http://broker.test"), Key: testKey(t), Projects: []string{"PUB", "PRIV"},
 		Subject: &scriptedSource{token: "t", tokenType: oauthwire.SubjectTokenTypePerson, describe: "a person's sign-in"},
 	})
 	if err == nil {
