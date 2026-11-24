@@ -12,9 +12,12 @@
 # bindings of clusterroles, impersonating users and groups and a node's proxy are cluster-scoped,
 # which only a ClusterRoleBinding grants. A node's proxy reaches the kubelet's API, whose exec and
 # attach enter any pod on the node, the guarded ones included. A binding is written by create,
-# patch or update, and RBAC lets one who may bind its role, by name, update it, so each is asked. A
-# Secret of type kubernetes.io/service-account-token naming a ServiceAccount is filled with its
-# token, so create secrets is asked beside get, list and watch.
+# patch or update, and RBAC lets one who may bind its role, by name, update it, so each is asked;
+# a Role or ClusterRole is written by patch or update, which adds a rule to a role someone already
+# holds, so those are asked too (named_rights asks the same two by each bound role's name, which
+# live_named reads from the cluster's roles instead of reviewing). A Secret of type
+# kubernetes.io/service-account-token naming a ServiceAccount is filled with its token, so create
+# secrets is asked beside get, list and watch.
 RIGHTS_TABLE='
 create - serviceaccounts token named
 impersonate - serviceaccounts - named
@@ -24,6 +27,10 @@ escalate rbac.authorization.k8s.io roles - ns
 bind rbac.authorization.k8s.io roles - ns
 escalate rbac.authorization.k8s.io clusterroles - cluster
 bind rbac.authorization.k8s.io clusterroles - ns
+patch rbac.authorization.k8s.io roles - ns
+update rbac.authorization.k8s.io roles - ns
+patch rbac.authorization.k8s.io clusterroles - cluster
+update rbac.authorization.k8s.io clusterroles - cluster
 create rbac.authorization.k8s.io rolebindings - ns
 patch rbac.authorization.k8s.io rolebindings - ns
 update rbac.authorization.k8s.io rolebindings - ns

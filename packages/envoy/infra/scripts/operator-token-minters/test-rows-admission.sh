@@ -479,7 +479,7 @@ review_answer_row() {
   local dir="$world/clusters/operator-cluster" chain
   base_world
   case "$1" in
-    judged | repeated | witness-copied)
+    judged | chunked | repeated | witness-copied)
       subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" envoy-operator ""
       ;;
     follow-refused | follow-nostatus)
@@ -496,14 +496,17 @@ review_answer_row() {
     follow-refused) : >"$dir/review-follow-refused" ;;
     follow-nostatus) : >"$dir/review-follow-nostatus" ;;
   esac
-  run
+  # The chunked item asks the same reviews in four kubectl calls at once, as a live run does with
+  # REVIEW_WORKERS workers: the finding and the run's exit are the same, and review reads the
+  # chunks back in the order it asked them.
+  if [ "$1" = chunked ]; then REVIEW_WORKERS=4 run; else run; fi
   case "$1" in
-    judged)
-      want_status 1 "two or more reviews answered as separate documents"
+    judged | chunked)
+      want_status 1 "two or more reviews answered as separate documents ($1)"
       want_line "FINDING system:serviceaccount:legion:worker: create pods in envoy-operator" \
-        "two or more reviews answered as separate documents"
+        "two or more reviews answered as separate documents ($1)"
       ! has_prefix "UNKNOWN live: RBAC on operator-cluster: the API server's answer to the reviews" ||
-        fail "two or more reviews answered as separate documents: the answer could not be read"
+        fail "two or more reviews answered as separate documents ($1): the answer could not be read"
       ;;
     repeated | witness-copied)
       want_rbac_unknown "the API server answered " "an answer that repeats one review and leaves out another ($1)"
@@ -526,6 +529,6 @@ review_answer_row() {
   esac
 }
 if row cy; then
-  each review_answer_row judged repeated witness-copied follow-refused follow-nostatus
-  passed "(cy) reviews answered as one document each are judged; an answer that repeats one and leaves out another reads UNKNOWN naming the count; and a follow round whose answer is all refused or has no status reads UNKNOWN for its witness"
+  each review_answer_row judged chunked repeated witness-copied follow-refused follow-nostatus
+  passed "(cy) reviews answered as one document each are judged, asked in one call or in four at once; an answer that repeats one and leaves out another reads UNKNOWN naming the count; and a follow round whose answer is all refused or has no status reads UNKNOWN for its witness"
 fi

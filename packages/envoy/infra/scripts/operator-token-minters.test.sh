@@ -67,6 +67,10 @@ readonly fake_bin="$temporary_dir/bin"
 # world is the world the current row plants in; a row run beside others has one of its own.
 world="$temporary_dir/world"
 mkdir -p "$fake_bin"
+# Every row asks the reviews in one kubectl call, so a world that answers the nth call its own way
+# (the fake's review-follow-* markers) names a round, not a worker's share of one; row (cy)'s
+# chunked item sets REVIEW_WORKERS itself and wants the same finding.
+export REVIEW_WORKERS=1
 
 readonly project=example-project
 readonly number=123456789012
