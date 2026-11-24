@@ -230,12 +230,12 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 // was held for has ended (decision 7): a reservation from the limiter, told to the daemon as the
 // moment the pacing lets it out (wakeLetOut, decision 14), then its timer, exactly as the wake gate
 // parks a launch (reserveWake, parkWake). A launch the reservation lets out now runs now, and a
-// daemon whose pacing is off runs it now, unpaced. A launch that took its token before the pause's
-// gate held it (wake.paid) runs now without a second reservation: a wake the pacing parked, whose
-// turn met the pause, writes its one wake line now, reporting the whole of its hold from its
-// reservation (runWake), and one that passed the wake gate wrote its line there (wake.ran). Its
-// callers are the gate's own stop finding no pause open (pauseStopDue) and the resume's event
-// (resumePause).
+// daemon whose pacing is off runs it now, unpaced. A launch that had its turn from the pacing
+// before the pause's gate held it (wake.paid) runs now without a reservation: a wake the pacing
+// parked, whose turn met the pause, writes its one wake line now, reporting the whole of its hold
+// from its reservation (runWake), and one that passed the wake gate wrote its line there
+// (wake.ran). Its callers are the gate's own stop finding no pause open (pauseStopDue) and the
+// resume's event (resumePause).
 func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 	waiting := m.wake
 	waiting.pause = 0

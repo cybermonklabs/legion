@@ -167,18 +167,20 @@ type wake struct {
 	// pause is the project pause whose gate holds this launch (pauseGate), 0 for a wake the
 	// pacing holds. A held launch has no moment to run: it waits on the machine with no timer, is
 	// published as no waiting wake (publish), and leaves only by the claim's stop for the pause
-	// (pauseStopDue) or by its let-out once that pause has ended (letOutHeldLaunch). It holds a
-	// pacing token only where it took one before the pause's gate held it (paid).
+	// (pauseStopDue) or by its let-out once that pause has ended (letOutHeldLaunch). Its let-out
+	// reserves a pacing token for it unless it paid.
 	pause int64
-	// paid is whether this launch has taken its pacing token already: the pacing parked it
-	// (reserveWake, parkWake), a let-out reserved for it (letOutHeldLaunch), or it passed the wake
-	// gate (ran). A launch the pause's gate holds that has paid is let out without a second
-	// reservation (letOutHeldLaunch).
+	// paid is whether this launch's let-out, once a pause's gate holds it, runs it with no
+	// reservation of its own (letOutHeldLaunch): the launch has had its turn from the pacing
+	// already. The pacing parked it on a token (reserveWake, parkWake), an earlier let-out
+	// reserved one for it (letOutHeldLaunch), or the wake gate let it past (ran) — on a token
+	// where the pacing held it to one, and on none for an exempt launch, the controller's, or one
+	// a daemon whose pacing is off ran.
 	paid bool
-	// ran is whether this launch has passed the wake gate already, and so has paid and written its
-	// wake line (reserveWake, wakeRan): a try the pause met after its write (pauseHeldTry), and a
-	// start parked at its issue pod's gate (askPod), whose grant the pause can meet (podStartDue).
-	// Its let-out writes no second line (runWake).
+	// ran is whether the wake gate has let this launch past already, and so it has paid and written
+	// its wake line (reserveWake, wakeRan): a try the pause met after its write (pauseHeldTry), and
+	// a start parked at its issue pod's gate (askPod), whose grant the pause can meet
+	// (podStartDue). Its let-out writes no second line (runWake).
 	ran bool
 	// park is the hold of the start this launch waits for at its issue pod's gate (askPod), nil for
 	// a wake the pacing or the pause's gate holds. Such a launch has let its process go, stopped it

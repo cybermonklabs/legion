@@ -7,8 +7,10 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -405,33 +407,18 @@ func TestALaunchPastThePauseCheckWhenThePauseBeginsStartsNothing(t *testing.T) {
 	// the count of tokens the pacing gave.
 	passed := func(t *testing.T) (h *harness, flag *pauseFlag, stops *stopTransaction, taken func() int, arm func()) {
 		t.Helper()
-		var mu sync.Mutex
-		n, armed := 0, false
-		var pausing *pauseFlag
+		var armed atomic.Bool
 		h, flag, stops = pauseHarness(t, queuedClaim(), func(d *Deps) {
 			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Reserve: func(now time.Time) time.Time {
-				mu.Lock()
-				defer mu.Unlock()
-				n++
-				if armed {
-					armed = false
-					pausing.set(7)
+				if armed.CompareAndSwap(true, false) {
+					flag.set(7)
 				}
 				return now
 			}}
 		})
-		pausing = flag
-		taken = func() int {
-			mu.Lock()
-			defer mu.Unlock()
-			return n
-		}
-		arm = func() {
-			mu.Lock()
-			defer mu.Unlock()
-			armed = true
-		}
-		return h, flag, stops, taken, arm
+		taken = countedReserve(h)
+		h.start(queuedClaim())
+		return h, flag, stops, taken, func() { armed.Store(true) }
 	}
 	const refusedStopLine = "supervise: the runtime did not confirm the stop of the process this launch let go; the launch waits for the project's pause to end all the same"
 	// staleRelaunch is the runtime finding the idle claim's live process at an address a process
@@ -1205,9 +1192,10 @@ func TestAResumeWhileAPauseStopsRuntimeCallRunsStillWritesTheStop(t *testing.T) 
 
 // A launch the gate held is let out into the pacing once its pause is over (decision 7): by the
 // resume's event, or by the gate's own stop finding no pause open, it takes a reservation from the
-// limiter, tells the daemon the moment the reservation lets it out, and launches then. One held
-// for a pause that a later pause has followed is stopped for the later one, and the earlier
-// pause's resume touches nothing of it.
+// limiter, tells the daemon the moment the reservation lets it out, and launches then; a launch
+// that paid before the gate held it (wake.paid) launches at once, with no reservation and no
+// moment told. One held for a pause that a later pause has followed is stopped for the later one,
+// and the earlier pause's resume touches nothing of it.
 func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing.T) {
 	gate := func(t *testing.T) (*harness, *pauseFlag, *stopTransaction, func() int, *[]time.Time) {
 		t.Helper()
@@ -1289,44 +1277,66 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		stops.wantStops(t, stopCall{stop: PauseStop{Pause: 8, LaunchOwed: true}, landed: true})
 	})
 
-	// A wake the pacing parked took its token at the wake gate; a pause that meets it at its turn
-	// holds it, and its let-out runs it without a second reservation, writing the one wake line
-	// its turn did not (wake.paid).
-	t.Run("a wake the pacing parked, met by the pause at its turn", func(t *testing.T) {
-		var mu sync.Mutex
-		taken := 0
+	// parked is a harness whose pacing parks every launch a minute out, and the count of tokens
+	// the pacing gave.
+	parked := func(t *testing.T) (*harness, *pauseFlag, *stopTransaction, func() int) {
+		t.Helper()
 		h, flag, stops := pauseHarness(t, queuedClaim(), func(d *Deps) {
-			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Reserve: func(now time.Time) time.Time {
-				mu.Lock()
-				defer mu.Unlock()
-				taken++
-				return now.Add(time.Minute)
-			}}
+			d.WakePace = WakePace{Rate: wakeRate, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(time.Minute) }}
 		})
-		h.must(RequestSpawn{Claim: h.token})
-		h.wantStarts(h.token, 0)
-		// The pause stands when the wake's turn reads it, and is over when the gate's own stop,
-		// which the same moment of the clock fires, reads it again.
-		flag.set(7)
+		taken := countedReserve(h)
+		h.start(queuedClaim())
+		return h, flag, stops, taken
+	}
+	// letOutOnce is the wake's turn meeting a pause that is over when the gate's own stop, which
+	// the same moment of the clock fires, reads it again: the gate holds the wake and lets it out
+	// at once, and the wake, which has paid, launches on no second token, writing its one line.
+	letOutOnce := func(t *testing.T, h *harness, flag *pauseFlag, stops *stopTransaction, taken func() int, pause int64) {
+		t.Helper()
+		flag.set(pause)
 		flag.clearAfterNextRead()
 
 		h.advance(time.Minute)
 
 		const heldLine = "supervise: the project is paused; its gate holds this claim's launch, and the claim is stopped for the pause"
-		if lines := h.logs.lines(heldLine, "claim="+string(h.token)); len(lines) != 1 {
+		if lines := h.logs.lines(heldLine, "claim="+string(h.token), fmt.Sprintf("pause=%d", pause)); len(lines) != 1 {
 			t.Fatalf("held lines = %v, want the pause's gate to have held the wake at its turn", lines)
 		}
 		h.wantStarts(h.token, 1)
-		mu.Lock()
-		n := taken
-		mu.Unlock()
-		if n != 1 {
-			t.Fatalf("the pacing gave %d tokens, want the one the wake took when it parked", n)
+		if n := taken(); n != 1 {
+			t.Fatalf("the pacing gave %d tokens, want the one the wake paid before the pause met it", n)
 		}
 		if lines := h.logs.lines(WakeRanMessage, "claim="+string(h.token)); len(lines) != 1 {
 			t.Fatalf("wake lines = %v, want one, written at the let-out", lines)
 		}
 		stops.wantStops(t)
+	}
+
+	// A wake the pacing parked took its token at the wake gate; a pause that meets it at its turn
+	// holds it, and its let-out runs it without a second reservation (wake.paid).
+	t.Run("a wake the pacing parked, met by the pause at its turn", func(t *testing.T) {
+		h, flag, stops, taken := parked(t)
+		h.must(RequestSpawn{Claim: h.token})
+		h.wantStarts(h.token, 0)
+
+		letOutOnce(t, h, flag, stops, taken, 7)
+	})
+
+	// A launch the gate held at the wake gate paid nothing there; its let-out reserves for it and
+	// parks it, and a second pause that meets it at that turn holds it again, whose let-out takes
+	// no second token (letOutHeldLaunch, wake.paid).
+	t.Run("a let-out the pacing parked, met by a second pause at its turn", func(t *testing.T) {
+		h, flag, stops, taken := parked(t)
+		flag.set(7)
+		h.must(RequestSpawn{Claim: h.token})
+		flag.set(0)
+		h.must(ResumePause{Claim: h.token, Pause: 7})
+		h.wantStarts(h.token, 0)
+		if n := taken(); n != 1 {
+			t.Fatalf("the let-out took %d tokens, want one reservation", n)
+		}
+
+		letOutOnce(t, h, flag, stops, taken, 8)
 	})
 }
 

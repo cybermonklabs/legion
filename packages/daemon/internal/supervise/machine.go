@@ -3080,14 +3080,14 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 	}
 }
 
-// heldTryWake is the wake that holds a try of launch l past the wake gate, its token paid and its
-// line written (wake.paid, wake.ran), in the claim's state as the try left it, launching: a try
-// parked at its issue pod's gate (askPod), which sets park, and a try the project's pause met
-// after its write (pauseHeldTry). Its run is the launch from the park's grant on while the wake
-// carries the hold, the grant starting with token, the boot token the try was written with; and a
-// fresh try of the same launch, asked of the gate anew, once it carries none, as a let-out after a
-// pause runs it (letOutHeldLaunch, runWake). Its again is the launch raised anew from the top, for
-// that let-out's lifecycle recheck (launchFromTop, relaunchRefused).
+// heldTryWake is the wake that holds a try of launch l the wake gate let past, so it has had its
+// turn from the pacing and written its line (wake.paid, wake.ran), in the claim's state as the try
+// left it, launching: a try parked at its issue pod's gate (askPod), which sets park, and a try the
+// project's pause met after its write (pauseHeldTry). Its run is the launch from the park's grant
+// on while the wake carries the hold, the grant starting with token, the boot token the try was
+// written with; and a fresh try of the same launch, asked of the gate anew, once it carries none,
+// as a let-out after a pause runs it (letOutHeldLaunch, runWake). Its again is the launch raised
+// anew from the top, for that let-out's lifecycle recheck (launchFromTop, relaunchRefused).
 func (m *Machine) heldTryWake(l launchTry, token string) *wake {
 	held := &wake{kind: WakeLaunch, state: m.claim.State, paid: true, ran: true, again: m.launchFromTop(l)}
 	held.run = func(ctx context.Context) error {
