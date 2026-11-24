@@ -157,11 +157,13 @@ const registrationSpare = 30 * time.Second
 // registerAsTheClientDoes posts body to the listener's /v1/interests/subscribe as the test's
 // shared-token caller and returns once the listener takes it (200), sending a 5xx again as the
 // client a session runs does. envoy-client sends a 5xx once more after 250 ms (the 5xx branch of
-// request, packages/envoy-client/src/transport.ts:1121-1128; LISTENER_CALL_RETRY_DELAY_MS and
-// LISTENER_CALL_ATTEMPTS, packages/contracts/src/envoy-session.ts:64 and :72), and pi-envoy and
-// claude-envoy register again 20 to 40 s after a failed registration and then at every heartbeat
-// (packages/pi-envoy/extensions/envoy.ts:3764-3771 and :3804,
-// packages/claude-envoy/src/envoy-channel-server.ts:1925). So a registration refused because the
+// createEnvoyClient's request, packages/envoy-client/src/transport.ts; LISTENER_CALL_RETRY_DELAY_MS
+// and LISTENER_CALL_ATTEMPTS, packages/contracts/src/envoy-session.ts:64 and :72), and pi-envoy
+// and claude-envoy register again 20 to 40 s after a failed registration and then at every
+// heartbeat (each plugin's heartbeat and its armRetry, whose delay is heartbeatRetryDelayMs of
+// packages/envoy-client/src/envoy-settings.ts: ensureHeartbeat in
+// packages/pi-envoy/extensions/envoy.ts, heartbeat in
+// packages/claude-envoy/src/envoy-channel-server.ts). So a registration refused because the
 // server answered the listener late - the 503 consumer_error of a session consumer call past its
 // bound, or the bus-unavailable 503 of store work past its own - is a registration the session
 // makes again, not one it never makes.
@@ -339,8 +341,11 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	}
 	requireStillPending(t, consumers, s2.id, heldFrame.seq)
 
-	// s2 restarts and registers a new epoch: the relay restarts at the ack floor and sends it the
-	// frame it never wrote, and s2's own done, the control, acknowledges it.
+	// s2 restarts and registers a new epoch: the relay restarts at the ack floor, which deletes the
+	// consumer holding the frame s2 never wrote and creates it again, so the row first waits for the
+	// consumer's stored state (awaitSessionConsumerStored); it sends s2 the frame again, and s2's own
+	// done, the control, acknowledges it.
+	awaitSessionConsumerStored(t, publisher.Conn, s2.id)
 	registerAsTheClientDoes(t, listener.port, consumerRegistration(s2.id, "epoch-2"))
 	again := two.collect(t, 1, 10*time.Second)[0]
 	requireFrames(t, []relayedFrame{again}, held)

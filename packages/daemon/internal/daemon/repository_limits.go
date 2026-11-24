@@ -144,7 +144,7 @@ func (w *workflowRuntime) onceRecordedBranches(ctx context.Context) recordBranch
 
 // recordedBranches is the default branch the project's records hold for each repository a record
 // names (record.Issue.GitHubRepo, in GitHub's spelling, and DefaultBranch), keyed by that name
-// lowercased, read in one read-only transaction bounded by appMintAttempt. A repository several
+// lowercased, read in one read-only transaction bounded by the App-call attempt bound (callBounds). A repository several
 // records name takes the first record in the store's order, by key, and not the newest: a record
 // carries no time its repository and default branch were recorded at (both are written once, when
 // the issue is first recorded, and no column dates that), and a key's number says nothing reliable
@@ -153,7 +153,7 @@ func (w *workflowRuntime) onceRecordedBranches(ctx context.Context) recordBranch
 // GitHub answers a read of it again. A record from before the record carried its repository holds
 // nothing.
 func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbranch.Repository, error) {
-	read, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	var issues []record.Issue
 	if err := store.TransactWith(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {

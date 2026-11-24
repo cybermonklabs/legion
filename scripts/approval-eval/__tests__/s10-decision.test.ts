@@ -34,7 +34,7 @@ const ENDED = "dispatch://ACME-1/comment/claim-result";
 const HERE = join(import.meta.dir, "..");
 
 /** The digest of the pinned closure at this head, as `sha256sum` over its six files prints it. */
-const PINNED_DIGEST = "30cfa3c810b3fc7449ad6a1610ba9ca720b94434b1925d31c3ae2f069487d77d";
+const PINNED_DIGEST = "55931c3f6c327a25abdfb70453e7692e9c61ed10cd9ff4ca1443ebceb15eadab";
 
 let scratch: string | undefined;
 

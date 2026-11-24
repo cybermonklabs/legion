@@ -22,7 +22,9 @@ import (
 // before the open P0 issues it arrives with, is what leaves no gap: every event at or below the
 // head was committed and is final before the reads that follow it (those P0 issues, each view's
 // recompute) run, and every event above it arrives on the feed. The listener's connection
-// (onConnected) catches the change log up after its LISTEN for the same reason.
+// (onConnected) catches the change log up after its LISTEN for the same reason, and marks every
+// Legion view, which a notification lost before that LISTEN would otherwise leave stale until
+// the next one came, with no bound (dirtyLegionViews).
 func (h *deliveryHub) intake(g *hubGeneration) {
 	var feed relaySubscription
 	var held, open bool
@@ -57,6 +59,7 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 			h.catchUp(g)
 		case <-g.connected:
 			h.catchUp(g)
+			h.dirtyLegionViews(g)
 			h.note(deliveryHubNote{what: "connected"})
 		case done := <-g.barrier:
 			h.catchUp(g)
@@ -348,7 +351,7 @@ func (h *deliveryHub) recheckHeardLocked(g *hubGeneration, view *deliveryView, n
 // showsIssue is whether a write to the issue key, a P0 before or after it when p0, can move the
 // view's answer: the view's population, or its ancestors, names the issue, or the view shows the
 // unowned P0 list and the issue is a P0. A Legion board names its own issues and shows no P0
-// list, so only the first rule reaches it.
+// list, so only the first rule reaches it; a legion_issue view names no issue, so none does.
 func (view *deliveryView) showsIssue(key string, p0 bool) bool {
 	_, named := view.issues[key]
 	_, ancestor := view.ancestors[key]
@@ -388,7 +391,9 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	if view.spec.classes().reads != viewReadsDelivery {
 		// The view reads no delivery row at all: what moves a Legion board is a read of the
-		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked).
+		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked), and what
+		// moves a legion_issue view is a read of its project's daemon or a write of one of its
+		// runs (workflowstore.RunsChannel).
 		return false
 	}
 	var times []time.Time

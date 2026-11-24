@@ -553,7 +553,7 @@ var installReadRetry = bootprobe.Retry{Initial: 30 * time.Second, Max: 10 * time
 var recoveryHoldBound = defaultHoldWarnEvery
 
 // installReadAttempt bounds one read of GitHub or Dispatch a preparation or the rename pass makes:
-// as long as any one GitHub call the boot waits for (appMintAttempt), so a GitHub that answers
+// as long as any one GitHub call the boot waits for (appCallBounds.attempt), so a GitHub that answers
 // slowly is still answered for, while a read GitHub has not answered by then is a read that did
 // not answer, and a repository GitHub hangs on is read again later rather than holding up the
 // rest. It bounds each installation read (readInstallations), each webhook App check
@@ -831,11 +831,11 @@ func (w *workflowRuntime) prepareAtStart(ctx context.Context) {
 
 // recordedRepositories is each distinct repository a record of the project names, as the record
 // keeps GitHub's spelling of it (record.Issue.GitHubRepo, repositoriesOf), sorted, read in one
-// read-only transaction bounded by appMintAttempt; a record that keeps no GitHub spelling is passed
+// read-only transaction bounded by the App-call attempt bound (callBounds); a record that keeps no GitHub spelling is passed
 // by, and one whose spelling is no <owner>/<name> refuses the read, as it refuses the boot
 // (heardAtBoot).
 func (w *workflowRuntime) recordedRepositories(ctx context.Context) ([]ghrepo.Repository, error) {
-	read, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	var issues []record.Issue
 	if err := store.TransactWith(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -1053,7 +1053,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 func (w *workflowRuntime) republishHeard(ctx context.Context) error {
 	w.heardMu.Lock()
 	defer w.heardMu.Unlock()
-	publish, cancel := context.WithTimeout(ctx, appMintAttempt)
+	publish, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	var recorded []ghrepo.Repository
 	err := store.TransactWith(publish, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -1105,7 +1105,7 @@ func (w *workflowRuntime) heldDue() time.Time {
 
 // rereadHeldBranches is the refresher's fifth job: each default branch held through a rate limit
 // whose limit has ended by now (heldThroughLimit) is read again (defaultBranches.Named, bounded by
-// appMintAttempt), and one GitHub's limit refuses again is held again, which names it once more
+// the App-call attempt bound, callBounds), and one GitHub's limit refuses again is held again, which names it once more
 // (Named, onHold).
 func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time) {
 	w.heldMu.Lock()
@@ -1118,7 +1118,7 @@ func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time)
 	}
 	w.heldMu.Unlock()
 	for _, read := range due {
-		attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+		attempt, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 		_, err := w.defaultBranches.Named(attempt, read.repo)
 		cancel()
 		if err != nil && ctx.Err() == nil {
@@ -1138,7 +1138,7 @@ func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time)
 // request made before it starts; a read that fails is logged and run again on installReadRetry.
 func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 	before := w.repositories.liveNames()
-	read, cancel := context.WithTimeout(ctx, appMintAttempt)
+	read, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	err := serializedTx(read, w.pool, "serialize the read of the live records with admission", func(ctx context.Context, tx pgx.Tx) error {
 		return w.refreshCacheRepositories(ctx, tx)
 	})
@@ -1293,7 +1293,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 		return
 	}
 	names := slices.Sorted(maps.Keys(repos))
-	attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
+	attempt, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	issues, err := w.dispatch.ListIssues(attempt, w.dispatchProject, nil)
 	// todo is each repository, lowercased, that an unrecorded todo issue of the listing that
@@ -2115,7 +2115,7 @@ func (w *workflowRuntime) hearRepository(ctx context.Context, repo ghrepo.Reposi
 	slices.SortFunc(heard, func(a, b ghrepo.Repository) int {
 		return strings.Compare(strings.ToLower(a.String()), strings.ToLower(b.String()))
 	})
-	update, cancel := context.WithTimeout(context.WithoutCancel(ctx), appMintAttempt)
+	update, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.callBounds().attempt)
 	defer cancel()
 	if err := w.updateSubscription(update, heard); err != nil {
 		return err
@@ -2489,9 +2489,10 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 // its start, for who set the label (labelSetter, intake.DispatchIssue.LabelSetter): a person's
 // label queues the root through the outbox, a session's wakes the controller as today, and the
 // event that reaches the daemon says the label is there, not who put it there. It is one paged
-// read per such event, outside the fact lock as the rest of the preparation reads, and a failed
-// read leaves the event to be retried. A recorded root a person moved back to triage is never
-// queued again, so its log is not read.
+// read per such event, outside the fact lock as the rest of the preparation reads. A failed read
+// fails the preparation, so the event is delivered again; a log that does not decode fails it at
+// every delivery, so the intake gives the event up at its bound. A recorded root a person moved
+// back to triage is never queued again, so its log is not read.
 func (w *workflowRuntime) prepareRepository(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 	return w.prepareIssue(ctx, issue, true)
 }
@@ -2543,13 +2544,14 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 	return w.withAncestry(ctx, prepared, nil, observe)
 }
 
-// labelSetter is the kind of the Dispatch actor that added the label to key, read from the issue's
-// whole Dispatch event log, from sequence 0, by intake.LabelSetter's rule: one paged read per call,
-// outside the fact lock as the rest of a preparation reads, for an event's preparation
-// (prepareIssue) and the boot listing's (reconcileListing) alike. A read that fails, or a log the
-// daemon cannot decode, is an error naming the key, for the caller to fail the preparation on, so
-// the event or the listing is read again rather than applied with a setter nobody read: a setter
-// of "" would keep today's triage wake for a label a person set.
+// labelSetter is the kind of the Dispatch actor that added the label to key, by
+// intake.LabelSetter's rule. It reads the issue's whole Dispatch event log from sequence 0, in one
+// paged read, outside the fact lock. A read that fails is an error that wraps the client's error,
+// which can be a *dispatch.EventLogError, for a page of the log the client cannot read, or a
+// Dispatch refusal (*dispatch.Error). A log that does not decode is an error that wraps a
+// *dispatch.EventLogError too. Each error names the key. No error comes with a setter, since a
+// caller must not apply a setter nobody read: a setter of "" would keep today's triage wake for a
+// label a person set.
 func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, error) {
 	events, err := w.dispatch.EventsAfter(ctx, key, 0)
 	if err != nil {
@@ -2571,6 +2573,18 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 // event to be retried. Every other review or version event — a session's or Dispatch's own review,
 // a changes request, a carried approval, a version — asks Dispatch nothing and is applied as
 // decoded, with no view, which queues nothing.
+//
+// The view is the issue as it is now, so it cannot say whether the status changed after the
+// approval. For an approval that needs the issue's whole Dispatch event log
+// (intake.DispatchArtifact.NeedsEventLog: one that can queue its root by that view and carries a
+// sequence to place it by), a second read takes that log, and the first change of the issue's
+// status after the approval is set on the fact (StatusChangedSeq, by
+// intake.DispatchArtifact.WithStatusChange), so the workflow refuses an approval after which the
+// person parked the root again, however late it is applied or replayed. That read is one paged
+// read of the issue's whole log, the same read labelSetter makes for an unrecorded issue's
+// admission event, made under the same AckWait bound the intake puts on the whole preparation, the
+// issue read's included. A failed read, or a log the daemon cannot decode, fails the preparation
+// with an error naming the key, so the event is delivered again, as a failed issue read is.
 func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.DispatchArtifact) (intake.DispatchArtifact, error) {
 	if !fact.PersonApproval() {
 		return fact, nil
@@ -2580,6 +2594,16 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 		return fact, fmt.Errorf("read %s from Dispatch before applying a person's approval of its document %s: %w", fact.Key, fact.ArtifactID, err)
 	}
 	fact.Issue = &issue
+	if !fact.NeedsEventLog() {
+		return fact, nil
+	}
+	events, err := w.dispatch.EventsAfter(ctx, fact.Key, 0)
+	if err != nil {
+		return fact, fmt.Errorf("read the event log of %s from Dispatch for a change of its status after the approval at %d: %w", fact.Key, fact.Mark.Seq, err)
+	}
+	if fact, err = fact.WithStatusChange(events); err != nil {
+		return fact, fmt.Errorf("read a change of the status of %s after the approval at %d from its event log: %w", fact.Key, fact.Mark.Seq, err)
+	}
 	return fact, nil
 }
 
