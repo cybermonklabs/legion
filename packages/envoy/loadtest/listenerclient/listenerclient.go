@@ -20,7 +20,7 @@ import (
 
 // Client is one listener: its base URL, the bearer a call sends when it is not empty, and the HTTP
 // client whose timeout bounds each call, which follows no redirect (redirects.Refused), since
-// every call carries the bearer. A call that got no answer fails through redact.Cause.
+// every call carries the bearer.
 type Client struct {
 	URL   string
 	Token string

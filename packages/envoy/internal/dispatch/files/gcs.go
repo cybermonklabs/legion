@@ -23,8 +23,7 @@ import (
 // GCS is a Store over one Google Cloud Storage bucket, through the JSON API. It needs exactly two
 // permissions on the bucket, storage.objects.create and storage.objects.get (roles/storage.objectCreator
 // and roles/storage.objectViewer cover them), and never overwrites or deletes an object: every
-// write carries a create-only precondition, and no call it makes deletes. Each failure of a call
-// prints through gcsFailure, never as the client's own text.
+// write carries a create-only precondition, and no call it makes deletes.
 type GCS struct {
 	objects *storage.ObjectsService
 	bucket  string

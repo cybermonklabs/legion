@@ -7,10 +7,6 @@
 // and builds, so that CI compiles and vets them with everything else here. Each is still a
 // plain Go HTTP client: it reads the proxy, NO_PROXY and the trust bundle from its own
 // environment, as net/http does for any Go program, and that is the whole point of the probe.
-// Each prints its failure through redact, never as net/http's or net/url's own text, which quotes
-// the answering party's words (a proxy's refusal, a Location, a status line) and the whole value
-// of a URL that does not parse. probe-bound's request carries a bearer, so its client also follows
-// no redirect. Neither changes how a probe reads the proxy or the trust bundle.
 package main
 
 import (
@@ -82,8 +78,6 @@ func runProbeBound(args []string, stdout, stderr io.Writer) int {
 	address := os.Getenv("AIRLOCK_S_URL") + "/go"
 	request, err := http.NewRequest(http.MethodGet, address, nil)
 	if err != nil {
-		// net/url quotes the whole value it could not parse, the user information of the URL
-		// among it, so the failure prints by its class alone.
 		fmt.Fprintln(stdout, "error", redact.Class(err))
 		return 0
 	}
