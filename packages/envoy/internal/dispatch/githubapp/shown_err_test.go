@@ -271,9 +271,10 @@ func TestShownErrCutsOnlyAnErrorPastTheBound(t *testing.T) {
 }
 
 // A transport error after a URL past the bound still names its cause. http.Client's Do answers a
-// url.Error, `Get "<URL>": <cause>`, and send cuts its URL and its cause each (ShownErr):
-// a cut of the whole url.Error would keep the URL's first 512 runes and push the cause out (review
-// of cybermonklabs/legion#4373 at e185c085). send's own words before the url.Error name the URL as
+// url.Error, `Get "<URL>": <cause>`, and send names the call by its target as ShownBody shows it
+// and the cause by redact.Unanswered, a transport failure's own words: a cut of the whole error
+// would keep the URL's first 512 runes and push the cause out (review of
+// cybermonklabs/legion#4373 at e185c085). send's own words before the url.Error name the URL as
 // ShownBody shows it too, so the error names the whole URL nowhere. The branch here is 60
 // characters of three bytes, so its URL, each byte escaped as %XX, passes 512 runes. The context
 // has ended before the request, so the cause is context.DeadlineExceeded, and the error still
