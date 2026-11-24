@@ -36,18 +36,26 @@ everything the broker depends on, and its generated configuration reference list
 with its default.
 
 `envoy-broker` with no argument serves.
-It takes two subcommands in place of serving.
+It takes three subcommands in place of serving; the third, `envoy-broker versions`, is in the
+operate page's "A migration recorded under another file".
 `envoy-broker end-sessions <login>` ends every browser session that login holds on the approval
 page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
-`envoy-broker airlock-check <file> [--against <old file>]` reads an airlock rules file with the
-broker's own code and exits non-zero, naming the entry or the parse position, when the broker
-would not serve that file;
-on a file it would serve it prints the secrets, hosts and headers the file adds and removes
-against the file `--against` names, with a changed `allow`, `kind` or `judge` beside them, so
-that a pull request changing the deployment's `airlock.json` leaves a reviewer only the question
-of whether each host is the right one for its secret.
-`airlock-check` reads no configuration, opens no database and binds nothing.
+`envoy-broker profiles check <file> [--against <old file>] [--private-upstream <host>=<url>]`
+reads a profiles file with the broker's own code and exits non-zero, naming the profile and the
+field or the parse position, when the broker would not serve that file, or when its start check of
+the results profile `DISPATCH_RESULTS_TOKEN` refuses it;
+`--private-upstream` takes the value `BROKER_AIRLOCK_PRIVATE_UPSTREAM` gives the broker, and holds
+that profile to the destination's host as the start does, and without it a file that holds the
+profile prints one line saying that tie was not checked;
+on a file it would serve it prints every field of each profile the file adds and removes against
+the file `--against` names, and each field a profile both files hold changes: its source, tier,
+requesters and `maxGrant`, its GitHub accounts, repositories, permissions and value, its Google
+scopes, and its proxy block's hosts, headers, `allow`, `kind`, `judge` and guidance.
+So a pull request changing the deployment's `profiles.json` leaves a reviewer only the question of
+whether each of those is right for its profile.
+`profiles check` reads no configuration, opens no database and binds nothing.
+The removed `envoy-broker airlock-check` exits 2 naming `profiles check`.
 
 For a local stack (Postgres in Docker, or one you run named by `DEV_BROKER_POSTGRES_URL`, a fake
 secrets file standing in for Secrets Manager, and the clients), run
@@ -77,8 +85,8 @@ members. A group whose last good read is more than 2 hours old, or that was neve
 nobody: no member decides, no session gets its agent-tier secret at once, and a grant a member
 approved, or an automatic grant of a member's session, releases nothing from its next release. A
 grant the model judge approved for a group's secret rests on no member, so it keeps releasing, and
-the judge keeps deciding new requests for that secret, while the airlock rules in force give the
-judge that secret. A `requesters` entry naming such a group cannot say who is on the list, so a
+the judge keeps deciding new requests for that secret, while the profiles in force give the judge
+that secret. A `requesters` entry naming such a group cannot say who is on the list, so a
 request it decides is denied `requester-group-unread`, a live grant it decides is paused, not
 revoked, and releases again once a read lists the person, and an approval of a pending request
 waits rather than being recorded. A member the group's last good read listed may still revoke the
@@ -138,8 +146,8 @@ expires at the token's own end, which the airlock's proxy reads to mint again fi
 it, as it does for every minted value; the release's `expires_at` is the grant's end. A rule that
 sets five minutes or less works, but every proxied call then mints again. The secret is human tier
 alone (the broker refuses one at agent tier as `type-human-tier`), and a person approves every
-release of it: the model judge decides none, whatever seconds the airlock rules give the name, as
-for a secret tagged `admin`. It takes a `max-grant` of an hour or less, names its owner in
+release of it: the model judge decides none, whatever seconds a profile's `proxy` block gives the
+name, as for a secret tagged `admin`. It takes a `max-grant` of an hour or less, names its owner in
 `requesters` as a `google-service-account` secret does (one person, or one group, beside
 registered services), may carry `admin: true`, and carries no `scopes`.
 

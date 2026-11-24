@@ -511,15 +511,14 @@ func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testin
 // task — and the promotion a carried hand-over makes, which keeps its rows (admit's readmit
 // returns before the clear for an orphan) and so keeps the commit.
 func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
-	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf(headOne)
+	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf(headOne)
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
-		pool, _, apply := reviewRoundOne(t)
+		pool, engine, apply := reviewRoundOne(t)
 		apply("approve", reviewAt(t, pool, 1, "approved", headOne, reviewTestedAt))
 		if got := issuePhase(t, pool); got != phase.Accepting {
 			t.Fatalf("after the approval the issue is in %s, want accepting", got)
 		}
-		if result := apply("move-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleArchitect, To: phase.Implementing,
-			Reason: "the API needs another shape"}); result.Refusal != nil {
+		if result := apply("move-back", rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the API needs another shape")); result.Refusal != nil {
 			t.Fatalf("the architect's move back was refused: %+v", result.Refusal)
 		}
 		backToReviewing(t, pool, apply, 2)
@@ -684,7 +683,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 			return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
-		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
+		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
 		if after.Entry != before.Entry+1 || after.EntryTask != want {
 			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, want)
 		}
@@ -732,10 +731,10 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 	})
 }
 
-// The negative control of v-review-range: the commit round 2 names comes from the record of the
-// first review and from nothing else. With the stored commit taken off the reviewer's row after
-// round 1's review, round 2's task names none; with it left, the same lines name it, so the
-// control can fail.
+// The negative control of the commit a later round is told: the commit round 2 names comes from
+// the record of the first review and from nothing else. With the stored commit taken off the
+// reviewer's row after round 1's review, round 2's task names none; with it left, the same lines
+// name it, so the control can fail.
 func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -21,20 +21,23 @@ import (
 )
 
 const (
-	// resultsHost is the host the rules entry DISPATCH_RESULTS_TOKEN binds: Dispatch's public
-	// host, the one a grant's writes go to through the proxy.
+	// resultsHost is the host the proxy block of the profile DISPATCH_RESULTS_TOKEN binds:
+	// Dispatch's public host, the one a grant's writes go to through the proxy.
 	resultsHost = "dispatch.test"
 	// airlockProxyURL and airlockCA are what the broker hands a run to reach its proxy by.
 	airlockProxyURL = "https://airlock.test:13381"
 	airlockCA       = "-----BEGIN CERTIFICATE-----\nnot-a-real-certificate\n-----END CERTIFICATE-----\n"
+	// resultsEntryDigest stands for the broker's results entry (AirlockSettings.EntryDigest): 64
+	// hex digits, as cmd/cipherd computes one and as result_grants holds every one.
+	resultsEntryDigest = "1111111111111111111111111111111111111111111111111111111111111111"
 )
 
 // newResultsFixture is the exchange fixture of a broker whose airlock binds DISPATCH_RESULTS_TOKEN
-// to resultsHost, with adjust applied last.
+// to resultsHost under the entry resultsEntryDigest, with adjust applied last.
 func newResultsFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixture {
 	t.Helper()
 	return newExchangeFixture(t, func(c *oauth.Config) {
-		c.Airlock = &oauth.AirlockSettings{ProxyURL: airlockProxyURL, CACertificatePEM: airlockCA, ResultHosts: []string{resultsHost}}
+		c.Airlock = &oauth.AirlockSettings{ProxyURL: airlockProxyURL, CACertificatePEM: airlockCA, ResultHosts: []string{resultsHost}, EntryDigest: resultsEntryDigest}
 		adjust(c)
 	})
 }
@@ -145,6 +148,27 @@ func TestAResultEntrysRunIsGrantedAPlaceholderAndNoToken(t *testing.T) {
 	}
 	if after := f.count(t, "oauth_access_tokens"); after != before {
 		t.Errorf("access tokens after the placeholder exchange = %d, want the %d there were", after, before)
+	}
+}
+
+// TestAResultGrantRecordsTheEntryItWasGrantedUnder: a run's grant records the results entry of the
+// broker that made it (AirlockSettings.EntryDigest) in its row's entry_digest, and the grant every
+// pod reads by the placeholder carries it, so a pod compares the grant's entry with its own before
+// it mints the run's token. Two brokers of two entries each record their own.
+func TestAResultGrantRecordsTheEntryItWasGrantedUnder(t *testing.T) {
+	const another = "2222222222222222222222222222222222222222222222222222222222222222"
+	for _, digest := range []string{resultsEntryDigest, another} {
+		t.Run(digest[:4], func(t *testing.T) {
+			f := newResultsFixture(t, func(c *oauth.Config) { c.Airlock.EntryDigest = digest })
+			held := f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), newKey(t))
+			var stored string
+			if err := f.pool.QueryRow(context.Background(), `select entry_digest from result_grants where placeholder_sha256 = $1`, sha256Hex(held)).Scan(&stored); err != nil {
+				t.Fatalf("read the grant's entry_digest: %v", err)
+			}
+			if read := f.grantOf(t, held).EntryDigest; stored != digest || read != digest {
+				t.Errorf("the grant made under the entry %s holds entry_digest %q and reads back %q; want the broker's entry", digest, stored, read)
+			}
+		})
 	}
 }
 

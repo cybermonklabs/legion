@@ -1,41 +1,60 @@
 name: CI job test
 
-# The steps of ci.yaml's `test` job, in a file of its own.
-# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# The steps of ci.yaml's `test` and `tooling-checks` jobs, in a file of their own.
+# ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
+# file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
+# whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
+# that is. The two share a file because ci.yaml already calls as many reusable workflows as
+# .github/scripts/check-workflow-files.sh allows it
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 #
-# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
-# these steps selects this job alone, where a change to ci.yaml selects every job.
+# The split is for the filters. Each job's filter names this file beside ci.yaml, so a change to
+# these steps selects these two jobs alone, where a change to ci.yaml selects every job.
 #
-# What runs here is what reads this repository's own tooling: the Claude Code plugin build, the
-# changelog fold, the `*.test.sh` harness of each script under .github/scripts (and of
-# scripts/priorities-seed-check.sh and scripts/red-at-base.sh), and the Bun suites of scripts/.
-# The daemon's Go tests, which this job used to carry, are
+# The two are the halves of what was one job, and each runs every one of its steps wherever it
+# runs: no step of either reads the event or a label. tooling-checks builds and checks this
+# repository's own tooling: the Claude Code plugin build and its build-input list, the changelog
+# fold, the guides' layout, and the lint and typecheck of the script directories that are no
+# workspace. Those are build, lint and typecheck checks, which run on a pull request whatever
+# their time. test runs the tests: the `*.test.sh` harness of each script under .github/scripts
+# (and of scripts/priorities-seed-check.sh and scripts/red-at-base.sh), the Bun suites of scripts/
+# and the live proofs' libraries. Its `test` output is held back on a pull request without the
+# label full-ci or lane:test, so it runs in the merge queue
+# (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+#
+# The daemon's Go tests, which the test job used to carry, are
 # .github/workflows/ci-job-daemon-go.yaml's; the session message-wait suite, the one step here
-# that needed a database, is
-# .github/workflows/ci-job-sessions-script.yaml's, and no step of this job needs one now; and
-# check-private-names-port.test.sh, the one harness here that built a binary of this head - so
-# the only one whose reads were a whole Go closure on this job's filter - is
-# .github/workflows/ci-job-private-names-port.yaml's.
+# that needed a database, is .github/workflows/ci-job-sessions-script.yaml's, and no step of
+# either job needs one now; and check-private-names-port.test.sh, the one harness here that built
+# a binary of this head - so the only one whose reads were a whole Go closure on the test filter -
+# is .github/workflows/ci-job-private-names-port.yaml's.
 #
-# Each harness step runs behind an input of its own, which ci.yaml's calling job fills from the
-# `changes` output of the same name, whose filter is that harness and the script it tests: so a
-# change to one script runs one harness instead of all of them. A step of a called workflow
-# cannot read `needs.changes.outputs.<name>` - inside a reusable workflow the only context
-# carrying a caller's value is `inputs` - which is why each of these is an input here and
-# `.github/scripts/check-ci-filters.sh` resolves it through the caller's `with:`.
+# Each harness step of the test job runs behind an input of its own, which ci.yaml's test job
+# fills from the `changes` output of the same name, whose filter is that harness and the script
+# it tests: so a change to one script runs one harness instead of all of them. A step of a called
+# workflow cannot read `needs.changes.outputs.<name>` - inside a reusable workflow the only
+# context carrying a caller's value is `inputs` - which is why each of these is an input here and
+# `.github/scripts/check-ci-filters.sh` resolves it through the caller's `with:`. tooling-checks'
+# guides step reads guide_layout the same way. Only the job that reads an input is passed it, so
+# none of them is required.
 #
-# ci.yaml keeps this job running when `changes` did not succeed, "so this buys signal", and an
+# ci.yaml keeps both jobs running when `changes` did not succeed, "so this buys signal", and an
 # input it fills from that job is empty then. So each gated step reads `changes-result` too and
 # runs whenever `changes` failed, which is what the job did before the gates were written; lint
 # spells the same term for its own two steps. A gated step added here takes both halves.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
+      job:
+        description: >-
+          The id of ci.yaml's job that calls this file, `test` or `tooling-checks`: the job of
+          this file of that id runs, and the other is skipped.
+        type: string
+        required: true
       ci-ok-changes:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
@@ -45,228 +64,242 @@ on:
       changes-result:
         description: >-
           ci.yaml's `needs.changes.result`: every gated step below runs when `changes` did not
-          succeed, as they did before this job's `if:` gated them one by one, and as lint's two
+          succeed, as they did before the job's `if:` gated them one by one, and as lint's two
           notices steps do.
         type: string
         required: true
       guide_layout:
         description: >-
-          ci.yaml's `needs.changes.outputs.guide_layout`: the guides' layout step below runs
-          when that filter matched.
+          ci.yaml's `needs.changes.outputs.guide_layout`, which tooling-checks passes: its
+          guides' layout step runs when that filter matched.
         type: string
-        required: true
+        required: false
       release_push_test:
         description: "ci.yaml's needs.changes.outputs.release_push_test: release-push.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       release_bump_test:
         description: "ci.yaml's needs.changes.outputs.release_bump_test: release-bump.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_bun_version_test:
         description: "ci.yaml's needs.changes.outputs.check_bun_version_test: check-bun-version.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_playwright_version_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_playwright_version_test:
           check-playwright-version.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       check_bun_workspace_manifests_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_bun_workspace_manifests_test:
           check-bun-workspace-manifests.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       check_zod_version_test:
         description: "ci.yaml's needs.changes.outputs.check_zod_version_test: check-zod-version.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_gh_version_test:
         description: "ci.yaml's needs.changes.outputs.check_gh_version_test: check-gh-version.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_gitleaks_version_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_gitleaks_version_test:
           check-gitleaks-version.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       workflow_paths_test:
         description: "ci.yaml's needs.changes.outputs.workflow_paths_test: workflow_paths.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_image_trigger_paths_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_image_trigger_paths_test:
           check-image-trigger-paths.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       check_ci_images_test:
         description: "ci.yaml's needs.changes.outputs.check_ci_images_test: check-ci-images.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       mirror_ci_images_test:
         description: "ci.yaml's needs.changes.outputs.mirror_ci_images_test: mirror-ci-images.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       ci_tools_test:
         description: "ci.yaml's needs.changes.outputs.ci_tools_test: ci-tools.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       mirror_ci_tools_test:
         description: "ci.yaml's needs.changes.outputs.mirror_ci_tools_test: mirror-ci-tools.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_ci_tools_test:
         description: "ci.yaml's needs.changes.outputs.check_ci_tools_test: check-ci-tools.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       ci_tools_proof_test:
         description: "ci.yaml's needs.changes.outputs.ci_tools_proof_test: ci-tools-proof.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_action_pins_test:
         description: "ci.yaml's needs.changes.outputs.check_action_pins_test: check-action-pins.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_workflow_files_test:
         description: "ci.yaml's needs.changes.outputs.check_workflow_files_test: check-workflow-files.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_private_names_test:
         description: "ci.yaml's needs.changes.outputs.check_private_names_test: check-private-names.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_private_names_terms_test:
         description: "ci.yaml's needs.changes.outputs.check_private_names_terms_test: check-private-names-terms.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_private_names_keys_test:
         description: "ci.yaml's needs.changes.outputs.check_private_names_keys_test: check-private-names-keys.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_plugin_names_test:
         description: "ci.yaml's needs.changes.outputs.check_plugin_names_test: check-plugin-names.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_fireevent_reasons_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_fireevent_reasons_test:
           check-fireevent-reasons.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       check_daemon_api_contract_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_daemon_api_contract_test:
           check-daemon-api-contract.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       check_release_credentials_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_release_credentials_test:
           check-release-credentials.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       repo_paths_test:
         description: "ci.yaml's needs.changes.outputs.repo_paths_test: repo-paths.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       select_e2e_proofs_test:
         description: "ci.yaml's needs.changes.outputs.select_e2e_proofs_test: select-e2e-proofs.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       go_tagged_tests_test:
         description: "ci.yaml's needs.changes.outputs.go_tagged_tests_test: go-tagged-tests.test.sh and what it tests."
         type: string
-        required: true
+        required: false
+      ci_router_outputs_test:
+        description: "ci.yaml's needs.changes.outputs.ci_router_outputs_test: ci-router-outputs.test.sh and what it tests."
+        type: string
+        required: false
       ci_ok_test:
         description: "ci.yaml's needs.changes.outputs.ci_ok_test: ci-ok.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       ci_ok_report_test:
         description: "ci.yaml's needs.changes.outputs.ci_ok_report_test: ci-ok-report.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       ci_ok_reconcile_test:
         description: "ci.yaml's needs.changes.outputs.ci_ok_reconcile_test: ci-ok-reconcile.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       find_pr_payload_test:
         description: "ci.yaml's needs.changes.outputs.find_pr_payload_test: find-pr-payload.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       merge_group_cancels_test:
         description: "ci.yaml's needs.changes.outputs.merge_group_cancels_test: merge-group-cancels.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       main_bypass_check_test:
         description: "ci.yaml's needs.changes.outputs.main_bypass_check_test: main-bypass-check.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       edited_migrations_base_test:
         description: >-
           ci.yaml's needs.changes.outputs.edited_migrations_base_test:
           edited-migrations-base.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       dispatch_browser_latest_blobs_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_latest_blobs_test:
           dispatch-browser-latest-blobs.test.sh and what it tests.
         type: string
-        required: true
+        required: false
+      dispatch_browser_reading_rows_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.dispatch_browser_reading_rows_test:
+          dispatch-browser-reading-rows.test.sh and what it tests.
+        type: string
+        required: false
       dispatch_browser_run_reads_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_run_reads_test:
           dispatch-browser-run-reads.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       gh_read_test:
         description: "ci.yaml's needs.changes.outputs.gh_read_test: gh-read.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       dispatch_browser_samples_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_samples_test:
           dispatch-browser-samples.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       race_memory_test:
         description: "ci.yaml's needs.changes.outputs.race_memory_test: race_memory.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       disk_watch_test:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       priorities_seed_check_test:
         description: >-
           ci.yaml's needs.changes.outputs.priorities_seed_check_test:
           scripts/priorities-seed-check.test.sh and what it tests.
         type: string
-        required: true
+        required: false
       red_at_base_test:
         description: >-
           ci.yaml's needs.changes.outputs.red_at_base_test:
           scripts/red-at-base.test.sh and what it tests.
         type: string
-        required: true
+        required: false
+      architecture_check_test:
+        description: "ci.yaml's needs.changes.outputs.architecture_check_test: check.test.sh and what it tests."
+        type: string
+        required: false
       check_ci_filters_test:
         description: "ci.yaml's needs.changes.outputs.check_ci_filters_test: check-ci-filters.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       check_ts_filters_test:
         description: "ci.yaml's needs.changes.outputs.check_ts_filters_test: check-ts-filters.test.sh and what it tests."
         type: string
-        required: true
+        required: false
       go_test_step_expansion_test:
         description: >-
           ci.yaml's needs.changes.outputs.go_test_step_expansion_test:
           go-test-step-expansion.test.sh and what it tests.
         type: string
-        required: true
+        required: false
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -279,14 +312,15 @@ env:
 
 jobs:
   test:
+    if: inputs.job == 'test'
     runs-on: ubuntu-24.04-arm
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
-    # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
-    # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
-    # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
-    # about six times that, which leaves a slow runner room and still fails a hung harness inside
-    # the hour.
+    # left is the Bun install, the shell-script harnesses and a handful of Bun suites, the Claude
+    # Code plugin build and the lint and typecheck steps having gone to tooling-checks below -
+    # less than the 325 s of setup dispatch://INFRA-1052 measured before the plain Go step
+    # started, less the tool installs that went with those steps. Thirty minutes is about six
+    # times that, which leaves a slow runner room and still fails a hung harness inside the hour.
     timeout-minutes: 30
     env:
       JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -302,34 +336,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # The very command release.yaml's claude_envoy_build runs, so a pull request whose source
-      # that job would refuse fails this job, and with it the required ci-ok, instead of merging
-      # and then failing every release. What it builds and checks:
-      # packages/claude-envoy/scripts/verify-build.sh.
-      - name: Build, check and pack the Claude Code plugin as the release does
-        run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
-        working-directory: packages/claude-envoy
-
-      # release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers scripts/build-inputs.txt, so a build input
-      # missing from it is one no release bumps a version for.
-      - name: Check the Claude Code plugin's build input list covers what the build reads
-        run: bun test tests/build-inputs.test.ts
-        working-directory: packages/claude-envoy
-
-      # release-push.test.sh renders its fold-notes cases with the real changie, and the step
-      # below renders this checkout's own fragments with it; where changie is absent, as on a
-      # developer's machine, those cases print a SKIP line and count nothing.
+      # release-push.test.sh renders its fold-notes cases with the real changie; where changie is
+      # absent, as on a developer's machine, those cases print a SKIP line and count nothing.
       - uses: ./.github/actions/install-changie
-
-      # Nothing renders a changelog fragment between the merge and the release that first ships
-      # it, so a fragment changie refuses would fail that release's build job, and every run
-      # after it, until a fix merges. This renders every fragment of every listed package here
-      # instead, inside a required check. It runs in this job rather than beside fold-orphans in
-      # lint because this is the job that installs changie.
-      - name: Check every changelog fragment renders
-        run: |
-          # shellcheck disable=SC2046 # the file is the package list, split on purpose
-          .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
 
       - name: Test release scripts
         if: inputs.changes-result != 'success' || inputs.release_push_test == 'true'
@@ -349,15 +358,6 @@ jobs:
       # fake Dispatch of the test's own: it reaches no network and no deployment.
       - name: Test the priorities seed
         run: bun test scripts/priorities-seed.test.ts
-
-      # The guides' own layout, in this job because it installs Bun's dependencies, which the
-      # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
-      # step has a filter of its own, guide_layout, naming the five guides the test reads and
-      # the checker it spawns: no other step of this job reads one of them, so a run that
-      # changed none of them skips this step.
-      - name: Check the guides' semantic line breaks
-        if: inputs.changes-result != 'success' || inputs.guide_layout == 'true'
-        run: bun test scripts/semantic-line-breaks.guides.test.ts
 
       - name: Test the Bun pin check
         if: inputs.changes-result != 'success' || inputs.check_bun_version_test == 'true'
@@ -471,6 +471,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.go_tagged_tests_test == 'true'
         run: .github/scripts/go-tagged-tests.test.sh
 
+      # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
+      # lane labels and a label that names nothing.
+      - name: Test the router outputs' label terms
+        if: inputs.changes-result != 'success' || inputs.ci_router_outputs_test == 'true'
+        run: .github/scripts/ci-router-outputs.test.sh
+
       - name: Test ci-ok's verdict
         if: inputs.changes-result != 'success' || inputs.ci_ok_test == 'true'
         run: .github/scripts/ci-ok.test.sh
@@ -495,7 +501,7 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true'
         run: .github/scripts/main-bypass-check.test.sh
 
-      # The base envoy-go-checks' edited-migrations check compares a run's tree with, per event,
+      # The base envoy-go-build's edited-migrations check compares a run's tree with, per event,
       # over fixture remotes cloned one commit deep as actions/checkout leaves a run's tree.
       - name: Test the edited-migrations check's choice of base (fixture git remotes; no GitHub)
         if: inputs.changes-result != 'success' || inputs.edited_migrations_base_test == 'true'
@@ -508,6 +514,14 @@ jobs:
       - name: Test the browser lane's blob attempt selection
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_latest_blobs_test == 'true'
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
+
+      # Reading one of dispatch-browser.yaml's merge job, run through that job's own call over
+      # fixture blob directories and a stand-in for its jobs read: what it says of the legs for
+      # each way its download and selection steps can end, a download that never ran among them,
+      # which it once reported as legs that sent no blob (run 44754426131, attempt 1).
+      - name: Test the browser lane's reading of its rows
+        if: inputs.changes-result != 'success' || inputs.dispatch_browser_reading_rows_test == 'true'
+        run: .github/scripts/dispatch-browser-reading-rows.test.sh
 
       # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
       # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
@@ -535,17 +549,18 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
 
-      # The machine watch's falling-least case watches a tmpfs it mounts in an unprivileged user
-      # and mount namespace, so that no other writer moves the free space it reads, and it fails
-      # rather than skips under GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged user namespaces
-      # with an AppArmor sysctl, so the job turns it off on its throwaway runner, as daemon-go does
-      # (`|| true`: a runner image without the key restricts nothing), and the unshare after it is
-      # the verdict that the restriction is gone.
-      - name: Allow unprivileged user namespaces (the machine watch's falling-least case)
+      # The machine watch's test runs as the first process of its own unprivileged user, mount and
+      # PID namespaces, so no sampler it starts outlives it, and its falling-least case watches a
+      # tmpfs it mounts in a further namespace, so that no other writer moves the free space it
+      # reads; both fail rather than skip under GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged
+      # user namespaces with an AppArmor sysctl, so the job turns it off on its throwaway runner,
+      # as daemon-go does (`|| true`: a runner image without the key restricts nothing), and the
+      # unshare after it is the verdict that the restriction is gone.
+      - name: Allow unprivileged user namespaces (the machine watch's test)
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          unshare --user --map-root-user --mount true
+          unshare --user --map-root-user --mount --pid --fork --mount-proc true
 
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
@@ -555,41 +570,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
         run: bash scripts/priorities-seed-check.test.sh
 
-      - name: Lint the Dispatch census script
-        run: bunx biome check --error-on-warnings scripts/dispatch
-
-      # scripts/dispatch is no workspace; the root package pins its TypeScript and Bun types.
-      - name: Typecheck the Dispatch census script
-        run: bunx tsc --noEmit -p scripts/dispatch
+      - name: Test the architecture-check action's go-path mode
+        if: inputs.changes-result != 'success' || inputs.architecture_check_test == 'true'
+        run: .github/actions/architecture-check/check.test.sh
 
       - name: Test the Dispatch census script
         run: bun test scripts/dispatch
-
-      - name: Lint the GitHub App registration script
-        run: bunx biome check --error-on-warnings scripts/github-apps
-
-      # scripts/github-apps is no workspace either; the root package pins its TypeScript and Bun types.
-      - name: Typecheck the GitHub App registration script
-        run: bunx tsc --noEmit -p scripts/github-apps
-
-      - name: Lint the session message-wait script
-        run: bunx biome check --error-on-warnings scripts/sessions
-
-      # scripts/sessions is no workspace either; the root package pins its TypeScript and Bun types.
-      - name: Typecheck the session message-wait script
-        run: bunx tsc --noEmit -p scripts/sessions
-
-      # The suite itself is .github/workflows/ci-job-sessions-script.yaml's: it creates a
-      # session-store database of its own and refuses without one, and it was the one step of
-      # this job that needed a database. The lint and the typecheck above stay, since they need
-      # none and share this job's Bun.
-
-      - name: Lint the approval-eval statistics
-        run: bunx biome check --error-on-warnings scripts/approval-eval
-
-      # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
-      - name: Typecheck the approval-eval statistics
-        run: bunx tsc --noEmit -p scripts/approval-eval
 
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
@@ -600,12 +586,6 @@ jobs:
       - name: Test the search-measure psql helper
         run: python3 -m unittest -v pg_test
         working-directory: scripts/search-measure
-
-      # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
-      # test, whose answer is typed to the contract, and the root package pins its TypeScript and
-      # Bun types. The test itself runs in this job's bun test of scripts/e2e/lib.
-      - name: Typecheck the plan ratings read test
-        run: bunx tsc --noEmit -p scripts/e2e/lib
 
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
@@ -656,5 +636,106 @@ jobs:
         uses: ./.github/actions/ci-ok-report
         with:
           job: test
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  tooling-checks:
+    if: inputs.job == 'tooling-checks'
+    runs-on: ubuntu-24.04-arm
+    # The steps the test job ran before the split, less its tests: the same Bun install, and the
+    # builds, lints and typechecks that ran beside the harnesses. No run has measured them apart
+    # yet, so the limit stays the one they ran under there.
+    timeout-minutes: 30
+    env:
+      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # The very command release.yaml's claude_envoy_build runs, so a pull request whose source
+      # that job would refuse fails this job, and with it the required ci-ok, instead of merging
+      # and then failing every release. What it builds and checks:
+      # packages/claude-envoy/scripts/verify-build.sh.
+      - name: Build, check and pack the Claude Code plugin as the release does
+        run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
+        working-directory: packages/claude-envoy
+
+      # release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers scripts/build-inputs.txt, so a build input
+      # missing from it is one no release bumps a version for.
+      - name: Check the Claude Code plugin's build input list covers what the build reads
+        run: bun test tests/build-inputs.test.ts
+        working-directory: packages/claude-envoy
+
+      # The step below renders this checkout's own fragments with changie.
+      - uses: ./.github/actions/install-changie
+
+      # Nothing renders a changelog fragment between the merge and the release that first ships
+      # it, so a fragment changie refuses would fail that release's build job, and every run
+      # after it, until a fix merges. This renders every fragment of every listed package here
+      # instead, inside a required check. It runs in this job rather than beside fold-orphans in
+      # lint because this job installs changie.
+      - name: Check every changelog fragment renders
+        run: |
+          # shellcheck disable=SC2046 # the file is the package list, split on purpose
+          .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
+
+      # The guides' own layout, in this job because it installs Bun's dependencies, which the
+      # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
+      # step has a filter of its own, guide_layout, naming the five guides the test reads and
+      # the checker it spawns: no other step of this job reads one of them, so a run that
+      # changed none of them skips this step.
+      - name: Check the guides' semantic line breaks
+        if: inputs.changes-result != 'success' || inputs.guide_layout == 'true'
+        run: bun test scripts/semantic-line-breaks.guides.test.ts
+
+      - name: Lint the Dispatch census script
+        run: bunx biome check --error-on-warnings scripts/dispatch
+
+      # scripts/dispatch is no workspace; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the Dispatch census script
+        run: bunx tsc --noEmit -p scripts/dispatch
+
+      - name: Lint the GitHub App registration script
+        run: bunx biome check --error-on-warnings scripts/github-apps
+
+      # scripts/github-apps is no workspace either; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the GitHub App registration script
+        run: bunx tsc --noEmit -p scripts/github-apps
+
+      - name: Lint the session message-wait script
+        run: bunx biome check --error-on-warnings scripts/sessions
+
+      # scripts/sessions is no workspace either; the root package pins its TypeScript and Bun types.
+      # The suite itself is .github/workflows/ci-job-sessions-script.yaml's: it creates a
+      # session-store database of its own and refuses without one.
+      - name: Typecheck the session message-wait script
+        run: bunx tsc --noEmit -p scripts/sessions
+
+      - name: Lint the approval-eval statistics
+        run: bunx biome check --error-on-warnings scripts/approval-eval
+
+      # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the approval-eval statistics
+        run: bunx tsc --noEmit -p scripts/approval-eval
+
+      # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
+      # test, whose answer is typed to the contract, and the root package pins its TypeScript and
+      # Bun types. The test itself runs in the test job's bun test of scripts/e2e/lib.
+      - name: Typecheck the plan ratings read test
+        run: bunx tsc --noEmit -p scripts/e2e/lib
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: tooling-checks
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}

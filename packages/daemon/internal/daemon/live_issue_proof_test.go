@@ -2,16 +2,16 @@
 
 // The harness of this package's live proofs of one issue on an open pull request, whose roles the
 // fake runtime launches and the driver plays over the daemon's worker stream and HTTP routes:
-// behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go and
-// phase_entry_converge_live_test.go, each built with `-tags e2e` by the script under scripts/e2e/
-// that bears its name. Each driver embeds liveIssueProof, liveProof (live_proof_test.go) grown for
-// that one issue: the issue's seed and the daemon's boot over the fake runtime; the reads of a
-// claim's token, its launch and the issue's state; each role's agent, as the registered session it
-// is over HTTP (liveSession) and as the turns a step plays on the shim (liveClaimant); GitHub's
-// REST API for the pull request at the head the driver last pushed (liveGitHub); and the
-// implementer's push, GitHub's synchronize and a push onto the base. firstLine, the cut of a
-// prompt a note prints, is here too, for these drivers and the other e2e ones. What one proof
-// alone drives stays in its driver.
+// behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go,
+// conflict_merger_live_test.go and phase_entry_converge_live_test.go, each built with `-tags e2e`
+// by the script under scripts/e2e/ that bears its name. Each driver embeds liveIssueProof,
+// liveProof (live_proof_test.go) grown for that one issue: the issue's seed and the daemon's boot
+// over the fake runtime; the reads of a claim's token, its launch and the issue's state; each
+// role's agent, as the registered session it is over HTTP (liveSession) and as the turns a step
+// plays on the shim (liveClaimant); GitHub's REST API for the pull request at the head the driver
+// last pushed (liveGitHub); and a push to the issue's branch with GitHub's synchronize, and a push
+// onto the base. firstLine, the cut of a prompt a note prints, is here too, for these drivers and
+// the other e2e ones. What one proof alone drives stays in its driver.
 package daemon
 
 import (
@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -128,7 +129,9 @@ func (p *liveIssueProof) seedImplementing(head string) {
 // it was seeding on an error.
 func (p *liveIssueProof) write(what string, body func(tx pgx.Tx) error) {
 	p.t.Helper()
-	if err := p.st.Tx(context.Background(), body); err != nil {
+	if err := store.Transact(context.Background(), p.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return body(tx)
+	}); err != nil {
 		p.t.Fatalf("seed %s: %v", what, err)
 	}
 }
@@ -192,27 +195,42 @@ func (p *liveIssueProof) waitFor(what string, want func(api.Issue) bool) api.Iss
 // push is the implementer's push of to onto from, subject the pushed commit's: GitHub's own copy
 // of the pull request moves first, as it does on github.com, then the push and the synchronize
 // Envoy relays (publishPush, publishSynchronize), and it returns once the head the daemon's record
-// holds is the pushed one.
+// holds is the pushed one. The envelopes name no sender, as Envoy's did before it relayed one.
 func (p *liveIssueProof) push(from, to, subject string) {
 	p.t.Helper()
+	p.pushAs(from, to, subject, "")
+}
+
+// pushAs is push made by sender, the GitHub account that pushed: the push names it as its pusher
+// and its sender, and the synchronize names it as its sender with the head it moved from, as
+// Envoy's relay of the two webhooks names them (packages/envoy/internal/contracts/normalize.go).
+// The daemon takes the move's push by that sender (classify's arrivalPushes). An empty sender is
+// push's envelopes.
+func (p *liveIssueProof) pushAs(from, to, subject, sender string) {
+	p.t.Helper()
 	p.github.head(to)
-	p.publishPush(from, to, subject)
-	p.publishSynchronize(to)
+	p.publishPush(from, to, subject, sender)
+	p.publishSynchronize(from, to, sender)
 	p.waitFor("the pull request at the pushed head "+to, func(got api.Issue) bool {
 		return got.PullRequest != nil && got.PullRequest.Head == to
 	})
 }
 
-// publishPush publishes the implementer's push of to onto from on the issue's branch, changing
-// code, as Envoy relays a GitHub push (intake's decodePush reads it). headSubject is the subject
-// of the commit pushed, which the envelope carries and the daemon does not read.
-func (p *liveIssueProof) publishPush(from, to, headSubject string) {
+// publishPush publishes the push of to onto from on the issue's branch, changing code, as Envoy
+// relays a GitHub push (intake's decodePush reads it): the implementer's, with no sender, or
+// sender's, which it names as its pusher and its sender. headSubject is the subject of the commit
+// pushed, which the envelope carries and the daemon does not read.
+func (p *liveIssueProof) publishPush(from, to, headSubject, sender string) {
 	p.t.Helper()
-	payload, err := json.Marshal(map[string]string{
+	fields := map[string]string{
 		"kind": "push", "repo": liveRepo, "ref": "refs/heads/legion/" + p.key, "before": from, "after": to,
 		"changed_paths": "src/widget.go", "changed_paths_truncated": "false", "forced": "false",
 		"pusher": "legion-implement[bot]", "commit_count": "1", "head_subject": headSubject,
-	})
+	}
+	if sender != "" {
+		fields["pusher"], fields["sender"] = sender, sender
+	}
+	payload, err := json.Marshal(fields)
 	if err != nil {
 		p.t.Fatalf("encode the push payload: %v", err)
 	}
@@ -221,15 +239,20 @@ func (p *liveIssueProof) publishPush(from, to, headSubject string) {
 }
 
 // publishSynchronize publishes GitHub's synchronize of the pull request to head, as Envoy relays a
-// GitHub pull-request event (intake's decodePullRequest reads it).
-func (p *liveIssueProof) publishSynchronize(head string) {
+// GitHub pull-request event (intake's decodePullRequest reads it). With a sender it names that
+// sender and before, the head the move left; with none it names neither.
+func (p *liveIssueProof) publishSynchronize(before, head, sender string) {
 	p.t.Helper()
-	payload, err := json.Marshal(map[string]string{
+	fields := map[string]string{
 		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(p.number),
 		"head_sha": head, "base_ref": p.base, "head_ref": "legion/" + p.key, "title": p.title,
 		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(p.number),
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if sender != "" {
+		fields["before"], fields["sender"] = before, sender
+	}
+	payload, err := json.Marshal(fields)
 	if err != nil {
 		p.t.Fatalf("encode the synchronize payload: %v", err)
 	}
@@ -342,12 +365,21 @@ func (c *liveSession) handoff(word string) string {
 // a completion with handoffID "" names no record and no version. No completion names a verdict:
 // the check states the daemon holds at the tested head decide the testing phase.
 func (c *liveSession) complete(summary, commit, handoffID string) (int, api.Failure) {
-	t := c.p.t
-	t.Helper()
-	req := api.HandoffCompleteRequest{GrantID: c.grant(), Summary: summary, Commit: commit, HandoffID: handoffID}
+	c.p.t.Helper()
+	req := api.HandoffCompleteRequest{Summary: summary, Commit: commit, HandoffID: handoffID}
 	if handoffID != "" {
 		req.HandoffVersion = 1
 	}
+	return c.completeWith(req)
+}
+
+// completeWith posts req, the completion whole as a pane sends it, with a grant minted for this
+// session now, and returns the status and the refusal the daemon answered: what complete sends,
+// and what a completion complete cannot name sends itself, as a retro's rating of the plan.
+func (c *liveSession) completeWith(req api.HandoffCompleteRequest) (int, api.Failure) {
+	t := c.p.t
+	t.Helper()
+	req.GrantID = c.grant()
 	status, body := c.p.d.request(http.MethodPost, "/legion/v1/handoff/complete", req, false)
 	if status == http.StatusOK {
 		return status, api.Failure{}

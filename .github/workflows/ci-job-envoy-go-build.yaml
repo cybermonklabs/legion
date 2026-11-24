@@ -1,0 +1,277 @@
+name: CI job envoy-go-build
+
+# The steps of ci.yaml's `envoy-go-build` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# envoy's Go build, vet, format, generated-code and migration checks, and the three package tests
+# that need no database: the half of the old envoy-go-checks job a pull request runs. Its script
+# tests are envoy-go-checks' and run in the merge queue only
+# (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+      migration-base:
+        description: >-
+          On a workflow_dispatch run, the commit main pointed at before the push the run tests
+          (ci.yaml's input of the same name, which main-bypass-check.yaml passes): the base the
+          edited-migrations check compares the run's tree with. A dispatch on main must name it;
+          a dispatch on another branch that names none compares with the branch's merge base
+          with main.
+        type: string
+        required: false
+        default: ''
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-go-build:
+    # ubuntu-24.04, the runner release-envoy-listener.yaml builds the release's listener archives
+    # on. The pack step below builds those archives as the release does, with no CGO_ENABLED, and
+    # Go turns cgo on for a native build where gcc is present and off for a cross build: on this
+    # runner that gives the release's own pair, an amd64 listener linked against glibc and a
+    # static arm64 one. On ubuntu-24.04-arm the same step built the reverse pair (measured on run
+    # 44082892660's artifact), so a failure of the release's build mode would pass the pull
+    # request and fail the release after the merge. The job therefore stays on the x86_64 pool,
+    # which changes nothing a release ships.
+    runs-on: ubuntu-24.04
+    # The builds below download the envoy module's dependencies and compile ./cmd/listener for
+    # each release architecture, so the job restores go-envoy, the family whose entry holds that
+    # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
+    # it the pack step would recompile the set per architecture from nothing on every push, which
+    # is the runner time this change exists to cut.
+    # The steps of envoy-go-checks but its script tests took 5.9 min at the median, 6.8 at p90 and
+    # 9.6 at most over 695 successful pull-request runs of 2026-11-22; half again is 15.
+    timeout-minutes: 15
+    env:
+      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The composite action other repositories call, run over this repository's own
+      # .dispatch/architecture (its default path), so every part of it is exercised here before
+      # another repository relies on it: its setup-go, its removal of setup-go's `go` problem
+      # matcher, its path resolved against the workspace, its cache restore, and its count output,
+      # which the next step reads. In a pull request and a merge group it restores its cache and
+      # saves nothing (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs,
+      # "Caches"). It runs right after the checkout, before this
+      # job's own setup-go, which adds setup-go's `go` problem matcher back for every later step
+      # of the job: the placement "before the Go setup of the job" of the action's README.md, "The
+      # Go toolchain". The checkout removes the problem matcher it adds before it ends, so no
+      # matcher of an earlier step reads the check's lines (README.md, "What the runner reads from
+      # the check's lines"). A refused note set fails the job before its other checks run.
+      - id: architecture-notes
+        name: Check this repository's architecture notes with the composite action
+        uses: ./.github/actions/architecture-check
+      # A caller reads the count through env, never inside run:, and so does this step. It runs
+      # only when the action succeeded, which without allow-empty means a valid set of one note or
+      # more, so a count that is missing or not a positive whole number is the action's fault.
+      - name: Read the note count the action hands to the job
+        env:
+          COUNT: ${{ steps.architecture-notes.outputs.count }}
+        run: |
+          if ! [[ $COUNT =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::the architecture-check action's count output is '$COUNT', not a positive whole number"
+            exit 1
+          fi
+          echo "The architecture-check action judged $COUNT notes."
+      # The spec-file action, run over this repository's own .dispatch/spec (its default path) for
+      # the reasons and in the place the architecture-note action above runs: every part of it is
+      # exercised here, and it runs before this job's own setup-go. Its own setup-go adds the `go`
+      # matcher again and it removes it again. Main holds no spec file yet, so the directory does
+      # not exist and allow-empty reads it as the empty tree; a pull request that adds a spec file
+      # is judged by every rule. A refused tree fails the job before its other checks run.
+      - id: spec-files
+        name: Check this repository's spec files with the composite action
+        uses: ./.github/actions/spec-check
+        with:
+          allow-empty: 'true'
+      # It runs only when the action succeeded: a valid tree, or with allow-empty the empty one, so
+      # 0 is a count, and a count that is missing or not a whole number is the action's fault.
+      - name: Read the statement count the spec-file action hands to the job
+        env:
+          COUNT: ${{ steps.spec-files.outputs.count }}
+        run: |
+          if ! [[ $COUNT =~ ^(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::the spec-check action's count output is '$COUNT', not a whole number"
+            exit 1
+          fi
+          echo "The spec-check action read $COUNT statements."
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      - name: Check Go formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
+            echo "$unformatted"
+            exit 1
+          fi
+        working-directory: packages/envoy
+      # These five packages need no database, so they run here on every push. This is their one
+      # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
+      # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
+      - name: Test the architecture-note and spec-file rules and their commands
+        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
+        working-directory: packages/envoy
+      # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
+      # type-checks the daemon's listener clients, so they run here, their one run, and a change to
+      # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step
+      # leaves both packages out, its `grep -Ev` and this step's package list built from
+      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
+      - name: Test the listener's wire package, its clients and wirecheck
+        run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
+        working-directory: packages/envoy
+      - name: Check Go contracts are generated from the shared schema
+        run: bun run check:go
+        working-directory: packages/contracts
+      - name: Check the OpenAPI document is generated from the route table
+        run: go run ./cmd/dispatch openapi --check
+        working-directory: packages/envoy
+      - name: Check pmdoc fixtures are up to date
+        run: bun run check
+        working-directory: packages/envoy/internal/dispatch/pmdoc/gen
+      # The fixture the web app's view tests draw (pmdoc/web_fixtures_test.go): a corpus text
+      # whose display reading changed and a fixture nobody regenerated fails here rather than
+      # leaving a view's test asserting against a stale tree. This is the one run of that test,
+      # TestWebDisplayFixture, and of TestTheWebFixtureFindsItsFilesFromAnyDirectory, which stats
+      # the same file: without `--check` the first writes the fixture instead of checking it, so
+      # envoy-go's unit step skips both by the same names, both texts built from
+      # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
+      - name: Check the web app's display-tree fixture is up to date
+        run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
+        working-directory: packages/envoy
+      # pmdoc's readers on tables in a build made without inlining, the mode of every debugger
+      # build: the table tests read through the block reader, and the display fixture test reads
+      # the display corpus, whose tables go through the display reader. goldmark builds both
+      # readers while pmdoc's package variables are initialized, and it calls into pmdoc there
+      # through the goldmark.Extender interface (lazyAwareTable.Extend,
+      # internal/dispatch/pmdoc/table.go), which Go's initialization order does not look through.
+      # So a reader that copied a variable of pmdoc there could be handed nil in a build without
+      # inlining, where inlining set the same variable at link time in every other build: each
+      # table then failed to read in the first build and read in the second. No other step builds
+      # pmdoc without inlining.
+      - name: Test pmdoc's tables in a build without inlining
+        run: go test -count=1 -gcflags=all=-l -run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./internal/dispatch/pmdoc/
+        working-directory: packages/envoy
+      - name: Build envoy services
+        run: go build ./cmd/dispatch ./cmd/listener
+        working-directory: packages/envoy
+      # A migration a database may already have run must keep its identity, or accept what such a
+      # database records of it, its first identity, the base's text and every identity and text the
+      # base's replaces lines name, in `-- replaces:` lines that begin with the base's, in their
+      # order, then one naming the base's file itself:
+      # each runner refuses a database whose version table records what its file does not accept
+      # (internal/pgmigrate, Reconcile), so an edit of an applied file, a comment included, is
+      # caught here, before any database boots it. The base is what this run's tree lands onto,
+      # and .github/scripts/edited-migrations-base.sh picks it, fetches it into this checkout, which
+      # is one commit deep, and prints it. On a pull request and in the merge queue it is the first
+      # parent of the commit the run checked out: of the pull request's merge commit, and of a
+      # merge-group entry's commit (main, or the entry before it, whose own run checks its change).
+      # On the bypass check's dispatch at main's tip after a push the queue never tested, which can
+      # carry several commits, it is the commit main pointed at before that push (migration-base),
+      # and a dispatch on main that names none fails here rather than compare the tip with its
+      # parent alone. On a dispatch of any other branch that names none, a full run started by
+      # hand, it is the branch's merge base with main. A push whose `before` is the all-zero
+      # commit, or a commit GitHub no longer serves, fails the base's fetch, so the check fails
+      # closed: an operator then dispatches the run again by hand with a base GitHub serves, the
+      # newest commit of main the queue tested before the push, as
+      # `gh workflow run ci.yaml --ref main -f migration-base=<that commit>`. The assignment of the
+      # base is a line of its own, so under bash -e the script's exit, 2 included, is the step's.
+      # The command is built and then run, not run through `go run`, which turns its exit 2, a
+      # check that could not be taken, into an exit 1.
+      - name: Check that no migration a database may have run is edited without its replaces line
+        env:
+          MIGRATION_BASE: ${{ inputs.migration-base }}
+        run: |
+          base=$(../../.github/scripts/edited-migrations-base.sh)
+          go build -o "$RUNNER_TEMP/edited-migrations" ./internal/pgmigrate/cmd/edited-migrations
+          "$RUNNER_TEMP/edited-migrations" --base "$base"
+        working-directory: packages/envoy
+      # Every package of the module, its tests included, as macOS compiles it: the agent-secrets
+      # command ships for darwin (.github/agent-secrets-client-targets.json), and a file with no
+      # build constraint that uses a symbol only a `//go:build linux` file defines compiles on this
+      # runner and nowhere else. The vet runs once per tag set .github/scripts/go_build_tags.py
+      # reads off the module's own build constraints, so a file under a tag that lands later, or
+      # under a negated one, is vetted too rather than passed over in silence. One
+      # darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+      # Its objects go to a build cache of their own, the GOCACHE in the step's env, which the
+      # go-envoy-darwin-vet family holds (.github/workflows/ci-caches.yaml fills it again on every
+      # push to main): restored from nothing, the vet compiled the standard library and every
+      # dependency for darwin on every run, 137.9 s of job 137308591036 and 172 s at the median of
+      # 550 pull request runs. Kept out of go-envoy, whose entry every envoy job downloads.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-build-darwin
+          key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-darwin-vet-{0}-{1}-', runner.os, runner.arch) }}
+      - name: Vet envoy for darwin, its tagged tests included
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-darwin
+        run: |
+          flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
+          while IFS= read -r flag; do
+            echo "Vetting for darwin with $flag"
+            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+          done <<< "$flags"
+        working-directory: packages/envoy
+      # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included.
+      - name: Pack envoy binaries
+        run: |
+          for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
+            out="../../out/pr-artifacts/envoy-$arch"
+            mkdir -p "$out"
+            GOOS=linux GOARCH=$arch go build -buildvcs=false -o "$out/envoy-listener" ./cmd/listener
+            GOOS=linux GOARCH=$arch ../../scripts/go-third-party-notices.sh "$out/THIRD_PARTY_NOTICES" ./cmd/listener
+            tar czf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz" -C "$out" envoy-listener THIRD_PARTY_NOTICES
+            tar tzvf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz"
+          done
+        working-directory: packages/envoy
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: legion-envoy-binaries-pr
+          path: |
+            out/pr-artifacts/legion-envoy-amd64.tar.gz
+            out/pr-artifacts/legion-envoy-arm64.tar.gz
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-build
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

@@ -4,7 +4,9 @@ package memoryguard
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -33,28 +35,40 @@ func watchModified(path string) (*fileWatch, error) {
 	file := os.NewFile(uintptr(fd), "inotify "+path)
 	modified := make(chan struct{}, 1)
 	w := &fileWatch{modified: modified, stop: func() { _ = file.Close() }}
-	go func() {
-		defer close(modified)
-		// One buffer for every read: room for many events, each of which is at most
-		// SizeofInotifyEvent+NAME_MAX+1 bytes, and an event on a watched file carries no name.
-		buf := make([]byte, 4096)
-		for {
-			n, err := file.Read(buf)
-			if err != nil {
-				w.err = err
-				return
-			}
-			select {
-			case modified <- struct{}{}:
-			default:
-			}
-			if watchIgnored(buf[:n]) {
-				w.err = errWatchIgnored
-				return
-			}
+	go readModified(file, modified, w)
+	return w, nil
+}
+
+// readModified reads the inotify descriptor's events into modified until the watch ends, and then
+// closes modified with w's err saying why. A panic here would end the launcher, PID 1 of the pod,
+// which runs this on a goroutine of its own, so it ends the watch instead, as a failed read does,
+// with the panic and where it was raised as w's err: the guest watch then logs its wake off line
+// and goes on with its scans alone (Guest's Run).
+func readModified(file io.Reader, modified chan<- struct{}, w *fileWatch) {
+	defer close(modified)
+	defer func() {
+		if p := recover(); p != nil {
+			w.err = errors.New(panicReason("panic", p))
 		}
 	}()
-	return w, nil
+	// One buffer for every read: room for many events, each of which is at most
+	// SizeofInotifyEvent+NAME_MAX+1 bytes, and an event on a watched file carries no name.
+	buf := make([]byte, 4096)
+	for {
+		n, err := file.Read(buf)
+		if err != nil {
+			w.err = err
+			return
+		}
+		select {
+		case modified <- struct{}{}:
+		default:
+		}
+		if watchIgnored(buf[:n]) {
+			w.err = errWatchIgnored
+			return
+		}
+	}
 }
 
 // watchIgnored is whether the events a read of an inotify descriptor took hold IN_IGNORED, the

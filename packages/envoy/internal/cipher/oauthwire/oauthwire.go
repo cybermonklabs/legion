@@ -138,16 +138,16 @@ const (
 // The token exchange's answer to a result entry's run: an airlock placeholder bound to a result
 // grant the broker keeps, never an access token. The run asks for it under
 // TokenTypeAirlockPlaceholder, and the broker's airlock proxy swaps the run's results token in for
-// the placeholder on each write the rules entry AirlockResultsName allows.
+// the placeholder on each write the proxy block of the profile AirlockResultsName allows.
 const (
 	// TokenTypeAirlockPlaceholder is the requested_token_type a result entry's run asks for and
 	// the issued_token_type it is answered: the placeholder its writes carry through the airlock.
 	// RFC 8693 Section 2.2.1 lets the issued token be other than an access token; the broker
 	// defines this name, as it defines SubjectTokenTypeGitHub.
 	TokenTypeAirlockPlaceholder = "urn:envoy:params:oauth:token-type:airlock-placeholder"
-	// AirlockResultsName is the one airlock name a result grant holds: the rules entry of kind
-	// dpop that binds Dispatch's public host, and the variable the command finds the placeholder
-	// in.
+	// AirlockResultsName is the one airlock name a result grant holds: the profile whose proxy
+	// block, of kind dpop, binds Dispatch's public host, and the variable the command finds the
+	// placeholder in.
 	AirlockResultsName = "DISPATCH_RESULTS_TOKEN"
 	// ResultGrantIDPrefix opens the id a result grant is named by on the wire and in the proxy's
 	// lines: "result:" and the grant's uuid.

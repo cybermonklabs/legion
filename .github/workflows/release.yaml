@@ -109,7 +109,8 @@ env:
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/
     packages/envoy/internal/dispatch/model/ packages/envoy/internal/dispatch/pmdoc/
     packages/envoy/internal/dispatch/text/ packages/envoy/internal/dpopproof/ packages/envoy/internal/fold/
-    packages/envoy/internal/googleidentity/ packages/envoy/internal/id/ packages/envoy/internal/redact/
+    packages/envoy/internal/googleidentity/ packages/envoy/internal/id/
+    packages/envoy/internal/oauthrefusal/ packages/envoy/internal/redact/
     packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/listenerwire/
     packages/envoy/listenfd/
     packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/

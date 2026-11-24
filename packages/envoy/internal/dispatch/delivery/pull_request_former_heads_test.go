@@ -58,11 +58,12 @@ func newReKeyRig(t *testing.T, number int, left, oldHead, head string) *reKeyRig
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssue(t, ctx, pool, number)
 	seedRenamedGadgets(t, ctx, pool)
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
 	earlier := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	stale := time.Now().Add(-10 * time.Minute)
 	for index, sha := range []string{left, oldHead} {
 		at := earlier.Add(time.Duration(index) * time.Minute)
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := attributor.UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 			Repo: gadgetsOldRepo, Number: number, HeadSHA: sha,
 			HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &at, CheckedAt: &stale,
 		}); err != nil {
@@ -71,12 +72,12 @@ func newReKeyRig(t *testing.T, number int, left, oldHead, head string) *reKeyRig
 	}
 	fake := gadgetsFake(t, number, issue+": the work", head)
 	client := fake.newTestClient()
-	if written, _, err := ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now()); err != nil || written != 1 {
+	if written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now()); err != nil || written != 1 {
 		t.Fatalf("read through %s at %s = %d, %v; want one row written", gadgetsRepo, head, written, err)
 	}
 	rig := &reKeyRig{pool: pool, ctx: ctx, issue: issue, number: number, left: left, oldHead: oldHead, head: head}
 	rig.refresh = func() error {
-		return RefreshPullRequestHead(context.Background(), pool, client, nil, gadgetsOldRepo, number, time.Now())
+		return attributor.RefreshPullRequestHead(context.Background(), pool, client, nil, gadgetsOldRepo, number, time.Now())
 	}
 	rig.formerHeadsOf = func(repo string) []string {
 		t.Helper()
@@ -312,7 +313,7 @@ func TestAReKeyOfAPullRequestBackAtAHeadItLeftCarriesThatHead(t *testing.T) {
 	rig := newReKeyRig(t, 529, left, oldHead, head)
 	back := time.Date(2026, 2, 1, 0, 2, 0, 0, time.UTC)
 	stale := time.Now().Add(-10 * time.Minute)
-	if err := UpsertPullRequestHead(rig.ctx, rig.pool, nil, PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(rig.ctx, rig.pool, nil, PullRequestHead{
 		Repo: gadgetsOldRepo, Number: rig.number, HeadSHA: left,
 		HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &back, CheckedAt: &stale,
 	}); err != nil {

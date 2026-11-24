@@ -34,13 +34,14 @@ import (
 // generation-1 rows run, they must finish without acting, never suspending the new generation's
 // worker (nothing would restart it: the phase waits for that worker's handoff).
 func TestAnEarlierGenerationsSuperviseRowNeverActsOnTheNextGeneration(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing},
 		Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, root)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
 	}); err != nil {
 		t.Fatalf("put slot: %v", err)
@@ -114,6 +115,7 @@ func TestAnEarlierGenerationsSuperviseRowNeverActsOnTheNextGeneration(t *testing
 // of a held tree's failed worker finishes, instead of being refused and retried for as long as the
 // daemon runs.
 func TestSuspendingAClaimThatRunsNothingIsDone(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -150,6 +152,7 @@ func TestSuspendingAClaimThatRunsNothingIsDone(t *testing.T) {
 // implementing and nothing relaunched; a completion it reports for a phase it no longer works is
 // refused. Only the issue's close stops it, and its session is kept.
 func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -326,6 +329,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 // no stop; once the turn ends the worker is suspended once with its session kept, and the row's
 // retry finishes it.
 func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -411,6 +415,7 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 // capability. (The mover is the reviewer: the tester has no backward move of its own out of
 // testing, since its step ends by its checks' states.)
 func TestABackwardMoveStartsTheImplementerWhileTheReviewerIsStillInItsTurn(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -419,7 +424,7 @@ func TestABackwardMoveStartsTheImplementerWhileTheReviewerIsStillInItsTurn(t *te
 	// The issue is at work in reviewing and at work in implementing after the move back, so it
 	// holds its admission slot throughout: the implementer's task is delivered rather than held for one.
 	holdSlot(t, pool, issue.Key)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1",
 			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}})
 	}); err != nil {
@@ -530,12 +535,13 @@ func TestABackwardMoveStartsTheImplementerWhileTheReviewerIsStillInItsTurn(t *te
 // works. When its relaunches run out, the claim fails, and the architect is told in a worker-died
 // that says the phase is not that role's; the issue is not held, since the phase's own worker is fine.
 func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
 	putOutboxIssue(t, pool, records, issue)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RolePlanner, Claim: "planner", HandoffRecord: "plan-1", HandoffVersion: 1, LastHandoff: "plan-1"})
 	}); err != nil {
 		t.Fatal(err)
@@ -674,6 +680,7 @@ func unfinishedSuperviseRows(t *testing.T, pool *store.Pool) int {
 // (only a merged or closed one belongs to the earlier generation), so the new generation's
 // implementer completion reaches testing on it.
 func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -681,7 +688,7 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 	approved := 1
 	root := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: key, Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, root)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -731,6 +738,7 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 // are suspended and its phase parked, so its tester's next completion advances nothing and no
 // status write lands over the human's backlog.
 func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -743,7 +751,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	// that no slot can reach and take the whole tree out of it, which is not what this test moves.
 	openTree(t, pool, "LEGION", "LEGION-208")
 	holdSlot(t, pool, "LEGION-208", "LEGION-209")
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "acme/widgets", Number: 90, Branch: "legion/LEGION-209", HeadSHA: "sha",
 			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}})
 	}); err != nil {
@@ -808,6 +816,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 // takes whatever task it is sent; then the runtime recovers and every row runs to its end, and the
 // worker is still running with the implementing task.
 func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -819,7 +828,7 @@ func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
 	// is the handoff between two phases of one worker, so the implementing task is given its row
 	// up front and waits for nothing.
 	holdSlot(t, pool, issue.Key)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "claim"})
 	}); err != nil {
 		t.Fatal(err)
@@ -925,6 +934,7 @@ func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
 // task, leaving the phase with nobody in it. The claim records the newest start run against it,
 // so the stop knows it is superseded whatever the timing was: no ordering, no window.
 func TestAStopSupersededByANewerStartNeverActs(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1012,6 +1022,7 @@ func TestAStopSupersededByANewerStartNeverActs(t *testing.T) {
 // suspended with the root in done, a phase no role works. Found by #1347's review, whose test this
 // extends.
 func TestARootLeavingTheWorkflowSuspendsEveryWorkerOfItsTree(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1020,7 +1031,7 @@ func TestARootLeavingTheWorkflowSuspendsEveryWorkerOfItsTree(t *testing.T) {
 	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Parent: &parent, Title: "Child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, root)
 	putOutboxIssue(t, pool, records, child)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
 	}); err != nil {
 		t.Fatal(err)
@@ -1102,6 +1113,7 @@ func retryHeldPhase(t *testing.T, issue record.Issue) record.OutboxRow {
 // writes a start of its own for the same phase and run: its task would come behind the kept one as
 // a second prompt for work already under way, so the row relaunches the claim and delivers nothing.
 func TestARetryOfAClaimThatKeptItsPhasesTaskDeliversNothingMore(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
@@ -1129,6 +1141,7 @@ func TestARetryOfAClaimThatKeptItsPhasesTaskDeliversNothingMore(t *testing.T) {
 // a check made before the relaunch, seeing the task still held, would relaunch the claim with
 // nothing to do.
 func TestARetryOfAClaimWhoseKeptTasksTurnWasOverDeliversItsTask(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
@@ -1151,6 +1164,7 @@ func TestARetryOfAClaimWhoseKeptTasksTurnWasOverDeliversItsTask(t *testing.T) {
 // the claim its own task: the delivery waits behind the kept task (the claim refuses a second
 // pending one), and the row is retried until it goes.
 func TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask(t *testing.T) {
+	t.Parallel()
 	for name, edit := range map[string]func(*supervise.Delivery){
 		"another phase": func(d *supervise.Delivery) { d.Phase = phase.Planning },
 		"another run":   func(d *supervise.Delivery) { d.Generation = 1 },
@@ -1180,6 +1194,7 @@ func TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask(t *testing.T) {
 // over's task into the new run: it is dropped (phaseHolds compares the run), and the new run's
 // start gives the worker its own task.
 func TestAnOperatorResumeAfterAReadmissionDropsTheOldRunsTask(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

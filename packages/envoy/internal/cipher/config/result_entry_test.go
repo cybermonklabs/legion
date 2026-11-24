@@ -8,18 +8,19 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
-// withResultsAirlock is e with the airlock's four settings: the rules file a result entry's
+// withResultsAirlock is e with the airlock's four settings: the profiles file a result entry's
 // grants need and the three the proxy cannot run without. Load reads none of the files.
 func withResultsAirlock(e map[string]string) map[string]string {
-	e["BROKER_AIRLOCK_RULES_FILE"] = "/run/airlock/airlock.json"
+	e["BROKER_PROFILES_FILE"] = "/run/broker/profiles.json"
 	e["BROKER_AIRLOCK_PROXY_URL"] = "https://secrets.internal.example:13381"
 	e["BROKER_AIRLOCK_CA_CERT_FILE"] = "/run/airlock/ca.crt"
 	e["BROKER_AIRLOCK_CA_KEY_FILE"] = "/run/airlock/ca.key"
 	return e
 }
 
-// resultsEntry is the rules entry a result entry's grants are held to: DISPATCH_RESULTS_TOKEN,
-// kind dpop, bound to Dispatch's host, carried in Authorization alone, with an allow list.
+// resultsEntry is the proxy block of the profile a result entry's grants are held to,
+// DISPATCH_RESULTS_TOKEN: kind dpop, bound to Dispatch's host, carried in Authorization alone,
+// with an allow list.
 func resultsEntry() proxyrules.SecretRule {
 	return proxyrules.SecretRule{
 		Name: "DISPATCH_RESULTS_TOKEN", Hosts: []string{"dispatch.example"}, Headers: []string{"Authorization"},
@@ -33,14 +34,15 @@ func resultsDestination() PrivateUpstream {
 	return PrivateUpstream{Host: "dispatch.example", URL: &url.URL{Scheme: "http", Host: "dispatch.dispatch.svc.cluster.local:8766"}}
 }
 
-// TestAResultEntryNeedsTheDPoPEntryAtStart: BROKER_EXCHANGE_RESULT_WORKFLOWS with no rules file
-// refuses the start naming BROKER_AIRLOCK_RULES_FILE, and AirlockResultRules, for a broker with
-// result entries, refuses rules with no DISPATCH_RESULTS_TOKEN entry, one that binds no host, one
-// that binds a `*.` name or more than one host (the run's token and a proof of the pod's key go to
-// every host the entry binds, so it binds Dispatch's one host and nothing else), one not of kind
-// dpop, one with no allow list or an empty one, and one carried in any header but Authorization
-// alone, each refusal naming what is missing. The entry whole, and the one with the default header
-// (Authorization), are taken with the private destination of its host.
+// TestAResultEntryNeedsTheDPoPEntryAtStart: BROKER_EXCHANGE_RESULT_WORKFLOWS with no profiles file
+// refuses the start naming BROKER_PROFILES_FILE, and AirlockResultRules, for a broker with
+// result entries, refuses profiles with no DISPATCH_RESULTS_TOKEN profile, one whose proxy block
+// binds no host, one that binds a `*.` name or more than one host (the run's token and a proof of
+// the pod's key go to every host the profile binds, so it binds Dispatch's one host and nothing
+// else), one not of kind dpop, one with no allow list or an empty one, and one carried in any
+// header but Authorization alone, each refusal naming BROKER_PROFILES_FILE and what is missing.
+// The profile whole, and the one with the default header (Authorization), are taken with the
+// private destination of its host.
 func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 	e := withResultsAirlock(validEnv())
 	e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
@@ -49,9 +51,9 @@ func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 	if _, err := Load(env(e)); err != nil {
 		t.Fatalf("result workflows with the airlock: %v", err)
 	}
-	delete(e, "BROKER_AIRLOCK_RULES_FILE")
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
-		t.Errorf("result workflows with no rules file: err = %v, want a refusal naming BROKER_EXCHANGE_RESULT_WORKFLOWS and BROKER_AIRLOCK_RULES_FILE", err)
+	delete(e, "BROKER_PROFILES_FILE")
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") {
+		t.Errorf("result workflows with no profiles file: err = %v, want a refusal naming BROKER_EXCHANGE_RESULT_WORKFLOWS and BROKER_PROFILES_FILE", err)
 	}
 	if err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{resultsEntry()}}, resultsDestination(), true); err != nil {
 		t.Fatalf("the whole entry: %v", err)
@@ -65,7 +67,7 @@ func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 		name, says string
 		spoil      func(*proxyrules.SecretRule)
 	}{
-		{"no such entry", "holds no entry", func(s *proxyrules.SecretRule) { s.Name = "OTHER_TOKEN"; s.Kind = "" }},
+		{"no such profile", "holds no profile", func(s *proxyrules.SecretRule) { s.Name = "OTHER_TOKEN"; s.Kind = "" }},
 		{"no host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = nil }},
 		{"a wildcard host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = []string{"*.example.com"} }},
 		{"a second host", "one exact host", func(s *proxyrules.SecretRule) { s.Hosts = []string{"dispatch.example", "api.github.com"} }},
@@ -85,25 +87,30 @@ func TestAResultEntryNeedsTheDPoPEntryAtStart(t *testing.T) {
 		err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{entry}}, resultsDestination(), true)
 		if err == nil || !strings.Contains(err.Error(), "DISPATCH_RESULTS_TOKEN") || !strings.Contains(err.Error(), c.says) {
 			t.Errorf("%s: err = %v, want a refusal naming DISPATCH_RESULTS_TOKEN and %q", c.name, err, c.says)
+			continue
+		}
+		if !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
+			t.Errorf("%s: err = %v, want a refusal naming BROKER_PROFILES_FILE, whose proxy blocks are the rules, and not the removed BROKER_AIRLOCK_RULES_FILE", c.name, err)
 		}
 	}
 }
 
-// TestTheResultsEntryIsCheckedOnABrokerWithNoResultEntries: AirlockResultRules holds the entry
+// TestTheResultsEntryIsCheckedOnABrokerWithNoResultEntries: AirlockResultRules holds the profile
 // DISPATCH_RESULTS_TOKEN on a broker with no result entries of its own as on one with them, since
-// any broker with an airlock port serves every result grant of the database it shares. Rules whose
-// entry binds a `*.` name, two hosts, its one host with no private destination or with a
-// destination of another host, rules with a second entry of kind dpop, and rules where another
-// entry, `*.` or exact, binds the destination's host, are each refused, naming the setting at fault
-// and never BROKER_EXCHANGE_RESULT_WORKFLOWS, which is unset. Control: the entry with the
-// destination of its host passes, and so do rules with no dpop entry and no destination.
+// any broker with an airlock port serves every result grant of the database it shares. Profiles
+// whose results profile binds a `*.` name, two hosts, its one host with no private destination or
+// with a destination of another host, profiles with a second proxy block of kind dpop, and profiles
+// where another proxy block, `*.` or exact, binds the results host (the refusal names that host),
+// are each refused, naming BROKER_PROFILES_FILE and the setting or the profile at fault, and never
+// BROKER_EXCHANGE_RESULT_WORKFLOWS, which is unset. Control: the profile with the destination of
+// its host passes, and so do profiles with no dpop block and no destination.
 func TestTheResultsEntryIsCheckedOnABrokerWithNoResultEntries(t *testing.T) {
 	secretOnly := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "GH_TOKEN", Hosts: []string{"api.github.com"}}}}
 	if err := AirlockResultRules(secretOnly, PrivateUpstream{}, false); err != nil {
-		t.Fatalf("control: rules with no dpop entry and no destination: %v", err)
+		t.Fatalf("control: profiles with no dpop block and no destination: %v", err)
 	}
 	if err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{resultsEntry(), secretOnly.Secrets[0]}}, resultsDestination(), false); err != nil {
-		t.Fatalf("control: the entry with the destination of its host: %v", err)
+		t.Fatalf("control: the profile with the destination of its host: %v", err)
 	}
 	elsewhere := resultsDestination()
 	elsewhere.Host = "elsewhere.example"
@@ -112,24 +119,24 @@ func TestTheResultsEntryIsCheckedOnABrokerWithNoResultEntries(t *testing.T) {
 		destination PrivateUpstream
 		spoil       func(*proxyrules.Rules)
 	}{
-		{"a wildcard entry", "one exact host", resultsDestination(), func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"*.example"} }},
-		{"a two-host entry", "one exact host", resultsDestination(), func(r *proxyrules.Rules) {
+		{"a wildcard profile", "one exact host", resultsDestination(), func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"*.example"} }},
+		{"a two-host profile", "one exact host", resultsDestination(), func(r *proxyrules.Rules) {
 			r.Secrets[0].Hosts = []string{"dispatch.example", "evil.example"}
 		}},
 		{"no private destination", "BROKER_AIRLOCK_PRIVATE_UPSTREAM is unset", PrivateUpstream{}, func(*proxyrules.Rules) {}},
 		{"a destination of another host", "names the host elsewhere.example", elsewhere, func(*proxyrules.Rules) {}},
-		{"a second dpop entry", "OTHER_TOKEN of kind dpop", resultsDestination(), func(r *proxyrules.Rules) {
+		{"a second dpop profile", "OTHER_TOKEN of kind dpop", resultsDestination(), func(r *proxyrules.Rules) {
 			other := resultsEntry()
 			other.Name, other.Hosts = "OTHER_TOKEN", []string{"elsewhere.example"}
 			r.Secrets = append(r.Secrets, other)
 		}},
-		{"a lone dpop entry over the destination", "LONE_TOKEN of kind dpop", resultsDestination(), func(r *proxyrules.Rules) {
+		{"a lone dpop profile over the destination", "LONE_TOKEN of kind dpop", resultsDestination(), func(r *proxyrules.Rules) {
 			r.Secrets[0].Name, r.Secrets[0].Hosts = "LONE_TOKEN", []string{"*.example"}
 		}},
-		{"a wildcard secret entry over the destination", "WILDCARD_TOKEN", resultsDestination(), func(r *proxyrules.Rules) {
+		{"a wildcard secret profile over the destination", "the profile WILDCARD_TOKEN of BROKER_PROFILES_FILE binds the host dispatch.example", resultsDestination(), func(r *proxyrules.Rules) {
 			r.Secrets = append(r.Secrets, proxyrules.SecretRule{Name: "WILDCARD_TOKEN", Hosts: []string{"*.example"}})
 		}},
-		{"an exact secret entry over the destination", "SAME_TOKEN", resultsDestination(), func(r *proxyrules.Rules) {
+		{"an exact secret profile over the destination", "the profile SAME_TOKEN of BROKER_PROFILES_FILE binds the host dispatch.example", resultsDestination(), func(r *proxyrules.Rules) {
 			r.Secrets = append(r.Secrets, proxyrules.SecretRule{Name: "SAME_TOKEN", Hosts: []string{"dispatch.example"}})
 		}},
 	} {
@@ -142,6 +149,9 @@ func TestTheResultsEntryIsCheckedOnABrokerWithNoResultEntries(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") {
 			t.Errorf("%s: the refusal names BROKER_EXCHANGE_RESULT_WORKFLOWS, which is unset: %v", c.name, err)
+		}
+		if !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
+			t.Errorf("%s: err = %v, want a refusal naming BROKER_PROFILES_FILE, whose proxy blocks are the rules, and not the removed BROKER_AIRLOCK_RULES_FILE", c.name, err)
 		}
 	}
 }

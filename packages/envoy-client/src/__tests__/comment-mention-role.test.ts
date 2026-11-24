@@ -48,14 +48,14 @@ const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) 
     body: text === "" ? undefined : JSON.parse(text),
   });
   if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/comments") {
-    return Response.json(
-      {
-        id: "comment-1",
-        issue_key: "DSP-1",
-        advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
-      },
-      { headers: { "Idempotency-Key": request.headers.get("Idempotency-Key") ?? "" } }
-    );
+    const answer = Response.json({
+      id: "comment-1",
+      issue_key: "DSP-1",
+      advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
+    });
+    const key = request.headers.get("Idempotency-Key");
+    if (key !== null) answer.headers.set("Idempotency-Key", key);
+    return answer;
   }
   return Response.json({ error: "not found", code: "NOT_FOUND" }, { status: 404 });
 }) as typeof fetch;

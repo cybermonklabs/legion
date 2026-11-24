@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dpopproof"
 )
 
-// resultTransport is what a request to a host whose rules entry is of kind dpop leaves the proxy
+// resultTransport is what a request to a host whose proxy block is of kind dpop leaves the proxy
 // through: a CI run's results capability, which the broker mints for a result grant and holds, so
 // that no process of the run's job ever holds a Dispatch token or the key one is bound to.
 // serveBound has already swapped the run's token in for the placeholder (proxyrules.Rewrite);

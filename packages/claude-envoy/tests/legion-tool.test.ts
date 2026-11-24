@@ -4,7 +4,7 @@ import { resolve } from "node:path"
 import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
+import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import { legion, name, version } from "../package.json" with { type: "json" }
@@ -188,13 +188,14 @@ test("declares the six phase-worker operations under one op, and names the Envoy
       wake_at: { type: "string" },
       plan_rating: { type: "integer", minimum: 1, maximum: 5 },
       plan_reason: { type: "string" },
+      return_to: { type: "integer", minimum: 1 },
       reason: { type: "string" },
       round: { type: "string" },
     },
     required: ["op"],
   })
   expect(definition.description).toContain(
-    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A wake that a project pause held is counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. handoff_complete",
+    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`,
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
@@ -297,6 +298,33 @@ test("the retro's handoff_complete sends its rating of the plan as planRating an
       commit: standing,
       planRating: 3,
       planReason: reason,
+    },
+  })
+})
+
+// A tester's fail names the step its task returns to through this tool as through every host's
+// (contract 219): `return_to` reaches the daemon as its own `returnTo`.
+test("a tester's fail sends return_to as returnTo", async () => {
+  const { client, requests } = await daemon({ state: stateAtPhase("testing") })
+  const tested = "d".repeat(40)
+  await executeLegionTool(
+    {
+      daemon: client,
+      claim: () => ({ ...implementer, role: "tester" }),
+      handoffReport: async () => ({ commit: tested }),
+      branchHead: noBranchHead,
+    },
+    { op: "handoff_complete", summary: "Red.", verdict: "fail", return_to: 1 },
+  )
+  expect(requests.at(-1)).toEqual({
+    method: "POST",
+    path: "/legion/v1/handoff/complete",
+    body: {
+      grantId: "grant-for-one-command",
+      summary: "Red.",
+      verdict: "fail",
+      commit: tested,
+      returnTo: 1,
     },
   })
 })

@@ -368,8 +368,7 @@ func shipPullRequestsTo(t *testing.T, builds *twoBuilds) string {
 	project := uniqueProjectKey(t, "PRS")
 	builds.current().createProject(t, project, "Merged pull requests")
 	if _, err := builds.database.Pool.Exec(ctx, `
-		insert into repo_projects (repo, project, is_default, created_by)
-		values ('acme/deploy', $1, true, '{"kind":"system","id":"test"}'::jsonb)
+		update projects set default_repo = 'acme/deploy' where key = $1
 	`, project); err != nil {
 		t.Fatalf("make acme/deploy %s's default repository: %v", project, err)
 	}

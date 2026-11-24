@@ -110,17 +110,14 @@ async function agentPut(route: string, input: Record<string, unknown>): Promise<
 /** `heads-issue <file> <scenario> [<case>]`: the run's issue, before rig.sh's heads_fixture makes
  * branches named after it. First the GitHub stand-in holds the run's repository and no pull
  * request, since the delivery settings read GitHub before Dispatch stores them
- * (settings_delivery.go); then the run's project LWEVAL is mapped to the repository and the
+ * (settings_delivery.go); then the run's project LWEVAL takes the repository as its default and the
  * delivery settings are written, as scripts/e2e/verification-results.ts writes them, since the
  * intake takes an event only while a settings row exists; then the issue, its spec, and its
  * Verification document, whose one check k1 carries `ci_check` in the case ci-only and in
  * ci-pass-and-fail. The fixture names that document, whose block k1 rig.sh's ci_job_results reads. */
 export async function headsIssue(file: string, world: string): Promise<void> {
   await seedGithub({});
-  await agentPut(`/api/v1/settings/repo-projects/${HEADS_REPO}`, {
-    default: true,
-    project: "LWEVAL",
-  });
+  await agentPut("/api/v1/projects/LWEVAL/default-repository", { repo: HEADS_REPO });
   await agentPut("/api/v1/settings/delivery", {
     deploy_repo: HEADS_REPO,
     deploy_workflow_path: ".github/workflows/deploy.yml",
@@ -208,7 +205,7 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  * case ci-only a `success` of k1's job at #702's head, and in ci-pass-and-fail that job's run
  * there `in_progress`. It serves no `commit_pulls`, so an event is the one thing that teaches
  * Dispatch a head. One `opened` envelope of each pull request goes out on the NATS
- * DISPATCH_E2E_NATS_URL names, with the subject and the body of `publishPullRequest`
+ * DISPATCH_E2E_NATS_URLS names, with the subject and the body of `publishPullRequest`
  * (scripts/e2e/verification-results.ts). Then the case's results, each as the role it names, and
  * the handoff records, in this order:
  *   - sibling-fails: a pass of the implementer and one of the tester at #702's head, a fail of the
@@ -308,9 +305,13 @@ export async function headsEvents(file: string, headsFile: string, world: string
         : {}),
   });
 
-  const natsUrl = process.env.DISPATCH_E2E_NATS_URL ?? "";
-  if (natsUrl === "") throw new Error("DISPATCH_E2E_NATS_URL names no NATS (rig.sh own_github)");
-  const nats = await connect({ name: "skill-scenarios-seed", servers: natsUrl });
+  const natsServers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
+    .split(",")
+    .map((server) => server.trim())
+    .filter((server) => server !== "");
+  if (natsServers.length === 0)
+    throw new Error("DISPATCH_E2E_NATS_URLS names no NATS (rig.sh own_github)");
+  const nats = await connect({ name: "skill-scenarios-seed", servers: natsServers });
   const codec = StringCodec();
   const [owner, name] = HEADS_REPO.split("/");
   for (const pr of prs) {

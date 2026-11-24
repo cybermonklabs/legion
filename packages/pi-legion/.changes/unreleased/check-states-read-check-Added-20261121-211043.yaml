@@ -10,8 +10,8 @@ body: |-
   runs of its batch were scored with no rig error; a row short of that reads UNKNOWN and the
   judgement exits 3, so a control of one scored run beside four rig errors approves nothing.
   `states-read-check.sh judge` gives the same judgement for two scores saved before. A checkout
-  whose `label-rules.ts` has no label `ablate-states-read` stops at its label checkouts, before the
-  rig starts a service or a model.
+  where the `ablate-states-read` patch does not apply stops at its label checkouts, before the rig
+  starts a service or a model.
 time: 2026-11-21T21:10:43Z
 custom:
     Issue: check-states-read-check

@@ -49,8 +49,8 @@ import {
 // answers the public name: a write that goes around the proxy opens no connection at all.
 //
 // Run as a script, `bun packages/envoy-client/test/ci-results-stack.ts` starts the stack, seeds
-// project ACME mapped to the repository local-org/local-repo as its default, one commit of it with
-// the probe spec and issue ACME-1 whose Verification document holds a check CI proves and an
+// project ACME, whose default repository is local-org/local-repo, one commit of that repository
+// with the probe spec and issue ACME-1 whose Verification document holds a check CI proves and an
 // ordinary one, prints the variables of one job of a push run and the commands of the try line,
 // and runs until Ctrl-C. With `--forge-only` it starts the stand-in's Actions token endpoint alone
 // and prints the three variables a job reads it by: each token it mints is signed by a key no real
@@ -60,7 +60,7 @@ import {
 // `process.env.X`.
 const { PATH: SHELL_PATH = "" } = process.env;
 
-/** The project the stack's result entry writes, mapped to {@link REPOSITORY}. */
+/** The project the stack's result entry writes, whose default repository is {@link REPOSITORY}. */
 const PROJECT = "ACME";
 /** The repository whose runs the result entry takes. */
 const REPOSITORY = "local-org/local-repo";
@@ -412,8 +412,8 @@ interface Front {
 /**
  * Starts the stack in `options.work`, which the caller reserved with
  * {@link useCIResultsStackDirectory} and which is empty, and resolves once each part serves and
- * project ACME maps local-org/local-repo. It throws, naming why, when a part does not come up;
- * whatever started by then is stopped.
+ * project ACME's default repository is local-org/local-repo. It throws, naming why, when a part
+ * does not come up; whatever started by then is stopped.
  */
 export async function startCIResultsStack(options: CIResultsStackOptions): Promise<CIResultsStack> {
   const { work } = options;
@@ -454,7 +454,9 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     const stands = path.join(bin, "dev-proxy-stands");
 
     // The cluster's issuer: Dispatch's own token at the brokers, rewritten before it lapses, and
-    // the brokers' sign-in client, which a broker requires and nothing here signs in at.
+    // the brokers' sign-in client, which a broker requires and nothing here signs in at. The issuer
+    // takes a code-flow client with its registered callback (#5185); this is the one dev-broker.sh
+    // and run-broker.sh register.
     const accountToken = path.join(work, "dispatch-account-token");
     const signInSecret = path.join(work, "signin-client-secret");
     writeFileSync(signInSecret, randomBytes(32).toString("hex"), { mode: 0o600 });
@@ -465,7 +467,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
         "--token",
         `${CLUSTER_AUDIENCE}=${DISPATCH_ACCOUNT}=${accountToken}`,
         "--code-flow",
-        `${SIGNIN_CLIENT}=${signInSecret}`,
+        `${SIGNIN_CLIENT}=${signInSecret}=http://127.0.0.1/signin/callback`,
       ],
       { PATH: SHELL_PATH, HOME: work },
       issuerLog
@@ -549,25 +551,28 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
 
     const fakeSecrets = path.join(work, "fake-secrets.json");
     writeFileSync(fakeSecrets, JSON.stringify({ secrets: [] }), { mode: 0o600 });
-    // C8's entry: Dispatch's public host alone, kind dpop, the placeholder in Authorization alone,
-    // and a POST under the projects' and the issues' routes alone.
-    const rulesFile = path.join(work, "airlock.json");
+    // C8's profile: a name and a proxy block alone, Dispatch's public host alone, kind dpop, the
+    // placeholder in Authorization alone, and a POST under the projects' and the issues' routes
+    // alone.
+    const profilesFile = path.join(work, "profiles.json");
     writeFileSync(
-      rulesFile,
+      profilesFile,
       JSON.stringify({
-        secrets: [
+        profiles: [
           {
             name: "DISPATCH_RESULTS_TOKEN",
-            kind: "dpop",
-            hosts: [DISPATCH_HOST],
-            headers: ["Authorization"],
-            // The two results routes a results token writes: a check of the spec files, and the
-            // check of an issue's Verification document whose ci_check names the job. Dispatch's
-            // own gate refuses the token on every other route under the second prefix.
-            allow: [
-              { method: "POST", pathPrefix: "/api/v1/projects/" },
-              { method: "POST", pathPrefix: "/api/v1/issues/" },
-            ],
+            proxy: {
+              kind: "dpop",
+              hosts: [DISPATCH_HOST],
+              headers: ["Authorization"],
+              // The two results routes a results token writes: a check of the spec files, and the
+              // check of an issue's Verification document whose ci_check names the job. Dispatch's
+              // own gate refuses the token on every other route under the second prefix.
+              allow: [
+                { method: "POST", pathPrefix: "/api/v1/projects/" },
+                { method: "POST", pathPrefix: "/api/v1/issues/" },
+              ],
+            },
           },
         ],
       })
@@ -583,7 +588,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       BROKER_SECRETS_PREFIX: SECRETS_PREFIX,
       BROKER_SECRETS_KMS_KEY_ARN: SECRETS_KMS_KEY_ARN,
       BROKER_FAKE_SECRETS_FILE: fakeSecrets,
-      BROKER_AIRLOCK_RULES_FILE: rulesFile,
+      BROKER_PROFILES_FILE: profilesFile,
       BROKER_AIRLOCK_LISTEN_ADDR: "127.0.0.1:0",
       BROKER_AIRLOCK_PROXY_URL: `http://${proxyFront.address}`,
       BROKER_AIRLOCK_CA_CERT_FILE: authority.ca_cert_file,
@@ -664,10 +669,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: `${PROJECT} project` });
     // The project's default repository, so its issues resolve to the repository a job's run is
     // of: the issue's results route takes a job's result only for such an issue.
-    await asPerson("PUT", `/api/v1/settings/repo-projects/${REPOSITORY}`, {
-      project: PROJECT,
-      default: true,
-    });
+    await asPerson("PUT", `/api/v1/projects/${PROJECT}/default-repository`, { repo: REPOSITORY });
     const filed = (await asPerson("POST", "/api/v1/issues", {
       project: PROJECT,
       title: "A change a CI job proves",

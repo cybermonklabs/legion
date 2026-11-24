@@ -89,7 +89,7 @@
 //   seed.ts heads-events <file> <heads file> <scenario> [<case>]
 //                                          after heads_fixture: the stand-in serves the open pull
 //                                          requests at the heads <heads file> names, their opened
-//                                          events go out on the NATS DISPATCH_E2E_NATS_URL names,
+//                                          events go out on the NATS DISPATCH_E2E_NATS_URLS names,
 //                                          and the case's results and handoff records are recorded;
 //                                          adds the records and each body's line of k1 to <file>
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

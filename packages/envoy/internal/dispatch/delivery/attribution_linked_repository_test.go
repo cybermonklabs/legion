@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The issue of this test, ACME-1, the repository its project maps, and the repository of each
+// The issue of this test, ACME-1, the default repository of its project, and the repository of each
 // pull request of the test, which is another one.
 const (
 	linkedIssue     = "ACME-1"
@@ -88,7 +88,7 @@ func linkedPullEnvelope(number int, title, headRef, headRepo, sha string) map[st
 // linkedHeads is the heads of ACME-1, as the results read reads them, by pull request number.
 func linkedHeads(t *testing.T, ctx context.Context, pool *store.Pool) map[int]AttributedHead {
 	t.Helper()
-	heads, err := HeadsAttributedTo(ctx, pool, linkedIssue)
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, linkedIssue)
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", linkedIssue, err)
 	}
@@ -156,7 +156,7 @@ func TestALinkedPullRequestOfAnotherRepositoryIsTheIssues(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		seedLinkedIssue(t, ctx, pool, linkedPullURL(9))
 		var reads atomic.Int32
-		intake := newIntake(nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil)
+		intake := newIntake(nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil, unrenamed())
 		if _, err := intake.recordPullRequestHead(ctx,
 			linkedPullEnvelope(9, "Move the deploy job", "work/deploy-job", linkedPullRepo, linkedHead), 9); err != nil {
 			t.Fatalf("record the head of acme/infra#9: %v", err)
@@ -179,7 +179,7 @@ func TestALinkedPullRequestOfAnotherRepositoryIsTheIssues(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		seedLinkedIssue(t, ctx, pool)
 		var reads atomic.Int32
-		intake := newIntake(nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil)
+		intake := newIntake(nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil, unrenamed())
 		envelope := linkedPullEnvelope(10, linkedIssue+" move the deploy job", "legion/"+linkedIssue, linkedPullRepo, namedHead)
 		envelope["body"] = "This moves the deploy job of " + linkedIssue + "."
 		if _, err := intake.recordPullRequestHead(ctx, envelope, 10); err != nil {
@@ -198,7 +198,7 @@ func TestALinkedPullRequestOfAnotherRepositoryIsTheIssues(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		seedLinkedIssue(t, ctx, pool, linkedPullURL(11))
 		var reads atomic.Int32
-		intake := newIntake(nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil)
+		intake := newIntake(nil, pool, nil, linkedPullGitHub(t, mergedHead, &reads).newTestClient(), nil, nil, unrenamed())
 		if _, err := intake.recordPullRequestHead(ctx,
 			linkedPullEnvelope(11, "Move the deploy job", "work/deploy-job", "contributor/infra", forkHead), 11); err != nil {
 			t.Fatalf("record the head of acme/infra#11: %v", err)
@@ -221,7 +221,7 @@ func TestALinkedPullRequestOfAnotherRepositoryIsTheIssues(t *testing.T) {
 		// #12 as a rule before R19 left it: merged, with no issue, and read an hour ago.
 		eventAt := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 		read := time.Now().Add(-time.Hour)
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 			Repo: linkedPullRepo, Number: 12, HeadSHA: mergedHead, HeadRef: "work/deploy-job",
 			BaseRef: "main", State: "merged", AttributionSource: string(sourceNone),
 			Title: "Move the deploy job", URL: linkedPullURL(12), EventAt: &eventAt, CheckedAt: &read,
@@ -233,7 +233,7 @@ func TestALinkedPullRequestOfAnotherRepositoryIsTheIssues(t *testing.T) {
 			t.Fatalf("the heads of %s before the pass = %+v, want none", linkedIssue, heads)
 		}
 
-		if err := NewReconcile(pool, client, nil).reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+		if err := NewReconcile(pool, client, nil, unrenamed()).reconcilePullRequestHeads(ctx, time.Now()); err != nil {
 			t.Fatalf("reconcile the pull request heads: %v", err)
 		}
 		heads := linkedHeads(t, ctx, pool)

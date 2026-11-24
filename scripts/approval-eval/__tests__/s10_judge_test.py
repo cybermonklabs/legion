@@ -1938,8 +1938,9 @@ class JobSpecTest(unittest.TestCase):
         self.assertEqual(volumes["gateway-key"]["secret"],
                          {"secretName": "session-secrets", "items": [{"key": "GATEWAY_KEY", "path": "key"}],
                           "defaultMode": 288})
-        self.assertEqual(volumes["route"]["configMap"]["items"],
-                         [{"key": "models.yml", "path": "models.yml"}, {"key": "overlay.yml", "path": "overlay.yml"}])
+        self.assertEqual(volumes["route"]["configMap"],
+                         {"name": "s10-judge-route",
+                          "items": [{"key": "models.yml", "path": "models.yml"}, {"key": "overlay.yml", "path": "overlay.yml"}]})
         self.assertEqual(volumes["work"], {"name": "work", "emptyDir": {}})
         self.assertEqual(len(volumes), 3)
         self.assertEqual([one["name"] for one in container["env"]],
@@ -1952,6 +1953,20 @@ class JobSpecTest(unittest.TestCase):
         self.assertEqual(next(one["value"] for one in kept if one["name"] == "S10_SANDBOX"), "sha256:" + sha("program"))
         other = JOB.job_spec("s10-judge-1", own_pod(), IMAGE, "session-account", {}, self.environ)
         self.assertEqual(other["spec"]["template"]["spec"]["serviceAccountName"], "session-account")
+
+    def test_the_route_is_point_twos_whatever_route_the_driver_mounts(self):
+        # The driver's own route ConfigMap holds Legion's live route as of the session's last
+        # apply, which can be another than point 2's: the Job names s10-judge-route, whose bytes
+        # `runtime_refusal` checks, and never the driver's, even where the driver mounts none.
+        unrouted = own_pod()
+        unrouted["spec"]["volumes"] = [one for one in unrouted["spec"]["volumes"] if one["name"] != "route"]
+        container = unrouted["spec"]["containers"][0]
+        container["volumeMounts"] = [one for one in container["volumeMounts"] if one["name"] != "route"]
+        for pod in (own_pod(), unrouted):
+            spec = JOB.job_spec("s10-judge-1", pod, IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+            volumes = {one["name"]: one for one in spec["spec"]["template"]["spec"]["volumes"]}
+            self.assertEqual(volumes["route"]["configMap"]["name"], "s10-judge-route")
+            self.assertNotIn("route-map", json.dumps(spec))
 
     def test_a_pod_whose_gateway_key_is_not_one_item_is_refused(self):
         pod = own_pod()

@@ -2,10 +2,12 @@
  * The rig's reading of the Legion daemon: `daemon-pane.go`, run with `go run -overlay` as a main
  * inside a checkout's daemon module, which is how it reaches the daemon's internal packages. The
  * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
- * construction. The one exception is `daemon-pane.go`'s own table of the handoff words, which the
- * program carries because one program runs against both checkouts of a comparison and the daemon's
- * table has not always had the same name; its comment says so. `workerPane` builds a phase
- * worker's whole pane environment over it.
+ * construction. The exceptions are `daemon-pane.go`'s own copies of the daemon's table of the
+ * handoff words, its resolution of the real gh, and its join and write of a system prompt, which
+ * the program carries because one program runs against each label's checkout of the daemon module,
+ * and an older one names them otherwise or lacks them; each one's comment says so. `workerPane`
+ * builds a phase worker's whole pane environment over it, and `composeRolePrompt` the prompt a
+ * launch of any role starts with.
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -44,6 +46,21 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go
+ * `prompt`): the role's parts, a blank line, then its addressing, and for the architect of a tree's
+ * root (`root`) the design gate steps after that, byte for byte as the daemon writes the prompt
+ * file. The claim is the rig's: its issue is the root of its tree, or a child under that root, in
+ * the world's repository (`RIG_WORLD`). */
+export function composeRolePrompt(module: string, role: LegionRole, root: boolean): string {
+  return runDaemonPane(module, [
+    "prompt",
+    role,
+    root ? "root" : "child",
+    RIG_WORLD.repository,
+    RIG_WORLD.defaultBranch,
+  ]);
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot

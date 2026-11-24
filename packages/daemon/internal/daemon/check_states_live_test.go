@@ -296,7 +296,6 @@ func newStatesProof(t *testing.T) *statesProof {
 		}
 	}
 	cases := statesSelected(t)
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/check-states.sh")
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
@@ -435,7 +434,7 @@ func (r *statesProof) seed() {
 	t.Helper()
 	ctx := context.Background()
 	all := r.allIssues()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range all {
 			listed := r.dispatch.issue(issue.key)
 			if err := r.records.PutIssue(ctx, tx, record.Issue{

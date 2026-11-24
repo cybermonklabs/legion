@@ -89,7 +89,7 @@ func TestAHealthyRowBehindAFullBatchOfFailingRowsIsReadWithinTwoPasses(t *testin
 		}
 	}
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), nil)
+	reconcile := NewReconcile(pool, fake.newTestClient(), nil, unrenamed())
 	baseOf := func() string {
 		t.Helper()
 		var stored *string
@@ -220,7 +220,7 @@ func TestTheRowsARateLimitedPassDidNotTryAreTheFirstTheNextPassTries(t *testing.
 		return tried
 	}
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), nil)
+	reconcile := NewReconcile(pool, fake.newTestClient(), nil, unrenamed())
 	stopped := time.Now().Truncate(time.Microsecond)
 	err = reconcile.reconcilePullRequestHeads(ctx, stopped)
 	if _, ok := githubapp.AsRateLimit(err); !ok {

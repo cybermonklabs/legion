@@ -44,12 +44,14 @@ type BranchAnswer int
 const (
 	// BranchUnknown is Dispatch not being able to say anything: a compare read refused by a
 	// rate limit, a 5xx, a timeout or a cancelled request; a repository whose own read failed,
-	// for any of those reasons or because the App cannot see it, where the caller named no
-	// branch and the stored rows answered nothing; and a repository whose default branch no
-	// read of this process ever named, which a deployment holding no App key makes of every
-	// repository. Wherever this is the last word the result's commit is unknown, and wherever
-	// it is any word at all no later branch's "not on it" may place that commit elsewhere: a
-	// fault of Dispatch's or a hiccup of GitHub's must not make a reviewer refuse an approval.
+	// for any of those reasons or because the App cannot see it, where the caller asked of the
+	// repository's own default branch and the stored rows answered nothing, whether it named no
+	// branch or spelled that branch out (isDefaultBranch); and, for a caller that names no
+	// branch, a repository whose default branch no read of this process ever named, which a
+	// deployment holding no App key makes of every repository. Wherever this is the last word
+	// the result's commit is unknown, and wherever it is any word at all no later branch's
+	// "not on it" may place that commit elsewhere: a fault of Dispatch's or a hiccup of
+	// GitHub's must not make a reviewer refuse an approval.
 	BranchUnknown BranchAnswer = iota
 	// BranchCarries is the branch's history holding the commit: the commit is that branch's
 	// head, or an ancestor of it. It is the whole answer wherever it is given, and no branch
@@ -528,13 +530,13 @@ func cannotSeeRepository(err error) bool {
 // The row is keyed by the lowercased repository, here and in writeBranchCommit, which are the
 // only two statements over this table: a third added later keys it the same way or it reads
 // and writes rows nobody else can find. One repository reaches the table under two spellings.
-// A merge's seed carries GitHub's own (`Acme/Widgets`), since refs.CanonicalRepo gives a
+// A merge's seed carries GitHub's own (`Acme/Widgets`), since refs.Renames.Canonical gives a
 // caller's spelling back unchanged where no rename is recorded, while the results read asks
-// under the lowercased name repo_projects stores (refs.ExternalRepo, through
-// comparisonReader.repositoryOf), so a table holding both spellings would place every
-// `after_merge` result of a repository whose owner writes their name with capitals at another
-// commit for good — the squash-merged, branch-deleted case the seed exists for above all
-// (UpsertPullRequestHead).
+// under the lowercased name an issue's own repository and a project's default repository are
+// stored under (refs.ExternalRepo, through comparisonReader.repositoryOf), so a table holding
+// both spellings would place every `after_merge` result of a repository whose owner writes their
+// name with capitals at another commit for good — the squash-merged, branch-deleted case the seed
+// exists for above all (UpsertPullRequestHead).
 //
 // It is lowercased on the way in rather than compared with `lower(repo)`, which is how
 // HeadStoredAt meets the same split one table over, because the two tables were in different

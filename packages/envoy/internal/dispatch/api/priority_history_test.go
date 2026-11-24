@@ -21,6 +21,7 @@ import (
 )
 
 func TestPriorityHistory(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}

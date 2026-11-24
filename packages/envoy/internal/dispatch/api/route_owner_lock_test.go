@@ -83,6 +83,7 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 	{name: "the role holders route", route: "PUT /api/v1/issues/{key}/role-holders (putIssueRoleHolders)", ready: readyRoleHolders},
 	{name: "the project default assignee route", route: "PUT /api/v1/projects/{key}/default-assignee (putProjectDefaultAssignee)", ready: readyProjectDefaultAssignee},
 	{name: "the project gated steps route", route: "PUT /api/v1/projects/{key}/gated-steps (putProjectGatedSteps)", ready: readyProjectGatedSteps},
+	{name: "the project default repository route", route: "PUT /api/v1/projects/{key}/default-repository (putProjectDefaultRepository)", ready: readyProjectDefaultRepository},
 	{name: "the project file upload route", route: "POST /api/v1/projects/{key}/artifacts on a file it has (storeArtifact)", ready: readyProjectFileUpload},
 	{name: "the ask follow route", route: "PUT /api/v1/asks/{id}/followers/{session_id} (changeAskFollower)", ready: readyAskFollow},
 }
@@ -91,6 +92,7 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 // of each route of routeOwnerLockTable and requires the route to wait for it having written
 // nothing, then to finish once the lock is given back (holdWriterBehindOwnerLock).
 func TestEveryRouteOnTheRouteTableWaitsForItsOwnerLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	for _, row := range routeOwnerLockTable {
 		t.Run(row.name, func(t *testing.T) { holdWriterBehindOwnerLock(t, row.route, row.ready(t, routeFixture{})) })
 	}
@@ -620,6 +622,31 @@ func readyProjectGatedSteps(t *testing.T, base routeFixture) lockedItemWrite {
 	return write
 }
 
+// readyProjectDefaultRepository drives PUT /api/v1/projects/{key}/default-repository with a
+// repository the project does not default to yet, which updates the project's row under the
+// project's owner lock it takes before the update (putProjectDefaultRepository), as every writer
+// of a projects row takes it.
+func readyProjectDefaultRepository(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Default repository")
+	write := fixture.routeWrite(t, "the project's default repository",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/LOCK/default-repository",
+				map[string]any{"repo": "acme/widgets"}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("set the default repository once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if set := fixture.rowCount(t, `select count(*) from projects where key = $1 and default_repo = 'acme/widgets'`, "LOCK"); set != 1 {
+				t.Fatal("the project names no default repository after the route answered 200")
+			}
+		})
+	write.owner = store.ProjectOwner("LOCK")
+	return write
+}
+
 // rowCount answers a count(*) query of one argument, read from the pool.
 func (f itemRowFixture) rowCount(t *testing.T, query string, arg any) int {
 	t.Helper()
@@ -637,6 +664,7 @@ func (f itemRowFixture) rowCount(t *testing.T, query string, arg any) int {
 // lock while it is held, then lets the send answer: the settle must queue behind the lock having
 // updated nothing, and record the attempt sent once the lock is given back.
 func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	entered, release := make(chan struct{}, 1), make(chan struct{})
 	sessions := `[{"session_id":"s1","title":"planner","capabilities":["btw"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

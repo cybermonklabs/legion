@@ -601,7 +601,8 @@ func brokerHostname(base string) string {
 // overlapsBoundHost reports whether a NO_PROXY entry could take a bound host's request past the
 // proxy. An entry and a bound host overlap when they name the same host or one is a parent domain
 // of the other, each read without its port, its leading dot or its "*." — the two spellings of a
-// suffix in a NO_PROXY list and in an airlock entry's hosts. The test is deliberately generous in
+// suffix in a NO_PROXY list and in an airlock entry's hosts — and without a trailing dot, the
+// spelling of the same name as fully qualified (noProxyHost). The test is deliberately generous in
 // both directions: "api.example.com" in the list is dropped against the bound "*.example.com"
 // because it names a host the proxy must carry, and "example.com" is dropped against the bound
 // "api.example.com" because every reader of NO_PROXY but none takes a bare domain to cover its
@@ -625,8 +626,10 @@ func overlapsBoundHost(entry string, hosts []string) bool {
 }
 
 // noProxyHost is the host a NO_PROXY entry or an airlock entry's host names, lower-cased and
-// without the port, the leading dot or the "*." a suffix is written with. A CIDR block or an
-// address keeps its own text, which matches no host name.
+// without the port, the leading dot or the "*." a suffix is written with, and without one trailing
+// dot: "example.test." is the fully qualified spelling of example.test, and Bun's fetch, which
+// `dispatch` runs on, reads a NO_PROXY entry written so as covering the host and its subdomains.
+// A CIDR block or an address keeps its own text, which matches no host name.
 func noProxyHost(entry string) string {
 	host := strings.ToLower(strings.TrimSpace(entry))
 	host = strings.TrimPrefix(host, "*")
@@ -643,5 +646,5 @@ func noProxyHost(entry string) string {
 			host = host[:colon]
 		}
 	}
-	return host
+	return strings.TrimSuffix(host, ".")
 }

@@ -51,7 +51,8 @@ function gateClause(gates: readonly { readonly issue: string; readonly step: str
   return `A Legion design gate records this document, so every READY in ${gates.length === 1 ? "its" : "each"} tree is refused until that approval comes back: ${named}.`;
 }
 
-/** What one design-gate step records, as the daemon publishes it. */
+/** What one design-gate step records, as a daemon older than `holds` publishes it: the test
+ * leaves `holds` out, so Dispatch reads each row by the deployment's gated steps. */
 interface PublishedGate {
   readonly step: string;
   readonly artifact_id: string;
@@ -96,8 +97,8 @@ describe.skipIf(!dispatchStackEnabled)(
       for (const key of [PROJECT, FIRST_TREE, SECOND_TREE]) {
         await asPerson("POST", "/api/v1/projects", { key, name: `${key} project` });
         // The deployment's own gated steps, which its daemon publishes beside the gate records
-        // and which the advice reads: a gate row on a step the deployment does not gate holds
-        // no READY back and prints no clause.
+        // and which the advice reads: a gate row with no `holds`, on a step the deployment does not
+        // gate, holds no READY back and prints no clause.
         await asMachine("PUT", `/api/v1/projects/${key}/gated-steps`, {
           steps: ["decisions", "criteria", "spec"],
           actor: { kind: "session", id: SESSION },

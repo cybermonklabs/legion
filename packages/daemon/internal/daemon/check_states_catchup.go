@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The boot's catch-up of check states: the check.state_changed events Dispatch appended to an
@@ -51,8 +52,8 @@ func (w *workflowRuntime) catchUpCheckStates(ctx context.Context) error {
 	}
 	var issues []checkStatesIssue
 	listing, cancel := context.WithTimeout(ctx, bootTimeout)
-	err := pgx.BeginFunc(listing, w.pool, func(tx pgx.Tx) error {
-		recorded, err := w.records.Issues(listing, tx)
+	err := store.TransactWith(listing, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		recorded, err := w.records.Issues(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -63,7 +64,7 @@ func (w *workflowRuntime) catchUpCheckStates(ctx context.Context) error {
 			}
 			keys = append(keys, issue.Key)
 		}
-		cursors, err := w.records.CheckStatesSeqs(listing, tx, keys)
+		cursors, err := w.records.CheckStatesSeqs(ctx, tx, keys)
 		if err != nil {
 			return err
 		}
@@ -152,7 +153,9 @@ func (w *workflowRuntime) catchUpIssueStates(ctx context.Context, issue checkSta
 	if through <= issue.cursor {
 		return nil
 	}
-	return pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error { return w.records.SetCheckStatesSeq(ctx, tx, issue.key, through) })
+	return store.TransactWith(ctx, w.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		return w.records.SetCheckStatesSeq(ctx, tx, issue.key, through)
+	})
 }
 
 // applyCheckStateCatchUp applies fact, the state event at seq of issue's log, under a processed id

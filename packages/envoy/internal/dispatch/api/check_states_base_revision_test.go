@@ -26,7 +26,7 @@ import (
 func storeBaseRevision(t *testing.T, rig *checkStatesRig, number int, sha, baseSHA string) {
 	t.Helper()
 	attributed := rig.issue
-	if err := delivery.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
+	if err := rig.served.deps.Attributor.UpsertPullRequestHead(context.Background(), rig.database.Pool, nil, delivery.PullRequestHead{
 		Repo: ciJobRepository, Number: number, HeadSHA: sha, HeadRef: "legion/work", BaseRef: "main", BaseSHA: baseSHA,
 		State: "open", IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true, Title: "A change",
 		URL: fmt.Sprintf("https://github.com/%s/pull/%d", ciJobRepository, number),
@@ -183,7 +183,7 @@ func TestTheReconcileStoresTheBaseRevisionARowOfTheReleaseBeforeLacks(t *testing
 	ran := make(chan struct{})
 	go func() {
 		defer close(ran)
-		delivery.NewReconcile(rig.database.Pool, rig.served.deps.GitHub, nil).TickEvery(100*time.Millisecond).
+		delivery.NewReconcile(rig.database.Pool, rig.served.deps.GitHub, nil, rig.served.deps.Attributor).TickEvery(100*time.Millisecond).
 			Run(ctx, storetest.Leases(t, rig.database.Pool))
 	}()
 	var baseSHA, head, issue string

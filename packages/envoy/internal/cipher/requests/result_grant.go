@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -32,7 +33,8 @@ type ResultTokens interface {
 // uuid, its session, the check run of its job, its end, and DISPATCH_RESULTS_TOKEN's one slot,
 // whose placeholder is the one presented. It belongs to no enrollment, so the enrollment id is
 // empty, and the proxy names its calls by the grant alone. A broker with no grant store answers
-// every result placeholder ErrGrantNotLive.
+// every result placeholder ErrGrantNotLive, and so does one whose results entry is not the
+// grant's (resultEntryRefusal).
 func (m *Machine) resultConnection(ctx context.Context, presented string) (AirlockConnection, error) {
 	if m.ResultGrants == nil {
 		return AirlockConnection{}, ErrGrantNotLive
@@ -42,6 +44,9 @@ func (m *Machine) resultConnection(ctx context.Context, presented string) (Airlo
 		return AirlockConnection{}, ErrGrantNotLive
 	}
 	if err != nil {
+		return AirlockConnection{}, err
+	}
+	if err := m.resultEntryRefusal(grant); err != nil {
 		return AirlockConnection{}, err
 	}
 	expires := grant.ExpiresAt
@@ -57,7 +62,8 @@ func (m *Machine) resultConnection(ctx context.Context, presented string) (Airlo
 // the grant's end is what the proxy's read of the connection checks on every request, so a value
 // the proxy holds needs no clock of its own. It answers beside it the policy version the proxy
 // holds values against, which a result grant does not read: a policy change makes the pod mint
-// again, which costs one token and changes nothing of the grant.
+// again, which costs one token and changes nothing of the grant. A grant of another results entry
+// than this broker's is refused before anything is minted (resultEntryRefusal).
 func (m *Machine) resultValues(ctx context.Context, id string) (map[string]AirlockSecret, string, error) {
 	if m.ResultGrants == nil || m.ResultTokens == nil || m.ResultKey == "" {
 		return nil, "", ErrGrantNotLive
@@ -69,11 +75,34 @@ func (m *Machine) resultValues(ctx context.Context, id string) (map[string]Airlo
 	if err != nil {
 		return nil, "", err
 	}
+	if err := m.resultEntryRefusal(grant); err != nil {
+		return nil, "", err
+	}
 	token, err := m.ResultTokens.MintResultToken(ctx, grant, m.ResultKey)
 	if err != nil {
 		return nil, "", err
 	}
 	return map[string]AirlockSecret{oauthwire.AirlockResultsName: {Slots: map[string]string{SlotValue: token}}}, m.PolicyVersion(), nil
+}
+
+// resultEntryRefusal is ErrGrantNotLive, saying why, for a result grant made under another
+// results entry than this broker's (oauthstore.ResultGrant.EntryDigest against
+// ResultEntryDigest): another profile DISPATCH_RESULTS_TOKEN or another private destination,
+// which would send the run's token somewhere the broker that granted it would not; and for every
+// grant on a broker with no results entry. The proxy answers it 407 GRANT_NOT_LIVE, with nothing
+// forwarded, as it answers an ended grant.
+//
+// The grant is refused, not ended: its row stays, and a pod whose entry is the grant's still
+// serves it. A run's token is spent once, so ending the grant here would end the run's writes on
+// the pods that agree with the grant too. During a roll that changes the profile or the
+// destination, pods of the old entry and of the new refuse each other's grants, in both
+// directions, until the grant ends; the command takes the 407 as final, and the run's next
+// attempt is granted under the entry of the pod it asks.
+func (m *Machine) resultEntryRefusal(grant oauthstore.ResultGrant) error {
+	if m.ResultEntryDigest == "" || grant.EntryDigest != m.ResultEntryDigest {
+		return fmt.Errorf("%w: the result grant was made under another results profile or private destination than this broker's", ErrGrantNotLive)
+	}
+	return nil
 }
 
 // checkRunOf is the check run of the job a result grant was made for, read from the run the grant

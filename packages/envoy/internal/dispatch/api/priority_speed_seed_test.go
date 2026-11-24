@@ -21,9 +21,10 @@ import (
 // package's migrated template (priority_fixture_test.go): 2,500 open issues over 18 projects,
 // two events on every one of them, 20 priorities and 400 `advances` relations, one chain as deep
 // as the parent-depth cap, and the cap of 20 relations on one issue. Written through the routes
-// it would be some 8,000 requests and the minutes they cost, which is time the measurement would
-// then be taken against. One VACUUM (ANALYZE) follows the five (settleSpeedCorpus), so every read
-// is planned from the corpus's own statistics.
+// it would be some 8,000 requests and the minutes they cost. One VACUUM (ANALYZE) follows the
+// five (settleSpeedCorpus), so every read is planned from the corpus's own statistics. Once every
+// other reading is taken, the Go side's growth is read over speedCorpusMoreRelations relations
+// more (growSpeedPriorities), which a sixth COPY writes.
 //
 // Twenty priorities rather than the sixteen the work is spread over: one issue carries the most
 // relations a write allows (contracts.MaxIssueAdvances, 20), and an issue cannot hold twenty
@@ -43,28 +44,42 @@ const (
 	// speedCorpusFanout is how many children an issue of the trees below takes, so the corpus
 	// is trees an inheritance walk climbs rather than 2,500 roots.
 	speedCorpusFanout = 4
-	// speedCorpusPage is the page the listing is measured over, the most issues one page holds
+	// speedCorpusPage is the page the listing is read over, the most issues one page holds
 	// (contracts.MaxIssuePageLimit).
 	speedCorpusPage = 250
+	// speedCorpusMoreRelations is how many `advances` relations the Go side's growth is read
+	// over (growSpeedPriorities): written after every other reading, they double the store's
+	// relations, each on a leaf issue in `triage` that held none (seedSpeedCorpus).
+	speedCorpusMoreRelations = speedCorpusRelations
 )
 
 // speedCorpusStatuses are the statuses the corpus's issues stand in: every status of the
 // lifecycle work is open in. None of them is `done`, because every issue of the corpus is open.
 var speedCorpusStatuses = []string{"triage", "icebox", "backlog", "todo", "in_progress", "testing", "needs_review", "retro"}
 
-// speedCorpusShape is the corpus as the measurements address it: the server over it, the issue
-// carrying the most relations, and the chain as deep as the cap.
+// speedCorpusShape is the corpus as the readings address it: the server over it, the issue
+// carrying the most relations, the chain as deep as the cap and the priorities' ids; the
+// database under the server, which the counts explain each statement on, and the trace of what
+// the server sends for a counted request. The server reads through a traced pool of that
+// database, and the caller's identity is resolved on the untraced one, so a count is the read's
+// own statements and not the sign-in lookup every request makes.
 type speedCorpusShape struct {
-	handler  http.Handler
-	server   *server
-	heaviest string
-	chain    []string
+	handler    http.Handler
+	server     *server
+	heaviest   string
+	chain      []string
+	priorities []string
+	database   *store.Store
+	trace      *speedTrace
+	// moreRelations are the speedCorpusMoreRelations tuples growSpeedPriorities writes, once
+	// every other reading is taken.
+	moreRelations [][]any
 }
 
 // seedSpeedCorpus writes the corpus and answers the server over it. Every issue of the first
-// page the measurements read stands in `triage` with the lowest board keys, so that page is the
+// page the readings take stands in `triage` with the lowest board keys, so that page is the
 // chain as deep as the cap, the issue carrying twenty relations and the issues below them —
-// the heaviest page the corpus holds, which is the one worth timing.
+// the heaviest page the corpus holds, which is the one worth reading.
 func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	t.Helper()
 	database := storetest.Open(t)
@@ -80,6 +95,8 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	issues := make([][]any, 0, speedCorpusIssues)
 	events := make([][]any, 0, speedCorpusEvents)
 	keys := make([]string, 0, speedCorpusIssues)
+	statuses := make([]string, 0, speedCorpusIssues)
+	parented := make(map[string]bool, speedCorpusIssues)
 	chain := make([]string, 0, speedCorpusChain)
 	for index := range speedCorpusIssues {
 		project := 0
@@ -118,6 +135,10 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 			seededEvent(key, 1, "issue.created", `{"seeded":true}`, written),
 			seededEvent(key, 2, "comment.created", `{"seeded":true}`, written.Add(time.Second)))
 		keys = append(keys, key)
+		statuses = append(statuses, status)
+		if parent != nil {
+			parented[*parent] = true
+		}
 		if index < speedCorpusChain {
 			chain = append(chain, key)
 		}
@@ -147,6 +168,32 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 			keys[speedCorpusChain+spread*stride], priorityIDs[spread%speedCorpusSpread], at))
 	}
 
+	// The relations the Go side's growth is read over (growSpeedPriorities), on issues off the
+	// first page that stand in `triage`, which neither fault reads, hold no relation yet and have
+	// no issue below them to inherit one: so a second read answers the same faults, and every
+	// priority already counts work in `triage` (the chain's), so the counts answer the same rows.
+	// Each leaf names priorities one after another, a different one on each pass over the
+	// leaves, so no pair is written twice.
+	holding := make(map[string]bool, speedCorpusRelations)
+	for _, tuple := range tuples {
+		holding[tuple[1].(string)] = true
+	}
+	leaves := []string{}
+	for index, key := range keys {
+		if index >= speedCorpusPage && statuses[index] == "triage" && !parented[key] && !holding[key] {
+			leaves = append(leaves, key)
+		}
+	}
+	if len(leaves)*speedCorpusPriorities < speedCorpusMoreRelations {
+		t.Fatalf("the corpus has %d leaf issues in triage without a relation, too few for %d relations more over %d priorities",
+			len(leaves), speedCorpusMoreRelations, speedCorpusPriorities)
+	}
+	more := make([][]any, 0, speedCorpusMoreRelations)
+	for index := range speedCorpusMoreRelations {
+		leaf, pass := index%len(leaves), index/len(leaves)
+		more = append(more, seededAdvancesTuple(leaves[leaf], priorityIDs[(leaf+pass)%speedCorpusPriorities], at))
+	}
+
 	projects := make([][]any, 0, speedCorpusProjects)
 	for index, key := range projectKeys {
 		projects = append(projects, seededProject(key, projectCounts[index], at))
@@ -165,8 +212,12 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	assertSpeedCorpus(t, database)
 	settleSpeedCorpus(t, database)
 
-	handler, _, _, srv := newRegisteredTestServer(t, testServerOptions{store: database})
-	return speedCorpusShape{handler: handler, server: srv, heaviest: heaviest, chain: chain}
+	trace := &speedTrace{}
+	handler, _, _, srv := newRegisteredTestServer(t, testServerOptions{store: database, tracer: trace, identity: headerIdentity(database)})
+	return speedCorpusShape{
+		handler: handler, server: srv, heaviest: heaviest, chain: chain, priorities: priorityIDs,
+		database: database, trace: trace, moreRelations: more,
+	}
 }
 
 // settleSpeedCorpus leaves the corpus as a deployment's database stands between writes: every

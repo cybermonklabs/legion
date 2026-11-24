@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Fixture is the shared fixture of check.state_changed: the event's type and actor, and its
@@ -169,7 +170,7 @@ func Decoded(t testing.TB, issue, repo, head string, state intake.DispatchCheckS
 // as the live consumer applies a fact (Decoded). A state naming no set of checks carries the set
 // of every check states name; one naming no check is the set form. No state at all is the set
 // form of a head with no check.
-func Apply(t testing.TB, pool intake.Pool, issue, repo, head string, serial int64, states []intake.DispatchCheckState, handlers ...intake.Handler) {
+func Apply(t testing.TB, pool store.TxPool, issue, repo, head string, serial int64, states []intake.DispatchCheckState, handlers ...intake.Handler) {
 	t.Helper()
 	if len(states) == 0 {
 		states = []intake.DispatchCheckState{{Checks: []string{}}}
@@ -199,7 +200,7 @@ func Apply(t testing.TB, pool intake.Pool, issue, repo, head string, serial int6
 // reads no other, so a test names it and this reads no head of its own. The event is on the
 // repository of issue's pull request, or on repo where the record holds none, and takes the
 // serial after the highest the daemon holds of issue, so it is the newest of its head.
-func Tested(t testing.TB, pool intake.Pool, issue, repo, head string, passes bool) (intake.DispatchCheckState, string) {
+func Tested(t testing.TB, pool store.TxPool, issue, repo, head string, passes bool) (intake.DispatchCheckState, string) {
 	t.Helper()
 	if head == "" {
 		t.Fatal("a tested state needs the head the completion tests: the move reads the states at that head alone")

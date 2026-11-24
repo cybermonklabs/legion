@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
@@ -25,10 +26,10 @@ import (
 // pull request, in any repository, while the issue links it, and one whose head is in a fork is
 // no issue's, linked or not. A link a person makes by hand is answered from what Dispatch holds,
 // with no read of GitHub. Each pull request reaches Dispatch through a writer that reads it from a
-// stand-in GitHub (delivery.RefreshPullRequestHead), as the reconcile reads one, and the stand-in
-// counts every request, so a test sees whether the PATCH asked GitHub anything. The file builds at
-// a commit whose PATCH read GitHub after a change of the links, and fails there on its own
-// assertion.
+// stand-in GitHub (delivery.Attributor.RefreshPullRequestHead), as the reconcile reads one, and
+// the stand-in counts every request, so a test sees whether the PATCH asked GitHub anything. The
+// file builds at a commit whose PATCH read GitHub after a change of the links, and fails there on
+// its own assertion.
 
 // changedLinkPull is one pull request changedLinkGitHub answers: its title, body, head branch, the
 // repository its head branch is in, its head commit, and whether it merged. A refused one is
@@ -127,11 +128,11 @@ func changedLinkServer(t *testing.T, github *changedLinkGitHub) (http.Handler, *
 }
 
 // readPull has Dispatch read repo#number from GitHub and store its row, as the reconcile's pass
-// reads one (delivery.RefreshPullRequestHead): the row's issue is the attribution's over the
-// links the issues hold now, with the inputs it was judged from stored beside it.
+// reads one (delivery.Attributor.RefreshPullRequestHead): the row's issue is the attribution's
+// over the links the issues hold now, with the inputs it was judged from stored beside it.
 func readPull(t *testing.T, served *server, repo string, number int) {
 	t.Helper()
-	if err := delivery.RefreshPullRequestHead(context.Background(), served.deps.Store.Pool, served.deps.GitHub,
+	if err := served.deps.Attributor.RefreshPullRequestHead(context.Background(), served.deps.Store.Pool, served.deps.GitHub,
 		served.deps.Events, repo, number, time.Now()); err != nil {
 		t.Fatalf("read %s#%d from GitHub: %v", repo, number, err)
 	}
@@ -144,7 +145,7 @@ func storeMerge(t *testing.T, database *store.Store, repo string, number int, sh
 	t.Helper()
 	eventAt := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
 	read := time.Now().Add(-time.Minute)
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
+	if err := delivery.NewAttributor(refs.Renames{}).UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
 		Repo: repo, Number: number, HeadSHA: sha, HeadRef: "work/deploy-job", BaseRef: "main",
 		State: "merged", IssueKey: issue, AttributionSource: source, AttributionComplete: true,
 		Title: "Move the deploy job", URL: "https://github.com/" + repo + "/pull/" + strconv.Itoa(number),
@@ -155,10 +156,11 @@ func storeMerge(t *testing.T, database *store.Store, repo string, number int, sh
 }
 
 // headNumbersOf is the number of each pull request the results read compares issue's
-// `before_merge` checks with (delivery.HeadsAttributedTo), in order.
+// `before_merge` checks with (delivery.Attributor.HeadsAttributedTo), in order, read with no
+// rename pairs, as the test server's own Attributor reads them.
 func headNumbersOf(t *testing.T, database *store.Store, issue string) []int {
 	t.Helper()
-	heads, err := delivery.HeadsAttributedTo(context.Background(), database.Pool, issue)
+	heads, err := delivery.NewAttributor(refs.Renames{}).HeadsAttributedTo(context.Background(), database.Pool, issue)
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", issue, err)
 	}

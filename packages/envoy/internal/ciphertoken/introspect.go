@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // IntrospectPath is the broker's RFC 7662 introspection route, which answers what the broker
@@ -166,5 +167,15 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	if answer.LegacyProject != nil {
 		return Introspection{}, ErrNotASession
 	}
+	// The person is read in its canonical form (fold.Login, which Dispatch's model.CanonicalLogin
+	// reads) here, where it is first read, so sessionCaller's checks, the cache and every Caller
+	// see that form and no later reader canonicalises it again. The broker does not canonicalise
+	// every source it names a person from: it lowers a Google sign-in's login, a machine's
+	// approver and a pod's operator, but answers the person of a BROKER_EXCHANGE_ACCOUNTS or
+	// BROKER_EXCHANGE_WORKFLOWS entry as the entry writes it. Every login Dispatch stores is
+	// canonical, the owner of a row a session writes among them, so a person taken as the broker
+	// spells it would be a login no other row or read names. A person that is empty once trimmed
+	// names nobody, and sessionCaller reads it as it reads an absent one.
+	answer.Person = fold.Login(answer.Person)
 	return answer.Introspection, nil
 }

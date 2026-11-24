@@ -5,8 +5,8 @@ import { fileLimit, ROW_MARGIN_MS, type Wait } from "@legion/test-fixtures/row-c
  * files and its assertions, which no process of its own bounds and a loaded machine stretches. At
  * a load of 401, judge.test.ts's row "a judge whose answer does not cover its input fails the run
  * naming the file", which runs judge.ts six times in this process, ran past bun's 5 s default; at
- * a load of about 690, rule-search.test.ts's afterAll took 36 s to remove its copies of the role
- * texts in this process. 60 s is past both.
+ * a load of about 690, a test's afterAll took 36 s to remove its copies of the role texts in this
+ * process. 60 s is past both.
  */
 export const ROW_WORK_MS = 60_000;
 

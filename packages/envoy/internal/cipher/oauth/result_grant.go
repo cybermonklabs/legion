@@ -31,8 +31,9 @@ const resultGrantMaxLifetime = 15 * time.Minute
 const resultValueSlot = "value"
 
 // AirlockSettings is what a result entry's run is handed beside its placeholder: where the
-// broker's airlock proxy is, the certificate authority to trust it by, and the hosts the rules
-// entry DISPATCH_RESULTS_TOKEN binds, which the command keeps off its NO_PROXY.
+// broker's airlock proxy is, the certificate authority to trust it by, and the hosts the proxy
+// block of the results profile DISPATCH_RESULTS_TOKEN binds, which the command keeps off its
+// NO_PROXY; and the results entry the run's grant is made under, which the grant records.
 type AirlockSettings struct {
 	// ProxyURL is BROKER_AIRLOCK_PROXY_URL.
 	ProxyURL string
@@ -40,6 +41,13 @@ type AirlockSettings struct {
 	CACertificatePEM string
 	// ResultHosts are the hosts DISPATCH_RESULTS_TOKEN's entry binds.
 	ResultHosts []string
+	// EntryDigest is this broker's results entry: the hex SHA-256 of the profile
+	// DISPATCH_RESULTS_TOKEN's fingerprint and the private destination's scheme and host, which
+	// cmd/cipherd computes once at boot (resultEntryDigest) and hands the request machine too
+	// (requests.Machine.ResultEntryDigest). Every grant records it (oauthstore.ResultGrant), and a
+	// broker pod whose own digest differs refuses the grant, so a run's token goes only where the
+	// broker that granted it would have sent it.
+	EntryDigest string
 	// GrantLifetime is BROKER_RESULT_GRANT_TEST_SECONDS, a local stack's own grant lifetime in
 	// place of resultGrantLifetime's; zero for every production start, which refuses the setting.
 	GrantLifetime time.Duration
@@ -80,9 +88,10 @@ func (p *Provider) resultGrantLifetime() time.Duration {
 
 // writeResultGrant writes the grant of the run decide decided onto session, on the transaction
 // ctx carries, and answers the placeholder the run is handed and the grant. The grant holds the
-// session's decision whole (its subject, session name, principal, granted scopes and extra claims)
-// and the placeholder's hash alone. The session's access-token expiry is set to the grant's end,
-// so claimSession holds the name until then.
+// session's decision whole (its subject, session name, principal, granted scopes and extra claims),
+// the placeholder's hash alone, and the results entry it is made under (AirlockSettings.EntryDigest).
+// The session's access-token expiry is set to the grant's end, so claimSession holds the name until
+// then.
 func (p *Provider) writeResultGrant(ctx context.Context, request oauth2.Requester, session *oauthstore.ExchangeSession) (string, oauthstore.ResultGrant, error) {
 	held, err := placeholder.Mint(placeholder.ResultPrefix)
 	if err != nil {
@@ -94,7 +103,8 @@ func (p *Provider) writeResultGrant(ctx context.Context, request oauth2.Requeste
 	grant := oauthstore.ResultGrant{
 		ID: uuid.NewString(), PlaceholderSHA256: placeholder.Hash(held),
 		Subject: session.Subject, Session: name, Principal: session.Principal,
-		Scopes: []string(request.GetGrantedScopes()), Extra: maps.Clone(session.Extra), ExpiresAt: expires,
+		Scopes: []string(request.GetGrantedScopes()), Extra: maps.Clone(session.Extra),
+		EntryDigest: p.airlock.EntryDigest, ExpiresAt: expires,
 	}
 	if err := p.store.CreateResultGrant(ctx, grant); err != nil {
 		return "", oauthstore.ResultGrant{}, err

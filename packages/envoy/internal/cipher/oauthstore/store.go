@@ -70,7 +70,7 @@ var sweepBatch = 1000
 var sweepMaxBatches = 10
 
 // sweepStatements are Sweep's statements for state deleted row by row, $1 the batch. Each
-// selects its batch by primary key through 0016's, 0018's, 0021's or 0041's *_expires index on
+// selects its batch by primary key through 0016's, 0018's, 0021's or 0042's *_expires index on
 // the predicate it sweeps by, oldest first, so a table of mostly live rows is never read whole.
 var sweepStatements = []struct{ what, sql string }{
 	{"device codes", `delete from oauth_device_codes where signature in (select signature from oauth_device_codes

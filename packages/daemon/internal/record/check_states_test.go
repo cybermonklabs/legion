@@ -212,7 +212,9 @@ func TestTheStatesFenceNeedsEverySerialThroughTheHandoffs(t *testing.T) {
 		}
 	}
 
-	if err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutCheckStateSerial(ctx, tx, "ACME-1", 0) }); err == nil ||
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutCheckStateSerial(ctx, tx, "ACME-1", 0)
+	}); err == nil ||
 		!strings.Contains(err.Error(), "serial 0") {
 		t.Fatalf("putting serial 0 answered %v, want an error naming it: a serial counts from 1", err)
 	}

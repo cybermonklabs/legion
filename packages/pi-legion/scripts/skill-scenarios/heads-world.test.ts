@@ -21,7 +21,7 @@ setDefaultTimeout(fileRowLimit());
 restoreEnvironment([
   "DISPATCH_E2E_PORT",
   "FAKE_GITHUB_PORT",
-  "DISPATCH_E2E_NATS_URL",
+  "DISPATCH_E2E_NATS_URLS",
   "PLAYWRIGHT_BASE_URL",
 ]);
 const dirOf = temporaryDirectories("heads-world");
@@ -32,7 +32,7 @@ const published: string[] = [];
 beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   delete process.env.PLAYWRIGHT_BASE_URL;
   mock.module("nats", () => ({
     connect: async () => ({
@@ -247,7 +247,7 @@ test("every run and reading of k1 the heads worlds record holds only words the p
   // The ports the hook above sets, which restoreEnvironment puts back after each test.
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   const worlds: [string | undefined, string][] = [
     ...["sibling-fails", "ci-only", "no-implementer", "no-tester"].map(
       (which): [string, string] => [which, "reviewer-own-head"]

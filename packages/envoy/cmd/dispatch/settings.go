@@ -110,10 +110,6 @@ var settings = []setting{
 		Description: "How long after its last registration a session counts as live, as a positive Go duration. Dispatch judges a role route's holder by it, as the Envoy listener judges every session: within it the holder is live and the event is forwarded. Give the listeners of a deployment and Dispatch the same value, or Dispatch calls a holder the listener still serves lapsed, and the other way round. A value that is not a positive duration refuses startup; one no Go duration can be read from is a warning and the default."},
 	{Name: "ENVOY_SESSION_GONE_HORIZON", Default: "`1h`", Required: "no",
 		Description: "How long after its last registration a session reads unresponsive before it reads gone, as a positive Go duration. Dispatch holds a role-routed event pending for an unresponsive holder, with its claim untouched, and counts the route reached with nothing sent only for a gone one. Give the listeners of a deployment and Dispatch the same value: with a horizon only the listener carries, Dispatch marks an event sent to nobody while the listener still calls that holder unresponsive and keeps its role, so the event reaches it never. A value that is not a positive duration refuses startup; one no Go duration can be read from is a warning and the default."},
-	{Name: "DISPATCH_REPO_PROJECTS", Required: "no",
-		Description: "Comma-separated `owner/repo=KEY` mappings seeded at startup; a mapping saved in the dashboard wins."},
-	{Name: "DISPATCH_DEFAULT_PROJECT", Required: "no",
-		Description: "Project an external issue from an unmapped repository is created in; it must already exist."},
 	{Name: "DISPATCH_NEW_ISSUE_LABEL", Default: "the issue carries no label", Required: "no",
 		Description: "Label an issue carries that the search bar files from the words a person typed, when those words match nothing the bar found; it is added to that issue alone."},
 	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made and no conversation is started on it", Required: "no",
@@ -145,7 +141,7 @@ var settings = []setting{
 	{Name: "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", Required: "when `DISPATCH_AGENT_SECRETS_URL` is set",
 		Description: "File holding Dispatch's own projected Kubernetes service-account token, which every call to the secrets broker presents; the broker verifies it and reads the caller from `BROKER_API_ACCOUNTS`. In the cluster it is the projected-token volume's path (`/var/run/secrets/…/token`), which the kubelet rewrites in place; the file is read at call time, so a rotation needs no restart, and a local run writes a token into a file of its own and names that."},
 	{Name: "DISPATCH_SEARCH_FILL", Default: "`on`", Required: "no",
-		Description: "`on` starts the keyword fill, which writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log while the server serves; `off` defers it: the process starts no fill, takes no hold and writes no row of that table or its cursor, and logs `dispatch: the keyword fill is deferred` once at boot. No route reads the table yet, so search answers alike either way. Read once at boot; any other value refuses startup."},
+		Description: "`on` starts the keyword fill, which writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log while the server serves; `off` defers it: the process starts no fill, takes no hold and writes no row of that table or its cursor, and logs `dispatch: the keyword fill is deferred` once at boot, with whether that table and its cursor each hold a row (`none`, `some`, or `unknown` with the read's error, which never stops the boot). No route reads the table yet, so search answers alike either way. Read once at boot; any other value refuses startup."},
 	{Name: "DISPATCH_EMBEDDER", Default: "`bedrock`", Required: "no",
 		Description: "Where meaning search reaches Cohere Embed v4: `bedrock` (AWS Bedrock, on the AWS SDK's own region and credentials; with no region, search is keyword-only) or `azure` (Azure AI Foundry, configured by the `DISPATCH_AZURE_EMBED_*` settings, each of which `bedrock` refuses, and by the shared Azure sign-in, which `DISPATCH_ANSWERER=azure` reads too)."},
 	{Name: "DISPATCH_AZURE_EMBED_ENDPOINT", Required: "when `DISPATCH_EMBEDDER` is `azure`",
@@ -239,6 +235,8 @@ var removedSettings = []struct{ Name, Replacement string }{
 	{"DISPATCH_AGENT_SECRETS_TOKEN", noSharedBrokerBearer},
 	{"DISPATCH_AGENT_SECRETS_TOKEN_FILE", noSharedBrokerBearer},
 	{"DISPATCH_ASSET_STORE_BUCKET", "every server process now keeps its build's dashboard assets in Dispatch's database"},
+	{"DISPATCH_REPO_PROJECTS", "a project's default repository: `PUT /api/v1/projects/{key}/default-repository`, or Settings → Projects"},
+	{"DISPATCH_DEFAULT_PROJECT", "an import names its project in the create's `project`"},
 }
 
 // noSharedBrokerBearer is why the secrets broker's shared bearer and its file are gone: the

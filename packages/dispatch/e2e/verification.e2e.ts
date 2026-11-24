@@ -10,7 +10,7 @@ import {
   editArtifact,
   getArtifactText,
   patchIssue,
-  putRepoProject,
+  putProjectDefaultRepository,
   recordCheckResult,
   retractCheckResult,
 } from "./api";
@@ -52,7 +52,7 @@ A check says whether a pass of it stands.
  *  issue. */
 async function seedIssue(title: string, head: string) {
   await createProject({ key: "VER", name: "Verification" });
-  await putRepoProject(repository, { default: true, project: "VER" });
+  await putProjectDefaultRepository("VER", repository);
   const issue = await createIssue({ project: "VER", spec, title });
   await seedFakeGithub({
     [repository]: {
@@ -513,7 +513,7 @@ async function headRowsShown(
 // negative control of v-page-each-head names: this file, run at a commit before the rows.
 test("the Verification tab shows the state at each open head", async ({ browser }, testInfo) => {
   await createProject({ key: "VER", name: "Verification" });
-  await putRepoProject(repository, { default: true, project: "VER" });
+  await putProjectDefaultRepository("VER", repository);
   const issue = await createIssue({ project: "VER", spec, title: "Each open head" });
   await seedFakeGithub({
     [repository]: {
@@ -625,7 +625,7 @@ async function seedCICheck(
   run: { conclusion: string; output: { title: string; summary: string } }
 ) {
   await createProject({ key: "VER", name: "Verification" });
-  await putRepoProject(repository, { default: true, project: "VER" });
+  await putProjectDefaultRepository("VER", repository);
   const issue = await createIssue({ project: "VER", spec, title });
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.

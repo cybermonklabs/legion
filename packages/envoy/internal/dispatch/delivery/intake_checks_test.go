@@ -120,7 +120,7 @@ func TestASettlementMarksTheIssueOfItsOpenHeadAndNothingElse(t *testing.T) {
 	logs := captureLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	clearCheckStateMarks(t, pool)
 
@@ -177,7 +177,7 @@ func TestASettlementWhoseMarkCouldNotBeWrittenIsHandedBack(t *testing.T) {
 
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	// The head's insert and the take-over marked the issue owed; this test counts the
 	// settlement's mark alone.
@@ -224,7 +224,7 @@ func TestATakeOverMarksEveryIssueWithAnOpenHeadBeforeItBinds(t *testing.T) {
 
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	waitFor(t, 20*time.Second, func() bool { return logged(logs, takeOverMarkFailed) >= 2 }, func() string {
 		return fmt.Sprintf("the take-over logged its failed mark %d times, want two attempts", logged(logs, takeOverMarkFailed))
 	})

@@ -1,6 +1,6 @@
 // packages/envoy/internal/cipher/proxy/dpop_test.go
 //
-// The rows of a host whose rules entry is of kind dpop: a CI run's results capability, which the
+// The rows of a host whose proxy block is of kind dpop: a CI run's results capability, which the
 // broker mints and holds. The command holds the result grant's placeholder alone and sends it as
 // its one Authorization header, DPoP <placeholder>; the proxy swaps in the run's token, signs a
 // DPoP proof of the pod's own key for the bound host's origin, and sends the request without the
@@ -47,9 +47,9 @@ const (
 // resultsPlaceholder is a result grant's placeholder in the shape the broker mints them.
 var resultsPlaceholder = placeholder.ResultPrefix + "QqRrSsTtUuVvWwXxYyZz0123456789ab"
 
-// dpopRules is the rules file of a broker whose airlock holds DISPATCH_RESULTS_TOKEN: kind dpop,
-// bound to the rig's host, carried in Authorization alone, allowing POST under the projects
-// route.
+// dpopRules is the proxy's rules (policy.Profiles.ProxyRules) of a broker whose profiles hold
+// DISPATCH_RESULTS_TOKEN: kind dpop, bound to the rig's host, carried in Authorization alone,
+// allowing POST under the projects route.
 func dpopRules() proxyrules.Rules {
 	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
 		Name: resultsName, Hosts: []string{boundHost}, Headers: []string{"Authorization"},

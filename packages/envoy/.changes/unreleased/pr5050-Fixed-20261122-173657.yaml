@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  An edge listener's read of a bucket key now takes the server's refusal of the request it sends.
+  The edge reads with stream message gets (`bus.WithStreamMessageReads`), and its read looked up a
+  direct get's refusal instead, a request it never sends. So a read the grant refused ended as
+  unanswered after its 10 s wait, where it now names the refusal; and a read whose answer was lost
+  could end with the refusal of a direct get on the same connection, which it no longer takes.
+time: 2026-11-22T17:36:57Z
+custom:
+    Issue: pr5050

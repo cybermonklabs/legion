@@ -241,6 +241,7 @@ func callsIn(code string) []string {
 // new, is beyond it, and so is text @@ query, an operator; a raw read of new for either still
 // fails here.
 func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	entries := map[string]bool{}

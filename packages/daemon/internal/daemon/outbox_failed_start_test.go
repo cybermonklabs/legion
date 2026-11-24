@@ -22,6 +22,7 @@ import (
 // one thing the cap counts. There is nothing left to come behind this row: it carries the task,
 // so the retry and the task arrive together, and the worker is prompted once.
 func TestTheStartRowRetriesAFailedClaimOnFreshBudgets(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

@@ -121,10 +121,10 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  * Bun judges a synchronous hook only after it returns, so a limit stopped no removal that never
  * returned and failed only one that had ended: on the devbox one removal of a row's folder of a
  * few files ran past Bun's 5 s at a 1-minute load of 476, and failed a row whose assertions had
- * all passed; a removal of a copy of the role texts took 36 s at a load of about 690
- * (`rule-search.test.ts`); and the afterAll of `score.test.ts`, removing its staged runs, ran past
- * a limit of 60 s at a load of 570. Now that the removal is a process, a limit of Bun's kills that
- * process at the limit and fails the hook, a removal that would have ended among them.
+ * all passed; a removal of a copy of the role texts took 36 s at a load of about 690; and the
+ * afterAll of `score.test.ts`, removing its staged runs, ran past a limit of 60 s at a load of 570.
+ * Now that the removal is a process, a limit of Bun's kills that process at the limit and fails
+ * the hook, a removal that would have ended among them.
  *
  * The making stays in this process: it is one `mkdirSync`, no tree to walk, under the same limit
  * of none.

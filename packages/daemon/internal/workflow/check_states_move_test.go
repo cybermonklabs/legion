@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -206,19 +207,17 @@ func TestAFailStateBeforeTheTesterCompletesStartsNothing(t *testing.T) {
 
 // Each step of the type testing among the steps the issue runs passes when each check reads yes
 // at its head, and its run ends passed; a check that reads no ends it failed, returning the work
-// to the step a failed step returns to. Today every issue runs the default steps.
+// to the step a failed step returns to. The issue here has no plan rows, so it walks the steps of
+// the task default on today's line (todaysWalk).
 func TestATestingStepPassesWhenItsChecksPass(t *testing.T) {
-	steps := DefaultSteps()
-	implementing, _, _, _ := stepIn(steps, phase.Implementing)
+	w := todaysWalk()
+	implementing, _ := w.PlaceOf(phase.Implementing)
 	tested := 0
-	for _, p := range phase.All {
-		if _, typ, ok := stepWork(p); !ok || typ != "testing" {
+	for i, step := range w.Steps {
+		if step.Type != plan.TypeTesting {
 			continue
 		}
-		place, _, _, ok := stepIn(steps, p)
-		if !ok {
-			continue
-		}
+		p, place := w.Line[i], placeOf("step", i+1)
 		tested++
 		for _, tc := range []struct {
 			name   string
@@ -228,7 +227,7 @@ func TestATestingStepPassesWhenItsChecksPass(t *testing.T) {
 			back   *int
 		}{
 			{"each check reads yes", []intake.DispatchCheckState{passOf("k1", "tester"), passOf("k2", "tester")}, phase.Reviewing, string(ResultPassed), nil},
-			{"a check reads no", []intake.DispatchCheckState{passOf("k1", "tester"), stateOf("k2", "no", "fail")}, phase.Implementing, string(ResultFailed), &implementing.Place},
+			{"a check reads no", []intake.DispatchCheckState{passOf("k1", "tester"), stateOf("k2", "no", "fail")}, phase.Implementing, string(ResultFailed), &implementing.Position},
 		} {
 			t.Run(fmt.Sprintf("step %d (%s): %s", place.Place, p, tc.name), func(t *testing.T) {
 				pool := migratedPool(t)
@@ -250,7 +249,7 @@ func TestATestingStepPassesWhenItsChecksPass(t *testing.T) {
 		}
 	}
 	if tested == 0 {
-		t.Fatalf("the steps %v hold no step of the type testing, so nothing was tested", steps)
+		t.Fatalf("the steps %v hold no step of the type testing, so nothing was tested", w.Steps)
 	}
 }
 

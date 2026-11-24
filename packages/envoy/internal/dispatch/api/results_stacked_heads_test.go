@@ -92,7 +92,8 @@ type stackedWorld struct {
 	issue   string
 	other   string
 	// readThrough writes a pull request's head row as production's read-through of its head
-	// commit writes it (delivery.ReadThroughCommitPulls), attributed from GitHub's answer.
+	// commit writes it (delivery.Attributor.ReadThroughCommitPulls), attributed from GitHub's
+	// answer.
 	readThrough func(pull stackedPull)
 	// attribution is the issue and the source the head row of the pull request number names.
 	attribution func(number int) (string, string)
@@ -100,7 +101,7 @@ type stackedWorld struct {
 	// that number on the other issue.
 	link func(number int)
 	// pullRequest records the other issue's open pull request number, at head, through the writer
-	// a `pull_request` event of it reaches (delivery.UpsertPullRequestHead).
+	// a `pull_request` event of it reaches (delivery.Attributor.UpsertPullRequestHead).
 	pullRequest func(number int, head string)
 	// offered reports whether the reconcile's head pass would read the pull request number again
 	// now (delivery.ListStalePullRequestHeads, the batch a pass reads).
@@ -145,7 +146,7 @@ func newStackedWorld(t *testing.T, project string, pulls ...stackedPull) stacked
 		t: t, handler: handler, issue: issue.Key, other: other,
 		readThrough: func(pull stackedPull) {
 			t.Helper()
-			if written, _, err := delivery.ReadThroughCommitPulls(ctx, database.Pool, served.deps.GitHub, nil,
+			if written, _, err := served.deps.Attributor.ReadThroughCommitPulls(ctx, database.Pool, served.deps.GitHub, nil,
 				"acme/widgets", pull.head, time.Now()); err != nil || written != 1 {
 				t.Fatalf("write the head of #%d through the read of its commit: %d written, %v", pull.number, written, err)
 			}
@@ -172,7 +173,7 @@ func newStackedWorld(t *testing.T, project string, pulls ...stackedPull) stacked
 		pullRequest: func(number int, head string) {
 			t.Helper()
 			key := other
-			if err := delivery.UpsertPullRequestHead(ctx, database.Pool, nil, delivery.PullRequestHead{
+			if err := served.deps.Attributor.UpsertPullRequestHead(ctx, database.Pool, nil, delivery.PullRequestHead{
 				Repo: "acme/widgets", Number: number, HeadSHA: head, HeadRef: "legion/" + other, BaseRef: "main",
 				State: "open", IssueKey: &key, AttributionSource: "branch", AttributionComplete: true,
 				Title: "Other work", URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),

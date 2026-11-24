@@ -41,6 +41,7 @@ func requireProcStatus(t *testing.T) {
 // Oh My Pi - is stopped by SIGTTOU again rather than inheriting SIG_IGN, which signal.Reset alone
 // leaves in place.
 func TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault(t *testing.T) {
+	// Not parallel: it changes the whole process's SIGTTOU disposition (terminalJob.attach, release).
 	requireProcStatus(t)
 	before := ignoredBy(t, bare)
 	if before&bit(syscall.SIGTTOU) != 0 {
@@ -67,6 +68,7 @@ func TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault(t *testing.T) {
 // At the terminal the attempt ignores SIGTSTP, so a Ctrl-Z cannot stop the terminal's foreground
 // job while this process waits in the background; an attempt run as the daemon's are does not.
 func TestATerminalAttemptIgnoresSIGTSTP(t *testing.T) {
+	t.Parallel()
 	requireProcStatus(t)
 	var background *terminalJob
 	if mask := ignoredBy(t, background.script); mask&bit(syscall.SIGTSTP) != 0 {
@@ -85,6 +87,7 @@ func TestATerminalAttemptIgnoresSIGTSTP(t *testing.T) {
 // Oh My Pi does, caught it and exited 130; any other end is judged as an answer, and an attempt
 // away from a terminal is never an interrupt.
 func TestATerminalAttemptEndedByCtrlCIsInterrupted(t *testing.T) {
+	t.Parallel()
 	ended := func(script string) *os.ProcessState {
 		t.Helper()
 		cmd := exec.Command("sh", "-c", script)
@@ -118,6 +121,7 @@ func TestATerminalAttemptEndedByCtrlCIsInterrupted(t *testing.T) {
 // the signal rather than reading it from the launch's status. Without a Ctrl-C the launch's own
 // status comes through.
 func TestATerminalAttemptRecordsACtrlCTheLaunchExitsZeroOn(t *testing.T) {
+	t.Parallel()
 	job := &terminalJob{}
 	// The launch ignores SIGINT and finishes normally, exit 0: the case no exit status carries.
 	launch := `exec sh -c 'trap "" INT; sleep 1; exit 0'`
@@ -155,6 +159,7 @@ func (c *chunks) Write(p []byte) (int, error) {
 
 // The terminal sees the attempt's stderr as it arrives, without the load probe's report.
 func TestTheTerminalCopyDropsTheProbesReportAndShowsAPromptAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		writes []string

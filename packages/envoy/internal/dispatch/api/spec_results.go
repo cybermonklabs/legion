@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
@@ -46,7 +47,8 @@ const (
 	codeResultInput = "RESULT_INPUT"
 	// codeCommitNotTheRuns refuses a result for another commit than the run's.
 	codeCommitNotTheRuns = "COMMIT_NOT_THE_RUNS"
-	// codeRepositoryNotTheProjects refuses a run of a repository the project does not map.
+	// codeRepositoryNotTheProjects refuses a run of a repository that is not the project's
+	// default repository.
 	codeRepositoryNotTheProjects = "REPOSITORY_NOT_THE_PROJECTS"
 	// codeCheckRunNotTheRuns refuses a token whose check run GitHub names for another commit.
 	codeCheckRunNotTheRuns = "CHECK_RUN_NOT_THE_RUNS"
@@ -136,11 +138,11 @@ func (c *specResultReads) init() {
 
 // recordSpecCheckResult is POST /api/v1/projects/{key}/results. The checks run in this order,
 // each before anything is read of GitHub that it does not need: the credential is a results
-// token; the body names the four fields alone, well formed; its commit is the run's; the project
-// maps the run's repository; GitHub names the run's check run at that commit; the graph logic
-// takes the files at that commit; the files hold the check; and the check's job is the check
-// run's. The project check of the path is withinProjectScope's, which register puts in front of
-// this handler.
+// token; the body names the four fields alone, well formed; its commit is the run's; the run's
+// repository is the project's default repository; GitHub names the run's check run at that
+// commit; the graph logic takes the files at that commit; the files hold the check; and the
+// check's job is the check run's. The project check of the path is withinProjectScope's, which
+// register puts in front of this handler.
 func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
@@ -179,14 +181,14 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	project := r.PathValue("key")
 	ctx := r.Context()
-	mapped, err := s.projectMapsRepository(ctx, project, run.Repository)
+	isDefault, err := s.isProjectsDefaultRepository(ctx, project, run.Repository)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if !mapped {
+	if !isDefault {
 		writeError(w, codeRepositoryNotTheProjects, http.StatusForbidden, fmt.Sprintf(
-			"project %s maps no repository %s, the repository of this token's run", project, run.Repository))
+			"%s, the repository of this token's run, is not the default repository of project %s", run.Repository, project))
 		return
 	}
 
@@ -331,19 +333,24 @@ func runNumbersOf(run oauthwire.CIRun) (runNumbers, error) {
 	return runNumbers{checkRun: checkRun, run: workflowRun, attempt: attempt}, nil
 }
 
-// projectMapsRepository answers whether project maps repository, by the name it was mapped
-// under or the name it was renamed to (repo_projects.renamed_to), which is the name GitHub
-// names a run's repository by. GitHub spells a repository as its owner does and Dispatch stores
-// a mapping's names lowercased (canonicalRepo), so both sides are compared lowercased, as every
-// comparison of a repository is (refs.CanonicalRepoSQL).
-func (s *server) projectMapsRepository(ctx context.Context, project, repository string) (bool, error) {
-	var mapped bool
+// isProjectsDefaultRepository answers whether repository, the repository GitHub names a run by,
+// is the default repository of project (projects.default_repo), the one repository Dispatch gives
+// a project: a project has one or none (project_default_repository.go), so a project with none is
+// the project of no run. Both names are read under the name the repository is called today
+// (refs.Renames.Canonical over Deps.Renames, and refs.CanonicalRepoSQL over the column), as PUT
+// /api/v1/projects/{key}/default-repository stores the default, so a default that a build before
+// this one stored under a name its repository was renamed away from is still the run's
+// repository. GitHub spells a repository as its owner does and Dispatch stores the default
+// lowercased (parseIssueRepo), so both sides are compared lowercased, as every comparison of a
+// repository is.
+func (s *server) isProjectsDefaultRepository(ctx context.Context, project, repository string) (bool, error) {
+	var isDefault bool
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select exists (select 1 from repo_projects where project = $1 and (lower(repo) = lower($2) or lower(renamed_to) = lower($2)))`,
-		project, repository).Scan(&mapped); err != nil {
-		return false, fmt.Errorf("read whether %s maps %s: %w", project, repository, err)
+		select exists (select 1 from projects where key = $1 and lower(`+refs.CanonicalRepoSQL(s.deps.Renames, "default_repo")+`) = lower($2))`,
+		project, s.deps.Renames.Canonical(repository)).Scan(&isDefault); err != nil {
+		return false, fmt.Errorf("read whether %s is the default repository of %s: %w", repository, project, err)
 	}
-	return mapped, nil
+	return isDefault, nil
 }
 
 // repositoryReader mints the installation token of one repository once a read needs it, so a

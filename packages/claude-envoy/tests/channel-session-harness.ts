@@ -375,14 +375,6 @@ export function settled(): Promise<void> {
 }
 
 /**
- * How long a test waits for a channel-server process it spawned to start: its first stderr line,
- * or its first dial. Most of a start is Bun loading and compiling this package, which a loaded
- * machine slows most: a server once wrote nothing for 15 s at a load of 700 on 288 cores, and
- * another had not dialed after 8 s at a load of 450, so a start gets 30 s.
- */
-export const SERVER_START_MS = 30_000
-
-/**
  * Polls `condition` every 5 ms until it holds; fails after `deadlineMs` (5 s by default) naming
  * `what`, followed by what `state` reports at that moment (an `observedClient`'s `describe`, the
  * test's own fakes). Real time on purpose: the awaited conditions are filesystem writes the

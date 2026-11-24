@@ -359,6 +359,7 @@ func allSent(attempts []model.CommentDelivery) bool {
 // sessions whose sends are all held answers at once, with its attempts pending, and they settle
 // once the sends are released.
 func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	release := state.hold("s1", "s2", "s3")
@@ -399,6 +400,7 @@ func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 // same lane. While the first comment's send is held, the second's attempt waits on that lane
 // under this process's claim, with its send not started.
 func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	release := state.hold("s1")
@@ -433,6 +435,7 @@ func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testi
 // A recipient whose send is held - a slow or unanswering session - does not hold back the
 // sends to anyone else.
 func TestABlockedMentionRecipientDoesNotHoldBackAnother(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	release := state.hold("s1")
@@ -466,6 +469,7 @@ func TestABlockedMentionRecipientDoesNotHoldBackAnother(t *testing.T) {
 // round trip rather than one each: three lookups of 200 ms each, seen from the listener, all
 // finish within 400 ms of the first one starting.
 func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
+	t.Parallel()
 	const lookup = 200 * time.Millisecond
 	var mu sync.Mutex
 	looked := map[string]bool{}
@@ -624,6 +628,7 @@ func commentWithAnUnansweredLookup(t *testing.T, lookup unansweredLookup) unansw
 // one session, so the event suppresses the route by that string and the session hears the
 // comment once, from the mention.
 func TestAnUnansweredMentionOfTheRouteItselfSuppressesTheRouteCopy(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		route: "session:s1", mention: "session:s1", hungPath: "/v1/registry/s1",
 	})
@@ -647,6 +652,7 @@ func TestAnUnansweredMentionOfTheRouteItselfSuppressesTheRouteCopy(t *testing.T)
 // sender pins s1 on the attempt row when it sends, and the outbox reads that row rather than the
 // payload, so the route copy to s1 is left to the mention and s1 hears the comment once.
 func TestAnUnansweredMentionOfAnotherStringForTheRouteIsLeftToThatMention(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		route: "session:s1", mention: "role:reviewer", hungPath: "/v1/roles/reviewer",
 	})
@@ -667,6 +673,7 @@ func TestAnUnansweredMentionOfAnotherStringForTheRouteIsLeftToThatMention(t *tes
 // s1's lookup goes unanswered: the comment's mentions name s1, so the author route leaves s1 to
 // the mention, and s1 hears the reply once, from it.
 func TestAnUnansweredSessionMentionOfTheRootAuthorSuppressesTheAuthorCopy(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		mention: "session:s1", hungPath: "/v1/registry/s1", replyToS1: true,
 	})
@@ -684,6 +691,7 @@ func TestAnUnansweredSessionMentionOfTheRootAuthorSuppressesTheAuthorCopy(t *tes
 // row when it sends, which is what the author route reads, so s1 is left to the mention there
 // too and hears the reply once.
 func TestAnUnansweredRoleMentionHeldByTheRootAuthorIsLeftToThatMention(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		mention: "role:reviewer", hungPath: "/v1/roles/reviewer", replyToS1: true,
 	})
@@ -700,6 +708,7 @@ func TestAnUnansweredRoleMentionHeldByTheRootAuthorIsLeftToThatMention(t *testin
 // to s1 under another string - role:reviewer, which s1 holds - suppresses the route copy for s1:
 // s1 hears the comment once, from the mention.
 func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *testing.T) {
+	t.Parallel()
 	got := commentWithAnUnansweredLookup(t, unansweredLookup{
 		route: "session:s1", mention: "role:reviewer", hungPath: "/v1/registry/s1", pinned: true,
 	})
@@ -722,6 +731,8 @@ func TestARouteWhoseOwnLookupGoesUnansweredIsSuppressedForTheSessionItNames(t *t
 // route's own lookup runs beside the mentions' lookups, not after them, so the two timeouts do not
 // add up.
 func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *testing.T) {
+	// Not parallel: it holds the answer to under 500 ms of wall clock, and among this package's
+	// parallel tests on CI's runner it answered in 589 ms (job 137359069610).
 	listener, state := newMentionListener(t)
 	letMentionAnswer := state.holdLookups("/v1/registry/s1")
 	defer letMentionAnswer()
@@ -767,6 +778,7 @@ func ageAttempts(t *testing.T, database *store.Store, commentIDs ...string) {
 // claim. The next process's delivery sweep sends such an attempt once it has waited a claim
 // lease, and leaves alone one whose claim is live, which another process's sender holds.
 func TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: stopping})
@@ -816,6 +828,7 @@ func TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone(t *tes
 // refused by the old process's sender and its attempt stays pending with no claim. The
 // successor's delivery sweep sends it, once.
 func TestARollingUpdatesSuccessorSendsTheMentionTheOldProcessAcceptedWhileDraining(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, lifetime: stopping})
@@ -857,6 +870,7 @@ func TestARollingUpdatesSuccessorSendsTheMentionTheOldProcessAcceptedWhileDraini
 // meanwhile leaves each of them to it and each reaches its recipient once, in the order its
 // comment was accepted.
 func TestTheSweepLeavesABusySendersUnstartedSendsToIt(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createInteractionIssue(t, handler, "TEST", "A busy sender", "before")
@@ -897,6 +911,7 @@ func TestTheSweepLeavesABusySendersUnstartedSendsToIt(t *testing.T) {
 // room and the attempt has waited a claim lease, sends it, once. The bound counts the send in
 // flight as well as the queued one (mentionSender.held), so a capacity of two holds both.
 func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	served.mentions.mu.Lock()
@@ -950,6 +965,7 @@ func TestAMentionPastTheQueueBoundIsSentOnceTheQueueDrains(t *testing.T) {
 // unclaimed, and the delivery sweep sends it once it has waited a claim lease: once, after the
 // first.
 func TestAQueueOfOneRefusesASecondSendWhileTheFirstIsInFlight(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	served.mentions.mu.Lock()
@@ -1118,6 +1134,7 @@ func postMentionOfS1(t *testing.T, handler http.Handler, issueKey, body string) 
 // refresh committed has lapsed, and the refresh no longer writes it (refreshMentionClaims), which
 // TestALostRefreshNeverRevivesALapsedClaim covers.
 func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1167,6 +1184,7 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 // the lane fall to the delivery sweep as soon as their claims lapse, and its pass sends them past
 // the send still in flight, out of the order the comments were accepted.
 func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1220,6 +1238,7 @@ func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
 // already holds: its next refresh writes that claim again, so the attempt stays this process's
 // and the delivery sweep leaves it alone. The repeat queues no second send.
 func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1273,6 +1292,7 @@ func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testin
 // latest, so the lane sends nothing, settles it failed as superseded and gives its claim back:
 // the recipient is handed one copy, the Retry's.
 func TestARetryWhileTheFirstAttemptIsQueuedLeavesTheRecipientOneCopy(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -1334,6 +1354,7 @@ func unclaimedSettled(t *testing.T, database *store.Store, commentID, target str
 // so the attempts are left pending and unclaimed for the next delivery sweep pass rather than
 // held by a claim nothing writes again.
 func TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	defer stop()
 	started, finish := make(chan struct{}), make(chan struct{})

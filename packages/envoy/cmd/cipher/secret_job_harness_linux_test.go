@@ -50,9 +50,8 @@ const promptJobMargin = 30 * time.Second
 // waitsGaveUp reports whether the moment every wait of these tests gives up has passed: the test
 // binary's deadline less promptJobMargin, the clamp testwait.Bounded gives. The day passed to it
 // stands for no bound of the wait's own: Bounded answers what is left before that moment when it is
-// sooner, and the day itself where there is no deadline (-timeout 0, and the helper, which bash
-// starts with no -test.timeout of its own), so such a wait never gives up; the test that started
-// the helper kills it in its cleanup.
+// sooner, and the day itself where there is no deadline (-timeout 0), so such a wait never gives
+// up. The helper has the deadline helperTimeout gives it, so its waits give up before the test's.
 func waitsGaveUp(t *testing.T) bool {
 	return testwait.Bounded(t, 24*time.Hour, promptJobMargin) <= 0
 }
@@ -232,15 +231,31 @@ func (s *promptShell) waitFrom(from int, wants ...string) (string, int) {
 	}
 }
 
+// helperTimeout is the -test.timeout the helper starts with: what is left of this test binary's
+// deadline less promptJobMargin. So the helper's waits (waitsGaveUp) give up promptJobMargin before
+// this process's waits do, and the helper's own text, such as "bash's line editor never took the
+// terminal", is on the terminal while the test still reads it. The helper's alarm comes when this
+// process's waits give up, by which time the test has failed. With no deadline (-timeout 0) the
+// helper has none either, and the test that started it kills it in its cleanup.
+func helperTimeout(t *testing.T) string {
+	deadline, ok := t.Deadline()
+	if !ok {
+		return ""
+	}
+	return " -test.timeout=" + max(time.Until(deadline)-promptJobMargin, time.Millisecond).String()
+}
+
 func (s *promptShell) start(wrapper bool, background bool) {
 	s.t.Helper()
-	command := s.env + "AGENT_SECRETS_JOB_HELPER=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'"
+	reference := ""
 	if background {
 		// fg hands the job the terminal in the state bash hands every foreground
 		// job, which is what the prompt must restore: not what the terminal holds
 		// while the job waits behind bash's line editor.
-		command = "AGENT_SECRETS_JOB_REFERENCE=" + s.foregroundState() + " " + command
+		reference = "AGENT_SECRETS_JOB_REFERENCE=" + s.foregroundState() + " "
 	}
+	// The helper's deadline is read after the probe above, so the probe's time is not in it.
+	command := reference + s.env + "AGENT_SECRETS_JOB_HELPER=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'" + helperTimeout(s.t)
 	if wrapper {
 		ignores := s.wrapperIgnores
 		if ignores == "" {

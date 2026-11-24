@@ -161,9 +161,10 @@ func TestAPullRequestFirstSeenClosedUnderItsCanonicalNameEndsTheLifecycleOfItsOl
 			pool, ctx := deliveryTestPool(t)
 			issue := seedGadgetsIssue(t, ctx, pool, row.number)
 			seedRenamedGadgets(t, ctx, pool)
+			attributor := NewAttributor(renamesOf(t, ctx, pool))
 			put := func(repo, head, state string) {
 				t.Helper()
-				if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+				if err := attributor.UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 					Repo: repo, Number: row.number, HeadSHA: head, State: state, IssueKey: &issue, AttributionComplete: true,
 				}); err != nil {
 					t.Fatalf("write %s#%d at %s, %s: %v", repo, row.number, head, state, err)
@@ -177,7 +178,7 @@ func TestAPullRequestFirstSeenClosedUnderItsCanonicalNameEndsTheLifecycleOfItsOl
 			if row.existing {
 				put(gadgetsRepo, h3, "open")
 			}
-			if err := upsertHeadUnderCanonicalName(ctx, pool, nil, PullRequestHead{
+			if err := attributor.upsertHeadUnderCanonicalName(ctx, pool, nil, PullRequestHead{
 				Repo: gadgetsRepo, Number: row.number, HeadSHA: h3, State: row.state, IssueKey: &issue, AttributionComplete: true,
 			}, gadgetsOldRepo); err != nil {
 				t.Fatalf("write %s#%d %s under the canonical name: %v", gadgetsRepo, row.number, row.state, err)
@@ -216,9 +217,10 @@ func TestTheCanonicalNameWriterWritesTheCanonicalRowBeforeItDeletesTheOldOne(t *
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssue(t, ctx, pool, number)
 	seedRenamedGadgets(t, ctx, pool)
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
 	put := func(repo, head, state string) {
 		t.Helper()
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := attributor.UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 			Repo: repo, Number: number, HeadSHA: head, State: state, IssueKey: &issue, AttributionComplete: true,
 		}); err != nil {
 			t.Fatalf("write %s#%d at %s, %s: %v", repo, number, head, state, err)
@@ -247,7 +249,7 @@ func TestTheCanonicalNameWriterWritesTheCanonicalRowBeforeItDeletesTheOldOne(t *
 		t.Fatalf("#%d holds no close after it closed and reopened under the old name: this test needs a close the settler knows", number)
 	}
 
-	if err := upsertHeadUnderCanonicalName(ctx, pool, nil, PullRequestHead{
+	if err := attributor.upsertHeadUnderCanonicalName(ctx, pool, nil, PullRequestHead{
 		Repo: gadgetsRepo, Number: number, HeadSHA: h4, State: "closed", IssueKey: &issue, AttributionComplete: true,
 	}, gadgetsOldRepo); err != nil {
 		t.Fatalf("write %s#%d closed under the canonical name: %v", gadgetsRepo, number, err)

@@ -2257,8 +2257,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
     namesNoToken(argv, stdout, stderr);
   }, 30_000);
 
-  // The airlock's rules entry for Dispatch's host allows the results write and nothing else, so
-  // the write asks Dispatch nothing first and nothing after: the stand-in counts every request.
+  // The proxy block of the profile DISPATCH_RESULTS_TOKEN allows the results write to Dispatch's
+  // host and nothing else, so the write asks Dispatch nothing first and nothing after: the
+  // stand-in counts every request.
   test("the job's write sends one POST and nothing else to Dispatch's host", async () => {
     const { code, stdout } = await runJob(record, jobEnvironment());
     expect(code, stdout).toBe(0);

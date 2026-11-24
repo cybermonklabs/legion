@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -77,7 +78,8 @@ type decisionSection struct {
 }
 
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	key := r.PathValue("key")
@@ -92,7 +94,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if specFound {
-		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), key, spec.ID, reader); err != nil {
+		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), who, key, spec.ID, reader); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -113,7 +115,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	if specFound {
 		specID = spec.ID
 	}
-	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID, reader); err != nil {
+	if answer.Decisions, err = s.readDecisions(r.Context(), who, document, reference, specID, reader); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -182,7 +184,7 @@ func artifactMissing(err error) bool {
 // shaping registers a pointer into the row, and an append that moved the backing array would
 // leave the reader filling trees into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
-	ctx context.Context, key, specID string, reader *displayTreeReader,
+	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
@@ -212,7 +214,7 @@ func (s *server) specOpenQuestions(
 	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, asks); err != nil {
 		return nil, err
 	}
-	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, asks); err != nil {
+	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, asks); err != nil {
 		return nil, err
 	}
 	for index := range questions {
@@ -232,7 +234,7 @@ func (s *server) specOpenQuestions(
 // filling a tree into memory the answer no longer holds. Keep reads the decisions to compare one
 // sum and answers none of them, so it passes no reader and no tree is read for it.
 func (s *server) readDecisions(
-	ctx context.Context, document model.Artifact, reference, specID string, reader *displayTreeReader,
+	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader,
 ) ([]model.Decision, error) {
 	markdown, sections, err := s.decisionSections(ctx, document.ID)
 	if err != nil {
@@ -244,7 +246,7 @@ func (s *server) readDecisions(
 	}
 	var links []model.BlockLink
 	if specID != "" {
-		if links, err = refs.BlockLinks(ctx, s.deps.Store.Pool, document.ID, specID); err != nil {
+		if links, err = refs.BlockLinks(ctx, s.deps.Store.Pool, who, document.ID, specID); err != nil {
 			return nil, err
 		}
 	}
@@ -444,7 +446,8 @@ func (s *server) versionsAtTimes(
 }
 
 // decisionSumsAt is each named version's decisions, with the sum of each one's text: the
-// version's own stored markdown, cut by the same rule as the document as it stands.
+// version's own stored markdown (versionsMarkdown), cut by the same rule as the document as it
+// stands.
 func (s *server) decisionSumsAt(
 	ctx context.Context, artifactID string, numbers []int,
 ) (map[int]map[sectionKey]string, error) {
@@ -452,23 +455,14 @@ func (s *server) decisionSumsAt(
 	if len(numbers) == 0 {
 		return sums, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select number, coalesce(markdown, '') from artifact_versions
-		where artifact_id = $1::uuid and number = any($2::int[])
-	`, artifactID, numbers)
+	markdown, err := s.versionsMarkdown(ctx, artifactID, numbers)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var number int
-		var markdown string
-		if err := rows.Scan(&number, &markdown); err != nil {
-			return nil, err
-		}
-		sums[number] = decisionSums(markdown)
+	for number, text := range markdown {
+		sums[number] = decisionSums(text)
 	}
-	return sums, rows.Err()
+	return sums, nil
 }
 
 // decisionSums cuts a document's markdown into its decisions and sums each one's text. It cuts
@@ -779,7 +773,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	blockID := r.PathValue("block_id")
-	decision, err := s.keptDecision(r.Context(), document, blockID)
+	decision, err := s.keptDecision(r.Context(), actor, document, blockID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -830,7 +824,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 // decisions.md of its issue - resolved as the view resolves it, by slug and then by filename, so
 // Keep and the view never disagree about which document holds the decisions - and that block is
 // the heading of a decision outside `## Replaced`.
-func (s *server) keptDecision(ctx context.Context, document model.Artifact, blockID string) (model.Decision, error) {
+func (s *server) keptDecision(ctx context.Context, who model.Actor, document model.Artifact, blockID string) (model.Decision, error) {
 	notFound := errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", blockID, document.Name)
 	if document.IssueKey == nil {
 		return model.Decision{}, notFound
@@ -842,7 +836,7 @@ func (s *server) keptDecision(ctx context.Context, document model.Artifact, bloc
 	if !found || decisionsDocument.ID != document.ID {
 		return model.Decision{}, notFound
 	}
-	decisions, err := s.readDecisions(ctx, document, artifactReference(document), "", nil)
+	decisions, err := s.readDecisions(ctx, who, document, artifactReference(document), "", nil)
 	if err != nil {
 		return model.Decision{}, err
 	}
@@ -887,7 +881,9 @@ type documentReadInput struct {
 
 // putDocumentRead is PUT /api/v1/me/documents/{id}/read {"version": n}: the caller has read the
 // document through that version. It is the caller's own view state, written as PUT
-// /api/v1/me/issues/{key}/state is, and announces nothing.
+// /api/v1/me/issues/{key}/state is, and announces nothing. The version is 0 or more and fits
+// user_document_reads.version, an integer column (fitsIntegerColumn); anything else is refused
+// 400 INVALID_STATE before the write.
 func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -898,8 +894,9 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if input.Version == nil || *input.Version < 0 {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "version must be a whole number that is not negative")
+	if input.Version == nil || *input.Version < 0 || !fitsIntegerColumn(*input.Version) {
+		writeError(w, "INVALID_STATE", http.StatusBadRequest,
+			fmt.Sprintf("version must be a whole number from 0 to %d", maxIntegerColumn))
 		return
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))

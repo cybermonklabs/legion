@@ -62,17 +62,20 @@ type Intake struct {
 	// settings is the delivery settings every message is routed by, shared with the job intake
 	// (StartIntakes).
 	settings *SettingsCache
+	// attributor attributes each pull request an envelope reports and keys its head row, by the
+	// rename pairs the process read at boot.
+	attributor *Attributor
 	// heldDurable is this intake's delivery from bus.DispatchDeliveryDurable under the durable's
 	// hold: the subscription, StopDelivering and the take-over.
 	heldDurable
 }
 
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
-// holding its durable and taking it over under a hold and a lease it takes on leases, and routing
-// by settings. Each take-over first marks every issue with an open head owed
-// (markOpenHeadsOwed).
-func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
-	in := &Intake{pool: pool, github: github, events: broker, settings: settings}
+// holding its durable and taking it over under a hold and a lease it takes on leases, routing by
+// settings, and attributing each pull request by attributor. Each take-over first marks every
+// issue with an open head owed (markOpenHeadsOwed).
+func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor}
 	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	in.heldDurable.beforeTakeOver = in.markOpenHeadsOwed
 	return in
@@ -635,7 +638,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, DeletePullRequest(ctx, in.pool, repoFull, number)
 	}
 
-	if err := completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
+	if err := in.attributor.completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -658,21 +661,18 @@ var errCheckStatesNotMarked = errors.New("the check states of the settled pull r
 // publish route can put an envelope here, and a mark only asks for a computation Dispatch makes
 // from GitHub's answer.
 //
-// The head is read under the repository's canonical name (refs.CanonicalRepo), the name its row
-// is keyed by. A pull request that is not open, or that no issue holds, has no published state
-// to change, and nothing is marked. A failure of the canonical read, the head's read or the mark
-// is errCheckStatesNotMarked, which deliver hands back; a number that does not parse is not, since
-// every delivery of the envelope carries it. It writes no row the issue.deployed rule reads, so it
-// reports wrote false.
+// The head is read under the repository's canonical name (Attributor.canonical, over the rename
+// pairs the boot read), the name its row is keyed by. A pull request that is not open, or that no
+// issue holds, has no published state to change, and nothing is marked. A failure of the head's
+// read or the mark is errCheckStatesNotMarked, which deliver hands back; a number that does not
+// parse is not, since every delivery of the envelope carries it. It writes no row the
+// issue.deployed rule reads, so it reports wrote false.
 func (in *Intake) handleChecksEnvelope(ctx context.Context, _ DeliverySettings, payload map[string]string) (wrote bool, err error) {
 	number, err := strconv.Atoi(payload["number"])
 	if err != nil {
 		return false, fmt.Errorf("checks envelope: malformed number %q: %w", payload["number"], err)
 	}
-	repoFull, err := refs.CanonicalRepo(ctx, in.pool, payload["repo"])
-	if err != nil {
-		return false, fmt.Errorf("%w: read the canonical name of %s: %w", errCheckStatesNotMarked, payload["repo"], err)
-	}
+	repoFull := in.attributor.canonical(payload["repo"])
 	var issue *string
 	err = in.pool.QueryRow(ctx, `
 		select issue_key from pull_request_heads where repo = $1 and number = $2 and state = 'open'
@@ -725,7 +725,7 @@ func (in *Intake) markOpenHeadsOwed(ctx context.Context) error {
 // head write does, for a pull request its title, body and branch left unattributed — and nil
 // when it has not, which is reconcile's case and intake's commoner one; a non-nil read spares
 // this the same paginated call a second time.
-func completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
+func (a *Attributor) completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
 	messages := read
 	if messages == nil {
 		paged, err := fetchCommitMessages(ctx, github, owner, repo, number)
@@ -737,11 +737,11 @@ func completePullRequest(ctx context.Context, pool *store.Pool, github *githubap
 		}
 		messages = paged
 	}
-	inputs := attributionInputsFrom(attributionFacts{
+	inputs := a.attributionInputsFrom(attributionFacts{
 		Repo: repoFull, URL: fetched.URL, Title: fetched.Title, Body: fetched.Body,
 		HeadRef: fetched.HeadRef, CommitMessages: messages,
 	})
-	issueKey, _, err := resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
+	issueKey, _, err := a.resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
 	if err != nil {
 		return err
 	}

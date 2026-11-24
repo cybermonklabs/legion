@@ -693,7 +693,7 @@ func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing
 			t.Fatalf("stamp the first turn of %s's reviewer: %v", issue, err)
 		}
 		resume(issue, claim.RoleMerger, pause, 2*time.Minute)
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			_, err := CloseRoleOpenResumeTx(ctx, tx, "legion", issue, claim.RoleMerger, resumedAt.Add(3*time.Minute))
 			return err
 		}); err != nil {

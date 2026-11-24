@@ -83,7 +83,7 @@ func startDeliveryIntakes(t *testing.T, rig *checkStatesRig, url string, publish
 	ctx, cancel := context.WithCancel(context.Background())
 	stop, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{url}, bus.WithName(name))
-	}, rig.database.Pool, leases, rig.served.deps.GitHub, rig.served.deps.Events, nil, nil)
+	}, rig.database.Pool, leases, rig.served.deps.GitHub, rig.served.deps.Events, nil, nil, rig.served.deps.Attributor)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)

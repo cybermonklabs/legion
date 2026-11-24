@@ -490,7 +490,7 @@ func UnholdableNames(session, sessionFile string) []Hold {
 // one that needs a new session starts none until an operator runs the command the line gives
 // (ReleaseNamesCommand). A store that does not answer refuses nothing: its error wraps
 // errHoldUnanswered, which a launch tries again at the probe interval charging nothing
-// (launchNow), and any other decision is asked again by the next one.
+// (launchTries), and any other decision is asked again by the next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
 	return m.holdNames(ctx, session, sessionFile, RecordedHolds(session, sessionFile))
 }
