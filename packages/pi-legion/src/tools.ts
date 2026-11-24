@@ -249,7 +249,7 @@ function stateSummary(state: LegionState): string {
   if (pause !== undefined) lines.push(pause);
   if (admission !== undefined) {
     lines.push(
-      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`,
+      `admission cap ${admission.cap}`,
       `active ${admission.active?.join(" ") || "(none)"}`,
       `waiting ${admission.waiting?.join(" ") || "(none)"}`
     );
@@ -284,8 +284,7 @@ function stateSummary(state: LegionState): string {
     lines.push(`${key} ${issue.phase} ${issue.status}`);
     if (issue.phase === "done" || issue.phase === "unrecorded") continue;
     if (issue.slot !== undefined) {
-      const lent = issue.slot.lentTo === undefined ? "" : ` lent ${issue.slot.lentTo}`;
-      lines.push(`  slot ${issue.slot.index} since ${issue.slot.admittedAt}${lent}`);
+      lines.push(`  slot ${issue.slot.index} since ${issue.slot.admittedAt}`);
     }
     if (issue.holdReason !== undefined) lines.push(`  hold ${issue.holdReason}`);
     if (issue.designGate !== undefined) {

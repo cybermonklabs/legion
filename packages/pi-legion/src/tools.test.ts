@@ -1717,7 +1717,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
       firstBootAt: "2026-10-01T00:00:00Z",
       startedAt: "2026-10-30T01:02:03Z",
     },
-    admission: { cap: 8, active: [], waiting: [], blocked: [], free: 0 },
+    admission: { cap: 8, active: [], waiting: [], blocked: [] },
     issues: {},
     pendingStatusWrites: [],
     heldOutboxRows: [],
@@ -1815,7 +1815,6 @@ function stateOf92Issues(running = 46): LegionState {
     issues,
     admission: {
       cap: 8,
-      free: 0,
       active: ["INFRA-100", "INFRA-101"],
       waiting: ["INFRA-102"],
       blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103", "INFRA-104"] }],
@@ -1869,7 +1868,7 @@ async function summaryLinesOf(daemon: () => LegionDaemonClient): Promise<string[
 
 test("the controller reads the state without a grant and sets an issue's status with its own", async () => {
   const state = legionState({
-    admission: { cap: 2, free: 0, active: ["LEGION-208"], waiting: [], blocked: [] },
+    admission: { cap: 2, active: ["LEGION-208"], waiting: [], blocked: [] },
     issues: {
       "LEGION-208": {
         key: "LEGION-208",
@@ -2251,7 +2250,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 
   expect(summary).toContain("project INFRA boots 9 started 2026-10-30T01:02:03Z");
   expect(summary).toContain(
-    "\nadmission cap 8 free 0\nactive INFRA-100 INFRA-101\nwaiting INFRA-102\nblocked INFRA-102 on INFRA-103 INFRA-104\n"
+    "\nadmission cap 8\nactive INFRA-100 INFRA-101\nwaiting INFRA-102\nblocked INFRA-102 on INFRA-103 INFRA-104\n"
   );
   expect(summary).toContain("\ncapability subagents present\n");
   expect(summary).toContain(
@@ -2300,7 +2299,7 @@ test("read_state's summary names the live trees and each held issue with its rea
   ]);
 
   const idle = legionState({
-    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [], free: 8 },
+    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [] },
   });
   expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: idle }).daemon))).toEqual([
     "active (none)",
@@ -2407,7 +2406,6 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   const wave = legionState({
     admission: {
       cap: 8,
-      free: 0,
       active: ["INFRA-100", "INFRA-101"],
       waiting: ["INFRA-102"],
       blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103"] }],

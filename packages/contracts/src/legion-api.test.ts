@@ -840,39 +840,43 @@ test("every answer-side object strips a key it does not name", () => {
   expect(found.strips.length).toBeGreaterThan(0);
 });
 
-test("state accepts optional fields emitted by later workflow slices", () => {
-  const current = fixture("state.json");
-  expect(LegionStateResponse.safeParse(current).success).toBeTrue();
+// A later daemon may add a key to an object of the state. The reader takes the body and drops the
+// key, so the body parses to what the same body without it parses to. `laterField` is a name no
+// schema here declares, planted under `admission` and under an issue's `slot`.
+test("state accepts and drops a field a later daemon adds", () => {
+  const current = LegionStateResponse.safeParse(fixture("state.json"));
+  expect(current.success).toBeTrue();
 
   const later = fixture("state.json") as {
     admission: Record<string, unknown>;
-    issues: Record<string, { phase: string; slot?: Record<string, unknown> }>;
+    issues: Record<string, { slot?: Record<string, unknown> }>;
   };
   const laterIssue = later.issues["LEGION-208"];
   if (laterIssue === undefined || laterIssue.slot === undefined) {
     throw new Error("state fixture lacks LEGION-208 or its slot");
   }
-  later.admission.free = 1;
-  laterIssue.phase = "integrating";
-  laterIssue.slot.lentTo = "LEGION-209";
+  later.admission.laterField = 1;
+  laterIssue.slot.laterField = "LEGION-209";
 
-  expect(LegionStateResponse.safeParse(later).success).toBeTrue();
+  const parsed = LegionStateResponse.safeParse(later);
+  expect(parsed.success).toBeTrue();
+  expect(parsed.data).toEqual(current.data);
 });
 
 test("state rejects malformed optional workflow fields", () => {
-  const negativeFree = fixture("state.json") as { admission: Record<string, unknown> };
-  negativeFree.admission.free = -1;
-  expect(LegionStateResponse.safeParse(negativeFree).success).toBeFalse();
+  const negativeCap = fixture("state.json") as { admission: Record<string, unknown> };
+  negativeCap.admission.cap = -1;
+  expect(LegionStateResponse.safeParse(negativeCap).success).toBeFalse();
 
-  const malformedLender = fixture("state.json") as {
+  const malformedAdmittedAt = fixture("state.json") as {
     issues: Record<string, { slot?: Record<string, unknown> }>;
   };
-  const malformedLenderIssue = malformedLender.issues["LEGION-208"];
-  if (malformedLenderIssue === undefined || malformedLenderIssue.slot === undefined) {
+  const malformedIssue = malformedAdmittedAt.issues["LEGION-208"];
+  if (malformedIssue === undefined || malformedIssue.slot === undefined) {
     throw new Error("state fixture lacks LEGION-208 or its slot");
   }
-  malformedLenderIssue.slot.lentTo = "not an issue key";
-  expect(LegionStateResponse.safeParse(malformedLender).success).toBeFalse();
+  malformedIssue.slot.admittedAt = "not a time";
+  expect(LegionStateResponse.safeParse(malformedAdmittedAt).success).toBeFalse();
 });
 
 test("state accepts the existing done phase", () => {
