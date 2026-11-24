@@ -15,13 +15,19 @@ import (
 // ghHelpStandIn is the stand-in gh TestRegenerateGhHelpPrintsNoWordOfGhs runs the script on: it
 // logs each call to GH_STANDIN_LOG, says GH_STANDIN_SAYS on its stderr where that is set, exits 4
 // on the call GH_STANDIN_FAILS names, answers --version with GH_STANDIN_VERSION and a second line
-// as gh's does, and any other call with a help text.
+// as gh's does, and any other call with a help text. The version's two lines go out in one write
+// (cat), as gh writes them: the script reads them through `| head -1`, and bash's printf writes
+// each line on its own, so a head that had taken the first line and gone left the second write a
+// SIGPIPE, which failed the script's run of gh --version (exit 141) about once in 120 runs.
 const ghHelpStandIn = `#!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_STANDIN_LOG"
 [ -z "${GH_STANDIN_SAYS:-}" ] || printf '%s\n' "$GH_STANDIN_SAYS" >&2
 [ "$*" != "${GH_STANDIN_FAILS:-}" ] || exit 4
 if [ "$*" = --version ]; then
-  printf '%s\nhttps://github.com/cli/cli/releases/tag/v2.98.0\n' "$GH_STANDIN_VERSION"
+  cat <<EOF
+$GH_STANDIN_VERSION
+https://github.com/cli/cli/releases/tag/v2.98.0
+EOF
 else
   printf 'help of %s\n' "$*"
 fi
