@@ -478,10 +478,11 @@ var strandedStates = []EnumeratedValue{
 // (`LEGION_WORKFLOW_PHASES` in `packages/contracts/src/legion-api.ts`, with `unrecorded`, what an
 // issue the workflow does not record reads as), and `legion-api.test.ts` holds this list equal to
 // that enumeration. A record's domain is what a reader admits, not what this daemon writes, so
-// the list is the reader's: `integrating` is a member of that enumeration and no phase this
-// daemon writes, since phase.All has never held it. The field is older than the floor, and the
-// list has lost one value since: `awaiting_merge`, which contract 86 took out of the workflow and
-// out of that enumeration (version.go's 86).
+// the list is the reader's. The field is older than the floor, and the list has lost two values
+// since: `awaiting_merge`, which contract 86 took out of the workflow and out of that enumeration
+// (version.go's 86), and `integrating`, which that enumeration named for a later daemon that never
+// came. No daemon wrote `integrating`: phase.All has never held it, and no constraint the store
+// has put on an issue's phase or its hold has admitted it.
 //
 // A removed value needs no serving-down, which is why no row below records `awaiting_merge` at
 // any contract. This table records each value's arrival (`Since`) and nothing else, and the one
@@ -490,21 +491,21 @@ var strandedStates = []EnumeratedValue{
 // still names `awaiting_merge` refuses nothing for never meeting it, as it refuses nothing for
 // an `omitempty` key no issue carries. So a value leaves this list the day the enumeration of
 // this daemon's own contract drops it, and every other value's row stays where it is. The list
-// stays literal for that reason: `integrating` and `unrecorded` are no phase.Phase constant.
+// stays literal for that reason, and because `unrecorded` is no phase.Phase constant.
 var phases = valuesFrom(ServingFloor,
 	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
-	"retro", "merging", "integrating", "done", "held", "unrecorded")
+	"retro", "merging", "done", "held", "unrecorded")
 
 // workflowPhases is every phase of the workflow, which two fields of the decided record share:
 // an issue's `heldFrom` and the phase a claim's held task was queued for. It is the list of
 // `phases` without `unrecorded`, since `unrecorded` is what an issue the workflow holds no row
 // for reads its own `phase` as and is no phase a hold or a task names. Both fields arrived at
-// recordFieldsContract, so the list is recorded there, and it lost `awaiting_merge` with
-// `phases` for the reason that roster gives. It stays literal for the reason `phases` does:
-// `integrating` is no phase.Phase constant.
+// recordFieldsContract, so the list is recorded there, and it lost `awaiting_merge` and
+// `integrating` with `phases` for the reasons that roster gives. It stays literal for the reason
+// `phases` does.
 var workflowPhases = valuesFrom(recordFieldsContract,
 	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
-	"retro", "merging", "integrating", "done", "held")
+	"retro", "merging", "done", "held")
 
 // failureCauses is every word the site that failed a claim can choose
 // (supervise.FailureCause), which the failure record's `cause` and the `pendingCause` beside it

@@ -415,7 +415,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   expect(
     (phaseWorkerTool.parameters as z.ZodType).safeParse({
       op: "request_backward_move",
-      to: "integrating",
+      to: "awaiting_person",
       reason: "test failed",
     }).success
   ).toBeFalse();
