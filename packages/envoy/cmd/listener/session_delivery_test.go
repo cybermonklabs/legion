@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sessionConsumerRig is a listener's /v1 routes and durable handler over the in-process server,
@@ -929,22 +930,15 @@ func lockUsers(locks *sessionLocks, sessionID string) int {
 	return 0
 }
 
-// awaitLockUsers waits up to 10 s for exactly n callers to hold or wait for sessionID's consumer
-// lock: a test that holds it learns that the call it started waits for it (2), and that the call
-// is done with it (0).
+// awaitLockUsers waits for exactly n callers to hold or wait for sessionID's consumer lock: a test
+// that holds it learns that the call it started waits for it (2), and that the call is done with
+// it (0). The wait ends on the count, with the test binary's deadline as its only bound
+// (testwait.Until): a lock a caller reaches a moment later under load is the same lock, so no span
+// of this helper's own decides the row. Its failure prints the count it last read.
 func awaitLockUsers(t *testing.T, locks *sessionLocks, sessionID string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		users := lockUsers(locks, sessionID)
-		if users == n {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d callers hold or wait for the consumer lock of %s after 10s, want %d", users, sessionID, n)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("%d callers to hold or wait for the consumer lock of %s", n, sessionID),
+		func() (int, bool) { users := lockUsers(locks, sessionID); return users, users == n })
 }
 
 // followWhileLocked stores topic as sessionID's interest and sets its consumer's filter to it, as a
