@@ -925,7 +925,10 @@ export function renderHeadsRoutes(world: HeadsWorld): RouteTable {
         concluded(job) === null
           ? []
           : [
-              { match: `^gh api .*actions/jobs/${job.checkRun}/logs([ ?]|$)`, stdout: job.log ?? "" },
+              {
+                match: `^gh api .*actions/jobs/${job.checkRun}/logs([ ?]|$)`,
+                stdout: job.log ?? "",
+              },
               {
                 match: `^gh run view (?=.*--job[ =]${job.checkRun}\\b)(?=.*--log)`,
                 stdout: job.log ?? "",

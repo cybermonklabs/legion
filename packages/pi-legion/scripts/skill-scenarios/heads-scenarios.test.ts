@@ -138,7 +138,14 @@ test("a world added to the catalog alone reaches rig.sh, heads-world.ts, seed.ts
     ),
   }).toEqual({
     batch: "exit=0 ",
-    runs: ["", " no-verdict-fail", " no-verdict-pass", " ci-check-fail", " ci-check-fail-other-head", " no-verdict"]
+    runs: [
+      "",
+      " no-verdict-fail",
+      " no-verdict-pass",
+      " ci-check-fail",
+      " ci-check-fail-other-head",
+      " no-verdict",
+    ]
       .map((which, at) => `run architect-pass-and-fail head 1 ${at + 1} 1700000000${which}\n`)
       .join(""),
     run: "exit=0 ",

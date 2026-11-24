@@ -3292,21 +3292,62 @@ const requestedChangesNaming = (check: string) =>
   `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `${check} reads no at this head: its CI job usage-test ended failure.`], exit: 0 })}\n`;
 const sentBackNaming = (check: string) =>
   `${JSON.stringify({ at: headsAt(20), path: "/legion/v1/phase/backward", status: 200, body: { to: "implementing", reason: `${check} reads no for its CI job's failure` } })}\n`;
-const ciCheckFiles = (calls: string) => headsFiles({ "calls.jsonl": calls, "world.json": reviewWorld });
+const ciCheckFiles = (calls: string) =>
+  headsFiles({ "calls.jsonl": calls, "world.json": reviewWorld });
 for (const [name, calls, text] of [
-  ["reviewer-own-head-ci-check-fail-head-91", requestedChangesNaming("k2"), "k2's job failed at #702's head."],
-  ["reviewer-own-head-ci-check-fail-head-92", approvedAt(head), "k1 reads yes, and CI is the implementer's."],
-  ["reviewer-own-head-ci-check-fail-head-93", requestedChangesNaming("k1"), "k1 needs another look."],
-  ["reviewer-own-head-ci-check-fail-other-head-head-91", approvedAt(head), "Each check reads yes at #702's head."],
-  ["reviewer-own-head-ci-check-fail-other-head-head-92", requestedChangesNaming("k2"), "k2 fails at #703's head."],
+  [
+    "reviewer-own-head-ci-check-fail-head-91",
+    requestedChangesNaming("k2"),
+    "k2's job failed at #702's head.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-head-92",
+    approvedAt(head),
+    "k1 reads yes, and CI is the implementer's.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-head-93",
+    requestedChangesNaming("k1"),
+    "k1 needs another look.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-other-head-head-91",
+    approvedAt(head),
+    "Each check reads yes at #702's head.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-other-head-head-92",
+    requestedChangesNaming("k2"),
+    "k2 fails at #703's head.",
+  ],
 ] as const)
   run(name, ciCheckFiles(calls), [...header, said(10, text)]);
 for (const [name, log, text] of [
-  ["architect-pass-and-fail-ci-check-fail-head-91", sentBackNaming("k2"), "k2's job failed at the head."],
-  ["architect-pass-and-fail-ci-check-fail-head-92", signedOffAt(20), "The tester and the reviewer passed it."],
-  ["architect-pass-and-fail-ci-check-fail-head-93", sentBackNaming("k1"), "k1 needs another round."],
-  ["architect-pass-and-fail-ci-check-fail-other-head-head-91", sentBackNaming("k2"), "k2 fails at #703's head."],
-  ["architect-pass-and-fail-ci-check-fail-other-head-head-92", signedOffAt(20), "Each check reads yes at #702."],
+  [
+    "architect-pass-and-fail-ci-check-fail-head-91",
+    sentBackNaming("k2"),
+    "k2's job failed at the head.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-head-92",
+    signedOffAt(20),
+    "The tester and the reviewer passed it.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-head-93",
+    sentBackNaming("k1"),
+    "k1 needs another round.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-other-head-head-91",
+    sentBackNaming("k2"),
+    "k2 fails at #703's head.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-other-head-head-92",
+    signedOffAt(20),
+    "Each check reads yes at #702.",
+  ],
 ] as const)
   run(name, headsFiles({ "daemon.log": log }), [...header, said(10, text)]);
 
@@ -3539,7 +3580,9 @@ test("the ci-check-fail cases pass on the decision each check's state at the hea
     expect(rowOf(run)).toMatch(new RegExp(`^${run}\\tpass=${pass}\\t`));
   expect(rowOf("reviewer-own-head-ci-check-fail-head-91")).toContain("case=ci-check-fail ");
   expect(rowOf("reviewer-own-head-ci-check-fail-head-91")).toContain("namesK2=true");
-  expect(rowOf("reviewer-own-head-ci-check-fail-other-head-head-91")).toContain("case=ci-check-fail-other-head ");
+  expect(rowOf("reviewer-own-head-ci-check-fail-other-head-head-91")).toContain(
+    "case=ci-check-fail-other-head "
+  );
   for (const [scenario, count] of [
     ["reviewer-own-head:ci-check-fail", "1/3"],
     ["reviewer-own-head:ci-check-fail-other-head", "1/2"],

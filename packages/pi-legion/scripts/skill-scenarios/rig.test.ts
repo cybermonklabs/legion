@@ -2750,11 +2750,17 @@ describe("heads_fixture", () => {
     const { code, run } = build("heads_fixture");
     expect(code).toBe(0);
     const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"));
-    const k1Line = (pr: string) => `- Check k1 (before_merge): pass at ${String(heads[pr]).slice(0, 12)} (tester) on #${pr}`;
-    const k2Line = (pr: string, verdict: string) => `- Check k2 (before_merge): ${verdict} at ${String(heads[pr]).slice(0, 12)} (CI run usage-test) on #${pr}`;
+    const k1Line = (pr: string) =>
+      `- Check k1 (before_merge): pass at ${String(heads[pr]).slice(0, 12)} (tester) on #${pr}`;
+    const k2Line = (pr: string, verdict: string) =>
+      `- Check k2 (before_merge): ${verdict} at ${String(heads[pr]).slice(0, 12)} (CI run usage-test) on #${pr}`;
     writeFileSync(
       path.join(run, "fixture.json"),
-      JSON.stringify({ issue: "LWEVAL-9", title: "A usage page", lines: { "702": k1Line("702"), "703": k1Line("703") } })
+      JSON.stringify({
+        issue: "LWEVAL-9",
+        title: "A usage page",
+        lines: { "702": k1Line("702"), "703": k1Line("703") },
+      })
     );
     const routes = (scenario: string, scenarioCase: string, k2At: Record<string, string>) => {
       writeFileSync(
@@ -2763,7 +2769,10 @@ describe("heads_fixture", () => {
           "Checks of LWEVAL-9:",
           "",
           "- k1 (before_merge). A pass stands: yes.",
-          ...["702", "703"].flatMap((pr) => [`  - #${pr} at ${heads[pr]}: yes, from implementer, tester.`, `    Pull request line: ${k1Line(pr)}`]),
+          ...["702", "703"].flatMap((pr) => [
+            `  - #${pr} at ${heads[pr]}: yes, from implementer, tester.`,
+            `    Pull request line: ${k1Line(pr)}`,
+          ]),
           "- k2 (before_merge): its CI job's results below.",
           ...Object.entries(k2At).flatMap(([pr, verdict]) => [
             `  - #${pr} at ${heads[pr]}: ${verdict === "pass" ? "yes" : "no, as fail f9 counts at this commit."}`,
@@ -2803,15 +2812,25 @@ describe("heads_fixture", () => {
     const body = (reviewer.route("^gh pr view")?.stdout as { body: string }).body;
     expect(body).toContain(`**Checks:**\n${k1Line("702")}\n${k2Line("702", "fail")}\n`);
 
-    const other = routes("reviewer-own-head", "ci-check-fail-other-head", { "702": "pass", "703": "fail" });
+    const other = routes("reviewer-own-head", "ci-check-fail-other-head", {
+      "702": "pass",
+      "703": "fail",
+    });
     expect(String(other.route("^gh pr checks")?.stdout)).toContain(jobLine(passedJob, "pass"));
     expect(other.route("^gh pr checks")?.exit).toBe(0);
-    expect(String(other.route("^gh pr checks .*\\b703\\b")?.stdout)).toContain(jobLine(failedJob, "fail"));
+    expect(String(other.route("^gh pr checks .*\\b703\\b")?.stdout)).toContain(
+      jobLine(failedJob, "fail")
+    );
     expect(other.route(logOf(failedJob.checkRun))?.stdout).toBe(failedJob.log);
 
-    const architect = routes("architect-pass-and-fail", "ci-check-fail-other-head", { "702": "pass", "703": "fail" });
+    const architect = routes("architect-pass-and-fail", "ci-check-fail-other-head", {
+      "702": "pass",
+      "703": "fail",
+    });
     expect((architect.route("^gh pr list")?.stdout as unknown[]).length).toBe(2);
-    expect(architect.route("^gh api .*pulls/702/reviews")?.stdout).toMatchObject([{ state: "APPROVED", commit_id: heads["702"] }]);
+    expect(architect.route("^gh api .*pulls/702/reviews")?.stdout).toMatchObject([
+      { state: "APPROVED", commit_id: heads["702"] },
+    ]);
     const alone = routes("architect-pass-and-fail", "ci-check-fail", { "702": "fail" });
     expect((alone.route("^gh pr list")?.stdout as unknown[]).length).toBe(1);
     expect(String(alone.route("^gh pr checks")?.stdout)).toContain(jobLine(failedJob, "fail"));

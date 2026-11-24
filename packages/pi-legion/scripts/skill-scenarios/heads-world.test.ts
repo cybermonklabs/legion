@@ -202,7 +202,14 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
     [head]: [{ name: "usage-test", status: "completed", conclusion: "failure" }],
   });
   for (const [scenario, which, pulls, runs, results, records] of [
-    ["reviewer-own-head", "ci-check-fail", ["702", "703"], failed("a".repeat(40)), ["702", "702", "703", "703"], ["test"]],
+    [
+      "reviewer-own-head",
+      "ci-check-fail",
+      ["702", "703"],
+      failed("a".repeat(40)),
+      ["702", "702", "703", "703"],
+      ["test"],
+    ],
     [
       "reviewer-own-head",
       "ci-check-fail-other-head",
@@ -214,7 +221,14 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
       ["702", "702", "703", "703"],
       ["test"],
     ],
-    ["architect-pass-and-fail", "ci-check-fail", ["702"], failed("a".repeat(40)), ["702", "702"], ["test", "review"]],
+    [
+      "architect-pass-and-fail",
+      "ci-check-fail",
+      ["702"],
+      failed("a".repeat(40)),
+      ["702", "702"],
+      ["test", "review"],
+    ],
     [
       "architect-pass-and-fail",
       "ci-check-fail-other-head",
@@ -229,11 +243,15 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
   ] as const) {
     const { calls } = await world(which, scenario);
     const content = String(calls.find((call) => call.path.endsWith("/artifacts"))?.body.content);
-    expect(content).toContain(':::check{#k1 surface="cli" serves="dispatch://LWEVAL-7/spec#b-r1" run="');
+    expect(content).toContain(
+      ':::check{#k1 surface="cli" serves="dispatch://LWEVAL-7/spec#b-r1" run="'
+    );
     expect(content).toContain(
       ':::check{#k2 surface="cli" serves="dispatch://LWEVAL-7/spec#b-r1" ci_check="usage-test" when="before_merge"'
     );
-    const seed = calls.filter((call) => call.path === "/__fixture/repos").at(-1)?.body["example/widgets"] as Record<string, unknown>;
+    const seed = calls.filter((call) => call.path === "/__fixture/repos").at(-1)?.body[
+      "example/widgets"
+    ] as Record<string, unknown>;
     expect(Object.keys(seed.pulls as object)).toEqual([...pulls]);
     expect(seed.check_runs).toMatchObject(runs);
     expect(Object.keys(seed.check_runs as object)).toEqual(Object.keys(runs));
@@ -241,12 +259,19 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
     expect(
       calls
         .filter((call) => call.path.endsWith("/results"))
-        .map((call) => `${String(call.body.check)}@${String(call.body.commit).slice(0, 1)} ${String(call.body.role)} ${String(call.body.verdict)}`)
+        .map(
+          (call) =>
+            `${String(call.body.check)}@${String(call.body.commit).slice(0, 1)} ${String(call.body.role)} ${String(call.body.verdict)}`
+        )
     ).toEqual(
-      results.map((pr, at) => `k1@${pr === "702" ? "a" : "b"} ${at % 2 === 0 ? "implementer" : "tester"} pass`)
+      results.map(
+        (pr, at) => `k1@${pr === "702" ? "a" : "b"} ${at % 2 === 0 ? "implementer" : "tester"} pass`
+      )
     );
     expect(
-      calls.filter((call) => call.path.includes("/handoffs/")).map((call) => call.path.split("/").at(-1))
+      calls
+        .filter((call) => call.path.includes("/handoffs/"))
+        .map((call) => call.path.split("/").at(-1))
     ).toEqual([...records]);
   }
 });
@@ -288,9 +313,14 @@ test("every run and reading of k1 the heads worlds record holds only words the p
   process.env.FAKE_GITHUB_PORT = "18778";
   process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
   const worlds: [string | undefined, string][] = [
-    ...["sibling-fails", "ci-only", "no-implementer", "no-tester", "ci-check-fail", "ci-check-fail-other-head"].map(
-      (which): [string, string] => [which, "reviewer-own-head"]
-    ),
+    ...[
+      "sibling-fails",
+      "ci-only",
+      "no-implementer",
+      "no-tester",
+      "ci-check-fail",
+      "ci-check-fail-other-head",
+    ].map((which): [string, string] => [which, "reviewer-own-head"]),
     [undefined, "reviewer-pass-and-fail"],
     [undefined, "architect-pass-and-fail"],
   ];

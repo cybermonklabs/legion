@@ -309,10 +309,20 @@ test("a named job that failed: gh pr checks exits 1, its run and job fail, and i
     ],
   });
   expect(answer(failed, "gh api graphql -f query=q")).toMatchObject({
-    data: { repository: { pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE" } } }] } } } },
+    data: {
+      repository: {
+        pullRequest: {
+          commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE" } } }] },
+        },
+      },
+    },
   });
   expect(answer(failed, `gh api repos/example/widgets/commits/${H702}/check-runs`)).toMatchObject({
-    check_runs: [{ id: 8000 }, { id: 8001 }, { id: 9201, status: "completed", conclusion: "failure" }],
+    check_runs: [
+      { id: 8000 },
+      { id: 8001 },
+      { id: 9201, status: "completed", conclusion: "failure" },
+    ],
   });
   expect(answer(failed, "gh api repos/example/widgets/actions/runs/42")).toMatchObject({
     id: 42,
@@ -332,7 +342,12 @@ test("a named job that failed: gh pr checks exits 1, its run and job fail, and i
   ])
     expect(routeOf(failed, call)).toMatchObject({ stdout: USAGE_LOG });
   expect(answer(failed, "gh run view 42")).toContain("X usage-test");
-  const elsewhere = renderHeadsRoutes(world({ named: [{ ...DOCS, checkRun: 9202, run: 43, suite: 43, name: "usage-test" }], named703: [USAGE_FAILED] }));
+  const elsewhere = renderHeadsRoutes(
+    world({
+      named: [{ ...DOCS, checkRun: 9202, run: 43, suite: 43, name: "usage-test" }],
+      named703: [USAGE_FAILED],
+    })
+  );
   expect(routeOf(elsewhere, "gh pr checks 702").exit).toBe(0);
   expect(routeOf(elsewhere, "gh pr checks 703").exit).toBe(1);
   expect(routeOf(elsewhere, "gh run view --job 9201 --log")).toMatchObject({ stdout: USAGE_LOG });

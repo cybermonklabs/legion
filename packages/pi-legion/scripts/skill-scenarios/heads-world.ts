@@ -268,7 +268,9 @@ export async function headsEvents(file: string, headsFile: string, world: string
   const ciCheck = ciCheckWorld(world);
   const otherHead = ciCheck && world.endsWith("-other-head");
   const prs =
-    (world.startsWith("architect-pass-and-fail") && !otherHead) || ciRunning ? ["702"] : ["702", "703"];
+    (world.startsWith("architect-pass-and-fail") && !otherHead) || ciRunning
+      ? ["702"]
+      : ["702", "703"];
   const headOf = (pr: string): string => {
     const head = heads[pr];
     if (head === undefined) throw new Error(`${headsFile} names no head of #${pr}`);
