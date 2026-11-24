@@ -14,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // awsKeyARNPattern is a KMS key's ARN, whose last segment is the key id.
@@ -65,7 +67,10 @@ type SecretsManagerAPI interface {
 }
 
 // AWS is the Store over AWS Secrets Manager: from Secrets Manager and KMS themselves in
-// production, from a Local in local development and tests.
+// production, from a Local in local development and tests. Each failure of a Secrets Manager or
+// KMS call prints through redact.AWS, never as the SDK's own text, which quotes net/http's error (a
+// Location whatever answers at the service's address can write the call's X-Amz-Security-Token or
+// signature into) and the answer's request id and message.
 type AWS struct {
 	// Client lists, describes and reads the secrets.
 	Client SecretsManagerAPI
@@ -114,7 +119,7 @@ func (a AWS) List(ctx context.Context, prefix string) ([]Listing, error) {
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list secrets under %s: %w", prefix, err)
+			return nil, fmt.Errorf("list secrets under %s: %w", prefix, redact.AWS(err))
 		}
 		for _, e := range page.SecretList {
 			version := currentVersion(e.SecretVersionsToStages)
@@ -140,7 +145,7 @@ func (a AWS) Describe(ctx context.Context, id string) (Listing, error) {
 	case errors.As(err, &notFound):
 		return Listing{}, ErrNotFound
 	case err != nil:
-		return Listing{}, fmt.Errorf("describe %s: %w", id, err)
+		return Listing{}, fmt.Errorf("describe %s: %w", id, redact.AWS(err))
 	case out.DeletedDate != nil:
 		return Listing{}, ErrNotFound
 	}
@@ -210,7 +215,7 @@ func (a AWS) onKey(kmsKeyID string, keys *keyIdentifiers) func(context.Context) 
 			for pages.HasMorePages() {
 				page, err := pages.NextPage(ctx)
 				if err != nil {
-					return false, fmt.Errorf("list the aliases of %s: %w", keys.arn, err)
+					return false, fmt.Errorf("list the aliases of %s: %w", keys.arn, redact.AWS(err))
 				}
 				for _, al := range page.Aliases {
 					aliases[aws.ToString(al.AliasName)] = true
@@ -240,7 +245,7 @@ func (a AWS) Read(ctx context.Context, source string) (string, error) {
 		return "", ErrNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("secrets manager %s: %w", source, err)
+		return "", fmt.Errorf("secrets manager %s: %w", source, redact.AWS(err))
 	}
 	if out.SecretString == nil || *out.SecretString == "" {
 		return "", fmt.Errorf("secrets manager %s: %w", source, ErrValueNotText)
