@@ -47,9 +47,10 @@ refuses until that path is added too. The index stages of a conflict this script
 texts it merged, not the blobs of the merge's three commits: for a gate, the gate file the base's
 table would have written (stage 1), the branch's (stage 2, its side first in the markers) and
 main's (stage 3); for a test file, the file as this script wrote it (stage 2) and main's (stage 3),
-with no stage 1. A CONFLICT about a filter and a STOPPED line leave no file in conflict, and git
-refuses nothing for them: settle each, run this again with `--filters` until it exits 0, then
-commit. A side file it writes for a hand merge (`<gate file>.branch`) stays untracked.
+with no stage 1. A CONFLICT about a filter and a STOPPED line make no file conflict of their own, so
+git may refuse nothing for them (a push workflow still waiting for its paths stays unmerged after a
+STOPPED line): settle each, run this again with `--filters` until it exits 0, then commit. A side
+file it writes for a hand merge (`<gate file>.branch`) stays untracked.
 
 A conflict in any other file - code, a test the branch and main both edited - is the branch's own
 forward merge, which this script leaves as git left it: a test file git left unmerged stays so,
@@ -1149,8 +1150,9 @@ def merge_push_workflows(report: list) -> list:
             continue
         merged = three_way(sides[1], sides[0], main, path)
         held = show_file(path)
-        ours = held is not None and with_paths_of(held, merged) == merged
-        if held is not None and "<<<<<<< " not in held and not ours:
+        # Only this merge's exact text is a copy this script wrote before (a run that stopped): a copy
+        # that differs in any line, its push paths included, is someone's.
+        if held is not None and "<<<<<<< " not in held and held != merged:
             report.append(f"left {path} as it is: its working copy holds no conflict marker and is not this run's "
                           f"merge, so it is a resolution made by hand; `git add` it once it is right")
             continue

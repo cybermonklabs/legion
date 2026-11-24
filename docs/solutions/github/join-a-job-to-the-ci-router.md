@@ -306,9 +306,10 @@ written, the branch's and main's; for a test file whose old `//ci:` lines are to
 the file as the converter wrote it (stage 2) and main's (stage 3), with no stage 1. A push workflow
 git left in conflict is merged again with its push paths out of the merge and stays unmerged until
 the converter has written those paths; a copy you already resolved by hand is left as it is. A
-`CONFLICT filter` line or a `STOPPED` line leaves no file in conflict, and git refuses nothing for
-it: settle each, run the converter again with `--filters` until it exits 0, then commit. `--help`
-prints all of this.
+`CONFLICT filter` line or a `STOPPED` line makes no file conflict of its own, so git may refuse
+nothing for it (a push workflow still waiting for its paths stays unmerged after a `STOPPED` line):
+settle each, run the converter again with `--filters` until it exits 0, then commit. `--help` prints
+all of this.
 
 ## check-ci-filters.sh holds the table to ci.yaml
 

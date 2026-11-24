@@ -1478,6 +1478,27 @@ print('\n'.join(report))
 ")
 check "a resolution made by hand is left as it is" "$(is "$(cat "$root/.github/workflows/site.yaml")" "$(cat "$root.hand")")"
 check "  and unmerged" "$(contains "$(git -C "$root" status --porcelain)" '^UU .github/workflows/site.yaml$')"
+# A hand resolution that differs from the converter's merge only in its push paths is someone's too,
+# after a stop and after a refused write alike.
+for stop in stopped refused; do
+  root=$(fixture "convert-push-hand-paths-$stop")
+  push_conflict "$root"
+  git -C "$root" show :3:.github/workflows/site.yaml | sed -e 's/^name: Site$/name: Site build/' -e "s|'main/\*\*'|'hand/**'|" \
+    > "$root/.github/workflows/site.yaml"
+  cp "$root/.github/workflows/site.yaml" "$root.hand"
+  [ "$stop" = refused ] && replace "$root/.github/workflows/ci.yaml" "CI_OK_ALWAYS_RUN: '[\"changes\", \"lint\"]'" "CI_OK_ALWAYS_RUN: '[\"changes\"]'"
+  out=$(convert "$root" "
+report = []
+merged = cv.merge_push_workflows(report)
+if '$stop' == 'stopped':
+    report.append('STOPPED before the filters file: a stand-in for any stop')
+cv.settle_merge(report, merged)
+print('\n'.join(report))
+")
+  check "a hand resolution of the push paths only, then $stop: left as it is" \
+    "$(is "$(cat "$root/.github/workflows/site.yaml" | grep -c "'hand/\*\*'") $(grep -c '^<<<<<<<' "$root/.github/workflows/site.yaml")" '1 0')"
+  check "  and unmerged" "$(contains "$(git -C "$root" status --porcelain)" '^UU .github/workflows/site.yaml$')"
+done
 
 echo "case: the converter's --help says what it stages, what it leaves unmerged and what --filters does"
 root=$(fixture convert-help)
