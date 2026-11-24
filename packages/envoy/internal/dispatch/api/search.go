@@ -1125,7 +1125,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project := strings.TrimSpace(query.Get("project"))
-	if project != "" && !projectKeyPattern.MatchString(project) {
+	if project != "" && !contracts.ValidProjectKey(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return
 	}
@@ -1134,7 +1134,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// answers every project's rows as a search carrying nothing does. It is a key or empty, as
 	// project is, and is refused under a code of its own.
 	numberProject := strings.TrimSpace(query.Get("number_project"))
-	if numberProject != "" && !projectKeyPattern.MatchString(numberProject) {
+	if numberProject != "" && !contracts.ValidProjectKey(numberProject) {
 		writeError(w, "INVALID_NUMBER_PROJECT", http.StatusBadRequest,
 			projectKeyProblem("number_project", numberProject))
 		return

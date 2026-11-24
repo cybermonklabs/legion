@@ -91,7 +91,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	input.Key = strings.TrimSpace(input.Key)
 	input.Name = strings.TrimSpace(input.Name)
-	if !projectKeyPattern.MatchString(input.Key) {
+	if !contracts.ValidProjectKey(input.Key) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", input.Key))
 		return
 	}

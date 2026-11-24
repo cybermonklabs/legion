@@ -133,7 +133,7 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 // PROJECT_NOT_FOUND.
 func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, bool) {
 	project := strings.TrimSpace(r.PathValue("key"))
-	if !projectKeyPattern.MatchString(project) {
+	if !contracts.ValidProjectKey(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return "", false
 	}

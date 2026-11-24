@@ -227,6 +227,9 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// reads it, so a result for an issue of a project it does not see is refused as one for a
 	// key no issue carries, by the record and its dry run alike.
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return resultRequest{}, false
+	}
 	if err := input.refusal(); err != nil {
 		return refused(err)
 	}
@@ -250,10 +253,9 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	}
 	// The check may be on an issue of another project, which a parent of another project puts
 	// above the recording issue, and the result is appended to that issue. The pre-handler
-	// check read only the path's issue, so a credential scoped to one project is refused such a
-	// check here, before anything is written.
-	callerProject, _ := s.callerProject(r)
-	if err := refuseCheckOutsideCallerProject(r.Context(), pool, callerProject, check.IssueKey); err != nil {
+	// check read only the path's issue, so a full member's broker token scoped to one project is
+	// refused such a check here, before anything is written.
+	if err := refuseCheckOutsideCallerProject(r.Context(), pool, who, check.IssueKey); err != nil {
 		return refused(err)
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,

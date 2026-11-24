@@ -251,7 +251,7 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 		Project: strings.TrimSpace(query.Get("project")),
 		Checks:  []model.NearCopyCheck{},
 	}
-	if !projectKeyPattern.MatchString(page.Project) {
+	if !contracts.ValidProjectKey(page.Project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", page.Project))
 		return
 	}

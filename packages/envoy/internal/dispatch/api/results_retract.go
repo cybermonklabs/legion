@@ -72,8 +72,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// a second one (store/pool.go): inside the transaction every person would read as holding
 	// no scope, which is the refusal this route must not make.
 	person := s.callerHoldsScope(r, model.ScopePerson)
-	// The one project the credential may write, read before the transaction for the same reason.
-	callerProject, _ := s.callerProject(r)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -100,9 +102,9 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	// The pre-handler check held the result's own issue to a scoped caller's project, and the
 	// check's issue, which the retraction is appended to, can be of another project, reached
-	// through a parent of another project. Such a caller is refused it here, before it takes that
-	// issue's owner lock.
-	if err := refuseCheckOutsideCallerProject(r.Context(), tx, callerProject, result.CheckIssueKey); err != nil {
+	// through a parent of another project. A full member's broker token scoped to one project is
+	// refused it here, before it takes that issue's owner lock.
+	if err := refuseCheckOutsideCallerProject(r.Context(), tx, who, result.CheckIssueKey); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

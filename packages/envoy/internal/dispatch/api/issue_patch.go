@@ -70,6 +70,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// The issue is read as the caller reads it (loadIssue), so the reader is resolved here,
 	// before the write holds a connection.
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	var blockers []string
 	if input.BlockedBy != nil {
 		var err error
@@ -183,14 +186,14 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if parent != nil {
 		parentKey = *parent
 	}
-	// A credential that names one project is refused a target or a parent outside it where its
-	// project is read, since this route's own address names neither (project_scope.go). It is read
-	// first here, with no lock held and before a close settles the issue's documents or the
-	// transaction begins, so a write the credential may not make settles nothing; the
-	// pre-handler check already held the issue to the credential's project, which is therefore
-	// the issue's own. The lock step refuses it again before any lock, and writeBlockedBy or
-	// validateIssueParent under them.
-	callerProject, scoped := s.callerProject(r)
+	// A full member's broker token scoped to one project (namedProjectOf) is refused a target or a
+	// parent outside it where its project is read, since this route's own address names neither
+	// (project_scope.go). It is read first here, with no lock held and before a close settles the
+	// issue's documents or the transaction begins, so a write the credential may not make settles
+	// nothing; the pre-handler check already held the issue to the credential's project, which is
+	// therefore the issue's own. The lock step refuses it again before any lock, and writeBlockedBy
+	// or validateIssueParent under them.
+	callerProject, scoped := namedProjectOf(who.Viewer, resolvedCredential(r.Context()))
 	if scoped && (parentKey != "" || len(blockers) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, callerProject, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)

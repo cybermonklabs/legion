@@ -122,18 +122,19 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// The one write whose project its address does not name, so withinProjectScope leaves it
 	// here by its class (scopeProjectInBody). It runs once the body's project is read, and so
-	// before the external ref is resolved to an issue already imported: a scoped caller naming
-	// one imported into another project is refused rather than answered that project's issue,
-	// which respondWithExistingExternalIssue would also record a related-check outcome on.
-	// Nothing is written before this point.
-	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step, the parent's read and writeBlockedBy below read it
-	// again, since neither a blocked_by target's project nor the parent's is part of this address.
-	callerProject, scoped := s.callerProject(r)
-	if scoped && callerProject != input.Project {
-		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
+	// before the external ref is resolved to an issue already imported: a caller whose
+	// credential's list does not cover that project (access.CredentialCovers), or a broker token
+	// scoped to another project, naming one imported into it is refused rather than answered that
+	// project's issue, which respondWithExistingExternalIssue would also record a related-check
+	// outcome on. Nothing is written before this point.
+	if s.refuseOutsideCallerProjects(w, r, input.Project) {
 		return
 	}
+	// callerProject is the one project a full member's broker token scoped to one project may
+	// write (namedProjectOf), and empty for every other caller; the dependency lock step, the
+	// parent's read and writeBlockedBy below read it again, since neither a blocked_by target's
+	// project nor the parent's is part of this address.
+	callerProject, scoped := namedProjectOf(who.Viewer, resolvedCredential(r.Context()))
 	// A scoped caller is refused a parent or a blocked_by target outside its project here too,
 	// with no lock held, before the near-copy gate and every other write before the transaction,
 	// so a create it may not make records no near-copy check and gets no 409 in place of its 403.
@@ -180,7 +181,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			input.Title = input.External
 		}
 	}
-	if !projectKeyPattern.MatchString(input.Project) {
+	if !contracts.ValidProjectKey(input.Project) {
 		writeError(w, "INVALID_ISSUE", http.StatusBadRequest, projectKeyProblem("project", input.Project))
 		return
 	}

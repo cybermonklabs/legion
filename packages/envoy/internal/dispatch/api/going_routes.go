@@ -132,16 +132,16 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project := strings.TrimSpace(input.Project)
-	if project != "" && !projectKeyPattern.MatchString(project) {
+	if project != "" && !contracts.ValidProjectKey(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return
 	}
 	// The project comes from the body, not from the address, so this row is classed
 	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssue's
-	// (issue_create.go). It runs before the row is written: a credential that may write one
-	// project asks only of that project, and asking of every project is asking outside it.
-	if covers, scoped := s.callerProject(r); scoped && covers != project {
-		refuseWriteOutsideProjectScope(w, covers, project)
+	// (issue_create.go). It runs before the row is written: a credential asks only of a project its
+	// list covers (access.CredentialCovers), and a broker token scoped to one project only of that
+	// one; a restricted member's list covers no question over every project.
+	if s.refuseOutsideCallerProjects(w, r, project) {
 		return
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM

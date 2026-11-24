@@ -97,7 +97,7 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 	// (legionProject), which are every project route's (INVALID_PROJECT, projectKeyProblem), so a
 	// person who meets the mistake at either door learns one name for it. A project that does not
 	// exist is the read's to refuse, as the route's is (readLegionBoardView, loadProject).
-	if !projectKeyPattern.MatchString(project) {
+	if !contracts.ValidProjectKey(project) {
 		return invalidLiveView("INVALID_PROJECT", projectKeyProblem("project", project))
 	}
 	spec.project = project

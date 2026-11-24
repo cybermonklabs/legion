@@ -42,12 +42,15 @@ package api
 // row is 403 PROJECT_SCOPE_DEPLOYMENT, a project's row whose object is of another project, of none,
 // or of no row at all is 403 PROJECT_SCOPE naming what the object resolved to
 // (writeOutsideTheBrokerProject), a body's project outside it is 403 PROJECT_SCOPE
-// (refuseOutsideCallerProjects), and a blocked_by target outside it is 403 PROJECT_SCOPE
-// (writeBlockedBy), each in the words it was answered before (R9). An object of a project the
-// token does not see resolves to no project, so that refusal answers it exactly as one nobody
-// holds, and no refusal names a project the token may not see. A restricted member's such token is
-// held by its list instead, which covers that project alone, and an object outside it answers as
-// missing.
+// (refuseOutsideCallerProjects), and a blocked_by target or a parent outside it is 403
+// PROJECT_SCOPE (writeBlockedBy, refuseParentOutsideCallerProject), and so is a check of another
+// project's issue, which a result or its retraction reaches through such a parent
+// (refuseCheckOutsideCallerProject), each in the words it was answered before (R9); for every
+// other caller a parent and a blocked_by target may each be an issue of any project. An object of
+// a project the token does not see resolves to no project, so that refusal answers it exactly as
+// one nobody holds, and no refusal names a project the token may not see. A restricted member's
+// such token is held by its list instead, which covers that project alone, and an object outside
+// it answers as missing.
 
 import (
 	"context"
@@ -145,9 +148,10 @@ func writesHeldTo(reader model.Actor, credential *model.Credential) []string {
 // viewer being what access.Resolve answered it may read. Its writes were held to that project
 // before projects could be private, and still are, whatever the deployment holds (R9): its write
 // of a project's object resolves the object's project before the handler (withinProjectScope), and
-// its body's project and its blocked_by targets are held to it (refuseOutsideCallerProjects,
-// writeBlockedBy). A restricted member's such token is held by its list instead, which covers that
-// project alone, so an object outside it is one its reads do not find.
+// its body's project, its blocked_by targets, its parent and the issue of a check its result names
+// are held to it (refuseOutsideCallerProjects, writeBlockedBy, refuseParentOutsideCallerProject,
+// refuseCheckOutsideCallerProject). A restricted member's such token is held by its list instead,
+// which covers that project alone, so an object outside it is one its reads do not find.
 func namedProjectOf(viewer *model.Viewer, credential *model.Credential) (string, bool) {
 	if credential == nil || credential.NamedProject == "" || viewer == nil || viewer.All || viewer.Restricted {
 		return "", false
@@ -309,6 +313,40 @@ func writeOutsideTheBrokerProject(w http.ResponseWriter, covers, belongsTo strin
 		"this request's credential may write project %s; this write belongs to project %s", covers, belongsTo))
 }
 
+// refuseCheckOutsideCallerProject refuses a full member's broker token scoped to one project
+// (namedProjectOf), reading as who, a check whose issue, checkIssue, is of another project: 403
+// PROJECT_SCOPE, naming the issue and both projects. The results routes reach such a check through
+// a parent of another project (resolveCheck reads the Verification documents of every issue above
+// the recording one), and a result and its retraction are appended to the check's issue, which
+// the pre-handler check, reading only the path's object, never judged. Every other caller is let
+// through, as everywhere else. The check's issue is read as who reads it (access.ProjectClause): one
+// of a project who does not see resolves to no project, as an issue with no row does, and is
+// refused naming no project, failing closed as the pre-handler check does
+// (writeOutsideTheBrokerProject).
+func refuseCheckOutsideCallerProject(ctx context.Context, q queryer, who model.Actor, checkIssue string) error {
+	covers, scoped := namedProjectOf(who.Viewer, resolvedCredential(ctx))
+	if !scoped {
+		return nil
+	}
+	var project string
+	err := q.QueryRow(ctx, `select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
+		checkIssue, refs.VisibilityArg(who)).Scan(&project)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if project == covers {
+		return nil
+	}
+	if project == "" {
+		return errorf(http.StatusForbidden, codeProjectScope,
+			"this request's credential may write project %s; the check's issue %s resolves to no project of that credential's",
+			covers, checkIssue)
+	}
+	return errorf(http.StatusForbidden, codeProjectScope,
+		"this request's credential may write project %s; the check's issue %s belongs to project %s",
+		covers, checkIssue, project)
+}
+
 // projectResolver answers the project a request's addressed object belongs to, as the reader
 // whose visibility argument is viewer sees it. An empty project with no error means the address
 // resolved to no project: an object that belongs to none, an object of a project the reader does
@@ -353,6 +391,11 @@ func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 			left join issues i on i.key = m.issue_key
 			where m.id = $1 and `+access.ProjectClause("i.project_key", "$2"), "id"), true
 	case addresses(pattern, "/api/v1/results/{id}"):
+		// A result reads issue_key and not check_issue_key: a result recorded on a child against a
+		// parent's check belongs to the child. The two issues can be of different projects, since
+		// an issue's parent may be of another project, so a retraction refuses a scoped caller a
+		// check of another project itself (refuseCheckOutsideCallerProject), as the record route
+		// does.
 		return projectOfRow(`
 			select coalesce(i.project_key, '')
 			from check_results c
