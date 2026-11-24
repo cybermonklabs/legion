@@ -740,11 +740,12 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
   // its checks refuse, because a check is gone or runs after the write or the first psql: a host
   // that is not loopback, the `localhost?x@evil.example` shape whose host libpq reads as
   // evil.example (scripts/e2e/lib/loopback-dsn.sh), a key=value connection string, an
-  // `sslpassword` parameter (its key percent-decoded too), and a value run_database_url refuses to
-  // write into each run's connection string (a newline, which it refuses in a password the same
+  // `sslpassword` parameter (its key percent-decoded too), a URL pg-url.sh refuses (a raw `@` in
+  // its path, which pg-url.sh names on its own line first), and a value run_database_url refuses
+  // to write into each run's connection string (a newline, which it refuses in a password the same
   // way). Each refusal is the one its own check prints, and holds no password.
   test("refuses a URL the runs cannot use before psql runs or the URL is written", () => {
-    for (const [url, refusal] of [
+    for (const [url, refusal, before = ""] of [
       ["postgres://u:p@db.example:5432/postgres", host("db.example")],
       ["postgres://localhost?x:p@evil.example:5432/postgres", host("evil.example")],
       [
@@ -754,6 +755,11 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
       ["postgres://u:p@127.0.0.1:5432/postgres?sslmode=require&sslpassword=x", sslpassword],
       ["postgresql://u@localhost:5432/postgres?%73slpassword=x&sslmode=require", sslpassword],
       [
+        "postgres://u@127.0.0.1:5432/post@gres",
+        "SKILL_SCENARIOS_POSTGRES_URL is a URL pg-url.sh refuses, for the reason on the line above: pg_sql and safe_url take its password out with pg-url.sh, so the batch could neither reach that server nor name it",
+        "-: refused a Postgres URL: an @ sits between the first / and the ? (the URL is not printed)\n",
+      ],
+      [
         "postgres://u@localhost:5432/postgres?application_name=x%0A",
         "SKILL_SCENARIOS_POSTGRES_URL gives application_name U+000A, a character that does not print: it reaches the rewritten connection string, where a caller writes that string into a file, and this refusal prints no value that holds one",
       ],
@@ -761,7 +767,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
       expect({ url, ...up(url) }).toEqual({
         url,
         code: 1,
-        stderr: `skill-scenarios: ${refusal}\n`,
+        stderr: `${before}skill-scenarios: ${refusal}\n`,
         psqlRan: false,
         written: [],
       });
