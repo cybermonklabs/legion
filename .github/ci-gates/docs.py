@@ -52,6 +52,14 @@ GATE = gate("docs", "docs", runs=[
         ("internal/cipher/approval", "`packages/envoy/cmd/cipher-refgen/routes.go#resolve` and `packages/envoy/cmd/cipher-refgen/routes.go#pageAnswerers`: resolve's g.in of the pageAnswerers directory parses it through `packages/envoy/cmd/cipher-refgen/bodies.go#func (g *graph) pkg`"),
         ("internal/cipher/proxy", "`packages/envoy/cmd/cipher-refgen/recorder.go#airlockDir` and `packages/envoy/cmd/cipher-refgen/recorder.go#checkRefusalWrites`"),
     ) for path in files_but_tests(f"{ENVOY}/{directory}")],
+    # The store registry and each store's own package: broker-refgen reads the registry's files
+    # for the stores this build holds (`packages/envoy/cmd/cipher-refgen/config.go#storeIDs`) and
+    # parses each store's package for the BROKER_* variables it alone documents
+    # (`packages/envoy/cmd/cipher-refgen/config.go#storeDir`), so a store added, removed or
+    # renamed moves the configuration page.
+    *[(path, "broker-refgen parses it (`packages/envoy/cmd/cipher-refgen/config.go#storeIDs` and "
+             "`packages/envoy/cmd/cipher-refgen/config.go#storeDir`)")
+      for path in files_but_tests(f"{ENVOY}/internal/cipher/secretstore", tree=True)],
 ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
   + dispatch_api_types(at_docs("Typecheck the docs site"))
   + reads((SERVICE_SETTINGS, at_docs(SERVICE_SETTINGS_STEP) + " runs it"))

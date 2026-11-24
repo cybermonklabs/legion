@@ -99,6 +99,16 @@ func (g *graph) fields(ref structRef) ([]jsonField, error) {
 			return nil, fmt.Errorf("%s: field %s of %s has no json tag", ref.src.at(f), f.Names[0].Name, ref.spec.Name.Name)
 		}
 		if jsonTag == "-" {
+			// A field the body writes itself, not as this struct's own JSON: one tagged
+			// refgen:"store-settings" is each store's own settings fields, written after the
+			// fields above (settingsResponse.MarshalJSON).
+			if _, ok := reflect.StructTag(tag).Lookup("refgen"); ok {
+				storeFields, err := g.storeSettingsFields(reflect.StructTag(tag).Get("refgen"), ref.src.at(f))
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, storeFields...)
+			}
 			continue
 		}
 		name, options, _ := strings.Cut(jsonTag, ",")
@@ -115,6 +125,36 @@ func (g *graph) fields(ref structRef) ([]jsonField, error) {
 			field.Type += " or absent"
 		}
 		out = append(out, field)
+	}
+	return out, nil
+}
+
+// storeSettingsFields is the JSON fields each secret store's own SettingsFields struct declares,
+// in registry file order, for a body field tagged refgen:"store-settings". Any other refgen tag
+// is a mistake, named at where.
+func (g *graph) storeSettingsFields(tag, where string) ([]jsonField, error) {
+	if tag != "store-settings" {
+		return nil, fmt.Errorf("%s: refgen:%q is no tag refgen knows; the one it knows is store-settings", where, tag)
+	}
+	ids, err := storeIDs(g.src.root)
+	if err != nil {
+		return nil, err
+	}
+	var out []jsonField
+	for _, id := range ids {
+		store, err := g.pkg(storeDir + id)
+		if err != nil {
+			return nil, err
+		}
+		ts, gd := store.typeSpec("SettingsFields")
+		if ts == nil {
+			return nil, fmt.Errorf("%s: the %s store declares no SettingsFields, so its settings fields are documented nowhere", where, id)
+		}
+		fields, err := g.fields(structRef{store, ts, gd})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, fields...)
 	}
 	return out, nil
 }

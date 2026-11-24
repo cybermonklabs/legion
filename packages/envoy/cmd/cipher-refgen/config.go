@@ -3,14 +3,43 @@ package main
 import (
 	"fmt"
 	"go/ast"
+	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
 const (
 	configDir  = envoyDir + "/internal/cipher/config"
 	brokerMain = envoyDir + "/cmd/cipherd"
+	// storeRegistryDir holds one file per secret store, <id>.go, and storeDir is that store's
+	// own package, which parses the store's own BROKER_* variables and documents them.
+	storeRegistryDir = envoyDir + "/internal/cipher/secretstore/backends"
+	storeDir         = envoyDir + "/internal/cipher/secretstore/"
 )
+
+// storeIDs are the stores this build holds, in registry file order: the registry's files but
+// backends.go, each named for its store.
+func storeIDs(root string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(root, storeRegistryDir))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || name == "backends.go" || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		ids = append(ids, strings.TrimSuffix(name, ".go"))
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("%s holds no store file", storeRegistryDir)
+	}
+	slices.Sort(ids)
+	return ids, nil
+}
 
 // variable is one environment variable the broker reads, or refuses because it was removed.
 type variable struct {
@@ -26,12 +55,13 @@ var brokerVar = regexp.MustCompile(`^BROKER_[A-Z0-9_]+$`)
 // "BROKER_X, BROKER_X_FILE: …".
 var documentedVars = regexp.MustCompile(`^((?:BROKER_[A-Z0-9_]+)(?:, BROKER_[A-Z0-9_]+)*): (.*)$`)
 
-// readConfig reads every BROKER_* variable config.Load and cmd/cipherd read (any BROKER_* name the
-// two spell out as a string is one they read): each one's description from the doc comment that
-// opens with its name (a Config field's, or a comment in cmd/cipherd), its default and accepted
-// range from Load's own tables, and the variables Load refuses because they were removed. It
-// refuses a variable the code reads that no comment documents, a comment that documents a variable
-// nothing reads, and a removed variable with no reason.
+// readConfig reads every BROKER_* variable config.Load, cmd/cipherd and each secret store's own
+// package read (any BROKER_* name they spell out as a string is one they read): each one's
+// description from the doc comment that opens with its name (a Config field's, or a comment in
+// cmd/cipherd or in the store's package), its default and accepted range from Load's own tables,
+// and the variables Load refuses because they were removed. It refuses a variable the code reads
+// that no comment documents, a comment that documents a variable nothing reads, and a removed
+// variable with no reason.
 func readConfig(root string) ([]variable, error) {
 	cfg, err := parseDir(root, configDir)
 	if err != nil {
@@ -40,6 +70,19 @@ func readConfig(root string) ([]variable, error) {
 	main, err := parseDir(root, brokerMain)
 	if err != nil {
 		return nil, err
+	}
+	// Each store's package, in registry file order: its own variables, documented there.
+	ids, err := storeIDs(root)
+	if err != nil {
+		return nil, err
+	}
+	stores := make([]*source, 0, len(ids))
+	for _, id := range ids {
+		store, err := parseDir(root, storeDir+id)
+		if err != nil {
+			return nil, err
+		}
+		stores = append(stores, store)
 	}
 	vars := map[string]*variable{}
 	// doc is what the comment documenting a variable says, the variables it documents together, and
@@ -63,9 +106,11 @@ func readConfig(root string) ([]variable, error) {
 	for _, f := range ts.Type.(*ast.StructType).Fields.List {
 		addDocs(cfg, f.Doc)
 	}
-	for _, f := range main.files {
-		for _, cg := range f.Comments {
-			addDocs(main, cg)
+	for _, src := range append([]*source{main}, stores...) {
+		for _, f := range src.files {
+			for _, cg := range f.Comments {
+				addDocs(src, cg)
+			}
 		}
 	}
 
@@ -107,7 +152,12 @@ func readConfig(root string) ([]variable, error) {
 					}
 				case fun.Name == "orDefault" && len(x.Args) == 2:
 					inner, ok := x.Args[0].(*ast.CallExpr)
+					// The default is a literal, or another package's string constant, such as the
+					// store registry's name for the store a deployment that names none runs on.
 					def, ok2 := strLit(x.Args[1])
+					if !ok2 {
+						def, ok2 = constOf(cfg, cfg.fileOf(x), x.Args[1])
+					}
 					if ok && ok2 && len(inner.Args) == 1 {
 						if name, ok := strLit(inner.Args[0]); ok {
 							read(cfg, name, x)
@@ -139,16 +189,19 @@ func readConfig(root string) ([]variable, error) {
 			return true
 		})
 	}
-	for _, f := range main.files {
-		ast.Inspect(f, func(n ast.Node) bool {
-			// Every name cmd/cipherd spells out is one it reads, whichever call reads it.
-			if lit, ok := n.(*ast.BasicLit); ok {
-				if name, ok := strLit(lit); ok && brokerVar.MatchString(name) {
-					read(main, name, lit)
+	for _, src := range append([]*source{main}, stores...) {
+		for _, f := range src.files {
+			ast.Inspect(f, func(n ast.Node) bool {
+				// Every name cmd/cipherd and the store packages spell out is one they read,
+				// whichever call reads it.
+				if lit, ok := n.(*ast.BasicLit); ok {
+					if name, ok := strLit(lit); ok && brokerVar.MatchString(name) {
+						read(src, name, lit)
+					}
 				}
-			}
-			return true
-		})
+				return true
+			})
+		}
 	}
 
 	var out []variable
@@ -171,4 +224,26 @@ func readConfig(root string) ([]variable, error) {
 		}
 	}
 	return out, nil
+}
+
+// constOf is the string an expression naming another package's constant, pkg.Name, is set to, as
+// that package declares it; it answers false for anything else.
+func constOf(src *source, file *ast.File, e ast.Expr) (string, bool) {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok {
+		return "", false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	dir, ok := importDir(file, pkg.Name)
+	if !ok {
+		return "", false
+	}
+	other, err := parseDir(src.root, dir)
+	if err != nil {
+		return "", false
+	}
+	return other.stringConst(sel.Sel.Name)
 }

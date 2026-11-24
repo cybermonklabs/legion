@@ -2937,7 +2937,7 @@ func Load(getenv func(string) string) (Config, error) {
 	// and every other store's are refused, so a deployment moved between stores cannot keep the
 	// old store's settings and silently mean nothing by them.
 	storeName := getenv("BROKER_SECRETS_STORE")
-	backend, err := lookupStore(orDefault(storeName, secretstore.DefaultName))
+	backend, err := lookupStore(orDefault(getenv("BROKER_SECRETS_STORE"), secretstore.DefaultName))
 	if err != nil {
 		if storeName == "" {
 			return Config{}, fmt.Errorf("BROKER_SECRETS_STORE is unset, and this build holds no %s store, the default", secretstore.DefaultName)

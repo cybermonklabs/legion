@@ -19,9 +19,10 @@ The Envoy image (`packages/envoy/docker/Dockerfile`) ships it as `envoy-broker`.
 
 The broker takes no flags and reads its configuration from `BROKER_*` environment variables
 (`internal/cipher/config/config.go`). It needs Postgres and the agent secrets in its secret store
-(`BROKER_SECRETS_STORE`: AWS Secrets Manager, or Google Cloud Secret Manager under Application
-Default Credentials): every secret under `BROKER_SECRETS_PREFIX`, carrying `owner` and `tier` (AWS
-tags, or Secret Manager annotations) and encrypted with the agent-secrets key
+(`BROKER_SECRETS_STORE`, one package of `internal/cipher/secretstore` for each store: AWS Secrets
+Manager, Google Cloud Secret Manager under Application Default Credentials, or the memory store
+for local runs and tests): every secret under `BROKER_SECRETS_PREFIX`, carrying `owner` and `tier`
+(AWS tags, or Secret Manager annotations) and encrypted with the agent-secrets key
 (`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME`). It also needs its own OpenID
 Connect client, through which a person signs in to the approval page: `BROKER_SIGNIN_ISSUER`,
 `BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and `BROKER_SIGNIN_DOMAIN` are all
@@ -96,8 +97,8 @@ without the flag each such profile gets one line saying its tie to the destinati
 `profiles check` reads no configuration, opens no database and binds nothing.
 The removed `envoy-broker airlock-check` exits 2 naming `profiles check`.
 
-For a local stack (Postgres in Docker, or one you run named by `DEV_BROKER_POSTGRES_URL`, a fake
-secrets file standing in for Secrets Manager, and the clients), run
+For a local stack (Postgres in Docker, or one you run named by `DEV_BROKER_POSTGRES_URL`, the
+memory store over a file the script writes, and the clients), run
 `packages/envoy/scripts/dev-broker.sh`.
 
 ## Google groups
