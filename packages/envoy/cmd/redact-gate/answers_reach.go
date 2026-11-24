@@ -41,7 +41,7 @@ import (
 // function that answers the body's bytes lets a client print them as a method would.
 
 // reference is the full name of the reader or maker n names, an identifier or a selector, where n
-// is not the function a call calls, and whether it is one.
+// is not the function a call calls, and whether it is one; n of any other kind is none.
 func (a *answerReader) reference(n ast.Node, parents []ast.Node) (string, bool) {
 	var obj types.Object
 	switch n := n.(type) {

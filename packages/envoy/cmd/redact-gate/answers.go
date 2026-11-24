@@ -140,11 +140,11 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 					add("whole-response", false, exprString(cv.expr), "a response handed whole to "+cv.to+", as a "+held+", where fmt, log, slog and encoding/json print the status line the answering party wrote and every header it sent, as they came: name its status through redact.StatusLine and a header through redact.Header")
 				}
 			}
+			if name, ok := a.reference(n, parents); ok {
+				add("reference", false, exprString(n.(ast.Expr)), shortName(name)+" referred to other than by its call, as a function or method value, which no call rule follows: call it, so the census reads the call")
+			}
 			switch n := n.(type) {
 			case *ast.SelectorExpr:
-				if name, ok := a.reference(n, parents); ok {
-					add("reference", false, exprString(n), shortName(name)+" referred to other than by its call, as a function or method value, which no call rule follows: call it, so the census reads the call")
-				}
 				switch {
 				case a.responseField(n, "Body"):
 					switch {
@@ -161,10 +161,6 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 					} else {
 						add("status", false, exprString(n), "a read of an answer's status line as the answering party wrote it, whose phrase is its own words: name the status through redact.StatusLine (oauth2call.StatusLine), its code and the standard phrase")
 					}
-				}
-			case *ast.Ident:
-				if name, ok := a.reference(n, parents); ok {
-					add("reference", false, exprString(n), shortName(name)+" referred to other than by its call, as a function or method value, which no call rule follows: call it, so the census reads the call")
 				}
 			case *ast.CallExpr:
 				if why := a.decodedIntoBox(n, function()); why != "" {
