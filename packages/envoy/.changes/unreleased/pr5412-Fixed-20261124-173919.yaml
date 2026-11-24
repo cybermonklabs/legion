@@ -10,7 +10,13 @@ body: |-
   `role_no_source_session`. For such a publish, whether a live session holds the role is read from
   the role bucket stream's leader and the holder's registration from the session bucket stream's
   leader, never from a copy, so a copy that is behind refuses no message a live holder can take. A
-  publish that names a session, and one to a role a live session holds, are unchanged.
+  publish that names a session, and one to a role a live session holds, are unchanged. A publish
+  whose forward the stream stores for its holder later than `roles.ForwardFenceAge` and the route's
+  3.5 s budget after the listener read that holder is answered `504 delivery_failed`, its error
+  naming `roles.ErrForwardStoredTooLate`, and not `200`: the holder may have lost the role
+  meanwhile and the takeover record that would have copied the message to its next holder may have
+  ended, so the copy reached nobody. The sender's retry reads the holder again and reaches the
+  role's holder once.
 time: 2026-11-24T17:39:19Z
 custom:
     Issue: pr5412

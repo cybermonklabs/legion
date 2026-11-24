@@ -498,7 +498,10 @@ above. That reason is always `delivery_failed`, the one 504 reason the route giv
 is not known to have been stored for its holder (no live holder to forward to, a holder lookup
 that failed or ran out of time, a publish or flush to the server that failed or timed out, or the
 stream did not acknowledge storing the forward,
-`bus.ErrForwardNotStored`). A send whose last attempt ended while the stream still refused its
+`bus.ErrForwardNotStored`, or the stream stored it later than `roles.ForwardFenceAge` and the
+route's 3.5 s budget after the resolution that chose its holder, `roles.ErrForwardStoredTooLate`,
+when that holder may have lost the role and the takeover record that would copy the message to
+the next holder may have ended; the sender's retry resolves the holder again). A send whose last attempt ended while the stream still refused its
 forward as in process is answered instead `503` with `code: "maybe_stored"`, `Retry-After: 1` and
 the error `envoy: an earlier attempt of this message is still being stored: <reason>`, recorded
 `earlier_attempt_in_process`: the stream may yet store the earlier forward for the holder

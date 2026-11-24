@@ -237,8 +237,10 @@ dead letter of an expired copy goes to that session and there is none: its `erro
 and says that nothing was kept and why. Whether a live session holds the role is then read from
 the role bucket's and the session bucket's stream leaders, so a copy of either bucket that is
 behind refuses no message a live holder can take. If the holder does not take the message's delivery mode, the refusal is
-`403`; and if the stream has not stored the forward to a live holder within four seconds, it is
-`504` naming the holder, with the reason `delivery_failed`, and that message is not kept. A role
+`403`; and if the stream has not stored the forward to a live holder within four seconds, or
+stored it so long after the listener read the role's holder that the holder may have lost the role
+meanwhile, it is `504` naming the holder, with the reason `delivery_failed`, and that message is
+not kept: send it again, and the listener reads the holder again. A role
 message published straight onto NATS, not through the API, is kept the same way when no live
 session holds the role, and also when the listener could not read the role's claim, in which
 case it is forwarded once a later read finds a `live` holder inside the message's hour, with no
