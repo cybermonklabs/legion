@@ -108,3 +108,27 @@ func TestADefaultBranchGitHubNamesPrintsThroughTheRuleInEveryBranchLine(t *testi
 		})
 	}
 }
+
+// TestABranchACallerNamedPrintsThroughTheRuleInItsLines: a caller asks about a branch of its
+// own — the base branch an issue's pull request merged into, which GitHub's answer about that
+// pull request named — rather than about the repository's default branch, so no answer's record
+// travels with the name (githubapp.NamedBranch). The compare read of it is answered 500, and the
+// line names the branch only as the rule reads it, in its branch field and in its error.
+// Captures delivery.branch-lines/caller-named.
+func TestABranchACallerNamedPrintsThroughTheRuleInItsLines(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	logs := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewJSONHandler(logs, nil))
+	stand := defaultBranchStandIn(t, "main", http.StatusInternalServerError, `{"message":"Server Error"}`)
+	client := newAppClient(t, githubtest.Spec{Handle: stand.ServeHTTP})
+	branches := &Branches{}
+	got := branches.CommitOnBranch(t.Context(), unreachablePool(t), client, "acme/widgets", redacttest.Words, commit, time.Now())
+	if got != BranchUnknown {
+		t.Errorf("CommitOnBranch answered %v; want %v", got, BranchUnknown)
+	}
+	line := loggedLine(t, logs.String(), "dispatch: ask whether a commit is on a branch")
+	redacttest.RequireNone(t, "delivery.branch-lines/caller-named", line)
+	if want := `"branch":"` + redacttest.Shown + `"`; !strings.Contains(line, want) {
+		t.Errorf("the line is %s; want the branch as the rule reads it, %s", line, want)
+	}
+}

@@ -269,7 +269,14 @@ func TestAHeadThatIsNotASHAIsRefusedBeforeAnyRequest(t *testing.T) {
 	}, {
 		name: "commit-on-branch",
 		call: func(ctx context.Context, client *Client) error {
-			_, err := client.CommitOnBranch(ctx, "ghs_test", "acme", "web", "main", credentialShaped)
+			// The branch comes from a client with no App key, which answers its refusal
+			// before any request: the read this row is about refuses the sha before it
+			// builds a target, so the branch it is given says nothing. This file is read
+			// at this change's base as well (the inventory's leak entries copy it there),
+			// where DefaultBranch answers the name alone, so the branch is taken from that
+			// read rather than written out here.
+			branch, _ := (*Client)(nil).DefaultBranch(ctx, "ghs_test", "acme", "web")
+			_, err := client.CommitOnBranch(ctx, "ghs_test", "acme", "web", branch, credentialShaped)
 			return err
 		},
 	}} {
@@ -378,8 +385,8 @@ func TestADefaultBranchGitHubAnsweredPrintsAsTheRuleReadsIt(t *testing.T) {
 			})
 			ctx, attempt := githubreads.Begin(context.Background())
 			branch, err := client.DefaultBranch(ctx, "ghs_test", "acme", "web")
-			if err != nil || branch != redacttest.Code {
-				t.Fatalf("DefaultBranch = %q, %v; want GitHub's default_branch as it came", branch, err)
+			if err != nil || !strings.Contains(fmt.Sprint(branch), redacttest.Code) {
+				t.Fatalf("DefaultBranch = %v, %v; want GitHub's default_branch as it came", branch, err)
 			}
 			_, err = client.CommitOnBranch(ctx, "ghs_test", "acme", "web", branch, mainCommit)
 			if err == nil {
@@ -394,7 +401,9 @@ func TestADefaultBranchGitHubAnsweredPrintsAsTheRuleReadsIt(t *testing.T) {
 
 // echoToken is the installation token a request to a stand-in GitHub carried, which the stand-in
 // echoes in its answer.
-func echoToken(r *http.Request) string { return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") }
+func echoToken(r *http.Request) string {
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
 
 // TestATreePathPrintsNoTokenItsReadCarried: whatever answers in GitHub's place lists a note whose
 // path echoes the installation token the tree read (Dir) carried. DirFiles names that path, as
@@ -476,8 +485,8 @@ func TestADefaultBranchPrintsNoTokenItsReadCarried(t *testing.T) {
 			})
 			ctx, attempt := githubreads.Begin(context.Background())
 			branch, err := client.DefaultBranch(ctx, token, "acme", "web")
-			if err != nil || branch != "release-"+token {
-				t.Fatalf("DefaultBranch = %q, %v; want GitHub's default_branch as it came", branch, err)
+			if err != nil || !strings.Contains(fmt.Sprint(branch), "release-"+token) {
+				t.Fatalf("DefaultBranch = %v, %v; want GitHub's default_branch as it came", branch, err)
 			}
 			_, err = client.CommitOnBranch(ctx, token, "acme", "web", branch, mainCommit)
 			if err == nil {
@@ -490,5 +499,43 @@ func TestADefaultBranchPrintsNoTokenItsReadCarried(t *testing.T) {
 				t.Errorf("CommitOnBranch answered %q, want the branch named", err)
 			}
 		})
+	}
+}
+
+// TestADefaultBranchPrintsNoTokenAnEarlierMintCarried: the read that names a repository's
+// default branch carries one installation token, and the comparison against that branch carries
+// another, as it does where the client minted a token for the installation between the two reads
+// (RepositoryToken hands out one until it expires, so the earlier one is live for up to an hour).
+// Whatever answers in GitHub's place echoes the read's token in the default_branch it names, and
+// answers the comparison 500. The branch prints as the read that named it printed it, so neither
+// the error the comparison answers nor the note it leaves on the attempt holds a piece of that
+// earlier token. Captures githubapp.default-branch-minted-again.
+func TestADefaultBranchPrintsNoTokenAnEarlierMintCarried(t *testing.T) {
+	const read = redacttest.Token
+	const compare = "ghs_the_comparisons_own_token"
+	client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/acme/web":
+			fmt.Fprintf(w, `{"default_branch":%q}`, "release-"+echoToken(r))
+		case strings.HasPrefix(r.URL.Path, "/repos/acme/web/compare/"):
+			serverError(w, r)
+		default:
+			githubtest.Unexpected(t, w, r)
+		}
+	})
+	ctx, attempt := githubreads.Begin(context.Background())
+	branch, err := client.DefaultBranch(ctx, read, "acme", "web")
+	if err != nil || !strings.Contains(fmt.Sprint(branch), "release-"+read) {
+		t.Fatalf("DefaultBranch = %v, %v; want GitHub's default_branch as it came", branch, err)
+	}
+	_, err = client.CommitOnBranch(ctx, compare, "acme", "web", branch, mainCommit)
+	if err == nil {
+		t.Fatal("a comparison GitHub failed answered no error")
+	}
+	githubreads.NoteFailure(ctx, err)
+	_, _, cause := attempt.Outcome()
+	redacttest.RequireNoPiece(t, "githubapp.default-branch-minted-again", err.Error()+" | "+cause, read)
+	if !strings.Contains(err.Error(), "release-") {
+		t.Errorf("CommitOnBranch answered %q, want the branch named", err)
 	}
 }

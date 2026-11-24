@@ -107,26 +107,23 @@ func CheckRepositoryResponse(status int, header http.Header, body redact.Answer,
 // longer holding is the usual reason for; a 404 is also GitHub's answer for a commit the
 // repository does not have, which is likewise no proof that the branch lacks it.
 //
-// A sha that is not a SHA is ErrNotASHA, before any request (notASHA). branch can be GitHub's
-// text, the default_branch DefaultBranch answers as it came, so every error and note of the read
-// names the branch as the rule reads it, unescaped, never as the target holds it: the rule reads
-// a branch's `/` as text, where it would refuse the path-escaped %2F and the whole target with it.
-// Before the rule reads it, the branch has token redacted (redact.Tokens): the comparison's own
-// credential, the record its answer holds, and the token the read that named the branch carried,
-// since both are minted for the repository's installation and the client hands out the one it
-// holds until it expires (RepositoryToken), so a default_branch that echoes it prints without it.
-func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo, branch, sha string) (bool, error) {
+// A sha that is not a SHA is ErrNotASHA, before any request (notASHA). branch is the branch
+// GitHub named as the repository's own (DefaultBranch), which carries the record of the answer
+// that named it, or one a caller holds (NamedBranch); every error and note of the read names it
+// as Branch.shownName prints it, never as the target holds it: the rule reads a branch's `/` as
+// text, where it would refuse the path-escaped %2F and the whole target with it.
+func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo string, branch Branch, sha string) (bool, error) {
 	if c == nil {
 		return false, ErrNoAppKey
 	}
 	if err := notASHA("read the comparison of "+owner+"/"+repo, "commit", sha); err != nil {
 		return false, err
 	}
-	shown := redact.Field(redact.Tokens(branch, -1, token))
+	shown := branch.shownName(token)
 	// The three dots are the comparison's own syntax and travel unescaped; each side is escaped
 	// on its own so a `/` in a branch name travels as %2F.
 	path := repoPath(owner, repo) +
-		"/compare/" + url.PathEscape(branch) + "..." + url.PathEscape(sha) + "?per_page=1"
+		"/compare/" + url.PathEscape(branch.Name) + "..." + url.PathEscape(sha) + "?per_page=1"
 	printed := c.base + repoPath(owner, repo) + "/compare/" + shown + "..." + sha + "?per_page=1"
 	body, _, err := c.readRepositoryJSON(ctx, token, path, printed, owner+"/"+repo)
 	if err != nil {
@@ -222,29 +219,79 @@ func answerMessage(body redact.Answer) redact.RemoteText {
 	return answer.Message
 }
 
-// DefaultBranch is the name of the repository's default branch (`GET /repos/{owner}/{repo}`,
+// Branch is a branch of a repository: its name as it came, and the printed form of that name. A
+// branch GitHub named is GitHub's words — a `default_branch` its owner may write anything in, an
+// installation token among it — so the read that named it prints it from its own answer's record
+// (DefaultBranch), and every read that takes it afterwards names it by that printed form,
+// whatever token the later read carries. A branch a caller holds of its own is NamedBranch.
+type Branch struct {
+	// Name is the branch as it came. It builds a target, path-escaped, and keys what is stored
+	// about the branch; it prints nowhere.
+	Name string
+	// shown is Name as the read that named it prints it: the rule's reading of it, with that
+	// answer's own credentials redacted (redact.Answer.Said), cut as ShownBody cuts a target.
+	// Empty for a branch no read of GitHub named, whose Name prints as shownName reads it.
+	shown string
+}
+
+// NamedBranch is a branch a caller holds rather than one a read of GitHub named: the base branch
+// an issue's pull request merged into, a branch read from the store, or a name a test writes. No
+// answer's record travels with it, so its name prints as the rule reads it, with the token of the
+// read that names it redacted (shownName).
+func NamedBranch(name string) Branch { return Branch{Name: name} }
+
+// Shown is the branch as a line outside this package names it (delivery's branch lines): as the
+// read that named it printed it, and otherwise as the rule reads Name. A line that holds the
+// token the branch may echo has shownName redact that too; one that holds none cannot.
+func (b Branch) Shown() string {
+	if b.shown != "" {
+		return b.shown
+	}
+	return redact.Field(b.Name)
+}
+
+// shownName is the branch as this client's own errors and notes name it. A branch GitHub named
+// prints as the read that named it printed it, so a `default_branch` echoing the installation
+// token that read carried prints without it even where this read carries another token: the
+// client mints one token per installation and hands it out until it expires (RepositoryToken),
+// and a mint between the two reads leaves the earlier token nothing else here could redact. A
+// branch a caller holds prints as the rule reads it, with this read's own token redacted.
+func (b Branch) shownName(token string) string {
+	if b.shown != "" {
+		return b.shown
+	}
+	return redact.Field(redact.Tokens(b.Name, -1, token))
+}
+
+// DefaultBranch is the repository's default branch (`GET /repos/{owner}/{repo}`,
 // `default_branch` alone), the branch a default-branch result's commit must be on, and one of
 // the two an after-merge result's commit may be on (the other is the base branch its issue's pull
 // request merged into). A 403 or 404 is ErrRepositoryUnreadable.
-func (c *Client) DefaultBranch(ctx context.Context, token, owner, repo string) (string, error) {
+//
+// The name comes back as it came, with the printed form this answer's record gives it (Branch),
+// so a later read that names the branch names none of the credentials this read carried.
+func (c *Client) DefaultBranch(ctx context.Context, token, owner, repo string) (Branch, error) {
 	if c == nil {
-		return "", ErrNoAppKey
+		return Branch{}, ErrNoAppKey
 	}
 	path := repoPath(owner, repo)
 	body, _, err := c.readRepositoryJSON(ctx, token, path, c.base+path, owner+"/"+repo)
 	if err != nil {
-		return "", err
+		return Branch{}, err
 	}
 	var repository struct {
 		DefaultBranch string `json:"default_branch"`
 	}
 	if err := body.Decode(&repository); err != nil {
-		return "", fmt.Errorf("decode %s/%s: %w", owner, repo, ShownErr(err))
+		return Branch{}, fmt.Errorf("decode %s/%s: %w", owner, repo, ShownErr(err))
 	}
 	if repository.DefaultBranch == "" {
-		return "", fmt.Errorf("%s/%s: GitHub named no default branch", owner, repo)
+		return Branch{}, fmt.Errorf("%s/%s: GitHub named no default branch", owner, repo)
 	}
-	return repository.DefaultBranch, nil
+	return Branch{
+		Name:  repository.DefaultBranch,
+		shown: ShownBody(body.Said(repository.DefaultBranch).String()),
+	}, nil
 }
 
 // repoPath is the API path of owner/repo, each part escaped as CommitOnBranch escapes its own.

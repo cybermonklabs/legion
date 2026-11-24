@@ -29,9 +29,12 @@ func TestARefusedSHAIsErrNotASHA(t *testing.T) {
 				_, err := client.CommitCheckSuites(ctx, "ghs_test", "acme", "web", sha, 1, "")
 				return err
 			},
-			"statuses":   func() error { _, err := client.CommitStatuses(ctx, "ghs_test", "acme", "web", sha, 1, ""); return err },
-			"commit":     func() error { _, err := client.HasCommit(ctx, "ghs_test", "acme", "web", sha); return err },
-			"comparison": func() error { _, err := client.CommitOnBranch(ctx, "ghs_test", "acme", "web", "main", sha); return err },
+			"statuses": func() error { _, err := client.CommitStatuses(ctx, "ghs_test", "acme", "web", sha, 1, ""); return err },
+			"commit":   func() error { _, err := client.HasCommit(ctx, "ghs_test", "acme", "web", sha); return err },
+			"comparison": func() error {
+				_, err := client.CommitOnBranch(ctx, "ghs_test", "acme", "web", NamedBranch("main"), sha)
+				return err
+			},
 			"blob": func() error {
 				_, err := client.DirFiles(ctx, "ghs_test", "acme", "web", Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: "docs/a.md", SHA: sha, Size: 1}}})
 				return err
@@ -69,7 +72,7 @@ func TestABranchHoldingASlashPrintsReadably(t *testing.T) {
 	if want := "GET " + client.base + "/repos/acme/web/git/ref/heads/" + url.PathEscape("feature/notes") + `: status 500: {"message":"Server Error"}`; err == nil || err.Error() != want {
 		t.Errorf("Branch answered %v, want %q", err, want)
 	}
-	_, err = client.CommitOnBranch(ctx, "ghs_test", "acme", "web", "release/2026", mainCommit)
+	_, err = client.CommitOnBranch(ctx, "ghs_test", "acme", "web", NamedBranch("release/2026"), mainCommit)
 	if want := fmt.Sprintf("GET %s/repos/acme/web/compare/release/2026...%s?per_page=1: status 500: %s", client.base, mainCommit, `{"message":"Server Error"}`); err == nil || err.Error() != want {
 		t.Errorf("CommitOnBranch answered %v, want %q", err, want)
 	}

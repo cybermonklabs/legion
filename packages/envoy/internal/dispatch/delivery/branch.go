@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // branch.go owns every answer about whether one branch of one repository carries one commit,
@@ -168,7 +167,7 @@ type compareHold struct {
 // pair is held as long as any other answer, so an unreadable repository is not asked about on
 // every read.
 type cachedBranch struct {
-	branch   string
+	branch   githubapp.Branch
 	readable bool
 	readAt   time.Time
 }
@@ -190,7 +189,8 @@ type cachedBranch struct {
 func (c *Branches) DefaultBranchOf(
 	ctx context.Context, client *githubapp.Client, repoFull string, now time.Time,
 ) (string, bool) {
-	return c.branchOf(ctx, client, repoFull, now)
+	branch, readable := c.branchOf(ctx, client, repoFull, now)
+	return branch.Name, readable
 }
 
 // CommitOnBranch answers what Dispatch can say about branch of repoFull carrying sha: one of
@@ -287,20 +287,29 @@ func (c *Branches) CommitOnBranch(
 	// question of the same branch and so is gated on the same read. A caller naming any other
 	// branch has asked nothing of the repository, so the compare read below is what finds out.
 	readable := true
+	// named is the branch every read below is made against: the one GitHub named as the
+	// repository's own, which carries the record of the answer that named it (branchOf), or the
+	// caller's own name, which no answer of GitHub's records. Its Name keys the stored row and
+	// the holds; only its printed form reaches a line (githubapp.Branch).
+	named := githubapp.NamedBranch(branch)
 	switch {
 	case branch == DefaultBranch:
-		if branch, readable = c.branchOf(ctx, client, repoFull, now); branch == "" {
+		if named, readable = c.branchOf(ctx, client, repoFull, now); named.Name == "" {
 			return BranchUnknown
 		}
 	case c.isDefaultBranch(repoBranch{repo: repoFull, branch: branch}):
 		// The caller's own name stands: branchOf is read here for whether the repository can
 		// be read at all, and a default branch renamed away from this one since leaves it an
-		// ordinary named branch rather than quietly measuring against another branch.
-		_, readable = c.branchOf(ctx, client, repoFull, now)
+		// ordinary named branch rather than quietly measuring against another branch. Where it
+		// is still that branch, the record of the answer that named it travels with it.
+		var held githubapp.Branch
+		if held, readable = c.branchOf(ctx, client, repoFull, now); held.Name == branch {
+			named = held
+		}
 	}
-	stored, found, err := readBranchCommit(ctx, pool, repoFull, branch, sha)
+	stored, found, err := readBranchCommit(ctx, pool, repoFull, named, sha)
 	if err != nil {
-		slog.Warn("dispatch: read a commit's branch answer", branchLine(repoFull, branch, sha, err)...)
+		slog.Warn("dispatch: read a commit's branch answer", branchLine(repoFull, named, sha, err)...)
 	}
 	if found && (stored.OnBranch || now.Sub(stored.CheckedAt) < BranchCommitStaleAfter) {
 		if stored.OnBranch {
@@ -316,7 +325,7 @@ func (c *Branches) CommitOnBranch(
 		// and branchOf keeps no account of which (cachedBranch).
 		return BranchUnknown
 	}
-	pair := repoBranch{repo: repoFull, branch: branch}
+	pair := repoBranch{repo: repoFull, branch: named.Name}
 	// holdable is whether a refusal of this pair may be held at all, which the repository's own
 	// default branch is not: that pair reads no hold and leaves none, under whichever name the
 	// caller reached it. It is read once, before the call goes out, so the refusal below is
@@ -325,10 +334,10 @@ func (c *Branches) CommitOnBranch(
 	if holdable && c.unseenHeld(pair, now) {
 		return BranchUnseen
 	}
-	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
+	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, named, sha)
 	if err != nil {
 		if !cannotSeeRepository(err) {
-			slog.Warn("dispatch: ask whether a commit is on a branch", branchLine(repoFull, branch, sha, err)...)
+			slog.Warn("dispatch: ask whether a commit is on a branch", branchLine(repoFull, named, sha, err)...)
 			return BranchUnknown
 		}
 		if holdable {
@@ -339,8 +348,8 @@ func (c *Branches) CommitOnBranch(
 	if holdable {
 		c.markSeen(pair, now)
 	}
-	if err := writeBranchCommit(ctx, pool, repoFull, branch, sha, answer, now); err != nil {
-		slog.Warn("dispatch: record a commit's branch answer", branchLine(repoFull, branch, sha, err)...)
+	if err := writeBranchCommit(ctx, pool, repoFull, named, sha, answer, now); err != nil {
+		slog.Warn("dispatch: record a commit's branch answer", branchLine(repoFull, named, sha, err)...)
 	}
 	if answer {
 		return BranchCarries
@@ -349,10 +358,11 @@ func (c *Branches) CommitOnBranch(
 }
 
 // branchLine is the fields a line about sha on branch of repoFull names them by, and err. The
-// branch prints as the rule reads it (redact.Field), since a repository's default branch is
-// GitHub's words (branchOf), or a stand-in's.
-func branchLine(repoFull, branch, sha string, err error) []any {
-	return []any{"repo", repoFull, "branch", redact.Field(branch), "commit", sha, "error", err}
+// branch prints as the read that named it printed it, and otherwise as the rule reads it
+// (githubapp.Branch.Shown), since a repository's default branch is GitHub's words (branchOf), or
+// a stand-in's.
+func branchLine(repoFull string, branch githubapp.Branch, sha string, err error) []any {
+	return []any{"repo", repoFull, "branch", branch.Shown(), "commit", sha, "error", err}
 }
 
 // branchOf is the default branch this process holds for repoFull and whether the newest read of
@@ -365,11 +375,11 @@ func branchLine(repoFull, branch, sha string, err error) []any {
 // CommitOnBranch wants the name even when the newest read could not say, since a
 // branch_commits row is keyed by a branch and the name has to come from somewhere before that
 // row can be asked for at all.
-func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) (string, bool) {
+func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) (githubapp.Branch, bool) {
 	if held, fresh := c.get(repoFull, now); fresh {
 		return held.branch, held.readable
 	}
-	branch := ""
+	var branch githubapp.Branch
 	if client != nil {
 		read, err := repositoryDefaultBranch(ctx, client, repoFull)
 		if err != nil {
@@ -380,7 +390,7 @@ func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoF
 			branch = read
 		}
 	}
-	return c.put(repoFull, branch, now), branch != ""
+	return c.put(repoFull, branch, now), branch.Name != ""
 }
 
 // get is what this process holds about repo's default branch, exactly as put left it, and
@@ -398,7 +408,7 @@ func (c *Branches) get(repo string, now time.Time) (cachedBranch, bool) {
 // put records what GitHub said about repo's default branch at now and answers the name held
 // afterwards. A read that could not say leaves the name standing and marks the repository
 // unreadable, for the reason cachedBranch gives.
-func (c *Branches) put(repo, branch string, now time.Time) string {
+func (c *Branches) put(repo string, branch githubapp.Branch, now time.Time) githubapp.Branch {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.known == nil {
@@ -406,8 +416,8 @@ func (c *Branches) put(repo, branch string, now time.Time) string {
 	}
 	held := c.known[repo]
 	held.readAt = now
-	held.readable = branch != ""
-	if branch != "" {
+	held.readable = branch.Name != ""
+	if branch.Name != "" {
 		held.branch = branch
 	}
 	c.known[repo] = held
@@ -439,7 +449,7 @@ func (c *Branches) put(repo, branch string, now time.Time) string {
 func (c *Branches) isDefaultBranch(pair repoBranch) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.known[pair.repo].branch != pair.branch {
+	if c.known[pair.repo].branch.Name != pair.branch {
 		return false
 	}
 	delete(c.compares, pair)
@@ -559,17 +569,17 @@ func cannotSeeRepository(err error) bool {
 // The branch is not lowercased with it. Git's branch names are case-sensitive, so `Release`
 // and `release` are two branches and a compare read of one says nothing about the other. Its
 // error names the branch as the rule reads it (branchLine says why).
-func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, sha string) (BranchCommit, bool, error) {
+func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull string, branch githubapp.Branch, sha string) (BranchCommit, bool, error) {
 	var answer BranchCommit
 	err := pool.QueryRow(ctx, `
 		select on_branch, checked_at from branch_commits
 		where repo = lower($1) and branch = $2 and sha = $3
-	`, repoFull, branch, sha).Scan(&answer.OnBranch, &answer.CheckedAt)
+	`, repoFull, branch.Name, sha).Scan(&answer.OnBranch, &answer.CheckedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return BranchCommit{}, false, nil
 	}
 	if err != nil {
-		return BranchCommit{}, false, fmt.Errorf("read whether %s@%s is on %s: %w", repoFull, sha, redact.Field(branch), err)
+		return BranchCommit{}, false, fmt.Errorf("read whether %s@%s is on %s: %w", repoFull, sha, branch.Shown(), err)
 	}
 	return answer, true, nil
 }
@@ -582,14 +592,14 @@ func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, s
 // compare read's answer (CommitOnBranch) and inside a transaction for a merge's permanent yes,
 // which commits with the head row it was learned from or not at all (UpsertPullRequestHead). Its
 // error names the branch as the rule reads it, as readBranchCommit's does.
-func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sha string, onBranch bool, now time.Time) error {
+func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull string, branch githubapp.Branch, sha string, onBranch bool, now time.Time) error {
 	_, err := db.Exec(ctx, `
 		insert into branch_commits (repo, branch, sha, on_branch, checked_at)
 		values (lower($1), $2, $3, $4, $5)
 		on conflict (repo, branch, sha) do update set on_branch = excluded.on_branch, checked_at = excluded.checked_at
-	`, repoFull, branch, sha, onBranch, now)
+	`, repoFull, branch.Name, sha, onBranch, now)
 	if err != nil {
-		return fmt.Errorf("record whether %s@%s is on %s: %w", repoFull, sha, redact.Field(branch), err)
+		return fmt.Errorf("record whether %s@%s is on %s: %w", repoFull, sha, branch.Shown(), err)
 	}
 	return nil
 }
@@ -619,11 +629,12 @@ func repositoryRead(ctx context.Context, client *githubapp.Client, repoFull stri
 // around the mint's own error, so the read that failed is the mint and not the repository's.
 var ErrTokenMint = errors.New("mint installation token")
 
-// repositoryDefaultBranch is the name of repoFull's default branch, read through the App.
-func repositoryDefaultBranch(ctx context.Context, client *githubapp.Client, repoFull string) (string, error) {
+// repositoryDefaultBranch is repoFull's default branch, read through the App: the name as GitHub
+// gave it, with the printed form that answer's record gives it (githubapp.Branch).
+func repositoryDefaultBranch(ctx context.Context, client *githubapp.Client, repoFull string) (githubapp.Branch, error) {
 	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
 	if err != nil {
-		return "", err
+		return githubapp.Branch{}, err
 	}
 	return client.DefaultBranch(ctx, token, owner, repo)
 }
@@ -631,7 +642,7 @@ func repositoryDefaultBranch(ctx context.Context, client *githubapp.Client, repo
 // askGitHubCommitOnBranch asks the App whether sha is on branch of repoFull. It is the read
 // CommitOnBranch makes when nothing stored answers, named for the call it spends so the two
 // cannot be mistaken for one another.
-func askGitHubCommitOnBranch(ctx context.Context, client *githubapp.Client, repoFull, branch, sha string) (bool, error) {
+func askGitHubCommitOnBranch(ctx context.Context, client *githubapp.Client, repoFull string, branch githubapp.Branch, sha string) (bool, error) {
 	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
 	if err != nil {
 		return false, err

@@ -624,7 +624,7 @@ func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
 		"7777777777777777777777777777777777777777": true,
 		"8888888888888888888888888888888888888888": false,
 	} {
-		got, err := client.CommitOnBranch(ctx, token, "acme", "widgets", "main", sha)
+		got, err := client.CommitOnBranch(ctx, token, "acme", "widgets", githubapp.NamedBranch("main"), sha)
 		if err != nil {
 			t.Fatalf("CommitOnBranch(%s): %v", sha, err)
 		}
@@ -632,10 +632,10 @@ func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
 			t.Fatalf("CommitOnBranch(%s) = %v, want %v", sha, got, want)
 		}
 	}
-	if branch, err := client.DefaultBranch(ctx, token, "acme", "widgets"); err != nil || branch != "main" {
-		t.Fatalf("DefaultBranch = %q, %v; want main", branch, err)
+	if branch, err := client.DefaultBranch(ctx, token, "acme", "widgets"); err != nil || branch.Name != "main" {
+		t.Fatalf("DefaultBranch = %v, %v; want main", branch, err)
 	}
-	if _, err := client.CommitOnBranch(ctx, token, "acme", "hidden", "main", "6666666666666666666666666666666666666666"); !errors.Is(err, githubapp.ErrRepositoryUnreadable) {
+	if _, err := client.CommitOnBranch(ctx, token, "acme", "hidden", githubapp.NamedBranch("main"), "6666666666666666666666666666666666666666"); !errors.Is(err, githubapp.ErrRepositoryUnreadable) {
 		t.Fatalf("CommitOnBranch on an unreadable repository = %v, want ErrRepositoryUnreadable", err)
 	}
 }
@@ -1489,7 +1489,7 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 	if err := UpsertPullRequestHead(ctx, pool, nil, merged); err != nil {
 		t.Fatalf("store the head of a merged pull request: %v", err)
 	}
-	stored, found, err := readBranchCommit(ctx, pool, merged.Repo, base, mergeCommit)
+	stored, found, err := readBranchCommit(ctx, pool, merged.Repo, githubapp.NamedBranch(base), mergeCommit)
 	if err != nil {
 		t.Fatalf("read whether the merge commit is on %s: %v", base, err)
 	}
