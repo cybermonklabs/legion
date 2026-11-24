@@ -72,6 +72,10 @@ func newJoinedHarness(t *testing.T) *joinedHarness {
 // later exit 4 then, as Container-Optimized OS's 1.8 does, and the wait goes on. jq 1.6 exits 0, so
 // under it the script takes a container that is not up for a node that runs, and a row's verdict
 // would be this machine's jq rather than the script's.
+//
+// The probe passes only on a status the jq itself returned. A probe killed by a signal (its
+// context's deadline, an out-of-memory kill) also gives an *exec.ExitError, and taking that for
+// "it exits non-zero" would pass every jq on a machine too slow to run the probe.
 func requireJQFailsOnEmptyInput(t *testing.T) {
 	t.Helper()
 	jq := tool(t, "jq")
@@ -86,6 +90,8 @@ func requireJQFailsOnEmptyInput(t *testing.T) {
 			strings.TrimSpace(string(version)))
 	case !errors.As(err, &exit):
 		t.Fatalf("%s -e . on empty input did not run: %v", jq, err)
+	case !exit.Exited():
+		t.Fatalf("%s -e . on empty input did not exit of its own (%v), so what it answers on empty input is not read", jq, exit.ProcessState)
 	}
 }
 

@@ -285,7 +285,9 @@ const (
 // The negative controls are the two ways it could fail: killed by the signal (no trap, which as PID
 // 1 would ignore it until the grace period's SIGKILL), or exiting only once its sleep returns (a
 // trap held behind a foreground sleep). Here the sleep lasts until the test ends it, so such an
-// advertiser never exits, and its shell is killed at the test binary's deadline.
+// advertiser never exits: its shell is killed at the test binary's deadline and the wait for its
+// exit fails by name. Nothing reads that sleep after the exit, since a correct trap may end and
+// reap it before exiting, and a check that it still runs would then fail a right advertiser.
 func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	realSleep, err := exec.LookPath("sleep")
 	require.NoError(t, err, "sleep is not on PATH")
@@ -306,9 +308,9 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
-	// The shimmed sleep logs its line before it records its PID, so the wait is for the PID, which
-	// the check after the exit reads: the whole line, since a read while the shim writes it can see
-	// a prefix of the number.
+	// The shimmed sleep logs its line before it records its PID, so the wait is for the PID: the
+	// whole line, since a read while the shim writes it can see a prefix of the number. It is the
+	// advertiser's first wait, the fact the SIGTERM must land in.
 	testwait.Until(t, fmt.Sprintf("the advertiser's first wait (with no logged-in node it retries every %d s)", tailnetAdvertiserPeriodSeconds), func() (string, bool) {
 		recorded, err := os.ReadFile(filepath.Join(r.fake, "sleep-pid"))
 		if errors.Is(err, os.ErrNotExist) {
@@ -321,22 +323,6 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
 	err = cmd.Wait()
 	require.NoError(t, err, "the advertiser was killed by SIGTERM rather than exiting on it:\n%s", out.String())
-	// The sleep the advertiser is waiting on lasts until the test ends it, and it is still running:
-	// the advertiser acted on the signal mid-wait rather than when its sleep returned, which is what
-	// a trap held behind a foreground sleep would have done.
-	require.True(t, tailnetSleepRuns(t, r),
-		"the advertiser exited only once its sleep had returned, held by it:\n%s", out.String())
-}
-
-// tailnetSleepRuns reports whether the sleep the advertiser last waited on is still running, by
-// the pid the shimmed sleep recorded.
-func tailnetSleepRuns(t *testing.T, r *tailnetRig) bool {
-	t.Helper()
-	recorded, err := os.ReadFile(filepath.Join(r.fake, "sleep-pid"))
-	require.NoError(t, err, "the shimmed sleep recorded no pid, so the advertiser never waited")
-	pid, err := strconv.Atoi(strings.TrimSpace(string(recorded)))
-	require.NoError(t, err)
-	return syscall.Kill(pid, 0) == nil
 }
 
 // The ready file appears only once the node's service-host capability lists the Service: every

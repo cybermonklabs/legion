@@ -635,25 +635,24 @@ func TestDispatchCertPublishExitsWhenTheClaimGateDies(t *testing.T) {
 // it exits 0 on SIGTERM, and at once while its publishing loop sleeps its 60 seconds: the sleep
 // runs under wait, which a trapped signal ends. Without the trap the test's shell dies of the
 // signal ("signal: terminated"); with a foreground sleep it exits only when the sleep returns,
-// and here the sleep lasts until the test ends it, so it never exits and the wait for its exit
-// fails by name.
+// and here the loop's pause lasts until the test ends it, so such a cert-publish never exits and
+// the wait for its exit fails by name. The pause the loop is in is the mid-wait fact: nothing
+// reads it after the exit, since a correct trap may end and reap that sleep before it exits, and
+// a check that the sleep still runs would then fail a right program.
 func TestDispatchCertPublishExitsOnSIGTERM(t *testing.T) {
 	store := newFrontDoorSecretStore(t)
 	run := startCertPublish(t, newFrontDoorCertPaths(t, store.url), false, true)
 	// The pause begins after the pass, so a SIGTERM sent once it is recorded comes while the loop
 	// sleeps, or while it starts the sleep it waits on.
-	pause := testwait.Until(t, "the publishing loop's first pass, and the 60 s pause after it", func() ([]int, bool) {
+	testwait.Until(t, "the publishing loop's first pass, and the 60 s pause after it", func() ([]int, bool) {
 		stdout, _ := run.output(t)
 		pauses := run.pauses(t)
 		return pauses, len(pauses) > 0 && strings.Contains(stdout, "waiting for tailscaled to cache a certificate")
-	})[0]
+	})
 	require.NoError(t, run.cmd.Process.Signal(syscall.SIGTERM))
 	testwait.Receive(t, "cert-publish to exit on the SIGTERM sent while its publishing loop slept", run.exited)
 	_, stderr := run.output(t)
 	require.NoError(t, run.err, "cert-publish was killed by SIGTERM rather than exiting on it:\n%s", stderr)
-	// The pause cert-publish was waiting on is still running: it acted on the signal mid-wait.
-	require.NoError(t, syscall.Kill(pause, 0),
-		"the pause cert-publish waited on (pid %d) is gone, so it did not exit mid-wait:\n%s", pause, stderr)
 }
 
 // frontDoorLedger is Secret <hostname>-tailnet-tls's claim annotation, its node registry and its
