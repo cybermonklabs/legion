@@ -361,7 +361,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 			if _, err := r.pool.Exec(r.ctx, `update outbox set lease_until = $2 where id = $1`, held, r.dueNow()); err != nil {
 				t.Fatalf("let P's row's lease lapse: %v", err)
 			}
-			// The outbox's sweep, every outboxLease of the wall clock, wakes P's lane.
+			// The outbox's sweep, every pauseRigOutboxSweep of the wall clock, wakes P's lane.
 			testwait.WithinPolling(t, 2*time.Minute, 200*time.Millisecond, "P's worker's launch to reserve the last turn", func() bool {
 				return len(r.rt.launches())-before+len(r.state().WakesWaiting) == others+1
 			})

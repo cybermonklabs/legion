@@ -999,6 +999,50 @@ func TestTheSweepAfterALeasesLapseStartsItsLaneAgainWithoutARestart(t *testing.T
 	})
 }
 
+// An outbox given a sweep interval of its own (sweepEvery, which a whole daemon takes from
+// overrides.outboxSweep) arms each sweep for that interval, and the sweep it fires finds a lapsed
+// lease as the daemon's would: a whole-daemon test that lets a lease lapse behind the daemon waits
+// that interval for the row, not outboxLease of the wall clock.
+func TestRunSweepsAtTheOutboxsOwnInterval(t *testing.T) {
+	t.Parallel()
+	const every = 5 * time.Second
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	clock := microClock()
+	client := &blockingDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}}
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger(), sweepEvery: every}
+	runner.now, runner.clock = clock.Now, clock
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runner.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	testwait.Eventually(t, "Run armed its sweep for the outbox's own interval", func() bool {
+		live, _ := clock.armed(every)
+		return live == 1
+	})
+	if _, armed := clock.armed(outboxLease); armed != 0 {
+		t.Fatalf("sweep timers armed for outboxLease = %d, want none: the outbox names an interval of its own", armed)
+	}
+
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), clock.Now()))
+	if _, err := pool.Exec(context.Background(), "update outbox set lease_token = 'a-runner-that-died', lease_until = $1", clock.Now().Add(every/2)); err != nil {
+		t.Fatalf("leave a lease nobody holds on the row: %v", err)
+	}
+	clock.advance(every)
+	if fired := clock.fire(every); fired != 1 {
+		t.Fatalf("sweep timers fired = %d, want the one Run armed", fired)
+	}
+	testwait.Eventually(t, "the row ran at the sweep after its lease lapsed", func() bool {
+		return client.count() == 1 && outboxRows(t, pool) == 0
+	})
+}
+
 // The daemon's stop joins its lanes: Run, its context cancelled while a lane holds a row blocked in
 // Dispatch, returns only once that lane has. The row's write failed on the stop, so the row is
 // retried with its lease cleared, on a settle the stop's context does not cut short; until the
