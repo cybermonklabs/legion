@@ -516,14 +516,14 @@ func TestClaimCauseTimesSurviveAReload(t *testing.T) {
 
 	want(put("that holds no cause"), "that holds no cause", time.Time{}, time.Time{})
 
-	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3)
-	c.LastStartFailure, c.LastStartFailureAt = "init container workspace-init failed: exit 1", at(9)
+	recordDeath(&c, "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3))
+	recordStartFailure(&c, "init container workspace-init failed: exit 1", at(9))
 	want(put("with both causes"), "with both causes", at(3), at(9))
 
 	c.LastDeathAt = at(21)
 	want(put("whose death was recorded again with the same text"), "whose death was recorded again with the same text", at(21), at(9))
 
-	c.LastStartFailure, c.LastStartFailureAt = "", time.Time{}
+	c.LastStartFailure, c.LastStartFailureAt, c.LastStartFailureDigest = "", time.Time{}, nil
 	want(put("whose start failure was dropped"), "whose start failure was dropped", at(21), time.Time{})
 
 	if _, err := store.Pool().Exec(ctx, `update claims set last_start_failure_at = $1 where token = $2`, at(30), string(c.Token)); err != nil {
@@ -533,19 +533,20 @@ func TestClaimCauseTimesSurviveAReload(t *testing.T) {
 }
 
 // After a rollback and a roll-forward, a row can hold a start failure beside an older failure's
-// time: the release before 20261124073512 names no last_start_failure_at, so a start failure it
-// drops at its agent's ready leaves that failure's time standing, and a failure it records later
-// is written beside the old time. This release drops the start failure, with its time, at every
-// ready (supervise's ready), so a start failure's time before last_ready is never the time of the
-// failure the row holds: the claim reads that start failure back with no time, and its death's
-// time, which no ready clears, as it stands (dispatch://INFRA-5645).
+// time: the release before 20261124073512 names neither last_start_failure_at nor its digest, so a
+// start failure it drops at its agent's ready leaves that failure's time and digest standing, and
+// a failure of the same text it records later is written beside them, where the digest matches.
+// This release drops the start failure, with its time, at every ready (supervise's ready), so a
+// start failure's time before last_ready is never the time of the failure the row holds: the claim
+// reads that start failure back with no time, and its death's time, which no ready clears, as it
+// stands (dispatch://INFRA-5645).
 func TestAStartFailureTimeBeforeTheReadyIsReadAsNone(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
 	c.State = supervise.StateLaunching
-	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 ended: OOMKilled", at(2)
-	c.LastStartFailure, c.LastStartFailureAt = "the launcher refused the start: the pod was not ready", at(5)
+	recordDeath(&c, "gone: pod legion-legion-209 ended: OOMKilled", at(2))
+	recordStartFailure(&c, "the launcher refused the start: the pod was not ready", at(5))
 	c.LastReady = at(10)
 	if err := store.PutClaim(ctx, c); err != nil {
 		t.Fatalf("put the rolled-back claim: %v", err)
@@ -577,8 +578,8 @@ func TestACauseAnEarlierReleaseWroteIsReadWithNoTime(t *testing.T) {
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
 	c.State = supervise.StateLaunching
-	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3)
-	c.LastStartFailure, c.LastStartFailureAt = "the launcher refused the start: the pod was not ready", at(5)
+	recordDeath(&c, "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3))
+	recordStartFailure(&c, "the launcher refused the start: the pod was not ready", at(5))
 	if got := putAndRead(t, store, c); !got.LastDeathAt.Equal(at(3)) || !got.LastStartFailureAt.Equal(at(5)) {
 		t.Fatalf("the claim read back its death at %v and its start failure at %v, want %v and %v",
 			got.LastDeathAt, got.LastStartFailureAt, at(3), at(5))
@@ -623,6 +624,16 @@ func putAndRead(t *testing.T, store *Store, c supervise.Claim) supervise.Claim {
 		t.Fatalf("put claim %s: %v", c.Token, err)
 	}
 	return onlyClaim(t, store)
+}
+
+// recordDeath and recordStartFailure set a claim's cause as the daemon's writers do: its text, its
+// time and the digest of its text together (supervise.Claim.LastDeathDigest).
+func recordDeath(c *supervise.Claim, cause string, at time.Time) {
+	c.LastDeathCause, c.LastDeathAt, c.LastDeathDigest = cause, at, supervise.CauseDigest(cause)
+}
+
+func recordStartFailure(c *supervise.Claim, cause string, at time.Time) {
+	c.LastStartFailure, c.LastStartFailureAt, c.LastStartFailureDigest = cause, at, supervise.CauseDigest(cause)
 }
 
 // What the daemon charged for the death of the process a claim records round-trips: a restart

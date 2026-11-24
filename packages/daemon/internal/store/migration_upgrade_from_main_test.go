@@ -156,8 +156,9 @@ import (
 // list's 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
 // dispatch://INFRA-5645's cause times (20261124073512) are applied after all of these and touch
-// no outbox_kind_check: they add claims.last_death_at and claims.last_start_failure_at, null on
-// every row they find, so they need no row of their own here.
+// no outbox_kind_check: they add claims.last_death_at, claims.last_start_failure_at and the
+// digest of the cause each dates, null on every row they find, so they need no row of their own
+// here.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

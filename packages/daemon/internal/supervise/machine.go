@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -367,23 +368,31 @@ type Claim struct {
 	// under the runtime's own bound (deathCause).
 	//
 	// LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside each, by
-	// its own clock, and zero where that cause is empty (dispatch://INFRA-5645). The rule: each is
-	// set and cleared only together with its cause, so a cause recorded again with the same text
-	// is given its new time, and whatever drops a cause drops its time. A reader tells an old
-	// cause from a current one by it, which the text alone does not say: a claim keeps its
-	// death's cause through every later ready. A cause an earlier release recorded has no time,
-	// since that release wrote none (the migration that added the columns backfilled nothing).
+	// its own clock, and zero where that cause is empty (dispatch://INFRA-5645). LastDeathDigest
+	// and LastStartFailureDigest are the digest of the cause text each time dates (CauseDigest),
+	// nil where that time is zero. The rule: each time and its digest are set and cleared only
+	// together with their cause, in the statement that writes the cause, so a cause recorded again
+	// with the same text is given its new time, and whatever drops a cause drops its time. A
+	// reader tells an old cause from a current one by the time, which the text alone does not
+	// say: a claim keeps its death's cause through every later ready. The digest is the store's
+	// and no surface serves it: a daemon of an earlier release rewrites a cause and names neither
+	// its time nor its digest, so the store reads a time back only while its digest is the digest
+	// of the cause the row holds (the claim store's scanClaim). A cause an earlier release
+	// recorded has no time, since that release wrote none (the migration that added the columns
+	// backfilled nothing).
 	//
 	// LastReady is when the agent last said it could be prompted. LastDeathAt dates the death: a
-	// LastDeathAt before LastReady is a death the running agent survived. All five are persisted:
+	// LastDeathAt before LastReady is a death the running agent survived. All seven are persisted:
 	// the operator reading a claim after a restart is the one who has to act on them, and the
 	// death's cause is what the record of that death names (endDied, EndedWork), which the
 	// restarted worker is told (RelaunchSentence, interruptedTask).
-	LastDeathCause     string
-	LastDeathAt        time.Time
-	LastStartFailure   string
-	LastStartFailureAt time.Time
-	LastReady          time.Time
+	LastDeathCause         string
+	LastDeathAt            time.Time
+	LastDeathDigest        []byte
+	LastStartFailure       string
+	LastStartFailureAt     time.Time
+	LastStartFailureDigest []byte
+	LastReady              time.Time
 	// BootTokenHash is the hash of the current launch's boot token, which the shim's hello and the
 	// agent's registration are resolved by. CapabilityHash is the hash of the secret the agent's
 	// registration was issued.
@@ -3090,7 +3099,8 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			m.relaunchAtProbe(l)
 			return errors.Join(err, m.persist(starting))
 		}
-		m.claim.LastStartFailure, m.claim.LastStartFailureAt = storetext.FarSideError(err.Error()), m.deps.Clock.Now()
+		refusal := storetext.FarSideError(err.Error())
+		m.claim.LastStartFailure, m.claim.LastStartFailureAt, m.claim.LastStartFailureDigest = refusal, m.deps.Clock.Now(), CauseDigest(refusal)
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, l.charged, l.exempt)
 		}
@@ -3691,7 +3701,8 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail, "podEnd", observation.PodEnd, "chargedBefore", m.claim.DeathCharged)
-	m.claim.LastDeathCause, m.claim.LastDeathAt = deathCause(observation), m.deps.Clock.Now()
+	cause := deathCause(observation)
+	m.claim.LastDeathCause, m.claim.LastDeathAt, m.claim.LastDeathDigest = cause, m.deps.Clock.Now(), CauseDigest(cause)
 	// The pod's own reason for this end is kept on the claim, so the failure the workflow is told
 	// of when this death fails it — here, or where the relaunch it raises finds the launch budget
 	// spent (relaunchAfterFailure) — names the cause the role never chose, and so does the boot's
@@ -3783,6 +3794,15 @@ func deathCause(observation runtime.Observation) string {
 		return string(observation.Kind)
 	}
 	return storetext.FarSideText(fmt.Sprintf("%s: %s", observation.Kind, observation.Detail))
+}
+
+// CauseDigest is the digest a cause's time is stored with (Claim.LastDeathDigest): the SHA-256 of
+// the cause's text as the claim holds it and the store writes it, after deathCause's bound and the
+// far side's text rules (storetext.FarSideText, storetext.FarSideError). The store reads a time
+// back only while its digest is CauseDigest of the cause the row holds.
+func CauseDigest(cause string) []byte {
+	sum := sha256.Sum256([]byte(cause))
+	return sum[:]
 }
 
 // AbandonedSession is a session a claim stopped resuming: the id and transcript path it recorded
@@ -4605,17 +4625,17 @@ func NormalizeClaim(c *Claim) (enrollment *Enrollment, changed bool) {
 }
 
 // DropStaleStartFailure clears the start failure of a claim stored ready, working or idle, with
-// its time, and answers whether it cleared one. That claim's agent said it was ready after the
-// start failed, which ended the failure (table.go's ready), so the sentence is a refusal its
-// running agent came after. A daemon of an earlier release keeps it past that ready, and several
-// projects' daemons share one database, so a daemon still on that release, or a rollback and a
-// roll-forward, writes such a row after migration 20261123212127 cleared the rest. The boot asks
-// this of every claim it reads, before it repairs any state (internal/daemon's restore).
+// its time and digest, and answers whether it cleared one. That claim's agent said it was ready
+// after the start failed, which ended the failure (table.go's ready), so the sentence is a refusal
+// its running agent came after. A daemon of an earlier release keeps it past that ready, and
+// several projects' daemons share one database, so a daemon still on that release, or a rollback
+// and a roll-forward, writes such a row after migration 20261123212127 cleared the rest. The boot
+// asks this of every claim it reads, before it repairs any state (internal/daemon's restore).
 func DropStaleStartFailure(c *Claim) bool {
 	if !SaidReady(c.State) || c.LastStartFailure == "" {
 		return false
 	}
-	c.LastStartFailure, c.LastStartFailureAt = "", time.Time{}
+	c.LastStartFailure, c.LastStartFailureAt, c.LastStartFailureDigest = "", time.Time{}, nil
 	return true
 }
 

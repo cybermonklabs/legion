@@ -6,8 +6,10 @@ body: |-
     `lastStartFailureAt` beside `lastStartFailure`, in RFC 3339, each absent when its cause is.
     The daemon writes each time with its cause, again for a cause whose text is the same as the
     one it replaces, and drops the start failure's time with the start failure when the agent is
-    ready. A migration adds the two columns to the `claims` table, so a restart keeps them; a cause
-    recorded before it carries no time. Daemon API contract 243: a caller below it is served
+    ready. A migration adds the two times to the `claims` table, each beside a digest of the cause
+    it dates, so a restart keeps them; a cause recorded before it carries no time, and so does a
+    cause a rolled-back daemon rewrote with other text, since a time is served only beside the
+    cause whose digest it was stored with. Daemon API contract 243: a caller below it is served
     neither key.
 time: 2026-11-24T08:00:01Z
 custom:

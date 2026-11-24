@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,7 +54,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
-	c.last_death_cause, c.last_death_at, c.last_start_failure, c.last_start_failure_at, c.last_ready,
+	c.last_death_cause, c.last_death_at, c.last_death_digest,
+	c.last_start_failure, c.last_start_failure_at, c.last_start_failure_digest, c.last_ready,
 	c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
@@ -433,11 +435,11 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
-		last_death_at, last_start_failure_at,
+		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -466,7 +468,9 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 			from unnest(claims.delivered_rows || excluded.delivered_rows) as delivered),
 		last_turn_start = excluded.last_turn_start, last_turn_end = excluded.last_turn_end,
 		last_death_cause = excluded.last_death_cause, last_death_at = excluded.last_death_at,
+		last_death_digest = excluded.last_death_digest,
 		last_start_failure = excluded.last_start_failure, last_start_failure_at = excluded.last_start_failure_at,
+		last_start_failure_digest = excluded.last_start_failure_digest,
 		last_ready = excluded.last_ready, turn_outcomes = excluded.turn_outcomes,
 		abandoned_session = excluded.abandoned_session,
 		update_round = excluded.update_round, update_reasons = excluded.update_reasons,
@@ -526,7 +530,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
-		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
+		instant(c.LastDeathAt), instant(c.LastStartFailureAt), c.LastDeathDigest, c.LastStartFailureDigest,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -901,6 +905,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		turnStart, turnEnd          *time.Time
 		lastReady                   *time.Time
 		deathAt, startFailureAt     *time.Time
+		deathDigest, failureDigest  []byte
 		outcomes                    []byte
 		abandoned                   []byte
 		endedWork                   []byte
@@ -926,7 +931,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd,
-		&c.LastDeathCause, &deathAt, &c.LastStartFailure, &startFailureAt, &lastReady, &outcomes, &abandoned, &endedWork,
+		&c.LastDeathCause, &deathAt, &deathDigest, &c.LastStartFailure, &startFailureAt, &failureDigest, &lastReady,
+		&outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -982,21 +988,20 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		}
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
-	// A cause's time is read only beside the cause (20261124073512_claim_cause_times): a daemon of
-	// the release before it drops a start failure at its agent's ready and leaves the column it
-	// never names, and that time dates no cause the claim holds. For the same reason a start
-	// failure's time before last_ready is read as none: this release drops the start failure, with
-	// its time, at every ready (supervise's ready), so such a time is an older failure's, which a
-	// failure that release recorded after a rollback was written beside. A death's time has no such
-	// test, since no ready clears a death (the migration's header says what that costs).
-	if c.LastDeathCause != "" {
-		c.LastDeathAt = orZero(deathAt)
-	}
-	if c.LastStartFailure != "" {
-		c.LastStartFailureAt = orZero(startFailureAt)
-		if c.LastStartFailureAt.Before(c.LastReady) {
-			c.LastStartFailureAt = time.Time{}
-		}
+	// A cause's time is read only while the digest stored with it is the digest of the cause the
+	// row holds (20261124073512_claim_cause_times, supervise.CauseDigest). A daemon of the release
+	// before it rewrites each cause, and drops a start failure at its agent's ready, naming neither
+	// the time nor the digest, so a time can stand beside a cause it does not date: such a cause is
+	// read with no time. One that release wrote again with the same text matches the digest and is
+	// read with the older time, which no read can tell from its own. A start failure's time before
+	// last_ready is read as none as well: this release drops the start failure, with its time, at
+	// every ready (supervise's ready), so a start failure beside a time before last_ready is one
+	// that release wrote after that ready, with the older failure's text. A death's time has no
+	// such test, since no ready clears a death (the migration's header says what a rollback leaves).
+	c.LastDeathAt, c.LastDeathDigest = causeTime(c.LastDeathCause, deathAt, deathDigest)
+	c.LastStartFailureAt, c.LastStartFailureDigest = causeTime(c.LastStartFailure, startFailureAt, failureDigest)
+	if c.LastStartFailureAt.Before(c.LastReady) {
+		c.LastStartFailureAt, c.LastStartFailureDigest = time.Time{}, nil
 	}
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
@@ -1095,4 +1100,14 @@ func orZero(t *time.Time) time.Time {
 		return time.Time{}
 	}
 	return *t
+}
+
+// causeTime is the time a row holds for cause, with the digest stored beside it, or the zero time
+// and no digest where the cause is empty, the row holds no time, or the digest stored with the
+// time is of another text (supervise.Claim.LastDeathDigest).
+func causeTime(cause string, at *time.Time, digest []byte) (time.Time, []byte) {
+	if cause == "" || at == nil || !bytes.Equal(digest, supervise.CauseDigest(cause)) {
+		return time.Time{}, nil
+	}
+	return *at, digest
 }
