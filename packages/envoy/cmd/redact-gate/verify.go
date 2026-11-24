@@ -240,6 +240,9 @@ func exitStatus(err error) (int, error) {
 	return exit.ExitCode(), nil
 }
 
+// envoyModule is the module a Go row's package named relative to packages/envoy (./...) is in.
+const envoyModule = "github.com/sjawhar/envoy"
+
 // goPackageName is the import path of a Go row's package: a package of another module go.work
 // uses, the daemon's, is named by it already.
 func goPackageName(pkg string) string {

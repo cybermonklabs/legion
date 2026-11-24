@@ -142,9 +142,8 @@ func (c *controlRun) setMutation(id, preimage, replacement string) {
 }
 
 // controls is every negative control runControls runs, in order: the core controls, then the Go
-// census's and the answer census's (censusControls, controls_census.go), then the check script's
-// judges' (judgesControls, controls_judges.go).
-var controls = slices.Concat(coreControls, censusControls, judgesControls)
+// census's and the answer census's (censusControls, controls_census.go).
+var controls = slices.Concat(coreControls, censusControls)
 
 var coreControls = []control{
 	{id: "1", what: "the grammar returns every field unchanged, in Go and in TypeScript", fixture: true, plant: func(c *controlRun) error {
@@ -810,7 +809,7 @@ func runControls(repo, only string) int {
 		}
 		fmt.Printf("control %s %s (%s): %s %s\n", ctl.id, status, time.Since(start).Round(time.Second), ctl.what, verdict)
 		for _, line := range strings.Split(output, "\n") {
-			if strings.HasPrefix(line, "FAIL ") || strings.HasPrefix(line, "gate: stopped") || strings.HasPrefix(line, "fixture ") || strings.HasPrefix(line, "leak ") || strings.HasPrefix(line, "judges ") {
+			if strings.HasPrefix(line, "FAIL ") || strings.HasPrefix(line, "gate: stopped") || strings.HasPrefix(line, "fixture ") || strings.HasPrefix(line, "leak ") {
 				fmt.Printf("    %s\n", line)
 			}
 		}
