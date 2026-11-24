@@ -984,12 +984,19 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
 	// A cause's time is read only beside the cause (20261124073512_claim_cause_times): a daemon of
 	// the release before it drops a start failure at its agent's ready and leaves the column it
-	// never names, and that time dates no cause the claim holds.
+	// never names, and that time dates no cause the claim holds. For the same reason a start
+	// failure's time before last_ready is read as none: this release drops the start failure, with
+	// its time, at every ready (supervise's ready), so such a time is an older failure's, which a
+	// failure that release recorded after a rollback was written beside. A death's time has no such
+	// test, since no ready clears a death (the migration's header says what that costs).
 	if c.LastDeathCause != "" {
 		c.LastDeathAt = orZero(deathAt)
 	}
 	if c.LastStartFailure != "" {
 		c.LastStartFailureAt = orZero(startFailureAt)
+		if c.LastStartFailureAt.Before(c.LastReady) {
+			c.LastStartFailureAt = time.Time{}
+		}
 	}
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)

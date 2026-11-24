@@ -4,9 +4,8 @@
 -- claims.last_death_at is supervise.Claim.LastDeathAt and claims.last_start_failure_at is
 -- supervise.Claim.LastStartFailureAt: the time, by the daemon's clock, at which it recorded the
 -- cause in claims.last_death_cause and in claims.last_start_failure, null where that cause is
--- empty. Each is written with its cause and at no other time: every death and every failed start
--- the daemon records writes it again, one whose text is the same as the cause it replaces
--- included, and the ready that drops the start failure (20261123212127) clears its time with it.
+-- empty. Each is set and cleared only together with its cause (supervise.Claim.LastDeathAt
+-- states the rule), so a cause recorded again with the same text is given its new time.
 -- A claim keeps its death's cause through every later ready, and a reader of the state took a
 -- cause of days before for the current one, since nothing in the row dated it; the claim view
 -- and the operator's claim view serve both times beside their causes (lastDeathAt and
@@ -21,10 +20,12 @@
 -- column of claims it reads and writes (the claim store's claimSelect and upsertClaim), so it
 -- boots with both columns standing, reads neither, and leaves each as it is on every write; the
 -- database needs nothing taken off for a rollback. What the rollback costs is the times
--- themselves: a death or a failed start that release records leaves standing the time this
--- release gave an earlier cause of that kind, so after the roll-forward such a claim reads its
--- cause beside a time that is not that cause's, until this release records the next cause of that
--- kind. A start failure that release drops at its agent's ready leaves its time beside no cause,
--- and this release reads a time beside an empty cause as none (the claim store's scanClaim).
+-- themselves. A death that release records leaves standing the time this release gave an earlier
+-- death, so after the roll-forward such a claim reads its death beside an older death's time until
+-- this release records the next death, and no read can tell. A start failure that release drops at
+-- its agent's ready leaves its time beside no cause, and one it records later is written beside
+-- that older time; this release reads a time beside an empty cause, and a start failure's time
+-- before last_ready, as none (the claim store's scanClaim), since it drops the start failure with
+-- its time at every ready.
 alter table claims add column last_death_at timestamptz;
 alter table claims add column last_start_failure_at timestamptz;
