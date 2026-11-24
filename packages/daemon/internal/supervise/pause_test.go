@@ -394,8 +394,10 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 // stop reads the durable charge with the locator rather than only the wake the restart forgot.
 // No RecordedDeath is posted here: the stop must preserve that launch on its own. A pause's stop
 // carries no deadline (internal/daemon's pause stop rows), so over a working claim it is held for
-// the turn, and the death's own report ends that hold (died, endHeld); the working rows with a
-// deadline of now end it at once instead (suspendAtTimeout), and the ready row is never held.
+// the turn, and the death's own report ends that hold (died, endHeld, letProcessGoFor). The other
+// rows reach the stop at once: the ready row is never held; the working row's deadline of now ends
+// the hold (suspendAtTimeout); and the row whose recovery read found the process gone is decided
+// where it arrives (holdSuspension, suspendOverADeadProcess, letProcessGoFor).
 func TestAPausesStopOfAClaimWhoseRecordSaysItsProcessDiedOwesItsLaunch(t *testing.T) {
 	for _, row := range []struct {
 		name     string
