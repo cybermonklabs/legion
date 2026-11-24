@@ -1946,6 +1946,10 @@ class SandboxTest(unittest.TestCase):
                  "a message another model served": (probe_of(model, answered[:2] + [dict(answered[2], model="claude-sonnet-5")]
                                                              + answered[3:]), "call 3"),
                  "a message that names no model": (probe_of(model, [dict(one, model=None) for one in answered]), "None"),
+                 "a model that is an object": (probe_of(model, [dict(one, model={"id": "claude-opus-5-5"}) for one in answered]),
+                                               "call 1"),
+                 "a model that is a list": (probe_of(model, [dict(one, model=["claude-opus-5-5"]) for one in answered]),
+                                            "call 1"),
                  "a call that is no object": (probe_of(model, answered[:9] + ["ok"]), "call 10")}
         for name, (probe, reason) in cases.items():
             with self.subTest(name=name):

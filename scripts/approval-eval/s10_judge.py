@@ -620,9 +620,9 @@ def preflight(context):
     its result kept under `preflights/<n>/`, every check of `sandbox_problems` made on it, and its
     calls of point 2's model held to `SANDBOX.probe_refusal`. A refusal, a failed check, a gateway
     key in its files, a Job that gave no readable result, or a call of the model that the gateway
-    did not answer with a message stops the run before the request has started, so no request
-    meets a sandbox that would refuse it or a gateway that would refuse its judges, and none is
-    spent as a deviation for it."""
+    did not answer with a message by the model stops the run before the request has started, so no
+    request meets a sandbox that would refuse it, and none is spent on a refusal the probe met; a
+    refusal that starts after a passed probe can still make that request's deviation."""
     stage = context.stage
     run = context.runner.preflight(context.pins.model)
     done = {name.split("/")[1] for name in stage.record["files"] if name.startswith(PREFLIGHT_DIRECTORY + "/")}

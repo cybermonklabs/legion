@@ -677,7 +677,7 @@ def probe_refusal(probe, model):
             return (f"call {index} of the preflight's {PROBE_CALLS} calls of {model} to the gateway was answered "
                     f"{call.get('status')} with no message{said}, so no request starts while the gateway refuses "
                     "the judges' model")
-        if call.get("model") not in served:
+        if not isinstance(call.get("model"), str) or call["model"] not in served:
             return (f"call {index} of the preflight's {PROBE_CALLS} calls of {model} to the gateway was answered by "
                     f"{call.get('model')!r}, so no request starts while the gateway serves the judges another model")
     if len(probe["calls"]) != PROBE_CALLS:
