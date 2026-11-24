@@ -27,10 +27,20 @@
 // retry below the middleware resends the first attempt's token. A redirect is never followed, in
 // a run or in a decision, so the token reaches the endpoint the caller named and no other
 // server: the client's redirect check fails the call, above the transport and its retry, with
-// an error naming the redirecting status and the host the Location points at, so the run ends
-// in FaultProviderError. The Detail of that fault carries more than the host: Go's own
-// *url.Error wraps the check's error and names the Location in full, query included, as the
-// endpoint sent it. A caller that logs a Detail logs whatever the endpoint it named put there.
+// an error naming the redirecting status, so the run ends in FaultProviderError.
+//
+// # What a Detail says of a failed call
+//
+// Whoever answers in the endpoint's place can echo the call's credential in its own words: in a
+// Location, in an error body and in an error message. So a call that got no answer is said as the
+// endpoint's address allows (redact.Cause): a transport failure's own text, the redirect's
+// status, or the failure's class, and never in net/http's words. Go parses a Location before the
+// redirect check and fails the call with net/http's error quoting one that does not parse, and
+// its *url.Error names a refused redirect's Location in full; neither prints, nor does the
+// Location's host. A run's answer the SDK refused is named by its status alone
+// (redact.StatusLine), since the SDK's error quotes the error body or its message. A decision's
+// refusal names its status and its words as the rule for remote text reads them, with the call's
+// credential redacted (redact.Answer).
 //
 // # The retry
 //

@@ -186,7 +186,13 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	resp, err := client.Do(post)
 	var answer redact.Answer
 	tooLarge := false
-	if err == nil {
+	if err != nil {
+		// net/http's error can quote the answering party's words, which can echo the bearer: a
+		// Location that does not parse, read before the redirect check, and a refused redirect's
+		// Location in full. So the call's failure is said as the endpoint's address allows
+		// (redact.Cause): a transport failure's own text, the redirect's status, or its class.
+		err = redact.Cause(err, req.Model.Endpoint.BaseURL)
+	} else {
 		answer, err = redact.ReadAnswer(resp, answerLimit)
 		_ = resp.Body.Close()
 		tooLarge = errors.Is(err, redact.ErrAnswerTooLarge)
