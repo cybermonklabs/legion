@@ -88,9 +88,11 @@ type coverageReader interface {
 //
 // The embedder's identity, place and model are Dispatch's words, or the words of whatever answers
 // in its place, which can echo the read's bearer or quote a URL with a credential in it. The gate
-// decides only whether each is null, and its record (coverageRecord) prints them, so the report it
-// answers holds each as the rule reads it with the read's record (redact.RemoteText, which
-// redact.Answer.Decode holds so), null where Dispatch named none.
+// decides only whether each is null, and its record (coverageRecord) prints them. So the body is
+// decoded once, with those three members held as the rule reads them with the read's record
+// (redact.RemoteText, which redact.Answer.Decode holds so) behind a pointer each, which is nil
+// for the null a deployment with no embedder answers; the report this answers holds each as that
+// reading (shownEmbedder), since the model type the gate's readers share holds a plain string.
 type dispatchCoverage struct{ a *api }
 
 func (c dispatchCoverage) readCoverage(ctx context.Context) (model.SearchCoverage, error) {
@@ -102,27 +104,30 @@ func (c dispatchCoverage) readCoverage(ctx context.Context) (model.SearchCoverag
 	case res.status != http.StatusOK:
 		return coverage, fmt.Errorf("GET %s: HTTP %d %s", searchCoveragePath, res.status, res.text())
 	}
-	var embedder struct {
-		Identity redact.RemoteText `json:"identity"`
-		Place    redact.RemoteText `json:"place"`
-		Model    redact.RemoteText `json:"model"`
+	var report struct {
+		Identity *redact.RemoteText         `json:"identity"`
+		Place    *redact.RemoteText         `json:"place"`
+		Model    *redact.RemoteText         `json:"model"`
+		Total    model.SearchCoverageCounts `json:"total"`
+		Kinds    model.SearchCoverageKinds  `json:"kinds"`
 	}
-	if err := res.answer.Decode(&coverage); err != nil {
+	if err := res.answer.Decode(&report); err != nil {
 		return coverage, fmt.Errorf("GET %s: %w", searchCoveragePath, err)
 	}
-	if err := res.answer.Decode(&embedder); err != nil {
-		return coverage, fmt.Errorf("GET %s: %w", searchCoveragePath, err)
-	}
-	coverage.Identity = readingOf(coverage.Identity, embedder.Identity)
-	coverage.Place = readingOf(coverage.Place, embedder.Place)
-	coverage.Model = readingOf(coverage.Model, embedder.Model)
+	coverage.Total, coverage.Kinds = report.Total, report.Kinds
+	coverage.Identity = shownEmbedder(report.Identity)
+	coverage.Place = shownEmbedder(report.Place)
+	coverage.Model = shownEmbedder(report.Model)
 	return coverage, nil
 }
 
-// readingOf is the rule's reading of held, a member of the coverage report held as Dispatch's
-// words, which member holds as it came: nil where member is, for a report that names none.
-func readingOf(member *string, held redact.RemoteText) *string {
-	if member == nil {
+// shownEmbedder is one member of the embedder the coverage report names as the model type holds
+// it (model.SearchCoverage.Identity, a *string): the rule's reading of Dispatch's words, and nil
+// where the report answered null, which is what a deployment with no embedder answers and the
+// one thing the gate decides on. The member's absence is the box pointer's own, read from the
+// body the member came in, rather than from a second decode of it into the model type.
+func shownEmbedder(held *redact.RemoteText) *string {
+	if held == nil {
 		return nil
 	}
 	shown := held.String()
