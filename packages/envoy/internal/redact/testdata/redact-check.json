@@ -12445,8 +12445,8 @@
       "capture": "mcpbridge.relative-endpoint/elsewhere",
       "mutation": {
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
-        "preimage": "endpoint.User == nil && endpoint.Scheme == base.Scheme && strings.EqualFold(endpoint.Host, base.Host)",
-        "replacement": "endpoint.User == nil"
+        "preimage": "endpoint.Scheme == base.Scheme && strings.EqualFold(endpoint.Host, base.Host)",
+        "replacement": "true"
       }
     },
     {
@@ -12459,8 +12459,8 @@
       "capture": "mcpbridge.relative-endpoint/elsewhere-absolute",
       "mutation": {
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
-        "preimage": "endpoint.User == nil && endpoint.Scheme == base.Scheme && strings.EqualFold(endpoint.Host, base.Host)",
-        "replacement": "endpoint.User == nil"
+        "preimage": "endpoint.Scheme == base.Scheme && strings.EqualFold(endpoint.Host, base.Host)",
+        "replacement": "true"
       }
     },
     {
