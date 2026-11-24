@@ -10,6 +10,9 @@
       "github.com/sjawhar/envoy/internal/redact.Error",
       "github.com/sjawhar/envoy/internal/redact.AnswerText",
       "github.com/sjawhar/envoy/internal/redact.Tokens",
+      "github.com/sjawhar/envoy/internal/redact.ShapedSHA",
+      "github.com/sjawhar/envoy/internal/redact.ShapedID",
+      "github.com/sjawhar/envoy/internal/redact.ShapedLogin",
       "github.com/sjawhar/envoy/oauth2call.Field",
       "github.com/sjawhar/envoy/oauth2call.Tokens",
       "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
@@ -4779,6 +4782,48 @@
       "package": "./internal/redact",
       "test": "TestAShortCredentialIsRedactedOnlyAsATokenOfItsOwn",
       "production": "redact.Tokens"
+    },
+    {
+      "id": "redact-shaped-sha",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestAFieldMeantToBeASHAPrintsOnlyAsOne",
+      "production": "github.com/sjawhar/envoy/internal/redact.ShapedSHA: a value that is not forty or sixty-four lowercase hex digits prints as the phrase naming its field",
+      "function": "github.com/sjawhar/envoy/internal/redact.ShapedSHA",
+      "capture": "redact.shaped-sha",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/shape.go",
+        "preimage": "return \"(the \" + field + \" is not a SHA)\"",
+        "replacement": "return s"
+      }
+    },
+    {
+      "id": "redact-shaped-id",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestAFieldMeantToBeAnIDPrintsOnlyAsOne",
+      "production": "github.com/sjawhar/envoy/internal/redact.ShapedID: a value that is not one to twenty decimal digits prints as the phrase naming its field",
+      "function": "github.com/sjawhar/envoy/internal/redact.ShapedID",
+      "capture": "redact.shaped-id",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/shape.go",
+        "preimage": "return \"(the \" + field + \" is not an id)\"",
+        "replacement": "return s"
+      }
+    },
+    {
+      "id": "redact-shaped-login",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestAFieldMeantToBeALoginPrintsOnlyAsOne",
+      "production": "github.com/sjawhar/envoy/internal/redact.ShapedLogin: a value that is not what a GitHub login can be prints as the phrase naming its field",
+      "function": "github.com/sjawhar/envoy/internal/redact.ShapedLogin",
+      "capture": "redact.shaped-login",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/shape.go",
+        "preimage": "return \"(the \" + field + \" is not a login)\"",
+        "replacement": "return s"
+      }
     },
     {
       "id": "launcher-exchange-echo",
