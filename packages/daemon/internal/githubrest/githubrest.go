@@ -181,9 +181,8 @@ var client = redirects.SameOrigin(http.DefaultClient)
 // names the budget spent, the REST API's core budget when GitHub names no other.
 //
 // A failure names the call shown, its caller's name for it (Client), wherever it would name
-// target: GitHub's answer's path (refusal) and the error of a request that got no answer
-// (oauth2call.Unanswered, which prints none of net/http's own words for it, nor x509's). With
-// shown "" each names target: the former as it is, the latter as envoy's redact.URL prints it.
+// target, and with shown "" names target: GitHub's answer as ShownPath names it, and a request
+// that got no answer as oauth2call.Unanswered names it.
 func (c Client) call(ctx context.Context, method, target, shown string, body []byte, into any) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
@@ -208,23 +207,12 @@ func (c Client) call(ctx context.Context, method, target, shown string, body []b
 		return "", response.Header, err
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return "", response.Header, c.refusal(method, request.URL, shown, response, read)
+		return "", response.Header, AnswerOf(method, ShownPath(c.API, request.URL, shown), response, read)
 	}
 	if into == nil {
 		return nextPage(response.Header.Get("Link")), response.Header, nil
 	}
 	return nextPage(response.Header.Get("Link")), response.Header, read.Decode(into)
-}
-
-// refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
-// caller returns (AnswerOf), naming the call shown, or, when shown is "", by the path under the
-// client's API (answerPath).
-func (c Client) refusal(method string, target *url.URL, shown string, response *http.Response, read oauth2call.Answer) *Answer {
-	path := shown
-	if path == "" {
-		path = c.answerPath(target)
-	}
-	return AnswerOf(method, path, response, read)
 }
 
 // AnswerOf is response, GitHub's answer other than 2xx to method at path, read as read
@@ -249,15 +237,16 @@ func AnswerOf(method, path string, response *http.Response, read oauth2call.Answ
 	return refused
 }
 
-// answerPath is the path an Answer names for target under the client's API (PathUnder).
-func (c Client) answerPath(target *url.URL) string { return PathUnder(c.API, target) }
-
-// PathUnder is the path an Answer names for target, its query left out: the path under api, or
-// GitHub's whole path for a URL outside it, such as a later page GitHub names under
-// /repositories/<id>/, which GetPages names by its number instead. Client names its answers'
-// paths so where its caller gives the call no name of its own (refusal), and appauth names those
-// its errors carry so under its own base URL (appauth.AnswerError).
-func PathUnder(api string, target *url.URL) string {
+// ShownPath is the path an Answer names a call to target by: shown, its caller's name for a call
+// whose path holds another party's words (Client), or, where shown is "", target's path under
+// api, its query left out, or GitHub's whole path for a URL outside api, such as a later page
+// GitHub names under /repositories/<id>/, which GetPages names by its number instead. Client
+// names its answers so, and appauth those its errors carry, under its own base URL
+// (appauth.AnswerError).
+func ShownPath(api string, target *url.URL, shown string) string {
+	if shown != "" {
+		return shown
+	}
 	if base, err := url.Parse(api); err == nil {
 		if rest, found := strings.CutPrefix(target.Path, base.Path); found && strings.HasPrefix(rest, "/") {
 			return rest
