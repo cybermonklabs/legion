@@ -7,11 +7,16 @@ body: |-
     `steps`, `owner` or `merges`, and a task that needs an element. It refuses a `parent` that names
     an id of the plan's document that no typed block of the version holds. It refuses a block under
     itself, and blocks under each other. It refuses a task that names both `owner` and `steps`, and
-    a plan in which a part can never start. The store migration `20261124023617_sub_owners` adds the
-    running kinds `parts` and `reported` and the column `plan_tasks.parts_conflicts`, with its way
-    back. A sub-owner's grant may give a version of its own issue's plan, and Legion takes from it
-    only changes to the parts of its task. `register_plan` still refuses `owner` and parts, so this
-    release starts no sub-owner.
+    a plan in which a part can never start. It refuses a need of a part of another task, so a part
+    needs only its sibling parts or a task of the top level. Each part starts from
+    its task's joined work, whatever else it needs. The store migration `20261124023617_sub_owners`
+    adds the running kinds `parts` and `reported` and the column `plan_tasks.parts_conflicts`, with
+    its way back. A sub-owner's grant may give a version of its own issue's plan, and Legion takes
+    from it only changes to the parts of its task. Legion refuses a sub-owner's version that changes
+    whether a task the sub-owner does not write merges. It takes a sub-owner's version that adds,
+    changes or removes a part only while its task stands at its parts or is stopped. It refuses that
+    version while the task is reported, or stands at its retro or its merge. `register_plan` still
+    refuses `owner` and parts, so this release starts no sub-owner.
 time: 2026-11-24T08:32:01.968046949Z
 custom:
     Issue: pr5169
