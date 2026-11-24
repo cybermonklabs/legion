@@ -395,6 +395,7 @@ old_cli_case() {
   mkdir -p "$old_dir/work"
   output="$(
     unset AIRLOCK_OLD_CLI_TAG
+    # shellcheck disable=SC2030 # the stand-in gh is first on PATH for this run alone
     export PATH="$old_dir/bin:$PATH" OLD_CLI_TARBALL="$old_dir/$tarball.tar.gz" OLD_CLI_STATUS=ahead
     for setting in "$@"; do export "${setting?}"; done
     WORK_DIR="$old_dir/work"
@@ -463,6 +464,77 @@ label="the compare's answer in that file does name the marker"; check grep -qF "
 old_cli_case good OLD_CLI_STATUS=diverged
 label="fetch_old_cli refuses a release GitHub compares as diverged, and says so"
 check test "${output#*"as 'diverged', not 'ahead'"}" != "$output"
+
+# --- k6's and k7's fetches of sjawhar/dotfiles and k7's gh step, read out of airlock-check.sh and
+# run on their own with a stand-in gh first on PATH. Whatever answers gh in GitHub's place holds
+# gh's token and writes gh's error and its answer, so each puts the marker in what gh says, and
+# what the check prints (the function's stdout and stderr, or the line the gh step writes into the
+# file the check observes and judges) holds no run of eight of its characters. Twins: the kept file
+# holds the marker. Control: a gh whose last line ends (HTTP 401) gives the step `gh=HTTP 401`,
+# which k7's judge reads as GitHub's refusal.
+fetch_dir="$work/dotfiles-fetch"
+mkdir -p "$fetch_dir/bin"
+cat >"$fetch_dir/bin/gh" <<'GH'
+#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >>"$FETCH_CALLS"
+printf 'gh: %s (HTTP %s)\n' "$FETCH_SAYS" "${FETCH_STATUS:-502}" >&2
+exit 1
+GH
+chmod +x "$fetch_dir/bin/gh"
+for function in k6_azure k7_dotfiles; do
+  definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/airlock-check.sh")"
+  [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no %s()\n' "$function"; exit 1; }
+  eval "$definition"
+done
+fetch_case() { # <function> <kept file under WORK_DIR>
+  rm -rf "$fetch_dir/work" && mkdir -p "$fetch_dir/work"
+  : >"$fetch_dir/calls"
+  status=0
+  # shellcheck disable=SC2034,SC2031 # WORK_DIR is read by the function, eval'd above; PATH is the stand-in's for this one call
+  output="$(WORK_DIR="$fetch_dir/work" FETCH_CALLS="$fetch_dir/calls" FETCH_SAYS="$old_marker" PATH="$fetch_dir/bin:$PATH" "$1" 2>&1)" || status=$?
+  label="$1 asks the stand-in gh"; check grep -q '^gh api repos/sjawhar/dotfiles/' "$fetch_dir/calls"
+  label="$1 refuses the failed fetch"; check test "$status" -ne 0
+  label="$1 prints no run of the marker gh said"; check prints_no_marker "$output"
+  label="$1's refusal names the file that keeps gh's words"; check test "${output#*"gh's own words are in $fetch_dir/work/$2"}" != "$output"
+  label="twin: that file holds the marker"; check grep -qF "$old_marker" "$fetch_dir/work/$2"
+}
+fetch_case k6_azure k6/az-broker.gh-err
+fetch_case k7_dotfiles k7/dotfiles/fetch.gh-err
+
+# k7_steps writes the step; the step is run alone, between its comment and pulumi's.
+step_dir="$work/k7-gh-step"
+mkdir -p "$step_dir/bin" "$step_dir/k7"
+cat >"$step_dir/bin/secret-run" <<'RUN'
+#!/usr/bin/env bash
+while [[ $# -gt 0 && "$1" != -- ]]; do shift; done
+shift
+GITHUB_ADMIN_PAT=fake-admin-placeholder exec "$@"
+RUN
+chmod +x "$step_dir/bin/secret-run"
+definition="$(sed -n '/^k7_steps() {/,/^}/p' "$script_dir/airlock-check.sh")"
+[[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no k7_steps()\n'; exit 1; }
+eval "$definition"
+# shellcheck disable=SC2034 # read by k7_steps, eval'd above
+(
+  WORK_DIR="$step_dir" SCRIPT_DIR="$script_dir" K7_GH_DIR="$fetch_dir/bin" AIRLOCK_S_URL=https://s.test \
+    AIRLOCK_BOTO3_PYTHON=python3 STANDS_BIN=/bin/true K7_DOTFILES="$step_dir/dotfiles" k7_steps
+)
+sed -n '/^# gh api under secret-run for GITHUB_ADMIN_PAT/,/^# pulumi preview/p' "$step_dir/k7/steps.sh" >"$step_dir/gh-step.sh"
+label="k7_steps writes the gh step"; check grep -q 'exec gh api user' "$step_dir/gh-step.sh"
+gh_step() { # [FETCH_STATUS]
+  : >"$step_dir/out" && : >"$fetch_dir/calls"
+  rm -f "$step_dir/k7/gh-step.out"
+  # The step's own lines, with say writing where the generated script's does.
+  # shellcheck disable=SC2016,SC2031 # expanded in the step's bash; PATH is the stand-ins' for this one call
+  FETCH_CALLS="$fetch_dir/calls" FETCH_SAYS="$old_marker" FETCH_STATUS="${1:-401}" PATH="$step_dir/bin:$fetch_dir/bin:$PATH" \
+    bash -c 'out=$1; say() { printf "%s\n" "$1" >>"$out"; }; source "$2"' bash "$step_dir/out" "$step_dir/gh-step.sh" >/dev/null 2>&1 || true
+  output="$(cat "$step_dir/out")"
+}
+gh_step 401
+label="k7's gh step asks the stand-in gh"; check grep -q '^gh api user' "$fetch_dir/calls"
+label="k7's gh step writes no run of the marker gh said where the check reads it"; check prints_no_marker "$output"
+label="control: it writes gh's HTTP status, which k7's judge reads as a refusal"; check test "$output" = "gh=HTTP 401"
+label="twin: gh-step.out keeps gh's words, the marker among them"; check grep -qF "$old_marker" "$step_dir/k7/gh-step.out"
 
 if [[ "$failed" -ne 0 ]]; then
   printf 'airlock-check inputs: failed (%s checks)\n' "$failed"
