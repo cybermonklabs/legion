@@ -1479,13 +1479,22 @@ test("after a first read that failed the row still draws the link's chips", asyn
   expect(rowControls()).toEqual(["Filter · 1", "Remove Author: octocat filter"]);
 });
 
-/** Each option of the panel's `facet`, by the name it is read out as (`listOptionNames`). Escape
- *  closes the list again, so the next read opens its own. */
-async function facetOptionNames(user: UserEvent, facet: string): Promise<string[]> {
-  await user.click(await panelFacet(user, facet));
-  const names = listOptionNames(screen.getByRole("listbox", { name: `${facet} options` }));
+/** Each option of the list `trigger` opens, named `listbox`, by the name it is read out as
+ *  (`listOptionNames`). Escape closes the list again, so the next read opens its own. */
+async function openedOptionNames(
+  user: UserEvent,
+  trigger: HTMLElement,
+  listbox: string
+): Promise<string[]> {
+  await user.click(trigger);
+  const names = listOptionNames(screen.getByRole("listbox", { name: listbox }));
   await user.keyboard("{Escape}");
   return names;
+}
+
+/** Each option of the panel's `facet` (`openedOptionNames`). */
+async function facetOptionNames(user: UserEvent, facet: string): Promise<string[]> {
+  return openedOptionNames(user, await panelFacet(user, facet), `${facet} options`);
 }
 
 // INFRA-3135, round 25 (the tester's), by the architect's ruling of 2026-11-24 08:07Z: a count
@@ -1635,13 +1644,13 @@ test("while a pick's read is out the Filter panel's other facets draw no count b
   expect(await facetOptionNames(user, "Priority")).toEqual(["P1, 2 PRs", "P0, 1 PR"]);
 });
 
-/** Each value a List column's header filter offers, by the name it is read out as
- *  (`listOptionNames`). Escape closes the list again, so the next read opens its own. */
-async function columnOptionNames(user: UserEvent, column: string): Promise<string[]> {
-  await user.click(screen.getByRole("button", { name: new RegExp(`^Filter ${column}`) }));
-  const names = listOptionNames(screen.getByRole("listbox", { name: `${column} options` }));
-  await user.keyboard("{Escape}");
-  return names;
+/** Each value a List column's header filter offers (`openedOptionNames`). */
+function columnOptionNames(user: UserEvent, column: string): Promise<string[]> {
+  return openedOptionNames(
+    user,
+    screen.getByRole("button", { name: new RegExp(`^Filter ${column}`) }),
+    `${column} options`
+  );
 }
 
 // The same for the List view's column filters, which count each value from the same answer: while
@@ -1680,15 +1689,13 @@ test("while a pick's read is out a List column's filter draws no count beside a 
   expect(await columnOptionNames(user, "Author")).toEqual(["hubot, 2 PRs", "octocat, 1 PR"]);
 });
 
-/** Each agent the Own colour list offers, by the name it is read out as (`listOptionNames`).
- *  Escape closes the list again, so the next read opens its own. */
-async function ownColourNames(user: UserEvent): Promise<string[]> {
-  await user.click(screen.getByRole("button", { name: /^Own colour and lane: / }));
-  const names = listOptionNames(
-    screen.getByRole("listbox", { name: "Own colour and lane options" })
+/** Each agent the Own colour list offers (`openedOptionNames`). */
+function ownColourNames(user: UserEvent): Promise<string[]> {
+  return openedOptionNames(
+    user,
+    screen.getByRole("button", { name: /^Own colour and lane: / }),
+    "Own colour and lane options"
   );
-  await user.keyboard("{Escape}");
-  return names;
 }
 
 // The same, for the Own colour list, which counts each agent from the same answer: while a new

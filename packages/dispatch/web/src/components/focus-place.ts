@@ -484,8 +484,7 @@ type Shown = "any" | "cut";
  *  So every engine lands a control the same way. `clips` is the caller's read of which boxes clip
  *  (`clippingBoxes`): a focus changes no box's overflow. Answers whether it took the focus. */
 function land(element: HTMLElement, clips: Map<Element, boolean>, shown: Shown): boolean {
-  element.focus({ preventScroll: true });
-  if (document.activeElement !== element) return false;
+  if (!focusNoScroll(element)) return false;
   showWhole(element, clips, shown);
   queueMicrotask(() => {
     if (document.activeElement === element) showWhole(element, clips, shown);
@@ -1318,9 +1317,9 @@ export function controlsLikeRow(row: Element, control: Element, from: Element): 
   return alike ? [same, first] : [first];
 }
 
-/** Focuses `target` without a scroll: a region's own stop (`focusOwnStop`), and the control the
- *  Agents page hands a pin's moved focus to (`controlsLikeRow`). Answers whether it took the
- *  focus. */
+/** Focuses `target` without a scroll: a hand-off's landing (`land`), a region's own stop
+ *  (`focusOwnStop`), and the control the Agents page hands a pin's moved focus to
+ *  (`controlsLikeRow`). Answers whether it took the focus. */
 export function focusNoScroll(target: HTMLElement): boolean {
   target.focus({ preventScroll: true });
   return document.activeElement === target;

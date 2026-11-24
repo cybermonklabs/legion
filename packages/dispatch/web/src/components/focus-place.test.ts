@@ -1422,37 +1422,36 @@ test("a double click on a control the press's write holds, in a root inside the 
 // left the page has no dialog or main content around it to say its region, and the page's main
 // content behind the dialog is not where the reader was.
 test("an armed press whose commit takes away its container in a dialog, with the fallback out of sight, lands on the dialog's own stop, not the page's main content", async () => {
-  const main = mainOf();
-  main.setAttribute("aria-label", "Main content");
-  const dialog = document.createElement("div");
-  dialog.setAttribute("role", "dialog");
-  dialog.setAttribute("aria-label", "Search bar");
-  document.body.append(dialog);
-  try {
-    // The fallback stands 500 px above the window's top, out of the reader's sight.
-    const trigger = windowSelectIn(dialog, -500);
-    const fallback = () => trigger;
-    const line = armedLineIn(dialog, { fallback, labels: ["Mark all read"] });
+  withMain(() => {
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-label", "Search bar");
+    document.body.append(dialog);
     try {
-      clickPress(line.button("Mark all read"));
-      const recorded = recordMoves();
+      // The fallback stands 500 px above the window's top, out of the reader's sight.
+      const trigger = windowSelectIn(dialog, -500);
+      const fallback = () => trigger;
+      const line = armedLineIn(dialog, { fallback, labels: ["Mark all read"] });
       try {
-        line.redraw({ fallback, labels: [], shown: false });
+        clickPress(line.button("Mark all read"));
+        const recorded = recordMoves();
+        try {
+          line.redraw({ fallback, labels: [], shown: false });
+        } finally {
+          recorded.restore();
+        }
+        expect({ landed: landing(), moves: recorded.moves }).toEqual({
+          landed: "Search bar",
+          moves: [{ move: "focus", of: "Search bar", options: { preventScroll: true } }],
+        });
       } finally {
-        recorded.restore();
+        line.remove();
       }
-      expect({ landed: landing(), moves: recorded.moves }).toEqual({
-        landed: "Search bar",
-        moves: [{ move: "focus", of: "Search bar", options: { preventScroll: true } }],
-      });
     } finally {
-      line.remove();
+      disarm();
+      dialog.remove();
     }
-  } finally {
-    disarm();
-    dialog.remove();
-    main.remove();
-  }
+  });
 });
 
 /** The two Enters a text field can be sent: the reader's own, and the one that ends an input
