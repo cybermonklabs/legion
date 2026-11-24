@@ -2896,12 +2896,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	if mergedAlready {
 		return e.closeMergedTelling(ctx, tx, s, pr)
 	}
-	// The issue leaves the workflow where its tasks put it in done (putIssue): the move of the
-	// one task of an issue to done, and of the last task of a plan of several, whose others are
-	// each done. A task that does not merge is done at its last step while another task waits or
-	// runs, and the issue goes on: each task whose needs that move made done starts (startReady).
+	// The issue leaves the workflow where its tasks put it in done (putIssue), through the one place
+	// of that leave (leaveByTasks): the move of the one task of an issue to done, and of the last
+	// task of a plan of several, whose others are each done. A task that does not merge is done at
+	// its last step while another task waits or runs, and the issue goes on: each task whose needs
+	// that move made done starts (startReady).
 	if written.Phase == phase.Done {
-		return e.leave(ctx, tx, written, "done")
+		return e.leaveByTasks(ctx, tx, written)
 	}
 	if w.State == record.TaskDone {
 		_, err := e.startReady(ctx, tx, written)

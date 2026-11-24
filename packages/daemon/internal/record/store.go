@@ -791,14 +791,41 @@ func (s *Postgres) PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task
 }
 
 func (s *Postgres) MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
-	merges, err := mergeTasks(ctx, tx, []string{issue})
+	plans, err := mergePlans(ctx, tx, []string{issue})
 	if err != nil {
 		return nil, fmt.Errorf("read the merge pull request of %s: %w", issue, err)
 	}
-	if merges[issue].none {
+	task, ok := issueMergeTask(plans[issue])
+	if !ok {
 		return nil, nil
 	}
-	return s.PullRequestOfTask(ctx, tx, issue, merges[issue].task)
+	return s.PullRequestOfTask(ctx, tx, issue, task)
+}
+
+// MergePullRequests is the pull request of each task of issue that has a merge, done or to come
+// (StoredPlan.TasksThatMerge of its plan at its generation), in task id order, the first of each
+// task's rows by branch as PullRequestOfTask reads it; a task with no pull request has none here.
+// An issue with no plan rows at its generation has its one row, of the task "".
+func (s *Postgres) MergePullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error) {
+	plans, err := mergePlans(ctx, tx, []string{issue})
+	if err != nil {
+		return nil, fmt.Errorf("read the merge pull requests of %s: %w", issue, err)
+	}
+	tasks := []string{""}
+	if stored := plans[issue]; stored != nil {
+		tasks = stored.TasksThatMerge()
+	}
+	prs, err := s.TaskPullRequests(ctx, tx, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the merge pull requests of %s: %w", issue, err)
+	}
+	var merges []PullRequest
+	for _, task := range tasks {
+		if at := slices.IndexFunc(prs, func(pr PullRequest) bool { return pr.Task == task }); at >= 0 {
+			merges = append(merges, prs[at])
+		}
+	}
+	return merges, nil
 }
 
 // TaskPullRequests reads every row of issue by its branch and answers them in task order, the
@@ -818,48 +845,52 @@ func (s *Postgres) TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string
 	return prs, nil
 }
 
-// mergeOf is the task of an issue's merge: task, the task that merges of its plan at its
-// generation (StoredPlan.MergingTask), and "" for an issue with no plan rows there, whose pull
-// request is of no task; none where its plan holds no task that merges, so it has no merge pull
-// request.
-type mergeOf struct {
-	task string
-	none bool
+// issueMergeTask is the task whose pull request is the merge of an issue whose plan at its
+// generation is stored: the one rule MergePullRequest and PullRequestsOf read by. An issue with no
+// plan rows (stored nil) has the task "", whose row is the issue's own. For a plan it is the first
+// task that has a merge, done or to come (StoredPlan.TasksThatMerge), and is not done, in task id
+// order: the merge still to come. Where each of them is done it is the last of them, whose merge
+// was the issue's last. Where no task of the plan has a merge, as where each task left the
+// workflow before it was done, there is none (false).
+func issueMergeTask(stored *StoredPlan) (string, bool) {
+	if stored == nil {
+		return "", true
+	}
+	tasks := stored.TasksThatMerge()
+	for _, id := range tasks {
+		if row, _ := stored.TaskOf(id); row.State != TaskDone {
+			return id, true
+		}
+	}
+	if len(tasks) == 0 {
+		return "", false
+	}
+	return tasks[len(tasks)-1], true
 }
 
-// mergeTasks is the task of the merge of each of issues (mergeOf), read for all of them in one
-// query, by the one rule of the task that merges (StoredPlan.MergingTask): the rule
-// MergePullRequest and PullRequestsOf read by. An issue with no plan rows at its generation has no
-// entry, whose zero value is its merge's.
-func mergeTasks(ctx context.Context, tx pgx.Tx, issues []string) (map[string]mergeOf, error) {
-	rows, err := tx.Query(ctx, `select t.issue, t.task, t.needs from plan_tasks t
-		join issues i on i.key = t.issue and t.generation = i.generation
-		where t.issue = any($1) order by t.issue, t.task`, issues)
+// mergePlans is the plan of each of issues at the issue's generation, by key, as the rows of its
+// tasks give it (StoredPlan.Tasks alone), read for all of them in one query: what the merges of an
+// issue are read from (issueMergeTask, StoredPlan.TasksThatMerge). An issue with no plan rows at
+// its generation has no entry.
+func mergePlans(ctx context.Context, tx pgx.Tx, issues []string) (map[string]*StoredPlan, error) {
+	rows, err := tx.Query(ctx, `select `+planTaskColumns+` from plan_tasks
+		join issues on issues.key = plan_tasks.issue and issues.generation = plan_tasks.generation
+		where plan_tasks.issue = any($1) order by plan_tasks.issue, plan_tasks.task`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("read the tasks of the plans of %v: %w", issues, err)
 	}
-	defer rows.Close()
-	plans := map[string]*StoredPlan{}
-	for rows.Next() {
-		var issue string
-		var task PlanTask
-		if err := rows.Scan(&issue, &task.Task, &task.Needs); err != nil {
-			return nil, fmt.Errorf("read the tasks of the plans of %v: %w", issues, err)
-		}
-		if plans[issue] == nil {
-			plans[issue] = &StoredPlan{}
-		}
-		plans[issue].Tasks = append(plans[issue].Tasks, task)
-	}
-	if err := rows.Err(); err != nil {
+	tasks, err := scanPlanTasks(rows)
+	if err != nil {
 		return nil, fmt.Errorf("read the tasks of the plans of %v: %w", issues, err)
 	}
-	merges := make(map[string]mergeOf, len(plans))
-	for issue, stored := range plans {
-		task, ok := stored.MergingTask()
-		merges[issue] = mergeOf{task: task, none: !ok}
+	plans := map[string]*StoredPlan{}
+	for _, task := range tasks {
+		if plans[task.Issue] == nil {
+			plans[task.Issue] = &StoredPlan{}
+		}
+		plans[task.Issue].Tasks = append(plans[task.Issue].Tasks, task)
 	}
-	return merges, nil
+	return plans, nil
 }
 
 // The three reads below key the pull_requests table on its repository — PullRequestByBranch,
@@ -975,11 +1006,11 @@ func collectPullRequests(rows pgx.Rows, describe string) ([]PullRequest, error) 
 // PullRequestsOf is the pull request of each of issues' merge, by issue key, in two reads whatever
 // the number of issues: a caller that must name the pull request of every issue of a tree makes no
 // read per issue (admit's tellStalledTrees). The pull request of an issue's merge is its row of
-// the task that merges (mergeTasks, the rule MergePullRequest reads by), the first of them by
-// branch as MergePullRequest reads it, so an issue whose tasks each hold a pull request is named by
-// the one of its merge. An issue the record holds no such pull request for has no entry, nor does
-// one whose plan holds no task that merges (mergeOf), and no
-// issues at all reads nothing — the queries are not made.
+// the task issueMergeTask names, the rule MergePullRequest reads by, the first of that task's rows
+// by branch as MergePullRequest reads it, so an issue whose tasks each hold a pull request is named
+// by the one of its merge. An issue the record holds no such pull request for has no entry, nor
+// does one whose plan holds no task that has a merge, and no issues at all reads nothing — the
+// queries are not made.
 //
 // It reads the state the record holds, whichever it is. OpenPullRequests, the other read of
 // several of this table, answers the open ones alone and could not serve this caller: a tree
@@ -989,7 +1020,7 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 	if len(issues) == 0 {
 		return nil, nil
 	}
-	merges, err := mergeTasks(ctx, tx, issues)
+	plans, err := mergePlans(ctx, tx, issues)
 	if err != nil {
 		return nil, err
 	}
@@ -1004,7 +1035,10 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 		if err != nil {
 			return nil, fmt.Errorf("read the pull requests of %v: %w", issues, err)
 		}
-		if _, named := requests[pr.Issue]; !named && !merges[pr.Issue].none && pr.Task == merges[pr.Issue].task {
+		if _, named := requests[pr.Issue]; named {
+			continue
+		}
+		if task, ok := issueMergeTask(plans[pr.Issue]); ok && pr.Task == task {
 			requests[pr.Issue] = *pr
 		}
 	}
@@ -3269,6 +3303,24 @@ func (s *Postgres) TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string
 		return false, fmt.Errorf("read whether the branch row of task %s of %s at generation %d is still queued: %w", task, issue, generation, err)
 	}
 	return queued, nil
+}
+
+// QueuedPullRequestCloses is the number of each pull request that a row of the outbox closing pull
+// requests of issue at generation (TaskPullRequestsClose) names, queued and not yet run, in number
+// order: the pull requests a merge, a version or a run started again already closes. None where no
+// such row is queued.
+func (s *Postgres) QueuedPullRequestCloses(ctx context.Context, tx pgx.Tx, issue string, generation uint64) ([]int, error) {
+	rows, err := tx.Query(ctx, `select distinct number::int from outbox, jsonb_array_elements_text(payload->'numbers') as number
+		where issue = $1 and kind = $2 and (payload->>'generation')::bigint = $3 order by 1`,
+		issue, string(OutboxKindTaskPullRequestsClose), int64(generation))
+	if err != nil {
+		return nil, fmt.Errorf("read the queued closes of the pull requests of %s at generation %d: %w", issue, generation, err)
+	}
+	numbers, err := pgx.CollectRows(rows, pgx.RowTo[int])
+	if err != nil {
+		return nil, fmt.Errorf("read the queued closes of the pull requests of %s at generation %d: %w", issue, generation, err)
+	}
+	return numbers, nil
 }
 
 // StepStopQueued says whether the outbox still holds a supervise row of issue whose op is

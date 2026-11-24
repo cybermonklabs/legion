@@ -151,9 +151,11 @@ type ReturnCounts struct {
 // held, "" for one whose agent's claim failed and for every task that is not held. StepWait and
 // StepWaitSince are what the step at a running task's place waits for and since when, nil where it
 // waits for nothing (SetStepWait). Branch is the GitHub branch the task works on, "" until its
-// first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose merge
-// GitHub refused as a conflict, into the branch the join of its needs is made on: its join branch
-// where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). JoinUnmerged says
+// first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose work
+// GitHub refused to merge as a conflict, into the branch the join of its needs is made on: its join
+// branch where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). The work of a
+// need that merged is the default branch's, so a conflict in the merge of the default branch names
+// each need whose work the default branch holds (StoredPlan.StartsFrom). JoinUnmerged says
 // GitHub refused as a conflict the merge of its join branch into its branch, which the task's own
 // work there makes at a start again (SetJoinUnmerged). PartsConflicts is the id of each part of a
 // task with a sub-owner whose join into the task's branch GitHub refused as a conflict. Nothing
@@ -426,18 +428,14 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 	return p.Tasks[0], nil
 }
 
-// MergingTask is the task of p whose work is the issue's that merges: the one task no task needs
-// (plan.Sinks), whatever the plan's count of tasks, and none (false) where the plan holds no task,
-// or more than one task no task needs, which plan.Supported refuses. It is the one rule every
-// reader of the task that merges reads by: the walk of each task (its retro and merge), the base of
-// a task's pull request (BaseOf) and the read of an issue's merge pull request (MergePullRequest).
-func (p *StoredPlan) MergingTask() (string, bool) {
-	tasks := make([]plan.Task, len(p.Tasks))
-	for i, row := range p.Tasks {
-		tasks[i] = plan.Task{ID: row.Task, Needs: row.Needs}
-	}
-	if sinks := plan.Sinks(tasks); len(sinks) == 1 {
-		return sinks[0], true
+// OnlyTaskThatMerges is the one task of p that has a merge, done or to come (TasksThatMerge), and
+// none (false) where p holds no such task or more than one. It is what a reader takes for a fact
+// that no row ties to a task, whose work is the issue's own: a completion, a move back or a read
+// of a row raised before the plan, and a promotion whose role works no step. Where several tasks
+// merge, such a fact is of no one task, so it moves none.
+func (p *StoredPlan) OnlyTaskThatMerges() (string, bool) {
+	if tasks := p.TasksThatMerge(); len(tasks) == 1 {
+		return tasks[0], true
 	}
 	return "", false
 }
@@ -447,12 +445,18 @@ func (p *StoredPlan) MergingTask() (string, bool) {
 // needs, its part_of and its merges. A left task, whose issue left the workflow before the task
 // was done, neither merges nor needs: a need that only it names keeps no task from merging. It
 // answers which tasks will merge under the plan p is, so a version that changes a task's needs or
-// its merges changes it; whether a task's work merged already is WorkMerged's. plan.Merging has
-// this one caller.
+// its merges changes it; whether a task's work merged already is WorkMerged's.
 func (p StoredPlan) Merging() []string {
+	return p.mergeRule(false)
+}
+
+// mergeRule is the rule of the plan (plan.Merging), its one caller, over each task of p as its row
+// gives its id, its needs, its part_of and its merges: over each task that is not left (Merging), or
+// over every task where withLeft says so (TasksThatMerge).
+func (p StoredPlan) mergeRule(withLeft bool) []string {
 	tasks := make([]plan.Task, 0, len(p.Tasks))
 	for _, row := range p.Tasks {
-		if row.State == TaskLeft {
+		if row.State == TaskLeft && !withLeft {
 			continue
 		}
 		tasks = append(tasks, plan.Task{ID: row.Task, Needs: row.Needs, PartOf: row.PartOf, Merges: row.Merges})
@@ -481,9 +485,17 @@ func (t PlanTask) workMerged() bool {
 }
 
 // TasksThatMerge is the ids of the tasks of p that have a merge, done or to come, in id order: each
-// task that will merge (Merging) and each task whose work merged (WorkMerged).
+// task that the rule of the plan merges over every task of p, a left task as its row stood before
+// its leave, and each task whose work merged (WorkMerged). A running generation holds no left task,
+// so there it is each task that will merge (Merging) and each whose work merged. A generation whose
+// issue left the workflow keeps each task its leave wrote left where it stood, with its needs and
+// its merges, since one leave writes every task of the generation at once and no later leave
+// writes them again: such a task's merge can still land, or have landed, as a person's merge of its
+// pull request or a merge queue's, before a later leave sets the issue done. It is the one set of
+// the merges of a run: the merge pull requests of an issue (Store.MergePullRequests), its merge
+// (Store.MergePullRequest) and the one task that merges (OnlyTaskThatMerges) read it.
 func (p StoredPlan) TasksThatMerge() []string {
-	tasks := p.Merging()
+	tasks := p.mergeRule(true)
 	for _, row := range p.Tasks {
 		if row.workMerged() && !slices.Contains(tasks, row.Task) {
 			tasks = append(tasks, row.Task)

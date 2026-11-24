@@ -122,9 +122,10 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 // step the claim's agent works (record.Issue.StepOfAgent), which is that act; for an agent that
 // works none, the task of the step the latest phases row of rows that names the claim runs
 // (latestStepTask), which a completion reports that arrives after its step ended or before its
-// start was delivered; and for a claim that no row names a step for, the task that merges
-// (record.StoredPlan.MergingTask), whose work a row raised before the plan is of. The act of a task
-// whose step the agent does not work is read from the act of each task (record.Store.TaskActs).
+// start was delivered; and for a claim that no row names a step for, the one task of the plan that
+// has a merge (record.StoredPlan.OnlyTaskThatMerges), whose work a row raised before the plan is
+// of, and none where several tasks have one. The act of a task whose step the agent does not work
+// is read from the act of each task (record.Store.TaskActs).
 // ok is false where none of these is a task of stored: the completion is of no step of the plan.
 func (s *server) completingTask(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, rows []record.PhaseRow, completing claim.Token) (record.PlanTask, *record.RunningStep, bool, error) {
 	_, agent, _ := completing.Cut()
@@ -134,7 +135,7 @@ func (s *server) completingTask(ctx context.Context, tx pgx.Tx, issue record.Iss
 	}
 	id := latestStepTask(rows, completing)
 	if id == "" {
-		id, _ = stored.MergingTask()
+		id, _ = stored.OnlyTaskThatMerges()
 	}
 	task, ok := stored.TaskOf(id)
 	if !ok {

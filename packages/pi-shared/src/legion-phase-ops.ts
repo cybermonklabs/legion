@@ -390,8 +390,9 @@ export function legionToolDescription(host: {
     "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
     "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
     "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
-    "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
-    "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
+    "needs no handoff and no commit: it carries its verdict and summary alone. Its task's first line is `Production check of <KEY>`. " +
+    "Legion hands that task to the role the check records once the issue closes, after its last merge. " +
+    "A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
     "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
     "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
     "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +

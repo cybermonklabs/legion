@@ -544,9 +544,10 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, s TaskScope,
 // root's close lingers its tree and opens its check behind the linger's rows (leave). A merge is
 // the one fact GitHub never sends again, so one that lands while the tree lingers, where no
 // transition runs, still moves its task to done and ends the merge step. Where that merge ends the
-// issue it writes what leave would that a lingering tree allows — the phase done, the status done,
-// the pull request disarmed, the architect above a child told child-closed — and opens the check,
-// whose first look is a wake, since the linger suspended that role. The merge of any other task
+// issue it writes the phase done and the status done, and the issue leaves through the one place
+// of a leave its tasks make (leaveByTasks), which in a lingering tree tells the architect above a
+// child child-closed and opens the check of each merged pull request of the run that has none,
+// each first look a wake, since the linger suspended that role. The merge of any other task
 // writes the task's move and the issue in the phase its tasks put it in, and nothing of a close. It
 // retires nobody and suspends nothing: the linger's own rows already did, and the tree's close
 // retires every member's claims. The boot's sweep closes a migrated issue the same way (booted).
@@ -629,14 +630,8 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, s TaskScope, pr *re
 			"task", w.Task, "tree", issue.Tree, "pullRequest", pr.Number, "phase", written.Phase)
 		return nil, nil
 	}
-	issue = s.issue
-	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is done", issue.Key)}); err != nil {
-			return nil, err
-		}
-	}
-	return nil, e.openCheck(ctx, tx, issue, *pr, true)
+	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", written.Status)
+	return nil, e.leaveByTasks(ctx, tx, written)
 }
 
 // closed records the pull request closed unmerged, which a re-admitted generation drops, and tells

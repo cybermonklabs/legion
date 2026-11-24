@@ -90,8 +90,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				{"later version", "waits", "stopped"},
 				{"running task", "`PLAN_REFUSED`", "task <id> is running"},
 				{"running task's block", "goes on"},
-				// ... unless it moves the base of a started task's pull request.
-				{"running or held task", "moves the branch", "`PLAN_REFUSED`", "task <id> has started on the base"},
 				// A refusal changes nothing, so the same version is given again, and an issue
 				// that started before plans takes none.
 				{"changes nothing", "given again"},
@@ -113,6 +111,48 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				if !clauseHolds(composed, terms...) {
 					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
 				}
+			}
+		})
+	}
+}
+
+// Legion sets the base of each task's pull request, and a plan names no other
+// (record.StoredPlan.BaseOf): the pull request of each task whose work merges by itself, and of
+// each task with no needs, is against the repository's default branch, so a plan of one task, the
+// project's default steps included, has its pull request there; among the other tasks, a task with
+// one need has its pull request against that need's branch, and a task with several against its
+// join branch. The implementer's completion on a pull request against any other base is refused
+// HANDOFF_PULL_REQUEST_BASE (api's implementationPullRequest), so the owner who writes the plan
+// reads the rule in its own prompt, and what it does where work must build on unmerged work: a task
+// that needs the task doing it, or, for another issue's, an issue that waits on it by its
+// blocked_by list. Each rule is held by the terms of the clause that states it, in their order, and
+// the refusal's code once in the composed prompt. Both architect compositions share that part, so
+// both are read. This shows the text is loaded, never that an owner follows it.
+func TestTheOwnersPromptNamesTheBaseOfEachTasksPullRequest(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		isRoot bool
+	}{{"root architect", true}, {"sub-architect", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
+			for _, terms := range [][]string{
+				{"Legion sets the base of each task's pull request", "a plan names no other"},
+				{"a plan of one task", "the project's default steps included", "default branch"},
+				{"task with one need", "that need's branch", "a task with several", "its join branch"},
+				{"refused `HANDOFF_PULL_REQUEST_BASE`", "any other base", "never ask for another base in a task's text"},
+				{"unmerged work of the same issue", "a task that `needs` the task"},
+				{"another issue's unmerged branch", "`blocked_by`", "once that issue is `done`"},
+			} {
+				if !clauseHolds(composed, terms...) {
+					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
+				}
+			}
+			if got := strings.Count(composed, "HANDOFF_PULL_REQUEST_BASE"); got != 1 {
+				t.Errorf("the composed %s prompt names HANDOFF_PULL_REQUEST_BASE %d times, want once", tc.name, got)
 			}
 		})
 	}

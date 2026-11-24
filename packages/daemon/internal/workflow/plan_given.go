@@ -48,11 +48,11 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 // leaveWhereDone ends the run of the issue keyed key where the version just taken left each of its
 // tasks done or left the workflow (issuePhaseOfTasks rule 1): one that removes the last task that
 // was not done, a stopped or a waiting one. The issue is written where its tasks put it, done, with
-// the Dispatch status done (putScope), and leaves the workflow with the status done, as the close
-// at a merge does (leave): a root lingers its tree, and a child tells the architect above it. It
-// opens no production check of its own: each merge opened its own, and the leave opens one only
-// for a merge that has none. An issue that is done already, or whose tasks put it anywhere else,
-// is left as it stands.
+// the Dispatch status done (putScope), and leaves the workflow with the status done through the one
+// place of that leave (leaveByTasks), as the close at a merge does: a root lingers its tree, and a
+// child tells the architect above it. Its leave opens the check of each merged pull request of its
+// run that has none, and a merge that opened its own check gets no second one. An issue that is
+// done already, or whose tasks put it anywhere else, is left as it stands.
 func (e *Engine) leaveWhereDone(ctx context.Context, tx pgx.Tx, key string) error {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil || issue.Phase == phase.Done {
@@ -78,7 +78,7 @@ func (e *Engine) leaveWhereDone(ctx context.Context, tx pgx.Tx, key string) erro
 	}
 	e.logOnCommit(ctx, "workflow: a version left only tasks that are done, and the issue leaves the workflow", "issue", key, "tree", written.Tree,
 		"status", written.Status)
-	return e.leave(ctx, tx, written, "done")
+	return e.leaveByTasks(ctx, tx, written)
 }
 
 // givenVersion is what versionRefusal read of a version it takes: the issue the record holds (nil

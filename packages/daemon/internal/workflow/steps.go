@@ -356,17 +356,16 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, s TaskScope, at p
 
 // startAgent is the agent a start of the step s's copy stands in at names: for accepting, the
 // architect that owns the issue now (acceptingAgent), nobody for a merge GitHub has already made,
-// where no merger starts, and the agent of the step's place otherwise (placeToken).
+// the pull request of s's own task merged (taskPullRequest), where no merger starts, and the agent
+// of the step's place otherwise (placeToken).
 func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, s TaskScope, at phase.Phase) (claim.Token, error) {
 	issue := s.issue
 	switch at {
 	case phase.Accepting:
 		return e.acceptingAgent(ctx, tx, issue)
 	case phase.Merging:
-		standing := issue
-		standing.Phase = at
-		merged, err := PhaseFinished(ctx, e.store, tx, standing)
-		if err != nil || merged {
+		pr, err := e.taskPullRequest(ctx, tx, s)
+		if err != nil || pr != nil && pr.State == record.PullRequestMerged {
 			return "", err
 		}
 	}

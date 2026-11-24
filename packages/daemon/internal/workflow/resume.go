@@ -266,13 +266,13 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported
-// (booted): the merge of the pull request of its task that merges (record.Store.MergePullRequest).
-// Each is re-read before its close, for that task (issueOfPullRequest), so an issue whose plan
-// holds several tasks closes as that task's merge closes it: a child's close may have closed the
-// merged issues above it (closeAwaitingMerge), and a root's close lingers the tree its children then
-// close under. A root whose tree still runs is left where it stands by closeMerged, which owns that
-// rule, and the sweep tells nobody of the wait: a restart must not repeat the architect's
-// notice, and a root can now wait for days across many boots.
+// (booted): the merge of the pull request of a task that stands at its merge (mergesAwaited). Each
+// such pull request's issue is re-read before its close, for that task (issueOfPullRequest), so an
+// issue whose plan holds several tasks closes as that task's merge closes it: a child's close may
+// have closed the merged issues above it (closeAwaitingMerge), and a root's close lingers the tree
+// its children then close under. A root whose tree still runs is left where it stands by
+// closeMerged, which owns that rule, and the sweep tells nobody of the wait: a restart must not
+// repeat the architect's notice, and a root can now wait for days across many boots.
 func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
@@ -282,30 +282,33 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 		if !awaitsMerge(listed) {
 			continue
 		}
-		pr, err := e.store.MergePullRequest(ctx, tx, listed.Key)
-		if err != nil || pr == nil || pr.State != record.PullRequestMerged {
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		scope, err := e.issueOfPullRequest(ctx, tx, *pr)
-		if err != nil || scope == nil || !awaitsMerge(scope.issue) {
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		issue := &scope.issue
-		waiting, err := e.closeMerged(ctx, tx, *scope, pr)
+		awaited, err := mergesAwaited(ctx, e.store, tx, listed)
 		if err != nil {
 			return err
 		}
-		if len(waiting) > 0 {
-			continue
+		for _, at := range awaited {
+			if at.pr.State != record.PullRequestMerged {
+				continue
+			}
+			pr := at.pr
+			scope, err := e.issueOfPullRequest(ctx, tx, pr)
+			if err != nil {
+				return err
+			}
+			if scope == nil || !awaitsMerge(scope.issue) {
+				continue
+			}
+			issue := &scope.issue
+			waiting, err := e.closeMerged(ctx, tx, *scope, &pr)
+			if err != nil {
+				return err
+			}
+			if len(waiting) > 0 {
+				continue
+			}
+			e.logOnCommit(ctx, "workflow: the boot closes an issue whose pull request merged before the upgrade", "issue", issue.Key,
+				"tree", issue.Tree, "task", scope.Task(), "pullRequest", pr.Number, "phase", issue.Phase)
 		}
-		e.logOnCommit(ctx, "workflow: the boot closes an issue whose pull request merged before the upgrade", "issue", issue.Key,
-			"tree", issue.Tree, "pullRequest", pr.Number, "phase", issue.Phase)
 	}
 	return nil
 }

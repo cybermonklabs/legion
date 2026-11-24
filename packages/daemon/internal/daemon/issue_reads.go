@@ -233,9 +233,9 @@ func (r issueRecords) implementing() bool {
 // request the per-issue read judges, and whether it has one, for a plan of any count of tasks, one
 // among them: the task named, which a completion names (handoffCompleted), else the task whose step
 // the issue's implementer runs or ran last (implementer's record.PhaseRow.StepTask), else, for an
-// implementer's row raised before the plan, which names no step, the task that merges
-// (record.StoredPlan.MergingTask): none where the plan holds no such task. An issue with no plan
-// rows judges its own work, the zero task, on the issue's branch.
+// implementer's row raised before the plan, which names no step, the one task of the plan that has
+// a merge (record.StoredPlan.OnlyTaskThatMerges): none where the plan holds no such task, or
+// several. An issue with no plan rows judges its own work, the zero task, on the issue's branch.
 func judgedTask(stored *record.StoredPlan, implementer record.PhaseRow, named string) (record.PlanTask, bool) {
 	if stored == nil {
 		return record.PlanTask{}, true
@@ -244,7 +244,7 @@ func judgedTask(stored *record.StoredPlan, implementer record.PhaseRow, named st
 		named = implementer.StepTask
 	}
 	if named == "" {
-		named, _ = stored.MergingTask()
+		named, _ = stored.OnlyTaskThatMerges()
 	}
 	return stored.TaskOf(named)
 }

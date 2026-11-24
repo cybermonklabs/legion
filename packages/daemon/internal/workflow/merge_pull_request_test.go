@@ -38,8 +38,8 @@ func mergingTasks(t *testing.T, pool *pgxpool.Pool, aState, bState record.PullRe
 	return b
 }
 
-// The merge of an issue is the pull request of the task that merges, the one task of its plan that
-// no task needs (record.Store.MergePullRequest), and no other task's. LEGION-209 stands in merging
+// The merge of an issue is the pull request of its task that merges, here b, the one task of its
+// plan with a merge (record.Store.MergePullRequest), and no other task's. LEGION-209 stands in merging
 // with task a done on the issue's branch, where its pull request #43 merged, and task b, which needs
 // a, at its merge, with its own pull request #45 still open. The issue's phase is not finished
 // (PhaseFinished), and the boot's sweep of merged issues (sweepMerged) closes nothing: the issue

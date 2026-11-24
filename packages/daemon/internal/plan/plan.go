@@ -117,25 +117,6 @@ type Task struct {
 // NamesSteps says whether t's block names a step at all.
 func (t Task) NamesSteps() bool { return len(t.Steps) > 0 }
 
-// Sinks is the ids of the tasks of tasks that no task needs, in id order: the tasks whose work
-// ends the plan, where it merges. A need is a task id (FromBlocks).
-func Sinks(tasks []Task) []string {
-	needed := map[string]bool{}
-	for _, task := range tasks {
-		for _, id := range task.Needs {
-			needed[id] = true
-		}
-	}
-	var sinks []string
-	for _, task := range tasks {
-		if !needed[task.ID] {
-			sinks = append(sinks, task.ID)
-		}
-	}
-	slices.Sort(sinks)
-	return sinks
-}
-
 // Merging is the ids of the tasks of tasks whose work merges by itself, in id order: each task
 // whose block says merges (Merges), and each task of the top level (PartOf "") that no task of
 // tasks needs, whatever its block says. A part of another task merges only where its block says

@@ -16,38 +16,42 @@ import (
 )
 
 // leave is an issue leaving the workflow for status (done, backlog, icebox, or triage). A root
-// takes its tree with it into linger, and a root closed as done on a merged pull request then
-// opens its production check (openCheckIfMerged), behind the linger's rows: the root's own
-// IssueSuspend finishes without acting on the check's start (store.IssueSuspension's restarted
-// fence), and the start resumes the checking role in the still-live pod. A child ends only itself:
+// takes its tree with it into linger, and a root closed as done then opens the production check of
+// each merged pull request of its run that has none (openCheckIfMerged, over the merges leaveMerges
+// reads), behind the linger's rows: the root's own IssueSuspend finishes without acting on the
+// check's start (store.IssueSuspension's restarted fence), and the start resumes the checking role
+// in the still-live pod. A root already lingering, which a person parked and now sets done, opens
+// them too, each first look a wake of the checking role's suspended claim. A child ends only itself:
 // it leaves the table, its phase parked in done, so no transition or status write follows the
 // human's move; the architect above it is told, and decides what the rest of its tree does, as the
 // shipped daemon routes a child's close to the architect. A later todo re-enters the child. What
 // becomes of the child's claims is the status's: a child parked in backlog, icebox or triage has
 // every claim suspended with its session, for a later todo to resume; a child closed as done with
-// no merged pull request (close_root, a human's done) is finished, so each of its claims is
-// closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
+// no merged pull request of its run (close_root, a human's done) is finished, so each of its claims
+// is closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
 // the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while
-// its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
-// production check, where the project opens one (Engine.checkRole): five of its claims are
-// closed, the checking role's is not, no IssueSuspend is written, and the check opens in that
-// role's live session; the check's close writes the suspension (closeCheck). A project whose
-// `production_check` is off checks nothing in production, so its merged child close is like any
-// other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
+// its parent keeps running in a pod of its own. A child closed as done with a merged pull request of
+// its run still owes the production check of each such merge, where the project opens one
+// (Engine.checkRole): five of its claims are closed, the checking role's is not, no IssueSuspend is
+// written, and each check opens in that role's live session; the check's close writes the
+// suspension (closeCheck). A project whose `production_check` is off checks nothing in production,
+// so its merged child close is like any other done: every claim is closed and the Sandbox deleted
+// with the pod and the disk it ran on. A leave at any other status opens no check: a park suspends
+// the issue's claims and its pod, which a look would need.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session
 // it kept when a start of its role reaches it: the architect's and the planner's at its next first
 // phase start. Every claim above is one of Legion's own; the issue's Dispatch claim is the
 // board's, and Dispatch releases one at a close alone, so every departure short of a close queues
 // the row that releases it (record.ClaimRelease).
 //
-// A member's leave may be the last one a merged issue above it waited for: an issue whose pull
-// request merged stands in merging while any issue beneath it is in the workflow
-// (closeMerged), and closes once the last of them leaves (closeAwaitingMerge). That is the tree
-// root for a member of its tree, and any parent between them for a member below it, so the leave
-// re-reads the wait of every merged ancestor the departing issue stood beneath. Every way a
-// member stops holding one runs this function — a status moving to backlog, icebox, triage or
-// done (dispatchIssue), a phase reaching done (transition), the architect's close_root, and
-// LeaveUnslotted — and the boot's sweep is the backstop. The child's check opens after that
+// A member's leave may be the last one a merged issue above it waited for: an issue whose task
+// stands at its merge with its pull request merged stands in merging while any issue beneath it is
+// in the workflow (closeMerged), and closes once the last of them leaves (closeAwaitingMerge). That
+// is the tree root for a member of its tree, and any parent between them for a member below it, so
+// the leave re-reads the wait of every merged ancestor the departing issue stood beneath. Every way
+// a member stops holding one runs this function — a status moving to backlog, icebox, triage or
+// done (dispatchIssue), a phase its tasks put in done (leaveByTasks), the architect's close_root,
+// and LeaveUnslotted — and the boot's sweep is the backstop. The child's check opens after that
 // close, so its start row follows the linger's suspends and resumes the checking role as a
 // root's own check does, rather than being stopped by them.
 //
@@ -79,9 +83,17 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.clearMergeForwards(ctx, tx, issue); err != nil {
 		return err
 	}
+	// The merges this leave checks are read before it writes the issue's tasks out of the workflow,
+	// and they are the same after (leaveMerges).
+	merges, err := e.leaveMerges(ctx, tx, issue, status)
+	if err != nil {
+		return err
+	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		if issue.Lingers() {
-			return nil
+			// A root that lingers left before, at a park, which suspended every claim of its tree:
+			// its done checks each merge of its run, each first look a wake of that suspended claim.
+			return e.openCheckIfMerged(ctx, tx, issue, merges, true)
 		}
 		if held, err := record.OperatorHoldsTree(ctx, e.store, tx, issue); err != nil || held {
 			if err != nil {
@@ -95,10 +107,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if err := e.releaseParkedClaim(ctx, tx, issue, status); err != nil {
 			return err
 		}
-		if status != "done" {
-			return nil
-		}
-		return e.openCheckIfMerged(ctx, tx, issue, false)
+		return e.openCheckIfMerged(ctx, tx, issue, merges, false)
 	}
 	// The leave ends the child's task with its run, where it stands (endTaskWithLeave).
 	if issue.Phase != phase.Done {
@@ -106,11 +115,11 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 	}
-	pr, err := e.store.MergePullRequest(ctx, tx, issue.Key)
+	open, err := e.toldPullRequests(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	merged := status == "done" && pr != nil && pr.State == record.PullRequestMerged
+	merged := slices.ContainsFunc(merges, func(pr record.PullRequest) bool { return pr.State == record.PullRequestMerged })
 	op, except := record.SuperviseOp("suspend"), claim.Role("")
 	if status == "done" {
 		op = "issue_close"
@@ -150,7 +159,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if status == "done" {
 		kind = "child-closed"
 	}
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: leftNotice(issue, status, pr, members)}); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: kind, Role: claim.RoleArchitect, Reason: leftNotice(issue, status, open, members)}); err != nil {
 		return err
 	}
 	// This departure may be the last one any merged ancestor of the issue waited for, and not
@@ -183,7 +192,78 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err != nil {
 		return err
 	}
-	return e.openCheck(ctx, tx, issue, *pr, lingers)
+	return e.openCheckIfMerged(ctx, tx, issue, merges, lingers)
+}
+
+// leaveByTasks is the one place where an issue whose tasks put it in done leaves the workflow:
+// written is the issue as its tasks put it there. Its callers are the doors from the tasks: a
+// transition that writes the issue done (transition: a task's last step, the merge that ends the
+// last task, the close of a merge that waited for the issues beneath, closeAwaitingMerge, and the
+// boot's sweep, sweepMerged, each through closeMerged), a version that leaves only done tasks
+// (leaveWhereDone), and the merge that ends the issue in a lingering tree (closeMerged). A person's
+// status, close_root and LeaveUnslotted are no door from the tasks and call leave themselves. In a
+// running tree it is the leave at done (leave). In a lingering tree it calls no leave, since the
+// linger suspended every claim and the tree's close retires them: a child tells the architect above
+// it child-closed, and the check of each merged pull request of the run that has none opens, each
+// first look a wake of the checking role's suspended claim.
+func (e *Engine) leaveByTasks(ctx context.Context, tx pgx.Tx, written record.Issue) error {
+	lingers, err := record.TreeLingers(ctx, e.store, tx, written.Tree)
+	if err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: each task of the issue is done or left, and it leaves the workflow", "issue", written.Key,
+		"tree", written.Tree, "lingers", lingers)
+	if !lingers {
+		return e.leave(ctx, tx, written, "done")
+	}
+	merges, err := e.leaveMerges(ctx, tx, written, "done")
+	if err != nil {
+		return err
+	}
+	if !claim.IsTreeRoot(written.Key, written.Tree) {
+		if err := e.notice(ctx, tx, written.Key, record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is done", written.Key)}); err != nil {
+			return err
+		}
+	}
+	return e.openCheckIfMerged(ctx, tx, written, merges, true)
+}
+
+// leaveMerges is the pull request of each merge of issue's run (record.Store.MergePullRequests:
+// each task that has a merge, done, to come, or cut short by a park, as the plan stood) that a
+// leave at status checks: each of them at done, and none at any other status, since a park
+// suspends the claims and the pod a look would need. Its rows are the same whether they are read
+// before the leave writes the issue's tasks out of the workflow or after: that write changes no
+// task's needs or merges, and a task it writes done at its merge stood among the tasks that merge.
+func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) ([]record.PullRequest, error) {
+	if status != "done" {
+		return nil, nil
+	}
+	return e.store.MergePullRequests(ctx, tx, issue.Key)
+}
+
+// toldPullRequests is the number of each pull request of issue that is open and that no queued
+// close of the issue's generation names (record.Store.QueuedPullRequestCloses), in number order:
+// what the notice of a child's leave names (leftNotice). A merge that ends the issue queues the
+// close of each other open pull request in its own transaction, before its leave, so that leave
+// names none of them; a close that keeps failing keeps its row, and its pull requests are not
+// named while it retries.
+func (e *Engine) toldPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]int, error) {
+	prs, err := e.store.TaskPullRequests(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	closing, err := e.store.QueuedPullRequestCloses(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return nil, err
+	}
+	var open []int
+	for _, pr := range prs {
+		if pr.State == record.PullRequestOpen && !slices.Contains(closing, pr.Number) {
+			open = append(open, pr.Number)
+		}
+	}
+	slices.Sort(open)
+	return open, nil
 }
 
 // leaveState is the state the task of w is in once its issue leaves the workflow at status: done
@@ -239,18 +319,26 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 // leftNotice is the reason of the child-closed or child-status notice that tells the architect
 // above child that it left the workflow at status (leave). It starts with "<KEY> is <status>",
 // and it names after that what the move leaves for that architect to act on
-// (dispatch://INFRA-3178/spec R4). The first is the child's pull request while it is open: the
-// daemon closes no pull request, and a merge of it later closes nothing (merged). The second is
-// each recorded issue under the child that is not done, with its status, in key order: the move
+// (dispatch://INFRA-3178/spec R4). The first is each of the child's pull requests that is open, in
+// number order (toldPullRequests): the daemon closes no pull request at a move, and a merge of one
+// later closes nothing (merged); a pull request whose close is queued is not named. The second
+// is each recorded issue under the child that is not done, with its status, in key order: the move
 // ends the child alone, so an issue under it in the workflow runs on, and one out of the workflow
 // stays out (record.Beneath, over members, the tree's records). A child with nothing to name gets
 // the first sentence alone, so every reader of that bare reason stays valid. The record holds no
 // state that says a pull request is in the merge queue (the daemon hears only GitHub's removal
 // from it, intake.PullRequestDequeued), so the notice cannot say so.
-func leftNotice(child record.Issue, status string, pr *record.PullRequest, members []record.Issue) string {
+func leftNotice(child record.Issue, status string, pullRequests []int, members []record.Issue) string {
 	reason := fmt.Sprintf("%s is %s", child.Key, status)
-	if pr != nil && pr.State == record.PullRequestOpen {
-		reason += fmt.Sprintf(". Its pull request #%d is open", pr.Number)
+	numbers := make([]string, len(pullRequests))
+	for i, number := range pullRequests {
+		numbers[i] = fmt.Sprintf("#%d", number)
+	}
+	switch {
+	case len(numbers) == 1:
+		reason += fmt.Sprintf(". Its pull request %s is open", numbers[0])
+	case len(numbers) > 1:
+		reason += fmt.Sprintf(". Its pull requests %s and %s are open", strings.Join(numbers[:len(numbers)-1], ", "), numbers[len(numbers)-1])
 	}
 	under := record.Beneath(child, members)
 	slices.SortFunc(under, func(a, b record.Issue) int { return strings.Compare(a.Key, b.Key) })
@@ -294,45 +382,88 @@ func (e *Engine) LeaveUnslotted(ctx context.Context, tx pgx.Tx, root record.Issu
 	return e.leave(ctx, tx, root, root.Status)
 }
 
-// openCheckIfMerged opens issue's production check when its pull request has merged: a done issue
-// with no merged pull request — a root closed before its first phase (close_root), a human's done
-// on an issue short of its merge — has nothing to check in production and opens none, and neither
-// does a merged one of a project that checks nothing in production, whose openCheck opens no
-// record, queues no bound row and starts no look (Engine.checkRole).
-func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, wake bool) error {
-	pr, err := e.store.MergePullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
-		return err
+// openCheckIfMerged opens the production check of each of merges, the merges of issue's run that a
+// leave read (leaveMerges), that merged: a done issue with no merged pull request — a root closed
+// before its first phase (close_root), a human's done on an issue short of each merge — has nothing
+// to check in production and opens none, a merge that has a check opens no second one (openCheck),
+// and neither does a merged one of a project that checks nothing in production, whose openCheck
+// opens no record, queues no bound row and starts no look (Engine.checkRole). wake says the
+// checking role's claim is suspended, so each first look is a wake of it.
+func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, merges []record.PullRequest, wake bool) error {
+	for _, pr := range merges {
+		if pr.State != record.PullRequestMerged {
+			continue
+		}
+		if err := e.openCheck(ctx, tx, issue, pr, wake); err != nil {
+			return err
+		}
 	}
-	return e.openCheck(ctx, tx, issue, *pr, wake)
+	return nil
 }
 
-// closeAwaitingMerge closes merged when its own merge was waiting on the issues beneath it: an
-// issue whose pull request of its task that merges (record.Store.MergePullRequest) merged stands in
-// merging (or held from it) while any issue beneath it is in the workflow (closeMerged), and
-// closes, as its merge would have, once the last of them leaves. The close is that task's, on the
-// copy of merged read for it (viewOfPullRequest), as the merge's own close is (merged), so an issue
-// whose plan holds several tasks closes too. Which issues still hold it is closeMerged's to judge,
-// so this runs on every merged ancestor of an issue that leaves the workflow and changes nothing
-// for any other. It tells nobody: the architect heard the wait when the close entered it (merged),
-// and this path is walked at every departure.
+// awaitedMerge is a task of an issue that stands at its merge, on the copy of the issue read for
+// it, and that task's pull request.
+type awaitedMerge struct {
+	scope TaskScope
+	pr    record.PullRequest
+}
+
+// mergesAwaited is each task of issue's run that stands at its merge, with its pull request: the
+// rows of the issue's merges (record.Store.MergePullRequests) whose task's copy awaits its merge
+// (awaitsMerge), in task id order, and for an issue with no plan rows its one row where the issue
+// itself awaits its merge. It is the one read of the merges an issue waits on, read on the issue as
+// the store holds it, with no copy for a task: whether the merging of an issue is finished
+// (PhaseFinished), the close of a merge that waited for the issues beneath it (closeAwaitingMerge),
+// the boot's sweep of merges GitHub reported (sweepMerged) and the hand-over of a member left at
+// its merge with its pull request open (unfinishedHandOvers) read it.
+func mergesAwaited(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) ([]awaitedMerge, error) {
+	prs, err := store.MergePullRequests(ctx, tx, issue.Key)
+	if err != nil || len(prs) == 0 {
+		return nil, err
+	}
+	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return nil, err
+	}
+	var awaited []awaitedMerge
+	for _, pr := range prs {
+		if s, ok := scopeOrNoPlan(issue, stored, pr.Task); ok && awaitsMerge(s.issue) {
+			awaited = append(awaited, awaitedMerge{scope: s, pr: pr})
+		}
+	}
+	return awaited, nil
+}
+
+// closeAwaitingMerge closes merged when the merge of its task at its merge was waiting on the
+// issues beneath it: an issue whose task stands at its merge with its pull request merged stands
+// in merging (or held from it) while any issue beneath it is in the workflow (closeMerged), and
+// closes, as its merge would have, once the last of them leaves. Only the merge of the task that
+// ends the issue waits (lastToFinish), so that is the one task of mergesAwaited whose pull request
+// merged. The close is that task's, on the copy of merged read for it, as the merge's own close is
+// (merged). Which issues still hold it is closeMerged's to judge, so this runs on every merged
+// ancestor of an issue that leaves the workflow and changes nothing for any other. It tells nobody:
+// the architect heard the wait when the close entered it (merged), and this path is walked at every
+// departure.
 func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged record.Issue) error {
 	if !awaitsMerge(merged) {
 		return nil
 	}
-	pr, err := e.store.MergePullRequest(ctx, tx, merged.Key)
-	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
+	awaited, err := mergesAwaited(ctx, e.store, tx, merged)
+	if err != nil {
 		return err
 	}
-	s, ok, err := e.scopeOfPullRequest(ctx, tx, merged, *pr)
-	if err != nil || !ok {
-		return err
+	for _, at := range awaited {
+		if at.pr.State != record.PullRequestMerged {
+			continue
+		}
+		waiting, err := e.closeMerged(ctx, tx, at.scope, &at.pr)
+		if err != nil || len(waiting) > 0 {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: a merged issue closes once the last issue beneath it left the workflow", "issue", merged.Key,
+			"task", at.scope.Task(), "pullRequest", at.pr.Number)
+		return nil
 	}
-	waiting, err := e.closeMerged(ctx, tx, s, pr)
-	if err != nil || len(waiting) > 0 {
-		return err
-	}
-	e.logOnCommit(ctx, "workflow: a merged issue closes once the last issue beneath it left the workflow", "issue", merged.Key, "pullRequest", pr.Number)
 	return nil
 }
 
@@ -422,10 +553,10 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // unfinishedHandOvers is every member the close of a root's linger hands to Legion as a root of
 // its own (handOver). A root that stayed done hands over every member it leaves in the workflow,
 // whatever phase that member stands in. A root that did not stay done hands over only a member
-// standing at phase.Merging whose pull request is still open, and nothing else. It is read
-// before the close's own writes, because what the close hands over is also what it does not warn
-// about: a decision a person made on one of these members, or on an issue below one, is owed to
-// that member's architect once it is re-admitted, not left behind by this tree
+// standing at phase.Merging with a task at its merge whose pull request is still open, and nothing
+// else. It is read before the close's own writes, because what the close hands over is also what it
+// does not warn about: a decision a person made on one of these members, or on an issue below one,
+// is owed to that member's architect once it is re-admitted, not left behind by this tree
 // (warnKeptDecisionsOfAClosedTree).
 //
 // A reopen inside the linger resumes those members in the old tree instead: lingerExpired is
@@ -464,10 +595,10 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // guard would otherwise strand is exactly the one holding an open pull request with no live tree
 // left to merge it — green and approved, with nothing in the workflow that would ever merge it.
 // Whether that pull request is open is the one fact here that record.Issue does not carry, so it
-// is read from the pull_requests row of the member's task that merges
-// (record.Store.MergePullRequest), and only for a member of a non-done root's tree that this
-// clause could take — one at phase.Merging that is in the workflow — so a tree of many members
-// costs a handful of reads at most.
+// is read from the pull_requests row of each task of the member that stands at its merge
+// (mergesAwaited), and only for a member of a non-done root's tree that this clause could take —
+// one at phase.Merging that is in the workflow — so a tree of many members costs a handful of reads
+// at most.
 //
 // What the close does around the hand-over, for a member handed over under either rule: the same
 // expiry still queues a tree_close for each claim of every member — one for each stored claim, and
@@ -499,11 +630,11 @@ func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record
 			if member.Phase != phase.Merging {
 				continue
 			}
-			pr, err := e.store.MergePullRequest(ctx, tx, member.Key)
+			awaited, err := mergesAwaited(ctx, e.store, tx, member)
 			if err != nil {
 				return nil, err
 			}
-			if pr == nil || pr.State != record.PullRequestOpen {
+			if !slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return at.pr.State == record.PullRequestOpen }) {
 				continue
 			}
 		}

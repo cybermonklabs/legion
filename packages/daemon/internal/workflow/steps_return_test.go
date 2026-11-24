@@ -554,9 +554,9 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 // The walk takes the task its read names: the task a copy read for one task names
 // (record.Issue.ViewTask), and for a read that names none the plan's one task. A plan of two tasks
 // read for none is no walk, and the error names the plan's count of tasks; read for one of them it
-// is that task's walk, whose line holds Legion's retro and merge only where the task is the one
-// that no task needs (Walk.Merges). A read for a task the plan does not hold is no walk either. The
-// control is the same issue with its plan of one task, which walks it, retro and merge after its
+// is that task's walk, whose line holds Legion's retro and merge only where the task merges
+// (Walk.Merges): b, which no task needs. A read for a task the plan does not hold is no walk either.
+// The control is the same issue with its plan of one task, which walks it, retro and merge after its
 // steps. Each walk is read in a transaction of its own and with no boot pass, which would read the
 // same walk first.
 func TestTheWalkTakesTheTaskItsReadNames(t *testing.T) {

@@ -137,14 +137,18 @@ func TestTheMergeOfOneTaskMakesItDoneAndTheIssueGoesOn(t *testing.T) {
 // of a moves a to done at once: a is not the last task to finish. b's retro passes and its merge
 // starts, and the merge of b's pull request waits: b is the last, so b stays at its merge, the
 // issue stands in merging, and the architect is told once, in a pr-merged notice that names the
-// child. b stands at its retro, not at its first step, at a's merge: a task that passes its last
-// step while a child runs, and is the last to finish, is held before its retro (beneathRetro), so
-// the close wait meets the task whose retro ran beside another's, neither of them the last.
+// child. When the child leaves the workflow, b is done at its merge, and the issue is done and its
+// tree lingers: the merge of the issue is b's, its task with a merge still to come. b stands at its
+// retro, not at its first step, at a's merge: a task that passes its last step while a child runs,
+// and is the last to finish, is held before its retro (beneathRetro), so the close wait meets the
+// task whose retro ran beside another's, neither of them the last.
 //
 // The faults it catches are the merge of a task that is not the last waiting for the whole tree
 // (its control: the wait with no read of lastToFinish, the revision before, under which a stays at
-// its merge), and a last merge that does not wait (its control: closeMerged with no wait at all,
-// under which b is done while the child runs).
+// its merge), a last merge that does not wait (its control: closeMerged with no wait at all, under
+// which b is done while the child runs), and a last merge that never closes once the tree beneath
+// it left (its control: the merge of the issue read from the one task no task needs, which this
+// plan does not have, so b stays at its merge).
 func TestOnlyTheLastMergeWaitsForTheIssuesBeneath(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -179,12 +183,10 @@ func TestOnlyTheLastMergeWaitsForTheIssuesBeneath(t *testing.T) {
 	}
 
 	childLeavesDone(t, pool, engine)
-	// The child's leave leaves b at its merge for now: closeAwaitingMerge reads the issue's merge
-	// pull request (record.Store.MergePullRequest), which reads the one task no task needs, and this
-	// plan has two. Once MergePullRequest reads each task that merges, and closeAwaitingMerge reads
-	// the pull request of the task at its merge, this assertion becomes "b is done at its merge, and
-	// the issue is done and leaves the workflow".
-	assertTask(t, tasksOf(t, pool, engine, root.Key), "b", record.TaskRunning, atMerge)
+	assertTask(t, tasksOf(t, pool, engine, root.Key), "b", record.TaskDone, atMerge)
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Done || !issue.Lingers() {
+		t.Fatalf("%s once %s left stands in %s (lingers %t), want done and lingering: b's merge was its last", root.Key, heldParentChild, issue.Phase, issue.Lingers())
+	}
 }
 
 // Only the retro of the task that ends the issue is held for the issues beneath it. Of a and b, each

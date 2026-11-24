@@ -178,13 +178,13 @@ func TestACompletionOfAPlanOfOneTaskNamesItsTask(t *testing.T) {
 // agent runs no step now, and its completion is of the task of the step that the latest phases row
 // naming its claim runs (record.PhaseRow.StepTask). The late completion of a plan of one task
 // (LEGION-212) is taken as before, keyed by its issue's phase and its task's pass, and now names its
-// task; that of a plan of two tasks that no task needs, so that none merges (LEGION-211), is taken
-// as task a's, which its row names, keyed by a's phase and a's pass, where before it was refused
-// HANDOFF_NOT_CURRENT_PHASE and its report lost.
+// task; that of a plan of two tasks that no task needs, each of which merges, so that no one task is
+// the task that merges (LEGION-211), is taken as task a's, which its row names, keyed by a's phase
+// and a's pass, where before it was refused HANDOFF_NOT_CURRENT_PHASE and its report lost.
 //
 // The fault it catches is a late completion read by its agent's running step alone (its controls:
-// the route reading no phases row, which leaves the plan of two tasks no task, since none merges;
-// and the running step alone, which refuses the late completion of a plan of one task too).
+// the route reading no phases row, which leaves the plan of two tasks no task, since no one task
+// merges; and the running step alone, which refuses the late completion of a plan of one task too).
 func TestALateCompletionIsOfTheTaskItsPhasesRowNames(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	const one, several = "LEGION-212", "LEGION-211"

@@ -58,8 +58,9 @@ func (e *Engine) checkRole() claim.Role { return e.cfg.ProductionCheckRole }
 // same merge seen again — a done child a person parks and sets done again, each move a leave —
 // opens nothing, since one of the issue's checks, open or recorded, is that merge's. The check's
 // OpenedAt is its identity (record.ProductionCheck.ID), so it is the clock truncated to the
-// microsecond, Postgres's timestamptz precision: the value the rows and facts of this
-// transaction carry equals the one every later read of the record returns.
+// microsecond, Postgres's timestamptz precision, or a microsecond after the latest check of the
+// issue where that is not earlier: the value the rows and facts of this transaction carry equals
+// the one every later read of the record returns, and two checks opened in one transaction are two.
 func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest, wake bool) error {
 	role := e.checkRole()
 	if role == "" {
@@ -90,7 +91,15 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 			return err
 		}
 	}
+	// The new check's moment is later than each check of the issue: the store keys a check by its
+	// issue and that moment, so a second check opened at the same reading of the clock, as a leave
+	// that checks two merges opens them, would be written over the first.
 	now := e.now().Truncate(time.Microsecond)
+	for _, existing := range checks {
+		if !existing.OpenedAt.Before(now) {
+			now = existing.OpenedAt.Add(time.Microsecond)
+		}
+	}
 	check := record.ProductionCheck{
 		Issue: issue.Key, Project: issue.Project, Tree: issue.Tree, Repo: pr.Repo, Number: pr.Number, MergeSHA: pr.MergeSHA,
 		OpenedAt: now, BoundAt: now.Add(e.cfg.ProductionCheckBound), Role: role, Generation: issue.Generation,

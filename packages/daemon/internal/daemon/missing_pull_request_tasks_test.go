@@ -218,10 +218,10 @@ func TestAHeldTaskIsNotToldItsPullRequestIsMissing(t *testing.T) {
 
 // The read of an issue's pull request judges, of a plan of any count of tasks, the task a
 // completion names, else the task of the step its implementer's phases row runs
-// (record.PhaseRow.StepTask), else, for a row raised before the plan, which names no step, the task
-// that merges (record.StoredPlan.MergingTask); and the issue's own work, the zero task, where the
-// issue has no plan rows. A named task the plan does not hold judges none, and so does a row naming
-// no step of a plan in which no task merges.
+// (record.PhaseRow.StepTask), else, for a row raised before the plan, which names no step, the one
+// task that merges (record.StoredPlan.OnlyTaskThatMerges); and the issue's own work, the zero task,
+// where the issue has no plan rows. A named task the plan does not hold judges none, and so does a
+// row naming no step of a plan in which several tasks merge, whose work is no one task's.
 //
 // The fault it catches is a plan of one task judged by its count of tasks rather than by the task
 // named, and a row raised before a plan of several tasks judging none, so the read of such an issue
@@ -243,7 +243,7 @@ func TestTheReadJudgesTheNamedTaskElseTheImplementersElseTheOneThatMerges(t *tes
 		{"two tasks, named", chain, "a", "b", "b", true},
 		{"two tasks, the implementer's row", chain, "a", "", "a", true},
 		{"two tasks, the row raised before the plan: the task that merges", chain, "", "", "b", true},
-		{"two tasks that no task needs, the row raised before the plan: none merges", apart, "", "", "", false},
+		{"two tasks that no task needs, the row raised before the plan: both merge, so none is judged", apart, "", "", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			task, judged := judgedTask(tc.stored, record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleImplementer, StepTask: tc.row}, tc.named)

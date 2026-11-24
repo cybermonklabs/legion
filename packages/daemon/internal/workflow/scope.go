@@ -328,10 +328,11 @@ func (e *Engine) openStepsOfPullRequest(ctx context.Context, tx pgx.Tx, issue re
 // completion of a step the task has left), else the held or stopped task whose step has that claim
 // (heldOrStoppedOf: the report of the run a stop ended), the claim and its agent read as factClaim
 // and factAgent read them. A completion of the role's own claim (claim.NewToken) that none of them
-// reaches is of the plan's merging task: the claim of a row raised before the plan, or of a step a
-// later version took off the task's line. A keyed agent's claim that none of them reaches runs no
-// step of the plan, and ok is false: the completion is of no step, and moves no task. A run with no
-// plan rows is its issue.
+// reaches is of the one task of the plan that has a merge (record.StoredPlan.OnlyTaskThatMerges):
+// the claim of a row raised before the plan, or of a step a later version took off the task's line;
+// where several tasks have a merge it is of none. A keyed agent's claim that none of them reaches
+// runs no step of the plan, and ok is false: the completion is of no step, and moves no task. A run
+// with no plan rows is its issue.
 func (e *Engine) completionScope(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete) (TaskScope, bool, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
@@ -364,7 +365,7 @@ func (e *Engine) completionScope(ctx context.Context, tx pgx.Tx, issue record.Is
 			return s, ok, err
 		}
 		if own, err := stepClaim(issue, issue.Key, fact.Role); err == nil && token == own {
-			task, _ = stored.MergingTask()
+			task, _ = stored.OnlyTaskThatMerges()
 		}
 	}
 	s, ok := scopeOn(issue, stored, task)
@@ -410,10 +411,10 @@ func (e *Engine) actScope(ctx context.Context, tx pgx.Tx, issue record.Issue, ta
 
 // backwardScope is the scope a move back (fact) is read on: the owner's, at accepting, on the task
 // it names or the one task there (actScope); a phase worker's on the task its route names
-// (intake.BackwardMove.Task), else the task of the step its claim's agent runs, else the plan's
-// merging task. The owner's move that names no task while none stands at accepting, and a worker's
-// whose task the plan does not hold, are refused and change nothing. A run with no plan rows is its
-// issue.
+// (intake.BackwardMove.Task), else the task of the step its claim's agent runs, else the one task of
+// the plan that has a merge (record.StoredPlan.OnlyTaskThatMerges). The owner's move that names no
+// task while none stands at accepting, and a worker's whose task the plan does not hold, are
+// refused and change nothing. A run with no plan rows is its issue.
 func (e *Engine) backwardScope(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.BackwardMove) (TaskScope, *intake.Refusal, error) {
 	if fact.Requester == claim.RoleArchitect {
 		s, ok, refusal, err := e.actScope(ctx, tx, issue, fact.Task, phase.Accepting)
@@ -432,7 +433,7 @@ func (e *Engine) backwardScope(ctx context.Context, tx pgx.Tx, issue record.Issu
 		if step, ok := issue.StepOfAgent(agentOf(fact.By)); ok {
 			task = step.Task
 		} else {
-			task, _ = stored.MergingTask()
+			task, _ = stored.OnlyTaskThatMerges()
 		}
 	}
 	if s, ok := scopeOn(issue, stored, task); ok {
@@ -509,15 +510,15 @@ func (e *Engine) heldScope(ctx context.Context, tx pgx.Tx, issue record.Issue, t
 // PromotedScope is the scope a re-admitted tree's promotion starts role on (admit's
 // startMidPhaseMembers): the scope of the task whose step role works among the steps that take
 // work (OpenStepsOf, the first in task id order, as the promotion takes each role once), else the
-// plan's merging task. The promotion reads its start's claim (PromotedWorkerClaim), weighs that
-// claim's run against the copy's phase (StartFor) and starts the role (StartPromotedWorker) on it.
-// A run with no plan rows is its issue.
+// one task of the plan that has a merge (record.StoredPlan.OnlyTaskThatMerges). The promotion reads
+// its start's claim (PromotedWorkerClaim), weighs that claim's run against the copy's phase
+// (StartFor) and starts the role (StartPromotedWorker) on it. A run with no plan rows is its issue.
 func (e *Engine) PromotedScope(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (TaskScope, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
 		return noPlanScope(issue), err
 	}
-	task, _ := stored.MergingTask()
+	task, _ := stored.OnlyTaskThatMerges()
 	open := OpenStepsOf(issue)
 	if at := slices.IndexFunc(open, func(step record.RunningStep) bool { return step.Role == role }); at >= 0 {
 		task = open[at].Task

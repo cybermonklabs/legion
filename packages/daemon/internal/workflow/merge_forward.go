@@ -253,10 +253,11 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 // MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue
 // key is judged by: the issue, whether its tree lingers (record.TreeLingers) and the pull request
 // the message is about: the issue's pull request that holds a merge forward of head, whichever
-// task's it is, and the pull request of the issue's task that merges where none does
-// (record.Store.MergePullRequest). It returns the issue and that pull request, with why a message
-// of step about the merge forward asked of head is no longer to be delivered (leftMergeForwardAt),
-// "" while it is. An issue the record does not hold is a nil issue, no pull request and no reason.
+// task's it is, and the issue's merge pull request where none does (record.Store.MergePullRequest:
+// the first task with a merge still to come, else the last merge). It returns the issue and that
+// pull request, with why a message of step about the merge forward asked of head is no longer to be
+// delivered (leftMergeForwardAt), "" while it is. An issue the record does not hold is a nil issue,
+// no pull request and no reason.
 // The daemon's executor is its one caller: it reads the rule in one transaction at each attempt of
 // a row, just before it delivers (the daemon's mergeForwardMessage), so the executor judges each
 // queued row by this rule, and no row outlives the state it was written for. The workflow calls

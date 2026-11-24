@@ -350,10 +350,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
 		}
 
-		// The issue's own pull request is its merge's, the row of the task whose work merges
-		// (record.Store.MergePullRequest), and so is what its review round waits on from GitHub.
-		// Each task's own pull request is served on that task (taskViews), so the review round of
-		// a task that does not merge keeps its served pull request there.
+		// The issue's own pull request is its merge's: the row of its first task with a merge still
+		// to come, else of its last merge (record.Store.MergePullRequest), and so is what its review
+		// round waits on from GitHub. Each task's own pull request is served on that task
+		// (taskViews), so the review round of a task that does not merge keeps its served pull
+		// request there.
 		pr, err := in.Store.MergePullRequest(ctx, in.Tx, issue.Key)
 		if err != nil {
 			return api.State{}, err

@@ -2113,11 +2113,16 @@ type Store interface {
 	// PullRequestOfTask is the pull request of task of issue, the one on the branch task holds
 	// (PullRequest.Task), nil for none ("" is the task of an issue with no plan rows).
 	PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
-	// MergePullRequest is the pull request of the task of issue that merges: the task of the plan
-	// at the issue's generation that merges (StoredPlan.MergingTask), or task "" where the issue
-	// has no plan rows at its generation; nil where that task has none, and where the plan holds no
-	// task that merges.
+	// MergePullRequest is the pull request of the merge of issue: for an issue with plan rows at its
+	// generation, the row of the first task that has a merge, done or to come
+	// (StoredPlan.TasksThatMerge), that is not done, in task id order, else of the last of them; the
+	// row of the task "" where the issue has no plan rows there. nil where that task has none, and
+	// where no task of the plan has a merge.
 	MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
+	// MergePullRequests is the pull request of each task of issue that has a merge, done or to come
+	// (StoredPlan.TasksThatMerge), in task id order; the one row of the task "" where the issue has
+	// no plan rows at its generation. A task with no pull request has none here.
+	MergePullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
 	// TaskPullRequests is each pull request of issue, by task (PullRequest.Task), those of one task
 	// by branch.
 	TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
@@ -2650,6 +2655,9 @@ type Store interface {
 	// generation, whatever its lease or its next_at: the join of the task's needs at that
 	// generation has not ended.
 	TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error)
+	// QueuedPullRequestCloses is the number of each pull request a queued row closing pull requests
+	// of issue at generation (TaskPullRequestsClose) names, in number order; none for no such row.
+	QueuedPullRequestCloses(ctx context.Context, tx pgx.Tx, issue string, generation uint64) ([]int, error)
 	// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
 	// step_stop, queued before the row before, whatever its lease or its next_at: the process of a
 	// stopped task's step may still run.
