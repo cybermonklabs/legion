@@ -154,8 +154,7 @@ func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 // Every description carries its display tree for a caller that sent `Dispatch-Trees: 1`, read
 // as a comment list reads its bodies' (displayTreeReader), so the page parses no description.
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
-	reader, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	query := r.URL.Query()
@@ -171,7 +170,7 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The list is final here, so every field registered stands where resolve fills it.
-	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	for index := range body.Priorities {
 		row := &body.Priorities[index]
 		reader.text(&row.DescriptionTree, row.Description)
@@ -517,8 +516,7 @@ func priorityEvent(actor model.Actor, id, change string) model.Event {
 // id answer (refusePriorityWrite). A priority somebody deleted still answers its history: the
 // row is there, and the delete is the last act of it.
 func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	id := r.PathValue("id")

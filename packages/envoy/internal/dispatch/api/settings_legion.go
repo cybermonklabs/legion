@@ -23,9 +23,9 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // getLegionSetting answers GET /api/v1/projects/{key}/legion/daemon with the project's daemon,
@@ -39,11 +39,7 @@ func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return
-	}
-	settings, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project, refs.VisibilityArg(who))
+	settings, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project)
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
 			WriteJSON(w, http.StatusOK, nil)

@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -155,13 +154,11 @@ func tallyOf(tallies map[string]*collaboratorTally, id string) *collaboratorTall
 // assignee, one events read by issue_key and type (the (issue_key, seq) index), one listener call
 // and, for sessions the registry names no title for, one title read.
 func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	ctx := r.Context()
 	key := r.PathValue("key")
-	viewer := refs.VisibilityArg(who)
 	var assignee *string
 	if err := s.deps.Store.Pool.QueryRow(ctx, `select assignee from issues where key = $1`, key).Scan(&assignee); err != nil {
 		s.writeHandlerError(w, err)

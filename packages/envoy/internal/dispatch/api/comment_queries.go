@@ -242,14 +242,12 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The comment and its replies are hydrated in one pass: one read each of their mentions, their
-	// deliveries and their reply blocks, and one of which sessions those name the reader sees.
-	thread, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, append([]model.Comment{comment}, replies...))
+	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), who, comments[0].Anchor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	thread[0].AnchorPosition, err = s.anchorBlock(r.Context(), who, thread[0].Anchor)
+	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

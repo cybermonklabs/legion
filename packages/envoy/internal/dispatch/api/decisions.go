@@ -239,7 +239,6 @@ func (s *server) specOpenQuestions(
 func (s *server) readDecisions(
 	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader,
 ) ([]model.Decision, error) {
-	viewer := refs.VisibilityArg(who)
 	markdown, sections, err := s.decisionSections(ctx, who, document.ID)
 	if err != nil {
 		return nil, err
@@ -763,6 +762,9 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	// Resolved before any connection is held: the decision is read as the caller reads it.
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	var input keepDecisionInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
@@ -779,7 +781,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	blockID := r.PathValue("block_id")
-	decision, err := s.keptDecision(r.Context(), actor, document, blockID)
+	decision, err := s.keptDecision(r.Context(), who, document, blockID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

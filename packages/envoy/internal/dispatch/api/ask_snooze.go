@@ -48,7 +48,6 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	who, ok := s.readerOf(w, r)
 	askID, err := parseAskID(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -124,7 +123,6 @@ func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	who, ok := s.readerOf(w, r)
 	askID, err := parseAskID(r)
 	if err != nil {
 		s.writeHandlerError(w, err)

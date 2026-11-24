@@ -122,7 +122,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded, issueHeld && keep)
+	s.writeListAnswer(w, key, encoded, issueHeld)
 }
 
 // keptViewOf is what a kept list answer read for who is filed under beside the owner the request
@@ -290,7 +290,6 @@ func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, o
 	default:
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
-	viewer := refs.VisibilityArg(who)
 	if len(options.ids) > 0 {
 		return s.readEventRows(ctx, who, eventSelect+`
 			where `+predicate+` and e.id = any($2)
