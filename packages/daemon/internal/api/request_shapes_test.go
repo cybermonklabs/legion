@@ -81,11 +81,17 @@ var frozenPluginRequests = map[string]reflect.Type{
 }
 
 // pluginRequests is every route that decodes a body a plugin sends, with the type its handler
-// decodes that body into: the frozen rows, then each entry's rows in the build's order.
+// decodes that body into: the frozen rows, then each entry's rows in the build's order, less every
+// route an entry retires (RemovedRoutes). A retired route answers every call with its refusal and
+// reads no body, and the record of the retiring entry's number holds no request of it, so a revert
+// that retires a route an earlier entry or a numbered one added leaves the frozen rows as they are.
 func pluginRequests() map[string]reflect.Type {
 	requests := maps.Clone(frozenPluginRequests)
 	for _, rows := range entriesTestRows() {
 		maps.Copy(requests, rows.requests)
+	}
+	for route := range RemovedRoutes() {
+		delete(requests, route)
 	}
 	return requests
 }

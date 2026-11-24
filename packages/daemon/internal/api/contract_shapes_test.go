@@ -1543,7 +1543,8 @@ func allShapeProblems(records map[shapeKey]contractShape, served map[shapeKey]an
 // One record for each answer the table names, at each contract of SupportedContracts from the
 // later of the floor and that answer's arrival up to this daemon's own, and no record for any
 // other pair. The records are this build's: the frozen ones and those the entry fixtures compose
-// (shapeRecordsOfBuild). An answer nobody recorded fails here rather than passing unseen, and an
+// (shapeRecordsOfBuild), each held to its own contract's rows (recordSetProblems), since an entry
+// may undo an earlier one. An answer nobody recorded fails here rather than passing unseen, and an
 // answer no plugin parses — the operator's claim answers, the controller's secret and credential —
 // is no row of the table and has no record to keep.
 //
@@ -1598,23 +1599,48 @@ func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
 }
 
 // recordSetProblems is every problem of the record set of this build, its entry fixtures read from
-// dir, against the case above.
+// dir, against the case above. Each contract is held to its own tables: a numbered entry's to the
+// rows the composition starts from (lastNumberedRecords), and an entry's number to the rows the
+// composition gives it. A record of a numbered entry is frozen, so the frozen rows say all of it:
+// every answer from its arrival up, with the row's noBody, and each domain the values that arrived
+// at or below its contract. An entry may undo an earlier one, taking an answer, a value or a body
+// out again while the rows only ever gain, so the record of an entry's number is what the
+// composition gives it (composeEntries): each answer it holds is a row of that contract's
+// answers, and each value a value of that contract's rows arrived at or below it.
 func recordSetProblems(t *testing.T, dir string) []string {
 	t.Helper()
 	problems := []string{}
 	errorf := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
 	onFile := shapeRecordsOfBuild(t, dir)
-	noBody := map[AnswerID]bool{}
+	base := lastNumberedRecords(t)
+	tables := map[int]contractRecords{}
+	for _, contract := range SupportedContracts() {
+		if contract <= LastNumberedContract {
+			tables[contract] = base
+		}
+	}
+	for _, contract := range buildRecords(t, dir) {
+		tables[contract.Contract] = contract
+	}
+	// rows is the row of each answer a record may hold, by contract and answer; want is the pairs
+	// a record must hold, every answer of a numbered entry's contract from its arrival up.
+	rows := map[shapeKey]Answer{}
 	want := map[shapeKey]bool{}
+	for contract, table := range tables {
+		for _, answer := range table.Answers {
+			if answer.Since > contract {
+				continue
+			}
+			key := shapeKey{contract: contract, answer: answer.ID}
+			rows[key] = answer
+			if contract <= LastNumberedContract {
+				want[key] = true
+			}
+		}
+	}
 	for _, answer := range Answers() {
-		noBody[answer.ID] = answer.NoBody
 		if answer.Since > DaemonAPIVersion() {
 			errorf("the %s answer arrived at %d, above this daemon's own contract %d", answer.ID, answer.Since, DaemonAPIVersion())
-		}
-		for _, contract := range SupportedContracts() {
-			if answer.Since <= contract {
-				want[shapeKey{contract: contract, answer: answer.ID}] = true
-			}
 		}
 	}
 	// The table itself: every row names an answer of Answers, so a row no answer carries is red
@@ -1640,14 +1666,16 @@ func recordSetProblems(t *testing.T, dir string) []string {
 			errorf("the records hold the %s answer at contract %d twice", record.Answer, record.Contract)
 		}
 		seen[key] = true
-		if !want[key] {
-			errorf("the records hold the %s answer at contract %d, which is no pair of SupportedContracts and Answers: the answer arrived later, or the contract is one this daemon describes no shape for",
+		row, held := rows[key]
+		if !held {
+			errorf("the records hold the %s answer at contract %d, which is no pair of SupportedContracts and the answers of that contract's rows: the answer arrived later, or the contract is one this daemon describes no shape for",
 				record.Answer, record.Contract)
 			continue
 		}
-		if record.NoBody != noBody[record.Answer] {
+		frozen := record.Contract <= LastNumberedContract
+		if frozen && record.NoBody != row.NoBody {
 			errorf("the records hold the %s answer at contract %d with noBody %t and answers.go says %t",
-				record.Answer, record.Contract, record.NoBody, noBody[record.Answer])
+				record.Answer, record.Contract, record.NoBody, row.NoBody)
 		}
 		if record.NoBody && len(record.KeyPaths) != 0 {
 			errorf("the records hold the %s answer at contract %d as writing no body and give it %d key paths",
@@ -1657,21 +1685,30 @@ func recordSetProblems(t *testing.T, dir string) []string {
 			errorf("the records hold the %s answer at contract %d with its key paths out of order",
 				record.Answer, record.Contract)
 		}
-		wantDomains := domainsOf(EnumeratedFields(), record.Answer, record.Contract)
+		wantDomains := domainsOf(tables[record.Contract].EnumeratedFields, record.Answer, record.Contract)
 		for path, domain := range record.Domains {
 			admitted, declared := wantDomains[path]
 			if !declared {
-				errorf("the records hold a domain of `%s` on the %s answer at contract %d and answers.go's EnumeratedFields declares no such field of that answer",
+				errorf("the records hold a domain of `%s` on the %s answer at contract %d and the rows of that contract declare no such field of that answer",
 					path, record.Answer, record.Contract)
 				continue
 			}
-			if !slices.Equal(domain, admitted) {
+			if frozen && !slices.Equal(domain, admitted) {
 				errorf("the records hold `%s` on the %s answer at contract %d admitting %v and the table says %v: a domain holds the sorted values whose arrival is at or below the contract",
 					path, record.Answer, record.Contract, domain, admitted)
 			}
+			if !frozen && !slices.IsSorted(domain) {
+				errorf("the records hold `%s` on the %s answer at contract %d admitting %v, out of order", path, record.Answer, record.Contract, domain)
+			}
+			for _, value := range domain {
+				if !frozen && !slices.Contains(admitted, value) {
+					errorf("the records hold `%s` on the %s answer at contract %d admitting `%s`, and the rows of that contract admit %v: a domain holds only values whose arrival is at or below the contract",
+						path, record.Answer, record.Contract, value, admitted)
+				}
+			}
 		}
 		for path, admitted := range wantDomains {
-			if _, recorded := record.Domains[path]; !recorded && len(admitted) > 0 {
+			if _, recorded := record.Domains[path]; frozen && !recorded && len(admitted) > 0 {
 				errorf("the records hold no domain of `%s` on the %s answer at contract %d, and the table admits %v there: a record that holds no domain for a field admits no value of it",
 					path, record.Answer, record.Contract, admitted)
 			}
