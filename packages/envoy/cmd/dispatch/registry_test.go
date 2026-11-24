@@ -103,7 +103,7 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 func TestAProcessStoppedWhileWaitingForAdmissionExitsCleanly(t *testing.T) {
 	t.Parallel()
 	// Two Dispatch processes at once: the live peer, and the one waiting for admission beside it.
-	reserveProcessSlots(t, 2)
+	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	peer := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{SigningKey: "the-live-peers-key"})
 	peer.waitHealthy(t)

@@ -17,17 +17,14 @@ import "github.com/sjawhar/envoy/internal/dispatch/store"
 // MaxProcessesAtOnce is the most Dispatch server processes one test binary runs at once against
 // one Postgres. The count is the binary's, not one test's: one `go test` binary is what one lane's
 // server serves, and parallel root tests in it share that server. A process counts from its start
-// until it exits, which is what it holds connections for. cmd/dispatch/process_slots_test.go holds
-// every start to one of this many slots, and refuses by name a test that asks for more at once.
+// until it exits, which is what it holds connections for. Every start takes one of this many slots
+// first (dispatchSlots, cmd/dispatch/process_slots_test.go, says how), and a test that asks for
+// more at once is refused by name.
 //
-// Each binary of cmd/dispatch runs up to 4 at once, as follows. With no tag, most tests are
-// parallel and share the 4 slots: a test's first process waits for a free slot, and the four that
-// run two processes at once reserve both before their first start. The memory binary's tests are
-// parallel too, and TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound reserves its writer and
-// reader. The multiprocess, twobuild and basebuild tests run one at a time, and each takes a free
-// slot for every process it runs at once: three in multiprocess's three-process test, four in
-// twobuild's TestTwoBuildsAnswerEachOthersCLI. A test that comes to need more is refused by name,
-// and this number is raised to what it runs.
+// The peak of each binary of cmd/dispatch: 4 with no tag and with the memory tag, whose parallel
+// tests share the slots; 3 with multiprocess (TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables);
+// 2 with twobuild and with basebuild. A test that comes to need more is refused by name, and this
+// number is raised to what it runs.
 const MaxProcessesAtOnce = 4
 
 // RequiredConnections is what MaxProcessesAtOnce Dispatch processes may open together.

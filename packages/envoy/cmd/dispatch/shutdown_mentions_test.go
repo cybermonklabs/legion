@@ -292,7 +292,7 @@ func waitForSent(
 // data dir would hold its start up to a live window, until that row lapsed (processes.Register).
 //
 // The claim is the real minute. The test pauses at t.Parallel once the next process runs
-// (parallelHoldingItsProcesses), so the minute passes while the serial tests run; the bound is read
+// (dispatchSlots.parallelHoldingItsProcesses), so the minute passes while the serial tests run; the bound is read
 // off when the listener took the last resend, which a pause does not move.
 func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t *testing.T) {
 	listener := newHandoverListener(t)
@@ -313,7 +313,7 @@ func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaim
 	listener.letAnswer()
 	next := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	next.waitHealthy(t)
-	parallelHoldingItsProcesses(t)
+	dispatchSlots.parallelHoldingItsProcesses(t)
 
 	waitForSent(t, database, next, []string{inFlight, queued}, 4,
 		killedAt.Add(model.DeliveryClaimLapse+deliverySweepInterval+sweepMargin))
@@ -349,11 +349,11 @@ func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaim
 // refuses a successor whose signing keys it does not hold (processes.Register).
 //
 // The old process and its successor run at once, so the test reserves both slots before its first
-// start. It pauses at t.Parallel once the old process has exited (parallelHoldingItsProcesses), so
+// start. It pauses at t.Parallel once the old process has exited (dispatchSlots.parallelHoldingItsProcesses), so
 // the claim lease and the sweep interval pass while the serial tests run; the bound is read off
 // when the listener took the last send, which a pause does not move.
 func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T) {
-	reserveProcessSlots(t, 2)
+	dispatchSlots.reserve(t, 2)
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
 	options := dispatchOptions{SigningKey: "rolling-update-mentions-key", Env: map[string]string{"ENVOY_URL": listener.url}}
@@ -401,7 +401,7 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 	listener.letAnswer()
 	old.WaitExit(t, "SIGTERM")
 	exited := time.Now()
-	parallelHoldingItsProcesses(t)
+	dispatchSlots.parallelHoldingItsProcesses(t)
 
 	waitForSent(t, database, successor, []string{inFlight, queued, drained}, 3,
 		exited.Add(model.DeliveryClaimLapse+deliverySweepInterval+sweepMargin))

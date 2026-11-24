@@ -1468,9 +1468,9 @@ func startDispatchProcessWithSettleDelay(t *testing.T, databaseURL string, settl
 // port before it serves. DISPATCH_PORT names the same port, which Dispatch checks against the socket.
 func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatchOptions) *dispatchProcess {
 	t.Helper()
-	// A slot of the lane's server first (takeProcessSlot): a parallel test waits here for another
+	// A slot of the lane's server first (dispatchSlots.take): a parallel test waits here for another
 	// test's process to exit rather than running more processes than the server is sized for.
-	releaseSlot := takeProcessSlot(t)
+	releaseSlot := dispatchSlots.take(t)
 	// The server must allow what this process and every other Dispatch process this test binary
 	// runs may open (connection_ceiling_test.go), since a server that allows fewer fails later and
 	// elsewhere.

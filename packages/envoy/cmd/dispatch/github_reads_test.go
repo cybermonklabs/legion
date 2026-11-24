@@ -44,7 +44,7 @@ const gitHubReadsSigningKey = "github-reads-signing-key"
 func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 	t.Parallel()
 	// Two Dispatch processes at once, the second started while the first runs.
-	reserveProcessSlots(t, 2)
+	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	_, natsURL := testnats.Start(t)
 	// failure is the body GitHub answers the webhook's deliveries listing with, with a 503; nil

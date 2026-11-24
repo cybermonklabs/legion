@@ -34,7 +34,7 @@ const olderBuildSigningKey = "older-build-signing-key"
 func TestAnOlderBuildServesOverANewerStoreSchema(t *testing.T) {
 	t.Parallel()
 	// Two Dispatch processes at once: the older build keeps serving while the newer one starts.
-	reserveProcessSlots(t, 2)
+	dispatchSlots.reserve(t, 2)
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()

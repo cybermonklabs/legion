@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// A slotPool serves its takers first come, first served (reserveProcessSlots rests on it): a taker
+// A slotPool serves its takers first come, first served (processSlots.reserve rests on it): a taker
 // of one that comes after a queued taker of two waits behind it even while a slot is free, and the
 // taker of two gets both slots at once, as soon as both are free. With a channel of tokens the
 // taker of one took the free slot, and a taker of two could wait as long as takers of one kept
@@ -51,7 +51,7 @@ func TestASlotPoolServesItsTakersInTurn(t *testing.T) {
 
 // A slot held across a pause at t.Parallel comes back only after the serial tests, so the pool
 // refuses at once, by name, a take that would need it, and a pause that would make a queued take
-// need it (parallelHoldingItsProcesses): a wait that could never end fails instead of hanging.
+// need it (processSlots.parallelHoldingItsProcesses): a wait that could never end fails instead of hanging.
 func TestASlotPoolRefusesAWaitOnASlotHeldAcrossAPause(t *testing.T) {
 	t.Parallel()
 	pool := &slotPool{size: 2, free: 2}
@@ -112,9 +112,9 @@ func TestASecondStartNeverWaitsForASlot(t *testing.T) {
 	t.Run("a parallel test with no reservation", func(t *testing.T) {
 		t.Parallel()
 		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, false), state)
-		if !strings.Contains(stopped, "reserveProcessSlots") {
+		if !strings.Contains(stopped, "dispatchSlots.reserve") {
 			t.Fatalf("the second start of a parallel test with no reservation stopped with %q, want it refused, "+
-				"naming reserveProcessSlots", stopped)
+				"naming dispatchSlots.reserve", stopped)
 		}
 	})
 	t.Run("a parallel test that reserved two", func(t *testing.T) {
@@ -167,7 +167,7 @@ func slotsWithATakeOfTwoQueued(t *testing.T, reserve bool) *processSlots {
 // stopped, empty when it took a slot (whose release t's cleanup runs). It waits a bounded time, so
 // a start that waits for a slot fails the test by name, saying it waited with state, instead of
 // hanging it.
-func startOnItsOwnGoroutine(t *testing.T, slots *processSlots, state string) (stopped string) {
+func startOnItsOwnGoroutine(t testing.TB, slots *processSlots, state string) (stopped string) {
 	t.Helper()
 	answered := make(chan string, 1)
 	go func() {
@@ -184,6 +184,15 @@ func startOnItsOwnGoroutine(t *testing.T, slots *processSlots, state string) (st
 	}
 }
 
+// namedTB is a test as processSlots sees it under another name: everything but Name is the
+// wrapped test's, its cleanups, its Setenv and its failures among them.
+type namedTB struct {
+	testing.TB
+	name string
+}
+
+func (n namedTB) Name() string { return n.name }
+
 // Sibling subtests are tests of their own (processSlots): parallel subtests each take their own
 // first slot. With one count for a whole root test, the second sibling's first start counted the
 // first sibling's process as its own and was refused (dispatch-memory job 138518824605, every row
@@ -193,15 +202,18 @@ func startOnItsOwnGoroutine(t *testing.T, slots *processSlots, state string) (st
 // rows do.
 func TestASubtestHoldsTheSlotsOfTheTestsAboveIt(t *testing.T) {
 	t.Parallel()
+	// Sibling b starts while sibling a holds its slot, on every run. Two real parallel subtests
+	// overlap only when the scheduler runs both at once, and in the package's whole run the
+	// -parallel slots can all be held by tests of a minute or more, so no bound on a wait for the
+	// other sibling would be both reliable and short. The siblings here are named as subtests of
+	// this parallel row are, and take their slots one after the other, each held until the row ends.
 	t.Run("parallel siblings", func(t *testing.T) {
 		slots := newProcessSlots(2)
-		for _, name := range []string{"a", "b"} {
-			t.Run(name, func(t *testing.T) {
-				t.Parallel()
-				if stopped := startOnItsOwnGoroutine(t, slots, "two slots and a sibling holding one"); stopped != "" {
-					t.Fatalf("a parallel subtest's first start stopped (%s), want a slot of its own", stopped)
-				}
-			})
+		for _, sibling := range []string{"a", "b"} {
+			named := namedTB{TB: t, name: t.Name() + "/" + sibling}
+			if stopped := startOnItsOwnGoroutine(named, slots, "two slots, the other sibling holding one"); stopped != "" {
+				t.Fatalf("sibling %s's first start, its sibling holding a slot, stopped (%s), want a slot of its own", sibling, stopped)
+			}
 		}
 	})
 	t.Run("rows one after another", func(t *testing.T) {

@@ -11,21 +11,21 @@ import (
 
 // dispatchSlots are the slots of the lane's Postgres that this test binary's Dispatch processes
 // hold, one each from its start until it exits: at most testlimits.MaxProcessesAtOnce, the most
-// every lane's server is sized to serve at once (requireConnectionCeiling refuses a start past it).
-// startDispatchProcessWith and the memory harness take a process's slot through takeProcessSlot;
-// reserveProcessSlots and parallelHoldingItsProcesses are the two other ways a test holds slots.
+// every lane's server is sized to serve at once. startDispatchProcessWith and the memory harness
+// take a process's slot with take; reserve and parallelHoldingItsProcesses are the two other ways
+// a test holds slots.
 //
 // No test waits for a slot while it holds one, and that is what ends every wait. A test counts the
 // slots of the tests above it as its own (processSlots):
 //   - A test's first process waits for a slot, and the test holds none while it waits.
 //   - A test that runs n processes at once and calls t.Parallel reserves them before its first
-//     start (reserveProcessSlots). It takes the n at once, in its turn, and holds none while it
-//     waits.
+//     start (reserve). It takes the n at once, in its turn, and holds none while it waits.
 //   - A process that a test starts while another of its own runs takes one of the test's reserved
 //     slots. A test that runs alone (no t.Parallel in it or above it) can instead take a free slot
-//     at once, because the only other holders it can meet are the paused tests below. Neither
-//     waits. In a parallel test with no reservation the start is refused by name, whatever the
-//     slots' state, so such a test fails on every run, not only when other tests hold the slots.
+//     at once, because the only other holders it can meet are the paused tests of the next
+//     bullet. Neither waits. In a parallel test with no reservation the start is refused by name,
+//     whatever the slots' state, so such a test fails on every run, not only when other tests
+//     hold the slots.
 //   - A test paused at t.Parallel with a process running (parallelHoldingItsProcesses) holds its
 //     slots until the serial tests have run and its turn comes again. The pool counts those slots
 //     as paused and refuses at once, by name, a wait that could need one (slotPool).
@@ -34,26 +34,6 @@ import (
 // waiter gets its slots as soon as enough are back: the queue drains whatever the number of tests
 // and whatever -parallel is.
 var dispatchSlots = newProcessSlots(testlimits.MaxProcessesAtOnce)
-
-// takeProcessSlot is the slot of dispatchSlots that a Dispatch process of t holds from its start
-// until it exits (processSlots.take).
-func takeProcessSlot(t testing.TB) (release func()) {
-	t.Helper()
-	return dispatchSlots.take(t)
-}
-
-// reserveProcessSlots takes n slots of dispatchSlots for t (processSlots.reserve).
-func reserveProcessSlots(t testing.TB, n int) {
-	t.Helper()
-	dispatchSlots.reserve(t, n)
-}
-
-// parallelHoldingItsProcesses calls t.Parallel with t's processes still running
-// (processSlots.pauseParallel).
-func parallelHoldingItsProcesses(t *testing.T) {
-	t.Helper()
-	dispatchSlots.pauseParallel(t)
-}
 
 // processSlots is a slotPool and the slots each test holds of it, by test name. A test counts the
 // slots of the tests above it as its own: a subtest that waited for a slot while its parent's
@@ -86,7 +66,7 @@ func (s *processSlots) slotsOf(name string) *testSlots {
 }
 
 // lineOf is the testSlots of the test name and of each test above it, nearest first, of those
-// that hold slots or are name itself. The caller holds s.mu.
+// with an entry, and name's own, made if it has none. The caller holds s.mu.
 func (s *processSlots) lineOf(name string) []*testSlots {
 	line := []*testSlots{s.slotsOf(name)}
 	for parent, cut := cutLast(name); cut; parent, cut = cutLast(parent) {
@@ -127,36 +107,39 @@ func (s *processSlots) take(t testing.TB) (release func()) {
 		running += slots.inUse + slots.held
 	}
 	own := line[0]
-	// Counted before the take, so that a start of this test on another goroutine meanwhile sees a
-	// process of this test running.
+	// Counted before the pool's slot is taken, so that a start of this test on another goroutine
+	// meanwhile sees a process of this test running.
 	own.held++
 	s.mu.Unlock()
-	forget := func() {
+	if err := s.poolSlot(t, running); err != nil {
 		s.mu.Lock()
 		own.held--
 		s.mu.Unlock()
-	}
-	if running == 0 {
-		if err := s.pool.take(1); err != nil {
-			forget()
-			t.Fatalf("%s cannot start a Dispatch process: %v", name, err)
-		}
-		return s.releaseLater(t, func() { own.held-- }, 1)
-	}
-	if refused := requireRunsAlone(t); refused != nil {
-		forget()
-		t.Fatalf("%s starts a Dispatch process while %d of its own, or of a test above it, run, and other tests "+
-			"can run beside it (%v). A parallel test that runs several processes at once reserves them before "+
-			"its first start (reserveProcessSlots(t, n)), so that it never waits for a slot while it holds one",
-			name, running, refused)
-	}
-	if !s.pool.takeFree(1) {
-		forget()
-		t.Fatalf("%s starts its process number %d at once, and no process slot is free: tests paused at "+
-			"t.Parallel hold %d of the %d (testlimits.MaxProcessesAtOnce), and they come back only after the "+
-			"serial tests", name, running+1, s.pool.pausedNow(), s.pool.size)
+		t.Fatalf("%s cannot start a Dispatch process: %v", name, err)
 	}
 	return s.releaseLater(t, func() { own.held-- }, 1)
+}
+
+// poolSlot takes a slot of the pool for a process of t, which already runs running processes of
+// its own or of tests above it, or answers why it cannot. A first process waits for its slot. A
+// further process of a test that runs alone takes a free slot at once, and of a parallel test is
+// refused: it would wait for a slot while its test holds one.
+func (s *processSlots) poolSlot(t testing.TB, running int) error {
+	if running == 0 {
+		return s.pool.take(1)
+	}
+	if refused := requireRunsAlone(t); refused != nil {
+		return fmt.Errorf("it starts a process while %d of its own, or of a test above it, run, and other tests can "+
+			"run beside it (%v). A parallel test that runs several processes at once reserves them before its "+
+			"first start (dispatchSlots.reserve(t, n)), so that it never waits for a slot while it holds one",
+			running, refused)
+	}
+	if !s.pool.takeFree(1) {
+		return fmt.Errorf("it starts its process number %d at once, and no process slot is free: tests paused at "+
+			"t.Parallel hold %d of the %d (testlimits.MaxProcessesAtOnce), and they come back only after the "+
+			"serial tests", running+1, s.pool.pausedNow(), s.pool.size)
+	}
+	return nil
 }
 
 // releaseLater answers the call that runs forget under s.mu and gives n slots back to the pool,
@@ -176,10 +159,10 @@ func (s *processSlots) releaseLater(t testing.TB, forget func(), n int) func() {
 }
 
 // reserve takes n slots for t, all of them before it returns, and holds them until t ends (less
-// any pauseParallel gives back). A parallel test that runs n Dispatch processes at once calls it
-// before its first start, and each start of it or of its subtests then takes a reserved slot
-// without waiting (take). It takes the n at once, in its turn, and neither t nor a test above it
-// holds a slot while it waits.
+// any parallelHoldingItsProcesses gives back). A parallel test that runs n Dispatch processes at
+// once calls it before its first start, and each start of it or of its subtests then takes a
+// reserved slot without waiting (take). It takes the n at once, in its turn, and neither t nor a
+// test above it holds a slot while it waits.
 func (s *processSlots) reserve(t testing.TB, n int) {
 	t.Helper()
 	name := t.Name()
@@ -206,8 +189,8 @@ func (s *processSlots) reserve(t testing.TB, n int) {
 	own.reserved += n
 	s.mu.Unlock()
 	t.Cleanup(func() {
-		// What the reservation still holds: pauseParallel gives back a slot the test no longer uses
-		// before it pauses.
+		// What the reservation still holds: parallelHoldingItsProcesses gives back a slot the test
+		// no longer uses before it pauses.
 		s.mu.Lock()
 		held := own.reserved
 		own.reserved = 0
@@ -216,14 +199,20 @@ func (s *processSlots) reserve(t testing.TB, n int) {
 	})
 }
 
-// pauseParallel calls t.Parallel for a test whose Dispatch processes keep running across the
-// pause, so a product timer they wait out (a claim lapse, a sweep interval) passes while the
-// serial tests run rather than after. Before it pauses it gives back each reserved slot no process
-// uses, and counts the rest as held across the pause (slotPool.pause), which refuses by name a
-// pause that a queued start could then wait on.
-func (s *processSlots) pauseParallel(t *testing.T) {
+// parallelHoldingItsProcesses calls t.Parallel for a top-level test whose Dispatch processes keep
+// running across the pause, so a product timer they wait out (a claim lapse, a sweep interval)
+// passes while the serial tests run rather than after. Before it pauses it gives back each reserved
+// slot no process uses, and counts the rest as held across the pause (slotPool.pause), which
+// refuses by name a pause that a queued start could then wait on. A subtest is refused by name: a
+// top-level test's pause lasts until the serial tests have run, which is what the pool counts on,
+// and a subtest's pause lasts only until its parent returns.
+func (s *processSlots) parallelHoldingItsProcesses(t *testing.T) {
 	t.Helper()
 	name := t.Name()
+	if _, sub := cutLast(name); sub {
+		t.Fatalf("%s pauses at t.Parallel holding its processes, and it is a subtest: only a top-level test's "+
+			"pause lasts until the serial tests have run, which is what the pool counts paused slots by", name)
+	}
 	s.mu.Lock()
 	slots := s.slotsOf(name)
 	idle := slots.reserved - slots.inUse
