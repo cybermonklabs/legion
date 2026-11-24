@@ -578,7 +578,7 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
 	"POST /api/v1/deploys": {
 		Status: http.StatusCreated, Response: deployResponse{}, Request: deployInput{},
-		Also: []routeAnswer{{Status: http.StatusOK, Response: deployResponse{}}},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: deployResponse{}}},
 	},
 	"GET /api/v1/deploys": {
 		Status: http.StatusOK, Response: deploysResponse{}, Params: deploysQuery{},

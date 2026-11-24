@@ -97,6 +97,7 @@ func TestADeployIsRecordedOnceForEachProductionRunAndMovedByItsReRun(t *testing.
 func TestAWorkflowRunKeepsItsKnownOrUnknownAttempt(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
+	settings := seedDeliverySettings(t, ctx, pool)
 	for _, test := range []struct {
 		name, attempt string
 		want          *int
@@ -105,7 +106,7 @@ func TestAWorkflowRunKeepsItsKnownOrUnknownAttempt(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var item workflowRunItem
-			body := fmt.Sprintf(`{"id":700,"head_sha":%q,"created_at":"2026-11-20T00:00:00Z"%s}`, fmt.Sprintf("%040d", 700), test.attempt)
+			body := fmt.Sprintf(`{"id":700,"head_sha":%q,"head_branch":"main","created_at":"2026-11-20T00:00:00Z"%s}`, fmt.Sprintf("%040d", 700), test.attempt)
 			if err := json.Unmarshal([]byte(body), &item); err != nil {
 				t.Fatal(err)
 			}
@@ -119,6 +120,35 @@ func TestAWorkflowRunKeepsItsKnownOrUnknownAttempt(t *testing.T) {
 			}
 			if (stored.RunAttempt == nil) != (test.want == nil) || test.want != nil && *stored.RunAttempt != *test.want {
 				t.Fatalf("stored attempt = %v, want %v", stored.RunAttempt, test.want)
+			}
+			completed := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
+			if err := UpsertRunJobs(ctx, pool, "acme/widgets", 700, []DeliveryJob{{
+				JobID: 700, Name: settings.Production().JobNames[0], CompletedAt: &completed, Conclusion: DeliveryJobConclusionSuccess,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := RecordProductionDeploys(ctx, pool, settings, events.NewBroker()); err != nil {
+				t.Fatal(err)
+			}
+			deploys, err := CurrentDeploys(ctx, pool, "acme/widgets")
+			if err != nil || len(deploys) != 1 {
+				t.Fatalf("deploy record = %+v, %v", deploys, err)
+			}
+			got := deploys[0].RunAttempt
+			if (got == nil) != (test.want == nil) || test.want != nil && *got != *test.want {
+				t.Fatalf("deploy attempt = %v, want %v", got, test.want)
+			}
+			wire, err := json.Marshal(deploys[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(wire, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			value, present := decoded["run_attempt"]
+			if !present || test.want == nil && value != nil || test.want != nil && value != float64(*test.want) {
+				t.Fatalf("daemon's run_attempt field = %s, want explicit null or attempt 2", wire)
 			}
 		})
 	}
