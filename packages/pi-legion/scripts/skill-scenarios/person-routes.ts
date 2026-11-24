@@ -31,11 +31,13 @@ const PERSON_SCOPE = "model.ScopePerson";
  * literal for a fixed segment and any other expression for one of the caller's values. */
 const CLIENT_PATH = /\[\s*"api",\s*"v1"\s*[,\]]/g;
 /** The calls a path is sent by, read off the text before the path: `this.#json`,
- * `this.#jsonAnswer` or `this.#form` with the method before it; `this.#upload`, which posts it;
- * and a `const` the path is bound to, directly, as either arm of a `? :`, or as the URL
- * `this.#url` makes of it, which a later call of the same method of the client sends. */
+ * `this.#jsonAnswer` or `this.#form` with the method before it; `this.#upload` and
+ * `this.#writingNothing`, which post it; and a `const` the path is bound to, directly, as either
+ * arm of a `? :`, or as the URL `this.#url` makes of it, which a later call of the same method of
+ * the client sends: one of those first three or `this.#send` given the method and the const, or
+ * `this.#writingNothing` given the const, which posts it. */
 const SENT = /this\.#(?:json|jsonAnswer|form)(?:<[^()]*>)?\(\s*"([A-Z]+)",\s*$/;
-const UPLOADED = /this\.#upload(?:<[^()]*>)?\(\s*$/;
+const POSTED = /this\.#(?:upload|writingNothing)(?:<[^()]*>)?\(\s*$/;
 const BOUND = /\bconst (\w+) = (?:this\.#url\(|(?:[^;]*[?:] )?)$/;
 /** The end of a method of the client: its closing brace, alone on its line at the class's
  * indentation. */
@@ -141,18 +143,19 @@ function clientRequests(checkout: string): Sent[] {
       throw new Error(`${CLIENT_TS}:${line} opens a route path that no "]" closes`);
     const before = text.slice(Math.max(0, open - 400), open);
     const bound = BOUND.exec(before)?.[1];
-    let method = SENT.exec(before)?.[1] ?? (UPLOADED.test(before) ? "POST" : undefined);
+    let method = SENT.exec(before)?.[1] ?? (POSTED.test(before) ? "POST" : undefined);
     if (method === undefined && bound !== undefined) {
       const rest = text.slice(spelled.end);
       const body = rest.slice(0, METHOD_END.exec(rest)?.index ?? rest.length);
       const sends = new RegExp(
         `this\\.#(?:json|jsonAnswer|form|send)(?:<[^()]*>)?\\(\\s*"([A-Z]+)",\\s*${bound}\\b`
       );
-      method = sends.exec(body)?.[1];
+      const posts = new RegExp(`this\\.#writingNothing(?:<[^()]*>)?\\(\\s*${bound}\\b`);
+      method = sends.exec(body)?.[1] ?? (posts.test(body) ? "POST" : undefined);
     }
     if (method === undefined)
       throw new Error(
-        `${CLIENT_TS}:${line} spells the route path ${text.slice(open, spelled.end).replace(/\s+/g, " ")}, which no call this reads sends: this.#json, this.#jsonAnswer or this.#form given "<METHOD>" and it, this.#upload given it, or a const it is bound to that one of them or this.#send sends later in the same method`
+        `${CLIENT_TS}:${line} spells the route path ${text.slice(open, spelled.end).replace(/\s+/g, " ")}, which no call this reads sends: this.#json, this.#jsonAnswer or this.#form given "<METHOD>" and it, this.#upload or this.#writingNothing given it, or a const it is bound to that one of the first three or this.#send given "<METHOD>", or this.#writingNothing, sends later in the same method`
       );
     sent.push({ method, segments: spelled.segments });
   }

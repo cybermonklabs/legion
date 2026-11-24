@@ -12361,14 +12361,16 @@ await state(file, Number(turn), run);
 // SKILL_SCENARIOS_NATS_URL name when both are set, and otherwise two containers it starts. The
 // harness gives services_up a docker that records its command line and answers `docker port`, so
 // the container branch runs where there is no docker, a pg_sql that answers every query with
-// 100, the max_connections of a server that admits 100, a `go` that records the directory each
-// build runs in and writes a binary naming it, a `bun` that records each read of a label's
-// daemon facts (label_facts) with the work directory and the build it was given, and refuses it
-// when FACTS_REFUSE names why, and runs every other call as bun does (services_from's read of
-// the programs a run runs, run-programs.ts, and label_contract's reading of the label's own
-// contract, standin-record.ts), and a load_label whose label's checkout is a directory of the
-// row's own (<work>/checkouts/<label>), holding a contract of the row's own: one that describes
-// every state body unless the row gives the label another (`contracts`).
+// 100, the max_connections of a server that admits 100, a `go` that answers connections_needed's
+// `go run` of store/cmd/connections with 30 connections for each run, the count the rows' numbers
+// are worked from, and records nothing of that call, and records the directory each build runs in
+// and writes a binary naming it, a `bun` that records each read of a label's daemon facts
+// (label_facts) with the work directory and the build it was given, and refuses it when
+// FACTS_REFUSE names why, and runs every other call as bun does (services_from's read of the
+// programs a run runs, run-programs.ts, and label_contract's reading of the label's own contract,
+// standin-record.ts), and a load_label whose label's checkout is a directory of the row's own
+// (<work>/checkouts/<label>), holding a contract of the row's own: one that describes every state
+// body unless the row gives the label another (`contracts`).
 describe("services_up and services_down", () => {
   const stubs = `
 until_true() { shift 2; "$@"; }
@@ -12377,7 +12379,12 @@ nats_ready() { :; }
 start_listener() { started=$(( \${started:-0} + 1 )); envoy_port=410$started; printf '%s %s\\n' "$1" "$2" >>"$S/listeners"; }
 load_label() { P=$work/profiles/$1; co=$work/checkouts/$1; pin=omp@stub; profile=skills-$1; }
 pinned_omp() { printf '%s\\n' "$work/omp"; }
-go() { printf '%s go %s\\n' "$PWD" "$*" >>"$S/go-calls"; printf 'built in %s\\n' "$PWD" >"$3"; }
+go() {
+  case "$*" in
+  'run ./internal/dispatch/store/cmd/connections -process') printf '%s\\n' 30 ;;
+  *) printf '%s go %s\\n' "$PWD" "$*" >>"$S/go-calls"; printf 'built in %s\\n' "$PWD" >"$3" ;;
+  esac
+}
 bun() {
   case $1 in
   */daemon-pane.ts)
@@ -12397,6 +12404,7 @@ docker() {
       "note",
       "fail",
       "given_services",
+      "connections_needed",
       "safe_url",
       "build_dir",
       "go_binary",
