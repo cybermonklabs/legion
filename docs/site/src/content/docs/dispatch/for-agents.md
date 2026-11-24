@@ -214,6 +214,7 @@ Read the document with `dispatch doc-read`, which prints `Document token: sha256
 An upload naming a token the document has moved past is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token it carries now, decide what that version says, and upload again naming that token.
 An upload that names no token is taken for now, unchecked, since older `dispatch` commands cannot name one; name it anyway, because Dispatch will refuse a replacement naming none again once every deployed command sends one.
 An upload that replaces a file or a picture names the token of the version it replaces the same way: `dispatch doc-read` of the file prints that version's `Document token: sha256:…` line after its text, and an upload naming a token of a version since replaced is refused `409 PRECONDITION_FAILED` as a document's is.
+An upload under a file's name without `--force` is refused before anything is sent, and the refusal names the flags to send: `--force --precondition-json '{"document":"sha256:…"}'` with the token of the version that stands, or `--force` alone from a Dispatch that states no token for the file.
 A first upload of a name replaces no version, so it names no token.
 
 A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end

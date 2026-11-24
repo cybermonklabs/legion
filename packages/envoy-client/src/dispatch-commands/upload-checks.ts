@@ -18,17 +18,41 @@ export function artifactUnderName(
   );
 }
 
-/** The refusal of an upload under a name its owner already holds: the document found, its kind,
- *  its newest version and who wrote that version, then the rule that names --force. */
+/** The refusal of an upload under a name its owner already holds: the artifact found, its kind,
+ *  its newest version and who wrote that version, then what to do. A document's is the rule that
+ *  names --force and the token dispatch doc-read prints; a file's or a picture's names the token
+ *  itself, or --force alone (fileNameExistsRule). */
 export function artifactNameExistsProblem(held: Artifact, owner: string): string {
   const versions = held.versions ?? [];
   const newest = versions[versions.length - 1];
+  const rule = held.kind === "doc" ? ARTIFACT_NAME_EXISTS_RULE : fileNameExistsRule(held, newest);
   if (newest === undefined) {
-    return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}), which has no version yet and which ${actorText(held.created_by)} created. ${ARTIFACT_NAME_EXISTS_RULE}`;
+    return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}), which has no version yet and which ${actorText(held.created_by)} created. ${rule}`;
   }
   const authors = (newest.authors ?? []).map(actorText);
   const wroteIt = authors.length === 0 ? actorText(held.created_by) : authors.join(" and ");
-  return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${ARTIFACT_NAME_EXISTS_RULE}`;
+  return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${rule}`;
+}
+
+/**
+ * What the refusal of an upload under a file's or a picture's name says to do. A file holds no
+ * text dispatch doc-edit changes, so its one way to a next version is the upload: with --force
+ * and the token of the version it replaces, which the owner's listing states beside the version
+ * (`versions[].token`) and which the refusal therefore names whole, so the writer sends exactly
+ * what it reads. Where Dispatch states no token for the version, it refuses one on the file's
+ * upload (a build from before file tokens, 400 INVALID_PRECONDITION; a version stored without its
+ * bytes' hash, 409 PRECONDITION_FAILED), so the refusal names --force alone, which it takes.
+ */
+function fileNameExistsRule(
+  held: Artifact,
+  version: NonNullable<Artifact["versions"]>[number] | undefined
+): string {
+  const what = held.kind === "image" ? "picture" : "file";
+  const head = `An upload under the name of a ${what} the owner already holds is refused: it writes that ${what}'s next version, over the bytes it holds.`;
+  if (version?.token === undefined) {
+    return `${head} This Dispatch states no token for the version it would replace and refuses one on the upload of a ${what}: to write the next version, send the upload again with force (--force) alone.`;
+  }
+  return `${head} To write the next version, send the upload again with --force --precondition-json '${JSON.stringify({ document: version.token })}', the token of version ${version.number}, which dispatch doc-read prints for it.`;
 }
 
 /**

@@ -1,5 +1,5 @@
 kind: Fixed
-body: '`dispatch doc-read` of an uploaded file or picture, at its latest version or a named one, ends with that version''s token in the `Document token:` line a document read prints, so the next version''s upload can name it in `--precondition-json`. A Dispatch that states no token for a file prints no line, since it would refuse the token.'
+body: '`dispatch doc-read` of an uploaded file or picture, at its latest version or a named one, ends with that version''s token in the `Document token:` line a document read prints, so the next version''s upload can name it in `--precondition-json`. A Dispatch that states no token for a file prints no line, since it would refuse the token. `dispatch artifact` under the name of a file or picture its owner holds is refused with only flags that Dispatch takes: `--force --precondition-json` with the standing version''s token written out, or `--force` alone from a Dispatch that states no token for the file, and no `dispatch doc-edit`, which edits no file. Until now it named `--force` and a token, which Dispatch refused for a file.'
 time: 2026-11-22T15:07:21.301301161Z
 custom:
     Issue: pr5013
