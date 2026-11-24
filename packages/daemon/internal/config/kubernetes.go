@@ -452,8 +452,8 @@ var imageDigestRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 // daemon logs in with at boot and again before each launcher credential expires, reading the file
 // each time so the kubelet's rotation is picked up (no person approves the login, and the key it
 // wins lives only in process memory); the audience of the projected token every pod carries for
-// the broker; and that pod token's lifetime. The audience defaults to the broker's own
-// (`agent-secrets`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
+// the broker; and that pod token's lifetime. The audience defaults to Cipher's own
+// (`cipher`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
 // Legion worker token; the API server issues none under 600. ExchangeAudience is the audience of a
 // second projected token every enrolled pod carries, the identity the broker's exchange trades for
 // a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); empty, no pod carries one.
@@ -465,12 +465,15 @@ type AgentSecretsConfig struct {
 	ExchangeAudience   string
 }
 
+// DefaultAgentSecretsAudience is the audience an agent_secrets block that names none settles on,
+// Cipher's; the key table prints it as the block's default.
+const DefaultAgentSecretsAudience = "cipher"
+
 const (
-	agentSecretsKey             = kubernetesKey + ".agent_secrets"
-	defaultAgentSecretsAudience = "agent-secrets"
-	defaultTokenExpirySeconds   = 3600
-	minTokenExpirySeconds       = 600
-	maxTokenExpirySeconds       = 3600
+	agentSecretsKey           = kubernetesKey + ".agent_secrets"
+	defaultTokenExpirySeconds = 3600
+	minTokenExpirySeconds     = 600
+	maxTokenExpirySeconds     = 3600
 )
 
 // readAgentSecrets reads `runtime.kubernetes.agent_secrets`: nil when absent, every member checked.
@@ -488,7 +491,7 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if fields["operator"] != nil {
 		return nil, fmt.Errorf("%s.operator was removed (LEGION-664): the daemon logs in with its own ServiceAccount token (token_file), which no person approves, so it names no approver; delete the key", agentSecretsKey)
 	}
-	block := &AgentSecretsConfig{Audience: defaultAgentSecretsAudience, TokenExpirySeconds: defaultTokenExpirySeconds}
+	block := &AgentSecretsConfig{Audience: DefaultAgentSecretsAudience, TokenExpirySeconds: defaultTokenExpirySeconds}
 	if block.URL, err = requiredString(fields["url"], agentSecretsKey+".url", ""); err != nil {
 		return nil, err
 	}

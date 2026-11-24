@@ -321,8 +321,10 @@ const legionClaimView = z.object({
    * running agent — a launcher that refused the start, a failed init container, a pod that never
    * became ready. Each is absent until it happens, and the two are separate because they answer
    * separate questions: a claim that cannot start and a claim that keeps dying are different
-   * faults. `lastReady` is when the claim's agent last said it could be prompted, which dates
-   * both: a cause older than it is one the agent running now has already survived. */
+   * faults. `lastReady` is when the claim's agent last said it could be prompted, which dates the
+   * death: a death older than it is one the agent running now has already survived. The daemon
+   * drops the start failure when the agent says it is ready, so one it records is from after
+   * `lastReady`; a claim an older daemon left waiting can still carry one from before. */
   lastDeathCause: nonEmptyString.optional(),
   lastStartFailure: nonEmptyString.optional(),
   lastReady: timestamp.optional(),
@@ -1774,8 +1776,9 @@ export const LegionOperatorClaimResponse = z.object({
   lastTurnEnd: timestamp.optional(),
   /** Why the claim's process was last found gone, why its last start did not produce a running
    * agent, and when its agent last said it could be prompted; each absent until it happens. The
-   * two causes answer separate questions and never overwrite each other, and `lastReady` dates
-   * them. `legion claims list --json` serves them. */
+   * two causes answer separate questions and never overwrite each other. `lastReady` dates the
+   * death; the daemon drops the start failure when the agent says it is ready.
+   * `legion claims list --json` serves them. */
   lastDeathCause: nonEmptyString.optional(),
   lastStartFailure: nonEmptyString.optional(),
   lastReady: timestamp.optional(),

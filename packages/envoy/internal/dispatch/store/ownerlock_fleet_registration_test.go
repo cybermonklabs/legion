@@ -42,6 +42,7 @@ const registrationGateBound = 5 * time.Second
 // up only fleetLockMargin before the test binary's deadline, after the row's wait gives up and
 // names it, so no bound but the function's can refuse it first.
 func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
+	t.Parallel()
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
 	mine := registerFleetProcess(t, s, OwnerLockProtocol, 0)

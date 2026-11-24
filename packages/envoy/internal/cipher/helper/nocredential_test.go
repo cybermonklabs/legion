@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const noCredentialMsg = "no machine credential; run: agent-secrets machine login, and have a human approve it"

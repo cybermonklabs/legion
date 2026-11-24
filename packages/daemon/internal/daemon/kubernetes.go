@@ -56,8 +56,8 @@ var workerImageTools = sandbox.Tools{
 // imageProbeRetry is how often the daemon tries its worker image again after an attempt that said
 // nothing definitive: the daemon's backoff, bounded like `legion probe-image`'s at six attempts.
 // Its transient outcomes (a pod that never finished, a kubelet failure, a probe that exited
-// bootprobe.NoVerdictExit because a TLS run or a check had no verdict) can repeat for a reason no
-// wait changes, such as a memory limit too small for Oh My Pi or a client that never answers, so
+// bootprobe.NoVerdictExit because a check had no verdict) can repeat for a reason no wait
+// changes, such as a memory limit too small for Oh My Pi or a command that never answers, so
 // an unbounded retry would hold a deterministic refusal as a boot that never ends. A probe pod
 // the pool has no room for is no such outcome: it is waited on at the policy's longest interval,
 // outside the six (bootprobe.Run, Outcome.Waiting), since a full pool is the pool's state and not
@@ -263,43 +263,20 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 
 // probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
 // one Oh My Pi at a time, each briefly (pi.agents, the plugin's load, the session-storage
-// setting), runs no lane, holds its TLS clients and headless Chromium to the chains its own server
-// serves and to two public test sites, and exits. It reserves 500m so the probe ends at least 60 s
-// inside its 240 s command budget at the defaults where the public test sites answer or refuse at
-// once. Five runs of `legion probe-image --skip-agent-models` at 1 CPU under gVisor (2026-11-18)
-// took 51.9–76.2 s, 19.40–35.99 s of it on CPU. Predicted at 250m (CPU time × 4, plus the wall time
-// off CPU), the worst takes 184 s, 56 s inside the budget, short of the 60 s; at 500m (CPU time × 2)
-// it takes 112 s, 128 s inside. The runs are at 1 CPU because the builds namespace refuses a Job
-// under 1 CPU, so the 500m figures are predictions. Once the probe served its own TLS chains
-// (2026-11-20), its runs in the worker image of 1c7c825367 in a CPU-quota scope on a development
-// host took 121.9–147.3 s at 500m (eleven runs, 44.0–56.6 s on CPU), 93 s inside the budget at the
-// slowest, and 73.5–104.4 s at 1 CPU (sixteen runs), with a peak of 374 MiB; on that host main's
-// probe took 66.5–91.1 s at 1 CPU, slower than under gVisor. A public test site that hangs, as a
-// blackhole does, costs at most one run at each of the two, a client's, or the site's positive
-// control's where it hangs from the start, since no client asks a site that gave no verdict
-// (probeTLSClients). While the served copies of the public chains are asked, only node, CodeGraph's
-// node, wget and git ask the public sites, each with a 20 s limit, so such a run stops at 20 s, up
-// to procgroup.StopGrace and procgroup.WaitDelay more for the stop, and the two add at most 44 s,
-// which would end the slowest run above at about 191 s, 49 s inside the budget, short of the 60 s
-// but inside it, so it takes no exit 75. Once a served copy is unasked, as every one is once its
-// leaf has expired (2027-05-03 for the leaves vendored on 2026-11-20; the probe warns of a leaf 30
-// days before its end), every client asks that public site, so a site that starts to hang at bq's
-// turn costs 60 s and at Chromium's 90 s, each up to 2 s more: at Chromium's turn at both sites
-// that ends the slowest run near 331 s and at bq's near 271 s, past the budget, so the probe's
-// deadline cuts it and it exits 75. On 2026-11-21, on the same host at 500m and a one-minute load
-// of 660 to 1,079 on 288 CPUs, a run whose public sites moved to a blackhole once their positive
-// controls passed took 264.6 s and one beside it with the sites left alone 245.5 s: the blackhole
-// cost 19 s, since node, the first client asked, gave up at each after its own 10 s connect
-// timeout; at that load neither run, which had no probe budget, kept inside 240 s, so the pair
-// measures the hung site's cost, not the margin. None of these runs met a cold image: a TLS run its
-// own limit stops at a site an earlier run reached runs once more at two times that limit
-// (probeTLSClients), which adds up to two times the limit for each such run to a probe on a node
-// where the image is new, and a probe its deadline cuts exits 75, which the daemon reads as a
-// transient attempt.
-// Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
-// kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
-// still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk
-// and a 1Gi disk request. The probe runs at every boot, before anything is served, and a probe that
+// setting), checks the image's capability rows and the roles' overlays, runs no lane, and exits.
+// Its 500m CPU was set while the command also ran a TLS check of the image's clients, the longest
+// part of its run, which it no longer makes, and every timing measured for the value came from a
+// probe that ran that check: five runs at 250m / 1Gi, before that check held gcloud, bq, az, mise,
+// wget, git, go, kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe; five
+// runs of `legion probe-image --skip-agent-models` at 1 CPU under gVisor (2026-11-18) took
+// 51.9–76.2 s, 19.40–35.99 s of it on CPU; and runs in the worker image of 1c7c825367 in a
+// CPU-quota scope on a development host took 121.9–147.3 s at 500m (eleven runs) and
+// 73.5–104.4 s at 1 CPU (sixteen runs), with a peak of 374 MiB, against the 240 s command budget
+// of the defaults. No run without the TLS check has been measured, so the value is kept until the
+// command's other checks are audited, and a measurement of the probe as it then runs sizes it.
+// The reservation still fits a pool that cannot place a controller or issue pod. It has a 5Gi
+// bound on node disk and a 1Gi disk request. The probe runs at every boot, before anything is
+// served, and a probe that
 // reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
 // could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
 // 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met

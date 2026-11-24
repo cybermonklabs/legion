@@ -146,14 +146,23 @@ test("the first step ends the stuck call's own processes, and only those", async
   const everyone = ["own-runner", "sub-runner", "before", "stuck", "other", "ended", "plain"];
   expect(everyone.filter((name) => pids.has(name))).toEqual(everyone);
 
-  // Every one of them is in the agent's tree, with the environment its case needs.
+  // Every one of them is in the agent's tree, running the program its case names, with the
+  // environment its case needs. A child the agent has forked but not yet exec'd is still a copy
+  // of the agent's shell: its command is the shell's and its environment names no call, so a
+  // scan made then reads `other` or `ended` as a process of no call started inside the call,
+  // which the second rule rightly takes (measured under gVisor: one such child was still unexec'd
+  // 15 ms after the agent printed `ready`).
+  const sleepers = ["before", "stuck", "other", "ended", "plain"];
   await until(async () => {
     const scan = await readStallProcesses({ agentPid: agent.pid });
     if (!scan.read) return false;
     const found = new Map(scan.processes.map((process) => [process.pid, process]));
     return (
       everyone.every((name) => found.has(pidOf(name))) &&
+      sleepers.every((name) => found.get(pidOf(name))?.command === "sleep 300") &&
       found.get(pidOf("stuck"))?.toolCallId === "toolu_stuck" &&
+      found.get(pidOf("other"))?.toolCallId === "toolu_other" &&
+      found.get(pidOf("ended"))?.toolCallId === "toolu_ended" &&
       found.get(pidOf("own-runner"))?.environment.PI_SESSION_FILE === SESSION_FILE &&
       found.get(pidOf("sub-runner"))?.environment.PI_SESSION_FILE === OTHER_SESSION_FILE &&
       found.get(pidOf("plain"))?.toolCallId === undefined
