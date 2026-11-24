@@ -369,9 +369,8 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 // armed for one wait, so a daemon test sees the deadline it fires and nothing else. Its time is the
 // wall clock, or at when set, so a deadline the daemon names as a time is armed as an exact wait
 // from at; advance moves at, so a lease or a backoff the daemon measured from it lapses. A timer
-// armed for a moment (At) is armed for the wait from the clock's time to it, and keeps the moment,
-// which fireAt fires it by: on the wall clock that wait is short of the reservation's by however
-// long the decision took to arm it.
+// armed for a moment (At) keeps that moment, which fireAt fires it by; fire matches it by the wait
+// from the clock's time at the arm.
 type heldClock struct {
 	mu     sync.Mutex
 	at     time.Time

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -259,14 +260,12 @@ func TestASpawnWhoseCarriedTurnPassedLongAgoIsPacedAgain(t *testing.T) {
 	}
 }
 
-// A wake runs at the turn the pacing gave it, the moment its claim's view names, however far the
-// clock moved between the decision's read of it and the arm of the wake's timer: a timer armed for
-// the wait from that read comes due that much past the turn. A test's clock moves forward from the
-// test's goroutine while a boot, a sweep or a relaunch parks a wake on another, and the wake then
-// never ran at the turn the test moved the clock to (internal/daemon's
-// TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst, a minute's wait at its line 898).
-// Here the clock moves a second inside the reservation of the parked wake, as that test's goroutine
-// moved it inside another goroutine's decision.
+// A parked wake runs at the turn its claim's view names, however far the clock moved between the
+// decision's read of it and the arm of the wake's timer (Clock.At). Here the reservation moves the
+// clock a second, as the test goroutine of internal/daemon's
+// TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst moved the wave clock inside
+// another goroutine's park, which failed it with "timed out waiting for the launch of … at its
+// turn" (awaitLaunchAtItsTurn).
 func TestAWakeRunsAtItsTurnWhenTheClockMovesBeforeItsTimerIsArmed(t *testing.T) {
 	const moved = time.Second
 	var h *harness
@@ -1584,6 +1583,81 @@ func TestTheBootsReplayMovesARelaunchItsReportParkedLaterToTheReplaysTurn(t *tes
 	h.wantStarts(h.token, 2)
 	if held := h.m.View().WakeWaiting; held != nil {
 		t.Fatalf("the claim still waits on wake %+v after its turn, want none: the report's later turn is spent, not run", *held)
+	}
+}
+
+// movingClock is the harness's clock moved by step right after each read while moving is set, as
+// another goroutine moves a test's clock between a decision's read of it and its arm. The move
+// fires nothing: the decision that read the clock still runs, and the test's next Advance fires
+// what fell due.
+type movingClock struct {
+	*fakeClock
+	step   time.Duration
+	moving atomic.Bool
+	moves  atomic.Int32
+}
+
+func (c *movingClock) Now() time.Time {
+	c.fakeClock.mu.Lock()
+	defer c.fakeClock.mu.Unlock()
+	now := c.fakeClock.now
+	if c.moving.Load() {
+		c.moves.Add(1)
+		c.fakeClock.now = now.Add(c.step)
+	}
+	return now
+}
+
+// The replay's move of a relaunch to the boot's earlier turn (takeEarlierTurn) runs it at that
+// turn, however far the clock moves between the replay's read of it and the arm (Clock.At).
+func TestTheBootsReplayRunsTheRelaunchAtTheEarlierTurnWhenTheClockMovesBeforeTheArm(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	queueAhead(h, 1)
+	dead := h.locator()
+	h.observe(runtime.Gone)
+	h.restart()
+	queueAhead(h, 3)
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+	late := h.wantWaitingWake(WakeLaunch)
+	turn := h.clock.Now().Add(wakeInterval)
+	if !turn.Before(late.At) {
+		t.Fatalf("the report's relaunch waits for %s, want a turn after %s: the queue ahead of it is too short", late.At, turn)
+	}
+	clock := &movingClock{fakeClock: h.clock, step: time.Millisecond}
+	h.m.deps.Clock = clock
+
+	clock.moving.Store(true)
+	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation, Turn: turn})
+	clock.moving.Store(false)
+
+	if clock.moves.Load() == 0 {
+		t.Fatal("the replay read the clock no time while it was moving: the clock moved nothing between a read and the arm")
+	}
+	h.wantWakeDueAt(WakeWaiting{Kind: WakeLaunch, At: turn})
+	h.clock.Advance(turn.Sub(h.clock.Now()))
+	h.m.Wait()
+	h.wantStarts(h.token, 2)
+}
+
+// The fake clock arms a moment it has passed, by either arm, for its own time: it fires at the
+// clock's next move and never moves the clock back.
+func TestTheFakeClockFiresAPassedMomentAtItsOwnTime(t *testing.T) {
+	for _, arm := range []string{"AfterFunc", "At"} {
+		c := newFakeClock()
+		c.Advance(time.Hour)
+		before := c.Now()
+		var read time.Time
+		f := func() { read = c.Now() }
+		if arm == "At" {
+			c.At(before.Add(-time.Minute), f)
+		} else {
+			c.AfterFunc(-time.Minute, f)
+		}
+		c.Advance(time.Nanosecond)
+		if read.IsZero() || read.Before(before) {
+			t.Fatalf("the timer %s armed for a passed moment read the clock at %s, want no earlier than %s, the clock's time at the arm", arm, read, before)
+		}
 	}
 }
 

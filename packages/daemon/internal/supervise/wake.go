@@ -332,9 +332,8 @@ func PacedLaunch(deps *Deps, c *Claim) bool {
 }
 
 // parkWake is the park the gate, the re-park and the pause's let-out share (reserveWake,
-// reparkWake, letOutHeldLaunch): TimerWake is armed at the wake's turn, waiting.at, the moment the
-// state names (armAt), and waiting waits on the machine (waitOnMachine), which is what reserveWake
-// states.
+// reparkWake, letOutHeldLaunch): TimerWake is armed at the wake's turn, waiting.at (armAt), and
+// waiting waits on the machine (waitOnMachine), which is what reserveWake states.
 //
 // The credit of the refresh gate this machine may hold outlives a park of this lane's own kind
 // and no other (endRefreshLane, dispatch://INFRA-2712 R1): that wake is the one the credit was
@@ -381,7 +380,7 @@ func (m *Machine) takeEarlierTurn(turn time.Time) bool {
 	m.log.Info("supervise: the relaunch a report of the recorded death parked takes the turn the boot reserved for it",
 		"due", w.at, "turn", turn)
 	w.at = turn
-	m.arm(TimerWake, max(turn.Sub(now), 0), "")
+	m.armAt(TimerWake, turn, "")
 	return true
 }
 

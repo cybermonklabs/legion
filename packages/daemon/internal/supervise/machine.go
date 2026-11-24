@@ -897,11 +897,12 @@ type Clock interface {
 	Now() time.Time
 	// AfterFunc calls f once d has passed from the clock's time at the call.
 	AfterFunc(d time.Duration, f func()) Cancel
-	// At calls f once the clock reaches at, at once when it already has. A timer for a moment the
-	// machine was given (a wake's turn, a held suspension's deadline) is armed here rather than
-	// for the wait from a read of Now, so a clock that moves between that read and the arm (a
-	// test's, which moves forward without waiting) fires the timer at the moment all the same
-	// (armAt). envoy's hubClock and jobClock have the same shape.
+	// At calls f once the clock reaches at, at once when it already has. A timer due at a moment
+	// is armed here, never for the wait from an earlier read of Now: time that passes between that
+	// read and the arm would put the timer past the moment, and a test's clock, which another
+	// goroutine moves forward without waiting, can move by any amount there. The envoy package has
+	// the same shape in dispatch/api's hubClock (delivery_live_hub.go) and dispatch/delivery's
+	// jobClock (jobs.go).
 	At(at time.Time, f func()) Cancel
 	// Sleep waits d, or returns ctx's error once ctx ends first.
 	Sleep(ctx context.Context, d time.Duration) error
@@ -4438,12 +4439,7 @@ func (m *Machine) arm(kind TimerKind, after time.Duration, deliveryID string) {
 	m.timers[kind] = armed{seq: ev.Seq, deliveryID: deliveryID, cancel: cancel, due: m.deps.Clock.Now().Add(after)}
 }
 
-// armAt is arm for a timer due at a moment the machine was given rather than after a wait: a
-// wake's turn (parkWake) and a held suspension's deadline (holdSuspension). The clock arms it at
-// that moment (Clock.At). A wait computed from the decision's earlier read of the clock would put
-// the timer past the moment by whatever time passed before the arm: on a test's clock, which
-// another goroutine moves forward meanwhile, past the turn the state names and the test moves the
-// clock to, so the wake never ran.
+// armAt is arm for a timer due at a moment (Clock.At).
 func (m *Machine) armAt(kind TimerKind, at time.Time, deliveryID string) {
 	ev := m.nextTimer(kind, deliveryID)
 	cancel := m.deps.Clock.At(at, func() { m.fire(ev) })

@@ -1,9 +1,8 @@
 kind: Fixed
 body: |-
-    A paced wake now runs at the moment `legion state` names for it (`wakesWaiting`'s `dueAt`), and
-    a held suspension stops its agent at its deadline. Each timer was armed for the wait from the
-    daemon's earlier read of the clock, so it came due as much later as the decision took between
-    that read and the arm.
+    A launch or a refresh relaunch that the wake pacing holds now runs at the turn the pacing gave
+    it. Its timer was armed for the wait from an earlier read of the clock, so it came due as much
+    later as the time between that read and the arm.
 time: 2026-11-24T05:23:15Z
 custom:
     Issue: wake-turn-moment
