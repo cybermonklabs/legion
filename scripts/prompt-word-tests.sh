@@ -26,8 +26,9 @@
 #                    builds a text (`...Task`, `...Text`, `...Notice`, `...Sentence`, ...), the
 #                    names read from the code at the time of the run, or reading a request's Task
 #   asserted-words   an assertion, or a wanted value, holding a literal of four words or more on
-#                    its line or, where the call opens on one line, on the next, in a package
-#                    whose code writes texts agents read, or in a file with a row above
+#                    its line or, where the call opens on one line, on the next, or one phrase of
+#                    a list a loop then asserts, in a package whose code writes texts agents read,
+#                    or in a file with a row above
 #
 # usage: scripts/prompt-word-tests.sh --repo <work tree> --out <dir> [--exclude <file>]
 #   --repo <dir>      the work tree to search, e.g. a fresh clone of main
@@ -178,22 +179,32 @@ search task-text -e "$re_task" -- "${pathspecs[@]}"
 cut -f1 "$raw" | sort -u > "$out/source-files.txt"
 search asserted-words -e "$re_assert" --and -e "$re_prose" -- "${pathspecs[@]}"
 
-# An assertion whose call opens on one line and whose literal stands on the next, as a formatter
-# breaks a long one (`toContain(` and then the phrase): the literal's line is the row. git grep
-# reads one line at a time, so awk reads the files the asserted-words rows are kept for.
+# Two shapes git grep cannot see, since it reads one line at a time, so awk reads the files the
+# asserted-words rows are kept for:
+#   - an assertion whose call opens on one line and whose literal stands on the next, as a
+#     formatter breaks a long one (`toContain(` and then the phrase): the literal's line is the row;
+#   - a list of wanted phrases, one a line, that a loop then asserts one by one
+#     (`for _, want := range []string{` or `for (const phrase of [`, then the phrases): each
+#     phrase's line is a row.
 re_open="([.](toContain|toMatch|toInclude|toStartWith|toEndWith|toBe|toEqual|toStrictEqual|includes|startsWith|endsWith)|strings[.](Contains|ContainsAny|Count|Index|HasPrefix|HasSuffix|EqualFold)|regexp[.](MustCompile|MatchString))[(][^)]*\$"
+re_list="[[][]]string[{][[:space:]]*\$|(of|=|[(]|return|:)[[:space:]]*[[][[:space:]]*\$"
+re_item="^[[:space:]]*[\"$q$bt].*[\"$q$bt],?[[:space:]]*\$"
+re_list_end="^[[:space:]]*[]})]"
 { grep -E "$agent_text_packages" "$out/files.txt" || true; cat "$out/source-files.txt"; } | sort -u > "$out/open-files.txt"
 if [ -s "$out/open-files.txt" ]; then
   (
     cd "$top"
-    tr '\n' '\0' < "$out/open-files.txt" | xargs -0 awk -v open="$re_open" -v prose="$re_prose" '
-      FNR == 1 { opened = 0 }
+    tr '\n' '\0' < "$out/open-files.txt" | xargs -0 awk -v open="$re_open" -v prose="$re_prose" \
+      -v list="$re_list" -v item="$re_item" -v list_end="$re_list_end" '
+      FNR == 1 { opened = 0; listing = 0 }
       {
-        if (opened && $0 ~ prose) {
+        if ((opened || (listing && $0 ~ item)) && $0 ~ prose) {
           text = $0; gsub(/\t/, " ", text)
           print FILENAME "\t" FNR "\tasserted-words\t" text
         }
         opened = ($0 ~ open)
+        if ($0 ~ list) listing = 1
+        else if (listing && $0 ~ list_end) listing = 0
       }
     '
   ) >> "$raw"

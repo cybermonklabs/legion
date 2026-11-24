@@ -9,6 +9,7 @@
 #   - a Go test behind the e2e build tag that reads a skill;
 #   - a Bun test that reads a skill, and one that pins words of a tool's description;
 #   - a Bun test whose assertion opens on one line and holds its words on the next;
+#   - a Go test whose phrases stand one a line in a list that a loop then asserts;
 #   - a Go test that pins words of a daemon task text;
 #   - a shell harness under scripts/e2e that greps a role prompt;
 #   - a Bun test outside the packages that write agents' texts, which reads a role prompt by path;
@@ -138,6 +139,26 @@ test("the planted skill keeps its words", () => {
   expect(text).toContain("planted words of the architect skill");
 });'
 
+phrase_list_test=packages/daemon/internal/daemon/zz_planted_phrase_list_test.go
+plant "$phrase_list_test" 'package daemon
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestZZPlantedNoticePhraseList(t *testing.T) {
+	reason := stalledNoticeReason(t)
+	for _, want := range []string{
+		"planted words of a phrase list",
+		"4h30m0s ago",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the notice says %q, which does not carry %q", reason, want)
+		}
+	}
+}'
+
 next_line_test=packages/pi-legion/src/zz-planted-next-line.test.ts
 plant "$next_line_test" 'import { expect, test } from "bun:test";
 import { phaseReminder } from "./reminders";
@@ -206,6 +227,8 @@ check "lists the e2e-tagged Go test that reads a skill" "$(row_at "$work/all" "$
 check "lists the Bun test that reads a skill" "$(row_at "$work/all" "$bun_test" 'skills/legion-architect/SKILL.md' skill-file)"
 check "lists the Bun test that pins a tool description" "$(row_at "$work/all" "$tool_test" 'planted words of a tool description' asserted-words)"
 check "names the tool specs it reads" "$(row_at "$work/all" "$tool_test" 'dispatchToolSpecs[0]' tool-description)"
+check "lists each phrase of a list a loop asserts" "$(row_at "$work/all" "$phrase_list_test" 'planted words of a phrase list' asserted-words)"
+check "lists no short value of that list" "$(is "$(row_at "$work/all" "$phrase_list_test" '4h30m0s ago')" false)"
 check "lists the words on the line after an assertion's call" "$(row_at "$work/all" "$next_line_test" 'planted words on the line after the call' asserted-words)"
 check "lists the Go test that pins words of a daemon task text" "$(row_at "$work/all" "$task_test" 'planted words of a wake task' asserted-words)"
 check "names the task text it reads" "$(row_at "$work/all" "$task_test" 'WakeTask(' task-text)"
