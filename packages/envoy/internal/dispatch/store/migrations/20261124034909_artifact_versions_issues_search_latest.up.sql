@@ -11,7 +11,11 @@
 -- Now a firing re-vectors the issue only when no version of the document with a higher number and
 -- with markdown is visible to it: in a multi-row insert that is the highest such row alone, and for
 -- a single-row insert, the route's, it is that row, as before. The vector it writes is the one the
--- last firing wrote before, since every firing read the same latest version. The `markdown is not
+-- last firing wrote before, since every firing read the same latest version. One shape writes
+-- nothing where the old body wrote: a version inserted below one the document already holds.
+-- The old body rewrote the vector of the stored latest version then, which changed nothing when
+-- that vector was current and repaired it when it was stale; no writer inserts below the latest,
+-- and the vector is current whenever the latest version was written through this trigger. The `markdown is not
 -- null` matches the trigger's own `when`: a higher version with no markdown (an image) fires no
 -- trigger, so it must not stop the highest version that does fire from re-vectoring, which then
 -- reads issue_embedding_spec's latest version exactly as before. The probe reads

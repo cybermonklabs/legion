@@ -148,18 +148,24 @@ func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
 // issue's search, which 20261101182522's trigger records in search_term_queue, so the queue
 // counts them. The second case's latest version holds no markdown (an image), which fires no
 // trigger; the version below it still re-vectors the issue, over that image version as before.
+// The third inserts a version below one the document already holds: it re-vectors nothing, where
+// the old body rewrote the vector the stored latest version already gave, so the vector is the
+// same only because it was current; no writer inserts below the latest.
 func TestAMultiVersionInsertReVectorsItsIssueOnce(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		versions string
-		want     int
+		name, setup, versions string
+		want, wantAfter       int
 	}{
-		{"eight versions with markdown", `
+		{"eight versions with markdown", "", `
 			select a.id, n, case when n = 9 then 'The rhumb lines of the Tyrrhenian portolan.' else 'Draft ' || n || '.' end, null, '[]'
-			from artifacts a cross join generate_series(2, 9) n where a.issue_key = $1 and a.is_primary`, 8},
-		{"seven versions with markdown under an image", `
+			from artifacts a cross join generate_series(2, 9) n where a.issue_key = $1 and a.is_primary`, 8, 1},
+		{"seven versions with markdown under an image", "", `
 			select a.id, n, case when n < 9 then 'Draft ' || n || ' of the Tyrrhenian portolan.' end, case when n = 9 then 'image/png' end, '[]'
-			from artifacts a cross join generate_series(2, 9) n where a.issue_key = $1 and a.is_primary`, 7},
+			from artifacts a cross join generate_series(2, 9) n where a.issue_key = $1 and a.is_primary`, 7, 1},
+		{"a version below the latest the document holds", `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			select a.id, 3, 'Version three of the Tyrrhenian portolan.', '[]' from artifacts a where a.issue_key = $1 and a.is_primary`, `
+			select a.id, 2, 'Version two.', null, '[]' from artifacts a where a.issue_key = $1 and a.is_primary`, 1, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -168,6 +174,11 @@ func TestAMultiVersionInsertReVectorsItsIssueOnce(t *testing.T) {
 				store := openMigratedTestStore(t, version)
 				seedCoreWithADefaultAssignee(t, store)
 				key := seedIssueWithSpec(t, ctx, store, 1, "Tide tables for the equinox", "Nothing of note.\n")
+				if test.setup != "" {
+					if _, err := store.Pool.Exec(ctx, test.setup, key); err != nil {
+						t.Fatalf("write the version the insert lands below: %v", err)
+					}
+				}
 				var queued int
 				count := `select count(*) from search_term_queue where kind = 'issue' and issue_key = $1`
 				if err := store.Pool.QueryRow(ctx, count, key).Scan(&queued); err != nil {
@@ -197,8 +208,8 @@ func TestAMultiVersionInsertReVectorsItsIssueOnce(t *testing.T) {
 			if beforeCount != test.want {
 				t.Errorf("before 20261124034909 the insert re-vectored the issue %d times, want %d, one for each version with markdown: the count this test reads does not count what it means to", beforeCount, test.want)
 			}
-			if afterCount != 1 {
-				t.Errorf("the insert re-vectored the issue %d times, want once", afterCount)
+			if afterCount != test.wantAfter {
+				t.Errorf("the insert re-vectored the issue %d times, want %d", afterCount, test.wantAfter)
 			}
 			if after != before {
 				t.Errorf("the issue's vector after the insert is\n%s\nwant the one the schema before 20261124034909 wrote,\n%s", after, before)
