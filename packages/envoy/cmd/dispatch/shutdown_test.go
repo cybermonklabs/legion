@@ -1385,8 +1385,8 @@ type dispatchProcess struct {
 	*cmdtest.Process
 	port int
 	// database is the Postgres database the test gave the process (DATABASE_URL's). The wait
-	// for the event feed's events_start needs it to tell a horizon stall held by this
-	// process's own write transaction from one held by a foreign transaction
+	// for the event feed's events_start needs it to judge a horizon stall, which an event write of
+	// that database holds, as the process's own hold past horizontest.OwnHoldBound
 	// (live_events_wait_test.go).
 	database string
 	// databaseURL is the URL the test gave the process (DATABASE_URL). A start that exits before

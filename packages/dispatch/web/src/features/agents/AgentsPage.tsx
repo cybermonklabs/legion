@@ -59,6 +59,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { replyParentOf } from "../conversation/composer-model";
 import { listedReplies } from "../conversation/conversation-model";
 import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
@@ -74,7 +75,8 @@ import {
   AgentUnresponsiveNote,
   useAgentText,
 } from "../refs/AgentName";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
@@ -226,7 +228,7 @@ function AgentExchangeReply({
       author={reply.author}
       body={
         <div className={textPrimaryOnCanvas}>
-          <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
+          <PostBody deleted={postDeletion(reply)} markdown={reply.body} tree={reply.body_tree} />
         </div>
       }
       delivery={
@@ -245,6 +247,8 @@ function AgentExchangeReply({
               targetName: rowTarget(agent),
             }
       }
+      deleted={postDeletion(reply)}
+      edited={reply.edited_at}
       onReply={() => onReply(agentReplyTo(agent, read, reply))}
       quote={
         parent === undefined
@@ -252,6 +256,8 @@ function AgentExchangeReply({
           : {
               author: parent.author,
               block: reply.reply_block,
+              deleted: postDeletion(parent),
+              edited: parent.edited_at,
               excerpt: parent.body,
               ...(parent.issue_key === null
                 ? {}
@@ -301,16 +307,24 @@ function AgentTargetedMessage({
         <>
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnCanvas}`}>
             <AgentName actor={read.message.author} className="font-semibold" inline />
-            <Timestamp at={read.message.created_at} />
+            <span>
+              <Timestamp at={read.message.created_at} />
+              <EditedMark at={read.message.edited_at} deleted={postDeletion(read.message)} />
+            </span>
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={read.message.body} tree={read.message.body_tree} />
+            <PostBody
+              deleted={postDeletion(read.message)}
+              markdown={read.message.body}
+              tree={read.message.body_tree}
+            />
           </div>
         </>
       }
       canAside={capabilitiesForTarget(read.message.target, liveAgents)?.includes("aside") !== false}
       canBtw={capabilitiesForTarget(read.message.target, liveAgents)?.includes("btw") !== false}
       canSteer={capabilitiesForTarget(read.message.target, liveAgents)?.includes("steer") !== false}
+      deleted={postDeletion(read.message)}
       deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
       header={null}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
@@ -823,7 +837,9 @@ function AgentRowDetails({
   // The session's conversation as the row's list reads it (`AgentMessageList`), the same read,
   // whatever a fold or a Clear shows of it: a draft the composer keeps for one of its messages
   // goes back by that message's Reply, and one kept for a message the read no longer holds is
-  // drawn itself (`ListedReplies`). Until the read answers, every kept reply is as it was.
+  // drawn itself (`ListedReplies`). Until the read answers, every kept reply is as it was. The
+  // message a reply quotes is looked up there too, so a draft open when its author deletes or
+  // edits that message quotes what became of it.
   const messages = useQuery(agentMessagesQuery(agent.session_id));
   const listed = useMemo(
     () => (messages.data === undefined ? undefined : listedReplies(messages.data)),
@@ -864,6 +880,7 @@ function AgentRowDetails({
           listed={listed}
           onCancelReply={() => setReplyTo(null)}
           onClose={leaveAgentComposer}
+          replyParent={replyParentOf(replyTo?.target ?? null, [], messages.data ?? [])}
           replyTo={replyTo}
           sendKey={sendKey}
         />

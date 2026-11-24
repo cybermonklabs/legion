@@ -1614,6 +1614,13 @@ Setting the App also starts Dispatch's webhook redelivery sweep, which needs the
 bucket the hub's Dispatch user is granted (`DispatchPermissions`): a pod whose NATS user lacks it
 exits at boot. With either group unset, nothing renders and the app's pod template is unchanged.
 
+`verdictAppId` (plain, optional, with the App) is the id of the App that writes `legion-verdict`,
+rendered as `DISPATCH_VERDICT_APP_ID` after the App's three variables and only when given: Dispatch's
+CI reconcile pass, which the App's key runs, leaves that App's check suites out of the CI record, as
+the listener does under `ENVOY_VERDICT_APP_ID` (`aws:WebhookListener`'s `verdictAppId`). Set the
+listener's and this one to the same App id, or neither: with the listener's set and this one unset,
+the pass writes the App's completed suite back into a settled record and the head is published twice.
+
 The Azure embedder's inputs are a third optional group, which takes no secret value either, and
 which reaches the app's `envoy-dispatch` container alone. `azureEmbedEndpoint` turns meaning search
 onto Azure AI Foundry: `DISPATCH_EMBEDDER=azure` and `DISPATCH_AZURE_EMBED_ENDPOINT`, the base URL
@@ -1713,7 +1720,8 @@ than a backend service's, a `signInPasskey` without `outsideOrigin` or the sign-
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` that is no
-Secret's key (as `seedSecretKey`'s rule above), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
+Secret's key (as `seedSecretKey`'s rule above), a `verdictAppId` without the App, blank, or not a
+GitHub App id (a whole number above 0 with no leading zero), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
 of the Azure embedder's group, any `azureEmbed` input without `azureEmbedEndpoint`, an endpoint
 without `azureEmbedTokensPerMinute` or with one below 1, both credential forms or neither,
 `azureTenantId` or `azureClientId` without the other, an `azureFederationAudience` without them or
@@ -2936,6 +2944,7 @@ environment, in this order:
 | `ENVOY_NATS_REPLICAS` | `natsReplicas` |
 | `ENVOY_WEBHOOKS` | `webhooks`, joined with commas, when it lists one |
 | `ENVOY_GITHUB_MENTION_TRIGGER`, `ENVOY_REVIEWER_APP_ID` | `mentionTrigger`, `reviewerAppId`, with `github` |
+| `ENVOY_VERDICT_APP_ID` | `verdictAppId`, with `github`, only when given |
 
 ECS injects its secrets from their ARNs: `ENVOY_GITHUB_WEBHOOK_SECRET` with `github`,
 `ENVOY_SLACK_SIGNING_SECRET` with `slack`, `ENVOY_API_TOKEN`, and `NATS_NKEY_SEED` with
@@ -2976,6 +2985,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 | `seedSecretArn` | unset | The secret holding the seed of the NATS user the listener connects as. Unset, it connects with none. |
 | `webhooks` | required | The webhooks the listener serves: `["github", "slack"]`, or `[]` for none. With `[]` the container carries no webhook's setting or secret, and the listener mounts no webhook route. This version takes no other list. |
 | `githubWebhookSecretArn`, `reviewerAppId`, `mentionTrigger` | with `github` | Required while `webhooks` lists `github`, refused while it does not. |
+| `verdictAppId` | optional, with `github` | The App whose own check suites the listener leaves out of the CI record. Written only when given; refused blank, refused when it is not a GitHub App id (a whole number above 0 with no leading zero), and refused while `webhooks` does not list `github`. Give Dispatch the same App id (`envoy-infra:gcp:Dispatch`'s `verdictAppId`, or `DISPATCH_VERDICT_APP_ID`), or the head is published twice: Dispatch's CI reconcile pass otherwise writes the App's completed suite back into a settled record. |
 | `slackSigningSecretArn` | with `slack` | Required while `webhooks` lists `slack`, refused while it does not. |
 | `clusterArn`, `executionRoleArn`, `taskRoleArn` | required | The ECS cluster and the task's two roles. |
 | `executionRoleName` | required | The execution role's name, which the read policies attach to. |
@@ -3330,7 +3340,7 @@ authorization {
 ### webhook-listener-env
 
 ```text
-envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
+envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--verdict-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
 ```
 
 Prints `aws:WebhookListener`'s container environment, one `KEY=value` line per variable in the
@@ -3355,6 +3365,9 @@ none for `webhooks: []`, and refuses `--reviewer-app-id` and `--mention-trigger`
 
 Without `--reviewer-app-id`, it prints
 `refused: --reviewer-app-id: reviewerAppId is required with webhook "github"` and exits 2.
+
+`--verdict-app-id` sets `verdictAppId` and prints `ENVOY_VERDICT_APP_ID` after the other GitHub
+lines; left out, it prints none.
 
 `--sender-messages-per-minute` and `--sender-message-burst` set `senderMessagesPerMinute` and
 `senderMessageBurst`. Each prints its variable, `ENVOY_SENDER_MESSAGES_PER_MINUTE` or

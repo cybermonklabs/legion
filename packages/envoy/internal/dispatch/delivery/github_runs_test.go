@@ -86,6 +86,7 @@ func TestListWorkflowRunJobsAsksForATokenPerPage(t *testing.T) {
 }
 
 func TestListWorkflowRunsMapsRunShapes(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fdeploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, map[string]any{
@@ -177,6 +178,7 @@ func TestListWorkflowRunsMapsRunShapes(t *testing.T) {
 }
 
 func TestListWorkflowRunsPaginatesAcrossPages(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	var pagesSeen []string
 	fake.handle("GET /repos/acme/widgets/actions/workflows/deploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +227,7 @@ func repeatRunItems(n int, startID int64) []map[string]any {
 }
 
 func TestListWorkflowRunsHalvesOnOverflowWithoutGapOrOverlap(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	type window struct{ since, until string }
 	var windows []window
@@ -271,6 +274,7 @@ func TestListWorkflowRunsHalvesOnOverflowWithoutGapOrOverlap(t *testing.T) {
 }
 
 func TestListWorkflowRunsUpstream404IsWrapped(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/actions/workflows/deploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -285,6 +289,7 @@ func TestListWorkflowRunsUpstream404IsWrapped(t *testing.T) {
 }
 
 func TestListWorkflowRunsUpstream500IsWrapped(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/actions/workflows/deploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -299,6 +304,7 @@ func TestListWorkflowRunsUpstream500IsWrapped(t *testing.T) {
 }
 
 func TestListWorkflowRunJobsMapsEveryField(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/actions/runs/42/jobs", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("filter"); got != "latest" {
@@ -341,6 +347,7 @@ func TestListWorkflowRunJobsMapsEveryField(t *testing.T) {
 // TestRunJobsRecordsTheApplyStepOfAListedJob proves that only listed production jobs carry the
 // configured apply step and its conclusion into the stored representation.
 func TestRunJobsRecordsTheApplyStepOfAListedJob(t *testing.T) {
+	t.Parallel()
 	const step = "Run ./.github/actions/apply"
 	fetched := []FetchedJob{
 		{Name: "production / production-apply", Conclusion: new("success"), Steps: []FetchedStep{{Name: "Set up job", Conclusion: new("success")}, {Name: step, Conclusion: new("skipped")}}},
@@ -366,6 +373,7 @@ func TestRunJobsRecordsTheApplyStepOfAListedJob(t *testing.T) {
 }
 
 func TestListWorkflowRunJobsPaginatesAcrossPages(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	var pagesSeen []string
 	fake.handle("GET /repos/acme/widgets/actions/runs/7/jobs", func(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +414,7 @@ func repeatJobItems(n int) []map[string]any {
 }
 
 func TestListWorkflowRunJobsUpstream404IsWrapped(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/actions/runs/404/jobs", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -419,6 +428,7 @@ func TestListWorkflowRunJobsUpstream404IsWrapped(t *testing.T) {
 }
 
 func TestListWorkflowRunJobsUpstream500IsWrapped(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/actions/runs/500/jobs", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

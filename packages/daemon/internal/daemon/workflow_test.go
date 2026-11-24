@@ -120,7 +120,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 		"no review login":        {appauth.Implement: "legion-implementer[bot]"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, time.Now, nil)
+			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, time.Now, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), "the workflow needs two different Apps") {
 				t.Fatalf("openWorkflow = %v, want the two-Apps refusal", err)
 			}
@@ -133,7 +133,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
 	t.Parallel()
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
-	login, err := appLoginsAtBoot(context.Background(), tokens, newStartWaits(startRateLimits, time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	login, err := appLoginsAtBoot(context.Background(), tokens, newStartWaits(productionAppCalls(), time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("appLoginsAtBoot: %v", err)
 	}
@@ -160,9 +160,9 @@ func (c countedLogins) AppLogin(_ context.Context, role appauth.AppRole) (string
 // token mode each read of an App runs its token_command, whose grant may wait on a person's
 // approval.
 func TestTheLoginsReadReadsNoAppAgainOnceItReadItsLogin(t *testing.T) {
-	quickAppMints(t)
+	t.Parallel()
 	reads := countedLogins{}
-	login, err := appLoginsAtBoot(context.Background(), reads, newStartWaits(startRateLimits, time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	login, err := appLoginsAtBoot(context.Background(), reads, newStartWaits(*quickAppMints(), time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if want := "legion-" + string(appauth.Review) + "[bot]"; err != nil || login != want {
 		t.Fatalf("appLoginsAtBoot = %q, %v; want %q, the review App's login, after one transient failure", login, err, want)
 	}
@@ -180,8 +180,8 @@ func TestTheLoginsReadReadsNoAppAgainOnceItReadItsLogin(t *testing.T) {
 // (openWorkflow), so no two waits of a start overlap.
 func TestStartWaitsDecidesEachWait(t *testing.T) {
 	t.Parallel()
-	if want := (rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}); startRateLimits != want {
-		t.Fatalf("the start's rate-limit policy = %+v, want R4's %+v", startRateLimits, want)
+	if want := (rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}); productionAppCalls().rateLimits != want {
+		t.Fatalf("the start's rate-limit policy = %+v, want R4's %+v", productionAppCalls().rateLimits, want)
 	}
 	start := time.Date(2026, 11, 20, 4, 0, 0, 0, time.UTC)
 	retryAfter := func(seconds string) *githubrest.Answer {
@@ -243,7 +243,7 @@ func TestStartWaitsDecidesEachWait(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			now := start
-			waits := newStartWaits(startRateLimits, func() time.Time { return now })
+			waits := newStartWaits(productionAppCalls(), func() time.Time { return now })
 			for index, step := range row.steps {
 				now = start.Add(step.at)
 				until, waited, ended := waits.wait(step.call, step.answer, step.wait)

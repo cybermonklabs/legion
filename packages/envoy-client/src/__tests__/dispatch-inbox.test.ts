@@ -179,6 +179,11 @@ function repliesBody(rows: Record<string, unknown>[], now: number): Record<strin
   return { rows, total: rows.length, limit: 0, offset: 0, as_of: new Date(now).toISOString() };
 }
 
+/** The Unread threads line `stdout` prints for the thread whose page is `ref`, which ends it. */
+function threadLine(stdout: string, ref: string): string | undefined {
+  return stdout.split("\n").find((line) => line.startsWith("- ") && line.endsWith(` · ${ref}`));
+}
+
 /** How the stub answers one read: the rows it lists by default (`LISTED`), or a body and status
  *  of its own, a literal `null` body among them. */
 type Answer = typeof LISTED | { readonly status: number; readonly body: unknown };
@@ -501,6 +506,84 @@ describe("dispatch inbox", () => {
         "- legion-implementer · agent · Can you take the migration next? · session ses-5 · <1m · /agents/ses-5/live",
       ].join("\n")
     );
+  });
+
+  test("a thread whose root its author deleted prints the deleted line where its subject was", async () => {
+    const now = Date.now();
+    // A comment thread whose root its author deleted, then the default rows: the delete cleared
+    // the root's body, which the subject is read from.
+    const rows = threadRows(now);
+    repliesAnswer = {
+      status: 200,
+      body: repliesBody(
+        [
+          {
+            ...rows[0],
+            thread_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            ref: "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            subject: "",
+            deleted_at: "2026-11-02T08:00:00Z",
+            deleted_by: { kind: "user", id: "alice@example.com" },
+          },
+          ...rows,
+        ],
+        now
+      ),
+    };
+
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    // The deleted line stands where the root's subject was; the thread's author and age are the
+    // fixture's, which this row does not read.
+    expect(
+      threadLine(stdout, "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+    ).toStartWith(
+      "- DSP-6 · comment · Deleted by user alice@example.com at 2026-11-02T08:00:00Z · "
+    );
+    expect(
+      threadLine(stdout, "/issues/DSP-6/comments/66666666-6666-4666-8666-666666666666")
+    ).toStartWith("- DSP-6 · comment · The staging box lost its disk again · ");
+  });
+
+  test("a thread whose root its author edited prints the edited mark after its subject", async () => {
+    const now = Date.now();
+    // The subject is the head of the root's words as they stand, which an edit replaced: the line
+    // says the root was edited and when, beside them. The default rows carry no edit and no mark.
+    const rows = threadRows(now);
+    repliesAnswer = {
+      status: 200,
+      body: repliesBody(
+        [
+          {
+            ...rows[0],
+            thread_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            ref: "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            subject: "The staging box is back",
+            edited_at: "2026-11-02T08:00:00Z",
+          },
+          ...rows,
+        ],
+        now
+      ),
+    };
+
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    // The edited mark follows the root's subject, and a root nobody edited carries none; the
+    // thread's author and age are the fixture's, which this row does not read.
+    expect(
+      threadLine(stdout, "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+    ).toStartWith("- DSP-6 · comment · The staging box is back · edited 2026-11-02T08:00:00Z · ");
+    const standing = threadLine(
+      stdout,
+      "/issues/DSP-6/comments/66666666-6666-4666-8666-666666666666"
+    );
+    expect(standing).toStartWith("- DSP-6 · comment · The staging box lost its disk again · ");
+    expect(standing).not.toContain("edited");
   });
 
   test("counts the unread threads in the call's details", async () => {

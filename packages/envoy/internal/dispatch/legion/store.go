@@ -26,8 +26,9 @@ type Settings struct {
 // query that returns a setting selects exactly this.
 const settingsColumns = `project, state_url, created_by, updated_at`
 
-// ErrNoSettings is "this project names no Legion daemon": the sampler reads nothing for it and
-// the board has nothing to show.
+// ErrNoSettings is "this project names no Legion daemon": the sampler reads nothing for it, the
+// board has nothing to show, and an issue's own Legion read answers `configured` false rather
+// than refusing (api/legion_issue.go).
 var ErrNoSettings = errors.New("this project has no Legion daemon configured")
 
 // StateChannel is the Postgres notification channel one read of a daemon's state announces itself
@@ -81,12 +82,19 @@ func ListSettings(ctx context.Context, pool *store.Pool) ([]Settings, error) {
 	return listed, nil
 }
 
+// RowQueryer is what GetSettings needs of its connection: the pool, or a transaction a reader
+// holds open so the setting answers the moment its other reads of what the sampler writes answer
+// (api/legion_issue.go's readLegionIssue, whose `configured` and state are one moment's).
+type RowQueryer interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // GetSettings is one project's setting, or ErrNoSettings when it has none, as the reader whose
 // visibility argument viewer binds (refs.VisibilityArg) reads it: a project that reader does not
 // see has none (access.ProjectClause, in the statement itself), whatever the caller's own read of
 // the project answered before.
-func GetSettings(ctx context.Context, pool *store.Pool, project string, viewer any) (Settings, error) {
-	settings, err := scanSettings(pool.QueryRow(ctx, `select `+settingsColumns+` from legion_settings where project = $1 and `+
+func GetSettings(ctx context.Context, db RowQueryer, project string, viewer any) (Settings, error) {
+	settings, err := scanSettings(db.QueryRow(ctx, `select `+settingsColumns+` from legion_settings where project = $1 and `+
 		access.ProjectClause("$1", "$2"), project, viewer))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

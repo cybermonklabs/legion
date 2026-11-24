@@ -445,7 +445,7 @@ func (s *server) resolveThroughTakeover(
 	takeover := s.newTakeoverRetry()
 	var resolved ResolvedMention
 	resolve := func() string {
-		resolved = s.resolveMentionTarget(ctx, target, delivery, mentionLookupTimeout)
+		resolved = s.resolveMentionTarget(ctx, target, delivery, s.commentLookupBound(target))
 		return resolved.ResolveError
 	}
 	if !wait {
@@ -455,6 +455,16 @@ func (s *server) resolveThroughTakeover(
 	// A try that holds nothing has nothing to renew, so retry answers no error.
 	_ = takeover.retry(ctx, resolve, nil)
 	return resolved, takeover
+}
+
+// commentLookupBound is the bound on one try of a comment's listener lookup of target, read as
+// that try starts: mentionLookupTimeout on every server the deployment builds, which sets no
+// mentionLookupBound, and whatever a test set for that target otherwise.
+func (s *server) commentLookupBound(target string) time.Duration {
+	if s.mentionLookupBound != nil {
+		return s.mentionLookupBound(target)
+	}
+	return mentionLookupTimeout
 }
 
 // again reports whether the sender tries once more after a try that recorded failure, having

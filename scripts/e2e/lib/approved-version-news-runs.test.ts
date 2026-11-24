@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   a4,
@@ -33,8 +33,10 @@ import { scriptAssignments, sourcedLibraries } from "./script-functions";
 
 const assignment = scriptAssignments(script);
 const scratch = temporaryDirectories("approved-version-news-run-test");
-const withoutSetsid = skipWithout("setsid");
-const withoutGit = skipWithout("git", "tar");
+// Read once, at module scope: a host without setsid, or without git and tar, skips the rows that
+// need them naming what it lacks, and under GITHUB_ACTIONS fails each by its own name (hostGate).
+const setsidHost = hostGate({ programs: ["setsid"] });
+const gitHost = hostGate({ programs: ["git", "tar"] });
 
 // Part one's steps and the checks each makes, read from the script's own part_one_checks, so the
 // stand-in driver below prints what the script counts.
@@ -74,7 +76,7 @@ function partOneRun(kill?: { at: KillPoint; signal: StopSignal }) {
 // line. A run a signal ends in part one reads FAIL at part-one; moving the script's run_end above
 // part one makes it print PASS. A signal to the group ends part one's subshell too, and the two
 // shells print their FAIL lines in either order.
-describe.skipIf(withoutSetsid)("the script's run of part one", () => {
+setsidHost.describe("the script's run of part one", () => {
   test("reads each step of part_one_checks and the checks it makes", () => {
     expect(partOneChecks.length).toBeGreaterThan(0);
     for (const { step, checks } of partOneChecks) {
@@ -269,7 +271,7 @@ const onePlan = plan(
 // full run's plan it left out and its count of runs where it is not three, and exits 0; a head run
 // of the pick that did not pass still reads FAIL. The counts and the checks follow the driver's
 // plan, and a pick the driver refuses is refused in its words.
-describe.skipIf(withoutGit)("the script's run of both parts", () => {
+gitHost.describe("the script's run of both parts", () => {
   test("reads PASS for a full run, which picks nothing", () => {
     const run = bothPartsRun({}, { full: fullPlan }, [
       ...runsOf(a4, "head", passed, passed, passed),

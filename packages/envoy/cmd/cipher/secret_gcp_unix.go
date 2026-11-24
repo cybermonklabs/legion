@@ -21,9 +21,10 @@ import (
 // Setpgid the kill finds no group and nothing is killed at the deadline.
 // In a group of its own gcloud does not get a signal sent to this command's group, such as a
 // terminal's interrupt, so an end by such a signal kills the group itself (exitBySignal,
-// killGcloudGroup).
+// killGcloudGroup). An end this command cannot handle, a SIGKILL, kills gcloud's process too where
+// the platform can (gcloudProcAttr): nothing of this command is left to kill the group then.
 func killGroupOnCancel(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = gcloudProcAttr()
 	cmd.Cancel = func() error {
 		err := signalGroup(cmd.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {

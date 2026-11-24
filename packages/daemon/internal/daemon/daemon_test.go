@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestAnIssueMovedWhileBootListsIsStillAdmitted reads the captured event through ../intake/testdata
+
 import (
 	"bufio"
 	"bytes"
@@ -27,7 +29,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -474,109 +475,6 @@ func secretDSN(address string) string {
 	return (&url.URL{Scheme: "postgres", User: url.UserPassword("legion", "hunter2"), Host: address, Path: "/legion", RawQuery: "sslmode=disable"}).String()
 }
 
-// pgConnection is what pgProxy does with one connection it accepts.
-type pgConnection int
-
-const (
-	// forwardConnection relays the connection to the Postgres behind the proxy, both ways.
-	forwardConnection pgConnection = iota
-	// resetConnection ends the connection with a TCP reset (SO_LINGER 0) as soon as it is accepted.
-	resetConnection
-	// silentConnection holds the connection open and never answers it.
-	silentConnection
-)
-
-// pgProxy is dsn's Postgres reached through a TCP proxy on 127.0.0.1 that does with the n-th
-// connection it accepts what plan[n] says, and forwards every connection after the plan's last.
-// The URL it returns is dsn at the proxy's address with sslmode=disable: under pgx's default,
-// prefer, one attempt to open the store can open a TLS connection and then a plain one, and a
-// test of the attempts counts one connection to each. The proxy and every connection through it
-// close when the test ends.
-func pgProxy(t *testing.T, dsn string, plan ...pgConnection) string {
-	t.Helper()
-	upstream, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("read the address of the Postgres behind the proxy: %v", err)
-	}
-	server := net.JoinHostPort(upstream.Host, strconv.Itoa(int(upstream.Port)))
-	proxied, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatalf("parse the URL of the Postgres behind the proxy: %v", err)
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for the Postgres proxy: %v", err)
-	}
-	var mu sync.Mutex
-	var held []net.Conn
-	closed := false
-	// hold keeps conns until the test ends, or closes them at once when it has.
-	hold := func(conns ...net.Conn) bool {
-		mu.Lock()
-		defer mu.Unlock()
-		if closed {
-			for _, conn := range conns {
-				_ = conn.Close()
-			}
-			return false
-		}
-		held = append(held, conns...)
-		return true
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-		mu.Lock()
-		defer mu.Unlock()
-		closed = true
-		for _, conn := range held {
-			_ = conn.Close()
-		}
-	})
-	go func() {
-		for n := 0; ; n++ {
-			client, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			handling := forwardConnection
-			if n < len(plan) {
-				handling = plan[n]
-			}
-			switch handling {
-			case resetConnection:
-				_ = client.(*net.TCPConn).SetLinger(0)
-				_ = client.Close()
-			case silentConnection:
-				hold(client)
-			default:
-				go func() {
-					postgres, err := net.Dial("tcp", server)
-					if err != nil {
-						_ = client.Close()
-						return
-					}
-					if !hold(client, postgres) {
-						return
-					}
-					go func() {
-						_, _ = io.Copy(postgres, client)
-						_ = postgres.Close()
-						_ = client.Close()
-					}()
-					_, _ = io.Copy(client, postgres)
-					_ = postgres.Close()
-					_ = client.Close()
-				}()
-			}
-		}
-	}()
-	proxied.Host = listener.Addr().String()
-	query := proxied.Query()
-	query.Set("sslmode", "disable")
-	proxied.RawQuery = query.Encode()
-	return proxied.String()
-}
-
 // refusingPostgres answers each connection's startup message with one FATAL ErrorResponse of code
 // and message, as a Postgres that refuses the connection answers it, and returns its address and
 // the count of the connections it has accepted.
@@ -623,7 +521,7 @@ func storeOpenWaits(t *testing.T, logs string) []map[string]any {
 func TestRunOpensItsStoreOnTheThirdAttemptAfterTwoResets(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
-	cfg.PostgresDSN = pgProxy(t, cfg.PostgresDSN, resetConnection, resetConnection)
+	cfg.PostgresDSN = testdb.Outage(t, cfg.PostgresDSN, testdb.Reset, testdb.Reset).DSN
 	proxy, err := url.Parse(cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -1239,21 +1137,39 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log.
+// startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
+// against a boot that never serves, not its speed, so it is testwait's bound (a minute, or the test
+// binary's own deadline less a second): a fixed 10 s failed a test about the stranded report (1 of
+// 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
+// other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
+	return startDaemonWithin(t, cfg, o, log, testwait.Bounded(t, time.Minute, time.Second))
 }
 
 // startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
 // within the given time. A test that points its workflow at no GitHub of its own gets
 // repositoriesGitHub, so every launch on a repository reads its default branch from a stand-in
 // rather than from github.com.
+//
+// The daemon's own log is kept beside log, and printed when the test fails, its stop included,
+// since a test's own logger is most often quietLogger. Once the daemon answers /healthz, the test
+// logs how long that took and when each boot stage began (bootStages), so a run's output says
+// what the boots of its tests spent their time on.
 func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.Logger, within time.Duration) *daemon {
 	t.Helper()
 	if o.githubAPI == "" {
 		o.githubAPI = repositoriesGitHub(t)
 	}
+	kept := &syncBuffer{}
+	log = slog.New(slog.NewMultiHandler(log.Handler(), slog.NewJSONHandler(kept, nil)))
+	// Registered before the stop, so it runs after it.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the daemon's log:\n%s", kept.String())
+		}
+	})
+	started := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	// One transport for every request, so the test can close its own connections before it asks
 	// the daemon to stop: net/http gives an idle connection five seconds before a Shutdown may
@@ -1289,7 +1205,26 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 	}) {
 		t.Fatalf("the daemon did not answer /healthz on %s within %s: %v", d.base, within, err)
 	}
+	t.Logf("the daemon answered /healthz %s after it started; boot stages: %s", time.Since(started).Round(time.Millisecond), bootStages(kept.String(), started))
 	return d
+}
+
+// bootStages is when each boot stage (`legion workflow boot stage`) began in log, a JSON log, after
+// started: "store +0.12s, config +0.31s, ...", in the order the daemon logged them.
+func bootStages(log string, started time.Time) string {
+	var stages []string
+	for line := range strings.Lines(log) {
+		var entry struct {
+			Time  time.Time `json:"time"`
+			Msg   string    `json:"msg"`
+			Stage string    `json:"stage"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil || entry.Msg != "legion workflow boot stage" {
+			continue
+		}
+		stages = append(stages, fmt.Sprintf("%s +%.2fs", entry.Stage, entry.Time.Sub(started).Seconds()))
+	}
+	return strings.Join(stages, ", ")
 }
 
 // repositoriesGitHub is GitHub's REST API answering a read of any repository,

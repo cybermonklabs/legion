@@ -521,6 +521,14 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: delete from tables.refs":    {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: insert into tables.refs":    {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.markItemBlocksOwed: update tables.state":                 {},
+	// The tombstone of a deleted comment or message (refs.TombstoneItem): each block's stored
+	// excerpt and each text a revision recorded, over the item's own blocks and block texts
+	// tables, none of them projected.
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.blocks": {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.texts":  {},
+	// A delete's settle of its post's pending send attempts (queueDeletedPostSettlement):
+	// comment_deliveries or message_deliveries, neither of them projected.
+	"packages/envoy/internal/dispatch/api/post_history.go#api.queueDeletedPostSettlement: update read.table": {},
 	// The stamp of an item's block links (refs.Stamp): comment_block_refs, message_block_refs or
 	// ask_block_refs, never block_refs, whose stamp is a statement of its own beside it.
 	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {},

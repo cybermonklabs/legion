@@ -279,7 +279,11 @@ for the accounts the profile its command names lists, each an account of the sec
 private key, as the PEM GitHub gives or its base64, is `DISPATCH_APP_PEM_B64`. The review App's id
 is the listener's `ENVOY_REVIEWER_APP_ID` and Dispatch's `DISPATCH_REVIEWER_APP_ID`; set both,
 because with `DISPATCH_REVIEWER_APP_ID` unset Dispatch's CI reconcile pass records no `tester` or
-`architect` check run. Store the private keys where `github_apps.<role>` and
+`architect` check run. The id of the App that writes `legion-verdict` is the listener's
+`ENVOY_VERDICT_APP_ID` and Dispatch's `DISPATCH_VERDICT_APP_ID`; set both to one value, because
+the listener leaves that App's check suites out of the CI record and Dispatch's CI reconcile pass
+would otherwise write the App's completed suite back, which publishes a settled head a second
+time. Store the private keys where `github_apps.<role>` and
 Dispatch read them, delete the files, then install every App from
 `https://github.com/apps/<slug>/installations/new` on the same repositories.
 
@@ -337,8 +341,10 @@ Dispatch read them, delete the files, then install every App from
   for the sources. The image probe pod, which every
   boot runs before anything is served, carries a fixed reservation of its own:
   500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
-  at a time, runs no lane and runs its TLS clients one at a time, and a larger probe could keep the daemon from
-  booting on a full pool. A pool with no room even for that does not stop the daemon: its probe pod
+  at a time and runs no lane, and a larger probe could keep the daemon from booting on a full
+  pool. Its 500m was set while the probe also ran a TLS check of the image's clients, which it no
+  longer makes, and is kept until its other checks are audited and measured. A pool with no room
+  even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
@@ -1080,9 +1086,9 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
 
 ## Secrets and files
 
-- **The operator token** authenticates `legion controller start`, `legion claims` and
-  `legion issue status <issue> <status>` from an operator's shell. Make one long random string in a
-  file only you can read:
+- **The operator token** authenticates `legion controller start`, `legion claims`,
+  `legion project`, `legion intake` and `legion issue status <issue> <status>` from an operator's
+  shell. Make one long random string in a file only you can read:
 
   ```sh
   openssl rand -hex 32 > operator-token && chmod 0600 operator-token
@@ -1439,6 +1445,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   consumer legion-go-WIDGETS-dispatch: 0 waiting
   consumer legion-go-WIDGETS-github: 3 waiting, oldest 2s
   consumer legion-go-WIDGETS-wake: 0 waiting
+  intake give-ups legion-go-WIDGETS-dispatch: 1 open, newest seq 48213
+  intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
   ```
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
@@ -1589,7 +1597,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   many messages wait for the consumer, delivered and not yet handled or not yet delivered, the
   events the daemon will acknowledge without acting on included, and how long ago the oldest of
   them was stored (`oldest unknown` when that message could not be read). A message is handled
-  once the daemon acknowledged it, or terminated it as poison; a message put back to retry is not.
+  once the daemon acknowledged it, or terminated it once it gave the message up; a message put
+  back to retry is not.
   `STALLED: none handled for <d>` ends the line when messages wait and the daemon has handled
   none of that consumer's for 60 seconds, since the last it handled (named) or, before the first,
   since the daemon started. `unavailable: <error>` names what NATS did not answer in time (two
@@ -1598,6 +1607,16 @@ Closing the terminal leaves the project without one, and the daemon logs
   workflow prints `durable consumers: none`.
   [GitHub events wait](/legion/legion/troubleshooting/#github-events-wait) says what each means
   and what to check.
+
+  The `intake give-ups` lines count, for each durable consumer, the messages the daemon gave up on
+  that no replay or discard has closed, with the newest stream sequence among them: that sequence
+  is the `--through-seq` with which `legion intake replay` and `legion intake discard` take all of
+  them ([below](#replay-or-discard-a-message-the-intake-gave-up)). Under them each of the ten
+  newest give-ups has a line: its record's id, which `--give-up` takes, its consumer, subject and
+  stream sequence, when the daemon gave it up, after how many deliveries and why, and the first
+  line of its last error. With none open the one line reads `intake give-ups: none`.
+  [A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up)
+  says what each reason means and what to do.
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
@@ -1655,6 +1674,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing
   waits or that message could not be read; `lastHandledAt`, null before the first; `stalled`; and
   `unavailable`, present only when a NATS read failed),
+  `intakeGiveUps` (`consumers`, each consumer with an open give-up as `name`, `open` and
+  `newestSeq`, and `newest`, the 50 open give-ups given up last, latest first, each with `id`,
+  `consumer`, `subject`, `streamSeq`, `storedAt`, `eventId`, null for a message that did not
+  decode, `deliveries`, `gaveUpAt`, `reason` and the first 300 characters of `lastError`; both
+  lists empty, never null, while none is open),
   `settings` (the daemon's resolved `legion.yaml` — `review_round_cap`, `worker_boot_timeout_seconds`,
   `hooks` with each hook's `name`, `on`, `moves`, `every`, `roles` and `prompt_file` but never its
   words, and the rest as the daemon runs them — with every credential, credential source and credential
@@ -1692,3 +1716,37 @@ legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-fil
 A root on the backlog or in icebox stops its tree: its agents are suspended and the slots
 its issues held go to the next issues in line. `todo` admits a labelled root again, as a new generation that starts from its
 architect.
+
+## Replay or discard a message the intake gave up
+
+The daemon gives up on a message whose handling keeps failing, keeps it whole and tells the
+controller; [A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up)
+says when, how to find the cause, and when to replay and when to discard. From an operator's
+shell, two commands act on those records, as the controller does through its `legion` tool's
+`replay_give_up` and `discard_give_up`:
+
+```sh
+legion intake replay  --config legion.yaml --operator-token-file operator-token --give-up 412
+legion intake replay  --config legion.yaml --operator-token-file operator-token --consumer legion-go-WIDGETS-dispatch --through-seq 48213
+legion intake discard --config legion.yaml --operator-token-file operator-token --give-up 412 --reason 'the payload is not JSON, so no release can apply it'
+```
+
+Each takes `--operator-token-file` (required), `--config`, `--port`, and one selection:
+`--give-up <id>`, one record by the id `legion state` lists, or `--consumer <name>` with
+`--through-seq <seq>`, every open record of that consumer at or below that stream sequence. The
+newest sequence on the consumer's `intake give-ups` line takes all of them. A command that names
+neither selection, both, or only one of `--consumer` and `--through-seq` exits 2 and sends
+nothing.
+
+- **`legion intake replay`** prints one line for each record it took,
+  `<id> <consumer> seq <n>: <outcome>`, with the error after a `failed` one, then
+  `remaining <n>`. It exits 1 when a record failed.
+- **`legion intake discard`** also takes `--reason <text>` (required). It prints
+  `discarded <id>` for each record it closed, or `discarded none`.
+
+What each outcome does to its record, how many records one call takes, what `remaining` counts
+and how a replay undoes a wrong discard are in
+[A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up).
+
+A refusal of the daemon, such as `409 GIVE_UP_CLOSED` for a discard of a closed record, is printed
+with its status and sentence, and the command exits 1.

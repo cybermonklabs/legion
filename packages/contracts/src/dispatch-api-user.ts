@@ -208,12 +208,17 @@ export type PasskeyRefusal = (typeof PASSKEY_REFUSALS)[number];
 
 /** GET /api/v1/whoami: a person by lowercase email (`login`), or an agent with its personal
  *  token's owner (a lowercase email) — null under the shared token or a verified service token —
- *  and that service token's subject (`service`), null unless one authenticated the request.
+ *  and that service token's subject (`service`), or for a broker-issued token naming no person the
+ *  fleet its machine belongs to or the Kubernetes account an exchange entry lists, null otherwise.
  *  `session` is the session the credential itself proved, which only an access token the secrets
  *  broker issued does, and `project`, deprecated, the one key of a one-key `projects`, null for
- *  any other list. A client reads an absent `service`, `session` or `project` as a Dispatch older
- *  than that field, not as null: `service` is absent from one older than verified service tokens,
- *  and the other two from one older than broker-issued tokens. The agent form's `projects` is the
+ *  any other list. `sign_in_required` is whether Dispatch refuses every write of the
+ *  credential until a person signs in on its machine (`SIGN_IN_REQUIRED`), the decision its write
+ *  check makes. A client reads an absent `service`, `session`, `project` or `sign_in_required` as
+ *  a Dispatch older than that field, not as null or false: `service` is absent from one older than
+ *  verified service tokens, `session` and `project` from one older than broker-issued tokens, and
+ *  `sign_in_required` from one older than the field, whose rule the client then reads from the
+ *  owner, the service and the session. The agent form's `projects` is the
  *  credential's list, sorted, and its `private_projects` those of them the caller must treat as
  *  private (a private project, one the credential no longer sees, one that names no project), so
  *  a key is public exactly when it is in `projects` and not in `private_projects`; both are absent

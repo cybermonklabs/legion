@@ -16,6 +16,7 @@ import {
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import type { Subprocess } from "bun"
 import { buildBundles } from "../scripts/build"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 // The answers hook as Claude Code runs it: the bundle `hooks.json` names
 // (`dist/session-hook.js answers`), its whole environment given, its input on stdin. One stand-in
@@ -519,6 +520,7 @@ function runHook(
   const run = Bun.spawn(["bun", ...preload, bundle, "answers"], {
     env: {
       PATH: process.env["PATH"] ?? "",
+      ...NO_TRANSPILER_CACHE,
       CLAUDE_PLUGIN_ROOT: packageRoot,
       ENVOY_ANSWERS_TIMING_FILE: timingFile,
       ENVOY_COMMAND_TIMEOUT_MS: String(COMMAND_BOUND_MS),

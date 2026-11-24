@@ -194,20 +194,26 @@ type whoamiAgent struct {
 	Scopes  []string `json:"scopes"`
 	Service *string  `json:"service"`
 	Session *string  `json:"session"`
+	// SignInRequired is whether Dispatch refuses every write this credential makes until a person
+	// signs in on its machine (403 SIGN_IN_REQUIRED): the decision writeNeedsASignedInPerson acts
+	// on, answered from that same function (signInRequired), so a client reads it rather than
+	// guessing it from the owner and the service. A Dispatch that predates it omits the field.
+	SignInRequired bool `json:"sign_in_required"`
 }
 
 // whoami tells any authenticated caller who the server takes it for: a human by login, or an
 // agent with the lowercase login of the person it acts for — the personal token's owner, or a
 // broker-issued token's person (null for the shared token and for a broker-issued token that
 // names a service and no person) — the service it is, which is the verified Kubernetes subject
-// of its service-account token or the fleet a broker-issued token naming no person belongs to
-// (null for every other credential), the session its credential proved (null for a credential
-// that proves none, which every one but a broker-issued token is), the projects it lists (absent
-// where there are none) and, deprecated, the one project its writes are held to by name (null
-// otherwise, a person-scoped token included). A broker token's list is answered only while some
-// project is private or its person is a restricted member (access.Resolve), so while no project is
-// private a full member's broker token scoped to one project answers that project and no projects,
-// and a token acting as its person answers neither, as each always did (R9).
+// of its service-account token, or, for a broker-issued token naming no person, the fleet its
+// machine belongs to or the account an operator's entry lists, which its writes are recorded
+// under (null for every other credential), the session its credential proved (null for a
+// credential that proves none, which every one but a broker-issued token is), the projects it
+// lists (absent where there are none) and, deprecated, the one project its writes are held to by
+// name (null otherwise, a person-scoped token included). A broker token's list is answered only
+// while some project is private or its person is a restricted member (access.Resolve), so while
+// no project is private a full member's broker token scoped to one project answers that project
+// and no projects, and a token acting as its person answers neither, as each always did (R9).
 //
 // Every caller is told the OAuth scopes its credential holds, which is what decides the routes it
 // may call (gateRouteScopes): both for a person at a browser, the set its own row names for a
@@ -216,6 +222,11 @@ type whoamiAgent struct {
 // broker-issued token that names a service and no person. The kind stays `agent` for a personal
 // token holding the person scope, since the kind names the credential and not the act; the
 // person that token acts for is its `owner`, which the dispatch command reads.
+//
+// An agent is also told whether Dispatch refuses its every write until a person signs in on its
+// machine (sign_in_required): true for a broker-issued token of a machine nobody has signed in
+// on, and false for every other credential, an account entry's token naming no person among them,
+// whose writes are recorded under its account.
 func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
@@ -250,6 +261,7 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		viewer = reader.Viewer
 	}
 	answer := newWhoamiAgent(actor, memberKind, scopes, viewer)
+	_, answer.SignInRequired = s.signInRequired(r)
 	if answer.PrivateProjects, err = s.whoamiPrivateProjects(r.Context(), viewer, answer.Projects); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("read which of the credential's projects are private: %w", err))
 		return

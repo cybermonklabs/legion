@@ -39,11 +39,10 @@ const (
 	// while a gap stands open above the safe horizon held by an older transaction
 	// (events.GapHeld): it first waits eventRelayGapMin, doubles the wait up to eventRelayGapMax
 	// while the horizon stays where it was, and starts again from eventRelayGapMin each time the
-	// horizon moves. The transaction holding the gap is usually a write whose commit notifies,
-	// and that notification reads at once; the fallback is for one that ends without notifying (a
-	// write that appends no event, another database's transaction on the instance, another
-	// process's observation), which nothing else would announce. It runs only while a gap is
-	// open.
+	// horizon moves. The transaction holding the gap is an event write whose commit notifies,
+	// and that notification reads at once; the fallback is for one that ends without notifying (an
+	// event write that rolls back, or one that only updated events), which nothing else would
+	// announce. It runs only while a gap is open.
 	eventRelayGapMin = 10 * time.Millisecond
 	eventRelayGapMax = 250 * time.Millisecond
 )
@@ -58,10 +57,10 @@ const EventsChannel = "dispatch_events"
 // eventGapReread schedules a generation's re-read while a gap stands open above the safe horizon
 // (run), on the cadence the horizon's package documentation describes ("Cadence"): at once when
 // the read's own observation is the only one unproven (events.GapUnproven), since observing again
-// proves it unless an older transaction id is still running; otherwise (events.GapHeld) on the
-// next commit notification, read without the coalescing window (eager), or after the fallback
-// delay (eventRelayGapMin to eventRelayGapMax), whichever comes first. Nothing is scheduled while
-// no gap is open, so an idle generation observes nothing.
+// proves it unless an event write of this database older than its observer is still open;
+// otherwise (events.GapHeld) on the next commit notification, read without the coalescing window
+// (eager), or after the fallback delay (eventRelayGapMin to eventRelayGapMax), whichever comes
+// first. Nothing is scheduled while no gap is open, so an idle generation observes nothing.
 //
 // The re-reads it asks for at once are bounded by the event log's own commits: a read gets one
 // only when the horizon moved since the read before (or the gap is new), and the horizon moves
@@ -205,7 +204,7 @@ type eventStreamRelay struct {
 	closed bool
 	// starting is open while one caller runs a generation's first cursor read, which runs without
 	// mu so that no other caller's subscribe waits on the database while holding it: that read
-	// waits for a safe horizon, which any open write on the instance can hold back.
+	// waits for a safe horizon, which any open event write of this database can hold back.
 	starting chan struct{}
 	// startsRead counts the generation starts that have read the log (firstRelayCursor's newest id
 	// and gaps) and so await the horizon or are past it: an event that commits after a start's read
@@ -282,7 +281,7 @@ type relaySubscription struct {
 // either published into this subscription or already at or below its head, never neither.
 //
 // A generation's first cursor read (firstRelayCursor) waits for a safe horizon, which an open
-// write anywhere on the instance can hold back, so it runs outside mu: the caller running it marks
+// event write of this database can hold back, so it runs outside mu: the caller running it marks
 // starting, and every other caller waits on starting (or its own ctx) rather than on mu or a spin.
 // A read that fails starts nothing and is the caller's error; the next subscription tries again.
 // Once the lifetime has ended, or a read ends after it has, subscribe refuses.
@@ -430,15 +429,16 @@ func (g *relayGeneration) onConnected() { signal(g.wake) }
 //
 // A read that leaves a gap open above the horizon (an observed id the horizon does not yet cover)
 // schedules a re-read of its own on the horizon's cadence (eventGapReread): at once when its own
-// observation is the only one unproven, which the next observation proves unless an older
-// transaction id is still running; and while an older transaction holds the gap, on that
-// transaction's commit notification, read at once, or after the fallback delay, eventRelayGapMin
-// doubling to eventRelayGapMax while the horizon stands still and back to eventRelayGapMin
-// whenever it moves. Nothing is scheduled while no gap is open, so an idle generation observes
-// nothing. A gap re-read skips the reset check: it asks only whether the horizon has moved, on
-// the horizon's own connection, and reads the shared pool only once there is something to
-// publish, so a gap held open by a long transaction costs no request a connection. A reset is
-// still caught at the next notification, which the refill's own inserts send.
+// observation is the only one unproven, which the next observation proves unless an event write
+// of this database older than its observer is still open; and while such an older event write
+// holds the gap, on that write's commit notification, read at once, or after the fallback delay,
+// eventRelayGapMin doubling to eventRelayGapMax while the horizon stands still and back to
+// eventRelayGapMin whenever it moves. Nothing is scheduled while no gap is open, so an idle
+// generation observes nothing. A gap re-read skips the reset check: it asks only whether the
+// horizon has moved, on the horizon's own connection, and reads the shared pool only once there
+// is something to publish, so a gap held open by a long event write costs no request a
+// connection. A reset is still caught at the next notification, which the refill's own inserts
+// send.
 func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
 	gaps := eventGapReread{first: r.gapFallback}
 	defer gaps.stop()
@@ -652,7 +652,7 @@ func (r *eventStreamRelay) window() time.Duration {
 // after the read and none committed before it, but those between the lowest late one and the
 // newest id. A gap still empty then is a rollback, and moves the cursor nowhere.
 //
-// The wait is the start's: as long as any transaction open on the instance holds the horizon back,
+// The wait is the start's: as long as an event write of this database holds the horizon back,
 // with the subscription's events_start not yet sent (feedEvents). The gap read covers the ids above
 // the floor, which are the ids written since a recent mark, however long the log. An event that
 // commits between the subscription's start and this read, a round trip apart, counts as committed

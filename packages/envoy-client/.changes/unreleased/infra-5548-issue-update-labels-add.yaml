@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `dispatch issue-update --labels-add <label>`, repeated, adds labels to those the issue holds,
+  inside Dispatch's write, and prints the labels the issue holds after it; `--label` still
+  replaces them all. A call naming both is refused before any request.
