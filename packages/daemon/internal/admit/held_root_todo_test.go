@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +230,51 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 			Title: other, Rank: "Z", HandedOver: true}, engine)
 		assertPromoted(t, pool, hold)
 		assertSlots(t, pool, []record.Slot{{Issue: child, Index: 0, AdmittedAt: fixedNow}})
+	})
+
+	// Before its promotion a person moves the carried root to in_progress, then back to todo. The
+	// in_progress takes it out of the line (record.QueuedRoot needs todo), and admission's pass then
+	// finds a waiting root at a status only a running tree has, in no tree that runs: it leaves the
+	// workflow as a parked root does (releaseUnslotted, workflow's LeaveUnslotted), done and
+	// lingering, with one unslotted notice for the controller and nothing started. The person's todo
+	// with the label then queues it again (readmit), so it never reaches the release of a hold
+	// (workflow's releaseHeldRoot) and no worker starts in a tree that has not opened. The test
+	// leaves open what that re-admission does to the phase and the hold the hand-over carried.
+	t.Run("a carried held root a person moves out of the line leaves the workflow, and its todo starts no worker", func(t *testing.T) {
+		const other = "LEGION-9"
+		pool := migratedPool(t)
+		seedSlotted(t, pool, other, "Z")
+		admission, engine := newAdmission(t, 1, quiet), newEngine()
+		handOverHeldChild(t, pool, admission, engine)
+
+		apply(t, pool, admission, "in-progress", childEvent("in_progress", 3, false), engine)
+		if left := issue(t, pool, child); left.Phase != phase.Done || left.LingerUntil == nil {
+			t.Errorf("the carried child after a person's in_progress = %#v, want it out of the workflow, done and lingering", left)
+		}
+		var unslotted []record.ControllerNotice
+		for _, queued := range effects(t, pool) {
+			if notice, ok := queued.payload.(record.ControllerNotice); ok && queued.issue == child && notice.Kind == record.UnslottedNotice {
+				unslotted = append(unslotted, notice)
+			}
+		}
+		if len(unslotted) != 1 {
+			t.Errorf("unslotted notices of %s after a person's in_progress = %+v, want one", child, unslotted)
+		}
+		if starts := workerStartsOf(t, pool, child); len(starts) != 0 {
+			t.Errorf("phase worker starts of %s after a person's in_progress = %+v, want none", child, starts)
+		}
+
+		apply(t, pool, admission, "todo", childEvent("todo", 4, false), engine)
+		if back := issue(t, pool, child); back.Status != "todo" || back.LingerUntil != nil {
+			t.Errorf("the carried child after a person's todo = %#v, want it todo and lingering no more", back)
+		}
+		if line := waitingLine(t, pool, testProject, config.DesignGateRootIssues.Steps()); !slices.Contains(line, child) {
+			t.Errorf("the waiting line after a person's todo = %v, want %s queued in it again", line, child)
+		}
+		if starts := workerStartsOf(t, pool, child); len(starts) != 0 {
+			t.Errorf("phase worker starts of %s, whose tree never opened = %+v, want none", child, starts)
+		}
+		assertSlots(t, pool, []record.Slot{{Issue: other, Index: 0, AdmittedAt: fixedNow}})
 	})
 }
 
