@@ -180,7 +180,11 @@ func (e *apiError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
 // do sends a request carrying the caller's ServiceAccount token and, on a 2xx response, returns
 // its raw body; any other status decodes the broker's error envelope into an *apiError, its code
 // and words held with every credential the request carried redacted (redact.Carried), since
-// whatever answers in the broker's place can echo the bearer back.
+// whatever answers in the broker's place can echo the bearer back. The request's URL is path
+// joined onto the address's path, its query kept (cipheraddr.Address.Join): path appended to the
+// address's text would sit inside a query or a fragment, and the broker would be asked another
+// path. An address that does not parse or names no host is refused by the setting it came from
+// and the class of the failure, never by url.Parse's error, which quotes it whole.
 func (c *apiClient) do(ctx context.Context, method, path string, body any) (*redact.Answer, error) {
 	var reader io.Reader
 	if body != nil {
@@ -190,9 +194,13 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) (*red
 		}
 		reader = bytes.NewReader(b)
 	}
+	callURL, err := c.base.Join(path)
+	if err != nil {
+		return nil, fmt.Errorf("--broker (or AGENT_SECRETS_URL) %q: %s", redact.NotPrinted, redact.ClassNotAURL)
+	}
 	// Each error naming the URL names it through the Address's Error, so no credential the
 	// broker's URL carries prints.
-	req, err := http.NewRequestWithContext(ctx, method, c.base.Raw()+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, callURL.String(), reader)
 	if err != nil {
 		return nil, c.base.Error(err)
 	}
