@@ -3651,6 +3651,48 @@
         "base": "472691e2057f31b65a93752540da80abf6ed6f46",
         "files": ["packages/envoy/internal/cipher/proxy/certificate_words_test.go"],
         "capture": "proxy.certificate-words/macos-expired"
+      },
+      {
+        "row": "daemon-answer-words-listed-owner-installed-on",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/daemon/internal/daemon/key_proof_owner_words_test.go"],
+        "capture": "daemon.answer-words/listed-owner-installed-on"
+      },
+      {
+        "row": "api-answer-words-listed-owner-log",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/daemon/internal/api/controller_owner_words_test.go"],
+        "capture": "api.answer-words/listed-owner-log"
+      },
+      {
+        "row": "api-answer-words-listed-owner-served",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/daemon/internal/api/controller_owner_words_test.go"],
+        "capture": "api.answer-words/listed-owner-served"
+      },
+      {
+        "row": "leakguard-redirect-authorization-other-scheme",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/leakguard/hop_token_test.go"],
+        "capture": "leakguard.redirect-authorization/other-scheme"
+      },
+      {
+        "row": "mcpbridge-endpoint-not-a-url-opaque",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/envoy/internal/mcpbridge/endpoint_origin_test.go"],
+        "capture": "mcpbridge.endpoint-not-a-url/opaque"
+      },
+      {
+        "row": "mcpbridge-endpoint-not-a-url-hostless",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/envoy/internal/mcpbridge/endpoint_origin_test.go"],
+        "capture": "mcpbridge.endpoint-not-a-url/hostless"
+      },
+      {
+        "row": "mcpbridge-sse-url-reparsed",
+        "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
+        "files": ["packages/envoy/internal/mcpbridge/sse_url_test.go"],
+        "capture": "mcpbridge.sse-url/reparsed"
       }
     ],
     "boundary_fields": {
@@ -12025,16 +12067,16 @@
       "id": "leakguard-redirect-authorization-twin",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
-      "test": "TestTheTarballReadSendsNoRedirectTheToken/twin",
+      "test": "TestTheTarballReadSendsItsTokenToItsOwnOriginAlone/twin",
       "production": "the stand-in of the tarball read's redirect row: a client that follows the API address's 302 under net/http's own policy sends the stand-in on the same host name at another port (redirectstest.Sent) the token, in the Authorization net/http copies onto the redirect's request, so the row can see a token sent on"
     },
     {
       "id": "leakguard-redirect-authorization-other-port",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
-      "test": "TestTheTarballReadSendsNoRedirectTheToken/other-port",
-      "production": "leakguard Source.read: the tarball read follows redirects on a copy of its client whose CheckRedirect (tokenless, dropToken) deletes Authorization from every redirect's request and keeps Go's bound of ten requests, so a 302 from the API's address to the same host name at another port, which net/http's own policy sends the Authorization, is followed and sent no token",
-      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.dropToken",
+      "test": "TestTheTarballReadSendsItsTokenToItsOwnOriginAlone/other-port",
+      "production": "leakguard Source.read: the tarball read follows redirects on a copy of its client whose CheckRedirect (originToken, keepTokenOnOrigin) deletes Authorization from a redirect's request on any origin but the read's and keeps Go's bound of ten requests, so a 302 from the API's address to the same host name at another port, which net/http's own policy sends the Authorization, is followed and sent no token",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.keepTokenOnOrigin",
       "capture": "leakguard.redirect-authorization/other-port",
       "mutation": {
         "file": "packages/daemon/internal/leakguard/source.go",
@@ -12046,7 +12088,7 @@
       "id": "leakguard-redirect-authorization-control",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
-      "test": "TestTheTarballReadSendsNoRedirectTheToken/control",
+      "test": "TestTheTarballReadSendsItsTokenToItsOwnOriginAlone/control",
       "production": "the control of the tarball read's redirect row: GitHub's 302 to another host name whose Location carries the download's own signed query is still followed, and the read serves the tarball that host answers, which it answers only to that query and no Authorization"
     },
     {
@@ -12328,20 +12370,20 @@
       "requirement": "r3-each-site",
       "package": "./internal/mcpbridge",
       "test": "TestAnEndpointResolvesAgainstTheSSEURL/absolute",
-      "production": "mcpbridge readEndpointEvent: an absolute endpoint on the server's own origin is posted to as it is, as before the resolution, and the handshake completes"
+      "production": "mcpbridge readEndpointEvent: an absolute endpoint on the server's own origin is posted to, and the handshake completes (resolveEndpoint gives it the configured credential, which TestAnEndpointOnTheConfiguredOriginCarriesTheConfiguredCredential/absolute holds)"
     },
     {
       "id": "mcpbridge-relative-endpoint-elsewhere",
       "requirement": "r3-each-site",
       "package": "./internal/mcpbridge",
       "test": "TestAnEndpointResolvesAgainstTheSSEURL/elsewhere",
-      "production": "mcpbridge readEndpointEvent: a network-path endpoint on another origin (//host:port/...) takes the SSE URL's scheme and none of its user information, so the POST reaches that origin with no run of the configured credential",
-      "function": "github.com/sjawhar/envoy/internal/mcpbridge.readEndpointEvent",
+      "production": "mcpbridge resolveEndpoint: a network-path endpoint on another origin (//host:port/..., another port of the same host) takes the SSE URL's scheme and none of its user information, since only an endpoint on the configured URL's origin takes the configured credential, so the POST reaches that origin with no run of it",
+      "function": "github.com/sjawhar/envoy/internal/mcpbridge.resolveEndpoint",
       "capture": "mcpbridge.relative-endpoint/elsewhere",
       "mutation": {
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
-        "preimage": "return base.ResolveReference(ref).String(), nil",
-        "replacement": "resolved := base.ResolveReference(ref); resolved.User = base.User; return resolved.String(), nil"
+        "preimage": "endpoint.User == nil && endpoint.Scheme == base.Scheme && strings.EqualFold(endpoint.Host, base.Host)",
+        "replacement": "endpoint.User == nil"
       }
     },
     {
@@ -12349,13 +12391,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/mcpbridge",
       "test": "TestAnEndpointResolvesAgainstTheSSEURL/elsewhere-absolute",
-      "production": "mcpbridge readEndpointEvent: an absolute endpoint on another origin keeps its own user information, none, so the POST reaches that origin with no run of the configured credential, as before the resolution",
-      "function": "github.com/sjawhar/envoy/internal/mcpbridge.readEndpointEvent",
+      "production": "mcpbridge resolveEndpoint: an absolute endpoint on another origin (another port of the same host) takes none of the configured user information, since only an endpoint on the configured URL's origin takes the configured credential, so the POST reaches that origin with no run of it",
+      "function": "github.com/sjawhar/envoy/internal/mcpbridge.resolveEndpoint",
       "capture": "mcpbridge.relative-endpoint/elsewhere-absolute",
       "mutation": {
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
-        "preimage": "return base.ResolveReference(ref).String(), nil",
-        "replacement": "resolved := base.ResolveReference(ref); resolved.User = base.User; return resolved.String(), nil"
+        "preimage": "endpoint.User == nil && endpoint.Scheme == base.Scheme && strings.EqualFold(endpoint.Host, base.Host)",
+        "replacement": "endpoint.User == nil"
       }
     },
     {
@@ -12844,6 +12886,184 @@
         "preimage": "\tif words, ok := redact.TLSWords(err); ok {\n\t\treturn words\n\t}\n",
         "replacement": "\t_ = redact.TLSWords\n"
       }
+    },
+    {
+      "id": "daemon-answer-words-listed-owner-installed-on",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheKeyProofLineNamesAListedOwnerOnlyInItsShape/installed-on",
+      "production": "daemon proveAppKeys: the boot's key-proof line for an App installed on an account (installedOn) names each owner the App's installation read answered only as a login GitHub allows (githubrest.ShownLogin), the fixed phrase in place of an account login that echoes the App's JWT key-mode discovery carried, in the read's order, so the operator still sees an entry is there; the boot's record of the read (appauth.Installed.RecordProof) keeps the owners as they came. No mutation row: githubrest.ShownLogin is no rule call the census lists, and every such name is lowercased (appauth readInstalledOwners), so a mutant's capture holds the JWT case-folded (eyjhbgci...) and never the gate's case-sensitive marker eyJhbGci (cmd/redact-gate main.go:75, rows.go:234); the mutant is shown by hand.",
+      "capture": "daemon.answer-words/listed-owner-installed-on"
+    },
+    {
+      "id": "daemon-answer-words-listed-owner-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheKeyProofLineNamesAListedOwnerOnlyInItsShape/twin",
+      "production": "the stand-in of the key-proof listed-owner row: key-mode discovery of a listing of acme and an account whose login is the discovery's own Authorization answers acme and the App's JWT case-folded (appauth Manager.InstalledOwners), the owners proveAppKeys logs, so the row can see a leak"
+    },
+    {
+      "id": "api-answer-words-listed-owner-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestTheControllerCredentialNamesAListedOwnerOnlyInItsShape/log",
+      "production": "api controllerGitHubCredential: the served line (\"api: controller github credential served\", installed) names each owner the bundle's read of the review App's installations answered only as a login GitHub allows (githubrest.ShownLogin), the fixed phrase in place of an account login that echoes the App's JWT key-mode discovery carried, in the read's order. No mutation row: githubrest.ShownLogin is no rule call the census lists, and every such name is lowercased (appauth readInstalledOwners), so a mutant's capture holds the JWT case-folded (eyjhbgci...) and never the gate's case-sensitive marker eyJhbGci (cmd/redact-gate main.go:75, rows.go:234); the mutant is shown by hand.",
+      "capture": "api.answer-words/listed-owner-log"
+    },
+    {
+      "id": "api-answer-words-listed-owner-served",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestTheControllerCredentialNamesAListedOwnerOnlyInItsShape/served",
+      "production": "api controllerGitHubCredential: the answer's installed (ControllerCredentialResponse.Installed) serves each owner the bundle's read of the review App's installations answered only as a login GitHub allows (githubrest.ShownLogin), the fixed phrase in place of an account login that echoes the App's JWT key-mode discovery carried, in the read's order and count; legion controller start intersects it with the bundle's directories (controllerReach), which no such name is. No mutation row: githubrest.ShownLogin is no rule call the census lists, and every such name is lowercased (appauth readInstalledOwners), so a mutant's capture holds the JWT case-folded (eyjhbgci...) and never the gate's case-sensitive marker eyJhbGci (cmd/redact-gate main.go:75, rows.go:234); the mutant is shown by hand.",
+      "capture": "api.answer-words/listed-owner-served"
+    },
+    {
+      "id": "api-answer-words-listed-owner-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestTheControllerCredentialNamesAListedOwnerOnlyInItsShape/twin",
+      "production": "the stand-in of the controller route's listed-owner rows: appauth.ControllerCredential over a key-mode listing of acme and an account whose login is the discovery's own Authorization records acme and the App's JWT case-folded (appauth.Installed), the read controllerGitHubCredential logs and serves, so the rows can see a leak"
+    },
+    {
+      "id": "leakguard-redirect-authorization-other-port-hostname",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheTarballReadSendsItsTokenToItsOwnOriginAlone/other-port",
+      "production": "leakguard keepTokenOnOrigin: a redirect keeps the read's Authorization only on the read's own origin, its host compared with its port (URL.Host), so a 302 to the same host name at another port is followed and sent no token",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.keepTokenOnOrigin",
+      "capture": "leakguard.redirect-authorization/other-port",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/source.go",
+        "preimage": "!strings.EqualFold(next.URL.Host, first.Host)",
+        "replacement": "!strings.EqualFold(next.URL.Hostname(), first.Hostname())"
+      }
+    },
+    {
+      "id": "leakguard-redirect-authorization-twin-other-scheme",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheTarballReadSendsItsTokenToItsOwnOriginAlone/twin-other-scheme",
+      "production": "the stand-in of the tarball read's other-scheme row: a client that follows the API's https 302 to plain http on the same host and port under net/http's own policy sends the stand-in there (redirectstest.Sent) the token, in the Authorization net/http copies onto the redirect's request whatever its scheme, so the row can see a token sent on"
+    },
+    {
+      "id": "leakguard-redirect-authorization-other-scheme",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheTarballReadSendsItsTokenToItsOwnOriginAlone/other-scheme",
+      "production": "leakguard keepTokenOnOrigin: a redirect keeps the read's Authorization only on the read's own origin, its scheme among it, so a 302 from https to plain http on the API's own host and port is followed and sent no token, in clear text or otherwise",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.keepTokenOnOrigin",
+      "capture": "leakguard.redirect-authorization/other-scheme",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/source.go",
+        "preimage": "next.URL.Scheme != first.Scheme ||",
+        "replacement": "false ||"
+      }
+    },
+    {
+      "id": "leakguard-redirect-authorization-same-origin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheTarballReadSendsItsTokenToItsOwnOriginAlone/same-origin",
+      "production": "leakguard keepTokenOnOrigin: a renamed repository's 301 to /repositories/<id> on the API's own origin keeps the read's Authorization, so the read of a private check repository whose name changed is served the tarball that route answers only to the token"
+    },
+    {
+      "id": "mcpbridge-endpoint-origin-relative",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointOnTheConfiguredOriginCarriesTheConfiguredCredential/relative",
+      "production": "mcpbridge resolveEndpoint: a relative endpoint is posted to with the configured credential, which a server that needs it takes, and the handshake completes (the control of the absolute and network-path rows: unchanged)"
+    },
+    {
+      "id": "mcpbridge-endpoint-origin-absolute",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointOnTheConfiguredOriginCarriesTheConfiguredCredential/absolute",
+      "production": "mcpbridge resolveEndpoint: an absolute endpoint on the configured URL's origin (scheme, host and port) that names no user information takes the configured credential, as a relative one does, so a server that needs it on the POST takes the message, where it answered 401"
+    },
+    {
+      "id": "mcpbridge-endpoint-origin-network-path",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointOnTheConfiguredOriginCarriesTheConfiguredCredential/network-path",
+      "production": "mcpbridge resolveEndpoint: a network-path endpoint (//host:port/...) on the configured URL's origin takes the configured credential, so a server that needs it on the POST takes the message, where it answered 401"
+    },
+    {
+      "id": "mcpbridge-endpoint-not-a-url-opaque",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointThatIsNoHTTPURLPrintsNoneOfIt/opaque",
+      "production": "mcpbridge resolveEndpoint: an endpoint that resolves to an opaque URL of another scheme (x:message?...) is refused in the bridge's own words, where Start's error named it through redact.Field, which reads text with no scheme and two slashes as words and printed it as it came, its access token included",
+      "function": "github.com/sjawhar/envoy/internal/mcpbridge.resolveEndpoint",
+      "capture": "mcpbridge.endpoint-not-a-url/opaque",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "endpoint.Scheme != \"http\" && endpoint.Scheme != \"https\" || endpoint.Host == \"\"",
+        "replacement": "false"
+      }
+    },
+    {
+      "id": "mcpbridge-endpoint-not-a-url-hostless",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointThatIsNoHTTPURLPrintsNoneOfIt/hostless",
+      "production": "mcpbridge resolveEndpoint: an endpoint that resolves to an http URL with no host (http:/message?...) is refused in the bridge's own words, where Start's error named it through redact.Field, which reads it as words and printed it as it came, its access token included",
+      "function": "github.com/sjawhar/envoy/internal/mcpbridge.resolveEndpoint",
+      "capture": "mcpbridge.endpoint-not-a-url/hostless",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "endpoint.Scheme != \"http\" && endpoint.Scheme != \"https\" || endpoint.Host == \"\"",
+        "replacement": "false"
+      }
+    },
+    {
+      "id": "mcpbridge-endpoint-not-a-url-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointThatIsNoHTTPURLPrintsNoneOfIt/twin",
+      "production": "the probe of the not-a-URL rows: redact.Field of each endpoint (x:message?..., http:/message?...) holds its access token, since the rule reads text with no scheme and two slashes as words, so each row can see it printed"
+    },
+    {
+      "id": "mcpbridge-endpoint-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointThatDoesNotParseAgainPrintsNoneOfIt/reparsed",
+      "production": "mcpbridge HTTPServer.Start: a POST to an endpoint whose text, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) names the endpoint as the rule reads it (redact.Field, which cannot read it) and the failure by its class (redact.Cause), never net/http's parse error, which quotes the endpoint whole",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.endpoint-reparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "\"POST to %s: %w\", redact.Field(s.messageURL), redact.Cause(postErr, s.messageURL)",
+        "replacement": "\"POST to %s: %w\", s.messageURL, postErr"
+      }
+    },
+    {
+      "id": "mcpbridge-endpoint-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnEndpointThatDoesNotParseAgainPrintsNoneOfIt/twin",
+      "production": "the probe of the endpoint-reparsed row: net/http's error for a POST to that endpoint quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "mcpbridge-sse-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnSSEURLThatDoesNotParseAgainPrintsNoneOfIt/reparsed",
+      "production": "mcpbridge HTTPServer.Start: a configured URL that url.Parse and ServerConfig.validate take, whose SSE URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape), fails Start in the bridge's own words, never http.NewRequest's error, which quotes the SSE URL whole, its user information and query included",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.sse-url/reparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "fmt.Errorf(\"create SSE request: the SSE URL does not parse\")",
+        "replacement": "fmt.Errorf(\"create SSE request: %w\", err)"
+      }
+    },
+    {
+      "id": "mcpbridge-sse-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnSSEURLThatDoesNotParseAgainPrintsNoneOfIt/twin",
+      "production": "the probe of the sse-url-reparsed row: the configured URL passes ServerConfig.validate, and http.NewRequest's error for its SSE URL quotes its user information and its access token, so the row can see them printed"
     }
   ],
   "bun": [
@@ -15421,6 +15641,41 @@
       "site": "envoy's airlock proxy (internal/cipher/proxy upstreamReason, the one rule for the error of a call the proxy made to a service: the upstream line, the 502 and a failed Azure exchange's reason, line and answer) printed a certificate failure as x509's text up to its first ASCII quotation mark (logmask.HidePeerBytes), a second rule beside redact's for certificate text; on macOS x509 hands on the system verifier's words, which name the certificate's subject between curly quotation marks that cut does not see, so the line and the answer printed the name the service chose for its certificate, the real value the swap sent it among the names it could choose",
       "source": "the round-9 decisions of #4368",
       "guard": "proxy-certificate-words-macos-untrusted"
+    },
+    {
+      "site": "daemon proveAppKeys: the boot's key-proof line named each owner the App's installation read answered as it came (installedOn), the App's JWT case-folded where whatever answered in GitHub's place listed an account under it",
+      "source": "the round-9 decisions of #4368",
+      "guard": "daemon-answer-words-listed-owner-installed-on"
+    },
+    {
+      "site": "api controllerGitHubCredential: the served line named each owner the bundle's read of the review App's installations answered as it came (installed), the App's JWT case-folded among them",
+      "source": "the round-9 decisions of #4368",
+      "guard": "api-answer-words-listed-owner-log"
+    },
+    {
+      "site": "api controllerGitHubCredential: the answer's installed (ControllerCredentialResponse.Installed) served each owner the bundle's read of the review App's installations answered as it came, the App's JWT case-folded among them",
+      "source": "the round-9 decisions of #4368",
+      "guard": "api-answer-words-listed-owner-served"
+    },
+    {
+      "site": "leakguard Source.read under net/http's own policy also sent the installation token on a 302 from https to plain http on the API's own host and port, in clear text: net/http copies Authorization onto a redirect to the same host name whatever its scheme",
+      "source": "the round-9 decisions of #4368",
+      "guard": "leakguard-redirect-authorization-other-scheme"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: an absolute or network-path endpoint on the configured URL's origin got no configured credential, where a relative one did, so a server that needs it on the POST answered 401",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-endpoint-origin-absolute"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: an endpoint that resolved to no http or https URL with a host (opaque, hostless) was posted to and printed through redact.Field, which reads it as words and printed its query values as they came",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-endpoint-not-a-url-opaque"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: a configured URL whose SSE URL does not parse again printed http.NewRequest's error, which quotes it whole, user information and query included (the tools slice's create-SSE-request item)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "mcpbridge-sse-url-reparsed"
     }
   ]
 }
