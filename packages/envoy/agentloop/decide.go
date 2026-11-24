@@ -186,9 +186,14 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	resp, err := client.Do(post)
 	var answer redact.Answer
 	tooLarge := false
-	if err != nil {
+	var unread *tokenFailure
+	switch {
+	case errors.As(err, &unread):
+		// The call never went out: the caller's words for its token alone (tokenFailure).
+		err = unread
+	case err != nil:
 		err = redact.Cause(err, req.Model.Endpoint.BaseURL)
-	} else {
+	default:
 		answer, err = redact.ReadAnswer(resp, answerLimit)
 		_ = resp.Body.Close()
 		tooLarge = errors.Is(err, redact.ErrAnswerTooLarge)

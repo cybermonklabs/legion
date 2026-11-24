@@ -40,7 +40,9 @@
 // Location's host. A run's answer the SDK refused is named by its status alone
 // (redact.StatusLine), since the SDK's error quotes the error body or its message. A decision's
 // refusal names its status and its words as the rule for remote text reads them, with the call's
-// credential redacted (redact.Answer).
+// credential redacted (redact.Answer). A call whose Endpoint.Token failed never went out, so no
+// one answered it: it is said in the caller's words for that failure alone, after "reading the
+// <kind> token", and none of net/http's or the SDK's words around them prints.
 //
 // # The retry
 //
