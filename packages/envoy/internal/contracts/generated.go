@@ -451,9 +451,9 @@ const StepAgentTextRule = "printable ASCII with no space, from 1 to 128 characte
 // packages/contracts: Dispatch's step write and plan write refuse a task outside it, and the
 // Legion daemon, through github.com/sjawhar/envoy/steprecord, refuses a plan whose task block has
 // such an id, whose steps Dispatch could record none of.
-const StepTaskPattern = "^[a-z0-9][a-z0-9-]{0,63}$"
-const StepTaskMax = 64
-const StepTaskRule = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64 bytes"
+const StepTaskPattern = "^[a-z0-9][a-z0-9-]{0,64}$"
+const StepTaskMax = 65
+const StepTaskRule = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 65 bytes"
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the

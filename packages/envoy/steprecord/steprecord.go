@@ -72,7 +72,7 @@ const (
 	TaskIDRule = contracts.StepTaskRule
 )
 
-var taskID = regexp.MustCompile(contracts.StepTaskPattern)
+var taskID = regexp.MustCompile("^[a-z0-9][a-z0-9-]{0,63}$")
 
 // TaskIDHolds reports whether id is in the form of the task a step record names, which is the form
 // of the id of a `plan_task` block as well: a plan whose task block has any other id has no step

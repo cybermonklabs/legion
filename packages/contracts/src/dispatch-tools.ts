@@ -876,7 +876,7 @@ export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1
 
 /** The most bytes the id of a task a step record names holds. A task id is ASCII, so its bytes and
  *  its characters are one count. Generated into Go as `contracts.StepTaskMax`. */
-export const STEP_TASK_MAX = 64;
+export const STEP_TASK_MAX = 65;
 
 /** The form of the id of a task a step record names, which is also the id of a `plan_task` block
  *  of an owner's plan: lowercase letters, digits and hyphens, the first a letter or a digit, at
