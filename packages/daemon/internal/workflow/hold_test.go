@@ -196,9 +196,9 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
 		got := noticeRows(t, pool)
 		// No controller copy of the hold: the architect retries or escalates it, and the
-		// controller's skill does nothing for a hold that is not escalated (#4065). The escalation
-		// is what reaches the controller
-		// (TestAnEscalationIsRecordedOnTheHoldForAControllerThatStartsLater).
+		// controller's skill does nothing for a hold that is not escalated (#4065).
+		// TestAnEscalationIsRecordedOnTheHoldForAControllerThatStartsLater holds that the
+		// escalation reaches the controller.
 		if want := []record.OutboxPayload{held, died}; !sameNotices(got, want) {
 			t.Fatalf("notice rows = %+v, want %+v: the hold and the worker-died to the architect, each naming the failure, and no copy to the controller", got, want)
 		}

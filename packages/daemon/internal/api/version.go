@@ -3661,45 +3661,43 @@ package api
 // that waits out that bound, reads nothing and opens nothing, and is `503 POD_UPDATE_BUSY` with a
 // `Retry-After` of the sweep's interval in seconds (60), its sentence naming which of the two
 // ended the wait, and the bound.
-// While the project is paused (178), the controller's `agents/resume` and `agents/retry` answer
-// 409 `PROJECT_PAUSED`, with the `pause` that stands, for every agent, as its
-// `claims/fresh-session` and `claims/compact` do, and change nothing: an agent the pause stopped is
-// the pause's to bring back at the project's resume, and no agent action undoes the pause. Its
-// `agents/stop` and `agents/suspend` start nothing and still run. A suspension of the
-// controller's or the operator's and the pause's stop each keep their own source: the pause stops
-// no agent such a suspension already holds, an agent the pause stopped that such a suspension then
-// takes over stays suspended by it at the resume, and the resume brings back only what the pause
-// stopped. `issues/pod-update` answers
-// 409 `PROJECT_PAUSED` while the project is paused, before the daemon is asked anything, and 409
-// `POD_HELD_BY_PAUSE` for a pod a pause holds: the hold of a pause that began after that
+// While the project is paused (178), the controller's `agents/resume` and `agents/retry` answer 409
+// `PROJECT_PAUSED`, with the `pause` that stands, for every agent, as its `claims/fresh-session`
+// and `claims/compact` do, and change nothing: an agent the pause stopped is the pause's to bring
+// back at the project's resume, and no agent action undoes the pause. Its `agents/stop` and
+// `agents/suspend` start nothing and still run. A suspension of the controller's or the operator's
+// and the pause's stop each keep their own source: the pause stops no agent such a suspension
+// already holds, an agent the pause stopped that such a suspension then takes over stays suspended
+// by it at the resume, and the resume brings back only what the pause stopped. `issues/pod-update`
+// answers 409 `PROJECT_PAUSED` while the project is paused, before the daemon is asked anything,
+// and 409 `POD_HELD_BY_PAUSE` for a pod a pause holds: the hold of a pause that began after that
 // `PROJECT_PAUSED` check read the project as running, or a hold the resume left on a pod until a
 // role of the pod is live again; neither opens a round. Every `PROJECT_PAUSED` sentence, those of
 // 178's routes included, now ends by naming what lifts the pause (server.go's pauseLifts): the
 // project's resume, as the controller's `resume` operation of its `legion` tool, which names no
 // issue, and the operator's `legion project resume`; the fixture `project-paused.json` carries it.
-// The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the issue's
-// architect alone, as `session-lost` does: the controller is told of neither (#4065), and no
-// shape moves.
+// The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the
+// issue's architect alone, as `session-lost` does: the controller is told of neither (#4065),
+// and no shape moves.
 // Contract 253 is served down by 193's rule (#3659): every answer goes through one writer, which
-// shapes it to the contract its caller reads. The agent actions' answer and the pod update's
-// are two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
-// `issues/pod-update`, each arrived whole with its routes at this contract
-// (agentActionsContract), so no contract below records either, and shapeAnswer serves each as
-// written. The agent actions' `state`, `suspendedBy` and `suspensionHeldBy` are enumerated
-// fields of the table, each recorded whole at this contract, so no value of them is held back,
-// and the plugin reads every field of both answers as optional, since its code hands each answer
-// on whole and reads none of them (`LEGION_ANSWER_READS`). Every refusal of the five routes is the
-// refusal answer: `PROJECT_PAUSED` is an `api.PauseFailure`, placed by the caller's pod where it
-// states no contract and served without its `pause` below 178, and every other code, from
-// `CONTROLLER_REQUIRED` to `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The
-// five routes' request records start at this contract
-// (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No key and no value of any
-// other answer moved, so this contract's records of every other answer are 250's, under its own
-// number. agentActionsContract is now the last number of answers.go's SupportedContracts,
-// after shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract,
-// cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract,
-// 232, podHoldContract and priorityContract, and a renumber of this entry moves that constant with
-// it.
+// shapes it to the contract its caller reads. The agent actions' answer and the pod update's are
+// two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
+// `issues/pod-update`, each arrived whole with its routes at this contract (agentActionsContract),
+// so no contract below records either, and shapeAnswer serves each as written. The agent actions'
+// `state`, `suspendedBy` and `suspensionHeldBy` are enumerated fields of the table, each recorded
+// whole at this contract, so no value of them is held back, and the plugin reads every field of
+// both answers as optional, since its code hands each answer on whole and reads none of them
+// (`LEGION_ANSWER_READS`). Every refusal of the five routes is the refusal answer: `PROJECT_PAUSED`
+// is an `api.PauseFailure`, placed by the caller's pod where it states no contract and served
+// without its `pause` below 178, and every other code, from `CONTROLLER_REQUIRED` to
+// `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The five routes' request
+// records start at this contract (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No
+// key and no value of any other answer moved, so this contract's records of every other answer are
+// 250's, under its own number. agentActionsContract is now the last number of answers.go's
+// SupportedContracts, after shapedAnswersContract, 199, repositoriesLiveContract,
+// childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract,
+// intakeGiveUpsContract, 232, podHoldContract and priorityContract, and a renumber of this entry
+// moves that constant with it.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
@@ -3820,7 +3818,7 @@ package api
 // each of the 482 open pull requests, 2026-11-24T13:41:35Z to 13:44:24Z). The merge of main
 // `4e851eb1`, which still declares 232, keeps 234: no open head but this one declares it (read at
 // the head of each of the 480 open pull requests, 2026-11-24T15:09:20Z to 15:12:03Z). The merge of
-// main `7e75126f`, which declares 246 (#4960, the pod hold's entry right above), moves this entry
+// main `7e75126f`, which declares 246 (#4960, the pod hold's entry), moves this entry
 // from 234 to 248: 240 (#3712, #3993, #4539 and #4771), 241 (#4049, #4392 and #4682), 242 (#4596),
 // 243 (#5349), 244 (#3831), 245 (#5158), 246 (#4194) and 247 (#4580 and #5384) are other open pull
 // requests', and no open head declares 248 (read at the head of each of the 477 open pull requests,

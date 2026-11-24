@@ -226,8 +226,7 @@ func (s *server) agentEventAction(w http.ResponseWriter, r *http.Request, op age
 // suspension the caller may not get past in that hold's own code (refuseHold), an agent whose
 // claim is stored working, which the action does not reach, as a claim in a turn
 // (agentAction.refusesATurn, refuseClaimInATurn), and every other refusal as the operator's door
-// answers it, in the
-// machine's own words (operationFailure).
+// answers it, in the machine's own words (operationFailure).
 func (s *server) refuseAgentAction(w http.ResponseWriter, r *http.Request, target claimTarget, err error, op agentAction) {
 	var refused *supervise.RefusedError
 	switch {

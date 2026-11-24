@@ -2907,13 +2907,12 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // askedRetry is the retry the operator or the controller asks for an agent that runs nothing
-// (RequestAskedRetry): retry, for an architect — its tree's root, which no phase start
-// relaunches (admission starts it with its tree, and a person's answer resumes it: workflow's
-// StartArchitect and ResumeAwaitedRoot), or a child's own architect, which a start of the
-// workflow's can also bring back (workflow's StartFirstPhase and reviveArchitect, for example) —
-// and for a phase worker whose issue works no phase of its role, which the route has already
-// established before it reaches the machine (api's retryStart starts the phase itself for every
-// other one).
+// (RequestAskedRetry): retry, for an architect — its tree's root, which no phase start relaunches
+// (admission starts it with its tree, and a person's answer resumes it: workflow's StartArchitect
+// and ResumeAwaitedRoot), or a child's own architect, which a start of the workflow's can also
+// bring back (workflow's StartFirstPhase and reviveArchitect, for example) — and for a phase worker
+// whose issue works no phase of its role, which the route has already established before it reaches
+// the machine (api's retryStart starts the phase itself for every other one).
 // The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's
 // role never changes, so the refusal cannot race the decision it guards. The retry names who asks
 // (RequestAskedRetry.By, askedBy), which is what the wake pacing reads (exemptWake).

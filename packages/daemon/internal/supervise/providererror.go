@@ -163,9 +163,8 @@ func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {
 //   - 5xx, 408 and 429 are the provider saying "not now", which the ladder waits out;
 //   - 401 and 403 are a credential, which is the fleet's and not this claim's work
 //     (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3). Failing every claim
-//     whose turn hits one is worse than sending the task again, and the notice at
-//     providerErrorRunTold, given at six such turns in a row, is what tells a person
-//     (tellOfProviderErrors);
+//     whose turn hits one is worse than sending the task again: the notice at
+//     providerErrorRunTold (tellOfProviderErrors) tells a person at six such turns in a row;
 //   - no status at all is a turn that ends with nothing but a message, two kinds among them.
 //     A content-filter refusal clears because the plugin has already moved the session down its
 //     model chain, so the next prompt goes to another model. A turn whose provider key could not
@@ -236,10 +235,12 @@ func providerErrorTask(cause string) string {
 }
 
 // tellOfProviderErrors hands the claim's run of provider-error turns to
-// Deps.ProviderErrorRunReached, once, when it reaches providerErrorRunTold; a turn with no error
-// puts the run back to zero, and only then can another notice go. Who is told is that callback's
-// to decide (internal/daemon's providerErrorRunReached). It is the one exit from a run of such
-// turns, and it is a notice rather than a hold: R2 forbids an attempt limit. model is the model
+// Deps.ProviderErrorRunReached, once, when it reaches providerErrorRunTold. The run goes on past
+// it, and another notice can go only after the run is back at zero: a turn with no error, a
+// compaction that compacted the session (compactEnded) or a forgotten session (forgetSession)
+// puts it there. Who is told is that callback's to decide (internal/daemon's
+// providerErrorRunReached). It is a notice rather than a hold, and it ends no run: R2 forbids an
+// attempt limit. model is the model
 // the failed request went to, and is empty when the error named none. next is what the daemon does
 // about the turn that reached the count, in the caller's words: a prompt's task is kept and sent
 // again, and a turn that ran no prompt of the daemon's has no task to send

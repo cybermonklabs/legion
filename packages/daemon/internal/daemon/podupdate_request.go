@@ -50,8 +50,8 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //     round opened from it would be the ended round again.
 //   - a round open over the issue's pod: that round, opened nothing new. A round over the pod the
 //     claims record, a round whose claims record no pod at all (podlessRound carries it) and a
-//     round whose claims record two pods (a replacement in flight) are each the one this issue's
-//     pod is in.
+//     round whose claims record two pods (a replacement in flight) are each the one this
+//     issue's pod is in.
 //   - claims in two pods with no round open, or a round open over a pod the claims no longer
 //     record, which the next sweep ends: refused, the pod is changing (api.PodUpdatePodChanging).
 //     Opened over the pod in its place, the round would write over the record of the round before

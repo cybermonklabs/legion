@@ -103,8 +103,7 @@ type podUpdateOpening struct {
 // holds is whether a limit of the project holds this issue's opening back, and which limit, and
 // records the issue as waiting under the limit that did. Where both hold it back the limit on open
 // rounds is the one recorded: it is the one that will still hold the issue back at the next sweep,
-// and the
-// one an operator reading the record has to weigh.
+// and the one an operator reading the record has to weigh.
 func (sweep *podUpdateSweep) holds(issue string) (podUpdateLimit, bool) {
 	var limit podUpdateLimit
 	switch {

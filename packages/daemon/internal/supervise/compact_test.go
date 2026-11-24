@@ -85,7 +85,7 @@ func TestACompactionStartsTheRunOfProviderErrorsAgainSoItIsHandedOnASecondTime(t
 	}
 
 	if notices != 2 {
-		t.Fatalf("the run was handed on %d times, want a second time after six more refused turns", notices)
+		t.Fatalf("the runs were handed on %d times, want 2: once for each of the two runs that reached %d", notices, providerErrorRunTold)
 	}
 }
 

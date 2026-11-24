@@ -1131,9 +1131,9 @@ type ClaimView struct {
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
-	// provider outage (dispatch://INFRA-956's R2) — and the issue's architect and the project's
-	// controller are told of it once, at a run of six, so without this key the number behind that
-	// telling stands on no surface its reader can reach.
+	// provider outage (dispatch://INFRA-956's R2). The daemon tells the issue's architect, where one
+	// stands above the claim's agent, and the project's controller once, at a run of six, so this
+	// key is the only surface that shows the count before or after that notice.
 	ProviderErrorRun int `json:"providerErrorRun,omitempty"`
 	// PendingTask is the task the claim holds, reduced to what a reader of this surface decides
 	// on and never carrying its text (PendingTaskView); absent for a claim holding none.

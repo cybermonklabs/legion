@@ -201,10 +201,9 @@ func freshSessionCases() []freshSessionCase {
 		{
 			// The controller's suspension, which both doors lift: the operator's lifts every
 			// suspension, and the controller's its own. The operator's own suspension is the
-			// controller door's SUSPENDED_BY_OPERATOR
-			// (TestTheControllerCannotGetPastTheOperatorsSuspension), and the operator's door is
-			// held to it in
-			// TestTheOperatorLiftsItsOwnSuspensionAndTheControllers.
+			// controller door's SUSPENDED_BY_OPERATOR, which
+			// TestTheControllerCannotGetPastTheOperatorsSuspension holds, and the operator's door
+			// is held to it in TestTheOperatorLiftsItsOwnSuspensionAndTheControllers.
 			name: "a suspended phase worker", issue: "LEGION-209", role: claim.RoleImplementer, facts: 1, launches: true,
 			start: controllerSuspendedImplementer,
 		},

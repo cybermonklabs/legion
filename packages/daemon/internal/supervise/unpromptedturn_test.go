@@ -184,7 +184,7 @@ func TestARunOfRefusedPromptsAndPluginTurnsIsHandedOnOnceAtItsSixth(t *testing.T
 		h.pluginTurn(next(), true, 529)
 	}
 	if told != 2 {
-		t.Fatalf("the run was handed on %d times, want twice: once for each run that reached %d", told, providerErrorRunTold)
+		t.Fatalf("the runs were handed on %d times, want 2: once for each of the two runs that reached %d", told, providerErrorRunTold)
 	}
 }
 

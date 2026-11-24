@@ -80,8 +80,8 @@ func TestThePodUpdateNeedsAControllerGrantAnIssueKeyAndAnIssueOfTheDaemonsProjec
 		t.Fatalf("the daemon was asked to open a round over the pods of %v, want no request of the three to reach it", *asked)
 	}
 
-	// The same controller grant over an issue of the daemon's own project is the daemon's to
-	// answer.
+	// The same controller grant over an issue of the daemon's own project is
+	// the daemon's to answer.
 	if recorder := askPodUpdate(h, controller, "LEGION-209"); recorder.Code != http.StatusOK {
 		t.Fatalf("the controller's pod update of LEGION-209 = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}

@@ -2873,12 +2873,12 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // launch, by the one exception (podHolds.owes; the round asks no other claim the daemon suspended:
 // roundAsks, roundClock.passesOver). No live session of it holds the role's topic, so the publish
 // would end at notify.ErrNoHolder at every sweep, and the machine refuses the ask of an agent the
-// pause stopped before any publish (supervise's UpdateAskSuspended): a row and a log line a minute
-// for a claim that may stay suspended until a resume lifts its hold or the pause's resume launches
-// its agent. The first tick after the agent says it is ready asks it. A ready session claims its
-// topic inside its first turn or at the first-turn bound (supervise.SaidReady), so an ask in that
-// short window can still end at notify.ErrNoHolder, and the claim is then asked again at a later
-// sweep, as above.
+// pause stopped before any publish (supervise's UpdateAskSuspended): a row and a log line a
+// minute for a claim that may stay suspended until a resume lifts its hold or the pause's resume
+// launches its agent. The first tick after the agent says it is ready asks it. A ready session
+// claims its topic inside its first turn or at the first-turn bound (supervise.SaidReady), so an
+// ask in that short window can still end at notify.ErrNoHolder, and the claim is then asked again
+// at a later sweep, as above.
 //
 // The ask states the round's bound (roundClock.roundBound), read at the clock's now with the time
 // a project's pause held the pod. A round no claim of group records the opening of has no bound
@@ -3381,11 +3381,11 @@ func awaitsAnswer(c supervise.Claim, round string, clock roundClock) bool {
 //   - A failed claim's launches or prompts ran out, so it runs no process and no turn of it runs on
 //     the pod. Its machine ignores the round's post, and only a retry of its agent brings that
 //     agent back (supervise's onRetry and onAskedRetry rows), which the round does not make.
-//     Holding the round for its answer held the pod, and every answered worker's next task with it,
-//     for an answer it can never give: on the first contract-46 roll a planner that had failed at
-//     contract 41 recorded no round at all, and held its issue's round open behind the three
-//     workers that had answered. A retry starts it again, and it is asked like any other claim from
-//     the next tick.
+//     Holding the round for its answer held the pod, and every answered worker's next task with
+//     it, for an answer it can never give: on the first contract-46 roll a planner that had failed
+//     at contract 41 recorded no round at all, and held its issue's round open behind the three
+//     workers that had answered. A retry starts it again, and it is asked like any other claim
+//     from the next tick.
 //   - A claim that left the round's pod (supervise's Claim.LeftPodRound) runs its process in
 //     another pod. The ask names work that died with that pod, and no process the claim runs now
 //     holds any of it.

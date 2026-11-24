@@ -337,8 +337,8 @@ func TestTheControllersRefusedSuspensionCancelsNoStartInFlight(t *testing.T) {
 				t.Fatal("the refused suspension left a stopped start for the next suspension to read")
 			}
 
-			// The negative control: the operator's own suspension cancels the start where it
-			// arrives.
+			// The negative control: the operator's own suspension cancels the
+			// start where it arrives.
 			startInFlight(t, h)
 			_ = h.handle(RequestSuspend{Claim: testToken, Reason: "the operator suspended it", By: SuspendedByOperator})
 			if !h.m.stoppedAStart() {

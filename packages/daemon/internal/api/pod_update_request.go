@@ -52,9 +52,8 @@ const (
 	// ways: no claim records a process in a pod (each is suspended or between launches, or the
 	// runtime runs no pods), or the claims record a pod and none of them is a worker the round
 	// could ask (none has a session, or each one that has one has failed), so no claim would record
-	// the
-	// round. 404 NO_POD: the claims are there, and a worker in the pod the round is opened over is
-	// what is missing.
+	// the round. 404 NO_POD: the claims are there, and a worker in the pod the round is opened over
+	// is what is missing.
 	PodUpdateNoPod
 	// PodUpdatePodChanging: the issue's pod is changing under the request — its claims record two
 	// pods, a replacement in flight, or a round over the pod before this one is still ending — and
@@ -65,11 +64,10 @@ const (
 	// at a sweep. 409 POD_UPDATE_LIMITED, whose sentence names the limit.
 	PodUpdateLimited
 	// PodUpdateNotRecorded: the daemon posted the round, and no claim of the issue recorded it
-	// within the request's bound — a claim's machine is held in a long decision, a relaunch, or
-	// the claim's agent stopped — so it is no round the sweeps carry yet, and none a restart would
+	// within the request's bound — a claim's machine is held in a long decision, a relaunch, or the
+	// claim's agent stopped — so it is no round the sweeps carry yet, and none a restart would
 	// find. 503 POD_UPDATE_NOT_RECORDED: the post may still land, and a later request answers the
-	// round
-	// once a claim records it. A 200 is only ever a round a claim records.
+	// round once a claim records it. A 200 is only ever a round a claim records.
 	PodUpdateNotRecorded
 	// PodUpdateBusy: a sweep's walk over the project's issues held the turn the request waits for
 	// until the request's own context ended, or for the whole of the daemon's bound on that wait,

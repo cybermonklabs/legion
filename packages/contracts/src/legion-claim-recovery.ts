@@ -25,18 +25,17 @@ const nonEmptyString = z.string().min(1);
  * daemon builds the token from its own project, so such a claim is one it does not supervise
  * (`NO_CLAIM`).
  *
- * The controller's door gives `SUSPENDED_BY_OPERATOR` (409) to every request that would get past
- * a suspension the operator holds, held for the agent's turn or landed, before it reads anything
- * else of the claim: a resume of an agent that suspension holds, a suspension of such an agent,
- * and a stop, a retry or a `fresh_session` of one. Only the operator lifts the operator's
- * suspension. The request leaves the agent as it was, but where `fresh_session` went further before
- * that
- * suspension took the agent over: its own suspension of the agent ran, which that suspension then
- * took over, and the agent keeps the session its claim recorded; or it left behind the session its
- * claim recorded, so the agent starts in a new session once it is started. `compact` alone is let
- * past the operator's suspension, since a compaction lifts nothing: an agent that suspension holds
- * takes the compaction's own refusal below, whose sentence names the operator's `legion claims
- * resume` as what starts the agent.
+ * The controller's door gives `SUSPENDED_BY_OPERATOR` (409) to every request that would get past a
+ * suspension the operator holds, held for the agent's turn or landed, before it reads anything else
+ * of the claim: a resume of an agent that suspension holds, a suspension of such an agent, and a
+ * stop, a retry or a `fresh_session` of one. Only the operator lifts the operator's suspension. The
+ * request leaves the agent as it was, but where `fresh_session` went further before that suspension
+ * took the agent over: its own suspension of the agent ran, which that suspension then took over,
+ * and the agent keeps the session its claim recorded; or it left behind the session its claim
+ * recorded, so the agent starts in a new session once it is started. `compact` alone is let past
+ * the operator's suspension, since a compaction lifts nothing: an agent that suspension holds takes
+ * the compaction's own refusal below, whose sentence names the operator's `legion claims resume` as
+ * what starts the agent.
  *
  * While the project is paused, every action of the door that would start a turn of an agent —
  * `resume_agent`, `retry` and `fresh_session`, which start its session again, and `compact`,
@@ -63,28 +62,27 @@ const nonEmptyString = z.string().min(1);
  * it owed goes to it again. It reaches a narrower set, a claim whose agent is ready or idle and
  * no suspension is held over, since there has to be a running Oh My Pi session to ask.
  *
- * The daemon refuses each with the code and the sentence the controller reads. Each sentence
- * says what the claim is doing when the refusal is given, which operation reaches each state a
- * caller can read of it in `legion claims list`, and nothing of what the next turn, hold,
- * report or relaunch will make of it. Both give `CLAIM_IN_A_TURN` for a claim whose agent runs,
- * since cutting a running turn off would lose the turn that may be the one ending the run of
- * provider errors. Two claims take it: one stored working whose process the read at the request
- * finds running, and one whose session is being compacted, which is not read at all. An agent
- * whose claim is stored working and that a suspension is held over takes that code too, in the
- * words of the hold, except where the door refuses that suspension first, held or landed, because
- * it outranks the caller: the operator's for the controller's `fresh_session`
- * (`SUSPENDED_BY_OPERATOR`). No agent
- * with no process behind it takes it at either door, and nor does an agent whose process nobody
- * read. Both give `CLAIM_UNSETTLED` for an agent whose claim has no settled state: one
- * queued, one with a launch in flight, one a suspension is held over in any state but working (a
- * suspension the door refuses first again excepted), and three whose claims are stored working
- * that take this code rather than the turn's — one left working under a relaunch the daemon is
- * pacing, one whose process the runtime would not answer for, and one whose claim records no
- * process to read. The last two are left exactly as the request found them and told which read
- * did not happen; `fresh_session` gives the same code, with nothing changed, for an agent whose
- * claim moved under the request and that a second read finds no longer working or gone once
- * more; an agent whose claim moved is otherwise answered as that second read finds it, and the
- * compaction gives it for an agent whose claim moved out of working while the request was made.
+ * The daemon refuses each with the code and the sentence the controller reads. Each sentence says
+ * what the claim is doing when the refusal is given, which operation reaches each state a caller
+ * can read of it in `legion claims list`, and nothing of what the next turn, hold, report or
+ * relaunch will make of it. Both give `CLAIM_IN_A_TURN` for a claim whose agent runs, since cutting
+ * a running turn off would lose the turn that may be the one ending the run of provider errors. Two
+ * claims take it: one stored working whose process the read at the request finds running, and one
+ * whose session is being compacted, which is not read at all. An agent whose claim is stored
+ * working and that a suspension is held over takes that code too, in the words of the hold, except
+ * where the door refuses that suspension first, held or landed, because it outranks the caller: the
+ * operator's for the controller's `fresh_session` (`SUSPENDED_BY_OPERATOR`). No agent with no
+ * process behind it takes it at either door, and nor does an agent whose process nobody read. Both
+ * give `CLAIM_UNSETTLED` for an agent whose claim has no settled state: one queued, one with a
+ * launch in flight, one a suspension is held over in any state but working (a suspension the door
+ * refuses first again excepted), and three whose claims are stored working that take this code
+ * rather than the turn's — one left working under a relaunch the daemon is pacing, one whose
+ * process the runtime would not answer for, and one whose claim records no process to read. The
+ * last two are left exactly as the request found them and told which read did not happen;
+ * `fresh_session` gives the same code, with nothing changed, for an agent whose claim moved under
+ * the request and that a second read finds no longer working or gone once more; an agent whose
+ * claim moved is otherwise answered as that second read finds it, and the compaction gives it for
+ * an agent whose claim moved out of working while the request was made.
  * The compaction adds three refusals of its own: `CLAIM_NOT_RUNNING` for an agent whose claim is
  * suspended, failed or retired, and for one whose claim is stored working and that no process
  * stands behind, which has no live agent to ask either; all four run no session at all and

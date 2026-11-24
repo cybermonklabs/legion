@@ -64,9 +64,9 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     suspended, charged nothing (endHeld). A prompt retirement meanwhile is the held stop itself
 //     (suspendHeld), charged nothing.
 //   - A start run against the claim drops a daemon's hold (StartedBy); one a suspension that holds
-//     — the operator's or the controller's — holds waits instead, and a project pause's hold whose
-//     pause is still the open one stays. Every other end of the process drops it with the process
-//     (letGo).
+//     — the operator's or the controller's — holds waits instead, and a project pause's
+//     hold whose pause is still the open one stays. Every other end of the process drops it
+//     with the process (letGo).
 //   - A project pause's hold (RequestSuspend.Pause) whose pause has ended is dropped at the start
 //     of the claim's next decision instead of run (dropEndedPauseHold), the resume's event
 //     (ResumePause) among them. A pause's request that reaches a claim whose suspension is already

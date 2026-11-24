@@ -39,8 +39,8 @@ type ClaimRequest struct {
 // for a tree's root, and that is the root's own refusal, in the machine's words
 // (operationFailure). Nor is the suspension's, which is held for a turn rather than refused for it.
 // The retry reaches no agent in a turn either, and refuses one from retryAgent's own read of the
-// claim's state before the
-// machine is asked anything, so it leaves refusesATurn false and names its states in reaches.
+// claim's state before the machine is asked anything, so it leaves refusesATurn false and names
+// its states in reaches.
 // controllerPassesHold is whether the controller's request is let past the operator's
 // suspension at the door rather than refused there (agentDoor, supervise.Claim.HeldAgainst):
 // the compaction's alone, which stops, takes over and lifts no suspension, so an agent the
@@ -63,15 +63,14 @@ type ClaimRequest struct {
 // TestEachDoorNamesTheStatesItsOwnPredicatesReach holds both fields to the predicates that
 // decide them.
 //
-// No field says which action a paused project refuses: each door that starts a turn refuses
-// it itself, 409 PROJECT_PAUSED with the pause that stands, after the door and before an event
-// for the agent action is posted to its machine (refusedWhilePaused), as the operator's doors
-// do. The resume refuses it in its own event builder (resumeAgent), as the operator's resume does
+// No field says which action a paused project refuses: each door that starts a turn refuses it
+// itself, 409 PROJECT_PAUSED with the pause that stands, after the door and before an event for the
+// agent action is posted to its machine (refusedWhilePaused), as the operator's doors do. The
+// resume refuses it in its own event builder (resumeAgent), as the operator's resume does
 // (resumeEvent), the retry before its read of the claim's state (retryAgent), and the two
-// recoveries in the paths they
-// share with the operator's door (freshSession, compact). No agent action undoes the pause,
-// which the project's resume alone lifts. The stop and the suspension start nothing and are let
-// through, as the operator's are.
+// recoveries in the paths they share with the operator's door (freshSession, compact). No agent
+// action undoes the pause, which the project's resume alone lifts. The stop and the suspension
+// start nothing and are let through, as the operator's are.
 type agentAction struct {
 	name                 string
 	invalidRole          string

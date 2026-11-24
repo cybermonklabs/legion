@@ -539,8 +539,9 @@ func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 	}
 }
 
-// The one exit from a run of provider errors is the notice at providerErrorRunTold: the run is
-// handed to Deps.ProviderErrorRunReached once. There is no hold and no attempt limit behind it.
+// At providerErrorRunTold the run of provider errors is handed to Deps.ProviderErrorRunReached
+// once, and the run goes on past it: a seventh refused turn counts 7. There is no hold and no
+// attempt limit behind the notice.
 func TestTheSixthProviderErrorTurnInARowHandsTheRunOnOnce(t *testing.T) {
 	type told struct {
 		claim  Claim

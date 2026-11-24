@@ -420,9 +420,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - the project is paused, or a pause holds the pod (IdleHoldPaused, IdleHoldPauseHeld);
 //   - a live claim is in a turn, starting or stopping (IdleHoldInTurn);
 //   - a stopped claim still records a process, which the suspension would wait on for as long as
-//     it stands (IdleHoldUnownedClaimProcess), or a suspension that holds, the operator's or the
-//     controller's, is over a claim, which keeps the pod for its holder as UnownedPodRelease keeps
-//     it (IdleHoldUnownedSuspensionHolds);
+//     it stands (IdleHoldUnownedClaimProcess), or a suspension that holds, the operator's or
+//     the controller's, is over a claim, which keeps the pod for its holder as
+//     UnownedPodRelease keeps it (IdleHoldUnownedSuspensionHolds);
 //   - a task, notice, message or start waits for delivery to a role of the pod (IdleHoldDelivery);
 //   - a live role's session has reported nothing since its last turn, or reported background
 //     work of its own running (IdleHoldUnreported, IdleHoldBackgroundWork);

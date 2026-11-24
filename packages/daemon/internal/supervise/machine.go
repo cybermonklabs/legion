@@ -550,8 +550,10 @@ type Claim struct {
 	// prompt's result (promptResulted), and a refused turn that ran no prompt of the daemon's from
 	// its report (unpromptedTurnEnded), in the one run; a clean prompt result and a clean report,
 	// prompted or not, each end it (turnOutcome). At providerErrorRunTold the run is handed once
-	// to Deps.ProviderErrorRunReached, and not again until a turn with no error puts it back to
-	// zero. It bounds nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a
+	// to Deps.ProviderErrorRunReached, and not again until the run is back at zero: a turn with no
+	// error, a compaction that compacted the session (compactEnded) or a forgotten session
+	// (forgetSession) puts it there. It bounds nothing: R2 of dispatch://INFRA-956 forbids an
+	// attempt limit here, since a
 	// limit would fail every claim of a project at once in a provider outage.
 	ProviderErrorRun int
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream

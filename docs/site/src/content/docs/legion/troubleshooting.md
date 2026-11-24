@@ -611,9 +611,9 @@ the reminders keep their pace of one every 5 minutes, and the turn counts in the
 provider-error turns below. Nothing is sent again for such a turn: it carried no task.
 
 **After six turns of one claim in a row have ended in a provider error**, whether a prompt of the
-daemon's ran them or not, the issue's architect and the project's controller are each told once, as
-`provider-errors on <KEY>`, with the run, the model where the prompt's result named one, and the
-cause
+daemon's ran them or not, the project's controller is told once, and so is the issue's architect
+where one stands above the claim's agent, as `provider-errors on <KEY>`, with the run, the model
+where the prompt's result named one, and the cause
 (`supervise: a run of turns that ended in a provider error; it is handed to ProviderErrorRunReached`).
 A run of the tree root's architect's own claim is told to the controller alone, and a run of a
 child's own architect's claim to the architect above that child and the controller. Nothing is held
