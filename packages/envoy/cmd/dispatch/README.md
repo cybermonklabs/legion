@@ -5248,7 +5248,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/results` (GET; cookie, trusted header, or bearer)
 
   GET lists the `check` blocks of the issue's Verification document in document order:
-  `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
+  `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`, `subject`, `program`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
 
   - A check's results come newest first by `created_at`, the time the recording transaction began, with `id` descending breaking a tie, and a client that reads one result per check reads the first of them;
     `dispatch results` prints every one of them, each with the reading its role recorded.
@@ -5258,34 +5258,49 @@ Each item below names a path with its method and identity, then its purpose.
     The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head.
 
   Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
-  Each basis is `{kind, repo?, commit?, branch?, pull_request?, learned_at?}`, `kind` `named`, `pull_request` or `branch`; `repo` is the `owner/repo` of a basis in a repository the issue links a pull request in and does not resolve to, and is absent from every basis of the issue's own repository, so pull request `#7` or branch `main` of that linked repository reads apart from the issue's own.
+  Each basis is `{kind, repo?, commit?, branch?, merge_commit?, pull_request?, learned_at?}`. Its `kind` is `named`, `pull_request` or `branch`.
+  A linked basis names its repository in `repo`. An own basis omits it. A branch's `merge_commit` names the merge a result there must hold.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
 
-  - A `before_merge` check is compared with every head Dispatch holds for the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, attributed to that issue.
+  - A `before_merge` check names every open pull request head attributed to its issue in its own repository.
+    With none open, it names the final head of the pull request that merged last. `merged_at` and then number decide the order, not the last attribution event.
+    An unordered set names its heads without choosing one, and the check reads unknown. The read fills missing merge times it needs through GitHub, once per pull request in that read. A failed fill or a row still without a time is not ordered last.
+    Linked repositories choose their heads by the same rule.
+
     A pull request that the issue's external links name (`https://github.com/<owner>/<repo>/pull/<n>`) in a repository the issue does not resolve to counts as one attributed to it, since the attribution holds an issue to its own repository and can never give it that pull request (`delivery.Attributor.HeadsAttributedTo`, `linkedPullRequestTerms`); its basis names that repository in `repo`.
     The link is matched to the stored row by repository and number, so a push that moves that pull request's head moves the basis, and one that closed without a merge is no basis.
     The owner and the name are read by the patterns every name GitHub allows is read by, an owner of a letter or digit and then up to 38 letters, digits, `-` and `_` (a managed user's `mona-cat_octo` among them) and a name of letters, digits, `.`, `-` and `_`, and a name of `.` or `..` alone names no pull request, so a link cannot send a read of GitHub up the path.
     A link to a pull request of the issue's own repository adds nothing: the attribution alone decides which pull requests of that repository are the issue's.
 
-  - An `after_merge` check is compared with the branch the check's issue's pull request merged into — the `base_ref` of the newest merged pull request attributed to that issue — and with that repository's default branch, which answers alone where Dispatch holds no merge of the issue or the merged row names no base branch.
+  - An `after_merge` check compares with nothing (`not_merged`) until its issue has a merge of its own or linked work.
+    In each repository it names the last merge's base branch. It names the default branch only where the work's merge reached that branch. That can be a direct merge or a recorded landing of the integration branch. Each branch names the merge there.
 
-  - A `default_branch` check is compared with that repository's default branch alone, whatever branch the pull request merged into.
+    Where only linked work merged, the own default branch is still named without a merge. No own result can count there.
+    An unordered set names its possible branches without guessing a merge. A result carried there is unknown.
 
-  - A result of an `after_merge` or `default_branch` check whose commit the record route took to be of a repository the issue links a pull request in is compared in that repository:
-    the record route keeps that repository with the result (`check_results.commit_repo`, POST below), and the read asks that repository's branches, for `after_merge` the base branch of the merged linked pull request (`delivery.Attributor.BaseBranchMergedIn`) and then its default branch, for `default_branch` its default branch alone; the branch the result stands at names that repository in `repo`.
-    Asked of the issue's own repository, GitHub answers `404` for such a commit.
-    A `before_merge` result of that kind is read through that repository, below, for the same reason.
-    Every other result keeps no repository and is compared as above.
+  - A `default_branch` check names each repository's default branch alone. With no merge of the work anywhere, any commit on that branch can count. No merge is required.
+    Once any own or linked work merged, the result must hold the work's merge on its repository's default branch.
+    A known absence of that merge cannot count. An unknown merge leaves a carried result unknown.
+
+  - A branch check serves the union of its own bases and those of repositories in which it links merged work (`delivery.Attributor.MergeIn`). It serves these before any result names a linked commit. Each linked basis names its repository in `repo`.
+    A result walks only the bases of its own repository, never that served union. The record route keeps a linked result's repository in `check_results.commit_repo` (POST below). A result with no stored repository is compared in the issue's own repository.
+
+    A linked commit is not asked of the issue's own repository, which would answer `404`. A `before_merge` result uses its stored linked repository for the same reason.
 
   - A check compared with nothing says why in `compared_nothing`:
     `no_pull_request_or_branch` where the issue resolves to no repository, and where a `before_merge` check's issue holds no pull request at all;
     `repository_unreadable` where the App cannot read that repository and Dispatch can name no branch of it to ask a stored answer about;
-    `read_failed` where a read of Dispatch's own did not answer.
+    `read_failed` where a read of Dispatch's own did not answer;
+    `not_merged` where an `after_merge` check's issue has no own or linked merge.
 
-  - `commit_stands` is `{answer: "at_basis", basis}` where one of those commits is the result's own, or one of those branches carries it, `{answer: "other_commit"}` where none of them does, and `{answer: "unknown", reason}` where Dispatch cannot say.
-    A commit of a repository the App cannot read is unknown wherever nothing places it, whatever the check's `when`, and so is one left by a read of Dispatch's own that failed:
-    a commit there may head a pull request Dispatch was never able to learn.
-    A branch check still places a commit a stored `branch_commits` yes carries, since that answer is keyed by a branch and stands for good.
+  - `commit_stands` is `{answer: "at_basis", basis}` at a compared commit. It also answers this on a compared branch that carries the result and whose merge requirement it meets.
+    It is `{answer: "other_commit"}` where the result cannot count at any basis, and `{answer: "unknown", reason}` where Dispatch cannot say.
+    Commit C holds merge M where M is an ancestor of C, including equality. Equality asks GitHub nothing.
+    Branch membership alone cannot place a result whose required merge is unknown or not held.
+
+    A stored `branch_commits` yes and a stored `commit_holds` yes stand for good. They remain usable when the App cannot read the repository. A failed read is never stored as no.
+    A commit that still needs a repository read is unknown when that read cannot answer.
+    No repository read is needed to reject a known absent merge or an `after_merge` check with no merge anywhere.
     An earlier branch of an `after_merge` check is the one exception, and only where GitHub refused the read of it — a 403 or a 404, which a base branch GitHub no longer holds answers with: that says the branch does not carry the commit, and the default branch decides.
     Every other failure of that read, a rate limit, a 5xx, a timeout or a request whose caller went away, leaves the answer `unknown` wherever no branch carries the commit, and never `other_commit`.
     An issue that resolves to no repository is never unknown, since Dispatch holds every head such an issue will ever have, so a commit none of them names is another commit; the one exception is a `before_merge` result whose `check_results.commit_repo` names a linked repository, which that repository decides, as the next sentence says.
@@ -5295,9 +5310,14 @@ Each item below names a path with its method and identity, then its purpose.
   - `check_words_moved` is whether the check's words changed after the result was recorded, which the digest the result kept decides against the block's digest now.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
 
-  - `pass_stands` is `{answer, roles}` for the check as a whole: `yes`, with the roles of the passes that stand, while a result of it passed, stands at one of the compared commits, kept the check's words and carries no retraction;
-    `unknown` where the repository is unreadable, for a check CI proves whose check runs GitHub could not be read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place;
-    `no` otherwise, which a check compared with nothing for `no_pull_request_or_branch` answers, since there is nothing for a pass to stand at.
+  - `pass_stands` names the deciding answer, roles, result IDs, commit and reason. A retracted or reworded result does not decide it.
+    A `before_merge` pass must stand for every selected head, with no fail at any of those heads. A pass on one head cannot erase a fail on another.
+    An unreadable head or CI read that could still change the answer leaves it unknown.
+
+    For `after_merge` and `default_branch`, the first result that counts in newest-first order decides at its commit X.
+    Passes and fails together at X give `unknown/pass_and_fail`, naming the newest of each. A fail alone gives `no/fail`. Passes alone give `yes` and their distinct roles.
+    A newer result that could not be placed gives `unknown/not_placed` rather than reviving an older pass.
+    A result known to be at another commit is skipped. With none left, the answer is `no/no_result`.
 
   - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
     It is `current` where `commit_stands` is `at_basis`, `check_words_moved` is false and no retraction stands, and `older` where `commit_stands` is `other_commit` or it is `at_basis` and `check_words_moved` is true.
