@@ -2748,6 +2748,15 @@
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
         "files": ["packages/daemon/internal/daemon/kubeconfig_url_test.go"],
         "capture": "kubeerror.daemon/kubeconfig-proxy-url"
+      },
+      {
+        "row": "sandbox-kube-api-state-projection",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/daemon/internal/api/kube_refusal_projection_test.go",
+          "packages/daemon/internal/api/kube_refusal_answer_test.go"
+        ],
+        "capture": "kubeerror.api/state-projection"
       }
     ],
     "boundary_fields": {
@@ -9772,6 +9781,27 @@
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestAKubeconfigURLClientGoCannotParsePrintsNoneOfItsUserInformation/proxy-url",
       "production": "daemon kubeClient and kubeconfigURLs (under the configured context): a cluster proxy-url client-go cannot parse, carrying user information, is refused naming the file, the cluster and the field, before clientcmd's validation (ClientConfig) quotes it"
+    },
+    {
+      "id": "sandbox-kube-legion-boot-exhausted",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestProbeBootPrintsAnExhaustedImageProbeWithNoCredential",
+      "production": "legion probe-boot's stderr once the image probe's attempts ran out: every attempt of Prober.ProbeImage's create meets an echoing 500 (createProbe, patientObjects.Create, resend's projectKubeError, apiOutcome), bootprobe.Run logs a retry line with Outcome.Detail after each of the first five through runProbeBoot's JSON handler under redact.HandlerOptions, and printRefusal prints the probe's exhausted refusal, which carries the last attempt's detail; the row shortens the waits through daemon.ProbeBoot's retry (cmd/legion's probeBootRetry), which the base has not, so it binds resend's projection",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.resend",
+      "capture": "kubeerror.legion/boot-exhausted",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/busy.go",
+        "preimage": "projectKubeError(what, err)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "sandbox-kube-api-state-projection",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/api",
+      "test": "TestAKubernetesRefusalOfALaunchReachesTheProjectedStateWithNoCredential",
+      "production": "api stateRoute (GET /legion/v1/state) through projectState's repeatable-read snapshot of the store's pool, internal/projection.Project (which places the claim on its issue by the architect's phases row and builds its view with api.ClaimViewOf) and writeAnswerFrom: a root's architect, recorded as the workflow records one (issue at admitted, tree open under the workflow, phases row naming the claim), whose machine (supervise.NewMachine over api.NewBootTokens' recording store) was refused every launch by the Sandbox runtime itself (sandbox.New, Spawn) when the Kubernetes API answered its read of the claim's Sandbox 403 with a Status echoing the bearer; the machine stores the refusal as lastStartFailure (storetext.FarSideError) and fails the claim, and the projected architect view's lastStartFailure and failure detail hold the runtime's projection (resend's projectKubeError: 'kubernetes: get sandboxes <name>: the API server answered 403 Forbidden'), none of the bearer"
     }
   ],
   "bun": [

@@ -308,7 +308,8 @@ func TestProbeBootPrintsAKubernetesRefusalWithNoCredentialItsAnswerEchoed(t *tes
 // waits to run the probe again, as a SIGINT stops it (main's signal.NotifyContext cancels the
 // context run is handed), and prints the refusal of an abandoned probe. The runtime keeps the
 // create's error as its projection (resend's projectKubeError) before either holds it: neither
-// holds the bearer. Waiting out every attempt instead takes bootprobe.Image's 310 s.
+// holds the bearer. The probe's refusal once its attempts ran out is the exhausted row's
+// (TestProbeBootPrintsAnExhaustedImageProbeWithNoCredential), which shortens the probe's waits.
 func TestProbeBootLogsATransientKubernetesFailureWithNoCredentialWhenStoppedWaiting(t *testing.T) {
 	legionState(t)
 	api := newBootKubeAPI(t, map[string]bootEcho{"POST " + bootSandboxesPath: {http.StatusInternalServerError, metav1.StatusReasonInternalError}})

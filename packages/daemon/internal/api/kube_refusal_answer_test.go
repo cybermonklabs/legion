@@ -184,17 +184,19 @@ func kubeRefusalClaim(t *testing.T) supervise.Claim {
 	return supervise.Claim{Token: token, Project: testProject, Tree: body.Tree, Issue: body.Issue, Role: body.Role}
 }
 
-// kubeRefusedLaunch is the error the Sandbox runtime's Spawn returns for c's first launch when the
+// KubeRefusedLaunch is the error the Sandbox runtime's Spawn returns for c's first launch when the
 // Kubernetes API refuses the launch's requests, each with a Status that echoes the bearer the
 // request carried (kubeRefusalAPI): the runtime itself (sandbox.New, Spawn) over client-go, with
-// its informers synced against the API and its launch's first request past them refused.
+// its informers synced against the API and its launch's first request past them refused. It is
+// exported for this package's external tests (kube_refusal_projection_test.go), which build the
+// state through internal/projection, a package that imports this one.
 //
 // It fails t unless the API refused a request of the launch, the same request sent by client-go
 // with nothing between them (a typed client built from the same configuration) fails with an
 // error whose text holds the echoed credential, and every request the API was sent carried the
 // bearer: a row whose stand-in echoed nothing would hold none of the credential however this
 // package printed the refusal, so this is what says each row's check could see one.
-func kubeRefusedLaunch(t *testing.T, c supervise.Claim) error {
+func KubeRefusedLaunch(t *testing.T, c supervise.Claim) error {
 	t.Helper()
 	api := newKubeRefusalAPI(t)
 	prompt := filepath.Join(t.TempDir(), "role.md")
@@ -368,7 +370,7 @@ func kubeRefusalLines(t *testing.T, logged *testlog.Buffer, message string) (lin
 // TestAKubernetesRefusalOfALaunchReachesTheAPIsAnswersWithNoCredential: the operator spawns the
 // root's architect (POST /legion/v1/operator/claims), and every launch of it is refused by the
 // Sandbox runtime itself, its Kubernetes API refusing the launch's request with a Status that
-// echoes the bearer the request carried (kubeRefusedLaunch). That refusal is the fake runtime's
+// echoes the bearer the request carried (KubeRefusedLaunch). That refusal is the fake runtime's
 // answer to each of the claim's launches, which is how the runtime's answer enters this package
 // (supervise.Deps.Runtime); the machine charges each, stores the refusal as the claim's last start
 // failure (storetext.FarSideError) and fails the claim once its launch budget runs out. The
@@ -390,7 +392,7 @@ func kubeRefusalLines(t *testing.T, logged *testlog.Buffer, message string) (lin
 // would pass however the runtime printed it.
 func TestAKubernetesRefusalOfALaunchReachesTheAPIsAnswersWithNoCredential(t *testing.T) {
 	c := kubeRefusalClaim(t)
-	refused := kubeRefusedLaunch(t, c)
+	refused := KubeRefusedLaunch(t, c)
 	h := newHarness(t)
 	logged := kubeRefusalServer(h)
 	answer := fake.SpawnResult{Err: refused}

@@ -93,7 +93,7 @@ func TestProbeBootRefusesARuntimeWithoutTheSandboxProbe(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (probeBootConfig).
 	cfg, _ := probeBootConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime = config.Runtime{Name: "tmux"}
-	_, err := ProbeBoot(context.Background(), cfg, lookup(nil), quietLogger())
+	_, err := ProbeBoot(context.Background(), cfg, lookup(nil), quietLogger(), bootprobe.Retry{})
 	if err == nil || !strings.Contains(err.Error(), `runtime "tmux"`) {
 		t.Fatalf("ProbeBoot = %v, want a refusal naming runtime \"tmux\"", err)
 	}
@@ -104,7 +104,7 @@ func TestProbeBootRefusesWhatBootRefusesOfTheFilesItNames(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (probeBootConfig).
 	cfg, _ := probeBootConfig(t, "https://127.0.0.1:1")
 	cfg.OperatorTokenFile = filepath.Join(t.TempDir(), "absent")
-	_, err := ProbeBoot(context.Background(), cfg, lookup(nil), quietLogger())
+	_, err := ProbeBoot(context.Background(), cfg, lookup(nil), quietLogger(), bootprobe.Retry{})
 	if err == nil || !strings.Contains(err.Error(), "operator_token_file") {
 		t.Fatalf("ProbeBoot = %v, want boot's refusal of operator_token_file", err)
 	}
@@ -127,7 +127,7 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxBeforeAnyProbe(t *testing.T)
 	defer apiServer.Close()
 	cfg, dispatched := probeBootConfig(t, apiServer.URL)
 
-	_, err := probeBoot(context.Background(), cfg, lookup(nil), quietLogger(),
+	_, err := probeBoot(context.Background(), cfg, lookup(nil), quietLogger(), bootprobe.Retry{},
 		func(context.Context, *rest.Config, sandbox.Options) (imageProber, error) {
 			t.Error("the probe ran on a cluster without Agent Sandbox")
 			return &recordedProber{}, nil
@@ -168,7 +168,7 @@ func TestProbeBootRunsTheDaemonsImageProbeAfterTheClusterCheck(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	report, err := probeBoot(ctx, cfg, lookup(nil), quietLogger(),
+	report, err := probeBoot(ctx, cfg, lookup(nil), quietLogger(), bootprobe.Retry{},
 		func(_ context.Context, _ *rest.Config, opts sandbox.Options) (imageProber, error) {
 			mu.Lock()
 			checkedFirst = slices.Contains(requested, census)
@@ -192,6 +192,9 @@ func TestProbeBootRunsTheDaemonsImageProbeAfterTheClusterCheck(t *testing.T) {
 	budget, _ := ProbeBudget(cfg)
 	if got := prober.probed[0].Budget; got != budget {
 		t.Errorf("probe-boot ImageProbe.Budget = %s, want ProbeBudget(cfg) %s", got, budget)
+	}
+	if got := prober.probed[0].Retry; got != imageProbeRetry {
+		t.Errorf("probe-boot ImageProbe.Retry = %+v, want the booting daemon's own %+v when it is given none", got, imageProbeRetry)
 	}
 	opts := built[0]
 	k := cfg.Runtime.Kubernetes
