@@ -397,12 +397,20 @@ func startRegister(t *testing.T, r *rig, sessionID *string) <-chan callAnswer {
 // channel once the call is blocked in registerReply's select. The call answering first fails the
 // test: a register that waits must not answer before the enrollment it waits for has reached the
 // session.
+//
+// It knows the call is blocked from the rig's own Server (registerWaiting), never from the
+// process: other tests' Servers park registers in registerReply too while the package runs in
+// parallel, and a reading of the whole process's goroutines returned on one of theirs
+// (TestARegisterWaitIsReadOnTheRigsOwnServer).
 func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan callAnswer {
 	t.Helper()
+	waiting := registerWaiting(t, r.srv)
 	replies := startRegister(t, r, sessionID)
 	testwait.Until(t, "the register call to wait on the session's ready channel", func() (bool, bool) {
-		if blockedInRegisterReply() {
+		select {
+		case <-waiting:
 			return true, true
+		default:
 		}
 		select {
 		case got := <-replies:
@@ -412,6 +420,24 @@ func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan callAns
 		return false, false
 	})
 	return replies
+}
+
+// registerWaiting returns a channel that srv's next register call blocked in registerReply's
+// select sends on, once: the call has taken its wait, and nothing it waits on had happened when
+// it began to wait (Server.testRegisterWaiting). Only srv's own calls send on it; the hook comes
+// off again when t ends.
+func registerWaiting(t *testing.T, srv *Server) <-chan struct{} {
+	t.Helper()
+	waiting := make(chan struct{}, 1)
+	signal := func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	}
+	srv.testRegisterWaiting.Store(&signal)
+	t.Cleanup(func() { srv.testRegisterWaiting.CompareAndSwap(&signal, nil) })
+	return waiting
 }
 
 // freshEnrollment waits for the answer registerWaitBlocked's call gives once the session enrolls
@@ -425,13 +451,42 @@ func freshEnrollment(t *testing.T, replies <-chan callAnswer, stale ...string) s
 	return got.resp.EnrollmentID
 }
 
-// blockedInRegisterReply reports whether some goroutine is blocked in a select inside
-// Server.registerReply, which is where a register call waits for its session to enroll. It finds
-// that goroutine by name in the goroutine dump, a "[select" header over a ").registerReply("
-// frame, so a rename of registerReply must be made here too. A name that no longer matches never
-// lets the test pass: TestRegisterWaitWaitsForTheReEnrollmentAfterALapse then fails at the shared
-// wait's give-up, naming the wait.
-func blockedInRegisterReply() bool {
+// TestARegisterWaitIsReadOnTheRigsOwnServer: registerWaitBlocked reads that a register is waiting
+// from the rig's own Server, so another rig's waiting register does not satisfy it. Rig a's
+// register is parked in registerReply, its re-enrollment held at its fake's gate; rig b has no
+// register at all. The process's goroutines then show a register blocked in registerReply, which
+// is what the reading registerWaitBlocked used to make (anyRegisterBlocked) and which would have
+// let a test of rig b go on as though its own register waited; b's Server says nothing, and a's
+// says its register is waiting.
+func TestARegisterWaitIsReadOnTheRigsOwnServer(t *testing.T) {
+	t.Parallel()
+	a, lapsed, _ := lapseRig(t, failAlways)
+	gate, open := testGate(t)
+	a.fake.mu.Lock()
+	a.fake.enrollGate = gate
+	a.fake.revokeFailFirst = 0
+	a.fake.mu.Unlock()
+	b := startRig(t, "")
+	bWaiting := registerWaiting(t, b.srv)
+
+	replies := registerWaitBlocked(t, a, nil)
+	testwait.Until(t, "the process's goroutines to show a register blocked in registerReply", func() (bool, bool) {
+		return anyRegisterBlocked(), anyRegisterBlocked()
+	})
+	select {
+	case <-bWaiting:
+		t.Fatal("rig b's Server said a register of its own was waiting, though rig b was sent none: the reading is not the rig's own")
+	default:
+	}
+	open()
+	freshEnrollment(t, replies, lapsed)
+}
+
+// anyRegisterBlocked is the reading registerWaitBlocked made before the package ran in parallel:
+// whether some goroutine of the whole process is blocked in a select inside Server.registerReply,
+// found by name in the goroutine dump. TestARegisterWaitIsReadOnTheRigsOwnServer keeps it to show
+// that it answers for every rig in the process at once.
+func anyRegisterBlocked() bool {
 	for _, g := range goroutinetest.Traces() {
 		header, _, _ := strings.Cut(g, "\n")
 		if strings.Contains(header, "[select") && strings.Contains(g, ").registerReply(") {

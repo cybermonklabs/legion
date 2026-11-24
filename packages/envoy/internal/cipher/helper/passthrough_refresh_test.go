@@ -22,18 +22,20 @@ import (
 // it, ENROLL_FAILED carrying the broker's LAUNCHER_INVALID, and not an unknown outcome. The
 // refresh it stood behind goes on to its own answer and settles the credential.
 //
-// The row runs under a bound of overBound, so the refresh it holds need only outlast overBound
-// plus 1 s, where brokerCall's timer answers, rather than the real 21 s.
+// The row runs under a bound of overBound, with brokerCall's timer timerSlack after it
+// (slowTimer), so the op's own answer at the bound cannot lose to the timer under load, and the
+// refresh it holds need only outlast the timer, rather than the real 21 s.
 //
 // The named revert: put a sync.Mutex back as credMu, so the drop waits with no context, and
-// brokerCall's timer answers ENROLL_OUTCOME_UNKNOWN at the bound plus 1 s for an enrolment the
-// broker refused.
+// brokerCall's timer answers ENROLL_OUTCOME_UNKNOWN for an enrolment the broker refused.
 func TestAPassThroughOpAnswersInsideItsBoundWhileARefreshHoldsTheMachineLogin(t *testing.T) {
 	t.Parallel()
-	// timerAnswers is when brokerCall's timer answers an op still running: the bound plus 1 s.
-	const timerAnswers = overBound + time.Second
+	// timerAnswers is when brokerCall's timer answers an op still running: the bound plus
+	// timerSlack.
+	const timerAnswers = overBound + timerSlack
 	r := startRig(t, "")
 	r.srv.BrokerCallBound = overBound
+	slowTimer(r.srv)
 	signed := r.srv.Broker.cred.Load()
 
 	release := heldRefresh(t, r.fake, r.srv.Broker)

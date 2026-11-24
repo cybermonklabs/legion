@@ -470,12 +470,16 @@ func TestARegisterWaitAnswersAtOnceWhenALapsedIDBlocksTheConfirmation(t *testing
 // the enroll loop retries on its own schedule, exactly as it does for a 503.
 func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.T) {
 	t.Parallel()
-	// The production bound is DefaultFirstConfirmBound, 3 s; this row sets a short one of its
-	// own so it is quick and deterministic. What it pins is the mechanism — a first renew
-	// nothing answers ends the wait at the bound rather than at the client timeout — and not
-	// that number.
+	// The production bound is DefaultFirstConfirmBound, 3 s. This row ends the bound itself
+	// (Server.firstConfirmEnd) once its register is waiting, so no timer races the register to
+	// the wait: a bound that ran out before the register blocked would have it answer at once,
+	// and the row would fail for the machine's load and not the helper. What it pins is the
+	// mechanism — the end of the first renew's bound ends the wait, rather than the client
+	// timeout — and not the number.
 	const bound = 500 * time.Millisecond
 	r := reclaimedIdentityRigNeverAnswering(t, bound)
+	endBound := make(chan struct{})
+	r.srv.firstConfirmEnd.Store(&endBound)
 
 	// The register that admits the session and starts its enroll loop, whose confirming renew
 	// the gate then swallows. With no wait asked for it answers at once.
@@ -496,16 +500,18 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.
 	// what ends it below is the bound and not a wait never taken. Its client deadline is 20 s,
 	// past the 10 s asked for, so an unbounded first renew is read here as this row's own
 	// failure and not as a client that gave up.
-	started := time.Now()
 	replies := registerWaitBlocked(t, r, &id)
+	select {
+	case got := <-replies:
+		t.Fatalf("register --wait answered %+v (%v) before the first renew's bound ended; it waits for the confirmation in flight", got.resp, got.err)
+	default:
+	}
+	started := time.Now()
+	close(endBound) // the first confirming renew's bound ends now, with the register waiting on it
 	got := <-replies
 	elapsed := time.Since(started)
-	// The floor is half the bound, not the whole of it: the bound runs from the renew leaving
-	// the helper, which is a poll of the loop above before this call starts, so a reply at
-	// exactly the bound can be measured a little short here. Half of it still parts a reply
-	// that waited for the bound from one that waited for nothing (those answer in ~0 s).
-	if got.err != nil || got.resp.Code != CodeNoCredential || elapsed > 5*time.Second || elapsed < bound/2 {
-		t.Fatalf("register --wait 10 answered %+v (%v) after %s; want NO_CREDENTIAL at the bound (%s): well inside the 10 s wait, since a broker that never answers must not hold a launcher's gate for the helper's whole client timeout, and no sooner than the bound, since this register waits for the confirmation in flight", got.resp, got.err, elapsed, bound)
+	if got.err != nil || got.resp.Code != CodeNoCredential || elapsed > 5*time.Second {
+		t.Fatalf("register --wait 10 answered %+v (%v) %s after the first renew's bound ended; want NO_CREDENTIAL then: well inside the 10 s wait, since a broker that never answers must not hold a launcher's gate for the helper's whole client timeout", got.resp, got.err, elapsed)
 	}
 }
 

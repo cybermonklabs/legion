@@ -30,9 +30,9 @@ const settleCause = "the request may have reached the broker, but the helper did
 
 // wantSettled fails the row unless resp, the answer to what, is code saying the outcome is unknown
 // with settle's cause, given within before (elapsed is the time the call took): an answer from
-// brokerCall's timer, which comes at the bound plus 1 s and says the operation did not end, fails,
-// though it says that the outcome is unknown as well. The cause and the time are checked apart, so
-// a failing row reports each that is wrong.
+// brokerCall's timer, which says the operation did not end, fails, though it says that the
+// outcome is unknown as well. The cause and the time are checked apart, so a failing row reports
+// each that is wrong.
 func wantSettled(t *testing.T, what string, resp Response, code string, elapsed, before time.Duration) {
 	t.Helper()
 	if resp.OK || resp.Code != code || !strings.Contains(resp.Error, "the outcome is unknown") {
@@ -45,6 +45,17 @@ func wantSettled(t *testing.T, what string, resp Response, code string, elapsed,
 		t.Errorf("%s: answered after %s; want settle's answer, within %s", what, elapsed, before)
 	}
 }
+
+// timerSlack is how long after the bound brokerCall's timer answers in the rows that tell the
+// op's own answer at its bound from the timer's (slowTimer). At production's 1 s the op's answer
+// and the timer's are a second apart, and a loaded machine can move the op's past the timer's, so
+// the timer answers first and the row fails for no fault of the helper. At 20 s no load does.
+const timerSlack = 20 * time.Second
+
+// slowTimer has srv's brokerCall timer answer timerSlack after the bound instead of 1 s after it
+// (Server.brokerCallSlackNS). The op's own answer at the bound is what such a row reads; the timer
+// is only the backstop it must beat, and the cause it gives ("did not end in") still tells it apart.
+func slowTimer(srv *Server) { srv.brokerCallSlackNS.Store(int64(timerSlack)) }
 
 // TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt: a broker request that failed after
 // the broker got it (a 503, which a front door can send after the broker acted, or a 2xx the
@@ -125,9 +136,10 @@ func (s *heldSignIns) Refused(context.Context, string) error { return nil }
 // a lock that does not watch the op's context is answered by the timer, ENROLL_OUTCOME_UNKNOWN,
 // at its bound plus 1 s, not left open. Once the lock is released the op goes on, but its context
 // ended at the bound, so it sends the broker nothing: when the helper answers, no request of the
-// op is in flight and none can start.
+// op is in flight and none can start. The timer's answer comes at 2 s and the row fails it only at
+// 4 s, a margin of 2 s, so it runs beside the package's other tests.
 func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.T) {
-	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
+	t.Parallel()
 	var out syncBuffer
 	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(&out, nil)))
 	r.login(t)
@@ -164,9 +176,9 @@ func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.
 // TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown: the broker holds the device
 // authorization until the request ends. The op's bound ends that request, which the broker sees,
 // and login answers LOGIN_FAILED saying the outcome is unknown, with settle's cause, at the bound
-// and before the bound plus 1 s, where brokerCall's timer would answer.
+// and before brokerCall's timer would answer (slowTimer).
 func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testing.T) {
-	// Not parallel: it holds an answer to a wall-clock bound with a margin of 1 s or less, which the load of the package's parallel tests could push past.
+	t.Parallel()
 	r := newRig(t, "")
 	// A helper that left the request running would hold the fake's handler until its Close, which
 	// waits for it; closing the connections first lets this row fail rather than hang.
@@ -176,6 +188,7 @@ func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testin
 	r.fake.mu.Unlock()
 	const bound = time.Second
 	r.srv.BrokerCallBound = bound
+	slowTimer(r.srv)
 
 	start := time.Now()
 	resp, err := Call(r.sock, Request{Op: "login"}, BrokerCallWait)
@@ -183,7 +196,7 @@ func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testin
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	wantSettled(t, "login past its bound", resp, CodeLoginFailed, elapsed, bound+time.Second)
+	wantSettled(t, "login past its bound", resp, CodeLoginFailed, elapsed, bound+timerSlack)
 	if elapsed < bound {
 		t.Fatalf("login past its bound answered after %s; want about the %s bound", elapsed, bound)
 	}

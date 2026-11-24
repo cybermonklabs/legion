@@ -70,6 +70,30 @@ type Server struct {
 	// time.AfterFunc: the seam through which a test sees the bound a drain's timer is armed with
 	// and fires it itself, so no clock decides the row. Atomic for the reason dormantGraceNS is.
 	drainTimer atomic.Pointer[func(bound time.Duration, end func())]
+	// brokerCallSlackNS is how long after the bound brokerCall's timer answers an op still
+	// running: zero, which every production caller leaves it, means 1 s. A test that tells the
+	// op's own answer at the bound from the timer's sets a long one, so the two are seconds apart
+	// and no load on the machine can move one past the other. Atomic for the reason
+	// dormantGraceNS is.
+	brokerCallSlackNS atomic.Int64
+	// firstConfirmEnd, when set, ends the first confirming renew's bound when it closes, in place
+	// of FirstConfirmBound's timer (confirmInherited), so a test ends that bound once the register
+	// it reads is waiting rather than racing a timer to it. No production caller sets it. Atomic
+	// for the reason dormantGraceNS is.
+	firstConfirmEnd atomic.Pointer[chan struct{}]
+	// testRegisterWaiting, when set, runs in registerReply once a register call has taken its
+	// wait and holds the channels it waits on, just before it blocks: the seam through which a
+	// test knows that this Server's own register call is waiting, and no other Server's. No
+	// production caller sets it. Atomic, since a test sets it while the Server serves.
+	testRegisterWaiting atomic.Pointer[func()]
+	// testClock, when set, is renewLoop's clock in place of the wall clock: its Now for
+	// time.Now and its After for time.After, so a test walks the loop through a lease and an
+	// outage in virtual time and no scheduler's lateness moves a renewal. No production caller
+	// sets it, and a test sets it before the loop runs.
+	testClock interface {
+		Now() time.Time
+		After(time.Duration) <-chan time.Time
+	}
 	// revokesInFlight counts every revoke fired off (goRevoke) until it has returned, and
 	// revokesIdle is closed each time that count falls to zero, so a test that must see a revoke
 	// land waits for it (the tests' waitRevokes) rather than polling a fixed span for its effect.
@@ -329,14 +353,18 @@ func (s *Server) brokerCallBound() time.Duration {
 // op has made.
 func (s *Server) brokerCall(ctx context.Context, conn net.Conn, op string, call func(context.Context) Response) Response {
 	bound := s.brokerCallBound()
-	_ = conn.SetDeadline(time.Now().Add(bound + 5*time.Second))
+	slack := time.Second
+	if ns := s.brokerCallSlackNS.Load(); ns > 0 {
+		slack = time.Duration(ns)
+	}
+	_ = conn.SetDeadline(time.Now().Add(bound + slack + 4*time.Second))
 	callCtx, cancel := context.WithTimeout(ctx, bound)
 	result := make(chan Response, 1)
 	go func() {
 		defer cancel()
 		result <- call(callCtx)
 	}()
-	timer := time.NewTimer(bound + time.Second)
+	timer := time.NewTimer(bound + slack)
 	defer timer.Stop()
 	select {
 	case resp := <-result:
@@ -747,11 +775,23 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 		settled = sess.confirmationInFlight()
 	}
 	if wait > 0 && (credential || settled != nil) {
+		ready, timeout := sess.readyCh(), time.After(wait)
+		if waiting := s.testRegisterWaiting.Load(); waiting != nil {
+			// Only a call that will block: nothing it waits on has happened yet.
+			select {
+			case <-ready:
+			case <-sess.refused:
+			case <-settled:
+			case <-sess.stop:
+			default:
+				(*waiting)()
+			}
+		}
 		select {
-		case <-sess.readyCh():
+		case <-ready:
 		case <-sess.refused:
 		case <-settled:
-		case <-time.After(wait):
+		case <-timeout:
 		case <-sess.stop:
 		}
 	}
@@ -1588,6 +1628,17 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 		if first {
 			first = false
 			bounded, cancel := context.WithTimeout(ctx, s.firstConfirmBound())
+			if end := s.firstConfirmEnd.Load(); end != nil {
+				cancel()
+				bounded, cancel = context.WithCancel(ctx)
+				go func() {
+					select {
+					case <-*end:
+						cancel()
+					case <-bounded.Done():
+					}
+				}()
+			}
 			defer cancel()
 			renewCtx = bounded
 		}
@@ -1640,10 +1691,14 @@ func enrollmentNotLive(err error) (string, bool) {
 // this change exists to prevent — so a wake counts only while the identity has in fact moved on
 // from the one being renewed.
 func (s *Server) renewLoop(ctx context.Context, sess *Session, lease time.Time, generation uint64) bool {
+	now, after := time.Now, time.After
+	if s.testClock != nil {
+		now, after = s.testClock.Now, s.testClock.After
+	}
 	for {
-		interval := leasetime.HelperRenewAfter(time.Until(lease), s.MinRenew)
+		interval := leasetime.HelperRenewAfter(lease.Sub(now()), s.MinRenew)
 		select {
-		case <-time.After(interval):
+		case <-after(interval):
 		case <-sess.wakeCh():
 			if sess.identity().Generation == generation {
 				continue

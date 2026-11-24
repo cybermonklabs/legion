@@ -59,8 +59,9 @@ func newContractRig(t *testing.T, options ...ciphertest.Option) *contractRig {
 // recovers its sessions and listens. Every registry/operator artifact lives under its own TempDir
 // and the socket under a short temporary directory of its own, never under $HOME — the caller is
 // expected to have set HOME to a separate, otherwise-untouched TempDir of its own so it can later
-// assert nothing wrote there.
-func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile string, client *http.Client) *contractRig {
+// assert nothing wrote there. Each of configure runs on the Broker before it starts, for a row
+// that sets a test seam the Broker's start already reads (its expiry timers, for one).
+func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile string, client *http.Client, configure ...func(*Broker)) *contractRig {
 	t.Helper()
 	artifacts := t.TempDir()
 	logBuf := &syncBuffer{}
@@ -94,6 +95,9 @@ func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile strin
 		<-served
 		cr.srv.Broker.Close()
 	})
+	for _, c := range configure {
+		c(cr.srv.Broker)
+	}
 	if err := cr.srv.Broker.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

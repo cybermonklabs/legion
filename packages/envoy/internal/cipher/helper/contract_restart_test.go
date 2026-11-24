@@ -211,7 +211,9 @@ func TestContractARefreshThatCannotReachTheBrokerKeepsTheLogin(t *testing.T) {
 
 // TestContractAnUnrefreshedLoginDropsAtItsExpiry: a helper whose refresh never reaches the broker
 // holds its login until the expiry it kept, then drops it for that reason, as the broker's own
-// lapse would refuse it.
+// lapse would refuse it. The restarted helper's expiry timers are the row's (expiryTimers): the
+// row reads that the drop waits for the kept expiry and fires it, rather than giving the helper a
+// second of wall-clock time to start before a real expiry.
 func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
 	t.Parallel()
 	first := newContractRig(t)
@@ -220,25 +222,28 @@ func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kept.ExpiresAt = time.Now().Add(time.Second).UTC()
+	kept.ExpiresAt = time.Now().Add(time.Hour).Truncate(time.Second).UTC()
 	if err := kept.Save(first.machineFile); err != nil {
 		t.Fatal(err)
 	}
 
-	second := startContractHelper(t, first.broker, first.machineFile, &http.Client{Transport: failingTokenTransport{}})
-	if !second.srv.Broker.HasCredential() {
+	var timers *expiryTimers
+	second := startContractHelper(t, first.broker, first.machineFile, &http.Client{Transport: failingTokenTransport{}},
+		func(b *Broker) { timers = installExpiryTimers(b) })
+	cred := second.srv.Broker.cred.Load()
+	if cred == nil || !second.srv.Broker.HasCredential() {
 		t.Fatal("the restarted helper holds no login")
 	}
-	deadline := kept.ExpiresAt.Add(5 * time.Second)
-	for second.srv.Broker.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the credential is still held 5 s past its expiry %s", kept.ExpiresAt)
-		}
-		time.Sleep(20 * time.Millisecond)
+	timers.fire(t, cred, 0) // the warning a day ahead, due at once for an expiry an hour away
+	expiry := timers.started(t, cred, 1)
+	if left := time.Until(kept.ExpiresAt); expiry.d > left+time.Second || expiry.d < left-time.Minute {
+		t.Fatalf("the restarted helper drops its login after %s; want at the expiry it kept, %s from now", expiry.d, left)
 	}
-	if time.Now().Before(kept.ExpiresAt) {
-		t.Fatalf("the credential dropped before its expiry %s", kept.ExpiresAt)
+	if !second.srv.Broker.HasCredential() {
+		t.Fatal("the restarted helper dropped its login before its expiry timer fired")
 	}
+	expiry.ch <- time.Now()
+	waitFor(t, func() bool { return !second.srv.Broker.HasCredential() })
 	if got := second.call(t, Request{Op: "login-status"}); got.LoginState != "expired" || got.CredentialDropped != dropExpired {
 		t.Fatalf("login-status after the expiry: %+v; want expired, dropped for %q", got, dropExpired)
 	}
