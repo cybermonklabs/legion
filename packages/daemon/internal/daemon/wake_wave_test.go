@@ -1005,12 +1005,17 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 		promised[wake.Claim] = wake.DueAt
 	}
 
-	// The operator's resume: answered with a running claim, its process started at once, with the
-	// whole wave still waiting and the clock where it was.
+	// The operator's resume: answered with the claim written launching, 202, once its start is
+	// under way (dispatch://INFRA-5649 R4), its process started without waiting its turn, with the
+	// whole wave still waiting and the clock where it was. The clock does not move here, so a
+	// resume the pacing held would never launch, and the wait below would fail.
 	status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(suspended)+"/resume", nil, true)
-	if status != http.StatusOK {
-		t.Fatalf("the operator's resume = %d; body %s", status, body)
+	if status != http.StatusAccepted {
+		t.Fatalf("the operator's resume = %d, want 202; body %s", status, body)
 	}
+	testwait.Eventually(t, "the operator's resume to start its process with the clock where it was", func() bool {
+		return rt.launchesOf(suspended) == 1
+	})
 	if got := rt.launchesOf(suspended); got != 1 {
 		t.Fatalf("the operator's resume started %d processes, want one: an operator's wake never waits", got)
 	}
