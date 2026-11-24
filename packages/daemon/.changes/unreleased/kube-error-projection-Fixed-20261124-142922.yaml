@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  The Kubernetes runtime no longer prints what the API server, or whatever answers in its place,
+  wrote into a refusal. A Status message or detail, a plain-text refusal body, an error a watch
+  delivers, and net/http's error for a request that reached no server, which quotes the request's
+  URL with its label or field selector and options, could echo the in-cluster ServiceAccount
+  bearer or a Secret's value the request carried; that text reached the daemon's log, a claim's
+  start failure, an observation's detail, a repository cache's status, the image probe's verdict
+  and the boot refusal. Each error of the runtime's Kubernetes clients is now kept, where it
+  leaves client-go, as the operation that failed, the status code and a reason apimachinery
+  knows (any other prints as `other`), or, for a request that got no answer, a fixed class with
+  the operating system's name of a refused connection: for example `kubernetes: get secrets
+  <name>: the API server answered 403 Forbidden`. Every decision the runtime and client-go's
+  informers take from such an error is taken as before: an overloaded answer is still sent again,
+  an admission webhook's refusal is not, NotFound, AlreadyExists and Conflict still take their
+  branches, and the reflector still backs a refused watch off, relists after an expired or too
+  large resource version, and backs a 429 off. client-go's own log lines (its reflectors', its
+  token source's) now go through the daemon's logger, each error in them printed the same way.
+  A client whose configuration cannot be read is refused as before, naming the file.
+time: 2026-11-24T14:29:22.275608719Z
+custom:
+    Issue: kube-error-projection

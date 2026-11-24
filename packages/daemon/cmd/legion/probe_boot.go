@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // newProbeBootCommand is `legion probe-boot --config <legion.yaml>`: the part of a Kubernetes
@@ -42,6 +43,8 @@ func runProbeBoot(ctx context.Context, configPath string, stdout, stderr io.Writ
 		return 1
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, redact.HandlerOptions(nil)))
+	// client-go's own lines go through the same logger, each error as the runtime prints it.
+	sandbox.RouteClientLogs(log)
 	report, err := daemon.ProbeBoot(ctx, cfg, os.LookupEnv, log)
 	if err != nil {
 		printRefusal(stderr, "legion probe-boot", err)

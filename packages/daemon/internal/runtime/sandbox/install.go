@@ -57,8 +57,10 @@ func checkInstalled(ctx context.Context, dyn dynamic.Interface, kube kubernetes.
 	return errors.Join(errs...)
 }
 
-// refusal names piece and why it could not be read.
+// refusal names piece and why it could not be read: the read's error as its projection
+// (projectKubeError), whose status the 404 and 403 are told by.
 func refusal(piece string, err error) error {
+	err = projectKubeError("get "+piece, err)
 	switch {
 	case apierrors.IsNotFound(err):
 		return fmt.Errorf("agent sandbox: %s is not installed (404): %w", piece, err)
@@ -164,7 +166,8 @@ func (d IssueDisks) templates(project, label string) []volumeClaimTemplate {
 func rejectLegacyIssueSandboxes(ctx context.Context, sandboxes dynamic.ResourceInterface, project string, disks IssueDisks, log *slog.Logger) error {
 	list, err := sandboxes.List(ctx, metav1.ListOptions{LabelSelector: labelProject + "=" + project})
 	if err != nil {
-		return fmt.Errorf("sandbox runtime: census existing issue Sandboxes before layout migration: %w", err)
+		return fmt.Errorf("sandbox runtime: census existing issue Sandboxes before layout migration: %w",
+			projectKubeError("list the project's Sandboxes", err))
 	}
 	var refused []string
 	for _, object := range list.Items {

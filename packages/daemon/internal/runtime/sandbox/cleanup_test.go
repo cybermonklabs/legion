@@ -205,7 +205,9 @@ func TestATreeCleanupListsAgainAfterAConflict(t *testing.T) {
 }
 
 // A failed delete fails the cleanup, leaving that Sandbox and its pod's disk, and the same cleanup
-// run again finishes it: the Sandboxes already gone are not asked for again.
+// run again finishes it: the Sandboxes already gone are not asked for again. The failure is the
+// delete's, as the runtime keeps a Kubernetes error (projectKubeError): named by the operation,
+// with none of the client's words.
 func TestATreeCleanupThatFailedFinishesOnItsRetry(t *testing.T) {
 	c := newCleanupRig(t)
 	failed := false
@@ -216,7 +218,7 @@ func TestATreeCleanupThatFailedFinishesOnItsRetry(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	if err := c.r.CleanupTree(c.ctx, testTree); err == nil || !strings.Contains(err.Error(), "transient Sandbox API failure") {
+	if err := c.r.CleanupTree(c.ctx, testTree); err == nil || !strings.Contains(err.Error(), "kubernetes: delete sandboxes "+c.root+": ") {
 		t.Fatalf("first cleanup = %v, want its transient delete failure", err)
 	}
 	if c.sandbox(c.root) == nil || c.disk(c.root) == nil {

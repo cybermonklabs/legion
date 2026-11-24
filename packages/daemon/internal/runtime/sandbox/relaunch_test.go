@@ -1590,7 +1590,8 @@ func TestOnlyAPodsUnboundLaunchersReplaceItNotAFailedRead(t *testing.T) {
 			if tc.fails {
 				g.launcher(reviewer.Claim)
 				err := failedLaunch(t, g, reviewer)
-				if err == nil || !strings.Contains(err.Error(), "read its pod's launcher bindings") || !strings.Contains(err.Error(), tc.failure.Error()) {
+				if err == nil || !strings.Contains(err.Error(), "read its pod's launcher bindings") || !errors.Is(err, context.DeadlineExceeded) ||
+					!strings.Contains(err.Error(), "read launcher secret "+reviewerSecret+": kubernetes: get secrets "+reviewerSecret+": ") {
 					t.Fatalf("Spawn = %v, want the failed read of %s", err, reviewerSecret)
 				}
 				if pod := g.pod(sandboxName); pod == nil || string(pod.UID) != testerLoc.Sandbox.PodUID {
@@ -1712,7 +1713,7 @@ func TestAnAPIServerThrottleOnTheAddressRecordSpendsNoLaunchBudget(t *testing.T)
 		"a throttle past the launch's deadline, charged once per try": {
 			bootTimeout: 300 * time.Millisecond,
 			answer:      func(int32) error { return apierrors.NewInternalError(errors.New(etcdThrottle)) },
-			err:         "etcdserver: throttle: too many requests",
+			err:         "the API server answered 500 InternalError",
 			refused:     func(n int32) bool { return n > 3 }, want: "more than 3, each try sending it again while the throttle lasted",
 		},
 	} {

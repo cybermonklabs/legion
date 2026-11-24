@@ -80,10 +80,17 @@ func isLaunch(ctx context.Context) bool {
 // is the server's answer to the request, or, once the deadline leaves no room for another wait or
 // ctx ends, its last overloaded one, saying how long it was waited out, which the launch then fails
 // on as on any other error. A launch the server keeps waiting is charged nothing while it waits;
-// supervision charges a launch that failed. what names the request in the log.
+// supervision charges a launch that failed. what names the request in the log. Each answer's
+// error is judged as the API server gave it (serverBusy) and then kept as its projection
+// (projectKubeError), before anything logs it or returns it: neither of resend's lines, nor the
+// launch, holds the server's words.
 func resend[T any](ctx context.Context, r *Runtime, what string, send func() (T, error)) (T, error) {
-	answer, err := send()
-	if !serverBusy(err) || !isLaunch(ctx) {
+	attempt := func() (T, bool, error) {
+		answer, err := send()
+		return answer, serverBusy(err), projectKubeError(what, err)
+	}
+	answer, busy, err := attempt()
+	if !busy || !isLaunch(ctx) {
 		return answer, err
 	}
 	start := time.Now()
@@ -105,7 +112,7 @@ func resend[T any](ctx context.Context, r *Runtime, what string, send func() (T,
 			return answer, fmt.Errorf("%w (the API server answered %s overloaded %d times in %s, %s)",
 				err, what, overloaded, time.Since(start).Round(time.Millisecond), stopped)
 		}
-		if answer, err = send(); !serverBusy(err) {
+		if answer, busy, err = attempt(); !busy {
 			r.log.Info("sandbox runtime: the API server answered a launch's request it had answered overloaded",
 				"request", what, "overloaded", overloaded, "after", time.Since(start).Round(time.Millisecond), "error", err)
 			return answer, err

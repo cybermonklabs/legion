@@ -249,7 +249,7 @@ func TestAnEndWhoseSandboxCannotBeReadIsUncertain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs.Kind != runtime.Uncertain || !strings.Contains(obs.Detail, "etcdserver: request timed out") || !strings.Contains(obs.Detail, "the stores report gone") {
+	if obs.Kind != runtime.Uncertain || !strings.Contains(obs.Detail, "kubernetes: get sandboxes "+name+": ") || !strings.Contains(obs.Detail, "the stores report gone") {
 		t.Fatalf("an end whose Sandbox cannot be read: %s (%s), want Uncertain naming the verdict and the failed read", obs.Kind, obs.Detail)
 	}
 }
