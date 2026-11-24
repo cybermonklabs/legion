@@ -11,11 +11,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -25,7 +27,10 @@ import (
 // lingers, the controller is told, and Legion starts nothing for it, so a slot that frees later goes
 // elsewhere and never starts a second copy of someone else's work. Set back to todo with the label,
 // it is queued again and takes the next slot. A root a hand-over carried into a phase past admitted
-// waits in the line the same way, and leaves it the same way.
+// waits in the line the same way, and leaves it the same way. A root whose key an operator's tree
+// holds leaves the same way but lingers no tree, since the tree under its key is the operator's
+// (workflow's leave, leaveUnderOperator): its phase is done with no linger, the controller is told
+// once all the same (releaseUnslotted), and a todo with the label admits it again.
 func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
 		name, actor, status string
@@ -38,6 +43,8 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 		{name: "a person's in_progress", status: "in_progress", phase: phase.Admitted},
 		{name: "an outside session's in_progress", actor: "ses-outsider", status: "in_progress", phase: phase.Admitted},
 		{name: "an outside session's needs_review", actor: "ses-outsider", status: "needs_review", phase: phase.Admitted},
+		{name: "a person's testing", status: "testing", phase: phase.Admitted},
+		{name: "an outside session's retro", actor: "ses-outsider", status: "retro", phase: phase.Admitted},
 		{name: "a person's in_progress on a root carried into implementing", status: "in_progress", phase: phase.Implementing, handedOverFrom: "LEGION-200"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +92,44 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a person's in_progress on a root whose key an operator's tree holds", func(t *testing.T) {
+		const key = "LEGION-OPS"
+		pool := migratedPool(t)
+		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+		seedSlotted(t, pool, "LEGION-1", "A")
+		seedWaiting(t, pool, key, "B")
+		inTx(t, pool, func(tx pgx.Tx) {
+			project, err := claim.ProjectToken(testProject)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, project, key, treelifecycle.AuthorityOperator); err != nil {
+				t.Fatalf("open the operator's tree under %s: %v", key, err)
+			}
+		})
+		assertWaiting(t, pool, []string{key})
+
+		apply(t, pool, admission, "taken", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: key, Rank: "B", HandedOver: true}, engine)
+		if got := issue(t, pool, key); got.Phase != phase.Done || got.LingerUntil != nil || got.Status != "in_progress" {
+			t.Fatalf("%s after the in_progress = %#v, want it out of the workflow at phase done with no linger, status in_progress", key, got)
+		}
+		notices := controllerNotices(t, pool)
+		if len(notices) != 1 || notices[0].issue != key || notices[0].payload.(record.ControllerNotice).Kind != record.UnslottedNotice {
+			t.Fatalf("controller notices = %#v, want one unslotted notice on %s", notices, key)
+		}
+
+		// Set back to todo with the label, it is admitted again and waits behind the operator's tree.
+		apply(t, pool, admission, "queued-again", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: key, Rank: "B", HandedOver: true}, engine)
+		if got := issue(t, pool, key); got.Phase != phase.Admitted || got.Generation != 2 || got.LingerUntil != nil || got.Status != "todo" {
+			t.Fatalf("%s set back to todo = %#v, want it admitted at generation 2, waiting at todo", key, got)
+		}
+		assertWaiting(t, pool, []string{key})
+		if notices := controllerNotices(t, pool); len(notices) != 1 {
+			t.Fatalf("controller notices after the todo = %#v, want the one the leave wrote", notices)
+		}
+	})
 }
 
 // A root recorded in the workflow at a status only a running tree has, whose tree nothing will
