@@ -1,6 +1,7 @@
 package mcpbridge
 
 import (
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -64,6 +65,41 @@ func TestAConfiguredURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 		}
 		redacttest.RequireNoPiece(t, "mcpbridge.sse-url/unparsed", err.Error())
 		if want := "create SSE request: the configured URL does not parse"; err.Error() != want {
+			t.Errorf("Start = %q; want %q", err, want)
+		}
+	})
+}
+
+// TestAnSSEURLThatDoesNotParseAgainPrintsNoneOfIt: a configured URL that url.Parse takes and that
+// ServerConfig.validate passes, whose text, as url.URL.String writes it, url.Parse refuses: an
+// IPv6 zone holding a byte that is not ASCII, which String escapes as %FD and a second parse
+// refuses (a fuzzer found it). It carries redacttest's credentials in its user information and its
+// query. Start fails in the bridge's own words, with none of the URL (reparsed): http.NewRequest's
+// error, which the request's construction printed, quotes the SSE URL whole. The twin shows the
+// configured URL passes validate and that http.NewRequest's error for its SSE URL holds the
+// credentials. Captures mcpbridge.sse-url/reparsed.
+func TestAnSSEURLThatDoesNotParseAgainPrintsNoneOfIt(t *testing.T) {
+	configured := "http://" + redacttest.User + ":" + redacttest.Password + "@[::%25\xfd]/mcp?access" + "_token=" + redacttest.Token
+	t.Run("twin", func(t *testing.T) {
+		cfg := httpServerConfig(configured)
+		if err := cfg.validate(); err != nil {
+			t.Errorf("validate of the configured URL = %v; want it passed, so a loaded configuration can hold it", err)
+		}
+		parsed, err := url.Parse(configured)
+		if err != nil {
+			t.Fatalf("url.Parse of the configured URL = %v; want it taken", err)
+		}
+		if _, err := http.NewRequest(http.MethodGet, parsed.JoinPath("sse").String(), nil); err == nil || len(redacttest.Held(err.Error())) == 0 {
+			t.Errorf("http.NewRequest of the SSE URL = %v; want an error that quotes the credentials, so the row can see them", err)
+		}
+	})
+	t.Run("reparsed", func(t *testing.T) {
+		err := NewHTTPServer(ServerConfig{Name: "reparsed", Transport: "http", URL: configured}, func(string) {}).Start()
+		if err == nil {
+			t.Fatal("Start succeeded with an SSE URL that does not parse")
+		}
+		redacttest.RequireNoPiece(t, "mcpbridge.sse-url/reparsed", err.Error())
+		if want := "create SSE request: the SSE URL does not parse"; err.Error() != want {
 			t.Errorf("Start = %q; want %q", err, want)
 		}
 	})

@@ -64,11 +64,12 @@ func (s *HTTPServer) Start() error {
 	// (url.URL.JoinPath), where /sse appended to the URL's text would sit inside a query. The
 	// configured URL can carry a credential, in its user information, which net/http sends as the
 	// request's Basic Authorization, or in a query value: url.Parse's error quotes it, so a URL that
-	// does not parse is refused in the bridge's own words. The SSE URL prints as redact.URL allows,
-	// a failed connect prints through redact.Cause, and the client follows a redirect only on the
-	// server's own origin (redirects.SameOrigin): the server is any MCP server a person configures,
-	// which may move its stream on its own origin (a trailing slash, say), and a Location naming
-	// another host is the answering party's words.
+	// does not parse, or whose SSE URL does not parse again (url.URL.String can write text url.Parse
+	// refuses, such as an IPv6 zone escape), is refused in the bridge's own words. The SSE URL
+	// prints as redact.URL allows, a failed connect prints through redact.Cause, and the client
+	// follows a redirect only on the server's own origin (redirects.SameOrigin): the server is any
+	// MCP server a person configures, which may move its stream on its own origin (a trailing
+	// slash, say), and a Location naming another host is the answering party's words.
 	configured, err := url.Parse(s.cfg.URL)
 	if err != nil {
 		return fmt.Errorf("create SSE request: the configured URL does not parse")
@@ -77,7 +78,7 @@ func (s *HTTPServer) Start() error {
 	shown := redact.URL(sseURL)
 	req, err := http.NewRequest("GET", sseURL, nil)
 	if err != nil {
-		return fmt.Errorf("create SSE request: %w", err)
+		return fmt.Errorf("create SSE request: the SSE URL does not parse")
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
