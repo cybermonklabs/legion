@@ -40,8 +40,8 @@ const (
 
 // WaitsForSlot says whether root is a root handed to Legion that waits in the line for its tree
 // to be opened, with no architect running for it yet: the one queued-root rule (QueuedRoot),
-// read with the root's own design gate, not lingering, and holding no slot of its own. steps
-// are the design-gate steps the deployment gates.
+// read with the root's own design gate and its tree's lifecycle (RootFacts), not lingering, and
+// holding no slot of its own. steps are the design-gate steps the deployment gates.
 //
 // It is that rule and no other reading of it. "Status todo and no slot" used to say the same
 // thing and no longer does: a running root can hold no row while it waits on another issue, and a
@@ -56,11 +56,11 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 	if root.Lingers() || !claim.IsTreeRoot(root.Key, root.Tree) {
 		return false, nil
 	}
-	rows, err := store.GatesOf(ctx, tx, root.Key)
+	lifecycle, gate, err := RootFacts(ctx, store, tx, root, steps)
 	if err != nil {
 		return false, err
 	}
-	if !QueuedRoot(root, TreeGate{Steps: steps, Rows: rows}) {
+	if !QueuedRoot(root, lifecycle, gate) {
 		return false, nil
 	}
 	slots, err := store.Slots(ctx, tx)

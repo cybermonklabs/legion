@@ -61,13 +61,6 @@ const (
 	legionAgentRetryMaxWait   = time.Minute
 )
 
-// newLegionAgentRegistry serves store, a registry whose bucket is open.
-func newLegionAgentRegistry(store *legionagents.Store) *legionAgentRegistry {
-	r := &legionAgentRegistry{}
-	r.state.Store(&legionAgentState{store: store})
-	return r
-}
-
 // openLegionAgentRegistry opens the registry's bucket on conn. A bucket it cannot open logs one
 // ERROR and leaves the registry unavailable rather than ending the start, and the open is retried
 // in the background until it succeeds or close ends it.

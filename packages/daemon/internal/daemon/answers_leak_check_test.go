@@ -239,7 +239,7 @@ func TestAKubernetesDaemonInstallsItsGhToolsCheckFromTheRuntimesReader(t *testin
 	stateDir := t.TempDir()
 	var logs syncBuffer
 	reader := newServedCheckReader(t)
-	check, stop, err := installAnswersLeakCheck(context.Background(), stateDir, leakCheckTag, reader.setting(), reader, slog.New(slog.NewTextHandler(&logs, nil)))
+	check, stop, err := installAnswersLeakCheck(context.Background(), stateDir, leakCheckTag, reader.setting(), reader, productionAppCalls().retry, slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatalf("installAnswersLeakCheck: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestATmuxDaemonsGhToolResolvesTheMachinesCheckInTheDaemonsEnvironment(t *te
 // longer refused for it (internal/ghtool's
 // TestACallBeforeTheInstallLandsIsRefusedAndTheNextAfterItRuns runs such a call under the check).
 func TestATransientFailureOfTheChecksReadBootsTheDaemonAndInstallsTheCheckInTheBackground(t *testing.T) {
-	quickAppMints(t)
+	backoff := quickAppMints().retry
 	for _, tc := range []struct {
 		name    string
 		trouble readTrouble
@@ -360,7 +360,7 @@ func TestATransientFailureOfTheChecksReadBootsTheDaemonAndInstallsTheCheckInTheB
 			stateDir := t.TempDir()
 			var logs syncBuffer
 			log := slog.New(slog.NewTextHandler(&logs, nil))
-			check, stop, err := installAnswersLeakCheck(ctx, stateDir, leakCheckTag, reader.setting, reader, log)
+			check, stop, err := installAnswersLeakCheck(ctx, stateDir, leakCheckTag, reader.setting, reader, backoff, log)
 			if err != nil {
 				t.Fatalf("installAnswersLeakCheck = %v; want no error, the install left to the background", err)
 			}
@@ -412,7 +412,7 @@ func TestATransientFailureOfTheChecksReadBootsTheDaemonAndInstallsTheCheckInTheB
 // try, and the next gh call is refused with that cause, in the sentence that says the install is
 // tried again only at the daemon's next boot.
 func TestAPermanentCauseMetInTheBackgroundEndsTheInstall(t *testing.T) {
-	quickAppMints(t)
+	backoff := quickAppMints().retry
 	other := strings.Repeat("0", 64)
 	for _, tc := range []struct {
 		name string
@@ -452,7 +452,7 @@ func TestAPermanentCauseMetInTheBackgroundEndsTheInstall(t *testing.T) {
 			stateDir := t.TempDir()
 			var logs syncBuffer
 			log := slog.New(slog.NewTextHandler(&logs, nil))
-			check, stop, err := installAnswersLeakCheck(ctx, stateDir, leakCheckTag, tc.setting(reader), reader, log)
+			check, stop, err := installAnswersLeakCheck(ctx, stateDir, leakCheckTag, tc.setting(reader), reader, backoff, log)
 			if err != nil {
 				t.Fatalf("installAnswersLeakCheck over a read GitHub answered 502 = %v; want no error, the install left to the background", err)
 			}
@@ -463,7 +463,7 @@ func TestAPermanentCauseMetInTheBackgroundEndsTheInstall(t *testing.T) {
 			testwait.Eventually(t, "the install ended", func() bool { return strings.Contains(logs.String(), ended) })
 			tries := reader.tries.Load()
 			// Ten of the background's waits pass, and no try is made in them.
-			time.Sleep(10 * appMintRetry.Max)
+			time.Sleep(10 * backoff.Max)
 			if after := reader.tries.Load(); after != tries {
 				t.Fatalf("the install made %d tries after it ended, want none", after-tries)
 			}
@@ -496,7 +496,7 @@ func TestAServedCheckOfAnotherManifestDigestRefusesTheBoot(t *testing.T) {
 	other := strings.Repeat("0", 64)
 	stateDir := t.TempDir()
 	check, stop, err := installAnswersLeakCheck(context.Background(), stateDir, leakCheckTag,
-		leakguard.Setting{Repository: leakCheckSetting.Repository, ManifestSHA256: other}, reader, quietLogger())
+		leakguard.Setting{Repository: leakCheckSetting.Repository, ManifestSHA256: other}, reader, productionAppCalls().retry, quietLogger())
 	want := leakguard.RefusalPrefix + "the check the daemon read at " + leakCheckTag + " has the manifest digest " + reader.manifest +
 		", not the deployment's " + other + " (LEGION_LEAK_CHECK_MANIFEST_SHA256 or leak_check.manifest_sha256)"
 	if err == nil || err.Error() != want || appTransient(err) {
@@ -509,7 +509,7 @@ func TestAServedCheckOfAnotherManifestDigestRefusesTheBoot(t *testing.T) {
 		t.Fatalf("the refused install left %s: %v; want nothing installed", filepath.Join(stateDir, "leak-check"), err)
 	}
 
-	check, stop, err = installAnswersLeakCheck(context.Background(), stateDir, leakCheckTag, reader.setting(), reader, quietLogger())
+	check, stop, err = installAnswersLeakCheck(context.Background(), stateDir, leakCheckTag, reader.setting(), reader, productionAppCalls().retry, quietLogger())
 	if err != nil {
 		t.Fatalf("installAnswersLeakCheck under the check's own digest: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestACauseNoWaitChangesRefusesTheBoot(t *testing.T) {
 			if !setting.Configured() {
 				setting = leakCheckSetting
 			}
-			check, stop, err := installAnswersLeakCheck(context.Background(), t.TempDir(), tc.tag, setting, tc.reader, quietLogger())
+			check, stop, err := installAnswersLeakCheck(context.Background(), t.TempDir(), tc.tag, setting, tc.reader, productionAppCalls().retry, quietLogger())
 			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
 				t.Fatalf("installAnswersLeakCheck = %v, want the boot refused with %q…", err, tc.want)
 			}

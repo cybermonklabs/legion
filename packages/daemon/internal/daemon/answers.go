@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/answerloop"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
@@ -30,11 +31,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// answering is the daemon's answer loop, where it is on (config.Answers settled): the Legion
-// project token it answers for, the hand-off consumer connect opens, and the loop attachAnswers
-// builds once supervision runs (the gate is supervision's).
+// answering is the daemon's answer loop, where it is on (config.Answers settled): the hand-off
+// consumer connect opens, and the loop attachAnswers builds once supervision runs (the gate is
+// supervision's).
 type answering struct {
-	project  string
 	handoffs *intake.Handoffs
 	loop     *answerloop.Loop
 }
@@ -137,7 +137,7 @@ func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p
 		if !ok {
 			return ghTools{}, nil, fmt.Errorf("a Kubernetes daemon installs the gh tool's shared public leak check through the Agent Sandbox runtime's reader, not %T's", rt)
 		}
-		installed, stopInstall, err := installAnswersLeakCheck(ctx, cfg.StateDir, tag, cfg.LeakCheck, sandboxed.LeakCheck(), w.log)
+		installed, stopInstall, err := installAnswersLeakCheck(ctx, cfg.StateDir, tag, cfg.LeakCheck, sandboxed.LeakCheck(), w.callBounds().retry, w.log)
 		if err != nil {
 			return ghTools{}, nil, err
 		}
@@ -180,7 +180,8 @@ func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p
 // rate-limited 403), a 401 to a token the reader then forgets, so the next try mints a fresh one,
 // and a mint GitHub failed so. The check is then answered not installed, so the gh tool refuses
 // each call with the setup failure naming the pin and the last try's cause (ghtool.LeakCheck), and
-// the install is tried again in the background on appMintRetry's backoff, 5 s doubling to 30 s,
+// the install is tried again in the background on backoff, the daemon's App-call retry
+// (callBounds; 5 s doubling to 30 s in production),
 // each failed try logged with its cause and the wait before the next, until one lands, one meets a
 // cause that is not GitHub's trouble, or ctx ends. Such a cause, a manifest digest that is not
 // setting's among them, ends the install: it is logged once at Error with the tag, and the gh tool
@@ -192,7 +193,7 @@ func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p
 // moves the worker image's pin and with it the environment of a daemon run from that image, is
 // installed by the daemon's next boot, over the copy of the old tag, logging the one line that
 // says so.
-func installAnswersLeakCheck(ctx context.Context, stateDir, tag string, setting leakguard.Setting, reader sandbox.LeakCheckReader, log *slog.Logger) (*ghtool.LeakCheck, func(), error) {
+func installAnswersLeakCheck(ctx context.Context, stateDir, tag string, setting leakguard.Setting, reader sandbox.LeakCheckReader, backoff bootprobe.Retry, log *slog.Logger) (*ghtool.LeakCheck, func(), error) {
 	if reader == nil {
 		return nil, nil, errors.New(leakguard.Cause("the daemon runs with no GitHub App, so it cannot read "+setting.Repository.String(), nil))
 	}
@@ -209,7 +210,7 @@ func installAnswersLeakCheck(ctx context.Context, stateDir, tag string, setting 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for retry := appMintRetry.Initial; ; retry = min(2*retry, appMintRetry.Max) {
+		for retry := backoff.Initial; ; retry = min(2*retry, backoff.Max) {
 			log.Warn("answers: the shared public leak check is not installed, so the gh tool refuses every call until it is; installing it again",
 				"tag", tag, "retryIn", retry.String(), "error", cause)
 			wait := time.NewTimer(retry)

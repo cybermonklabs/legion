@@ -950,12 +950,16 @@ func apiWithFooter(run []string, parsed parsedArgs, foot string) ([]string, stri
 }
 
 // apiPath is a gh api endpoint as a path, for matching: no API host, leading slash or query.
-// https://api.github.com/ is the one host form a call that runs can carry, since the routing
-// refuses every other absolute endpoint before gh starts (ghroute's selectors.endpoint).
+// https://api.github.com/ and https://uploads.github.com/ are the host forms a call that runs can
+// carry, since the routing refuses every other absolute endpoint before gh starts (ghroute's
+// selectors.endpoint).
 func apiPath(endpoint string) string {
 	path := endpoint
-	if lower := strings.ToLower(path); strings.HasPrefix(lower, "https://api.github.com/") {
-		path = path[len("https://api.github.com/"):]
+	for _, host := range []string{"https://api.github.com/", "https://uploads.github.com/"} {
+		if strings.HasPrefix(strings.ToLower(path), host) {
+			path = path[len(host):]
+			break
+		}
 	}
 	path, _, _ = strings.Cut(strings.TrimPrefix(path, "/"), "?")
 	return path

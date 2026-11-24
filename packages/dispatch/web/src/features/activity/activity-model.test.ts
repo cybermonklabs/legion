@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { NO_LIVE_SESSION, type SettledDeliveryState } from "@legion/contracts";
+import {
+  DELETED_POST_DELIVERY_ERROR,
+  NO_LIVE_SESSION,
+  type SettledDeliveryState,
+} from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
 import { activityDescription, buildActivityItems, dateKey } from "./activity-model";
@@ -121,6 +125,7 @@ function commentDelivery(receipt: {
   duplicate?: boolean;
   session_id?: string | null;
   target?: string;
+  error?: string;
 }): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
@@ -183,12 +188,21 @@ test("a mention receipt kept for a role says the role's next session gets it", (
   ]);
 });
 
+// A delete appends one failed receipt per send of its post it ended, with its own words. That
+// receipt is no failure to deliver: the line says the post's delete ended the mention, while any
+// other failure still says the mention could not be delivered.
+test("a mention receipt the post's delete appended says the delete ended the mention", () => {
+  expect(
+    activityDescription(commentDelivery({ error: DELETED_POST_DELIVERY_ERROR, state: "failed" }))
+  ).toEqual(["the post's delete ended a comment mention to session:planner"]);
+  expect(
+    activityDescription(commentDelivery({ error: "no live session planner", state: "failed" }))
+  ).toEqual(["could not deliver a comment mention to session:planner"]);
+});
+
 function messageDelivery(
   state: SettledDeliveryState,
-  addressed: { session_id: string; target: string } = {
-    session_id: "planner",
-    target: "session:planner",
-  }
+  receipt: { error?: string; session_id?: string; target?: string } = {}
 ): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
@@ -200,9 +214,11 @@ function messageDelivery(
       attempt: 1,
       delivery: "steer",
       message_id: "message-1",
+      session_id: "planner",
       state,
+      target: "session:planner",
       title: "planner",
-      ...addressed,
+      ...receipt,
     },
     seq: 2,
     type: "message.delivery",
@@ -223,6 +239,17 @@ test("a message receipt kept for a role says the role's next session gets it", (
   expect(activityDescription(messageDelivery("queued", { session_id: "", target: role }))).toEqual([
     `kept a message for ${role}; the role's next session gets it if one takes the role within one hour`,
   ]);
+});
+
+// A failed message receipt is no delivery: it reads as a mention's failure does, naming the
+// target, and the one a delete appended for a send it ended says the delete ended it.
+test("a failed message receipt says it was not delivered, or that the post's delete ended it", () => {
+  expect(
+    activityDescription(messageDelivery("failed", { error: "no live session planner" }))
+  ).toEqual(["could not deliver a message to session:planner"]);
+  expect(
+    activityDescription(messageDelivery("failed", { error: DELETED_POST_DELIVERY_ERROR }))
+  ).toEqual(["the post's delete ended a message to session:planner"]);
 });
 
 test("a recorded handoff names its phase and version", () => {

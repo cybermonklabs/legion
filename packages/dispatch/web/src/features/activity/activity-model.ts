@@ -1,3 +1,5 @@
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
+
 import type { Actor, DispatchEvent } from "../../api/types";
 import { keptForRole, keptForRoleWait, queuedWait } from "../conversation/delivery";
 import { blockInvalidDescription } from "../issue/event-description";
@@ -131,7 +133,9 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     // Same rule as the issue timeline's line. A queued mention is the listener holding it for a
     // session that is not running, or keeping it for a role's next session, which is neither
     // delivered nor refused, so it reads as queued or kept first, a repeat included; a repeat
-    // the stream recognised says so next.
+    // the stream recognised says so next. A failure carrying the delete's words is the receipt
+    // the post's delete appended for a send it ended, which says nothing of whether that send
+    // reached the session.
     case "comment.delivery":
       if (event.payload.state === "queued") {
         return keptForRole(event.payload.target, event.payload.session_id)
@@ -141,9 +145,12 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       if (event.payload.duplicate === true) {
         return `already delivered a comment mention to ${event.payload.target}`;
       }
-      return event.payload.state === "failed"
-        ? `could not deliver a comment mention to ${event.payload.target}`
-        : `delivered a comment mention to ${event.payload.target}`;
+      if (event.payload.state !== "failed") {
+        return `delivered a comment mention to ${event.payload.target}`;
+      }
+      return event.payload.error === DELETED_POST_DELIVERY_ERROR
+        ? `the post's delete ended a comment mention to ${event.payload.target}`
+        : `could not deliver a comment mention to ${event.payload.target}`;
     case "comment.resolved":
       return `resolved a comment on ${event.payload.artifact_name}`;
     case "comment.anchor_refreshed":
@@ -158,6 +165,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `requested changes on ${event.payload.name} v${event.payload.version}`;
     case "comment.edited":
       return `edited a comment on ${event.payload.artifact_name}`;
+    case "comment.deleted":
+      return `deleted a comment on ${event.payload.artifact_name}`;
     case "suggestion.accepted":
       return `accepted a suggestion on ${event.payload.artifact_name}`;
     case "suggestion.rejected":
@@ -185,19 +194,32 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
         : `changed the answer to “${event.payload.question}”`;
     case "message.created":
       return "sent a message";
-    case "message.delivery":
+    case "message.delivery": {
+      const target = event.payload.target ?? `session:${event.payload.session_id}`;
       // A message the listener holds for a session that is not running, or keeps for a role's
-      // next session, is not delivered yet.
+      // next session, is not delivered yet. A failed one reads as a mention's does: the delete's
+      // words mark a send the post's delete ended, and any other failure a send that did not
+      // deliver it.
       if (event.payload.state === "queued") {
         return keptForRole(event.payload.target, event.payload.session_id)
           ? `kept a message for ${event.payload.target}; ${keptForRoleWait}`
-          : `queued a message for ${event.payload.target ?? `session:${event.payload.session_id}`}, which ${queuedWait}`;
+          : `queued a message for ${target}, which ${queuedWait}`;
       }
-      return "delivered a message";
+      if (event.payload.state !== "failed") {
+        return "delivered a message";
+      }
+      return event.payload.error === DELETED_POST_DELIVERY_ERROR
+        ? `the post's delete ended a message to ${target}`
+        : `could not deliver a message to ${target}`;
+    }
     case "message.accepted":
       return "took a message as its own turn";
     case "message.answered":
       return "answered a message";
+    case "message.edited":
+      return "edited a message";
+    case "message.deleted":
+      return "deleted a message";
     case "child.status":
       return `moved ${event.payload.child_key} from ${event.payload.from} to ${event.payload.to}`;
     case "child.added":

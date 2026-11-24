@@ -33,6 +33,12 @@ body: |-
   asks nothing, a reply of kind `none`, and every reply the controller would hear of, for which
   the loop posts nothing, appends nothing and tells the controller nothing. A decision that also
   asks is answered, appended and posted first, and its row then says where the answer is.
+
+  The daemon reads the messages the listener hands it through the durable consumer
+  `legion-go-<project>-answers`, and a message whose handling keeps failing is retried, given up
+  and kept as an intake message is: under that consumer's name in its record, in the controller's
+  `intake-gave-up` notice and in `legion state`. A replay hands it to the answer loop again, and
+  fails while the loop is off.
 time: 2026-11-17T05:20:13.000000000Z
 custom:
     Issue: pr2230

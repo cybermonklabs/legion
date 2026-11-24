@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/listenerwire"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -166,32 +167,43 @@ func DispatchOf(e HandoffEnvelope) (DispatchEvent, error) {
 	return event, nil
 }
 
-// HandoffSpec configures the hand-off consumer: the Legion project token whose hand-offs it reads,
-// how long a delivery may take before JetStream redelivers it, how long a refused one waits, and
-// where it logs.
-type HandoffSpec struct {
-	Project  string
-	AckWait  time.Duration
-	NakDelay time.Duration
-	Logger   *slog.Logger
-}
-
 // HandoffHandler takes one hand-off: nil once it is recorded, so the delivery is acknowledged; an
-// error to have it delivered again after the spec's NakDelay. raw is the hand-off as published.
+// error to have it delivered again at the delay its delivery count earns, and given up once the
+// intake's bound is reached (consumeHandoff). raw is the hand-off as published.
 type HandoffHandler func(ctx context.Context, handoff Handoff, raw []byte) error
 
-// Handoffs is the project's durable hand-off consumer.
+// Handoffs is the project's durable hand-off consumer: the Legion project token its subjects and
+// its hand-offs name (claim.ProjectToken of the intake's project), its stream and its consumer,
+// and the run each of its deliveries is settled on (consumerRun), which keeps its failures and its
+// give-ups where the intake keeps its own. sweepEvery is its failure sweep's period,
+// failureSweepEvery, which a test shortens.
 type Handoffs struct {
-	spec     HandoffSpec
-	consumer jetstream.Consumer
+	token      string
+	stream     jetstream.Stream
+	consumer   jetstream.Consumer
+	run        consumerRun
+	sweepEvery time.Duration
 }
 
 // OpenHandoffs creates or updates the project's durable hand-off consumer on
-// listenerwire.LegionHandoffSubject(<P>, ">"), as OpenConsumers does its own: one it creates
-// starts at the stream time pool keeps for it, or at the next hand-off when it keeps none, and one
-// that exists keeps its position.
-func OpenHandoffs(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec HandoffSpec) (*Handoffs, error) {
-	spec, err := normalizedHandoffSpec(spec)
+// listenerwire.LegionHandoffSubject(<P>, ">"), P the Legion project token of spec's project
+// (claim.ProjectToken), as OpenConsumers does its own: one it creates starts at the stream time
+// pool keeps for it, or at the next hand-off when it keeps none, and one that exists keeps its
+// position. spec is the intake's own (the ConsumerSpec OpenConsumers takes), so a hand-off the
+// loop keeps failing on is handled as an intake message that keeps failing is, under this
+// consumer's own name: delivered again at the same delays, given up under the same bound, kept in
+// the same record and counted in the same notice (consumeHandoff), and replayed through the loop
+// (GiveUps). Only the bound on one handling differs: AckWait, where an intake message's is
+// HandlerLimit.
+func OpenHandoffs(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec ConsumerSpec) (*Handoffs, error) {
+	if pool == nil {
+		return nil, errors.New("the hand-off consumer needs the Postgres pool its failures are kept in")
+	}
+	spec, err := normalizedSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+	token, err := claim.ProjectToken(spec.Project)
 	if err != nil {
 		return nil, err
 	}
@@ -199,23 +211,43 @@ func OpenHandoffs(ctx context.Context, js jetstream.JetStream, pool store.TxPool
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
 	}
-	consumer, err := openConsumer(ctx, js, stream, pool, spec.Logger, jetstream.ConsumerConfig{
-		Durable:       handoffConsumerName(spec.Project),
-		FilterSubject: listenerwire.LegionHandoffSubject(spec.Project, ">"),
+	remade := &remadeFailures{}
+	consumer, err := openConsumer(ctx, js, stream, pool, spec, remade, jetstream.ConsumerConfig{
+		Durable:       handoffConsumerName(token),
+		FilterSubject: listenerwire.LegionHandoffSubject(token, ">"),
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       spec.AckWait,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open the hand-off durable consumer: %w", err)
 	}
-	return &Handoffs{spec: spec, consumer: consumer}, nil
+	run := consumerRun{spec: spec, pool: pool, maxAge: stream.CachedInfo().Config.MaxAge, names: &issueNames{}, remade: remade,
+		dropped: newDroppedSettlements()}
+	return &Handoffs{token: token, stream: stream, consumer: consumer, run: run, sweepEvery: failureSweepEvery}, nil
 }
 
-// Run hands every hand-off to handle until ctx ends.
+// Run hands every hand-off to handle until ctx ends (consumeHandoff), and beside it sweeps the
+// consumer's open failures it moved past (failureSweep), as Consumers.Run does for the intake's.
 func (h *Handoffs) Run(ctx context.Context, handle HandoffHandler) error {
-	consuming, err := h.consumer.Consume(func(message jetstream.Msg) {
-		ConsumeHandoff(ctx, message, h.spec, handle)
+	group, running := errgroup.WithContext(ctx)
+	group.Go(func() error { return h.consume(running, handle) })
+	group.Go(func() error {
+		sweep := &failureSweep{spec: h.run.spec, pool: h.run.pool, stream: h.stream, names: []string{handoffConsumerName(h.token)}}
+		return sweep.run(running, h.sweepEvery)
 	})
+	return group.Wait()
+}
+
+// consume hands the consumer's hand-offs to handle one at a time, asking JetStream for
+// consumerFetchBatch of them at once as consumeConsumer does, until ctx ends.
+func (h *Handoffs) consume(ctx context.Context, handle HandoffHandler) error {
+	consuming, err := h.consumer.Consume(func(message jetstream.Msg) {
+		metadata, err := message.Metadata()
+		if err != nil {
+			metadata = nil
+		}
+		consumeHandoff(ctx, message, metadata, h.run, h.token, handle)
+	}, jetstream.PullMaxMessages(consumerFetchBatch))
 	if err != nil {
 		return err
 	}
@@ -232,71 +264,54 @@ func (h *Handoffs) Run(ctx context.Context, handle HandoffHandler) error {
 	}
 }
 
-// HandoffDelivery is what ConsumeHandoff reads and settles of one delivery (jetstream.Msg).
-type HandoffDelivery interface {
-	Subject() string
-	Data() []byte
-	Ack() error
-	NakWithDelay(delay time.Duration) error
-	Term() error
-}
-
-// ConsumeHandoff settles one delivery: a hand-off that cannot be decoded, or that is for another
-// project or another session than its subject names, is poison and terminated; one handle records
-// is acknowledged; one handle fails on is delivered again after the spec's NakDelay.
-func ConsumeHandoff(ctx context.Context, delivery HandoffDelivery, spec HandoffSpec, handle HandoffHandler) {
-	spec, err := normalizedHandoffSpec(spec)
+// consumeHandoff settles one delivery of the hand-off consumer as consumeMessage settles an intake
+// message's, on run, the consumer's: a hand-off that cannot be read, or that is not of project
+// token or not for the session its subject names (handoffOn), is given up at its first delivery as
+// a message that does not decode; one whose delivery before did not end is given up before handle
+// runs again once the bound is reached; one handle records is acknowledged, its open failure
+// deleted; and one handle fails on is recorded and delivered again at the delay its delivery count
+// earns, or given up once the bound is reached or the stream would delete it first
+// (consumerRun.failed). handle runs within AckWait, reported in progress meanwhile. It answers
+// whether the message left its consumer.
+func consumeHandoff(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, run consumerRun, token string, handle HandoffHandler) bool {
+	handoff, err := handoffOn(message.Subject(), token, message.Data())
 	if err != nil {
-		spec.Logger.Error("hand-off consumer misconfigured", "error", err)
-		return
+		return run.undecodable(ctx, message, metadata, err)
 	}
-	subject := delivery.Subject()
-	handoff, err := DecodeHandoff(delivery.Data())
-	if err == nil {
-		session, ok := strings.CutPrefix(subject, listenerwire.LegionHandoffSubject(spec.Project, ""))
-		switch {
-		case handoff.Project != spec.Project:
-			err = fmt.Errorf("the hand-off names project %q on this daemon's subject", handoff.Project)
-		case !ok || session != handoff.TargetSession:
-			err = fmt.Errorf("the hand-off for session %q came on subject %s", handoff.TargetSession, subject)
+	decoded := decodedMessage{Source: handoff.Envelope.Source, EventID: handoff.Envelope.EventID}
+	mayHaveFailed := run.mayHaveFailed(metadata)
+	if metadata != nil && metadata.NumDelivered >= 2 {
+		if decided, handled := run.noteRedelivery(ctx, message, metadata, decoded); decided {
+			return handled
 		}
 	}
-	if err != nil {
-		spec.Logger.Error("poison hand-off", "subject", subject, "error", err)
-		if termErr := delivery.Term(); termErr != nil {
-			spec.Logger.Error("term poison hand-off", "subject", subject, "error", termErr)
-		}
-		return
-	}
-	handled, cancel := context.WithTimeout(ctx, spec.AckWait)
+	spec := run.spec
+	work, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), spec.AckWait)
 	defer cancel()
-	if err := handle(handled, handoff, delivery.Data()); err != nil {
-		spec.Logger.Warn("hand-off not recorded; it is delivered again", "subject", subject, "event_id", handoff.Envelope.EventID,
-			"retry_in", spec.NakDelay, "error", err)
-		if nakErr := delivery.NakWithDelay(spec.NakDelay); nakErr != nil {
-			spec.Logger.Error("nak hand-off", "subject", subject, "error", nakErr)
-		}
-		return
+	stop := keepInProgress(work, message, spec.AckWait/3, spec.Logger)
+	err = handle(work, handoff, message.Data())
+	stop()
+	if err != nil {
+		return run.failed(ctx, message, metadata, decoded, nakOutcome("hand-off not recorded; it is delivered again", "nak hand-off", err))
 	}
-	if err := delivery.Ack(); err != nil {
-		spec.Logger.Error("ack hand-off", "subject", subject, "error", err)
-	}
+	return acknowledged(ctx, message, metadata, run, mayHaveFailed, false)
 }
 
-func normalizedHandoffSpec(spec HandoffSpec) (HandoffSpec, error) {
-	if spec.Logger == nil {
-		spec.Logger = slog.Default()
+// handoffOn decodes data, a hand-off published on subject (DecodeHandoff), and holds it to that
+// subject: a hand-off of project token, for the session the subject names.
+func handoffOn(subject, token string, data []byte) (Handoff, error) {
+	handoff, err := DecodeHandoff(data)
+	if err != nil {
+		return Handoff{}, err
 	}
-	if strings.TrimSpace(spec.Project) == "" {
-		return spec, errors.New("the hand-off consumer's project is required")
+	session, ok := strings.CutPrefix(subject, listenerwire.LegionHandoffSubject(token, ""))
+	switch {
+	case handoff.Project != token:
+		return Handoff{}, fmt.Errorf("the hand-off names project %q on this daemon's subject", handoff.Project)
+	case !ok || session != handoff.TargetSession:
+		return Handoff{}, fmt.Errorf("the hand-off for session %q came on subject %s", handoff.TargetSession, subject)
 	}
-	if spec.AckWait <= 0 {
-		spec.AckWait = defaultAckWait
-	}
-	if spec.NakDelay <= 0 {
-		spec.NakDelay = defaultNakDelay
-	}
-	return spec, nil
+	return handoff, nil
 }
 
 func handoffConsumerName(project string) string {

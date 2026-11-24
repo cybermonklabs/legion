@@ -561,27 +561,27 @@
     "values": [
       {
         "value": "architect",
-        "since": 229
+        "since": 259
       },
       {
         "value": "implementer",
-        "since": 229
+        "since": 259
       },
       {
         "value": "merger",
-        "since": 229
+        "since": 259
       },
       {
         "value": "planner",
-        "since": 229
+        "since": 259
       },
       {
         "value": "reviewer",
-        "since": 229
+        "since": 259
       },
       {
         "value": "tester",
-        "since": 229
+        "since": 259
       }
     ]
   },
@@ -1172,6 +1172,32 @@
       {
         "value": "task-stopped",
         "since": 219
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "intakeGiveUps.newest.*.reason",
+    "values": [
+      {
+        "value": "bound",
+        "since": 228
+      },
+      {
+        "value": "consumer moved past",
+        "since": 228
+      },
+      {
+        "value": "did not end",
+        "since": 228
+      },
+      {
+        "value": "retention",
+        "since": 228
+      },
+      {
+        "value": "undecodable",
+        "since": 228
       }
     ]
   },
@@ -2046,6 +2072,28 @@
       {
         "value": "tester",
         "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "intake-replay",
+    "keyPath": "replayed.*.outcome",
+    "values": [
+      {
+        "value": "already applied",
+        "since": 228
+      },
+      {
+        "value": "applied",
+        "since": 228
+      },
+      {
+        "value": "failed",
+        "since": 228
+      },
+      {
+        "value": "no fact",
+        "since": 228
       }
     ]
   }

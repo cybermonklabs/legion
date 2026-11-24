@@ -1,7 +1,7 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { NO_LIVE_SESSION } from "@legion/contracts";
 import { act, type RenderHookResult, renderHook } from "@testing-library/react";
-
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type { Message, MessageDelivery, MessageRead } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { type SessionSwitch, type SwitchRequest, useSessionSwitch } from "./use-session-switch";
@@ -40,6 +40,7 @@ function switchMessage(id: string, body: string, deliveries = [attempt()]): Mess
     broadcast_id: null,
     created_at: "2026-10-25T10:00:00Z",
     deliveries,
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,
@@ -55,6 +56,7 @@ function reply(id: string, inReplyTo: string, body: string, author = SESSION): M
     broadcast_id: null,
     created_at: "2026-10-25T10:00:01Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: inReplyTo,
     issue_key: null,

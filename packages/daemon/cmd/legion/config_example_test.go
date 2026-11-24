@@ -1,5 +1,7 @@
 package main
 
+//ci:reads deploy/kubernetes/daemon/legion.yaml.example stageShippedExample reads it from the repository root (runtime.Caller + ../../../..)
+
 import (
 	"bytes"
 	"context"

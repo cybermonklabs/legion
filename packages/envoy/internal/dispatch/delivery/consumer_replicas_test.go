@@ -13,6 +13,7 @@ import (
 // replica count), follow the stream when a start raises it from one copy to the deployment's three:
 // a durable left on one copy would lose its place with that one server.
 func TestDispatchDurablesMoveToThreeCopiesWhenAStartRaisesTheStream(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	start := func(replicas int) *bus.Client {
 		t.Helper()
@@ -24,7 +25,7 @@ func TestDispatchDurablesMoveToThreeCopiesWhenAStartRaisesTheStream(t *testing.T
 		return client
 	}
 	js := start(1).JS()
-	for _, config := range []natsgo.ConsumerConfig{deliveryConsumerConfig(), jobConsumerConfig()} {
+	for _, config := range []natsgo.ConsumerConfig{deliveryConsumerConfig(tuningFor(t)), jobConsumerConfig(tuningFor(t))} {
 		if _, err := js.AddConsumer(bus.Stream, &config); err != nil {
 			t.Fatalf("create durable %s: %v", config.Durable, err)
 		}

@@ -11,25 +11,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/listenerwire"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// fakeDelivery is one JetStream delivery as ConsumeHandoff settles it, recording how.
-type fakeDelivery struct {
-	subject string
-	data    []byte
-	settled string
-	delay   time.Duration
-}
-
-func (d *fakeDelivery) Subject() string { return d.subject }
-func (d *fakeDelivery) Data() []byte    { return d.data }
-func (d *fakeDelivery) Ack() error      { d.settled = "ack"; return nil }
-func (d *fakeDelivery) Term() error     { d.settled = "term"; return nil }
-func (d *fakeDelivery) NakWithDelay(delay time.Duration) error {
-	d.settled, d.delay = "nak", delay
-	return nil
-}
+// captureToken is the Legion project token of CAPTURE (claim.ProjectToken), which its hand-offs
+// and their subjects name.
+const captureToken = "capture"
 
 func handoffJSON(t *testing.T, project, session string) []byte {
 	t.Helper()
@@ -45,54 +36,91 @@ func handoffJSON(t *testing.T, project, session string) []byte {
 	return data
 }
 
-// A hand-off is acknowledged only once the loop has recorded it: a handler that fails has it
-// delivered again after the nak delay, one that succeeds acknowledges it, and the handler is handed
-// the hand-off it decoded with the bytes as published.
-func TestAHandoffIsAcknowledgedOnlyOnceTheLoopRecordedIt(t *testing.T) {
-	spec := HandoffSpec{Project: "legion", NakDelay: 7 * time.Second}
-	data := handoffJSON(t, "legion", "ses_tester")
+// deliverHandoff runs consumeHandoff on d as the hand-off consumer of CAPTURE does
+// (Handoffs.consume): d's metadata parsed once and handed on with it.
+func deliverHandoff(ctx context.Context, d *fakeDelivery, run consumerRun, handle HandoffHandler) bool {
+	metadata, _ := d.Metadata()
+	return consumeHandoff(ctx, d, metadata, run, captureToken, handle)
+}
 
-	failing := &fakeDelivery{subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: data}
-	ConsumeHandoff(context.Background(), failing, spec, func(context.Context, Handoff, []byte) error {
+// A hand-off is acknowledged only once the loop has recorded it. A handler that fails has it
+// delivered again at the delay its first failure earns, NakDelay, and leaves an open failure under
+// the hand-off consumer's name with the handler's error; the delivery after it, which the handler
+// records, acknowledges it and deletes that failure. The handler is handed the hand-off it decoded
+// with the bytes as published.
+func TestAHandoffIsAcknowledgedOnlyOnceTheLoopRecordedIt(t *testing.T) {
+	pool := migratedPool(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	run := productionRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
+	consumer := handoffConsumerName(captureToken)
+	data := handoffJSON(t, captureToken, "ses_tester")
+	first := newDelivery(t, consumer, listenerwire.LegionHandoffSubject(captureToken, "ses_tester"), data, 41, now)
+
+	if deliverHandoff(context.Background(), first, run, func(context.Context, Handoff, []byte) error {
 		return errors.New("the store is down")
-	})
-	if failing.settled != "nak" || failing.delay != 7*time.Second {
-		t.Fatalf("a hand-off the loop could not record settled %q after %s, want nak after 7s", failing.settled, failing.delay)
+	}) {
+		t.Fatal("a hand-off the loop could not record left its consumer, want it naked")
+	}
+	if acks, terms, naks := first.asked(); acks != 0 || terms != 0 || !slices.Equal(naks, []time.Duration{run.spec.NakDelay}) {
+		t.Fatalf("a hand-off the loop could not record asked %d acks, %d terms and naks %v, want one nak of %s", acks, terms, naks, run.spec.NakDelay)
+	}
+	if failure, found := intakeRecordOf(t, pool, consumer, 41); !found || failure.GivenUp() || failure.Deliveries != 1 || failure.LastError != "the store is down" {
+		t.Fatalf("the record = %+v (found %t), want the hand-off consumer's open failure of delivery 1 with the loop's error", failure, found)
 	}
 
 	var got Handoff
 	var raw []byte
-	recorded := &fakeDelivery{subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: data}
-	ConsumeHandoff(context.Background(), recorded, spec, func(_ context.Context, h Handoff, published []byte) error {
+	second := first.deliveredAgain(2)
+	if !deliverHandoff(context.Background(), second, run, func(_ context.Context, h Handoff, published []byte) error {
 		got, raw = h, published
 		return nil
-	})
-	if recorded.settled != "ack" {
-		t.Fatalf("a recorded hand-off settled %q, want ack", recorded.settled)
+	}) {
+		t.Fatal("a hand-off the loop recorded did not leave its consumer")
+	}
+	if acks, terms, naks := second.asked(); acks != 1 || terms != 0 || len(naks) != 0 {
+		t.Fatalf("a recorded hand-off asked %d acks, %d terms and naks %v, want one ack", acks, terms, naks)
 	}
 	if got.TargetSession != "ses_tester" || got.Envelope.SourceSession != "ses_asker" || string(raw) != string(data) {
 		t.Fatalf("the handler was handed %+v (%s), want the decoded hand-off and its bytes", got, raw)
 	}
+	if failure, found := intakeRecordOf(t, pool, consumer, 41); found {
+		t.Fatalf("the record = %+v, want the open failure deleted once the loop recorded the hand-off", failure)
+	}
 }
 
-// A hand-off that cannot be read, one for another project, and one whose session is not its
-// subject's are poison: terminated, and never handed to the loop.
-func TestAHandoffTheDaemonCannotTrustIsTerminated(t *testing.T) {
-	spec := HandoffSpec{Project: "legion"}
-	for name, delivery := range map[string]*fakeDelivery{
-		"not JSON":        {subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: []byte("{")},
-		"another project": {subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: handoffJSON(t, "other", "ses_tester")},
-		"another session": {subject: listenerwire.LegionHandoffSubject("legion", "ses_other"), data: handoffJSON(t, "legion", "ses_tester")},
-		"no envelope id": {subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"),
-			data: []byte(`{"original_topic":"t","target_session":"ses_tester","role_token":"r","project":"legion","envelope":{"source":"agent"}}`)},
+// A hand-off that cannot be read, one for another project, one whose session is not its subject's
+// and one whose envelope has no id are poison: each is given up at its first delivery as a message
+// that does not decode, kept under the hand-off consumer's name, and terminated, never handed to
+// the loop.
+func TestAHandoffTheDaemonCannotTrustIsGivenUpAsUndecodable(t *testing.T) {
+	pool := migratedPool(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	run := productionRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
+	consumer := handoffConsumerName(captureToken)
+	for i, row := range []struct {
+		name, session string
+		data          []byte
+	}{
+		{"not JSON", "ses_tester", []byte("{")},
+		{"another project", "ses_tester", handoffJSON(t, "other", "ses_tester")},
+		{"another session", "ses_other", handoffJSON(t, captureToken, "ses_tester")},
+		{"no envelope id", "ses_tester",
+			[]byte(`{"original_topic":"t","target_session":"ses_tester","role_token":"r","project":"capture","envelope":{"source":"agent"}}`)},
 	} {
-		ConsumeHandoff(context.Background(), delivery, spec, func(context.Context, Handoff, []byte) error {
-			t.Fatalf("%s: the poison hand-off reached the loop", name)
-			return nil
+		t.Run(row.name, func(t *testing.T) {
+			seq := uint64(60 + i)
+			delivery := newDelivery(t, consumer, listenerwire.LegionHandoffSubject(captureToken, row.session), row.data, seq, now)
+			left := deliverHandoff(context.Background(), delivery, run, func(context.Context, Handoff, []byte) error {
+				t.Fatal("the poison hand-off reached the loop")
+				return nil
+			})
+			if acks, terms, naks := delivery.asked(); !left || acks != 0 || terms != 1 || len(naks) != 0 {
+				t.Fatalf("asked %d acks, %d terms and naks %v of JetStream (left %t), want the hand-off terminated", acks, terms, naks, left)
+			}
+			if given, found := intakeRecordOf(t, pool, consumer, seq); !found || given.GiveUpReason != record.GiveUpUndecodable || given.Deliveries != 1 {
+				t.Fatalf("the record = %+v (found %t), want the hand-off given up at its first delivery as undecodable", given, found)
+			}
 		})
-		if delivery.settled != "term" {
-			t.Errorf("%s: settled %q, want term", name, delivery.settled)
-		}
 	}
 }
 
@@ -102,8 +130,10 @@ func TestAHandoffTheDaemonCannotTrustIsTerminated(t *testing.T) {
 // with the value it carried. This reader once decoded expects_reply as a string of its own, so a
 // hand-off carrying false did not decode and was terminated as poison, its message never answered.
 func TestAHandoffReachesTheLoopWhateverItsExpectsReply(t *testing.T) {
-	spec := HandoffSpec{Project: "legion"}
-	for _, tc := range []struct {
+	pool := migratedPool(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	run := productionRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
+	for i, tc := range []struct {
 		expects listenerwire.ExpectsReply
 		wire    string
 	}{
@@ -113,7 +143,7 @@ func TestAHandoffReachesTheLoopWhateverItsExpectsReply(t *testing.T) {
 	} {
 		// The bytes the listener publishes: its own hand-off body, marshalled as handOffToLegion does.
 		data, err := json.Marshal(listenerwire.LegionHandoff{
-			OriginalTopic: "notifications.agent.ses_tester", TargetSession: "ses_tester", RoleToken: "legion-legion-legion-9-tester", Project: "legion",
+			OriginalTopic: "notifications.agent.ses_tester", TargetSession: "ses_tester", RoleToken: "legion-legion-legion-9-tester", Project: captureToken,
 			Envelope: listenerwire.Envelope{EventID: "evt-1", Source: "agent", SourceEventID: "src-1", SourceSession: "ses_asker",
 				Topic: "notifications.agent.ses_tester", DedupeKey: "agent.ses_tester.0123456789abcdef0123456789abcdef",
 				PayloadSummary: "Which fruit?", TraceID: "trace-1", ExpectsReply: tc.expects},
@@ -126,18 +156,134 @@ func TestAHandoffReachesTheLoopWhateverItsExpectsReply(t *testing.T) {
 		}
 		var got Handoff
 		reached := false
-		delivery := &fakeDelivery{subject: listenerwire.LegionHandoffSubject("legion", "ses_tester"), data: data}
-		ConsumeHandoff(context.Background(), delivery, spec, func(_ context.Context, h Handoff, _ []byte) error {
+		delivery := newDelivery(t, handoffConsumerName(captureToken), listenerwire.LegionHandoffSubject(captureToken, "ses_tester"), data, uint64(70+i), now)
+		deliverHandoff(context.Background(), delivery, run, func(_ context.Context, h Handoff, _ []byte) error {
 			got, reached = h, true
 			return nil
 		})
-		if !reached || delivery.settled != "ack" {
-			t.Errorf("a hand-off carrying %s reached the loop %v and settled %q, want it handed to the loop and acknowledged", tc.wire, reached, delivery.settled)
+		if acks, _, _ := delivery.asked(); !reached || acks != 1 {
+			t.Errorf("a hand-off carrying %s reached the loop %v and was acknowledged %d times, want it handed to the loop and acknowledged", tc.wire, reached, acks)
 			continue
 		}
 		if string(got.Envelope.ExpectsReply) != string(tc.expects) {
 			t.Errorf("a hand-off carrying %s reached the loop with expects_reply %q, want %q", tc.wire, got.Envelope.ExpectsReply, tc.expects)
 		}
+	}
+}
+
+// A hand-off the loop fails on every time is given up visibly, as an intake message whose handler
+// always fails is: delivered again at delays doubling from NakDelay up to five minutes, each
+// failure kept, and given up at the 21st delivery, the first an hour or more after its first
+// failure, for the reason bound, under the hand-off consumer's own name. The give-up is counted in
+// the controller's intake-gave-up notice, which names it, listed among the open give-ups the state
+// shows, logged at error, and its message terminated. A replay of it hands the stored hand-off to
+// the loop again: with the loop off it fails and leaves the record open, and once the loop records
+// it the record is closed as applied.
+func TestAHandoffTheLoopAlwaysFailsOnIsGivenUpVisibly(t *testing.T) {
+	pool := migratedPool(t)
+	registerCaptureController(t, pool)
+	ctx := context.Background()
+	logs := &lockedBuffer{}
+	first := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	now := first
+	run := productionRun(t, pool, logs, func() time.Time { return now })
+	consumer := handoffConsumerName(captureToken)
+	subject := listenerwire.LegionHandoffSubject(captureToken, "ses_tester")
+	data := handoffJSON(t, captureToken, "ses_tester")
+	const seq = 81
+	stored := newDelivery(t, consumer, subject, data, seq, first)
+	calls := 0
+	failing := func(context.Context, Handoff, []byte) error {
+		calls++
+		return errAlwaysFails
+	}
+	for delivered := uint64(1); ; delivered++ {
+		delivery := stored.deliveredAgain(delivered)
+		left := deliverHandoff(ctx, delivery, run, failing)
+		acks, terms, naks := delivery.asked()
+		if left {
+			if delivered != uint64(run.spec.GiveUpDeliveries) || acks != 0 || terms != 1 || len(naks) != 0 {
+				t.Fatalf("delivery %d, %s after the first, left the consumer asking %d acks, %d terms and naks %v, want delivery 21 terminated",
+					delivered, now.Sub(first), acks, terms, naks)
+			}
+			break
+		}
+		want := nakDelay(delivered, run.spec)
+		if acks != 0 || terms != 0 || !slices.Equal(naks, []time.Duration{want}) {
+			t.Fatalf("delivery %d asked %d acks, %d terms and naks %v, want one nak of %s", delivered, acks, terms, naks, want)
+		}
+		if delivered >= uint64(run.spec.GiveUpDeliveries) {
+			t.Fatalf("delivery %d, %s after the first, was not given up", delivered, now.Sub(first))
+		}
+		now = now.Add(want)
+	}
+	if calls != run.spec.GiveUpDeliveries {
+		t.Fatalf("the loop was handed the hand-off %d times, want once at each of its %d deliveries", calls, run.spec.GiveUpDeliveries)
+	}
+	given, found := intakeRecordOf(t, pool, consumer, seq)
+	if !found || given.GiveUpReason != record.GiveUpBound || given.Deliveries != run.spec.GiveUpDeliveries || !given.GivenUpAt.Equal(now) ||
+		!given.FirstFailedAt.Equal(first) || given.LastError != errAlwaysFails.Error() || given.EventID != "evt-1" || given.NoticeID == 0 {
+		t.Fatalf("the record = %+v (found %t), want the hand-off given up at the bound at %s, its first failure at %s, counted in a notice", given, found, now, first)
+	}
+	if age := given.GivenUpAt.Sub(given.FirstFailedAt); age < run.spec.GiveUpAfter {
+		t.Fatalf("given up %s after its first failure, want %s or more", age, run.spec.GiveUpAfter)
+	}
+
+	if notices, count := giveUpNotices(t, pool); notices != 1 || count != 1 {
+		t.Fatalf("%d intake-gave-up notices, the highest counting %d, want one counting the hand-off", notices, count)
+	}
+	var named []record.NoticeGiveUp
+	var namedJSON []byte
+	if err := pool.QueryRow(ctx, `select payload->'giveUps' from outbox where id = $1`, given.NoticeID).Scan(&namedJSON); err != nil {
+		t.Fatalf("read the notice's give-ups: %v", err)
+	}
+	if err := json.Unmarshal(namedJSON, &named); err != nil {
+		t.Fatalf("decode the notice's give-ups %s: %v", namedJSON, err)
+	}
+	if want := []record.NoticeGiveUp{{ID: given.ID, Consumer: consumer, Subject: subject}}; !slices.Equal(named, want) {
+		t.Fatalf("the notice names %+v, want %+v", named, want)
+	}
+	var shown record.IntakeGiveUps
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		shown, err = record.NewStore().OpenIntakeGiveUps(ctx, tx, "CAPTURE", 50)
+		return err
+	}); err != nil {
+		t.Fatalf("read the open give-ups the state shows: %v", err)
+	}
+	if want := []record.IntakeGiveUpCount{{Consumer: consumer, Open: 1, NewestSeq: seq}}; !slices.Equal(shown.Consumers, want) ||
+		len(shown.Newest) != 1 || shown.Newest[0].ID != given.ID {
+		t.Fatalf("the state shows %+v, want the hand-off consumer's one open give-up", shown)
+	}
+	requireLogLine(t, logs, "level=ERROR", "intake: a message was given up", "consumer="+consumer, "delivered=21 ", "reason=bound")
+
+	records := Records{Pool: pool, Spec: run.spec, Repositories: func() []ghrepo.Repository { return nil }}
+	off, err := NewGiveUps(records)
+	if err != nil {
+		t.Fatalf("NewGiveUps: %v", err)
+	}
+	answer, err := off.Replay(ctx, record.IntakeSelector{ID: given.ID}, "operator")
+	if err != nil || len(answer.Replayed) != 1 || answer.Replayed[0].Outcome != ReplayFailed || answer.Remaining != 1 {
+		t.Fatalf("a replay with the loop off = %+v, %v; want it failed, the record left open", answer, err)
+	}
+	var replayed Handoff
+	records.Handoff = func(_ context.Context, h Handoff, _ []byte) error {
+		replayed = h
+		return nil
+	}
+	on, err := NewGiveUps(records)
+	if err != nil {
+		t.Fatalf("NewGiveUps: %v", err)
+	}
+	answer, err = on.Replay(ctx, record.IntakeSelector{Consumer: consumer, ThroughSeq: seq}, "operator")
+	if err != nil || len(answer.Replayed) != 1 || answer.Replayed[0].Outcome != ReplayApplied || answer.Remaining != 0 {
+		t.Fatalf("a replay through the loop = %+v, %v; want the hand-off applied", answer, err)
+	}
+	if replayed.TargetSession != "ses_tester" || replayed.Envelope.EventID != "evt-1" {
+		t.Fatalf("the replay handed the loop %+v, want the stored hand-off", replayed)
+	}
+	if closed, _ := intakeRecordOf(t, pool, consumer, seq); closed.ClosedHow != record.IntakeApplied || closed.ClosedBy != "operator" {
+		t.Fatalf("the record after the replay = %+v, want it closed as applied by the operator", closed)
 	}
 }
 

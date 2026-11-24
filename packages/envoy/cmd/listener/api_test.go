@@ -1,5 +1,8 @@
 package main
 
+//ci:reads packages/contracts/fixtures/dispatch-targeted-delivery.json TestDispatchClientSendUsesListenerWireContract and TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload and TestDispatchClientSendFrameModeIsGuardedEndToEnd
+//ci:reads packages/contracts/fixtures/envoy-session-no-interests.json readNoInterestRecordFixture
+
 import (
 	"bytes"
 	"context"

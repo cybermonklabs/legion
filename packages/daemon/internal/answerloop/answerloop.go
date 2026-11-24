@@ -444,7 +444,8 @@ func (l *Loop) work(ctx context.Context, session string) {
 // asking agent's conversation (deliver), passes on the decision it carries (Decisions), records
 // the question it asks, and wakes the loop. A hand-off for a session the history does not hold,
 // and one that is no question, is logged and dropped; nil acknowledges it. An error leaves it to
-// be delivered again.
+// be delivered again, and given up and kept as an intake message is once the intake's bound is
+// reached (intake.OpenHandoffs).
 //
 // An agent whose claim the daemon released (Gate.Released, read here) has its questions answered
 // as any stopped agent's, and is given through Wakes, once each, everything else that reached it

@@ -356,6 +356,9 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, markerLine("remote.origin.gh-resolved sjawhar/legion")), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion)"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, Remote{name: "fork", url: "ssh://git@ssh.github.com:443/Sjawhar/legion"}), err: "more than one owner"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, Remote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: "is an ssh remote whose host gh may read as github.com"},
+		// A remote whose host holds a letter beyond ASCII is refused, not passed over as another
+		// host's: gh lowers `gİthub.com` (U+0130) to github.com and acts on its repository.
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(Remote{name: "origin", url: "https://g\u0130thub.com/acme/widgets.git"}), err: "whose host holds a letter beyond ASCII"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, Remote{name: "mirror", url: "https://gitlab.example.com/sjawhar/legion"}, Remote{name: "local", url: "/srv/legion"}), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_CONFIG_DIR": "/owners", "LEGION_GH_OWNERS_DIR": "/owners"}, remotes: remotes(acmeClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: func() ([]Remote, error) { return nil, fmt.Errorf("bad config line 3") }, err: "cannot be read (bad config line 3)"},

@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  A turn the plugin starts itself, such as the phase reminder, is now judged by the daemon when
+  the provider refuses it. Such a turn has no prompt result, so a refusal of it failed nothing and
+  told nobody, and a worker whose reminders the provider refused, even with a 400, was reminded
+  every 5 minutes with no end. The turn-outcome report now carries the HTTP status the provider
+  refused the turn with, read from the host's own `errorStatus` on the refused message and never
+  from its words, and it marks a turn that ran no prompt of the daemon's `unprompted`: a run that
+  the daemon's RPC prompt did not start, read from that prompt's `input` and the next
+  `agent_start`. The daemon fails the claim at once for a status that cannot clear, which ends the
+  reminders, and counts any other refusal in the claim's run of provider-error turns, whose sixth
+  in a row tells the project's controller once. `legion.daemonApiVersion` is 232: install this
+  release with a daemon of the same release.
+time: 2026-11-23T23:04:10.514806801Z
+custom:
+  Issue: INFRA-4508

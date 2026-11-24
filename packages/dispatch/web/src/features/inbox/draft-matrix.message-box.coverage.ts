@@ -21,6 +21,7 @@ const REASONS = {
   9: "9. The Inbox draws a thread's box in the reading column above the column's width and in the row's card below it (`paneShown`), in a drawer that closing takes away (`InboxDrawer`), and on its own page (`app.tsx`'s `/` and `/credentials/*`); a resize across that width, closing the drawer, leaving the page, a column with no row selected or an empty list, and the Inbox's loading line or error unmount the box as the move to another row does, and the box drawn on return is the one that row draws, at the same thread's send name.",
   10: "10. The box answers its thread's root message and is drawn only while the read holds it (`root === undefined` draws none), so a read without the root leaves no message to answer, and a read that holds it again draws the box at the same thread, as the move to another row and back does.",
   11: "11. Below the reading column's width, a phone's included, the Inbox draws no column: each thread row is a card that draws its thread's own box (`ThreadRowCard`, `renderRow`'s `paneShown`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed. What ends a card's box is (9)'s: leaving the page, closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `MessageThreadBody`'s as the rows above. The layout's other branches in `Inbox` and `usePaneSelection` pick, focus and scroll the column's row and draw the list beside the column, and move no box; the app shell's forms are the sign-in file's.",
+  12: "12. A root message its author deleted takes no reply (`409 POST_DELETED`), so no box is drawn under it, as the margin's card draws no reply composer under a deleted root, and the box leaves the page as a read without the root takes it (10): a reply the reader kept for the thread - typed in the box, or a send refused or stopped - is drawn itself in its place, saying the message was deleted, with Discard my draft and no Send (`KeptReplyToDeleted`), as `ThreadBody.test.tsx`'s \"a comment thread whose root is deleted draws no box, and keeps the reply typed there\" holds it for a comment thread's box.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -60,6 +61,10 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | !(root === undefined) ? …",
     { reason: REASONS[10] }
+  ),
+  ...answers(
+    "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | !(postDeletion(root) !== null) ? …",
+    { reason: REASONS[12] }
   ),
   ...answers(
     "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | early return | if (messages.isPending) return …",

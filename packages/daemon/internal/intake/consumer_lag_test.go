@@ -330,24 +330,53 @@ func publishStored(t *testing.T, js jetstream.JetStream, stream jetstream.Stream
 
 // awaitWaiting waits until the server counts n messages waiting for the consumer named name, read
 // as Lag reads it: NumPending and NumAckPending of the consumer's CONSUMER.INFO. A publish's ack
-// says the stream stored the message, and the consumer's count is the server's own computed state,
-// which it brings up to date after that ack (drain_test.go's wait for its backlog says the same),
-// so a Lag read the moment the publish returns can find nothing waiting yet. A count past n is a
-// message from outside the row, and fails at once.
+// says the stream stored the message, and the server counts it for each consumer only afterwards,
+// in a goroutine of its own (drain_test.go's wait for its backlog says how), so a Lag read the
+// moment the publish returns can find nothing waiting yet: merge-group run 44087318326 and run
+// 45387283087 read the wake consumer Waiting 0. The wait, and each read in it, is bounded by the
+// row's hang guard alone (testwait.Remaining), never by a span of its own; its failure names the
+// last count read. A count past n is a message from outside the row, and fails at once, and so
+// does a read that fails. internal/daemon's nats_permissions_test.go holds a copy of it, which
+// that package's tests need and cannot import: keep the two in step.
 func awaitWaiting(t *testing.T, stream jetstream.Stream, name string, n uint64) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the server to count %d message(s) waiting for %s", n, name), func() (uint64, bool) {
-		consumer, err := stream.Consumer(context.Background(), name)
+	requests, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	consumer, err := stream.Consumer(requests, name)
+	if err != nil {
+		t.Fatalf("read the %s consumer: %v", name, err)
+	}
+	var waiting uint64
+	if testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
+		count, err := ConsumerWaiting(requests, consumer)
 		if err != nil {
-			t.Fatalf("read the %s consumer's info: %v", name, err)
+			t.Fatal(err)
 		}
-		info := consumer.CachedInfo()
-		waiting := info.NumPending + uint64(info.NumAckPending)
-		if waiting > n {
+		if waiting = count; waiting > n {
 			t.Fatalf("the server counts %d messages waiting for %s, more than the %d the row published", waiting, name, n)
 		}
-		return waiting, waiting == n
-	})
+		return waiting == n
+	}) {
+		return
+	}
+	t.Fatalf("the server counts %d message(s) waiting for %s at the row's hang guard, want %d", waiting, name, n)
+}
+
+// ConsumerWaiting is consumer's waiting messages, counted as Lag counts them (ConsumerLag's
+// Waiting: JetStream's NumPending plus NumAckPending), from one CONSUMER.INFO that requests
+// bounds; the row bounds it by its own deadline. Lag's own read bounds that request by
+// consumerLagBound, two seconds, and its oldest-message read by consumerOldestBound, one second.
+// Those bounds stay in the daemon: they keep its state route from waiting on a NATS server that
+// does not answer, which is that route's contract and not a row's subject; read through them, a
+// NATS server the machine held 2.1 s failed the drain row. It is the one count of this package's
+// tests: awaitWaiting's, and the drain row's (drain_test.go, of package intake_test, which is why
+// it is exported).
+func ConsumerWaiting(requests context.Context, consumer jetstream.Consumer) (uint64, error) {
+	info, err := consumer.Info(requests)
+	if err != nil {
+		return 0, fmt.Errorf("read the %s consumer's info: %w", consumer.CachedInfo().Name, err)
+	}
+	return info.NumPending + uint64(info.NumAckPending), nil
 }
 
 func lagNames(lags []ConsumerLag) []string {

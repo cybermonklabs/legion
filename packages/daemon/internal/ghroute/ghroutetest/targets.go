@@ -223,6 +223,7 @@ var FailsClosedCalls = []TargetCall{
 	// A URL is one in any case, as gh parses it.
 	{Argv: []string{"pr", "view", "HTTPS://GITHUB.COM/sjawhar/legion/pull/1"}, Owner: "sjawhar"},
 	{Argv: []string{"api", "HTTPS://API.GITHUB.COM/repos/sjawhar/legion"}, Owner: "sjawhar"},
+	{Argv: []string{"api", "HTTPS://UPLOADS.GITHUB.COM/repos/sjawhar/legion/releases/1/assets?name=x"}, Owner: "sjawhar"},
 	{Argv: []string{"api", "REPOS/sjawhar/legion"}, Owner: "sjawhar"},
 	// A command naming no repository, and GH_REPO where the leaf reads it.
 	{Argv: []string{"pr", "list"}},
@@ -268,13 +269,25 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"api", "repositories/12345"}, Err: "by its id"},
 	{Argv: []string{"api", "https://ghe.example.com/api/v3/repos/acme/w"}, Err: "another host"},
 	{Argv: []string{"api", "--hostname", "ghe.example.com", "repos/acme/w"}, Err: "another host"},
-	// An absolute endpoint is GitHub's own https://api.github.com/… or nothing: gh sends the
-	// bundle's token to whatever host and scheme it names, so an http:// one hands the token
-	// over in the clear, GitHub's 301 to https coming only after it has it.
+	// An absolute endpoint is GitHub's own https://api.github.com/… or https://uploads.github.com/…
+	// or nothing: gh sends the bundle's token to whatever host and scheme it names, so an http://
+	// one hands the token over in the clear, GitHub's 301 to https coming only after it has it.
 	{Argv: []string{"api", "http://api.github.com/repos/acme/w"}, Err: "is not https"},
 	{Argv: []string{"api", "HTTP://API.GITHUB.COM/repos/acme/w"}, Err: "is not https"},
 	{Argv: []string{"api", "ftp://api.github.com/repos/acme/w"}, Err: "is not https"},
 	{Argv: []string{"api", "-X", "POST", "http://api.github.com/repos/acme/w/issues/1/comments"}, Err: "is not https"},
+	// gh api's whole URL is placed only over https and on api.github.com or uploads.github.com,
+	// spelled in ASCII: another GitHub host, http, and `ſ` (U+017F), which strings.EqualFold
+	// folds onto `s`, are refused.
+	{Argv: []string{"api", "https://github.com/repos/acme/widgets"}, Err: "another host"},
+	{Argv: []string{"api", "https://gist.github.com/repos/acme/widgets"}, Err: "another host"},
+	{Argv: []string{"api", "https://upload\u017f.github.com/repos/acme/widgets/releases/1/assets?name=x"}, Err: "names another host than api.github.com or uploads.github.com"},
+	{Argv: []string{"api", "http://uploads.github.com/repos/acme/widgets/releases/1/assets?name=x"}, Err: "is not https"},
+	// A host is compared in ASCII alone: `İ` (U+0130), which strings.ToLower lowers to `i`,
+	// makes no github.com of `gİthub.com`, in -R, a URL argument or --hostname.
+	{Argv: []string{"pr", "view", "1", "-R", "g\u0130thub.com/acme/widgets"}, Err: "names another host than github.com"},
+	{Argv: []string{"pr", "view", "https://g\u0130thub.com/acme/widgets/pull/1"}, Err: "names another host than github.com"},
+	{Argv: []string{"api", "--hostname", "g\u0130thub.com", "repos/acme/w"}, Err: "names another host than github.com"},
 	{Argv: []string{"api", "https://api.github.com/repos/Acme/w"}, Owner: "acme"},
 	{Argv: []string{"api", "repos/../x/y"}, Err: `"..", which is no GitHub login`},
 	{Argv: []string{"pr", "list"}, Env: map[string]string{"GH_REPO": "../x/y"}, Err: `names another host`},
@@ -304,6 +317,7 @@ var OneRepositoryCalls = []TargetCall{
 	{Argv: []string{"search", "issues", "repo:sjawhar/legion", "is:open"}, Owner: "sjawhar", Repo: "legion"},
 	{Argv: []string{"api", "repos/sjawhar/legion/pulls/1/files"}, Owner: "sjawhar", Repo: "legion"},
 	{Argv: []string{"api", "REPOS/sjawhar/Legion"}, Owner: "sjawhar", Repo: "legion"},
+	{Argv: []string{"api", "https://uploads.github.com/repos/acme/widgets/releases/1/assets?name=x"}, Owner: "acme", Repo: "widgets"},
 	{Argv: []string{"api", "search/issues?q=repo:sjawhar/legion+is:open"}, Owner: "sjawhar", Repo: "legion"},
 	{Argv: []string{"pr", "list"}, Env: map[string]string{"GH_REPO": "sjawhar/Legion"}, Owner: "sjawhar", Repo: "legion"},
 	{Argv: []string{"api", "repos/{owner}/{repo}/pulls"}, Env: map[string]string{"GH_REPO": "sjawhar/legion"}, Owner: "sjawhar", Repo: "legion"},
