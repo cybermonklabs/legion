@@ -308,7 +308,7 @@ func (f *fakeSource) handler() http.Handler {
 		for _, name := range names {
 			fmt.Fprintf(digest, "%s\x00%s\x00", name, repo.files[name])
 			entries = append(entries, map[string]any{
-				"path": name, "mode": "100644", "type": "blob", "sha": "blob-" + name, "size": len(repo.files[name]),
+				"path": name, "mode": "100644", "type": "blob", "sha": blobSHA(name), "size": len(repo.files[name]),
 			})
 		}
 		if err := json.NewEncoder(w).Encode(map[string]any{
@@ -329,7 +329,12 @@ func (f *fakeSource) handler() http.Handler {
 			writeStatus(w, repo.blobStatus)
 			return
 		}
-		content, ok := repo.files[strings.TrimPrefix(r.PathValue("sha"), "blob-")]
+		content, ok := "", false
+		for name, file := range repo.files {
+			if blobSHA(name) == r.PathValue("sha") {
+				content, ok = file, true
+			}
+		}
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -342,6 +347,11 @@ func (f *fakeSource) handler() http.Handler {
 	})
 	return mux
 }
+
+// blobSHA is the SHA a fake GitHub of these tests names key's blob by in its trees and reads it
+// back by: forty lowercase hex digits, as GitHub's own blob SHAs are, which githubapp's blob read
+// refuses any other value than.
+func blobSHA(key string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(key)))[:40] }
 
 // writeStatus answers status with GitHub's JSON error body for it.
 func writeStatus(w http.ResponseWriter, status int) {
@@ -2112,7 +2122,7 @@ func (b *movingBranch) handler() http.Handler {
 		for _, name := range names {
 			fmt.Fprintf(digest, "%s\x00%s\x00", name, files[name])
 			entries = append(entries, map[string]any{
-				"path": name, "mode": "100644", "type": "blob", "sha": commit + "." + name, "size": len(files[name]),
+				"path": name, "mode": "100644", "type": "blob", "sha": blobSHA(commit + "." + name), "size": len(files[name]),
 			})
 		}
 		if err := json.NewEncoder(w).Encode(map[string]any{
@@ -2122,10 +2132,16 @@ func (b *movingBranch) handler() http.Handler {
 		}
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/git/blobs/{sha}", func(w http.ResponseWriter, r *http.Request) {
-		commit, name, _ := strings.Cut(r.PathValue("sha"), ".")
+		commit, content, ok := "", "", false
 		b.mu.Lock()
-		content, ok := b.commits[commit][name]
-		hold := commit == b.holdBlobsOf
+		for at, files := range b.commits {
+			for name, file := range files {
+				if blobSHA(at+"."+name) == r.PathValue("sha") {
+					commit, content, ok = at, file, true
+				}
+			}
+		}
+		hold := ok && commit == b.holdBlobsOf
 		b.mu.Unlock()
 		if hold {
 			b.wait(r)

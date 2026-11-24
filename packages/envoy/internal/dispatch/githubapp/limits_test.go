@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
@@ -358,7 +359,7 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 	answeredAt200 := func(body, wording string) func(*limitGitHub, error) string {
 		return func(fake *limitGitHub, err error) string {
 			limited, ok := AsRateLimit(err)
-			if !ok || limited.Held || limited.Status != http.StatusOK || limited.Body != "" || limited.wording != wording ||
+			if !ok || limited.Held || limited.Status != http.StatusOK || !limited.Body.IsEmpty() || limited.wording != wording ||
 				err.Error() != fmt.Sprintf("rate-limited by GitHub (status 200), next request in %s: %s", limited.Wait, wording) {
 				return fmt.Sprintf("(want GitHub's own 200 as a limit carrying GitHub's wording %q of it in place of its body %s, got %v)", wording, body, err)
 			}
@@ -540,7 +541,7 @@ func TestALimitNotedAt200NeverCarriesTheQuerysData(t *testing.T) {
 			if row.status/100 == 2 {
 				body, wording = "", row.wording
 			}
-			if limited == nil || limited.Status != row.status || limited.Body != body || limited.wording != wording {
+			if limited == nil || limited.Status != row.status || !limited.Body.Equal(body) || limited.wording != wording {
 				t.Fatalf("GraphQLRateLimit read %v, want a limit at %d whose Body is %q and whose wording is %q", limited, row.status, body, wording)
 			}
 			want := fmt.Sprintf("POST %s: rate-limited by GitHub (status %d), next request in %s", target, row.status, limited.Wait)
@@ -577,7 +578,7 @@ func TestARateLimitErrorAt2xxPrintsNoBodyWhoeverBuildsIt(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(strconv.Itoa(row.status), func(t *testing.T) {
-			limited := &RateLimitError{Status: row.status, Wait: time.Minute, Body: row.body}
+			limited := &RateLimitError{Status: row.status, Wait: time.Minute, Body: redact.NewRemoteText(row.body)}
 			want := fmt.Sprintf("rate-limited by GitHub (status %d), next request in 1m0s", row.status)
 			if row.detail != "" {
 				want += ": " + row.detail

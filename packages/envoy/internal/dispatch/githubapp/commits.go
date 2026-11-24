@@ -13,7 +13,6 @@ package githubapp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -24,16 +23,17 @@ import (
 )
 
 // readRepositoryJSON performs one GET of path (an API path under the API origin) with an
-// installation token, through Client.Read, and answers the body of a read of repoFull whose
+// installation token, as Client.Read does, and answers the body of a read of repoFull whose
 // answer is JSON, classified by CheckRepositoryResponse: a status the caller names in handled
 // comes back as its own status for the caller to read, any other failure as the error that rule
-// names.
-func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull string, handled ...int) (redact.Answer, int, error) {
-	body, status, header, err := c.Read(ctx, token, path)
+// names. printed is the request's target as its errors and notes name it, before ShownBody's cut
+// (readAt).
+func (c *Client) readRepositoryJSON(ctx context.Context, token, path, printed, repoFull string, handled ...int) (redact.Answer, int, error) {
+	body, status, header, err := c.readAt(ctx, token, path, printed, "", responseLimit)
 	if err != nil {
 		return redact.Answer{}, status, err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, handled...); err != nil {
+	if err := CheckRepositoryResponse(status, header, body, repoFull, printed, handled...); err != nil {
 		return redact.Answer{}, status, err
 	}
 	return body, status, nil
@@ -77,7 +77,9 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 // installation may not read this resource, or cannot see the repository at all — which the
 // results read takes as unknown, never as a commit it placed elsewhere. A rate limit behind
 // either status is the *RateLimitError instead. Any other status is the error CheckResponse
-// makes, named by the target as ShownBody shows it. repoFull is the `owner/repo` the error names.
+// makes, named by target as ShownBody shows it: the request's target where it holds no text
+// GitHub answered, and the rule's reading of that text where it does (CommitOnBranch). repoFull
+// is the `owner/repo` the error names.
 func CheckRepositoryResponse(status int, header http.Header, body redact.Answer, repoFull, target string, handled ...int) error {
 	if status == http.StatusOK || slices.Contains(handled, status) {
 		return nil
@@ -104,15 +106,25 @@ func CheckRepositoryResponse(status int, header http.Header, body redact.Answer,
 // default branch and as "not on it" about an after-merge check's base branch, which GitHub no
 // longer holding is the usual reason for; a 404 is also GitHub's answer for a commit the
 // repository does not have, which is likewise no proof that the branch lacks it.
+//
+// A sha that is not a SHA is ErrNotASHA, before any request (notASHA). branch can be GitHub's
+// text, the default_branch DefaultBranch answers as it came, so every error and note of the read
+// names the branch as the rule reads it, unescaped, never as the target holds it: the rule reads
+// a branch's `/` as text, where it would refuse the path-escaped %2F and the whole target with it.
 func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo, branch, sha string) (bool, error) {
 	if c == nil {
 		return false, ErrNoAppKey
 	}
+	if err := notASHA("read the comparison of "+owner+"/"+repo, "commit", sha); err != nil {
+		return false, err
+	}
+	shown := redact.Field(branch)
 	// The three dots are the comparison's own syntax and travel unescaped; each side is escaped
 	// on its own so a `/` in a branch name travels as %2F.
 	path := repoPath(owner, repo) +
 		"/compare/" + url.PathEscape(branch) + "..." + url.PathEscape(sha) + "?per_page=1"
-	body, _, err := c.readRepositoryJSON(ctx, token, path, owner+"/"+repo)
+	printed := c.base + repoPath(owner, repo) + "/compare/" + shown + "..." + sha + "?per_page=1"
+	body, _, err := c.readRepositoryJSON(ctx, token, path, printed, owner+"/"+repo)
 	if err != nil {
 		return false, err
 	}
@@ -120,7 +132,7 @@ func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo, branch,
 		Status string `json:"status"`
 	}
 	if err := body.Decode(&comparison); err != nil {
-		return false, fmt.Errorf("decode the comparison of %s/%s %s...%s: %w", owner, repo, branch, sha, ShownErr(err))
+		return false, fmt.Errorf("decode the comparison of %s/%s %s...%s: %w", owner, repo, shown, sha, ShownErr(err))
 	}
 	return comparison.Status == "behind" || comparison.Status == "identical", nil
 }
@@ -155,8 +167,11 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 	if c == nil {
 		return false, ErrNoAppKey
 	}
+	if err := notASHA("read the commit of "+owner+"/"+repo, "commit", sha); err != nil {
+		return false, err
+	}
 	target := c.base + repoPath(owner, repo) + "/commits/" + url.PathEscape(sha)
-	body, status, header, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeSHA, "", nil, responseLimit)
+	body, status, header, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, ShownBody(target), "Bearer "+token, mediaTypeSHA, "", nil, responseLimit)
 	if err != nil {
 		return false, err
 	}
@@ -167,6 +182,18 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 		return false, err
 	}
 	return true, nil
+}
+
+// notASHA is nil where sha is a commit's SHA, as redact.ShapedSHA prints it as it came, and
+// otherwise ErrNotASHA naming read, the read that takes sha, and sha by ShapedSHA's phrase for
+// field alone: the refusal each read that takes a SHA makes before it builds a target. ShapedSHA's
+// phrase, given as sha, passes as it came: it is text of this package's, and holds nothing of
+// anyone's.
+func notASHA(read, field, sha string) error {
+	if shown := redact.ShapedSHA(field, sha); shown != sha {
+		return fmt.Errorf("%s: %s: %w", read, shown, ErrNotASHA)
+	}
+	return nil
 }
 
 // noCommitForSHA reports whether a body is the one GitHub sends for a commit a readable
@@ -191,18 +218,6 @@ func answerMessage(body redact.Answer) redact.RemoteText {
 	return answer.Message
 }
 
-// responseMessage is the `message` of text, a refusal's body as the rule printed it
-// (RateLimitError.Body), and "" for text that is not JSON or names none.
-func responseMessage(text []byte) string {
-	var answer struct {
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(text, &answer) != nil {
-		return ""
-	}
-	return answer.Message
-}
-
 // DefaultBranch is the name of the repository's default branch (`GET /repos/{owner}/{repo}`,
 // `default_branch` alone), the branch a default-branch result's commit must be on, and one of
 // the two an after-merge result's commit may be on (the other is the base branch its issue's pull
@@ -212,7 +227,7 @@ func (c *Client) DefaultBranch(ctx context.Context, token, owner, repo string) (
 		return "", ErrNoAppKey
 	}
 	path := repoPath(owner, repo)
-	body, _, err := c.readRepositoryJSON(ctx, token, path, owner+"/"+repo)
+	body, _, err := c.readRepositoryJSON(ctx, token, path, c.base+path, owner+"/"+repo)
 	if err != nil {
 		return "", err
 	}
@@ -263,6 +278,9 @@ func (c *Client) CommitCheckRuns(ctx context.Context, token, owner, repo, sha st
 		return ObjectPage{}, ErrNoAppKey
 	}
 	repoFull := owner + "/" + repo
+	if err := notASHA("read the check runs of "+repoFull, "head", sha); err != nil {
+		return ObjectPage{}, err
+	}
 	path := repoPath(owner, repo) + "/commits/" + url.PathEscape(sha) +
 		"/check-runs?filter=all&per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
 	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body redact.Answer) ([]map[string]any, error) {
@@ -283,6 +301,9 @@ func (c *Client) CommitCheckSuites(ctx context.Context, token, owner, repo, sha 
 		return ObjectPage{}, ErrNoAppKey
 	}
 	repoFull := owner + "/" + repo
+	if err := notASHA("read the check suites of "+repoFull, "head", sha); err != nil {
+		return ObjectPage{}, err
+	}
 	path := repoPath(owner, repo) + "/commits/" + url.PathEscape(sha) +
 		"/check-suites?per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
 	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body redact.Answer) ([]map[string]any, error) {
@@ -308,6 +329,9 @@ func (c *Client) CommitStatuses(ctx context.Context, token, owner, repo, sha str
 		return ObjectPage{}, ErrNoAppKey
 	}
 	repoFull := owner + "/" + repo
+	if err := notASHA("read the statuses of "+repoFull, "head", sha); err != nil {
+		return ObjectPage{}, err
+	}
 	path := repoPath(owner, repo) + "/commits/" + url.PathEscape(sha) +
 		"/status?per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
 	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body redact.Answer) ([]map[string]any, error) {

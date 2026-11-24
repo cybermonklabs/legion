@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // shownMost is the longest text ShownBody makes: shownBodyRunes runes of at most utf8.UTFMax bytes
@@ -471,11 +472,12 @@ func TestATypeErrorOfALongNumberIsCutToTheBound(t *testing.T) {
 	}
 }
 
-// Every error blob answers shows the blob's sha, its path and the target that holds the sha as
-// ShownBody shows them, since sha and path come from GitHub's tree answer: a status other than 200
-// for a sha past the bound, an encoding other than base64 for a path past the bound, and a listed
-// size past notes.MaxFileSize for a path past the bound (notes.CheckSize, which DirFiles asks
-// before any blob read).
+// Every error blob answers shows the blob's path as shownPath prints it, the rule's reading cut as
+// ShownBody cuts it, since the path comes from GitHub's tree answer, and refuses a sha from that
+// answer that is not a SHA before it builds the blob's target: a sha past the bound, named by
+// redact.ShapedSHA's phrase alone, an encoding other than base64 for a path past the bound, and a
+// listed size past notes.MaxFileSize for a path past the bound (notes.CheckSize, which DirFiles
+// asks before any blob read).
 func TestABlobErrorShowsTheTreesShaAndPathToABound(t *testing.T) {
 	long := strings.Repeat("a", 2*shownBodyRunes)
 	for _, row := range []struct {
@@ -488,20 +490,20 @@ func TestABlobErrorShowsTheTreesShaAndPathToABound(t *testing.T) {
 		// is is an error the answer must still reach, nil for none.
 		is error
 	}{{
-		name:   "a status other than 200 for a sha past the bound",
-		sha:    long,
-		path:   "docs/a.md",
-		size:   1,
-		status: http.StatusInternalServerError,
-		want:   "GET {target} (docs/a.md): status 500",
+		name: "a sha past the bound, which is no SHA",
+		sha:  long,
+		path: "docs/a.md",
+		size: 1,
+		want: "read the blob of docs/a.md: (the blob is not a SHA): " + ErrNotASHA.Error(),
+		is:   ErrNotASHA,
 	}, {
 		name:   "an encoding other than base64 for a path past the bound",
-		sha:    "b1",
+		sha:    mainCommit,
 		path:   "docs/" + long + ".md",
 		size:   1,
 		status: http.StatusOK,
 		answer: `{"content":"","encoding":"utf-8"}`,
-		want:   "blob b1 (" + ShownBody("docs/"+long+".md") + ") is in an encoding that is not base64",
+		want:   "blob " + mainCommit + " (" + ShownBody("docs/"+long+".md") + ") is in an encoding that is not base64",
 	}, {
 		name: "a listed size past the notes bound for a path past the bound",
 		sha:  "b1",
@@ -541,11 +543,13 @@ func TestABlobErrorShowsTheTreesShaAndPathToABound(t *testing.T) {
 
 // A status error names its request's target, and a target holds names Dispatch keeps and text
 // GitHub gave. So each status error that a githubapp caller words itself names the target as
-// ShownBody shows it: whole within the bound, and past it the first 512 runes and the target's
-// size, never the target whole. Each row's request is answered 500:
+// ShownBody shows it, after the rule has read it where it holds GitHub's text (answeredTarget):
+// whole within the bound, and past it the first 512 runes and the target's size, never the target
+// whole. Each row's request is answered 500:
 //
 //   - The deliveries listing's next page. The first page answers 200 with a Link header that
-//     names a next page link on the API origin of about 1,500 bytes, under nextLinkMaxBytes.
+//     names a next page link on the API origin of about 1,500 bytes, under nextLinkMaxBytes,
+//     whose path is long, so the rule's reading of it, which keeps a path, is past the bound too.
 //   - A Branch read of a name of 60 characters of three bytes, each byte path-escaped as %XX, so
 //     its target passes 512 runes (review of cybermonklabs/legion#4373 at e185c085).
 func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
@@ -558,12 +562,15 @@ func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 		first string
 		// target is the failed request's target after the client's base.
 		target string
+		// answered is whether the target is text GitHub answered, which prints as the rule reads it.
+		answered bool
 		// read is the client's read that fails.
 		read func(*Client) error
 	}{{
-		name:   "the deliveries listing's next page",
-		first:  "/app/hook/deliveries?per_page=100",
-		target: "/app/hook/deliveries?per_page=100&cursor=" + strings.Repeat("c", 1_450),
+		name:     "the deliveries listing's next page",
+		first:    "/app/hook/deliveries?per_page=100",
+		target:   "/app/hook/deliveries/" + strings.Repeat("c", 1_450) + "?per_page=100",
+		answered: true,
 		read: func(client *Client) error {
 			_, err := client.Deliveries(context.Background(), time.Time{}, nil)
 			return err
@@ -590,11 +597,14 @@ func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 				}
 			})
 			whole := client.base + row.target
-			shown := ShownBody(whole)
-			if shown == whole || len(whole) > nextLinkMaxBytes {
+			printed := whole
+			if row.answered {
+				printed = redact.Field(whole)
+			}
+			shown := ShownBody(printed)
+			if shown == printed || len(whole) > nextLinkMaxBytes {
 				t.Fatalf("the target is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(whole), nextLinkMaxBytes)
 			}
-
 			err := row.read(client)
 			if err == nil {
 				t.Fatal("a read GitHub answered 500 answered no error")
@@ -611,25 +621,26 @@ func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 }
 
 // nextLink refuses a next page link that leaves the API origin, and one that url.Parse cannot
-// parse. A link is GitHub's text, so each refusal names the link as ShownBody shows it, never
-// whole. url.Parse's *url.Error quotes the link again, so the refusal holds that error as
-// ShownErr shows it, whose URL is the link as ShownBody shows it. Each link is about 1,500 bytes,
-// under nextLinkMaxBytes and past 512 runes. The link that url.Parse cannot parse holds a control
-// byte (DEL), which %q writes as \x7f. Each refusal is no longer than shownErrMost: two texts as
-// ShownBody shows them, and 256 bytes of words.
+// parse. A link is GitHub's text, so each refusal names the link as answeredTarget prints it, the
+// rule's reading as ShownBody shows it, never whole. url.Parse's *url.Error quotes the link again,
+// so the refusal holds a copy of that error whose URL is the link printed so too. The link that
+// leaves the origin is about 1,500 bytes, under nextLinkMaxBytes and past 512 runes, and its long
+// path, which the rule keeps, is cut. The link that url.Parse cannot parse holds a control byte
+// (DEL), so the rule cannot read it and it prints as redact.WordsNotReadable. Each refusal is no
+// longer than shownErrMost: two texts as ShownBody shows them, and 256 bytes of words.
 func TestANextLinkRefusalShowsTheLinkToABound(t *testing.T) {
 	const base = "https://api.github.com"
 	cursor := strings.Repeat("v", 1_450)
 	for _, row := range []struct {
 		name, link string
-		// want is the refusal's text. {link} stands for the link as ShownBody shows it, quoted
-		// with %q.
+		// want is the refusal's text. {link} stands for the link as answeredTarget prints it,
+		// quoted with %q.
 		want string
 		// parse is whether the refusal reaches url.Parse's *url.Error.
 		parse bool
 	}{{
 		name: "a link that leaves the API origin",
-		link: "https://collector.example/app/hook/deliveries?per_page=100&cursor=" + cursor,
+		link: "https://collector.example/app/hook/deliveries/" + cursor + "?per_page=100",
 		want: "next page link {link} leaves the API origin " + base,
 	}, {
 		name:  "a link that url.Parse cannot parse",
@@ -638,12 +649,12 @@ func TestANextLinkRefusalShowsTheLinkToABound(t *testing.T) {
 		parse: true,
 	}} {
 		t.Run(strings.ReplaceAll(row.name, " ", "_"), func(t *testing.T) {
-			shown := ShownBody(row.link)
+			shown := ShownBody(redact.Field(row.link))
 			if shown == row.link || len(row.link) > nextLinkMaxBytes {
 				t.Fatalf("the link is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(row.link), nextLinkMaxBytes)
 			}
 
-			next, err := nextLink("<"+row.link+`>; rel="next"`, base)
+			next, _, err := nextLink("<"+row.link+`>; rel="next"`, base)
 			if err == nil {
 				t.Fatalf("the %d-byte link was followed (%d bytes); want a refusal", len(row.link), len(next))
 			}
