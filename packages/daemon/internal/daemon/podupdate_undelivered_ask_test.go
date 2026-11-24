@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -364,18 +363,11 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 	gone := supervise.RuntimeObservation{Observation: runtime.Observation{
 		Locator: *rig.claimOf(claim.RoleImplementer).Locator, Kind: runtime.Gone, Detail: "the process ended",
 	}}
-	// The relaunch runs beside the test on a hold mark of its own (store.ForConcurrentWorker), as
-	// every goroutine that reaches the pool beside others does. The mark is one flag: on the rig's
-	// own, once the release below lets the Resume go on, the relaunch's reads for the round inside
-	// it (the claims, a project pause's pod holds) and its write of the claim after it mark the
-	// test as holding a connection, and the test's read of the outbox in that moment (runAsk) is
-	// refused as a second one (CI job 138452344255).
-	go func() { _ = m.Handle(store.ForConcurrentWorker(rig.ctx), gone) }()
+	go func() { _ = m.Handle(rig.worker(), gone) }()
 	testwait.Receive(t, "the relaunch to reach its Resume", inside)
 
 	ran := make(chan error, 1)
-	// The row runs beside the relaunch, so it takes a mark of its own too.
-	go func() { ran <- rig.lane.execute(store.ForConcurrentWorker(rig.ctx), row) }()
+	go func() { ran <- rig.lane.execute(rig.worker(), row) }()
 	err := testwait.Receive(t, "the ask's answer while its claim's machine is inside a Resume; a row that waits on the lock gives none", ran)
 	if !errors.Is(err, wait.ErrWaiting) {
 		t.Fatalf("the ask over a held claim = %v, want a wait that keeps the row", err)

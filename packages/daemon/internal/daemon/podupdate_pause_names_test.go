@@ -48,7 +48,7 @@ func (r *podUpdateRig) heldStartUntilHeld(role claim.Role, reached <-chan struct
 	m, _ := r.sup.Machine(r.tokens[role])
 	start := r.heldStartRequest(role)
 	go func() {
-		_ = m.Handle(store.ForConcurrentWorker(r.ctx), start)
+		_ = m.Handle(r.worker(), start)
 	}()
 	testwait.Receive(r.t, fmt.Sprintf("the %s's launch to reach the runtime", role), reached)
 }

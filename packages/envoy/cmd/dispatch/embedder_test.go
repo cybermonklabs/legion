@@ -75,6 +75,7 @@ func azureEmbedderFor(t *testing.T, overrides map[string]string) embed.Embedder 
 // Meaning search's place is checked whole at boot: each shape newEmbedder could not build, or a
 // setting it would silently ignore, refuses, naming the setting and never the key.
 func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "missing")
 	blank := writeFile(t, "blank-key", " \n")
 	endpoint := func(value string) map[string]string {
@@ -179,6 +180,8 @@ func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
 // A deployment that sets nothing new boots Bedrock exactly as before: with no AWS region, meaning
 // search is off with the warning it always logged, never a refusal; with one, the Bedrock client.
 func TestNewEmbedderBuildsBedrockWhenNothingNewIsSet(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it sets
+	// environment variables for the whole process.
 	boot := resolveWith(t, nil)
 	if boot.Embedder != (embedderConfig{Place: embed.PlaceBedrock}) {
 		t.Fatalf("Embedder = %+v, want Bedrock and nothing else", boot.Embedder)
@@ -216,6 +219,7 @@ func TestNewEmbedderBuildsBedrockWhenNothingNewIsSet(t *testing.T) {
 // Either Azure credential builds the Azure client, named by the endpoint's host and the
 // deployment, and logs one line naming the place and the identity, never the key.
 func TestNewEmbedderBuildsAzureFromEitherCredential(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	for credential, env := range map[string]map[string]string{
 		"key":     azureEmbedEnvironment(nil),
 		"keyless": azureEmbedEnvironment(azureKeyless),
@@ -248,6 +252,7 @@ func TestNewEmbedderBuildsAzureFromEitherCredential(t *testing.T) {
 // search with vectors that mean nothing and never know: it is read only by a local harness,
 // which is what DISPATCH_DEV_SIGNIN=1 marks, and it reads no setting of a model service.
 func TestTheDevEmbedderNeedsDevSignIn(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	refusedWith(t, map[string]string{"DISPATCH_DEV_EMBEDDER": "1"},
 		"DISPATCH_DEV_EMBEDDER is read only with DISPATCH_DEV_SIGNIN=1")
 	refusedWith(t, map[string]string{"DISPATCH_DEV_EMBEDDER": "yes"},
