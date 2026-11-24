@@ -3798,6 +3798,30 @@
         "base": "02891325d2312c7c9c3cb759f8627548268833a1",
         "files": ["packages/daemon/internal/repocache/entry_info_test.go"],
         "capture": "repocache.entry-info/ref"
+      },
+      {
+        "row": "sandbox-redirect-authorization-other-port",
+        "base": "76b1a57f7dac0938ac8274d52ff557344c94447e",
+        "files": ["packages/daemon/internal/runtime/sandbox/clients_redirect_test.go"],
+        "capture": "sandbox.redirect-authorization/other-port"
+      },
+      {
+        "row": "sandbox-redirect-authorization-other-host",
+        "base": "76b1a57f7dac0938ac8274d52ff557344c94447e",
+        "files": ["packages/daemon/internal/runtime/sandbox/clients_redirect_test.go"],
+        "capture": "sandbox.redirect-authorization/other-host"
+      },
+      {
+        "row": "sandbox-redirect-authorization-other-scheme",
+        "base": "76b1a57f7dac0938ac8274d52ff557344c94447e",
+        "files": ["packages/daemon/internal/runtime/sandbox/clients_redirect_test.go"],
+        "capture": "sandbox.redirect-authorization/other-scheme"
+      },
+      {
+        "row": "daemon-kubeconfig-redirect-authorization",
+        "base": "76b1a57f7dac0938ac8274d52ff557344c94447e",
+        "files": ["packages/daemon/internal/daemon/kubeconfig_redirect_test.go"],
+        "capture": "daemon.kube-redirect-authorization/kubeconfig"
       }
     ],
     "boundary_fields": {
@@ -13957,6 +13981,125 @@
         "preimage": "os.Open(path); err != nil {\n\t\t\t\treturn unpathed(err)",
         "replacement": "os.Open(path); err != nil {\n\t\t\t\treturn err"
       }
+    },
+    {
+      "id": "sandbox-redirect-authorization-other-port",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheRuntimesClientsSendTheirBearerToTheAPIServersOriginAlone/other-port",
+      "production": "sandbox requestConfig: every client the runtime makes of the daemon's cluster configuration (its request and informer sets, CheckInstalled, CensusLegacyIssueSandboxes) carries keepAuthorizationOnOrigin, the innermost round tripper of client-go's chain, which sends a request without its Authorization where its scheme, host or port is not the API server's, so a 307 from the API server's address to the same host name at another port, which net/http copies the bearer onto, is followed and sent no bearer",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.requestConfig",
+      "capture": "sandbox.redirect-authorization/other-port",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/clients.go",
+        "preimage": "requests.WrapTransport = transport.Wrappers(keepAuthorizationOnOrigin(requests), requests.WrapTransport)",
+        "replacement": "requests.WrapTransport = transport.Wrappers(requests.WrapTransport)"
+      }
+    },
+    {
+      "id": "sandbox-redirect-authorization-other-port-hostname",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheRuntimesClientsSendTheirBearerToTheAPIServersOriginAlone/other-port",
+      "production": "sandbox originAuthorization: a request keeps its Authorization only on the API server's own origin, its host compared with its port (URL.Host), so a 307 to the same host name at another port is followed and sent no bearer",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.originAuthorization).RoundTrip",
+      "capture": "sandbox.redirect-authorization/other-port",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/clients.go",
+        "preimage": "!strings.EqualFold(req.URL.Host, o.origin.Host)",
+        "replacement": "!strings.EqualFold(req.URL.Hostname(), o.origin.Hostname())"
+      }
+    },
+    {
+      "id": "sandbox-redirect-authorization-other-host",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheRuntimesClientsSendTheirBearerToTheAPIServersOriginAlone/other-host",
+      "production": "sandbox originAuthorization: a request off the API server's origin is sent on as a copy without its Authorization, so a 307 to another host name of the API server's address, on which net/http drops the Authorization and client-go's bearer round tripper sets it again, is followed and sent no bearer",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.originAuthorization).RoundTrip",
+      "capture": "sandbox.redirect-authorization/other-host",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/clients.go",
+        "preimage": "req.Header.Del(\"Authorization\")",
+        "replacement": "_ = req.Header"
+      }
+    },
+    {
+      "id": "sandbox-redirect-authorization-other-scheme",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheRuntimesClientsSendTheirBearerToTheAPIServersOriginAlone/other-scheme",
+      "production": "sandbox originAuthorization: a request keeps its Authorization only on the API server's own origin, its scheme among it, so a 307 from https to plain http on the API server's own host and port is followed and sent no bearer, in clear text or otherwise",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.originAuthorization).RoundTrip",
+      "capture": "sandbox.redirect-authorization/other-scheme",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/clients.go",
+        "preimage": "req.URL.Scheme != o.origin.Scheme ||",
+        "replacement": "false ||"
+      }
+    },
+    {
+      "id": "sandbox-redirect-authorization-twin-other-port",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheRuntimesClientsSendTheirBearerToTheAPIServersOriginAlone/twin-other-port",
+      "production": "the stand-in of the runtime's redirect rows: client-go's own client of the same in-cluster configuration (kubernetes.NewForConfig) follows the API server's 307 to the same host name at another port and sends the host the Location names (redirectstest.Sent) the bearer, which net/http copies onto the redirect's request, so the rows can see a bearer sent on"
+    },
+    {
+      "id": "sandbox-redirect-authorization-twin-other-host",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheRuntimesClientsSendTheirBearerToTheAPIServersOriginAlone/twin-other-host",
+      "production": "the stand-in of the runtime's redirect rows: client-go's own client follows a 307 to another host name of the API server's address and sends that host (redirectstest.Sent) the bearer, which net/http drops on the way and client-go's bearer round tripper sets again on every request that carries none"
+    },
+    {
+      "id": "sandbox-redirect-authorization-twin-other-scheme",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheRuntimesClientsSendTheirBearerToTheAPIServersOriginAlone/twin-other-scheme",
+      "production": "the stand-in of the runtime's redirect rows: client-go's own client follows a 307 from https to plain http on the API server's own host and port and sends the plain stand-in (redirectstest.Sent) the bearer in clear text"
+    },
+    {
+      "id": "sandbox-redirect-authorization-ordinary",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheRuntimesClientsSendTheirBearerToTheAPIServersOriginAlone/ordinary",
+      "production": "sandbox requestConfig: an ordinary read of a namespaced Secret, which the stand-in API server answers only to the bearer, succeeds through each of the runtime's client sets with the wrap in place"
+    },
+    {
+      "id": "sandbox-redirect-authorization-same-origin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestTheRuntimesClientsSendTheirBearerToTheAPIServersOriginAlone/same-origin",
+      "production": "sandbox originAuthorization: a 307 on the API server's own origin keeps the bearer, so a read the API server moves on its own origin is followed to the Secret that route answers only to the bearer"
+    },
+    {
+      "id": "daemon-kubeconfig-redirect-authorization",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheKubeconfigsBearerGoesToItsClustersOriginAlone/kubeconfig",
+      "production": "daemon kubeClient through the boot's cluster check (sandbox.CheckInstalled, requestConfig): the client of runtime.kubernetes' kubeconfig carries keepAuthorizationOnOrigin, so the CRD read's 307 from the cluster's https server to the same host name at another port over plain http, which net/http copies the kubeconfig user's bearer onto, is followed and sent no bearer",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.requestConfig",
+      "capture": "daemon.kube-redirect-authorization/kubeconfig",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/clients.go",
+        "preimage": "requests.WrapTransport = transport.Wrappers(keepAuthorizationOnOrigin(requests), requests.WrapTransport)",
+        "replacement": "requests.WrapTransport = transport.Wrappers(requests.WrapTransport)"
+      }
+    },
+    {
+      "id": "daemon-kubeconfig-redirect-authorization-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheKubeconfigsBearerGoesToItsClustersOriginAlone/twin",
+      "production": "the stand-in of the kubeconfig redirect row: client-go's own client of the same kubeconfig configuration (dynamic.NewForConfig) follows the CRD read's 307 and sends the host the Location names (redirectstest.Sent) the kubeconfig user's bearer"
+    },
+    {
+      "id": "daemon-kubeconfig-redirect-authorization-ordinary",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheKubeconfigsBearerGoesToItsClustersOriginAlone/ordinary",
+      "production": "daemon kubeClient through the boot's cluster check: the reads of an installed Agent Sandbox's CRD and controller Deployment, which the stand-in answers only to the bearer, succeed with the wrap in place and the check passes"
     }
   ],
   "bun": [
@@ -16690,6 +16833,26 @@
       "site": "loadtest cloudsqlMetadataToken: a -token-url that does not parse printed http.NewRequest's error, which quotes the URL whole, its user information and query included",
       "source": "the round-9 decisions of #4368",
       "guard": "loadtest-cloudsql-token-url-unparsed"
+    },
+    {
+      "site": "the daemon's Kubernetes clients (runtime/sandbox requestConfig, of kubeClient's in-cluster or kubeconfig configuration) followed redirects under net/http's own policy, which copies the Authorization onto a redirect to the API server's host name at any port, so a 307 from the API server's address to another port of its host was sent the service account's or the kubeconfig user's bearer",
+      "source": "the round-9 decisions of #4368",
+      "guard": "sandbox-redirect-authorization-other-port"
+    },
+    {
+      "site": "the daemon's Kubernetes clients sent the bearer on a redirect to another host name too: net/http drops the Authorization there, and client-go's bearer round tripper, which sets one on every request that carries none, set it again",
+      "source": "the round-9 decisions of #4368",
+      "guard": "sandbox-redirect-authorization-other-host"
+    },
+    {
+      "site": "the daemon's Kubernetes clients sent the bearer on a 307 from https to plain http on the API server's own host and port, in clear text: net/http copies the Authorization onto a redirect to the same host name whatever its scheme",
+      "source": "the round-9 decisions of #4368",
+      "guard": "sandbox-redirect-authorization-other-scheme"
+    },
+    {
+      "site": "the boot's cluster check over runtime.kubernetes' kubeconfig (kubeClient, sandbox.CheckInstalled) sent the kubeconfig user's bearer on the CRD read's redirect to another port of the cluster's host",
+      "source": "the round-9 decisions of #4368",
+      "guard": "daemon-kubeconfig-redirect-authorization"
     }
   ]
 }
