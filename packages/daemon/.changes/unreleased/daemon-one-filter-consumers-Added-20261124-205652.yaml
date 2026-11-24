@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  The daemon confirms its Dispatch consumer idle with a probe, so a message the NATS server stored
+  and has not yet counted on the consumer still keeps admission's hold. When the consumer's own counts
+  read zero, the daemon creates `legion-go-<P>-dispatch-probe`, a short-lived consumer on the
+  project's issue events from the sequence after the consumer's delivered one, and reads how many
+  messages the stream's leader counts for it as it makes it. The probe reads no stream state and no
+  stored message. A probe that is refused, does not answer within two seconds, answers an error or
+  finds one of its name still standing for those two seconds reads as not idle, and the daemon logs
+  a WARN line saying the idle could not be confirmed.
+
+  A `legion.yaml` that sets `dispatch_url` must now set `notification_stream_max_age_hours`: how
+  long Envoy's notification stream keeps a message, in hours (72, the stream's MaxAge), or
+  `unlimited`. The intake gives a failing message up before the stream would delete it, and reads
+  that age from this key, never from the stream. A file without the key is refused at load.
+time: 2026-11-24T20:56:52.737215692Z
+custom:
+    Issue: daemon-one-filter-consumers

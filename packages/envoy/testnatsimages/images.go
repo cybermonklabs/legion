@@ -12,5 +12,8 @@ const Image = internal.Image
 // HubImage is internal/testnats.HubImage, the image the GCP hub runs.
 const HubImage = internal.HubImage
 
+// ClusteredHubImage is internal/testnats.ClusteredHubImage, the image the clustered hub runs.
+const ClusteredHubImage = internal.ClusteredHubImage
+
 // Images is internal/testnats.Images: each image with the short name its subtest takes.
 var Images = internal.Images

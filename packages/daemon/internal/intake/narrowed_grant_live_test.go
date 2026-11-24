@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,21 +35,36 @@ import (
 const narrowedIdentity = "legion-daemon-CAPTURE"
 
 // narrowedRig is a server that admits an admin and a daemon held to project CAPTURE, with the
-// notification stream made, and the Postgres the daemon applies facts on.
+// notification stream made, and the Postgres the daemon applies facts on. refused is every call the
+// server refused the daemon's connection, and apiCalls every JetStream API request the server was
+// asked for, by anyone, from the rig's start.
 type narrowedRig struct {
 	admin       jetstream.JetStream
 	adminConn   *nats.Conn
 	stream      jetstream.Stream
 	daemon      jetstream.JetStream
+	daemonConn  *nats.Conn
 	pool        *pgxpool.Pool
 	consumerAPI *nats.Subscription
+	apiCalls    *nats.Subscription
+	refused     *refusals
 }
 
 func newNarrowedRig(t *testing.T) *narrowedRig {
 	t.Helper()
+	return newNarrowedRigWith(t, nil)
+}
+
+// newNarrowedRigWith is newNarrowedRig with change made to the daemon's grant before the server
+// starts, nil for the grant WithinProjects generates.
+func newNarrowedRigWith(t *testing.T, change func(grant *natsgrant.Permissions)) *narrowedRig {
+	t.Helper()
 	grant, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{"CAPTURE"}, Identity: narrowedIdentity})
 	if err != nil {
 		t.Fatalf("WithinProjects: %v", err)
+	}
+	if change != nil {
+		change(&grant)
 	}
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)
@@ -67,15 +84,22 @@ func newNarrowedRig(t *testing.T) *narrowedRig {
 	if err != nil {
 		t.Fatalf("create the notification stream: %v", err)
 	}
-	// Every consumer create or update the server is asked for, by anyone, from here on.
+	// Every consumer create or update the server is asked for, by anyone, from here on, and every
+	// JetStream API request.
 	consumerAPI, err := adminConn.SubscribeSync("$JS.API.CONSUMER.*.>")
 	if err != nil {
 		t.Fatalf("watch the consumer calls: %v", err)
 	}
+	apiCalls, err := adminConn.SubscribeSync("$JS.API.>")
+	if err != nil {
+		t.Fatalf("watch the JetStream API calls: %v", err)
+	}
 	if err := adminConn.Flush(); err != nil {
 		t.Fatalf("flush the watch: %v", err)
 	}
-	daemonConn, err := natsauth.Connect([]string{uri}, daemonSeed, t.Name()+" daemon", nats.CustomInboxPrefix(natsgrant.InboxPrefix(narrowedIdentity)))
+	refused := &refusals{}
+	daemonConn, err := natsauth.Connect([]string{uri}, daemonSeed, t.Name()+" daemon",
+		nats.CustomInboxPrefix(natsgrant.InboxPrefix(narrowedIdentity)), nats.ErrorHandler(refused.note))
 	if err != nil {
 		t.Fatalf("connect the narrowed daemon: %v", err)
 	}
@@ -88,7 +112,53 @@ func newNarrowedRig(t *testing.T) *narrowedRig {
 	if _, err := pool.Exec(context.Background(), `create table intake_test_writes (id bigserial primary key, handler text not null)`); err != nil {
 		t.Fatalf("create write table: %v", err)
 	}
-	return &narrowedRig{admin: admin, adminConn: adminConn, stream: stream, daemon: daemon, pool: pool, consumerAPI: consumerAPI}
+	return &narrowedRig{admin: admin, adminConn: adminConn, stream: stream, daemon: daemon, daemonConn: daemonConn, pool: pool,
+		consumerAPI: consumerAPI, apiCalls: apiCalls, refused: refused}
+}
+
+// refusals is every permission the server refused a connection, each as nats.go hands the
+// server's error to the connection's error handler: `nats: permissions violation: Permissions
+// Violation for Publish to "<subject>"`.
+type refusals struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *refusals) note(_ *nats.Conn, _ *nats.Subscription, err error) {
+	if !errors.Is(err, nats.ErrPermissionViolation) {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, err.Error())
+}
+
+func (r *refusals) all() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.lines)
+}
+
+// of is whether a refusal names subject.
+func (r *refusals) of(subject string) bool {
+	return slices.ContainsFunc(r.all(), func(line string) bool { return strings.Contains(line, fmt.Sprintf("%q", subject)) })
+}
+
+// daemonCalls is the subjects of every JetStream API request the daemon's connection sent that the
+// server routed, since the last read, in order: those whose reply subject is under the daemon's
+// inbox prefix.
+func (r *narrowedRig) daemonCalls() []string {
+	prefix := natsgrant.InboxPrefix(narrowedIdentity) + "."
+	var calls []string
+	for {
+		message, err := r.apiCalls.NextMsg(200 * time.Millisecond)
+		if err != nil {
+			return calls
+		}
+		if strings.HasPrefix(message.Reply, prefix) {
+			calls = append(calls, message.Subject)
+		}
+	}
 }
 
 // grantConfig writes grant in the server configuration's permissions syntax, each subject quoted

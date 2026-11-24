@@ -75,7 +75,7 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
                                             f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                             f"consts Image, SkippingImage"),
     (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
-                                           f"const HubImage"),
+                                           f"consts HubImage, ClusteredHubImage"),
 ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP) + ceiling_reads("daemon-go-race", job_file("daemon-go"))
   + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod"))
 GATE = with_reads(GATE, [

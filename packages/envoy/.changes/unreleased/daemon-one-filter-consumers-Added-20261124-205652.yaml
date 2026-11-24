@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The public package `notificationstream` names how long the notification stream keeps a message
+  (`notificationstream.MaxAge`, 72 hours), the value the stream is made with, so a deployment renders
+  a Legion daemon's `notification_stream_max_age_hours` from it.
+time: 2026-11-24T20:56:52.737215692Z
+custom:
+    Issue: daemon-one-filter-consumers
