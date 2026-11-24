@@ -605,7 +605,7 @@ const legionCheckWakeView = z.object({
  * settings. These members are optional: the tool reads no check state to choose a call or
  * validate a look. The daemon validates the named check; read_record passes this record on.
  */
-const legionOpenProductionCheck = z.object({
+const legionCheckView = z.object({
   repo: nonEmptyString.optional(),
   pullRequest: z.number().int().positive().optional(),
   mergeCommit: z.string().optional(),
