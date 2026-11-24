@@ -396,6 +396,9 @@ jobs:
         run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
 
+      # This fill runs no go vet, on purpose (PR #5289): with one, full or -stdmethods alike, the
+      # saved x64 entry was 475 MB against 202 MB without, so a go-envoy reader that vets reruns cgo
+      # for net, os/user and runtime/cgo, and that is the chosen cost.
       - name: Delete the build cache's entries the go-envoy build did not use
         run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-working-set"
 
