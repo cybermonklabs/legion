@@ -888,14 +888,38 @@ name_limited_row() {
       want_status 0 "create pods limited by name alone, which no request is allowed"
       return
       ;;
+    handed-off)
+      # The hand-off: a name-limited grant is a finding, and no review names a resource for a shape
+      # named-rights.jq builds from the cluster's bindings (bind, escalate, patch or update of a
+      # role or a binding, and impersonate of a user or a group, each by name). live_named reads
+      # those from the cluster's roles, which is where most of a real cluster's reviews would go:
+      # 1,325,530 of the 1,944,040 asked on 2026-11-24 named a resource. The rights the check still
+      # reviews by name are its own fixed ones, not a binding's: the signers of the certificate
+      # chain, a guarded pair's ServiceAccount, and each token Secret it listed.
+      subject_grant "$cluster" "$subject" bind rbac.authorization.k8s.io roles "" envoy-operator operator-role
+      run
+      want_status 1 "a bind limited to one role's name, read from the cluster's roles"
+      want_line "FINDING $who: bind roles.rbac.authorization.k8s.io operator-role in envoy-operator" \
+        "a bind limited to one role's name, read from the cluster's roles"
+      asked="$temporary_dir/asked-$cluster.tsv"
+      cat "$world/clusters/$cluster"/review-requests-*.tsv >"$asked" 2>/dev/null || true
+      [ -s "$asked" ] || fail "the check reviewed nothing, so the item proves nothing"
+      from_bindings='$6 != "" && ((($1 == "bind" || $1 == "escalate" || $1 == "patch" || $1 == "update") \
+        && ($3 == "roles" || $3 == "clusterroles" || $3 == "rolebindings" || $3 == "clusterrolebindings")) \
+        || ($1 == "impersonate" && ($3 == "users" || $3 == "groups")))'
+      named="$(awk -F'\t' "$from_bindings" "$asked" | wc -l)"
+      [ "$named" -eq 0 ] ||
+        fail "the check reviewed $named rights a binding limits by name, which live_named reads from the roles: $(awk -F'\t' "$from_bindings" "$asked" | awk -F'\t' '{ print $1, $3, $6 }' | sort -u | head -n 3 | tr '\n' ';')"
+      return
+      ;;
   esac
   run
   want_status 1 "a right limited by name ($1)"
   want_line "FINDING $who: $want$suffix" "a right limited by name ($1)"
 }
 if row bu; then
-  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-patch rv14 create-named
-  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec, a create with its patch) exits 1 naming the name; create limited by name alone exits 0"
+  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-patch rv14 create-named handed-off
+  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec, a create with its patch) exits 1 naming the name, read from the cluster's roles and reviewed by no request that names a resource; create limited by name alone exits 0"
 fi
 
 # --- (bv) The roles' list, which the named rights are read from. ---

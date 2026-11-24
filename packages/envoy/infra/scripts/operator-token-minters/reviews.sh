@@ -3,34 +3,68 @@
 # operator-token-minters/reviews.sh: SubjectAccessReviews, how their answers are judged, who can
 # become a ServiceAccount with a finding, and the principals and rights a cluster adds. Sourced by
 # operator-token-minters.sh, whose header says what each step checks.
+# REVIEW_WORKERS: how many kubectl calls review runs at once, each with its own share of the
+# principals. kubectl POSTs one review at a time, so one call is the API server's rate for one
+# connection: on a mock API server over loopback, 500 reviews took 21.5 s, 23.2 a second (measured;
+# a live API server is slower). The operator's cluster asks about 618,000 reviews, which is about
+# 7.4 hours at that one-call rate, and ten calls at once divide it if the API server serves ten
+# connections at that rate, which is arithmetic on the one-call measurement, not a measured figure.
+# A run sets REVIEW_WORKERS in its environment to ask more slowly, or 1 to ask as one call; the
+# answer's order does not depend on it, since the chunks are read back in the order they were asked.
+REVIEW_WORKERS="${REVIEW_WORKERS:-10}"
 # review KUBECONFIG PRINCIPALS RIGHTS [FENCE]: one SubjectAccessReview for each principal of the
-# JSON array PRINCIPALS ({principal, user, groups}) and each right of the JSON array RIGHTS, all sent
-# as one List, so a cluster is asked in one kubectl call, which POSTs each review on its own. kubectl
-# create answers with one JSON document per review it made, never a List (review-answer.jq), read
-# with -s. A review's answer is matched to its question by the subject and the attributes the API
-# server echoes in its spec. Writes a record of principal, right label, allowed|refused|error, the
-# evaluation error, the API server's reason and the fence's verdict on the right (review-answer.jq)
-# per review to $WORK/review.rec; FENCE is the broker's pod fence credited on this cluster
-# (broker-fence.sh's FENCE_CREDITED), none on any other. Returns 1 with REVIEW_ERROR when the API
-# server refused the call, when a document of the answer is not a SubjectAccessReview with a status,
-# or when the answer does not hold each review asked once (an empty body sent with exit 0 holds
-# none).
-# PRINCIPALS and RIGHTS reach jq through files (--slurpfile), never its command line: a cluster's
-# principals and rights (3,183 and 508 on the operator's) are more than one argument may hold. Each
-# must be one JSON array (one_array), so an empty argument fails the reviews' build.
+# JSON array PRINCIPALS ({principal, user, groups}) and each right of the JSON array RIGHTS. The
+# principals are split into REVIEW_WORKERS chunks, each asked by its own kubectl call as one List,
+# so each call POSTs its share one at a time and the calls run at once; the first chunk always holds
+# the witness, whose reviews every judgement ends on. kubectl create answers with one JSON document
+# per review it made, never a List (review-answer.jq), read with -s. A review's answer is matched to
+# its question by the subject and the attributes the API server echoes in its spec. Writes a record
+# of principal, right label, allowed|refused|error, the evaluation error, the API server's reason
+# and the fence's verdict on the right (review-answer.jq) per review to $WORK/review.rec, in the
+# chunks' order; FENCE is the broker's pod fence credited on this cluster (broker-fence.sh's
+# FENCE_CREDITED), none on any other. Returns 1 with REVIEW_ERROR when the API server refused a
+# call, when a document of an answer is not a SubjectAccessReview with a status, or when the answers
+# do not hold each review asked once (an empty body sent with exit 0 holds none). PRINCIPALS and
+# RIGHTS reach jq through files (--slurpfile), never its command line: a cluster's principals and
+# rights (530 and 3,668 on the operator's) are more than one argument may hold. Each must be one
+# JSON array (one_array), so an empty argument fails the reviews' build.
 review() {
+  local chunks chunk rc=0
   REVIEW_ERROR=""
   printf '%s' "$2" >"$WORK/review-principals.json"
   printf '%s' "$3" >"$WORK/review-rights.json"
-  if ! jq -n --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" -L "$LIB" \
-    -f "$LIB/review-request.jq" >"$WORK/review-in.json" 2>"$WORK/review.err"; then
-    REVIEW_ERROR="this script could not build the reviews: $(first_line "$WORK/review.err")"
+  # The chunks: at most REVIEW_WORKERS, each a share of the principals, the witness's in the first.
+  if ! chunks="$(jq -r --argjson workers "$REVIEW_WORKERS" '
+      (if length < $workers then length else $workers end) as $n
+      | if $n < 1 then 1 else $n end' "$WORK/review-principals.json" 2>"$WORK/review.err")"; then
+    REVIEW_ERROR="this script could not count the principals: $(first_line "$WORK/review.err")"
     return 1
   fi
-  if ! kubectl --kubeconfig "$1" create -f - -o json <"$WORK/review-in.json" >"$WORK/review.json" 2>"$WORK/review.err"; then
-    REVIEW_ERROR="the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE): $(first_line "$WORK/review.err")"
-    return 1
-  fi
+  rm -f "$WORK"/review-in-*.json "$WORK"/review-out-*.json "$WORK"/review-err-*
+  for ((chunk = 0; chunk < chunks; chunk++)); do
+    if ! jq -n --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" \
+      --argjson chunk "$chunk" --argjson chunks "$chunks" -L "$LIB" \
+      -f "$LIB/review-request.jq" >"$WORK/review-in-$chunk.json" 2>"$WORK/review.err"; then
+      REVIEW_ERROR="this script could not build the reviews: $(first_line "$WORK/review.err")"
+      return 1
+    fi
+  done
+  for ((chunk = 0; chunk < chunks; chunk++)); do
+    kubectl --kubeconfig "$1" create -f - -o json <"$WORK/review-in-$chunk.json" \
+      >"$WORK/review-out-$chunk.json" 2>"$WORK/review-err-$chunk" || touch "$WORK/review-refused-$chunk" &
+  done
+  wait
+  for ((chunk = 0; chunk < chunks; chunk++)); do
+    [ ! -e "$WORK/review-refused-$chunk" ] || {
+      rm -f "$WORK"/review-refused-*
+      REVIEW_ERROR="the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE): $(first_line "$WORK/review-err-$chunk")"
+      return 1
+    }
+  done
+  # The chunks are read in the order they were asked, so the records' order does not depend on which
+  # worker answered first.
+  : >"$WORK/review.json"
+  for ((chunk = 0; chunk < chunks; chunk++)); do cat "$WORK/review-out-$chunk.json" >>"$WORK/review.json"; done
   if ! jq -r -s --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" \
     --argjson fence "${4:-null}" -L "$LIB" -f "$LIB/review-answer.jq" "$WORK/review.json" >"$WORK/review.rec" 2>"$WORK/review.err"; then
     REVIEW_ERROR="the API server's answer to the reviews could not be read: $(first_line "$WORK/review.err")"
@@ -42,6 +76,7 @@ review() {
     REVIEW_ERROR="the API server answered $answered of the $asked reviews asked, in $documents documents"
     return 1
   fi
+  return $rc
 }
 # witness_held: whether the API server allowed every one of the witness's reviews in
 # $WORK/review.rec (WITNESS_RECORD, the first principal of every review); returns 1 with
@@ -642,7 +677,7 @@ settings_verdict() {
 # what it printed. Its callers run it as `named_rights || unknown`, which turns errexit off inside
 # it, so each pipeline here is checked by its own `||`.
 named_rights() {
-  local bindings='{"items": []}' file files=() built cannot="the rights a role limits by name could not be built, so none is reviewed"
+  local bindings='{"items": []}' file files=() built cannot="the rights a role limits by name could not be built, so none is read from the cluster's roles"
   NAMED_RIGHTS='[]' NAMED_ERROR=""
   cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/reviewed.json" ||
     { NAMED_ERROR="$cannot: the reviewed principals could not be listed"; return 1; }

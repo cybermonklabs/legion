@@ -556,7 +556,7 @@ broken_rights_row() {
   lib="$(dirname "$script")/operator-token-minters"
   case "$1" in
     custom-*) want="the rights on the custom resources could not be built, so none is reviewed: " ;;
-    named-*) want="the rights a role limits by name could not be built, so none is reviewed: " ;;
+    named-*) want="the rights a role limits by name could not be built, so none is read from the cluster's roles: " ;;
   esac
   case "$1" in
     custom-empty) echo 'empty' >"$lib/custom-rights.jq" ;;

@@ -67,10 +67,13 @@ read_other_cluster() {
   admission_rights "$KUBE" || unknown "$cstep" "$ADMISSION_ERROR"
   admission_power "$KUBE" "$cstep"
   named_rights "$iam_project" || unknown "$cstep" "$NAMED_ERROR"
-  guard_rights="$(with_rights "$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$POWER_RIGHTS")" "$NAMED_RIGHTS")"
+  guard_rights="$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$POWER_RIGHTS")"
+  # The name-limited rights are read from this cluster's own roles (live_named), never reviewed for
+  # every principal of every name; step-rbac.sh says why.
+  named_read="$(with_rights "$guard_rights" "$NAMED_RIGHTS")"
   # A cluster that is no GKE cluster runs kube-controller-manager's own approver of kubelet client
   # certificates (NODE_CLIENT_RIGHTS).
-  [ "$groups_mode" != own ] || guard_rights="$(with_rights "$guard_rights" "$NODE_CLIENT_RIGHTS")"
+  [ "$groups_mode" != own ] || { guard_rights="$(with_rights "$guard_rights" "$NODE_CLIENT_RIGHTS")"; named_read="$(with_rights "$named_read" "$NODE_CLIENT_RIGHTS")"; }
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list; its binding subjects are still reviewed.
   [ "$accounts" -gt 0 ] ||
@@ -80,7 +83,7 @@ read_other_cluster() {
   elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$guard_rights"; then
     unknown "$cstep" "$REVIEW_ERROR"
   elif judge_reviews "$cstep" "$where" "$principal"; then
-    live_named "$KUBE" "$cstep" "$where" "$principal" "$guard_rights"
+    live_named "$KUBE" "$cstep" "$where" "$principal" "$named_read"
     csr_chains "$where" "$principal"
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     remember_cluster "$KUBE" "$cstep" "$where" "$principal"

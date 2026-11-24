@@ -2,7 +2,9 @@
 # ClusterRoleBindings and RoleBindings. RBAC allows a request against a rule with resourceNames only
 # when the request names one of them, so a review that names nothing is refused for every
 # name-limited grant: one that may impersonate the group system:masters by name becomes
-# cluster-admin while the unnamed review says no. These rights name each name, as rights_json
+# cluster-admin while the unnamed review says no. No principal is reviewed by these names: they are
+# what live_named (reviews.sh) reads from the cluster's own Roles and ClusterRoles, where a rule
+# that limits one of them by name is a finding. They name each name, as rights_json
 # writes rights: impersonate groups for system:masters and every Group subject the bindings name;
 # impersonate users for every User subject and each user and Google service account the GKE IAM
 # step listed as a holder ($iam_users: GKE's IAM authorizer judges an impersonated user by its own

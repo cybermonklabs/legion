@@ -239,15 +239,31 @@ case "${args[*]}" in
     [ ! -e "$dir/refuse-sar" ] || forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
     # kubectl create, given a List, creates each object on its own and prints one JSON document per
     # object it made, never a List (kubectl 1.35.9's create.go), so this answers so. Each call is
-    # counted in review-calls: the first is the step's reviews, each later one a follow_becomes round.
+    # counted in review-calls, under a lock, since a review may be asked by several calls at once
+    # (REVIEW_WORKERS): two calls that took the same number would write one file over the other.
+    # With one worker (the harness's default) the first call is the step's reviews and each later
+    # one a follow_becomes round, which is what the markers below name; a row that sets
+    # REVIEW_WORKERS itself uses no marker.
     # A world marked
     #   review-answers-reversed answers the reviews in the reverse of the order asked (row ct);
     #   review-follow-refused answers every review of a follow round refused, the witness's too, and
     #   review-follow-nostatus answers a follow round's reviews with no status (row cy);
     #   review-witness-copied answers the witness's reviews with copies of the first other review,
     #   and review-repeated answers the last review with a copy of the first, keeping the count (row cy).
+    while ! mkdir "$dir/review-calls.lock" 2>/dev/null; do :; done
     calls=$(( $(cat "$dir/review-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$calls" >"$dir/review-calls"
+    rmdir "$dir/review-calls.lock"
+    # Each review asked, one a line (verb, group, resource, subresource, namespace, name, and the
+    # subject), in this call's own file, which a row reads as review-requests-*.tsv: calls that run
+    # at once must not write one file between them. A row that holds the check to what it reviewed
+    # and what it left to the roles' read reads them (row bu's handed-off item).
+    tee "$dir/review-call-$calls.json" |
+      jq -r '.items[] | .spec as $s | ($s.resourceAttributes // {})
+        | [.verb, (.group // ""), .resource, (.subresource // ""), (.namespace // ""), (.name // ""),
+           ($s.user // "group:" + ((($s.groups // []) | join(","))))] | @tsv' \
+        >"$dir/review-requests-$calls.tsv" 2>/dev/null || true
+    set -- "$dir/review-call-$calls.json"
     mark() { [ -e "$dir/$1" ] && echo on || echo off; }
     jq --slurpfile grants "$dir/grants.json" --arg masters "$([ -e "$dir/no-masters" ] && echo off || echo on)" \
       --arg reversed "$(mark review-answers-reversed)" --arg copied "$(mark review-witness-copied)" \
@@ -277,7 +293,7 @@ case "${args[*]}" in
       | (if $repeated == "on" then .[-1] = .[0] else . end)
       | (if $call > 1 and $follow_refused == "on" then map(.status = {allowed: false}) else . end)
       | (if $call > 1 and $follow_nostatus == "on" then map(del(.status)) else . end)
-      | .[]'
+      | .[]' "$1"
     ;;
   "get serviceaccounts --all-namespaces -o json")
     shaped_answer serviceaccounts
