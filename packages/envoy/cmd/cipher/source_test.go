@@ -190,7 +190,7 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 		{"a port no parser reads", userinfoURL("http", "tokuser9f3", "hunter2pw", "127.0.0.1:badport"), []string{"self"}, "the broker's address is not a valid URL: GET " + np},
 		{"a bad escape in the password", badEscape, []string{"self"}, "the broker's address is not a valid URL: GET " + np},
 		{"a bad escape in the password, injecting", badEscape, injection, "the broker's address is not a valid URL"},
-		{"a scheme-less URL", "tokuser9f3:hunter2pw@127.0.0.1:1", []string{"self"}, "GET " + np + " " + names + ": the request failed"},
+		{"a scheme-less URL", "tokuser9f3:hunter2pw@127.0.0.1:1", []string{"self"}, "the broker's address is not a valid URL: GET " + np + " " + names + ": nothing was sent"},
 		{"a plain-http broker on the network, secret list", userinfoURL("http", "tokuser9f3", "hunter2pw", "example.internal"), []string{"secret", "list"}, `AGENT_SECRETS_URL "` + np + `" must be https`},
 		{"a token in the query", "http://127.0.0.1:1/?token=hunter2pw", []string{"self"}, names + ": connection refused"},
 		{"one slash after the scheme", "http:/tokuser9f3:hunter2pw@127.0.0.1:1", []string{"self"}, names},

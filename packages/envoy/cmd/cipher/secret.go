@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type secretForm struct {
@@ -1107,7 +1108,10 @@ func sayUnchecked(s *secretSession, stderr io.Writer, form, name, secretType str
 			pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", secretType), cipherclient.SignInCommand, name, secretType)
 		return
 	}
-	route := s.broker.baseURL.Call(s.broker.route("/v1/secrets/" + name + "/reread"))
+	route := redact.NotPrinted
+	if target, err := s.broker.baseURL.Join("/v1/secrets/" + name + "/reread"); err == nil {
+		route = s.broker.baseURL.Call(target.String())
+	}
 	fmt.Fprintf(stderr, "agent-secrets %s: %s took the reread of %s, but how it serves %s was not checked (%v), so this exit 0 says only that the write stands. To check it, run `curl -s -X POST -H \"Proof: $(agent-secrets sign --method POST --url %s)\" %s` where this command has a broker identity (`%s`)\n",
 		form, s.src.brokerAt(), name, name, unsigned, route, route, cipherclient.SignInCommand)
 }

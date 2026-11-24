@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -81,4 +82,16 @@ func Sign(key *ecdsa.PrivateKey, enrollmentID, method, url string, now time.Time
 // approved, with no enrollment involved at all.
 func SignLauncher(key *ecdsa.PrivateKey, launcherID, method, url string, now time.Time) (string, error) {
 	return sign(key, method, url, now, claims{LauncherID: launcherID})
+}
+
+// TargetURI is the htu a proof of a request to u signs: u's scheme, host and port, and path,
+// without its query and fragment (RFC 9449 section 4.2) and without its user information, which
+// is no part of the request's target (RFC 9110 section 4.2.4). The broker checks a proof against
+// its public URL followed by the path the request reached it at (the url Verifier.Verify is given,
+// internal/cipher/api's proofSubject), which holds none of the three, so a proof signed over the
+// whole URL of a request to an address with a query or a user name is refused. Every signer of a
+// request this module sends to the broker signs TargetURI of that request's URL.
+func TargetURI(u *url.URL) string {
+	target := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}
+	return target.String()
 }

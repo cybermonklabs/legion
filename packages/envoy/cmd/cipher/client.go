@@ -31,11 +31,11 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/redirects"
 )
@@ -81,9 +81,19 @@ func newClient(baseURL cipheraddr.Address) *client {
 	return &client{baseURL: baseURL, http: redirects.Refused(&http.Client{Timeout: leasetime.RenewClientTimeout})}
 }
 
-// route is path's URL at the broker, built from the address as configured (Raw) to be sent and
-// signed, never printed: a message names it through c.baseURL.Call.
-func (c *client) route(path string) string { return c.baseURL.Raw() + path }
+// target is path's URL at the broker: path, with the query of this client's own it may end in,
+// joined onto the address as configured (cipheraddr.Address.Join), so the address's path stays
+// ahead of path and its own query ahead of path's, where path appended to the address's text would
+// sit inside that query. It is sent and signed (proof.TargetURI of it), never printed: a message
+// names it through c.baseURL.Call. An address that is no absolute URL with a host is refused as
+// one, before anything is signed or sent, and no part of it is printed.
+func (c *client) target(method, path string) (*url.URL, error) {
+	target, err := c.baseURL.Join(path)
+	if err != nil {
+		return nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, path, errNothingSent, ""}
+	}
+	return target, nil
+}
 
 // apiError is the broker's {"code":...,"error":...,"answer_id":...} error envelope, plus the HTTP
 // status it came with. The answer id is the id the broker's own record of the answer names: the
@@ -205,33 +215,45 @@ func (e *apiError) terminalCode() string {
 // ended enrollment its legacy code spells (enrollmentEnded).
 func (e *apiError) Permanent() bool { return e.terminalCode() != "" }
 
-// do sends the request and, on a 2xx response, returns its answer (*redact.Answer); any other
-// status decodes the broker's error envelope into an *apiError.
-func (c *client) do(ctx context.Context, method, url string, body []byte, headers map[string]string) (*redact.Answer, error) {
-	_, answer, err := c.doStatus(ctx, method, url, body, headers)
+// do sends method to path at the broker (target) and, on a 2xx response, returns its answer
+// (*redact.Answer); any other status decodes the broker's error envelope into an *apiError.
+func (c *client) do(ctx context.Context, method, path string, body []byte, headers map[string]string) (*redact.Answer, error) {
+	_, answer, err := c.doStatus(ctx, method, path, body, headers)
 	return answer, err
 }
 
 // doStatus is do, also answering the 2xx status itself, which tells apart the two answers a
 // route gives for success — POST /v1/enrollments's 201 for a new enrollment and 200 for the one
 // this key already holds.
+func (c *client) doStatus(ctx context.Context, method, path string, body []byte, headers map[string]string) (int, *redact.Answer, error) {
+	target, err := c.target(method, path)
+	if err != nil {
+		return 0, nil, err
+	}
+	return c.send(ctx, method, target, body, headers)
+}
+
+// send is one request of method to target, a URL target built, answered as doStatus answers it.
 //
-// A failure names the call by its URL without the query, as its proof does: the only query this
-// client sends is one it builds itself (GetRequest's wait), and the redactor prints no URL that
-// holds a query, so a read that asked the broker to hold it would otherwise name neither its
-// call nor its cause.
-func (c *client) doStatus(ctx context.Context, method, url string, body []byte, headers map[string]string) (int, *redact.Answer, error) {
-	named, query, _ := strings.Cut(url, "?")
+// A failure names the call by its URL without the query, as its proof does: the queries this
+// client sends are the address's own, which no clean address holds, and the one it builds itself
+// (GetRequest's wait), and the redactor prints no URL that holds a query, so a read that asked the
+// broker to hold it would otherwise name neither its call nor its cause.
+func (c *client) send(ctx context.Context, method string, target *url.URL, body []byte, headers map[string]string) (int, *redact.Answer, error) {
+	called := *target
+	called.RawQuery = ""
+	named, query := called.String(), target.RawQuery
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
 	if err != nil {
-		// With a base that prints as written, the part that did not parse is the path this
-		// client built, so the error says so (through Error, which prints it as net/url wrote it
-		// only where that is clean). With any other base, the parser's own text could quote a bad
-		// escape in a password, so the message says only that the address is not valid.
+		// target parsed the URL already, so what fails here is the method, or the URL as String
+		// writes it. With a base that prints as written, the error says which (through Error,
+		// which prints it as net/url wrote it only where that is clean). With any other base, the
+		// parser's own text could quote a bad escape in a password, so the message says only that
+		// the address is not valid.
 		if c.baseURL.Clean() {
 			return 0, nil, fmt.Errorf("the request could not be built: %w", c.baseURL.Error(err))
 		}
@@ -308,9 +330,10 @@ func enrollmentNotLive(err error) bool {
 	return errors.As(err, &refusal) && refusal.enrollmentEnded()
 }
 
-// doProof signs the request with signer.Sign against exactly this method and URL less any query
-// path carries, the shape proof.Verifier.Verify compares htm/htu against (the broker rebuilds the
-// htu from BROKER_PUBLIC_URL and the request's path, never its query).
+// doProof signs the request with signer.Sign against exactly this method and proof.TargetURI of
+// the request's URL, the shape proof.Verifier.Verify compares htm/htu against: the broker rebuilds
+// the htu from BROKER_PUBLIC_URL and the request's path, so the signed URL holds no query (the
+// address's own or path's), no fragment and no user information the address carries.
 func (c *client) doProof(ctx context.Context, signer proofSigner, method, path string, body []byte) (*redact.Answer, error) {
 	_, answer, err := c.doProofStatus(ctx, signer, method, path, body)
 	return answer, err
@@ -355,13 +378,15 @@ func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, p
 // the enrollment the broker no longer holds (terminalRenewal, exit 76) rather than quietly
 // register another.
 func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, *redact.Answer, error) {
-	url := c.route(path)
-	signedPath, _, _ := strings.Cut(path, "?")
-	token, err := signer.Sign(method, c.route(signedPath))
+	target, err := c.target(method, path)
+	if err != nil {
+		return 0, nil, err
+	}
+	token, err := signer.Sign(method, proof.TargetURI(target))
 	if err != nil {
 		return 0, nil, &signError{err: err}
 	}
-	return c.doStatus(ctx, method, url, body, map[string]string{"Proof": token})
+	return c.send(ctx, method, target, body, map[string]string{"Proof": token})
 }
 
 // signError is proofCall's failure to sign the proof, before anything was sent: the signer's own

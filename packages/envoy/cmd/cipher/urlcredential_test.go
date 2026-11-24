@@ -79,7 +79,7 @@ func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
 			defer broker.Close()
 
 			c := newClient(cipheraddr.New(broker.URL))
-			_, _, _ = c.doStatus(context.Background(), http.MethodGet, broker.URL+"/v1/enrollments/self", nil, map[string]string{"Proof": "the-session-proof"})
+			_, _, _ = c.doStatus(context.Background(), http.MethodGet, "/v1/enrollments/self", nil, map[string]string{"Proof": "the-session-proof"})
 			if got := targetCalls.Load(); got != 0 {
 				t.Errorf("the redirect's target received %d requests, want none", got)
 			}
@@ -132,7 +132,7 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 		if asked.Load() == before {
 			t.Fatalf("status never reached the broker\nstderr: %s", stderr.String())
 		}
-		_, err := newClient(cipheraddr.New(address)).do(context.Background(), http.MethodGet, address+"/v1/requests/req-1", nil, nil)
+		_, err := newClient(cipheraddr.New(address)).do(context.Background(), http.MethodGet, "/v1/requests/req-1", nil, nil)
 		if err == nil {
 			t.Fatal("the client took the broker's refusal as an answer")
 		}
@@ -227,7 +227,7 @@ func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testi
 			c := newClient(cipheraddr.New(address))
 			refusal := func(path string) error {
 				t.Helper()
-				_, err := c.do(context.Background(), http.MethodPost, address+path, nil, nil)
+				_, err := c.do(context.Background(), http.MethodPost, path, nil, nil)
 				if err == nil {
 					t.Fatalf("%s: the client took the broker's refusal as an answer", path)
 				}

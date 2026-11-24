@@ -59,7 +59,7 @@ func TestARefusalNamesTheBrokersAnswerID(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
-			_, err := newClient(cipheraddr.New(row.base)).do(context.Background(), http.MethodGet, row.base+row.path, nil, nil)
+			_, err := newClient(cipheraddr.New(row.base)).do(context.Background(), http.MethodGet, row.path, nil, nil)
 			var refusal *apiError
 			if !errors.As(err, &refusal) {
 				t.Fatalf("the refusal read as %v, want an *apiError", err)

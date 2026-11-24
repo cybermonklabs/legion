@@ -62,18 +62,14 @@ func (e *unreachableError) Error() string {
 func (e *unreachableError) Unwrap() error { return e.cause }
 
 // callWords is a call's URL as a message prints it: callURL through base.Call, or, where route is
-// set because the call's path held an id the person typed, the broker's address followed by route,
-// which leaves the id out, and redact.NotPrinted beside an address that is not clean. The broker
-// never accepted that id, and an argument that is no id is where a credential pasted in the wrong
-// place lands.
+// set because the call's path held an id the person typed, route at the broker's address with the
+// id left out (cipheraddr.Address.Route). The broker never accepted that id, and an argument that
+// is no id is where a credential pasted in the wrong place lands.
 func callWords(base cipheraddr.Address, callURL, route string) string {
 	if route == "" {
 		return base.Call(callURL)
 	}
-	if !base.Clean() {
-		return redact.NotPrinted
-	}
-	return strings.TrimSuffix(base.String(), "/") + route
+	return base.Route(route)
 }
 
 // withoutTypedID is err, the failure of a call whose path holds an id the person typed, with that
@@ -206,9 +202,9 @@ func retryable(err error) bool {
 }
 
 // withoutQuery is err with the URL of the *url.Error net/http wraps a failed call in cut at query,
-// the query doStatus's call carried, so the redactor reads the URL this client built from the
-// broker's address and a route. A URL that does not end in that query, a redirect's target say,
-// stays as net/http named it.
+// the query send's call carried (the address's own, then the route's), so the redactor reads the
+// URL this client joined from the broker's address and a route. A URL that does not end in that
+// query, a redirect's target say, stays as net/http named it.
 func withoutQuery(err error, query string) error {
 	var ue *url.Error
 	if query != "" && errors.As(err, &ue) {

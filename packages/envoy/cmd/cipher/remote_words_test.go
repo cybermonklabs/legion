@@ -95,7 +95,7 @@ func TestAStatusRefusalPrintsTheBrokersWordsAsTheRuleReadsThem(t *testing.T) {
 			if !strings.Contains(stderr, row.want) {
 				t.Errorf("status's stderr %q does not carry %q", stderr, row.want)
 			}
-			_, err := newClient(cipheraddr.New(srv.URL)).do(context.Background(), http.MethodGet, srv.URL+"/v1/requests/req-1", nil, nil)
+			_, err := newClient(cipheraddr.New(srv.URL)).do(context.Background(), http.MethodGet, "/v1/requests/req-1", nil, nil)
 			var refused *apiError
 			if !errors.As(err, &refused) || !refused.hasCode(row.code) {
 				t.Fatalf("the client read %v, want the broker's refusal", err)

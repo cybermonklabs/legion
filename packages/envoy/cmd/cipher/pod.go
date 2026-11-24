@@ -367,7 +367,7 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 	if err != nil {
 		return "", err
 	}
-	answer, err := c.do(ctx, http.MethodPost, c.route("/v1/launcher-credentials/token"), body, nil)
+	answer, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", body, nil)
 	if err != nil {
 		return "", err
 	}
