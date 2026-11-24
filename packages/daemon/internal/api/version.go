@@ -3612,17 +3612,55 @@ package api
 // main's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 251: the held word of a member of a tree whose root stands in backlog or icebox is
+// 256: #5349 -- each claim view of `GET /legion/v1/state` and of `GET
+// /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
+// `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
+// 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
+// which wrote no time, except after a rollback (the migration's header; `api.ClaimView`). The
+// claim keeps both in the store's `claims` table (`20261124073512_claim_cause_times`), so a
+// daemon restart keeps them, and each is set and cleared only together with its cause, so a
+// cause recorded again with the same text carries its new time (the rule
+// `supervise.Claim.LastDeathAt` states). The store writes each time with a digest of the cause it
+// dates, which no key serves, and reads the time back only beside that cause (the claim store's
+// causeTime). The records of 256
+// hold the two keys on every claim view, and no record below 256 does: a caller whose contract
+// (the one it states, else its pod's lowest) is below 256 is served every claim view without
+// them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`), so a plugin from 250 to
+// 255 is served 250's keys. The operator's claim view
+// (`api.OperatorClaim`, which `legion claims list --json` prints) carries the same two keys; the
+// operator routes are not served down, since their reader is the `legion` built with this daemon.
+// No value of an enumerated field moves, and no request a plugin sends changes.
+// (This entry took 243 at first, above each number another open pull request declared. A reading
+// of `const DaemonAPIVersion` at the head of each of the 138 of the 513 open pull requests of this
+// repository that change version.go, made at 2026-11-24T07:23:50Z, found every number from 221
+// to 242 declared and nothing above 242, so 243 was the lowest number above main's 220 that no
+// open pull request declared at that reading. The forward merge of 2026-11-24 that brought in
+// e14345bfc8 brought main's 228 (#4590), below 243, so this entry kept 243, and the forward
+// merge of 2026-11-24 that brought in d27405712c brought main's 232 (#5271), below it too, so it
+// kept 243 again. The forward merge of 2026-11-24 that brought in 7e75126fae brought main's 246
+// (#4960), above 243. A reading of version.go at the head of each of the 473
+// open pull requests of this repository, between 2026-11-24T15:34:44Z and 15:48:04Z, found 55
+// that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
+// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
+// changes, so this entry moved to 256, above every number an open pull request
+// declares or a change had been named for. From this entry the last number of answers.go's
+// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
+// of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
+// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 280: the held word of a member of a tree whose root stands in backlog or icebox is
 // `tree_in_backlog_or_icebox` (record.HeldTreeInBacklogOrIcebox), and the route table names no
 // child route of a removed operation by its path. The word is a value of
 // `admission.held[].reason` on `GET /legion/v1/state` and of `held[].reason` on the controller's
 // tick notice. It takes the place of the word the field carried for that hold since 98, which
 // this daemon no longer writes, and it arrives at this contract (answers.go's heldReasons, at
 // treeInBacklogOrIceboxContract). A caller whose contract (the one it states, else its pod's
-// lowest) is below 251 is served each such row as `unclassified` with no `heldBy` (shaping.go's
+// lowest) is below 280 is served each such row as `unclassified` with no `heldBy` (shaping.go's
 // withoutUnadmittedHeldWords), a word every reader of the field admits. So the records of
-// `contract-shapes.json` below 251 hold the domain of `admission.held.*.reason` without the word
-// that was renamed, as the daemon serves them, and the records of 251 hold the new word.
+// `contract-shapes.json` below 280 hold the domain of `admission.held.*.reason` without the word
+// that was renamed, as the daemon serves them, and the records of 280 hold the new word.
 // `packages/contracts/src/legion-api.ts`'s `LEGION_HELD_REASONS` and the controller's
 // `references/admission.md` name the new word, `legion state`'s `admission.held:` line counts
 // under it, and the issue's `why` says "Its tree's root <root> stands in backlog or icebox, …".
@@ -3636,7 +3674,7 @@ package api
 // rather than 404 `no route`. requests.go's RemovedRoutes names the pattern, removed at 205, and
 // the request gate resolves each recorded route through the server's mux to the pattern that
 // serves it, so the request records of 193, 199 and 202 still pass. No request of a plugin moves,
-// and the request records of 251 are 232's under its own number.
+// and the request records of 280 are 232's under its own number.
 // (This entry took 241 when main declared 220: a reading of every open pull request of
 // cybermonklabs/legion on 2026-11-24 found each number from 221 to 240 declared by at least one.
 // The forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (INFRA-1575's
@@ -3653,8 +3691,10 @@ package api
 // 3dbaa2b23a brought main's 232 (#5271, INFRA-4508's entry above); 251 stays above it. The forward
 // merge of 2026-11-24 that brought in 25cbe2b315 brought main's 246 (#4960's entry above); 251
 // stays above it. The forward merge of 2026-11-24 that brought in 5df00e2f13 brought main's 250
-// (#5365's entry above); 251 stays above it. From this entry the last number of answers.go's
-// SupportedContracts is `api.treeInBacklogOrIceboxContract`, after main's 232, 246 and 250. Read
-// the base's own number and every open pull request again at the next merge rather than from this
-// line.)
-const DaemonAPIVersion = 251
+// (#5365's entry above); 251 stays above it. The forward merge of 2026-11-25 that brought in
+// c227d04661 found main at 256 (#5349's entry above); INFRA-3118's architect, who allocates
+// contract numbers until INFRA-1569's #5399 merges, allocated 280 to this change. From this entry
+// the last number of answers.go's SupportedContracts is `api.treeInBacklogOrIceboxContract`,
+// after main's 232, 246, 250 and 256. Read the base's own number and every open pull request
+// again at the next merge rather than from this line.)
+const DaemonAPIVersion = 280
