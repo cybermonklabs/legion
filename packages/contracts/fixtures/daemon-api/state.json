@@ -670,6 +670,7 @@
       "tree": "LEGION-240",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "priority": null,
       "workers": {}
     },
     "LEGION-241": {
@@ -682,6 +683,7 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "heldFrom": "step",
+      "priority": null,
       "workers": {
         "checker": {
           "claim": {
