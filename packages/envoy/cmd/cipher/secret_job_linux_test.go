@@ -125,7 +125,7 @@ func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
 					break
 				}
 				if waitsGaveUp(t) {
-					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, promptJobMargin, stat, s.out.String())
+					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, waitMargin, stat, s.out.String())
 				}
 			}
 			s.pid = 0
@@ -798,6 +798,8 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 			if _, err := controller.Write([]byte("private-value")); err != nil {
 				t.Fatal(err)
 			}
+			meter := startStallMeter(t)
+			sent := time.Now()
 			if err := cmd.Process.Signal(sig); err != nil {
 				t.Fatal(err)
 			}
@@ -816,20 +818,28 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 					}
 				}
 			}()
-			exitWithin := 10 * time.Second
+			// The process ends on the signal; the one bound of this wait is the moment every wait
+			// of these tests gives up (waitsGaveUp). Its end is then timed from the signal against
+			// no deadline of its own (requireCommandOnTime), except SIGABRT's: Go's
+			// GOTRACEBACK=crash relays SIGQUIT between threads, and a SIGQUIT subscriber can make
+			// that relay wait for its 10s watchdog before the runtime raises the fatal SIGABRT.
+			for ended := false; !ended; time.Sleep(time.Millisecond) {
+				select {
+				case <-done:
+					ended = true
+				default:
+					if waitsGaveUp(t) {
+						_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+						state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
+						t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
+					}
+				}
+			}
+			allowed := time.Duration(0)
 			if sig == syscall.SIGABRT {
-				// Go's GOTRACEBACK=crash relays SIGQUIT between threads. A
-				// SIGQUIT subscriber can make that relay wait for its 10s
-				// watchdog before the runtime raises the fatal SIGABRT.
-				exitWithin = 30 * time.Second
+				allowed = 10 * time.Second
 			}
-			select {
-			case <-done:
-			case <-time.After(exitWithin):
-				_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-				state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
-				t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
-			}
+			requireCommandOnTime(t, meter, "the prompt after "+sig.String(), sent, allowed)
 			if err := controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
 				t.Fatal(err)
 			}

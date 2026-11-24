@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -50,7 +51,7 @@ func heldChildHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder
 		Project: testDispatchProject, Title: "the held child", Phase: phase.Admitted, Generation: 1, Status: "todo", DispatchStatus: "todo",
 		Rank: "B", HandedOver: true, LastDispatchSeq: 4})
 	approved := 1
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutGate(context.Background(), tx, record.DesignGate{Issue: statusRoot, ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", LatestVersion: 1, ApprovedVersion: &approved})
 	}); err != nil {
 		t.Fatalf("seed the accepted tree: %v", err)

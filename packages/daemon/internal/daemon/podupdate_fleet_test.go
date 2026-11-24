@@ -456,7 +456,13 @@ func (d *fleetHandoffs) HandOver(context.Context, dispatch.Issue, string) error 
 func (d *fleetHandoffs) ReleaseClaim(context.Context, string) error                { return nil }
 func (d *fleetHandoffs) PostMessage(context.Context, string, string) error         { return nil }
 func (d *fleetHandoffs) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *fleetHandoffs) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *fleetHandoffs) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *fleetHandoffs) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+func (d *fleetHandoffs) PutGatedSteps(context.Context, string, []string) error { return nil }
 func (d *fleetHandoffs) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
@@ -624,6 +630,7 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 // is replaced after, which is what the round is for. And nothing of any of it moves a root out
 // of the workflow: no root waits on a person, none is parked, and no architect is suspended.
 func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
 			roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}},
@@ -729,6 +736,7 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 // the same claim is refused the stale-caller 409 — the negative control — and the round is what
 // turns that refusal into the 200 a completion needs.
 func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
+	t.Parallel()
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueB, phase: phase.Planning, pod: fleetPodB,
 			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner}},
@@ -791,6 +799,7 @@ func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
 // as the daemon wires its supervisor (adoptingAsTheDaemonDoes), so who is in a turn is the
 // daemon's own answer (claimInTurn), read from the machines the round posts to.
 func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testing.T) {
+	t.Parallel()
 	rig := newWiredFleetRig(t, adoptingAsTheDaemonDoes,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
 			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer}},

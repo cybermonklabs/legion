@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    The launcher's memory guard may end a role's CodeGraph warm-up and everything it starts. The
+    shim starts the warm-up during its agent's session load, and the guard spared it with every
+    other direct child of the shim, although ending it ends no session: the next start runs it
+    again or finds the index its last build left. The guard tells the warm-up from the agent by its
+    command, the image's `codegraph` script or its bundled `node` on `codegraph.js`, and still
+    spares the agent, the secrets renewer and the working copy's adoption.
+time: 2026-11-23T00:14:54Z
+custom:
+    Issue: guard-ends-warm-up

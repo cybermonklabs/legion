@@ -101,10 +101,10 @@ func TestThePrintedRenewalCommandRunsFromAnOutDirectory(t *testing.T) {
 	// The control: the same command with the key directory taken off it, which is what was
 	// printed before. It finds no session identity and exits at once, so the variable is what
 	// makes the printed command work rather than anything else in the environment. It is run
-	// under a deadline because an identity leaking in from the environment would make it a
-	// renewal loop instead, and a loop that retried forever would hang the package rather than
-	// name what went wrong.
-	bareCtx, cancelBare := context.WithTimeout(context.Background(), 60*time.Second)
+	// under a deadline, the moment the waits of these tests give up, because an identity leaking
+	// in from the environment would make it a renewal loop instead, and a loop that retried
+	// forever would hang the package rather than name what went wrong.
+	bareCtx, cancelBare := context.WithTimeout(context.Background(), untilGiveUp(t))
 	defer cancelBare()
 	bare := exec.CommandContext(bareCtx, "/bin/sh", "-c", "agent-secrets renew --pod-token-file "+shellWord(tokenFile))
 	bare.Env = environment()
@@ -112,7 +112,7 @@ func TestThePrintedRenewalCommandRunsFromAnOutDirectory(t *testing.T) {
 	bare.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	output, err := bare.CombinedOutput()
 	if bareCtx.Err() != nil {
-		t.Fatalf("the command without the key directory did not exit in 60s; it found an identity it should not have. Output %q", output)
+		t.Fatalf("the command without the key directory had not exited %s before the test binary's deadline; it found an identity it should not have. Output %q", waitMargin, output)
 	}
 	if err == nil {
 		t.Fatalf("the command without the key directory succeeded, output %q; want it refused", output)
@@ -149,9 +149,9 @@ func TestThePrintedRenewalCommandRunsFromAnOutDirectory(t *testing.T) {
 		}
 		return false
 	}
-	for deadline := time.Now().Add(30 * time.Second); !renewed(); {
-		if time.Now().After(deadline) {
-			t.Fatalf("the printed command sent no renewal in 30s; stderr %q", renewErr.String())
+	for !renewed() {
+		if waitsGaveUp(t) {
+			t.Fatalf("the printed command sent no renewal, %s before the test binary's deadline; stderr %q", waitMargin, renewErr.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

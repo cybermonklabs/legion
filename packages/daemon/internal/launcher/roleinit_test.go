@@ -4,6 +4,7 @@ package launcher
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +21,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
 )
 
 // The three re-entrant helpers this test runs as processes of its own: the stage, which builds a
@@ -43,20 +46,22 @@ func init() {
 
 // stagePlan is what the stage builds and runs. Mount is the directory it covers with a memory
 // filesystem of its own, so the layout it builds — and the role's own mounts over it — stay out
-// of the machine's filesystem and out of the test process's view.
+// of the machine's filesystem and out of the test process's view. Deadline is when a wait of the
+// stage's gives up: the test's beforeDeadline, as the stage runs no deadline of its own.
 type stagePlan struct {
 	Mount    string
 	Role     string
 	Sibling  string
 	Owner    string
-	Detached string
+	Deadline time.Time
 }
 
 // agentPlan is what the agent reports on: the paths its role should and should not reach, the
 // process the stage started outside its namespaces, and the detached, SIGTERM-ignoring process it
-// leaves behind for the stage to look for once the namespaces are gone. Label is what its lines
-// carry, so the stage's two generations read apart. TestPGLog says the stage made the server's
-// log before this generation, so role-init bound it at the fixed path.
+// leaves behind for the stage to look for once the namespaces are gone, by Detached, the token
+// that process carries in its command line (detachedToken). Label is what its lines carry, so the
+// stage's two generations read apart. TestPGLog says the stage made the server's log before this
+// generation, so role-init bound it at the fixed path. Deadline is the stage's own (stagePlan).
 type agentPlan struct {
 	Home       string
 	HomeMounts string
@@ -70,6 +75,7 @@ type agentPlan struct {
 	OutsidePID int
 	Detached   string
 	TestPGLog  bool
+	Deadline   time.Time
 }
 
 // TestRoleNamespaceProbeHelper is the probe itself: cloned into a role's namespaces, it does the
@@ -97,16 +103,17 @@ func TestRoleNamespaceProbeHelper(t *testing.T) {
 // it nor, from a further namespace of its own, replace or remove it, and the launcher's file
 // stays a regular file; it sees and can signal only its own processes; what it writes under its
 // home and in its temporary directories lands on its own layer, invisible to the container; every
-// mount its home carried is still there; its config home is its own, a copy of the pod's shared
-// one that no sibling reads; and when the role's init exits nothing of the role is left, not even
-// a detached process that ignores SIGTERM.
+// mount its home carried is still there; a mount the container's /tmp hides is not carried into
+// the role's, and the role sees nothing of the container's /tmp at its path; its config home is
+// its own, a copy of the pod's shared one that no sibling reads; and when the role's init exits
+// nothing of the role is left, not even a detached process that ignores SIGTERM.
 func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := stagePlan{Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: "987654"}
+	plan := stagePlan{Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Deadline: time.Now().Add(beforeDeadline(t))}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +155,15 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"agent home-mount-writes", "volume", "what the role writes into a volume under its home reaches the volume"},
 		{"agent home-mounts-view", "0", "the container's view of the home's volumes is covered: the role sees each at its own path alone"},
 		{"agent tmp-mount", "mounted-a", "a mount /tmp carried is bound back over the role's own /tmp"},
+		{"agent tmp-mount-nested", "nested-a", "a mount inside a mount /tmp carries comes back with it"},
+		{"agent tmp-mount-nested-extra", "0", "role-init binds back only the outermost mount /tmp carries, whose recursive bind brings the one inside it, so the inner mount has no bind of its own: role-init resolves no path inside a volume every role writes, where a sibling role could put a link"},
+		// The two mounts the container's /tmp hides (runStage): the stage's rows say its mount
+		// table lists each and no path under /tmp reaches it, so the agent's rows read hidden
+		// mounts and not mounts that were never made.
+		{"stage shadowed", "listed reaches=absent", "the container's mount table lists the mount its /tmp hides under a later mount, and nothing is at its path"},
+		{"stage beneath", "listed reaches=container", "the container's mount table lists the mount made beneath its /tmp after it, and its path reaches the container's own directory there"},
+		{"agent tmp-shadowed", "absent", "a mount the container's /tmp hides under a later mount is not carried: no path under /tmp reaches it, and the role sees nothing at its path"},
+		{"agent tmp-beneath", "absent", "a mount the container's /tmp hides, listed after the mount that hides it, is not carried either: the role sees nothing of the container's /tmp at its path"},
 		{"agent home-carryover", "absent", "the role's first generation starts on a home layer with nothing of its own"},
 		{"agent home-dir-rename", "ok", "the role renames a directory on its own home layer and the sandbox lives; under gVisor without userxattr the rename panics the sandbox instead"},
 		{"stage upper-home", "present", "what the role wrote under its home landed on its own layer"},
@@ -156,8 +172,9 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"stage container-home", "absent", "what the role wrote under its home is invisible to the container"},
 		{"stage container-tmp", "absent", "what the role wrote in /tmp is invisible to the container"},
 		{"stage container-shm", "absent", "what the role wrote in /dev/shm is invisible to the container"},
-		{"stage shadowed", "stood-in", "the mount the stage's own /tmp hides has a stand-in at its path, as no container's /tmp hides a mount: role-init carries every mount listed under /tmp, from its path"},
+		{"agent detached-carrier", "carried", "while the role ran, its detached process carried the generation's token and was the process that reported its ignore of SIGTERM: without that no process of the role ever carried the token, and `stage detached=gone` holds from the start"},
 		{"stage detached", "gone", "a detached process of the role that ignores SIGTERM is gone once the role's init exits"},
+		{"stage left-behind", "none", "no process of any generation outlives its role-init: the stage, the child subreaper of all it starts, is left no child to wait for"},
 		{"stage status", "0", "role-init reports the shim's own wait status"},
 		// The role's relaunch: a second generation of the same role, over the same role-homes
 		// volume, with no agent-secrets directory, as a pod not enrolled with the broker has it.
@@ -174,6 +191,7 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"stage2 sibling-state", "absent", "a link the role left in its home layer is not followed: nothing appears in the sibling's state directory"},
 		{"agent2 home-mounts-view", "0", "the relaunch covers the container's view of the home's volumes too"},
 		{"stage2 status", "0", "the relaunch reports its own shim's wait status"},
+		{"agent2 detached-carrier", "carried", "the relaunch's detached process carried its own token while the role ran"},
 		{"stage2 detached", "gone", "the relaunch leaves nothing behind either"},
 		// The config home: each role's own, seeded from the pod's shared one.
 		{"agent config-legion", "legion-jj", "the role's config home holds the jj configuration workspace-init wrote in the shared one"},
@@ -187,6 +205,7 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"agent-sibling config-planted", "absent", "what one role wrote in its config home never reaches a sibling's"},
 		{"agent-sibling config-nested", "nested-a", "the sibling sees the mount under the shared config home too"},
 		{"stage-sibling status", "0", "the sibling's role-init reports its shim's wait status"},
+		{"agent-sibling detached-carrier", "carried", "the sibling's detached process carried its own token while the role ran"},
 		{"stage-sibling detached", "gone", "the sibling leaves nothing behind"},
 		{"stage shared-config-planted", "absent", "no role writes the pod's shared config home"},
 		{"stage own-config-planted", "present", "what the role wrote in its config home landed in its own directory"},
@@ -217,11 +236,12 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	}
 	// The two keys the agent says when its detached process could not be started, or never
 	// reported the ignore of SIGTERM it is there for, and then goes on. The table above names
-	// neither, so nothing in it fails the row for them — and without a process of the role's that
-	// ignores SIGTERM, `detached=gone` is met by role-init's own SIGTERM and says nothing about
-	// the SIGKILL this case is about. So either key, under any generation's prefix, fails the row
-	// here. Measured twice as a pass that proved nothing: with the marker pointed at a path the
-	// agent cannot write, and with it pointed elsewhere under `go test -overlay`.
+	// neither, so nothing in it fails the row for them — and without a
+	// process of the role's that ignores SIGTERM, `detached=gone` is met by role-init's own
+	// SIGTERM and says nothing about the SIGKILL this case is about. So each key, under any
+	// generation's prefix, fails the row here. Measured twice as a pass that proved nothing: with
+	// the marker pointed at a path the agent cannot write, and with it pointed elsewhere under
+	// `go test -overlay`.
 	for _, key := range slices.Sorted(maps.Keys(report)) {
 		who, what, _ := strings.Cut(key, " ")
 		switch what {
@@ -267,9 +287,12 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 // this binary: the helper, and role-init, which starts the agent through the role's own /proc.
 const stageSelf = "/proc/self/exe"
 
-// stageShadowed is the stage's own mount under the /tmp it covers, which its own /tmp then hides
-// (runStage, standInForHidden).
-const stageShadowed = "/tmp/shadowed"
+// stageShadowed and stageBeneath are the stage's own mounts under the /tmp it covers, which its
+// own /tmp then hides: the first made before that /tmp, the second beneath it after (runStage).
+const (
+	stageShadowed = "/tmp/shadowed"
+	stageBeneath  = "/tmp/beneath"
+)
 
 // stageMountPoint is a directory the stage can cover with a memory filesystem of its own. It is
 // the one piece of the machine the test needs: the layout must sit outside /tmp and outside the
@@ -325,40 +348,57 @@ func runStage(plan stagePlan) error {
 	if err := privateMounts(); err != nil {
 		return err
 	}
+	// The stage is the child subreaper of all it starts (PR_SET_CHILD_SUBREAPER): a process of a
+	// role that outlives its role-init, which no PID namespace of the role's then ends, is handed
+	// to the stage as its parent exits, so the stage's own wait says whether any is left
+	// (childrenLeft), and no scan of /proc can miss one between its reads.
+	subreaper := ""
+	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
+		subreaper = "make the stage a child subreaper: " + err.Error()
+	}
 	if err := mountTmpfs(plan.Mount, "size=96m"); err != nil {
 		return err
 	}
-	// A mount the machine's /tmp carries, as a machine's /tmp may (a container runtime's leftover,
-	// say): made on a memory filesystem of the stage's own over the machine's /tmp, so the machine
-	// never sees it, and hidden by the stage's own /tmp below as any mount of the machine's is. So
-	// the row needs on every machine what a machine whose /tmp carries a mount needs.
+	// Two mounts under /tmp that the container's own /tmp hides, as it would hide a mount the
+	// machine's /tmp carries (a container runtime's leftover, say): made on a memory filesystem of
+	// the stage's own over the machine's /tmp, so the machine never sees them. stageShadowed is
+	// hidden by a mount made after it, the stage's own /tmp. stageBeneath is made after that /tmp,
+	// beneath it, through a handle on the directory it covers, so the mount table lists it after
+	// the mount that hides it, as a namespace gVisor copies may list a hidden mount: it numbers the
+	// copy's mounts in the order it walks each mount's children, a Go map's (cloneMountTree,
+	// gVisor's pkg/sentry/vfs/mount.go). The stage's own /tmp holds a directory of its own at
+	// stageBeneath's path, so a role-init that carried a mount by its path alone would hand the
+	// role the container's directory there.
 	if err := mountTmpfs("/tmp", "size=1m"); err != nil {
 		return err
 	}
-	if err := os.Mkdir(stageShadowed, 0o755); err != nil {
+	below, err := os.Open("/tmp")
+	if err != nil {
 		return err
 	}
-	if err := mountTmpfs(stageShadowed, "size=1m"); err != nil {
+	defer below.Close()
+	if err := mountHidden(stageShadowed); err != nil {
 		return err
 	}
 	// The stage's own /tmp and /dev/shm, so what the role plants if its privacy broke lands here
 	// and never on the machine, and the stage can see that it did not. Each hides every mount the
-	// machine's carries, and the stage's container carries a stand-in of each instead.
-	stoodIn := false
+	// machine's carries.
 	for _, dir := range []string{"/tmp", "/dev/shm"} {
 		if err := mountTmpfs(dir, "size=16m"); err != nil {
 			return err
 		}
-		hidden, err := standInForHidden(dir)
-		if err != nil {
-			return err
-		}
-		stoodIn = stoodIn || slices.Contains(hidden, stageShadowed)
 	}
-	if stoodIn {
-		fmt.Println("stage shadowed=stood-in")
-	} else {
-		fmt.Printf("stage shadowed=not listed under /tmp once hidden: %s\n", stageShadowed)
+	if err := mountHidden(fmt.Sprintf("/proc/self/fd/%d/%s", below.Fd(), filepath.Base(stageBeneath))); err != nil {
+		return err
+	}
+	if err := os.Mkdir(stageBeneath, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(stageBeneath, "marker"), []byte("container"), 0o644); err != nil {
+		return err
+	}
+	for _, path := range []string{stageShadowed, stageBeneath} {
+		fmt.Printf("stage %s=%s\n", filepath.Base(path), hiddenMount(path))
 	}
 	rolesDir := filepath.Join(plan.Mount, "roles")
 	fixedRoot := filepath.Join(plan.Mount, "fixed")
@@ -421,8 +461,9 @@ func runStage(plan stagePlan) error {
 	// under the home mounts at their path relative to the home, as the pod builder renders them,
 	// so the home itself carries none. One sits shallow and holds a mount of its own; one sits
 	// deep, under directories the home does not have. A mount /tmp carries, as an operator's
-	// volume may, is carried over the role's own /tmp. The pod's shared config home sits at its
-	// own place, holding the jj configuration workspace-init writes there and a mount of its own.
+	// volume may, is carried over the role's own /tmp, with a mount of its own inside it. The
+	// pod's shared config home sits at its own place, holding the jj configuration workspace-init
+	// writes there and a mount of its own.
 	carried := filepath.Join(plan.Mount, "carried")
 	nested := filepath.Join(plan.Mount, "nested")
 	shared := filepath.Join(plan.Mount, "shared-config")
@@ -449,6 +490,7 @@ func runStage(plan stagePlan) error {
 		{carried, filepath.Join(homeMounts, "other", "cache")},
 		{carried, filepath.Join(homeMounts, "deep", "sessions")},
 		{carried, "/tmp/mounted"},
+		{nested, "/tmp/mounted/nested"},
 		{shared, filepath.Join(homeMounts, ConfigHomeDir)},
 		{nested, filepath.Join(homeMounts, ConfigHomeDir, "nested")},
 	} {
@@ -478,22 +520,37 @@ func runStage(plan stagePlan) error {
 		if err := syscall.Mount("mqueue", "/dev/mqueue", "mqueue", 0, ""); err != nil {
 			return err
 		}
-		queue, err := os.OpenFile("/dev/mqueue/container-queue", os.O_RDONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		room, err := makeQueue("container-queue")
 		if err != nil {
 			return err
 		}
-		_ = queue.Close()
+		fmt.Printf("stage container-queue-room=%s\n", room)
+		if listed := presence("/dev/mqueue/container-queue"); listed != "present" {
+			return fmt.Errorf("the stage's /dev/mqueue does not list the queue it made in its own IPC namespace: %s", listed)
+		}
 		mqueue = "present"
 	}
 	fmt.Printf("stage mqueue=%s\n", mqueue)
 	roleInitLaunch = roleInitHelperLaunch(stageSelf)
 	layout := agentPlan{
 		Home: home, HomeMounts: homeMounts, RolesDir: rolesDir, FixedRoot: fixedRoot, Role: plan.Role,
-		Sibling: plan.Sibling, Owner: plan.Owner, OutsidePID: outside.Process.Pid, Detached: plan.Detached,
-		TestPGLog: true,
+		Sibling: plan.Sibling, Owner: plan.Owner, OutsidePID: outside.Process.Pid, Detached: detachedToken(),
+		TestPGLog: true, Deadline: plan.Deadline,
 	}
 
-	if err := runGeneration(plan, layout, 1, "agent"); err != nil {
+	// Each generation's role is looked for once every generation has run (reportDetached), in
+	// the namespaces the stage holds from just after it starts the generation's role-init, and
+	// its lines are printed however the stage ends.
+	var readings []detachedReading
+	defer func() {
+		// The process outside the role is the stage's own child, and the agents are done with it.
+		_ = outside.Process.Kill()
+		_, _ = outside.Process.Wait()
+		reportDetached(readings, subreaper, plan.Deadline)
+	}()
+	hold, err := runGeneration(plan, layout, 1, "agent")
+	readings = append(readings, takeDetached("stage", layout.Detached, hold))
+	if err != nil {
 		return err
 	}
 	homes := filepath.Join(rolesDir, RoleHomesDir, plan.Role)
@@ -503,7 +560,6 @@ func runStage(plan stagePlan) error {
 	fmt.Printf("stage container-home=%s\n", presence(filepath.Join(home, "planted")))
 	fmt.Printf("stage container-tmp=%s\n", presence(filepath.Join("/tmp", "planted")))
 	fmt.Printf("stage container-shm=%s\n", presence(filepath.Join("/dev/shm", "planted")))
-	fmt.Printf("stage detached=%s\n", detachedProcess(plan.Detached))
 	// The log's lines go on the one line a report carries (oneLine), here and in the agent.
 	fmt.Printf("stage testpg-source=%s\n", oneLine(content(serverLog)))
 	// Read without following a link: a link the role had put in the file's place would name
@@ -541,16 +597,16 @@ func runStage(plan stagePlan) error {
 	if err := appending.Close(); err != nil {
 		return err
 	}
-	layout.Detached = plan.Detached + "2"
+	layout.Detached = detachedToken()
 	// What the links named is reported even when the generation failed, so a role-init that
 	// followed one shows where it wrote.
-	relaunched := runGeneration(plan, layout, 2, "agent2")
+	hold, relaunched := runGeneration(plan, layout, 2, "agent2")
+	readings = append(readings, takeDetached("stage2", layout.Detached, hold))
 	fmt.Printf("stage2 sibling-config=%s\n", presence(siblingConfig))
 	fmt.Printf("stage2 sibling-state=%s\n", presence(filepath.Join(siblingState, "cache")))
 	if relaunched != nil {
 		return relaunched
 	}
-	fmt.Printf("stage2 detached=%s\n", detachedProcess(layout.Detached))
 
 	// The sibling role's first generation, after the role's two have written their own config
 	// home: what the role wrote there never reaches the sibling, nor the pod's shared one. A
@@ -568,12 +624,13 @@ func runStage(plan stagePlan) error {
 	siblingPlan := plan
 	siblingPlan.Role, siblingPlan.Sibling = plan.Sibling, plan.Role
 	siblingLayout := layout
-	siblingLayout.Role, siblingLayout.Sibling, siblingLayout.Detached = plan.Sibling, plan.Role, plan.Detached+"3"
+	siblingLayout.Role, siblingLayout.Sibling, siblingLayout.Detached = plan.Sibling, plan.Role, detachedToken()
 	siblingLayout.TestPGLog = false
-	if err := runGeneration(siblingPlan, siblingLayout, 1, "agent-sibling"); err != nil {
+	hold, err = runGeneration(siblingPlan, siblingLayout, 1, "agent-sibling")
+	readings = append(readings, takeDetached("stage-sibling", siblingLayout.Detached, hold))
+	if err != nil {
 		return err
 	}
-	fmt.Printf("stage-sibling detached=%s\n", detachedProcess(siblingLayout.Detached))
 	fmt.Printf("stage shared-config-planted=%s\n", presence(filepath.Join(shared, "git", "config")))
 	fmt.Printf("stage own-config-planted=%s\n", presence(filepath.Join(homes, RoleConfigHomeDir, "git", "config")))
 	if mqueue == "present" {
@@ -592,40 +649,66 @@ func copyExecutable(source, target string) error {
 	return os.WriteFile(target, body, 0o755)
 }
 
-// standInForHidden gives every mount still listed strictly under dir, which the stage's own
-// memory filesystem at dir now hides, a memory filesystem of the stage's own at that path, each
-// path's parent first, and answers those paths. The stage's container must be one an issue pod's
-// can be, and no pod's container lists a mount under its /tmp that it cannot reach: no mount may be
-// at or above /tmp there (CheckPod), so nothing hides one. role-init carries every mount listed
-// under /tmp from its path, and one it cannot find there stops the role (carryOver). A machine's
-// /tmp may carry mounts — a container runtime's leftover, or the stage's own (stageShadowed) — so
-// the stage's container carries an empty volume at each such path, as an operator's volume
-// under /tmp is carried, and nothing of the machine's reaches the role.
-func standInForHidden(dir string) ([]string, error) {
-	_, hidden, err := mountsUnder(dir)
+// mountHidden makes path a memory filesystem of the stage's own that holds the marker `hidden`.
+func mountHidden(path string) error {
+	if err := os.Mkdir(path, 0o755); err != nil {
+		return err
+	}
+	if err := mountTmpfs(path, "size=1m"); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(path, "marker"), []byte("hidden"), 0o644)
+}
+
+// hiddenMount says how the stage's container sees a mount it hid at path: whether its mount table
+// lists a mount there, read from mountinfo itself, and what the path reaches (reached).
+func hiddenMount(path string) string {
+	listed := "unlisted"
+	switch count, err := mountsAt(path); {
+	case err != nil:
+		return "unreadable: " + err.Error()
+	case count > 0:
+		listed = "listed"
+	}
+	return listed + " reaches=" + reached(path)
+}
+
+// mountsAt is how many mounts this process's mount table lists at path, read from mountinfo
+// itself.
+func mountsAt(path string) (int, error) {
+	table, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	slices.Sort(hidden)
-	for _, path := range hidden {
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			return nil, err
-		}
-		if err := mountTmpfs(path, "size=1m"); err != nil {
-			return nil, err
+	count := 0
+	for _, line := range strings.Split(string(table), "\n") {
+		if fields := strings.Fields(line); len(fields) > 4 && fields[4] == path {
+			count++
 		}
 	}
-	return hidden, nil
+	return count, nil
+}
+
+// reached is what path reaches where the stage hid a mount: `absent` where nothing is there, else
+// the marker of what is there, `hidden` for the hidden mount itself and `container` for the
+// directory the container's own /tmp holds over it.
+func reached(path string) string {
+	if found := presence(path); found != "present" {
+		return found
+	}
+	return content(filepath.Join(path, "marker"))
 }
 
 // runGeneration runs one generation of the role over the stage's layout and reports the wait
-// status role-init gave back for it.
-func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label string) error {
+// status role-init gave back for it. It holds the role's namespaces from just after role-init
+// starts (holdRole) and hands them back, for the caller to read and then let go of; with no
+// role-init started it holds none.
+func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label string) (roleHold, error) {
 	layout.Label = label
 	layout.Generation = generation
 	agent, err := json.Marshal(layout)
 	if err != nil {
-		return err
+		return roleHold{unreadable: "no role-init was started"}, err
 	}
 	process, err := newRoleProcess(RoleInitConfig{
 		RoleCover: RoleCover{
@@ -636,15 +719,16 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 		Argv: []string{stageSelf, "-test.run=^TestRoleInitAgentHelper$"},
 	}, append(os.Environ(), roleInitAgentEnv+"="+string(agent)), os.Stdout, os.Stderr)
 	if err != nil {
-		return err
+		return roleHold{unreadable: "no role-init was started"}, err
 	}
 	if err := process.start(); err != nil {
-		return err
+		return roleHold{unreadable: "no role-init was started"}, err
 	}
+	hold := holdRole(process.cmd.Process.Pid)
 	status, _ := io.ReadAll(process.status)
 	_ = process.status.Close()
 	if err := process.cmd.Wait(); err != nil {
-		return fmt.Errorf("role-init generation %d: %w", generation, err)
+		return hold, fmt.Errorf("role-init generation %d: %w", generation, err)
 	}
 	// The stage's line for a generation carries the agent's label with `stage` in place of
 	// `agent`: stage, stage2, stage-sibling.
@@ -654,37 +738,445 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 	} else {
 		fmt.Printf("%s status=%d\n", who, reported.ExitStatus())
 	}
-	return nil
+	return hold, nil
 }
 
-// detachedProcess says whether any process of the machine still runs the detached command the
-// role started, once the role's init has exited.
-func detachedProcess(marker string) string {
-	var unreadable string
-	gone := testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
-		entries, err := os.ReadDir("/proc")
+// detachedToken is the token one generation's detached process carries in its command line, by
+// which detachedProcess tells it from every other process of the machine: random, so no process
+// outside the role holds it, and drawn again for each generation, so no generation's reading
+// finds another's process.
+func detachedToken() string { return "legion-role-detached-" + rand.Text() }
+
+// detachedReading is one generation's role as the stage looks for what it left once that
+// generation's role-init has exited: the stage's line for it (who), the token the detached
+// process's command line carried, and the role's namespaces the stage holds (roleHold).
+type detachedReading struct {
+	who, token string
+	hold       roleHold
+}
+
+// roleHold is one generation's role namespaces as the stage holds them open, from just after it
+// starts role-init until it has read what the role left (reportDetached). A namespace's link is
+// its inode number, which a namespace made after the role's has ended may be given again; one
+// held open cannot end, so no later namespace takes its number, and a process found in it is the
+// role's whenever it started. The stage holds the role's PID and IPC namespaces where it does not
+// share them (links), and the role's user namespace (user): every namespace the role's
+// processes make, a user namespace of their own included, descends from it. It does not hold the
+// role's mount namespace: that would keep the generation's home layer mounted while the next
+// generation mounts its own over the same directories. Unreadable says why the stage holds
+// nothing to look in; userUnread why it reads no user namespace's ancestry.
+type roleHold struct {
+	files                  []*os.File
+	links                  map[string]string
+	user                   *os.File
+	userUnread, unreadable string
+}
+
+// nsGetParent is NS_GET_PARENT, _IO(0xb7, 0x2) (include/uapi/linux/nsfs.h): the ioctl that opens
+// the parent of the user namespace a descriptor holds.
+const nsGetParent = 0xb702
+
+// holdRole opens the namespaces of role-init at pid (roleHold), each named by its link, and keeps
+// those the stage does not share. It checks, on the role's own user namespace, that the kernel
+// answers its parent with the stage's user namespace: where it does not (gVisor shows no real
+// user namespace), it reads no ancestry and says so.
+func holdRole(pid int) roleHold {
+	hold := roleHold{links: map[string]string{}}
+	for _, kind := range []string{"pid", "ipc", "user"} {
+		file, err := os.Open(filepath.Join("/proc", strconv.Itoa(pid), "ns", kind))
 		if err != nil {
-			unreadable = "unreadable: " + err.Error()
-			return true
-		}
-		for _, entry := range entries {
-			if _, err := strconv.Atoi(entry.Name()); err != nil {
+			if kind == "user" {
+				hold.userUnread = "the role's user namespace: " + err.Error()
 				continue
 			}
-			body, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
-			if err == nil && strings.Contains(string(body), marker) {
-				return false
+			hold.unreadable = fmt.Sprintf("hold the role's %s namespace: %v", kind, err)
+			return hold
+		}
+		hold.files = append(hold.files, file)
+		link, err := os.Readlink(filepath.Join("/proc/self/fd", strconv.Itoa(int(file.Fd()))))
+		if err != nil {
+			hold.unreadable = fmt.Sprintf("the link of the role's %s namespace: %v", kind, err)
+			return hold
+		}
+		own, err := os.Readlink(filepath.Join("/proc/self/ns", kind))
+		if err != nil {
+			hold.unreadable = fmt.Sprintf("the stage's own %s namespace: %v", kind, err)
+			return hold
+		}
+		switch {
+		case link == own && kind == "user":
+			hold.userUnread = "the role shares the stage's user namespace"
+		case link == own:
+		case kind == "user":
+			hold.user = file
+		default:
+			hold.links[kind] = link
+		}
+	}
+	if hold.user != nil {
+		if parent, err := namespaceParent(hold.user); err != nil {
+			hold.user, hold.userUnread = nil, "the parent of the role's user namespace: "+err.Error()
+		} else if stage, err := os.Open("/proc/self/ns/user"); err != nil {
+			_ = parent.Close()
+			hold.user, hold.userUnread = nil, "the stage's own user namespace: "+err.Error()
+		} else {
+			if !sameNamespace(parent, stage) {
+				hold.user, hold.userUnread = nil, "the parent of the role's user namespace is not the stage's"
+			}
+			_ = parent.Close()
+			_ = stage.Close()
+		}
+	}
+	if len(hold.links) == 0 && hold.user == nil {
+		hold.unreadable = "the role shares with the stage every namespace the stage could look in"
+	}
+	return hold
+}
+
+// close lets go of every namespace the hold keeps open.
+func (hold roleHold) close() {
+	for _, file := range hold.files {
+		_ = file.Close()
+	}
+}
+
+// namespaceParent opens the parent of the user namespace file holds (NS_GET_PARENT). The kernel
+// refuses it, with EPERM, for a parent outside the caller's own user namespace and those under
+// it.
+func namespaceParent(file *os.File) (*os.File, error) {
+	fd, err := unix.IoctlRetInt(int(file.Fd()), nsGetParent)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), "parent user namespace"), nil
+}
+
+// sameNamespace says whether two namespace descriptors hold one namespace: the same inode of the
+// same namespace filesystem.
+func sameNamespace(a, b *os.File) bool {
+	var one, two unix.Stat_t
+	return unix.Fstat(int(a.Fd()), &one) == nil && unix.Fstat(int(b.Fd()), &two) == nil && one.Dev == two.Dev && one.Ino == two.Ino
+}
+
+// takeDetached is the stage's reading of the generation whose line is who, whose detached process
+// carried token, and whose namespaces the stage holds in hold.
+func takeDetached(who, token string, hold roleHold) detachedReading {
+	if hold.userUnread != "" {
+		fmt.Printf("%s detached-user-ancestry=unread: %s\n", who, hold.userUnread)
+	}
+	return detachedReading{who: who, token: token, hold: hold}
+}
+
+// reportDetached prints, for each of readings, `<who> detached=` and whether anything of that
+// generation's role is still there, naming each process that is; then `stage left-behind=`,
+// whether the stage, the child subreaper of all it starts, is left any child (childrenLeft),
+// or why it cannot tell (subreaper, or a canary it did not receive: subreaperReceives); and then
+// lets go of the namespaces it held. The stage
+// shares the machine's PID namespace, so /proc lists every process of the machine. A process
+// reads as the role's by the token (detachedToken), never by a value a process outside the role
+// may carry — a pid, a port, a temporary directory's random digits — which would read a stranger
+// as the role's detached process still running; or by running in one of the role's namespaces
+// the stage holds, or in a user namespace that descends from the role's (roleHold): a process
+// that has exec'd another command no longer carries the token, nor does a process it started,
+// and a process that made namespaces of its own still descends from the role's user namespace.
+// A scan of /proc is no one moment, though: a chain of processes, each starting the next and
+// exiting, can be read after the one it has left and before the one it has started. The
+// subreaper's wait is one moment, so it decides whether anything is left, and the scan says
+// what.
+//
+// Each generation's role-init has been waited for. Linux lets a PID namespace's init be waited
+// for only once every other process of the namespace is gone (kernel/pid_namespace.c,
+// zap_pid_ns_processes), so there the first reading is the answer. gVisor's init sends each of
+// them SIGKILL and exits without that wait (pkg/sentry/kernel/task_exit.go, exitChildrenLocked),
+// so a process can still be ending: the reading waits for it until deadline, the test binary's
+// own less beforeDeadline's margin, and a process still there then is one the namespace's end
+// left alive. It reads every generation's at once, after the last generation: a wait spent to
+// the deadline then leaves no generation still to run, so the row fails by name rather than at
+// the binary's own deadline. A scan reads every process of the machine, which on a loaded
+// machine of thousands of processes takes seconds, so the reading starts no scan that, as long as
+// the longest one so far, would end past the deadline: what it read last is then the answer. Its
+// line `stage detached-reading=` says how many scans it made and the longest.
+func reportDetached(readings []detachedReading, subreaper string, deadline time.Time) {
+	defer func() {
+		for _, reading := range readings {
+			reading.hold.close()
+		}
+	}()
+	if subreaper == "" {
+		subreaper = subreaperReceives()
+	}
+	var found [][]string
+	var unreadable, unwaited error
+	left := false
+	var scans int
+	var longest time.Duration
+	began := time.Now()
+	testwait.Holds(time.Until(deadline), 50*time.Millisecond, func() bool {
+		scan := time.Now()
+		found, unreadable = leftBehind(readings)
+		if subreaper == "" {
+			left, unwaited = childrenLeft()
+		}
+		scans++
+		longest = max(longest, time.Since(scan))
+		scanned := unreadable != nil || !slices.ContainsFunc(found, func(each []string) bool { return len(each) > 0 })
+		return scanned && (unwaited != nil || !left) || time.Until(deadline) < 2*longest
+	})
+	fmt.Printf("stage detached-reading=%d scans in %s, the longest %s\n", scans, time.Since(began).Round(time.Millisecond), longest.Round(time.Millisecond))
+	for index, reading := range readings {
+		verdict := "gone"
+		switch {
+		case reading.hold.unreadable != "":
+			verdict = "unreadable: " + reading.hold.unreadable
+		case unreadable != nil:
+			verdict = "unreadable: " + unreadable.Error()
+		case len(found[index]) > 0:
+			verdict = "running: " + strings.Join(found[index], "; ")
+		}
+		fmt.Printf("%s detached=%s\n", reading.who, verdict)
+	}
+	switch {
+	case subreaper != "":
+		fmt.Printf("stage left-behind=unread: %s\n", subreaper)
+	case unwaited != nil:
+		fmt.Printf("stage left-behind=unread: %v\n", unwaited)
+	case left:
+		fmt.Printf("stage left-behind=%s\n", childrenNamed())
+	default:
+		fmt.Println("stage left-behind=none")
+	}
+}
+
+// childrenLeft reaps every child of the stage that has exited and says whether any child is
+// left: a wait4 the kernel answers in one moment, ECHILD when the stage has no child at all.
+func childrenLeft() (bool, error) {
+	for {
+		var status syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG|syscall.WALL, nil)
+		switch {
+		case errors.Is(err, syscall.ECHILD):
+			return false, nil
+		case errors.Is(err, syscall.EINTR):
+			continue
+		case err != nil:
+			return false, fmt.Errorf("wait for the stage's children: %w", err)
+		case pid == 0:
+			return true, nil
+		}
+	}
+}
+
+// subreaperReceives is the control of the left-behind reading: an empty answer when the stage
+// receives an orphan of its own and its reading sees it, else why not. The reading says `none`
+// when the stage's wait finds no child; a stage that is no subreaper, or a reading that never
+// waits, says the same while what a role left still runs elsewhere. So the stage starts a
+// canary: a shell that starts a sleep and exits, which orphans the sleep. A subreaper is handed
+// the orphan as the shell exits, before its wait returns. Then childrenLeft, the reading itself,
+// must find a child, and a wait4 on the sleep's own pid must find it the stage's live child.
+// The sleep is killed and reaped either way, by its pid.
+func subreaperReceives() string {
+	const failed = "the subreaper did not receive its canary"
+	out, err := exec.Command("/bin/sh", "-c", "/bin/sleep 600 </dev/null >/dev/null 2>&1 & echo $!").Output()
+	if err != nil {
+		return fmt.Sprintf("%s: start it: %v", failed, err)
+	}
+	canary, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return fmt.Sprintf("%s: its pid %q: %v", failed, out, err)
+	}
+	defer func() {
+		_ = syscall.Kill(canary, syscall.SIGKILL)
+		var status syscall.WaitStatus
+		for {
+			if _, err := syscall.Wait4(canary, &status, syscall.WALL, nil); !errors.Is(err, syscall.EINTR) {
+				return
 			}
 		}
-		return true
-	})
-	if unreadable != "" {
-		return unreadable
+	}()
+	left, err := childrenLeft()
+	switch {
+	case err != nil:
+		return fmt.Sprintf("%s: %v", failed, err)
+	case !left:
+		return fmt.Sprintf("%s: the stage's wait found no child while its canary, pid %d, ran", failed, canary)
 	}
-	if gone {
-		return "gone"
+	var status syscall.WaitStatus
+	if pid, err := syscall.Wait4(canary, &status, syscall.WNOHANG|syscall.WALL, nil); err != nil || pid != 0 {
+		return fmt.Sprintf("%s: a wait on its pid %d answered pid %d, error %v, not a live child of the stage's", failed, canary, pid, err)
 	}
-	return "running"
+	return ""
+}
+
+// childrenNamed names each child the stage has, by pid and command line, from each of its threads'
+// /proc/self/task/<tid>/children: a list read in several reads, so a child that moved between
+// them can be missing from it, which the answer then says.
+func childrenNamed() string {
+	var named []string
+	tasks, _ := filepath.Glob("/proc/self/task/*/children")
+	for _, task := range tasks {
+		body, err := os.ReadFile(task)
+		if err != nil {
+			continue
+		}
+		for _, pid := range strings.Fields(string(body)) {
+			cmdline, _ := os.ReadFile(filepath.Join("/proc", pid, "cmdline"))
+			named = append(named, fmt.Sprintf("pid %s (%s)", pid, strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " "))))
+		}
+	}
+	if len(named) == 0 {
+		return "children the stage's wait found and its thread lists did not name"
+	}
+	return "children of the stage's, none its own: " + strings.Join(named, "; ")
+}
+
+// leftBehind names, for each of readings, each process of the machine whose command line holds
+// its token, or that runs in its role (processNamespaces.in), by its pid and its command line. A
+// /proc that does not list the stage's own process is not the stage's PID namespace's, and no
+// reading of it says that a process is gone.
+func leftBehind(readings []detachedReading) ([][]string, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	self, listedSelf := strconv.Itoa(os.Getpid()), false
+	found := make([][]string, len(readings))
+	for _, entry := range entries {
+		if _, err := strconv.Atoi(entry.Name()); err != nil {
+			continue
+		}
+		listedSelf = listedSelf || entry.Name() == self
+		body, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		cmdline := strings.TrimSpace(strings.ReplaceAll(string(body), "\x00", " "))
+		// A process that has exited, a zombie included, runs in no namespace of the role's.
+		state, _, err := procStat(entry.Name())
+		live := err == nil && state != "Z" && state != "X"
+		process := processNamespaces{pid: entry.Name(), links: map[string]string{}}
+		for index, reading := range readings {
+			if reading.hold.unreadable != "" {
+				continue
+			}
+			where := ""
+			if live {
+				if where, err = process.in(reading.hold); err != nil {
+					return nil, err
+				}
+			}
+			switch carries := strings.Contains(string(body), reading.token); {
+			case where != "":
+				found[index] = append(found[index], fmt.Sprintf("pid %s (%s), %s", entry.Name(), cmdline, where))
+			case carries:
+				found[index] = append(found[index], fmt.Sprintf("pid %s (%s)", entry.Name(), cmdline))
+			}
+		}
+	}
+	if !listedSelf {
+		return nil, fmt.Errorf("/proc does not list the stage's own pid %s, so it is not the stage's PID namespace's", self)
+	}
+	return found, nil
+}
+
+// processNamespaces is what one scan of leftBehind reads of the namespaces of the process at pid,
+// once for every reading: its namespace links (links), and the user namespaces from its own up
+// through each parent the kernel will open for the stage (ancestry).
+type processNamespaces struct {
+	pid      string
+	links    map[string]string
+	ancestry []unix.Stat_t
+	walked   bool
+}
+
+// in says where the process runs in the role hold keeps — `in the role's <kind> namespace`, or
+// `in a user namespace of the role's` — or the empty string for nowhere. A process whose
+// namespaces the kernel will not show the stage is nowhere: every process of the role runs in a
+// user namespace that descends from the stage's own, where the stage holds every capability and
+// so may read any of them, so a refused read is of a process outside the role — measured: another
+// process of this uid on the machine refused it.
+func (process *processNamespaces) in(hold roleHold) (string, error) {
+	for _, kind := range []string{"pid", "ipc"} {
+		want, ok := hold.links[kind]
+		if !ok {
+			continue
+		}
+		link, read := process.links[kind]
+		if !read {
+			var err error
+			link, err = os.Readlink(filepath.Join("/proc", process.pid, "ns", kind))
+			switch {
+			case errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrPermission):
+				link = ""
+			case err != nil:
+				return "", fmt.Errorf("the %s namespace of pid %s: %w", kind, process.pid, err)
+			}
+			process.links[kind] = link
+		}
+		if link == want {
+			return "in the role's " + kind + " namespace", nil
+		}
+	}
+	if hold.user == nil {
+		return "", nil
+	}
+	var role unix.Stat_t
+	if err := unix.Fstat(int(hold.user.Fd()), &role); err != nil {
+		return "", fmt.Errorf("the role's user namespace: %w", err)
+	}
+	process.walk()
+	for _, each := range process.ancestry {
+		if each.Dev == role.Dev && each.Ino == role.Ino {
+			return "in a user namespace of the role's", nil
+		}
+	}
+	return "", nil
+}
+
+// walk reads, once, the user namespace of the process and each parent of it the kernel opens for
+// the stage: it stops at the first it refuses, which is above the stage's own, and at 33, more
+// than the 32 levels the kernel allows.
+func (process *processNamespaces) walk() {
+	if process.walked {
+		return
+	}
+	process.walked = true
+	file, err := os.Open(filepath.Join("/proc", process.pid, "ns", "user"))
+	if err != nil {
+		return
+	}
+	for range 33 {
+		var each unix.Stat_t
+		if unix.Fstat(int(file.Fd()), &each) != nil {
+			break
+		}
+		process.ancestry = append(process.ancestry, each)
+		parent, err := namespaceParent(file)
+		if err != nil {
+			break
+		}
+		_ = file.Close()
+		file = parent
+	}
+	_ = file.Close()
+}
+
+// procStat reads the state and the start time of the process at pid from /proc/<pid>/stat: its
+// third and twenty-second fields, counted past the command in parentheses, which may itself hold
+// spaces and parentheses.
+func procStat(pid string) (string, string, error) {
+	body, err := os.ReadFile(filepath.Join("/proc", pid, "stat"))
+	if err != nil {
+		return "", "", err
+	}
+	end := strings.LastIndexByte(string(body), ')')
+	if end < 0 {
+		return "", "", fmt.Errorf("/proc/%s/stat holds no command: %q", pid, body)
+	}
+	fields := strings.Fields(string(body[end+1:]))
+	if len(fields) < 20 {
+		return "", "", fmt.Errorf("/proc/%s/stat holds %d fields after its command, not 20", pid, len(fields))
+	}
+	return fields[0], fields[19], nil
 }
 
 // TestRoleInitAgentHelper is the worker shim's stand-in: the process role-init starts inside the
@@ -758,6 +1250,24 @@ func TestRoleInitAgentHelper(t *testing.T) {
 		say("home-mounts-view", strconv.Itoa(len(entries)))
 	}
 	say("tmp-mount", content(filepath.Join("/tmp", "mounted", "marker")))
+	say("tmp-mount-nested", content(filepath.Join("/tmp", "mounted", "nested", "marker")))
+	// How many mounts the role's table lists at the carried mount and at the mount inside it. The
+	// container's own mount at each path is in the role's table too, hidden under the role's own
+	// /tmp, so the row reads how many more the inner path has than the outer one: one more is a
+	// bind role-init made of the inner mount by its own path.
+	outer, outerErr := mountsAt(filepath.Join("/tmp", "mounted"))
+	inner, innerErr := mountsAt(filepath.Join("/tmp", "mounted", "nested"))
+	if err := errors.Join(outerErr, innerErr); err != nil {
+		say("tmp-mount-nested-extra", "unreadable: "+err.Error())
+	} else {
+		say("tmp-mount-mounts", strconv.Itoa(outer))
+		say("tmp-mount-nested-mounts", strconv.Itoa(inner))
+		say("tmp-mount-nested-extra", strconv.Itoa(inner-outer))
+	}
+	// The mounts the container's /tmp hides are no mounts of /tmp's to carry: nothing is at their
+	// paths in the role's own /tmp, neither the mount nor the container's directory over it.
+	say("tmp-shadowed", reached(stageShadowed))
+	say("tmp-beneath", reached(stageBeneath))
 	// What an earlier generation of this role wrote under its home is still the role's own: the
 	// writable layer is the role's across its generations, as a role container's filesystem was.
 	say("home-carryover", presence(filepath.Join(plan.Home, "planted")))
@@ -801,38 +1311,76 @@ func TestRoleInitAgentHelper(t *testing.T) {
 		_ = pty.Close()
 	}
 	say("container-queue", presence("/dev/mqueue/container-queue"))
-	if queue, err := os.OpenFile("/dev/mqueue/role-queue", os.O_RDONLY|os.O_CREATE|os.O_EXCL, 0o600); err != nil {
+	switch room, err := makeQueue("role-queue"); {
+	case err != nil:
 		say("own-queue", err.Error())
-	} else {
+	case presence("/dev/mqueue/role-queue") != "present":
+		say("own-queue-room", room)
+		say("own-queue", "made in the role's IPC namespace, and its /dev/mqueue does not list it: "+presence("/dev/mqueue/role-queue"))
+	default:
+		say("own-queue-room", room)
 		say("own-queue", "made")
-		_ = queue.Close()
 	}
 	for _, dir := range []string{plan.Home, "/tmp", "/var/tmp", "/dev/shm"} {
 		if err := os.WriteFile(filepath.Join(dir, "planted"), []byte("planted"), 0o600); err != nil {
 			say("write-"+dir, err.Error())
 		}
 	}
-	// The detached process says it is running by writing trapped, which it does once its ignore
+	// The detached process says it is running by making its marker, which it does once its ignore
 	// of SIGTERM is installed: the agent exits the moment it is told that, role-init then reports
 	// the shim's status and signals the role's whole namespace, and a detached process still
 	// under the default disposition would die of that SIGTERM. The row reads only that nothing of
 	// the role is left, so such a run would pass without the SIGKILL this case is about having
-	// reached anything. The marker is removed again before the agent leaves, so the role's own
-	// /tmp is what it was.
+	// reached anything. The shell carries the generation's token as its $0, by which the stage
+	// finds it, and stays the process that ignores SIGTERM for as long as it runs: its last
+	// command is `:`, so the shell runs the sleep as a child of its own rather than exec it, which
+	// a shell may do with its last command, leaving no process with the token in its command line.
+	// It names its marker by its own pid ($$), so the agent can read, while the role still runs,
+	// that the process it started is the one that reported and carries the token
+	// (detachedCarrier): a token no live process of the role ever carried is gone from the start,
+	// and the stage's `detached=gone` would hold for it. The markers are removed again before the
+	// agent leaves, so the role's own /tmp is what it was.
 	trapped := "/tmp/detached-trapped"
-	detached := exec.Command("/bin/sh", "-c", "trap '' TERM; : >"+trapped+"; /bin/sleep "+plan.Detached)
+	detached := exec.Command("/bin/sh", "-c", "trap '' TERM; : >"+trapped+"-$$; /bin/sleep 987654; :", plan.Detached)
 	detached.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := detached.Start(); err != nil {
 		say("detached-start", err.Error())
-	} else if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
-		_, err := os.Stat(trapped)
-		return err == nil
-	}) {
-		say("detached-trap", "the detached process never reported its ignore of SIGTERM")
+	} else {
+		var reported []string
+		if !testwait.Holds(time.Until(plan.Deadline), 10*time.Millisecond, func() bool {
+			reported, _ = filepath.Glob(trapped + "*")
+			return len(reported) > 0
+		}) {
+			say("detached-trap", "the detached process had not reported its ignore of SIGTERM by the stage's deadline, "+plan.Deadline.UTC().Format(time.RFC3339Nano)+", which an earlier wait of the stage's may have spent")
+		}
+		say("detached-carrier", detachedCarrier(detached.Process.Pid, plan.Detached, trapped, reported))
 	}
-	_ = os.Remove(trapped)
+	markers, _ := filepath.Glob(trapped + "*")
+	for _, marker := range markers {
+		_ = os.Remove(marker)
+	}
 	say("done", "yes")
 	os.Exit(0)
+}
+
+// detachedCarrier is what the agent reads, while the role runs, of the detached process it
+// started at pid: `carried` when that process is the one that reported its ignore of SIGTERM
+// (reported, the markers the agent found under trapped's name, is trapped-<pid> alone) and its
+// command line holds token, which is how the stage finds it once role-init has exited; otherwise
+// what it read instead. The reading is of a live process: a process that has ended, a zombie
+// included, shows no command line.
+func detachedCarrier(pid int, token, trapped string, reported []string) string {
+	if want := fmt.Sprintf("%s-%d", trapped, pid); !slices.Equal(reported, []string{want}) {
+		return fmt.Sprintf("the ignore of SIGTERM was reported by %q, not by the detached process alone (%s)", reported, want)
+	}
+	body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return fmt.Sprintf("pid %d's command line is unreadable: %v", pid, err)
+	}
+	if !strings.Contains(string(body), token) {
+		return fmt.Sprintf("pid %d does not carry the token %s: %s", pid, token, strings.TrimSpace(strings.ReplaceAll(string(body), "\x00", " ")))
+	}
+	return "carried"
 }
 
 // readable is what the role gets when it tries to read path: `refused` where the kernel denies
@@ -1037,6 +1585,53 @@ func ptsEntries() string {
 		}
 	}
 	return strconv.Itoa(count)
+}
+
+// makeQueue makes the POSIX message queue name in the caller's IPC namespace, as mq_open(3)
+// does, with room for one message of one byte, the least the kernel allows, and reads that room
+// back (mq_getattr) before it answers: a queue made with more room fails here, by name, whatever
+// else the machine holds. A queue's bytes, its messages' room and their index, are charged to
+// its owner's uid at every level of its user namespaces up to the machine's, against
+// RLIMIT_MSGQUEUE (ipc/mqueue.c, mqueue_get_inode), so every queue of one uid on a machine draws
+// on one budget: 819,200 bytes by default. A queue made with open(2) on an mqueue filesystem
+// takes the namespace's default room, ten messages of 8,192 bytes, about 82 KB, and five of these
+// rows at once, on a machine whose agents share one uid, spent that budget: the next queue was
+// refused with EMFILE, "too many open files". One of one byte takes about a hundred, so the row
+// needs a few hundred bytes of the uid's budget.
+//
+// It answers the room it read, `1 x 1 B`. gVisor implements no mq_getsetattr (ENOSYS) and
+// charges no queue to RLIMIT_MSGQUEUE (pkg/sentry/kernel/mq), so there the room is unread, which
+// the answer says, and no queue of the row's can be refused for it.
+func makeQueue(name string) (string, error) {
+	path, err := syscall.BytePtrFromString(name)
+	if err != nil {
+		return "", err
+	}
+	attr := mqAttr{maxmsg: 1, msgsize: 1}
+	fd, _, errno := syscall.Syscall6(syscall.SYS_MQ_OPEN, uintptr(unsafe.Pointer(path)), uintptr(syscall.O_RDONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_CLOEXEC),
+		0o600, uintptr(unsafe.Pointer(&attr)), 0, 0)
+	if errno != 0 {
+		return "", fmt.Errorf("make the message queue %s: %w", name, errno)
+	}
+	defer syscall.Close(int(fd))
+	var got mqAttr
+	_, _, errno = syscall.Syscall(syscall.SYS_MQ_GETSETATTR, fd, 0, uintptr(unsafe.Pointer(&got)))
+	switch {
+	case errno == syscall.ENOSYS:
+		return "unread: this kernel has no mq_getsetattr", nil
+	case errno != 0:
+		return "", fmt.Errorf("read the room of the message queue %s: %w", name, errno)
+	case got.maxmsg != 1 || got.msgsize != 1:
+		return "", fmt.Errorf("the message queue %s has room for %d messages of %d B, not 1 of 1 B", name, got.maxmsg, got.msgsize)
+	}
+	return "1 x 1 B", nil
+}
+
+// mqAttr is the kernel's struct mq_attr: four longs, then four reserved, and a C long is a Go int
+// on Linux.
+type mqAttr struct {
+	flags, maxmsg, msgsize, curmsgs int
+	_                               [4]int
 }
 
 func presence(path string) string {

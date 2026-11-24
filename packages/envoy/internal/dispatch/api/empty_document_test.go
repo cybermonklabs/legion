@@ -37,6 +37,7 @@ func createWithNoContent(t *testing.T, handler http.Handler, key string, body ma
 // holds it. The refusals a write already read - a closed issue, an artifact of another kind -
 // stand ahead of it, and a multipart body still needs its file.
 func TestADocumentIsMadeWithNoContent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	path := blankCreatePath(issue.Key)
@@ -159,6 +160,7 @@ func TestADocumentIsMadeWithNoContent(t *testing.T) {
 // title. A title that gives another slug makes a document that plays no role, and the role
 // document written with content is still the issue's.
 func TestAContentFreeCreateTakesNoDocumentRole(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createArtifactIssue(t, handler)
 	ctx := context.Background()
@@ -205,6 +207,7 @@ func TestAContentFreeCreateTakesNoDocumentRole(t *testing.T) {
 // attached to its issue, on the issue's document list, with the row and the event an uploaded
 // document has. Only its content differs, and a person writes that in Dispatch.
 func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createArtifactIssue(t, handler)
 	owner := "/api/v1/issues/" + issue.Key

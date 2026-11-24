@@ -40,6 +40,7 @@ func requireStoredTree(t *testing.T, database *store.Store, what, text string) {
 // resolution's reason, a review's reason and a document version's markdown. Each is driven through
 // the routes a client calls, so what the row is compared with is what the write stored.
 func TestEveryWriteOfAStoredTextStoresItsDisplayTree(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	const (
 		commentBody   = "Check **this** before the deploy."
@@ -184,6 +185,7 @@ func TestEveryWriteOfAStoredTextStoresItsDisplayTree(t *testing.T) {
 // A broadcast is one text however many recipients it reaches: every copy holds the body the send
 // was made with, and one row holds its tree.
 func TestABroadcastStoresTheOneTreeOfItsBody(t *testing.T) {
+	t.Parallel()
 	const body = "Status, please: the **deploy** is held."
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
@@ -215,6 +217,7 @@ func TestABroadcastStoresTheOneTreeOfItsBody(t *testing.T) {
 // same rows: this is the reading of the payload, and the shape it answers for is the shape a read
 // of that event answers.
 func TestThePublishPathStoresTheTreesOfAnEventsPayloadTexts(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	const (
 		question    = "Ship the **release** today, as the event carries it?"
@@ -250,6 +253,7 @@ func TestThePublishPathStoresTheTreesOfAnEventsPayloadTexts(t *testing.T) {
 // failure is logged and changes no answer. The table is dropped, which is every failure the store
 // can meet - a refused statement - as a caller sees it.
 func TestAWriteWhoseTreeCannotBeStoredStillSucceeds(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "NOTREE", "A store that fails", "# Spec\n\nWritten here.\n")
 	if _, err := database.Pool.Exec(context.Background(), `drop table text_trees`); err != nil {

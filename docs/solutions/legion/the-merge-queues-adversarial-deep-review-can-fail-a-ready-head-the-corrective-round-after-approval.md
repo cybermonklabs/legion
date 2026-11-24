@@ -12,7 +12,7 @@ tags:
   - implementer
   - merger
 date: 2026-09-18
-status: active
+status: superseded in part — The READY route and its READY_UNREVIEWED_CHANGE refusal are deleted, and the merger reads the pull request and merges the head itself. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker (READY and post-approval mechanics)
 related_issues:
   - "LEGION-105"

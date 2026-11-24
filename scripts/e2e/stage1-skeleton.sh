@@ -266,7 +266,13 @@ plugins="$work/home/.omp/plugins/node_modules/@sjawhar"
 mkdir -p "$plugins/pi-legion" "$plugins/pi-envoy"
 jq '{name, version, legion}' "$root/packages/pi-legion/package.json" >"$plugins/pi-legion/package.json"
 jq '{name, version}' "$root/packages/pi-envoy/package.json" >"$plugins/pi-envoy/package.json"
-pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home")
+# PATH is handed over by value, as the other e2e scripts hand theirs to the services they start
+# through held-port.py: start_kept runs `python3` by name (lib/rig.sh), and the first python3 can
+# be a version manager's shim that starts the interpreter with a PATH of its own. mise 2026.10.11's
+# python3 shim, in a mise-activated environment, put that environment's PATH in front of the
+# entries put first, so the daemon held-port.py starts would find that environment's tmux before
+# the real one put first above.
+pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home" PATH="$PATH")
 
 # Beyond what boot needs, the file plants what the state's `settings` must show and must not
 # (LEGION-791): a review_round_cap the default would not answer, a github_apps block whose

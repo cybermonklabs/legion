@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  A phase worker's first step reads the issue, its task and the earlier phases' handoffs, and
+  takes its architect's decisions from its task and its messages. It no longer reads the issue's
+  `open-items.md` document, which no start task named.
+time: 2026-11-23T03:13:45Z
+custom:
+    Issue: pr5172

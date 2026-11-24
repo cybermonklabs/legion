@@ -50,6 +50,7 @@ func (issueProvisionTokens) Token(context.Context, ghrepo.Repository) (string, e
 // session is the store's and outlives the Sandbox, which owned no part of it. The tree stays live
 // until its linger closes, and its cleanup then finds the issue's Sandbox already gone.
 func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
@@ -224,6 +225,7 @@ func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, tree string,
 // close takes the issue out of the workflow, and its row (record.IssueSuspend) deletes the kept
 // volume's Sandbox in the foreground too.
 func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// overSandbox is the idle rig whose issue's Sandbox the test API holds, Running, owning a kept
 	// volume where kept is true and no volume otherwise, with the issue's teardowns made by the
@@ -343,6 +345,7 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 // starts again on a new Sandbox and resumes the sessions its claims kept: the close cleared
 // neither the session id nor the resume path.
 func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
+	t.Parallel()
 	// Two children under the running root: the one closed as done, whose planner is stopped with
 	// its session kept, and the one parked in backlog, whose tester is. The root's own implementer
 	// works the phase the root stands in, so admission's pass starts no worker of the root's while
@@ -549,7 +552,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		putOutboxIssue(t, pool, records, child)
 	}
 	approved := 1
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -667,7 +670,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		t.Helper()
 		row := mustOutboxRow(t, issue, record.SuperviseRequest{Op: "start", Tree: root.Key, Role: role, Generation: 1}, due)
 		var id int64
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			id, err = records.EnqueueID(ctx, tx, row)
 			return err
@@ -695,6 +698,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 // itself (record.OutOfWorkflow) rather than a list of its own, so every status that takes an issue
 // out of the workflow declines the start while a status the workflow runs in still starts it.
 func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
+	t.Parallel()
 	// departed reads what a declined start leaves behind: nothing launched — the fixture seeds the
 	// child's Sandbox, so a Sandbox created here is a relaunch and nothing else — no start recorded
 	// against the claim, a claim with no process and no locator, and the issue's Sandbox given back
@@ -829,6 +833,7 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 // came back, and the second over the stand-in runtime, because what it must show is which rows the
 // re-admission wrote and which claim each brought back.
 func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
+	t.Parallel()
 	// Door one. The rig is newFenceRig's, the one
 	// TestAStartThatOutlivesItsIssuesDepartureStartsNothing reads the fence in, cut to the single
 	// park this door needs: a running root holding its admission slot, the tree's one child under
@@ -1038,14 +1043,14 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		}
 		// The rows admit.startMidPhaseMembers wrote for the member, which is the only pass that
 		// wrote a start of it here: the phase's own role, the implementer, through
-		// workflow.StartOrOwe, which writes one row carrying the phase's resume task
-		// (workflow.ResumeTask), marked ResumeTask and held unclaimable until the member holds a
+		// workflow.StartOrOwe, which writes one row carrying the phase's resume task (workflow's
+		// Engine.ResumeTask), marked ResumeTask and held unclaimable until the member holds a
 		// slot — and, beside it, one start with no task at all for each other role of the member
 		// that has run, since a role with nothing to do comes back and is told nothing. The
 		// planner is the one such role here: the claim row it kept through the close is the
 		// durable record that it ran, and the tester, the reviewer, the merger and the member's
 		// own sub-architect hold none, so the re-admission starts no session for them at all.
-		resume := workflow.ResumePhaseTask(*carried)
+		resume := resumeTaskOf(t, pool, engine, member.Key)
 		taskless := map[claim.Role]bool{}
 		var owed *record.SuperviseRequest
 		for _, row := range startRequestsOf(t, pool, member.Key) {
@@ -1145,6 +1150,7 @@ func startRequestsOf(t *testing.T, pool *store.Pool, issue string) []record.Supe
 // the claim records the row as its newest start, and the issue is still done when the look is
 // running: a look runs behind the close rather than reopening the issue.
 func TestAProductionCheckLookStillStartsItsRole(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

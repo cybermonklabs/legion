@@ -28,22 +28,26 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 
 // publishPastInProcess makes publish, and makes it again inProcessPause later each time a
 // clustered stream refuses it as still in process under another publish under the same message
-// id (bus.ErrDuplicateInProcess), since the next answer names the copy that publish stored. It is
-// the one handling of that refusal for every listener publish whose answer a request is answered
-// or charged by - the send route and the publish route's team and captured topics (sendHandler,
-// publishHandler), and a role forward (startRoleForward, which every role send, role-lane delivery
-// and kept-lane walk forwards through) - and for a keep (storeKeptRoleCopy) and a takeover's copy
-// (keepTakenRoleFrame). So a resend that meets its own earlier attempt still being stored, as a
-// hub failover leaves one, is answered with that attempt's copy rather than as a bus that did not
-// answer.
+// id (bus.ErrDuplicateInProcess), since the next answer names the copy that publish stored. The
+// message routes take it - the send route and the publish route's team and captured topics
+// (sendHandler, publishHandler, through publishHeld) - and so do a role forward
+// (startRoleForward, which every role send, role-lane delivery and kept-lane walk forwards
+// through), a keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame). So a resend
+// that meets its own earlier attempt still being stored, as a hub failover leaves one, is
+// answered with that attempt's copy rather than as a bus that did not answer.
 //
-// Three publishes under a message id do not take it, since no request's answer or charge rides
-// on them and the earlier publish the refusal names stores the one copy all the same: the
-// sweep's wake report (publishSweptRoleWake), which logs the report as not published and leaves
-// the next sweep to raise it; a kept copy's dead letter (endKeptCopyWithDeadLetter), whose walk
-// ends as a failed one with its claim left, so the walk that takes the claim over sends it again
-// and is answered with that copy; and a delivery exception (publishDeliveryException), which logs
-// exceptionPublishFailedLine.
+// The listener's other publishes under a message id do not take it, and the earlier publish the
+// refusal names stores the one copy all the same. The webhook routes (webhookRoutes:
+// internal/webhook's GitHub, Slack and Ghost Wispr handlers) answer their request by a publish
+// under the delivery's id, so a refusal there is answered 503 and logged `<source> publish in
+// process`, which no alarm counts (internal/webhook's failureOutcome); no sender limit charges a
+// webhook, and a redelivery, where its sender makes one, is answered by that copy as a duplicate.
+// The other three carry no request's answer or charge: the sweep's wake report
+// (publishSweptRoleWake), which logs the report as not published and leaves the next sweep to
+// raise it; a kept copy's dead letter (endKeptCopyWithDeadLetter), whose walk ends as a failed one
+// with its claim left, so the walk that takes the claim over sends it again and is answered with
+// that copy; and a delivery exception (publishDeliveryException), which logs
+// exceptionPublishInProcessLine at WARN rather than exceptionPublishFailedLine.
 //
 // A call that ends after a refusal, because ctx ended or a later send failed, wraps
 // errEarlierAttemptInProcess: with ctx's error and the last refusal when ctx ended, and with the

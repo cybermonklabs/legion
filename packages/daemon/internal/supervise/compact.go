@@ -211,7 +211,7 @@ func (m *Machine) compaction() (compacting, bool) {
 //
 // A compaction is the claim's own when the claim still records one, since a process let go and
 // a process found gone each drop it (letGo, compactionLostProcess), and when it is the one this
-// end names, since launchNow's bump leaves an earlier generation's behind.
+// end names, since launchTries' bump leaves an earlier generation's behind.
 //
 // A process still running that a parked launch is to replace is no such loss: the compaction
 // ran over a live session, so the claim records it to the end, that end gives the claim back
@@ -349,7 +349,7 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 			"delivery", m.claim.Pending.ID)
 		// The compaction aborts whatever run its session had, so no prompt of the task is left
 		// outstanding for a turn of its own (Machine.outstanding).
-		m.outstanding = nil
+		m.forgetOutstanding()
 		if err := m.takeBackPending(ctx, taskRead); err != nil {
 			return err
 		}

@@ -1,6 +1,6 @@
 kind: Fixed
 body: |-
-  The pre-merge check of edited migrations (`envoy-go-checks`) now fails an edit of a migration
+  The pre-merge check of edited migrations (`envoy-go-build`) now fails an edit of a migration
   whose `-- replaces:` lines do not begin with the lines the base's file has, in the base's order,
   then one naming the base's file itself, each by its file name and checksum. Before, it held
   only the first line and the base's own text, by checksum alone, so a third edit of one file

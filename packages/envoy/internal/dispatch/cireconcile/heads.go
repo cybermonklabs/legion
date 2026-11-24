@@ -22,13 +22,18 @@ const maxPages = 100
 // cistore.OpenWriter, which creates nothing. It is an interface rather than the writer itself so
 // that a caller may put its own writer in the pass's way, as every other collaborator of a
 // Reconciler is its caller's to choose; *cistore.Writer satisfies it. Its three record calls
-// answer whether the observation changed the head's record, which is how the pass knows a head to
-// count.
+// answer whether what they wrote changed the head's record, which is how the pass knows a head to
+// count. RecordRuns writes every check run of one head in one compare-and-swap (recordRuns).
+// VerifyRequests, MarkVerified and DoneVerifying are the verify loop's (Reconciler.Verify): the
+// heads a listener holds until a GitHub read, the answer to one, and the request's delete.
 type Writer interface {
-	Record(context.Context, contracts.CIObservation) (bool, error)
+	RecordRuns(context.Context, []contracts.CIObservation) (bool, error)
 	RecordSuite(context.Context, contracts.CIObservation) (bool, error)
 	RecordStatus(context.Context, contracts.StatusObservation) (bool, error)
 	HasRecord(owner, repo, number, sha string) (bool, error)
+	VerifyRequests(context.Context) ([]contracts.CIVerifyRequest, error)
+	MarkVerified(context.Context, contracts.CIHead, uint64, int64) (bool, error)
+	DoneVerifying(context.Context, contracts.CIHead, uint64) error
 }
 
 // object is one GitHub check run, check suite or commit status as its listing answers it, the
@@ -385,53 +390,6 @@ func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHea
 	return changedRecord, true
 }
 
-// listing is one of the two check listings a head's record is written from, as recordListing
-// walks either of them: the event name contracts.GithubCIObservation maps its objects under, the
-// store call an observation of it is written with, how a WARN about one of them names it, and
-// whether its observations go through the review App's rule, which reads a check's name and so
-// is the runs' alone. A head's commit statuses are the third listing, which maps and writes
-// through calls of its own (recordStatuses).
-type listing struct {
-	event string
-	write func(context.Context, Writer, contracts.CIObservation) (bool, error)
-	// what and label are how a failed write names this listing and the object it could not
-	// write: `did not record a check run` with the run's own name under `check`, `did not
-	// record a check suite` with the suite's id under `suite`.
-	what    string
-	label   string
-	nameOf  func(contracts.CIObservation) string
-	verdict bool
-}
-
-// checkRuns and checkSuites are those two listings. Each is built once rather than at every
-// head, and each writes through a plain function of the writer rather than a method value of
-// it, which would be an allocation for every head the pass records.
-var (
-	checkRuns = listing{
-		event:   "check_run",
-		write:   recordRun,
-		what:    "check run",
-		label:   "check",
-		nameOf:  func(observation contracts.CIObservation) string { return observation.CheckName },
-		verdict: true,
-	}
-	checkSuites = listing{
-		event:  "check_suite",
-		write:  recordSuite,
-		what:   "check suite",
-		label:  "suite",
-		nameOf: func(observation contracts.CIObservation) string { return observation.SuiteID },
-	}
-)
-
-func recordRun(ctx context.Context, writer Writer, observation contracts.CIObservation) (bool, error) {
-	return writer.Record(ctx, observation)
-}
-
-func recordSuite(ctx context.Context, writer Writer, observation contracts.CIObservation) (bool, error) {
-	return writer.RecordSuite(ctx, observation)
-}
-
 // record writes every observation the rules say to record from the pages GitHub answered 200
 // with, under the pull request's number and the owner and name GitHub itself gave. wanted counts
 // the observations those rules named, whether or not the record already held them.
@@ -440,15 +398,22 @@ func recordSuite(ctx context.Context, writer Writer, observation contracts.CIObs
 // listener already holds changes none. ok is false when a write failed and a later pass might
 // make it land, which is every failure but a refusal (refused); it is what makes the pass drop
 // this head's ETags.
+//
+// A head whose runs did not land is written nothing more in the pass: a completed suite or a
+// status written after it would re-arm a record that lacks the runs GitHub holds, and the listener
+// would settle the head on what the record held before.
 func (r *Reconciler) record(ctx context.Context, writer Writer, head pullHead, runs, suites, statuses []pageOf[object]) (wanted int, changedRecord, ok bool) {
-	wantedRuns, changedRuns, runsOK := r.recordListing(ctx, writer, head, runs, checkRuns)
-	wantedSuites, changedSuites, suitesOK := r.recordListing(ctx, writer, head, suites, checkSuites)
+	wantedRuns, changedRuns, runsOK := r.recordRuns(ctx, writer, head, runs)
+	if !runsOK {
+		return wantedRuns, changedRuns, false
+	}
+	wantedSuites, changedSuites, suitesOK := r.recordSuites(ctx, writer, head, suites)
 	wantedStatuses, changedStatuses, statusesOK := r.recordStatuses(ctx, writer, head, statuses)
-	return wantedRuns + wantedSuites + wantedStatuses, changedRuns || changedSuites || changedStatuses, runsOK && suitesOK && statusesOK
+	return wantedRuns + wantedSuites + wantedStatuses, changedRuns || changedSuites || changedStatuses, suitesOK && statusesOK
 }
 
 // recordStatuses writes each commit status of the pages GitHub answered 200 with whose state the
-// record keeps, and answers what recordListing answers for a listing. A pending status maps to
+// record keeps, and answers what record answers for the head. A pending status maps to
 // no observation (contracts.GithubStatusObservation) and is not recorded, so a context that stays
 // pending holds no head back. A status goes through no review App rule: a status named for a
 // verdict check is an entry of its own and never stands for that check. cistore answers a status
@@ -482,41 +447,86 @@ func (r *Reconciler) recordStatuses(ctx context.Context, writer Writer, head pul
 	return wanted, changedRecord, ok
 }
 
-// recordListing writes one of those two listings, page by page and object by object, and
-// answers for that listing what record answers for the head.
-func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pullHead, pages []pageOf[object], of listing) (wanted int, changedRecord, ok bool) {
+// recordRuns writes every check run of the pages GitHub answered 200 with, finished or not, in one
+// write of the head's record (cistore.Writer.RecordRuns), and answers for the runs what record
+// answers for the head.
+//
+// A run GitHub has not finished is recorded, as the webhook that announced it would have recorded
+// it. A pass that wrote only a head's finished runs, after the listener had missed the webhooks of
+// the others, would leave a record of finished checks alone, and the listener would settle a head
+// whose CI GitHub is still running: a settlement that claims the head done. The record's own
+// ordering keeps such a write from taking a head back from what it holds: a queued or running run
+// never replaces the same run finished, nor a newer run of its name (cistore's applyCheckRun), so
+// the pass re-arms a settled head only for a run GitHub holds unfinished as the newest of its name.
+//
+// The runs are one write, so they land together or not at all: a write that fails never leaves
+// the record holding some of the head's runs without the rest -- a passed run without the failed
+// one beside it, or the finished runs without the unfinished ones -- which the listener would
+// settle as a head greener, or further along, than GitHub holds it. A write past the record's
+// bound is refused whole, and cistore writes the record marked Overflowed, so the head never
+// settles (refused).
+func (r *Reconciler) recordRuns(ctx context.Context, writer Writer, head pullHead, pages []pageOf[object]) (wanted int, changedRecord, ok bool) {
+	listed := 0
+	for _, page := range pages {
+		if page.modified {
+			listed += len(page.items)
+		}
+	}
+	if listed == 0 {
+		return 0, false, true
+	}
+	runs := make([]contracts.CIObservation, 0, listed)
+	for _, page := range pages {
+		if !page.modified {
+			continue
+		}
+		for _, raw := range page.items {
+			observation, mapped := contracts.GithubCIObservation("check_run", raw, head.owner, head.repo, head.number)
+			if !mapped || !r.recordVerdict(observation, head) {
+				continue
+			}
+			runs = append(runs, observation)
+		}
+	}
+	if len(runs) == 0 {
+		return 0, false, true
+	}
+	changed, err := writer.RecordRuns(ctx, runs)
+	if err != nil {
+		r.Logger.Warn("ci reconcile did not record the check runs of a head",
+			"runs", len(runs), "repository", head.repository(),
+			"pr", head.number, "sha", head.sha, "error", err)
+		return len(runs), false, refused(err)
+	}
+	return len(runs), changed, true
+}
+
+// recordSuites writes each completed check suite of the pages GitHub answered 200 with, and
+// answers for the suites what record answers for the head. A suite is recorded only once it has
+// completed: a suite that is not completed can hold the head as a queued run does (cistore's
+// suiteHolds), and one left queued with no run of its own would hold it for ever. A suite that
+// is running holds the head through its runs only once GitHub has created them: between one job's
+// end and its dependants' runs a record of finished runs is ready, and with ENVOY_CI_VERIFY on the
+// verify read holds its answer while such a suite runs (runningSuite).
+func (r *Reconciler) recordSuites(ctx context.Context, writer Writer, head pullHead, pages []pageOf[object]) (wanted int, changedRecord, ok bool) {
 	ok = true
 	for _, page := range pages {
 		if !page.modified {
 			continue
 		}
 		for _, raw := range page.items {
-			observation, mapped := contracts.GithubCIObservation(of.event, raw, head.owner, head.repo, head.number)
-			if !mapped {
-				continue
-			}
-			// Only a completed object is recorded. cistore refuses to settle a head while any
-			// check its record holds is queued or running, and nothing ever takes a check out of
-			// a record, so one run left queued at that commit -- an attempt GitHub abandoned, a
-			// job nobody ran -- would stop ci-ok ever reaching the daemon for that head, which is
-			// the failure this pass exists to mend, and a suite that is not completed can hold
-			// the head as a queued run does (cistore's suiteHolds). The listener records
-			// a running run because the event completing it follows; a pass reading a listing has
-			// no such promise.
-			if observation.Status != "completed" {
-				continue
-			}
-			if of.verdict && !r.recordVerdict(observation, head) {
+			observation, mapped := contracts.GithubCIObservation("check_suite", raw, head.owner, head.repo, head.number)
+			if !mapped || observation.Status != "completed" {
 				continue
 			}
 			wanted++
-			changed, err := of.write(ctx, writer, observation)
+			changed, err := writer.RecordSuite(ctx, observation)
 			if err != nil {
 				if !refused(err) {
 					ok = false
 				}
-				r.Logger.Warn("ci reconcile did not record a "+of.what,
-					of.label, of.nameOf(observation), "repository", head.repository(),
+				r.Logger.Warn("ci reconcile did not record a check suite",
+					"suite", observation.SuiteID, "repository", head.repository(),
 					"pr", head.number, "sha", head.sha, "error", err)
 				continue
 			}
@@ -550,13 +560,13 @@ func (r *Reconciler) recordVerdict(observation contracts.CIObservation, head pul
 }
 
 // refused reports whether a failed write is one every later pass would meet again: cistore
-// refuses a write of a check run or check suite that would take the record or its settlement past
-// its bound with bus.ErrTooLarge and writes the record marked Overflowed, so the head never
-// settles on the checks it could not hold and the listener's own writes leave it exactly there.
-// Such a write is named at WARN once, as any other failed write is, but it does not cost the head
-// its ETags: reading the head in full at every pass would buy nothing. A commit status never
-// meets this: cistore answers a status its bounds refuse with no change and no error, and records
-// nothing of it.
+// refuses a write of a head's check runs, or of a check suite, that would take the record or its
+// settlement past its bound with bus.ErrTooLarge and writes the record marked Overflowed, so the
+// head never settles on the checks it could not hold and the listener's own writes leave it
+// exactly there. Such a write is named at WARN once, as any other failed write is, but it does not
+// cost the head its ETags: reading the head in full at every pass would buy nothing. A commit
+// status never meets this: cistore answers a status its bounds refuse with no change and no error,
+// and records nothing of it.
 func refused(err error) bool {
 	return errors.Is(err, bus.ErrTooLarge)
 }

@@ -1,0 +1,50 @@
+-- 20261121170714_dispatch_issue_applied_seq.up.sql — the sequence of the newest issue fact the
+-- daemon applied, in each row of the copy of Dispatch's issues.
+--
+-- dispatch_issues.applied_seq is the highest sequence of an issue fact the daemon applied through
+-- its handlers: an issue event, or a view intake let through (intake's settleObserved), each of
+-- which blockers.Mirror writes into the row first, in the fact's own transaction, whether or not
+-- the daemon records the issue (record.DispatchReading.Applied). A listing, the periodic turn's
+-- re-read and the release's read of the children it adopts are readings that decide nothing, and
+-- they leave it as it stands. dispatch_seq is no such number: it is the highest sequence of any
+-- reading the row took, and a turn's re-read takes Dispatch's last sequence of the issue, which
+-- Dispatch raises for a comment, a document edit, an ask or a claim too.
+--
+-- Two rules read it, both for an issue the daemon does not record: admission records nothing from
+-- a listing summary older than it (admit's unrecordedSummaryStale), and intake applies nothing of
+-- a view older than it (settleObserved). Both read it under the lock every fact applies under.
+--
+-- Every row the table already holds takes the default, 0: no fact has been applied. That is no
+-- loss. A listing or a view the daemon reads after it starts is read at Dispatch's last sequence of
+-- the issue then, at or above the sequence of every fact applied before the start, so only a fact
+-- applied since the start can be newer than it, and that fact writes this column.
+--
+-- The release before this one names each column of the table it writes (record's
+-- PutDispatchIssue) and reads none of this one, so every row it inserts takes the default and it
+-- raises the column for no fact. After a rollback and a roll-forward the column can stand below a
+-- fact that release applied, which by the paragraph above no listing or view read after the
+-- roll-forward's start is older than.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction that closes this header, its last
+-- paragraph (migrations.WayBack), run with every daemon of the database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. dispatch_issues holds
+-- the rows of every project that shares the database, and a daemon of this release names the
+-- column in every write of the copy (record's PutDispatchIssue), so one still running for another
+-- project after the drop would fail every issue fact it applies. Every daemon that shares the
+-- database moves together, on the way up and on the way back, as the header of
+-- 20261120055717_dispatch_issue_value_sequences says of the same table.
+--
+-- The drop and the delete of this migration's row go together. The release before this one needs
+-- neither to run, since it never names the column: the delete is what makes the version the store
+-- reports, its highest recorded row (store.SchemaVersionTx), that release's own again. Both are
+-- owed to the roll-forward. With the column dropped and the row deleted, store.apply finds no row
+-- of this version and runs this file again, which adds the column again at its default; an add of
+-- a column that stands would fail. What the drop costs is nothing a later read needs, by the
+-- paragraph on the default above.
+--
+-- begin;
+-- alter table dispatch_issues drop column if exists applied_seq;
+-- delete from schema_version where version = 20261121170714;
+-- commit;
+alter table dispatch_issues add column applied_seq bigint not null default 0 check (applied_seq >= 0);

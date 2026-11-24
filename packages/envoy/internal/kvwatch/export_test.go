@@ -37,3 +37,18 @@ func Generation(w *Watcher) uint64 {
 func RereadOn(w *Watcher, kv bus.KeyValue, generation uint64) error {
 	return w.watch(context.Background(), kv, generation)
 }
+
+// TakeWithinAfter is End's wait for a stop's result or a watch's end (takeWithinAfter): ended runs
+// once the wait has read ctx as ended, before its last read of c.
+func TakeWithinAfter[T any](ctx context.Context, c <-chan T, ended func()) (T, bool) {
+	return takeWithinAfter(ctx, c, ended)
+}
+
+// SetStreamReads sets how many reads of the stream w's watches have begun (Watcher.StreamReads),
+// as a watch counts one before its stream read, so a test stamps a copy's takes as made before or
+// after a read's stream read with no watch at all.
+func SetStreamReads(w *Watcher, n uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.streamReads = n
+}

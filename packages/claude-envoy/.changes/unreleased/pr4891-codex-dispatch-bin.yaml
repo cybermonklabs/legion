@@ -1,0 +1,10 @@
+kind: Added
+custom:
+  Issue: pr4891
+body: |-
+  The Codex plugin, `@sjawhar/codex-envoy`, ships the `dispatch` command for a terminal of your
+  own, as `bin/dispatch` and as the package's npm `bin`: the plugin's `dispatch` tool ends a command
+  after 120 s, and a command that waits for a person, such as the device login
+  `dispatch login --device --person <address>`, runs there. Run the installed plugin's
+  `${CODEX_HOME:-~/.codex}/plugins/cache/legion-plugins/codex-envoy/<version>/bin/dispatch`, or
+  `npx --package @sjawhar/codex-envoy dispatch …`.

@@ -240,9 +240,9 @@ function stubIssuePage(
 }
 
 /**
- * The reads the issue page's own panels make: the header's repository and component lines, the
- * Spec tab's requirements, the Artifacts tab's lists, the issue's references, and each
- * document's own record, text, blocks and versions, with the decisions and read marks
+ * The reads the issue page's own panels make: the header's component line, the Spec tab's
+ * requirements, the Artifacts tab's lists, the issue's references, and each document's own
+ * record, text, blocks and versions, with the decisions and read marks
  * `decisionsAndReadMarkHandlers` answers. Each is answered with the API's empty shape, so a
  * panel renders its loaded-empty state rather than its error state. A test that asserts one of
  * these spies the `api` method that fetches it (`spyOn(api, "getArtifactText")`) and never
@@ -250,7 +250,6 @@ function stubIssuePage(
  */
 function answerIssuePageReads(): void {
   answerRequests(
-    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
     http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([])),
     http.get("/api/v1/issues/:key/coverage", ({ params }) =>
       Response.json({
@@ -2140,6 +2139,36 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
       within(stateActions).queryAllByRole("button", { name: "Awaiting approval" }).length
     ).toBe(1);
     expect(within(stateActions).queryAllByRole("button", { name: "Approve" }).length).toBe(1);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage draws the steps of a root whose parent is in another project", async () => {
+  // CORE-1 under OTHR-6 is a root of CORE: a parent of another project passes nothing on, so the
+  // issue stands in CORE's gate and the header reads the projects to draw it.
+  const restore = stubIssuePage({ ...issue, parent: "OTHR-6" });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria", "spec"],
+    open_asks: 0,
+    key: "CORE",
+    name: "Core",
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria", "spec"]);
   } finally {
     view.unmount();
     listProjects.mockRestore();

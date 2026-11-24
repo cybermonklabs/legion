@@ -72,6 +72,7 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *eventStr
 // itself -- B's relay hears the commit on `listen dispatch_events` (migration 0107) and reads it
 // back out of the log. The broker fan-out the feed used to read would have ended at A.
 func TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed(t *testing.T) {
+	t.Parallel()
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	second := httptest.NewServer(secondProcessHandler(t, database))
@@ -99,7 +100,7 @@ func newCountedRelay(t *testing.T, deps Deps) (*eventStreamRelay, chan int64) {
 	relay.coalesce = time.Millisecond
 	reads := make(chan int64, 1024)
 	relay.readAfter = func(ctx context.Context, after, through int64) ([]model.Event, error) {
-		page, err := relay.server.readEventsAfterID(ctx, after, through, maxEventReplay)
+		page, err := relay.server.readEventsAfterID(ctx, model.Actor{}, after, through, maxEventReplay)
 		reads <- after
 		return page, err
 	}
@@ -258,6 +259,7 @@ func relaySubscribers(relay *eventStreamRelay) int {
 // last one closes. A relay that kept running after its last subscriber left would read the log
 // after every commit until the process exited.
 func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, reads := newCountedRelay(t, deps)
@@ -305,6 +307,7 @@ func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
 // of the event log and one encoding of its frame, however many streams are open. Every subscriber
 // receives the same frame bytes.
 func TestEventStreamRelayReadsEachCommitOnceForEverySubscriber(t *testing.T) {
+	t.Parallel()
 	const subscribers = 3
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
@@ -342,6 +345,7 @@ func TestEventStreamRelayReadsEachCommitOnceForEverySubscriber(t *testing.T) {
 // the last one is being cancelled either joins the running generation before it stops or starts a
 // new one; either way it receives the next commit.
 func TestEventStreamRelaySubscribeRacingTheLastCancelReceivesTheNextEvent(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, _ := newCountedRelay(t, deps)
@@ -369,6 +373,7 @@ func TestEventStreamRelaySubscribeRacingTheLastCancelReceivesTheNextEvent(t *tes
 // processes are apart, so the subscription on B is sent nothing past a while A is open, and a and
 // then b once A commits.
 func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *testing.T) {
+	t.Parallel()
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
@@ -391,6 +396,7 @@ func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *te
 // transaction holds open takes no connection a request needs. The reset check, a shared-pool
 // query, runs on the reads a notification wakes.
 func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	// The relay reads through a pool of its own, so its acquires are its alone.
 	deps.Store = storetest.SecondProcess(t, database)
@@ -429,6 +435,7 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 // cursor the relay has published through rather than from the log's head -- a cursor reset there
 // would silently swallow exactly the events the window dropped from every open page's feed.
 func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, _ := newCountedRelay(t, deps)
@@ -489,6 +496,7 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 // (TestTheEventFeedResumesAfterTheEventLogIsResetBeneathTheReader) -- and the next subscription
 // starts a generation on the new log.
 func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, _ := newCountedRelay(t, deps)
@@ -550,6 +558,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 // subscription made meanwhile finds the relay still on the old cursor, so it hands over only once
 // the relay has reset, and is sent a, which committed after it subscribed, below that new cursor.
 func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
+	t.Parallel()
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
@@ -631,6 +640,7 @@ func mustEventFrameID(t *testing.T, frame LiveEventFrame) int64 {
 // live and the frame it receives when it resumes the same bytes; a hand-rolled live read would
 // hand a page an ask without them, and only a resubscribe would repair it.
 func TestLiveAskEventFrameCarriesTheReadTimeFields(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Ask fields", "A spec")
 	since := eventHead(t, rig.database)

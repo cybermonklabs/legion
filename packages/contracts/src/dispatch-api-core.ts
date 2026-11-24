@@ -254,24 +254,31 @@ export const ProjectSchema = z
      *  gates nothing and one that has not published yet alike: neither holds a step waiting for
      *  a person. */
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
+    /** The project's default repository, `owner/name`: an issue that names no repository, and
+     *  whose parent chain names none, resolves to it.
+     *  `PUT /api/v1/projects/{key}/default-repository` sets and clears it. Absent when the
+     *  project has none, and from a Dispatch older than the field. */
+    default_repo: z.string().optional(),
     created_at: z.string(),
   })
   .readonly();
 
+/** A row of `GET /api/v1/settings/repo-projects`, the one route that still reads the repository
+ *  mapping. Nothing writes the rows now: they stay as the migration of `Project.default_repo`
+ *  left them, for the Legion daemons that read the route at boot, and the next release removes
+ *  the route. The retained event `settings.repo_project.updated` carries one as `mapping`. */
 export const RepoProjectSchema = z
   .strictObject({
     repo: z.string(),
     project: z.string(),
-    /** The project's default repository: an issue with no repository of its own and none on its
-     *  parent chain resolves to it. At most one mapping of a project is its default. */
+    /** Whether the row was its project's default repository. The migration copied each default
+     *  to `Project.default_repo`, which is what an issue resolves to now. */
     default: z.boolean(),
     /** The full `owner/name` this repository is called today, null for one that was never
-     *  renamed. Dispatch holds both names of a renamed repository and canonicalises every
-     *  comparison through this field, so an issue recorded under the old name is held to a pull
-     *  request on the new one. `PUT /api/v1/settings/repo-projects/{owner}/{repo}` takes it:
-     *  absent or null leaves the stored pair alone, `""` clears it. Optional here because a
-     *  client written before the field existed builds this shape without it; Dispatch always
-     *  answers it. */
+     *  renamed. Dispatch reads each pair once at boot: it writes the new name in place of the old
+     *  one in every stored repository field, and compares a repository under the new name.
+     *  Optional here because a client written before the field existed builds this shape
+     *  without it; Dispatch always answers it. */
     renamed_to: z.string().nullable().optional(),
     created_by: ActorSchema,
     created_at: z.string(),
@@ -301,6 +308,9 @@ export const ArchitectureSourceSchema = z
   })
   .readonly();
 
+/** `settings.repo_project.updated`: a write of the repository mapping, which no build makes
+ *  now. The events an earlier build stored stay as history, so the type stays for them.
+ *  `deleted` is true for a write that removed the mapping, and false for one that set it. */
 export const RepoProjectUpdatedEventPayloadSchema = z
   .strictObject({ mapping: RepoProjectSchema, deleted: z.boolean() })
   .readonly();
