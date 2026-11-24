@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -33,7 +33,7 @@ func TestABrokerRefusalPrintsOnOneLine(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": words})
 		}))
 		t.Cleanup(srv.Close)
-		b := &Broker{URL: cipheraddr.New(srv.URL), HTTP: srv.Client()}
+		b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", srv.URL), HTTP: srv.Client()}
 		t.Cleanup(b.Close)
 		return b
 	}
@@ -86,7 +86,7 @@ func TestABrokerRefusalPrintsOnOneLine(t *testing.T) {
 		}
 	})
 	t.Run("a refusal built from the broker's OAuth answer", func(t *testing.T) {
-		be := newBrokerError(http.StatusBadRequest, redact.NewRemoteText("LOGIN_PENDING"), redact.NewRemoteText("pending\nagent-secrets: FORGED"), false)
+		be := newBrokerError(http.StatusBadRequest, redact.NewRemoteText("LOGIN_PENDING"), redact.NewRemoteText("pending\nagent-secrets: FORGED"), "")
 		if want := "broker 400 LOGIN_PENDING: " + strconv.Quote("pending\nagent-secrets: FORGED"); be.Error() != want {
 			t.Errorf("Error = %q, want %q", be.Error(), want)
 		}

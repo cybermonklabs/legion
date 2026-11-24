@@ -23,9 +23,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/cipherclient"
 	"github.com/sjawhar/envoy/ciphertest"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // newBrokerRig is ciphertest.NewRig, failing rather than skipping on GitHub Actions when
@@ -344,7 +344,7 @@ func keyThumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
 // session.
 func tradeAs(t *testing.T, rig *ciphertest.Rig, exchangeToken string, key *ecdsa.PrivateKey, session string) error {
 	t.Helper()
-	client, err := cipherclient.New(cipherclient.Config{BrokerURL: cipheraddr.New(rig.URL), Key: key, Subject: rolesSubject{token: exchangeToken}, Session: session})
+	client, err := cipherclient.New(cipherclient.Config{BrokerURL: configaddr.New("AGENT_SECRETS_URL", rig.URL), Key: key, Subject: rolesSubject{token: exchangeToken}, Session: session})
 	if err != nil {
 		t.Fatal(err)
 	}

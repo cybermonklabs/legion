@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -38,7 +38,7 @@ func TestARestrictedMembersEnrollmentIsAskedOnce(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	srv := &Server{
 		Registry: NewRegistry(filepath.Join(t.TempDir(), "sessions.json")),
-		Broker: &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"),
+		Broker: &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"),
 			MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log},
 		Hostname: "testhost", PeerOf: PeerOf, Log: log, MinRenew: time.Second,
 	}

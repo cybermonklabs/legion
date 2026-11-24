@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -95,7 +95,7 @@ func TestAStatusRefusalPrintsTheBrokersWordsAsTheRuleReadsThem(t *testing.T) {
 			if !strings.Contains(stderr, row.want) {
 				t.Errorf("status's stderr %q does not carry %q", stderr, row.want)
 			}
-			_, err := newClient(cipheraddr.New(srv.URL)).do(context.Background(), http.MethodGet, srv.URL+"/v1/requests/req-1", nil, nil)
+			_, err := newClient(configaddr.New("AGENT_SECRETS_URL", srv.URL)).do(context.Background(), http.MethodGet, srv.URL+"/v1/requests/req-1", nil, nil)
 			var refused *apiError
 			if !errors.As(err, &refused) || !refused.hasCode(row.code) {
 				t.Fatalf("the client read %v, want the broker's refusal", err)
@@ -107,7 +107,7 @@ func TestAStatusRefusalPrintsTheBrokersWordsAsTheRuleReadsThem(t *testing.T) {
 
 // TestARefusalBesideAnAddressThatIsNotCleanPrintsItsStatusAlone: whoever answers at an address
 // that carries a credential refuses with words that repeat a credential. `agent-secrets status`
-// and a pod login print the status and cipheraddr.WordsNotPrinted, and no word of the answer.
+// and a pod login print the status and configaddr.Address.WordsNotPrinted, and no word of the answer.
 func TestARefusalBesideAnAddressThatIsNotCleanPrintsItsStatusAlone(t *testing.T) {
 	srv := refusingBroker(t, http.StatusForbidden, "REQUEST_INVALID", redacttest.Words, "")
 	address := credentialedAddress(srv)
@@ -118,7 +118,7 @@ func TestARefusalBesideAnAddressThatIsNotCleanPrintsItsStatusAlone(t *testing.T)
 		t.Run(capture, func(t *testing.T) {
 			stderr := printed(t)
 			redacttest.RequireNone(t, capture, stderr)
-			if want := "HTTP 403: " + cipheraddr.WordsNotPrinted; !strings.Contains(stderr, want) {
+			if want := "HTTP 403: " + brokerWordsNotPrinted; !strings.Contains(stderr, want) {
 				t.Errorf("the stderr %q does not carry %q", stderr, want)
 			}
 		})

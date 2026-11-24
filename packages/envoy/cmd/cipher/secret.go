@@ -33,7 +33,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -144,7 +144,7 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 // plain-http broker a network attacker can answer is refused before the first call; an
 // unparseable URL is left to the client, which names it. It reads the address (Raw) only to
 // parse its scheme and host, and names it as the Address prints.
-func requireTrustedBrokerURL(base cipheraddr.Address) error {
+func requireTrustedBrokerURL(base configaddr.Address) error {
 	if base.Empty() {
 		return nil
 	}
@@ -1034,7 +1034,7 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 // secretType. It is for a write known to have landed: a write whose outcome is open is reread by
 // rereadOpen, which claims nothing of it. The reason and the type are the broker's text, each
 // held with the record of the signed reread (Reread), so a line prints it as the broker's address
-// lets its answer print (cipheraddr.Address.WordsOf), with the reread's proof redacted, and a
+// lets its answer print (configaddr.Address.WordsOf), with the reread's proof redacted, and a
 // decision reads it as it came.
 func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType string, wantServed bool, restorable *time.Time) (Reread, bool) {
 	r, unsigned, err := s.askReread(s.ctx, name)
@@ -1116,7 +1116,7 @@ func sayUnchecked(s *secretSession, stderr io.Writer, form, name, secretType str
 // no proof, r.Told false), served (with its type), deleted (after a delete, which deleted is;
 // restorable is when it stops being restorable), or refused with its reason. The type and the
 // reason are the broker's text (Reread), so each prints as the broker's address lets its answer
-// print (cipheraddr.Address.WordsOf) and each decision reads it as it came.
+// print (configaddr.Address.WordsOf) and each decision reads it as it came.
 func printReread(s *secretSession, stdout io.Writer, name string, r Reread, deleted bool, restorable *time.Time) {
 	switch {
 	case !r.Told:

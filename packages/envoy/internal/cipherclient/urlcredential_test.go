@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // credentialMarkers stand for each part of a configured address that can carry a credential: its
@@ -56,7 +56,7 @@ func tradeOnce(t *testing.T, address string, httpClient *http.Client) (string, e
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	client, err := New(Config{
-		BrokerURL: cipheraddr.New(address), Key: testKey(t), Subject: projectedStub(), HTTP: httpClient,
+		BrokerURL: configaddr.New("AGENT_SECRETS_URL", address), Key: testKey(t), Subject: projectedStub(), HTTP: httpClient,
 		Log: slog.New(slog.NewTextHandler(&logged, nil)),
 		// The renewal loop's first wait ends it: it has logged the pass by then.
 		After: func(time.Duration) <-chan time.Time { cancel(); return make(chan time.Time) },
@@ -196,7 +196,7 @@ func TestATradeFollowsNoRedirect(t *testing.T) {
 					asked.Add(1)
 					http.Redirect(w, r, target+TokenPath, status)
 				})
-				client, err := New(Config{BrokerURL: cipheraddr.New(broker), Key: testKey(t), Subject: projectedStub(), HTTP: httpClient})
+				client, err := New(Config{BrokerURL: configaddr.New("AGENT_SECRETS_URL", broker), Key: testKey(t), Subject: projectedStub(), HTTP: httpClient})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -219,7 +219,7 @@ func TestATradeFollowsNoRedirect(t *testing.T) {
 // its address, refuses a person's trade for good with an OAuth error whose code repeats the
 // credential the configured address carries. The sign-in falls back to this machine and its log
 // line says so, and beside that address the line holds no part of the credential: the code is
-// the answerer's own text, so the line names it as cipheraddr.WordsNotPrinted. Beside a clean
+// the answerer's own text, so the line names it as configaddr.Address.WordsNotPrinted. Beside a clean
 // address the same code is what a person acts on, and the line names it as it came.
 func TestARefusedSignInsLogNamesItsCodeOnlyBesideACleanAddress(t *testing.T) {
 	repeated := strings.Join(credentialMarkers, " ")
@@ -240,7 +240,7 @@ func TestARefusedSignInsLogNamesItsCodeOnlyBesideACleanAddress(t *testing.T) {
 		rig := newSignInRig(t, nil)
 		rig.signIn(t, "ada@example.com")
 		var logged bytes.Buffer
-		rig.authority.BrokerURL = cipheraddr.New(address)
+		rig.authority.BrokerURL = configaddr.New("AGENT_SECRETS_URL", address)
 		rig.authority.Log = slog.New(slog.NewTextHandler(&logged, nil))
 		before := asked.Load()
 		if authority, err := rig.authority.Current(context.Background()); authority != nil || err != nil {
@@ -260,7 +260,7 @@ func TestARefusedSignInsLogNamesItsCodeOnlyBesideACleanAddress(t *testing.T) {
 			if marker := leakedMarker(logged); marker != "" {
 				t.Errorf("the sign-in's log holds %q:\n%s", marker, logged)
 			}
-			if !strings.Contains(logged, cipheraddr.WordsNotPrinted) {
+			if !strings.Contains(logged, brokerWordsNotPrinted) {
 				t.Errorf("the sign-in's log does not say its code was not printed:\n%s", logged)
 			}
 		})

@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -127,7 +127,7 @@ func TestARefusedSignInLogsTheBrokersCodeAsTheRuleReadsIt(t *testing.T) {
 	rig := newSignInRig(t, nil)
 	rig.signIn(t, "ada@example.com")
 	var logged bytes.Buffer
-	rig.authority.BrokerURL = cipheraddr.New(base)
+	rig.authority.BrokerURL = configaddr.New("AGENT_SECRETS_URL", base)
 	rig.authority.Log = slog.New(slog.NewTextHandler(&logged, nil))
 	if authority, err := rig.authority.Current(context.Background()); authority != nil || err != nil {
 		t.Fatalf("a refused sign-in answered %+v, %v; want nil and no error", authority, err)

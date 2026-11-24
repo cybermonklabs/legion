@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -155,7 +155,7 @@ func TestABusyBrokerIsAskedAgainRatherThanEndingTheLoop(t *testing.T) {
 // instant each token lands, which empties the broker's bucket.
 func TestATokenShorterThanRenewBeforeIsNotRenewedInALoop(t *testing.T) {
 	now := time.Now()
-	client, err := New(Config{BrokerURL: cipheraddr.New("https://secrets.example"), Key: testKey(t), Subject: projectedStub(),
+	client, err := New(Config{BrokerURL: configaddr.New("AGENT_SECRETS_URL", "https://secrets.example"), Key: testKey(t), Subject: projectedStub(),
 		Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -242,7 +242,7 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 				return tc.status, tc.body
 			})
 			logged := &logtest.Recorder{}
-			client, err := New(Config{BrokerURL: cipheraddr.New(broker.URL()), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Minute, Log: slog.New(logged)})
+			client, err := New(Config{BrokerURL: configaddr.New("AGENT_SECRETS_URL", broker.URL()), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Minute, Log: slog.New(logged)})
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}

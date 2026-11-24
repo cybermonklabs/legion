@@ -24,7 +24,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -43,7 +43,7 @@ type proofSigner interface {
 // (locations, record.TargetLocations, nil for none). audience is the broker the object is for.
 type Signer interface {
 	proofSigner
-	SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error)
+	SignRequestObject(audience configaddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error)
 }
 
 // fileSigner signs with the key and enrollment id an agent box or pod keeps under
@@ -81,7 +81,7 @@ func (f *fileSigner) Reenroll(ctx context.Context) error {
 	return nil
 }
 
-func (f *fileSigner) SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error) {
+func (f *fileSigner) SignRequestObject(audience configaddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error) {
 	return record.Sign(f.key, audience.Raw(), record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
 }
 
@@ -194,7 +194,7 @@ func (h *helperSigner) Sign(method, url string) (string, error) {
 // too and signs a request for the whole profile, which nothing the broker answers shows, so the
 // object it signed is read back here, and one that does not carry the target is refused before
 // it is sent.
-func (h *helperSigner) SignRequestObject(audience cipheraddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error) {
+func (h *helperSigner) SignRequestObject(audience configaddr.Address, names []string, reason string, lifetimeSeconds *int, locations []string) (string, error) {
 	resp, err := helper.Call(h.sock, helper.Request{Op: "sign-request", Secrets: names, Reason: reason, LifetimeSeconds: lifetimeSeconds, Locations: locations}, 5*time.Second)
 	if err != nil {
 		return "", helperFailure(h.sock, err, false)
@@ -249,10 +249,10 @@ func (l *launcherSigner) Sign(method, url string) (string, error) {
 
 // machineContext answers the broker URL and a launcher signer. Machine and grant commands run
 // where the helper does (the devbox); a machine with no helper has no machine login to act as.
-func machineContext() (base cipheraddr.Address, signer *launcherSigner, err error) {
+func machineContext() (base configaddr.Address, signer *launcherSigner, err error) {
 	base = brokerBaseURL()
 	if base.Empty() {
-		return cipheraddr.Address{}, nil, fmt.Errorf("%s is required: it names the secrets broker this machine's login, and the grants it lists or ends, are at", brokerURLVar)
+		return configaddr.Address{}, nil, fmt.Errorf("%s is required: it names the secrets broker this machine's login, and the grants it lists or ends, are at", brokerURLVar)
 	}
 	sock, named := helperSocket()
 	if !exists(sock) {
@@ -260,7 +260,7 @@ func machineContext() (base cipheraddr.Address, signer *launcherSigner, err erro
 		if named {
 			where = "AGENT_SECRETS_HELPER_SOCK"
 		}
-		return cipheraddr.Address{}, nil, fmt.Errorf("no agent-secrets-helper at %s (%s): machine and grant commands act under this machine's login, which its helper holds", sock, where)
+		return configaddr.Address{}, nil, fmt.Errorf("no agent-secrets-helper at %s (%s): machine and grant commands act under this machine's login, which its helper holds", sock, where)
 	}
 	return base, &launcherSigner{sock: sock}, nil
 }

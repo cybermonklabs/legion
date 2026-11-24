@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -38,11 +38,11 @@ type Settings struct {
 	JudgeKeys map[string]JudgeKey `json:"judge_keys,omitempty"`
 	// answeredBy is the address whose answer these settings are (client.Settings), so a message
 	// prints a field of them only as that address lets the text of its answer print (words).
-	answeredBy cipheraddr.Address
+	answeredBy configaddr.Address
 }
 
 // words is text of these settings - a field, or a value read out of one, or a check's words that
-// quote one - as a message may print it (cipheraddr.Address.Words): whoever answered at an address
+// quote one - as a message may print it (configaddr.Address.Words): whoever answered at an address
 // that is not clean can repeat its credential in any field, so beside such an address no field
 // prints. Settings no client read (the zero answeredBy) print none of their text either. Beside a
 // clean address the request they answer carried no credential to echo - GET /v1/settings goes

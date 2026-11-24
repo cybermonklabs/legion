@@ -28,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -138,7 +138,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		}
 		waits := &tradeWaits{}
 		machine, err := cipherclient.New(cipherclient.Config{
-			BrokerURL: cipheraddr.New(f.srv.URL), Key: key, HTTP: f.srv.Client(),
+			BrokerURL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), Key: key, HTTP: f.srv.Client(),
 			Subject: cipherclient.NewProjectedToken(tokenFile),
 			After:   waits.after,
 		})
@@ -147,7 +147,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		}
 		var out syncBuffer
 		b := &Broker{
-			URL: cipheraddr.New(f.srv.URL), Identity: machine, HTTP: f.srv.Client(),
+			URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), Identity: machine, HTTP: f.srv.Client(),
 			OperatorFile: filepath.Join(t.TempDir(), "no-operator-here"),
 			Log:          slog.New(slog.NewJSONHandler(&out, nil)),
 		}

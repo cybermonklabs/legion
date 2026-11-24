@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -58,8 +58,8 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			// The settings are base's answer, as client.Settings marks them (Settings.answeredBy).
-			row.settings.answeredBy = cipheraddr.New(row.base)
-			src := brokerSource(cipheraddr.New(row.base)).withSettings(row.settings)
+			row.settings.answeredBy = configaddr.New("AGENT_SECRETS_URL", row.base)
+			src := brokerSource(configaddr.New("AGENT_SECRETS_URL", row.base)).withSettings(row.settings)
 			if got := src.String(); got != row.source {
 				t.Fatalf("source %q, want %q", got, row.source)
 			}
@@ -78,7 +78,7 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 // what tells this CLI's answer from another secrets CLI's for the same name; the secret forms say
 // which broker by host in place of a store rather than guessing one.
 func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
-	src := brokerSource(cipheraddr.New("https://secrets.internal.example"))
+	src := brokerSource(configaddr.New("AGENT_SECRETS_URL", "https://secrets.internal.example"))
 	if got := src.String(); got != "the broker AGENT_SECRETS_URL names" {
 		t.Fatalf("source = %q, want the broker AGENT_SECRETS_URL names alone", got)
 	}
@@ -87,7 +87,7 @@ func TestASourceWithNoSettingsNamesTheBrokerItself(t *testing.T) {
 	}
 	// A value that is no plain http(s) URL is not printed: the allow-list proves nothing about
 	// what it holds.
-	if got := brokerSource(cipheraddr.New("not a url")).brokerAt(); !strings.Contains(got, redact.NotPrinted) || strings.Contains(got, "not a url") {
+	if got := brokerSource(configaddr.New("AGENT_SECRETS_URL", "not a url")).brokerAt(); !strings.Contains(got, redact.NotPrinted) || strings.Contains(got, "not a url") {
 		t.Fatalf("broker = %q, want %q", got, redact.NotPrinted)
 	}
 }
@@ -551,7 +551,7 @@ func TestAnAnswerFromABrokerWithNoSettingsRouteStillNamesTheBroker(t *testing.T)
 	counters.hideSettings()
 	keyDir := newKeyDir(t)
 
-	host := brokerSource(cipheraddr.New(broker.URL)).String()
+	host := brokerSource(configaddr.New("AGENT_SECRETS_URL", broker.URL)).String()
 	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, "self")
 	if exit != 0 || !strings.Contains(stdout, "source: "+host+"\n") {
 		t.Fatalf("self against a broker with no settings route: exit %d, stdout %q, stderr %q; want a source line naming %s alone", exit, stdout, stderr, host)
@@ -594,7 +594,7 @@ func TestABrokerThatCannotBeReachedSaysSo(t *testing.T) {
 			if exit == 0 || strings.Contains(stdout, "the-child-ran") {
 				t.Fatalf("exit = %d, stdout %q; want a refusal and no command run", exit, stdout)
 			}
-			for _, want := range []string{row.what, brokerHost(cipheraddr.New(row.base)), brokerURLVar, row.base, "/v1/"} {
+			for _, want := range []string{row.what, brokerHost(configaddr.New("AGENT_SECRETS_URL", row.base)), brokerURLVar, row.base, "/v1/"} {
 				if !strings.Contains(stderr, want) {
 					t.Fatalf("stderr = %q; want it to name %q", stderr, want)
 				}
@@ -641,7 +641,7 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 		{"an error none of these covers", errors.New("something unforeseen"), "the request to the broker at secrets.internal.example failed", "answered"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			err := unreachable(cipheraddr.New(base), http.MethodGet, base+"/v1/enrollments/self", &url.Error{Op: "Get", URL: base, Err: row.err})
+			err := unreachable(configaddr.New("AGENT_SECRETS_URL", base), http.MethodGet, base+"/v1/enrollments/self", &url.Error{Op: "Get", URL: base, Err: row.err})
 			var unreached *unreachableError
 			if !errors.As(err, &unreached) {
 				t.Fatalf("unreachable(%v) = %v, want an unreachableError", row.err, err)

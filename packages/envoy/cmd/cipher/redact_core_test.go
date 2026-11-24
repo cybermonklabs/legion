@@ -15,8 +15,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 )
+
+// brokerWordsNotPrinted is what agent-secrets prints in place of an answer's text beside a broker
+// address brokerURLVar names that is not clean (configaddr.Address.WordsNotPrinted).
+var brokerWordsNotPrinted = configaddr.New(brokerURLVar, "").WordsNotPrinted()
 
 // wantNamedNotPrinted fails t unless text names each of named and holds none of secrets.
 func wantNamedNotPrinted(t *testing.T, what, text string, named []string, secrets ...string) {

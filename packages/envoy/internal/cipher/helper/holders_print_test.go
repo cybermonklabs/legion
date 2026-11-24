@@ -18,7 +18,7 @@ type brokerErrorTwin struct {
 	Status   int
 	code     string
 	said     string
-	withheld bool
+	withheld string
 }
 
 func (e *brokerErrorTwin) Error() string {
@@ -29,7 +29,7 @@ type brokerErrorExported struct {
 	Status   int
 	Code     string
 	Said     string
-	Withheld bool
+	Withheld string
 }
 
 type leaseReplyTwin struct {
@@ -48,9 +48,9 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		{
 			Name:     "helper.BrokerError",
 			Kind:     "error",
-			Boxed:    newBrokerError(403, code, words, false),
-			Same:     &brokerErrorTwin{403, redacttest.Code, redacttest.Words, false},
-			Exported: &brokerErrorExported{403, redacttest.Code, redacttest.Words, false},
+			Boxed:    newBrokerError(403, code, words, ""),
+			Same:     &brokerErrorTwin{403, redacttest.Code, redacttest.Words, ""},
+			Exported: &brokerErrorExported{403, redacttest.Code, redacttest.Words, ""},
 		},
 		{
 			Name: "helper.Broker.do.envelope",

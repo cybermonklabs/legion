@@ -24,7 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -46,7 +46,7 @@ func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.
 	}
 	srv := &helper.Server{
 		Registry: helper.NewRegistry(filepath.Join(dir, "sessions.json")),
-		Broker:   &helper.Broker{URL: cipheraddr.New(brokerURL), OperatorFile: operatorFile, MachineFile: filepath.Join(dir, "machine.json"), HTTP: client},
+		Broker:   &helper.Broker{URL: configaddr.New("AGENT_SECRETS_URL", brokerURL), OperatorFile: operatorFile, MachineFile: filepath.Join(dir, "machine.json"), HTTP: client},
 		Hostname: "testhost",
 		PeerOf:   helper.PeerOf,
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),

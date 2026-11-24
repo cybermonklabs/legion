@@ -34,7 +34,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -293,7 +293,7 @@ func registerMachineSession(ctx context.Context, dir string, identity cipherclie
 // broker someone else now answers for — is refused before any token is minted for someone else's
 // service. It writes nothing: a machine with no identity of its own mints nothing, so it keeps no
 // audience, and a later audience or broker still gets the chain's no-source refusal.
-func checkGoogleAudience(base cipheraddr.Address, audience string) error {
+func checkGoogleAudience(base configaddr.Address, audience string) error {
 	dir := machineCacheDir()
 	if dir == "" {
 		return nil
@@ -311,7 +311,7 @@ func checkGoogleAudience(base cipheraddr.Address, audience string) error {
 // keepGoogleAudience keeps audience as the one this machine's identity tokens are minted for,
 // once machineSource has found an identity to mint one and before anything is minted, unless an
 // audience is kept already, and refuses it where another writer kept a different one first.
-func keepGoogleAudience(base cipheraddr.Address, audience string) error {
+func keepGoogleAudience(base configaddr.Address, audience string) error {
 	dir := machineCacheDir()
 	if dir == "" {
 		return nil
@@ -328,8 +328,8 @@ func keepGoogleAudience(base cipheraddr.Address, audience string) error {
 
 // sameGoogleAudience is the refusal of audience, which the broker at base names, where this
 // machine kept another one (machineCacheAudienceFile). Both audiences are text a broker's settings
-// answer wrote, so it prints them as base lets that text print (cipheraddr.Address.Words).
-func sameGoogleAudience(base cipheraddr.Address, audience, kept string) error {
+// answer wrote, so it prints them as base lets that text print (configaddr.Address.Words).
+func sameGoogleAudience(base configaddr.Address, audience, kept string) error {
 	if kept != audience {
 		return fmt.Errorf("the broker at %s names %s as its Google exchange audience, and this machine first read %s there (kept in %s): a broker's audience does not change, so this machine mints no identity token for another one. If the broker's audience did change, remove %s and run the command again",
 			base, base.Words(strconv.Quote(audience)), base.Words(strconv.Quote(kept)), machineCacheAudienceFile, machineCacheAudienceFile)

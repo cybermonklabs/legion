@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -14,7 +14,7 @@ import (
 
 type apiErrorTwin struct {
 	Status int
-	base   cipheraddr.Address
+	base   configaddr.Address
 	code   string
 	reason string
 }
@@ -32,7 +32,7 @@ type apiErrorExported struct {
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	code, words := redact.NewRemoteText(redacttest.Code), redact.NewRemoteText(redacttest.Words)
 	// A clean address, beside which the refusal prints its words: the state that prints most.
-	base := cipheraddr.New("http://127.0.0.1:1")
+	base := configaddr.New("AGENT_SECRETS_URL", "http://127.0.0.1:1")
 	type doTwin = struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`

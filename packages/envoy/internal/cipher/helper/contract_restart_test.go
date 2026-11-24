@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 )
 
@@ -69,7 +69,7 @@ func TestContractALostRefreshAnswerIsRetriedInsideTheGrace(t *testing.T) {
 	}
 	first.cancel()
 	lossy := &losingTokenTransport{}
-	b := &Broker{URL: cipheraddr.New(first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
 		HTTP: &http.Client{Transport: lossy}, refreshRetry: 200 * time.Millisecond}
 	t.Cleanup(b.Close)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -347,7 +347,7 @@ func TestContractALostRefreshAnswerIsRedeemableUntilTheGraceEnds(t *testing.T) {
 			first.login(t)
 			first.cancel()
 			lossy := &losingTokenTransport{}
-			b := &Broker{URL: cipheraddr.New(first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
+			b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
 				HTTP: &http.Client{Transport: lossy}, refreshRetry: time.Hour}
 			t.Cleanup(b.Close)
 			ctx, cancel := context.WithCancel(context.Background())

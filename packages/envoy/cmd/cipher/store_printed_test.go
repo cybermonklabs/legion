@@ -6,7 +6,7 @@
 // is the server's text. The broker's settings are text whoever answered AGENT_SECRETS_URL wrote,
 // and beside an address that carries a credential that text can repeat it. So a refusal names the
 // call and the code the store answered, and a settings field prints as the broker's address lets
-// its answer print (cipheraddr.Address.Words).
+// its answer print (configaddr.Address.Words).
 package main
 
 import (
@@ -24,7 +24,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -186,7 +185,7 @@ func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
 					}
 					return
 				}
-				wantNamedNotPrinted(t, "stderr", stderr, []string{row.says + cipheraddr.WordsNotPrinted}, planted, "demopass9z")
+				wantNamedNotPrinted(t, "stderr", stderr, []string{row.says + brokerWordsNotPrinted}, planted, "demopass9z")
 			})
 		}
 	}
@@ -195,7 +194,7 @@ func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
 // TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt: the reason a broker's reread refuses a
 // secret for, and the type it says it serves the secret as, are text of its answer, so beside an
 // AGENT_SECRETS_URL that carries a credential neither prints: the write's lines name them as
-// cipheraddr.WordsNotPrinted. Control: beside a clean address both print as the broker wrote them.
+// configaddr.Address.WordsNotPrinted. Control: beside a clean address both print as the broker wrote them.
 func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 	planted := "hunter2pw-" + "reread-" + "7e5b"
 	for _, row := range []struct {
@@ -208,7 +207,7 @@ func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 	} {
 		for _, clean := range []bool{false, true} {
 			name := row.name + ", beside a credentialed address"
-			shown := cipheraddr.WordsNotPrinted
+			shown := brokerWordsNotPrinted
 			if clean {
 				name, shown = "control: "+row.name+", beside a clean address", planted
 			}

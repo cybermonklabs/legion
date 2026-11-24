@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -80,7 +80,7 @@ func signedInBox(t *testing.T, tokenURL string) *cipherclient.SignInAuthority {
 		t.Fatalf("keep the sign-in: %v", err)
 	}
 	return &cipherclient.SignInAuthority{
-		Store: store, Machine: boxMachine{}, Flow: flow, BrokerURL: cipheraddr.New(tokenURL), HTTP: &http.Client{Timeout: 30 * time.Second},
+		Store: store, Machine: boxMachine{}, Flow: flow, BrokerURL: configaddr.New("AGENT_SECRETS_URL", tokenURL), HTTP: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

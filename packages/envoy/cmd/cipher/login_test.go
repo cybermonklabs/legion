@@ -27,7 +27,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -330,7 +330,7 @@ func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selectSigner after the lease lapsed: %v", err)
 	}
-	if _, _, err := newClient(cipheraddr.New(broker.server.URL)).Self(context.Background(), signer); err != nil {
+	if _, _, err := newClient(configaddr.New("AGENT_SECRETS_URL", broker.server.URL)).Self(context.Background(), signer); err != nil {
 		t.Fatalf("a call on a lapsed sign-in = %v; want the session registered again and the call answered", err)
 	}
 
@@ -436,7 +436,7 @@ func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
 
 			_, signer, err := selectSigner(keyDir, io.Discard, true)
 			if err == nil {
-				_, _, err = newClient(cipheraddr.New(broker.server.URL)).Self(context.Background(), signer)
+				_, _, err = newClient(configaddr.New("AGENT_SECRETS_URL", broker.server.URL)).Self(context.Background(), signer)
 			}
 			if err == nil {
 				t.Fatal("a call whose trade the broker refused succeeded")

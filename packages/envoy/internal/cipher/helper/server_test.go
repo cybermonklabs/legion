@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -66,7 +66,7 @@ func newLoggedRig(t *testing.T, statePath string, log *slog.Logger) *rig {
 	t.Helper()
 	f := newFakeBroker(t)
 	of := operatorFile(t, "ada@example.com")
-	r := serveBroker(t, &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}, statePath, log)
+	r := serveBroker(t, &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}, statePath, log)
 	r.fake = f
 	return r
 }
@@ -617,7 +617,7 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	// A second helper on the same state and the same fake broker.
 	of := operatorFile(t, "ada@example.com")
-	srv2 := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: cipheraddr.New(r.fake.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: r.fake.srv.Client()},
+	srv2 := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: configaddr.New("AGENT_SECRETS_URL", r.fake.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: r.fake.srv.Client()},
 		Hostname: "testhost", PeerOf: PeerOf, Log: slog.Default(), MinRenew: time.Second}
 	if _, err := srv2.Broker.Login(context.Background(), "testhost"); err != nil {
 		t.Fatalf("srv2 login: %v", err)
@@ -738,7 +738,7 @@ func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 	r.fake.revokeFirstDelay = 300 * time.Millisecond
 	r.fake.mu.Unlock()
 	of := operatorFile(t, "ada@example.com")
-	srv2 := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: cipheraddr.New(r.fake.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: r.fake.srv.Client()},
+	srv2 := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: configaddr.New("AGENT_SECRETS_URL", r.fake.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: r.fake.srv.Client()},
 		Hostname: "testhost", PeerOf: PeerOf, Log: slog.Default(), MinRenew: time.Second}
 	if _, err := srv2.Broker.Login(context.Background(), "testhost"); err != nil {
 		t.Fatalf("srv2 login: %v", err)
@@ -835,7 +835,7 @@ func TestRecoverFallsBackToIndependentRevokeIfTheRepinnedSessionEndsMidBackoff(t
 	r.fake.revokeFailFirst = failAlways
 	r.fake.mu.Unlock()
 	of := operatorFile(t, "ada@example.com")
-	srv2 := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: cipheraddr.New(r.fake.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: r.fake.srv.Client()},
+	srv2 := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: configaddr.New("AGENT_SECRETS_URL", r.fake.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: r.fake.srv.Client()},
 		Hostname: "testhost", PeerOf: PeerOf, Log: slog.Default(), MinRenew: time.Second}
 	if _, err := srv2.Broker.Login(context.Background(), "testhost"); err != nil {
 		t.Fatalf("srv2 login: %v", err)

@@ -30,7 +30,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
@@ -40,9 +40,9 @@ import (
 )
 
 type config struct {
-	// URL is AGENT_SECRETS_URL without its trailing slashes, as a cipheraddr.Address: the
+	// URL is AGENT_SECRETS_URL without its trailing slashes, as a configaddr.Address: the
 	// helper's log lines and errors name it only as a message may print it.
-	URL          cipheraddr.Address
+	URL          configaddr.Address
 	Socket       string
 	OperatorFile string
 	MachineFile  string
@@ -87,7 +87,7 @@ type config struct {
 func loadConfig(getenv func(string) string) (config, error) {
 	home := getenv("HOME")
 	cfg := config{
-		URL:          cipheraddr.New(cipherclient.WithoutTrailingSlashes(getenv(cipherclient.BrokerURLVar))),
+		URL:          configaddr.New(cipherclient.BrokerURLVar, cipherclient.WithoutTrailingSlashes(getenv(cipherclient.BrokerURLVar))),
 		Socket:       getenv("AGENT_SECRETS_HELPER_SOCK"),
 		OperatorFile: getenv("AGENT_SECRETS_OPERATOR_FILE"),
 		MachineFile:  getenv("AGENT_SECRETS_MACHINE_FILE"),

@@ -39,7 +39,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/googleidentity"
@@ -60,7 +60,7 @@ func gcpTestSettings() Settings {
 		Store: secrets.StoreGCP, SecretsPrefix: testGCPPrefix,
 		KMSKeyName: testKMSKeyName, GCPProject: testGCPProject,
 		SecretTypeTag: true,
-		answeredBy:    cipheraddr.New("https://broker.example"),
+		answeredBy:    configaddr.New("AGENT_SECRETS_URL", "https://broker.example"),
 	}
 }
 

@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/cipherclient"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // controllerDispatchTradeWait bounds the one trade this start makes to prove the controller can
@@ -83,10 +83,10 @@ func controllerDispatchBroker(ctx context.Context, stderr io.Writer) error {
 			cipherclient.IdentityVar)
 	}
 	// The address may carry a user name, a password, a query or a fragment, and this start names it
-	// in its refusal and on stderr, so it is held as a cipheraddr.Address from the moment it is read:
+	// in its refusal and on stderr, so it is held as a configaddr.Address from the moment it is read:
 	// each of those prints it through the Address, and only the token client reads its raw value, to
 	// build its request.
-	broker := cipheraddr.New(os.Getenv(cipherclient.BrokerURLVar))
+	broker := configaddr.New(cipherclient.BrokerURLVar, os.Getenv(cipherclient.BrokerURLVar))
 	if broker.Empty() {
 		return fmt.Errorf("%s names the identity this machine proves, so %s must name the secrets broker it proves it to",
 			cipherclient.IdentityVar, cipherclient.BrokerURLVar)

@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // TestATypedIDIsLeftOutOfAFailedCallEvenWhereALayerWrapsIt: withoutTypedID leaves the id a person
@@ -23,7 +23,7 @@ func TestATypedIDIsLeftOutOfAFailedCallEvenWhereALayerWrapsIt(t *testing.T) {
 	const base = "http://127.0.0.1:1"
 	const route = "/v1/operator/machines/(the machine id, not printed)/revoke"
 	failure := func() *unreachableError {
-		return &unreachableError{"the broker did not answer", cipheraddr.New(base), http.MethodPost, base + "/v1/operator/machines/" + typed + "/revoke", io.ErrUnexpectedEOF, ""}
+		return &unreachableError{"the broker did not answer", configaddr.New("AGENT_SECRETS_URL", base), http.MethodPost, base + "/v1/operator/machines/" + typed + "/revoke", io.ErrUnexpectedEOF, ""}
 	}
 	for _, row := range []struct {
 		name string

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -222,9 +222,9 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 // without it, is polled again; every other refusal, and a call never sent, is not.
 func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 	const base = "http://broker.example"
-	reset := unreachable(cipheraddr.New(base), http.MethodGet, base+"/v1/requests/"+flakyRequestID, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
+	reset := unreachable(configaddr.New("AGENT_SECRETS_URL", base), http.MethodGet, base+"/v1/requests/"+flakyRequestID, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
 	refusal := func(status int, code, words string) *apiError {
-		return newAPIError(status, redact.NewRemoteText(code), redact.NewRemoteText(words), redact.RemoteText{}, false)
+		return newAPIError(status, redact.NewRemoteText(code), redact.NewRemoteText(words), redact.RemoteText{}, "")
 	}
 	for _, row := range []struct {
 		err  error
@@ -232,12 +232,12 @@ func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 	}{
 		{reset, true},
 		{fmt.Errorf("wrapped: %w", reset), true},
-		{&cutOffError{base: cipheraddr.New(base), method: http.MethodGet, url: base + "/v1/requests/x", cause: &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}}, true},
-		{&cutOffError{base: cipheraddr.New(base), method: http.MethodGet, url: base + "/v1/requests/x", cause: io.ErrUnexpectedEOF}, true},
+		{&cutOffError{base: configaddr.New("AGENT_SECRETS_URL", base), method: http.MethodGet, url: base + "/v1/requests/x", cause: &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}}, true},
+		{&cutOffError{base: configaddr.New("AGENT_SECRETS_URL", base), method: http.MethodGet, url: base + "/v1/requests/x", cause: io.ErrUnexpectedEOF}, true},
 		// The helper's socket failing under a machine session's proof is the local signer's
 		// failure, not a poll that did not reach the broker: it ends the wait, as before.
 		{fmt.Errorf("sign proof: %w", &net.OpError{Op: "read", Net: "unix", Err: os.NewSyscallError("read", syscall.ECONNRESET)}), false},
-		{&unreachableError{"the broker's address is not a valid URL", cipheraddr.New(base), http.MethodGet, base, errNothingSent, ""}, false},
+		{&unreachableError{"the broker's address is not a valid URL", configaddr.New("AGENT_SECRETS_URL", base), http.MethodGet, base, errNothingSent, ""}, false},
 		{refusal(http.StatusTooManyRequests, "RATE_LIMITED", "slow down"), true},
 		{refusal(http.StatusBadGateway, "", "<html>502 Bad Gateway</html>"), true},
 		{refusal(http.StatusServiceUnavailable, "SHUTTING_DOWN", "shutting down"), true},

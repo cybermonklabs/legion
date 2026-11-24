@@ -24,7 +24,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -45,7 +45,7 @@ func tableRows(t *testing.T, stdout string) (header []string, rows [][]string) {
 // returns its helper.Broker and the launcher credential its approval minted.
 func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.Broker, string) {
 	t.Helper()
-	b := &helper.Broker{URL: cipheraddr.New(rig.URL), OperatorFile: rig.OperatorFile, MachineFile: filepath.Join(t.TempDir(), "machine.json"), HTTP: http.DefaultClient}
+	b := &helper.Broker{URL: configaddr.New("AGENT_SECRETS_URL", rig.URL), OperatorFile: rig.OperatorFile, MachineFile: filepath.Join(t.TempDir(), "machine.json"), HTTP: http.DefaultClient}
 	t.Cleanup(b.Close)
 	code, err := b.Login(context.Background(), host)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 
 	// Every line names the broker it acted at, so no answer of this CLI's reads as another
 	// secrets CLI's (source.go).
-	at := " at " + brokerSource(cipheraddr.New(rig.URL)).String() + "\n"
+	at := " at " + brokerSource(configaddr.New("AGENT_SECRETS_URL", rig.URL)).String() + "\n"
 	if stdout, stderr, exit := machine("revoke", laptopID); exit != 0 || stdout != "revoked "+laptopID+at || stderr != "" {
 		t.Fatalf("machine revoke the laptop: exit %d, stdout %q, stderr %q", exit, stdout, stderr)
 	}
@@ -129,7 +129,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	if stdout, stderr, exit := machine("revoke", strings.ToUpper(own)); exit != 0 || stdout != "revoked "+strings.ToUpper(own)+at || stderr != ownWarning {
 		t.Fatalf("machine revoke this machine's own login in upper case: exit %d, stdout %q, stderr %q; want %q", exit, stdout, stderr, ownWarning)
 	}
-	refused := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at " + brokerSource(cipheraddr.New(rig.URL)).String() + " is expired or revoked; run: agent-secrets machine login, and have a human approve it\n"
+	refused := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at " + brokerSource(configaddr.New("AGENT_SECRETS_URL", rig.URL)).String() + " is expired or revoked; run: agent-secrets machine login, and have a human approve it\n"
 	if stdout, stderr, exit := machine("list"); exit != 1 || stdout != "" || stderr != refused {
 		t.Fatalf("machine list after revoking this machine's own login: exit %d, stdout %q, stderr %q; want 1, %q", exit, stdout, stderr, refused)
 	}
@@ -188,10 +188,10 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 		t.Fatalf("grant list --json: exit %d, stdout %q, stderr %q; want the Live grants page's body %q", exit, stdout, stderr, page)
 	}
 
-	if stdout, stderr, exit := grant("revoke", grantID); exit != 0 || stdout != "revoked "+grantID+" at "+brokerSource(cipheraddr.New(rig.URL)).String()+"\n" || stderr != "" {
+	if stdout, stderr, exit := grant("revoke", grantID); exit != 0 || stdout != "revoked "+grantID+" at "+brokerSource(configaddr.New("AGENT_SECRETS_URL", rig.URL)).String()+"\n" || stderr != "" {
 		t.Fatalf("grant revoke: exit %d, stdout %q, stderr %q", exit, stdout, stderr)
 	}
-	if _, err := newClient(cipheraddr.New(rig.URL)).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, releaseCall{}); err == nil {
+	if _, err := newClient(configaddr.New("AGENT_SECRETS_URL", rig.URL)).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, releaseCall{}); err == nil {
 		t.Fatal("the box read the revoked grant's values")
 	}
 	if stdout, _, _ := grant("list"); strings.Contains(stdout, grantID) {
@@ -404,7 +404,7 @@ func TestGrantRevokeInsideASessionEndsItsOwnGrant(t *testing.T) {
 	}
 
 	res := session.run("grant", "revoke", grantID)
-	want := "revoked " + grantID + " at " + brokerSource(cipheraddr.New(rig.URL)).String() + "\n"
+	want := "revoked " + grantID + " at " + brokerSource(configaddr.New("AGENT_SECRETS_URL", rig.URL)).String() + "\n"
 	if res.Code != 0 || res.Stdout != want || res.Stderr != "" {
 		t.Fatalf("grant revoke inside the session: exit %d, stdout %q, stderr %q; want 0 and %q", res.Code, res.Stdout, res.Stderr, want)
 	}

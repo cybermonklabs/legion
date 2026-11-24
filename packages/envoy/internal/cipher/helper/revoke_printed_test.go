@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -34,7 +34,7 @@ func TestARevokeThatCannotReachTheBrokerPrintsNoID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &Broker{URL: cipheraddr.New(closed)}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", closed)}
 	t.Cleanup(b.Close)
 	err = b.revokeUnder(context.Background(), &cipherclient.Authority{Key: key, CredentialID: "cred-1"}, nil, typed)
 	if err == nil {
@@ -58,7 +58,7 @@ func TestARevokeAnsweredWithBrokenHTTPPrintsNoID(t *testing.T) {
 		t.Fatal(err)
 	}
 	address := brokenHTTPBroker(t)
-	b := &Broker{URL: cipheraddr.New(address)}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", address)}
 	t.Cleanup(b.Close)
 	err = b.revokeUnder(context.Background(), &cipherclient.Authority{Key: key, CredentialID: "cred-1"}, nil, typed)
 	if err == nil {
@@ -68,7 +68,7 @@ func TestARevokeAnsweredWithBrokenHTTPPrintsNoID(t *testing.T) {
 }
 
 // TestNoLineMadeFromARevokesFailurePrintsItsID: a revoke that failed names its route with the id
-// left out (cipheraddr.Address.Named), and every line made from that failure keeps the id out:
+// left out (configaddr.Address.Named), and every line made from that failure keeps the id out:
 // Error and Cause again beside the helper's own address, another clean one and one that carries
 // a credential, Class, BrokerAnswer, Words, a wrap with %w, and the helper's relays of it, the
 // unenroll-session-key answer (UNENROLL_FAILED, or UNENROLL_OUTCOME_UNKNOWN through
@@ -78,7 +78,8 @@ func TestARevokeAnsweredWithBrokenHTTPPrintsNoID(t *testing.T) {
 // line names the route and the class.
 func TestNoLineMadeFromARevokesFailurePrintsItsID(t *testing.T) {
 	const typed = "hunter2pw-typed-walk-3c9"
-	credentialed := cipheraddr.New("http://" + "walkuser" + ":" + "hunter2pwADDR" + "@127.0.0.1:1")
+	credentialedURL := "http://" + "walkuser" + ":" + "hunter2pwADDR" + "@127.0.0.1:1"
+	credentialed := configaddr.New("AGENT_SECRETS_URL", credentialedURL)
 	for _, row := range []struct {
 		name, address, class, code string
 	}{
@@ -91,7 +92,7 @@ func TestNoLineMadeFromARevokesFailurePrintsItsID(t *testing.T) {
 				t.Fatal(err)
 			}
 			authority := &cipherclient.Authority{Key: key, CredentialID: "cred-1"}
-			b := &Broker{URL: cipheraddr.New(row.address), SignIns: &stubSignIns{authority: authority}}
+			b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", row.address), SignIns: &stubSignIns{authority: authority}}
 			t.Cleanup(b.Close)
 			failed := b.revokeUnder(context.Background(), authority, nil, typed)
 			if failed == nil {
@@ -99,9 +100,9 @@ func TestNoLineMadeFromARevokesFailurePrintsItsID(t *testing.T) {
 			}
 			route := http.MethodDelete + " " + row.address + "/v1/enrollments/(the enrollment id, not printed): "
 			wantNamedNotPrinted(t, "the revoke's error", failed.Error(), []string{route, row.class}, typed)
-			addresses := map[string]cipheraddr.Address{
+			addresses := map[string]configaddr.Address{
 				"the helper's address":                 b.URL,
-				"another clean address":                cipheraddr.New("https://other-broker.example"),
+				"another clean address":                configaddr.New("AGENT_SECRETS_URL", "https://other-broker.example"),
 				"an address that carries a credential": credentialed,
 			}
 			for _, err := range []error{failed, fmt.Errorf("unenroll: %w", failed)} {
@@ -184,7 +185,7 @@ func brokenHTTPBroker(t *testing.T) string {
 // the control.
 func TestAnAnswerUnderClassIsNotTheBrokersRefusal(t *testing.T) {
 	const secret = "hunter2pw-answer-4d81"
-	addr := cipheraddr.New("https://broker.example")
+	addr := configaddr.New("AGENT_SECRETS_URL", "https://broker.example")
 	foreign := &oauth2.RetrieveError{
 		Response:  &http.Response{StatusCode: http.StatusBadRequest},
 		ErrorCode: "invalid_client", ErrorDescription: "echo of " + secret,
@@ -217,7 +218,8 @@ func TestARefusalBesideAnAddressWithACredentialIsStillARefusal(t *testing.T) {
 		Response:  &http.Response{StatusCode: http.StatusBadRequest},
 		ErrorCode: "invalid_request", ErrorDescription: "LOGIN_PENDING: a login is already pending (echo " + secret + ")",
 	}
-	credentialed := cipheraddr.New("http://" + "tokuser9f3" + ":" + secret + "@broker.invalid")
+	credentialedURL := "http://" + "tokuser9f3" + ":" + secret + "@broker.invalid"
+	credentialed := configaddr.New("AGENT_SECRETS_URL", credentialedURL)
 	// settled is settle of err for a request that was sent whole, where only a refusal the helper
 	// can read as the broker's 4xx is a known outcome.
 	settled := func(err error) error {
@@ -233,11 +235,11 @@ func TestARefusalBesideAnAddressWithACredentialIsStillARefusal(t *testing.T) {
 	if outcomeUnknown(err) {
 		t.Errorf("the refusal beside an address with a credential = %q, which reads as an unknown outcome", err)
 	}
-	wantNamedNotPrinted(t, "the refusal beside an address with a credential", err.Error(), []string{"broker 400: " + cipheraddr.WordsNotPrinted}, secret)
+	wantNamedNotPrinted(t, "the refusal beside an address with a credential", err.Error(), []string{"broker 400: " + brokerWordsNotPrinted}, secret)
 	if strings.Contains(err.Error(), "tokuser9f3") || strings.Contains(err.Error(), "LOGIN_PENDING") {
 		t.Errorf("the refusal beside an address with a credential = %q, which prints the broker's words", err)
 	}
-	clean := cipheraddr.New("https://broker.example")
+	clean := configaddr.New("AGENT_SECRETS_URL", "https://broker.example")
 	if got := settled(oauthBrokerError(refusal, clean)); !strings.HasPrefix(got.Error(), "broker 400 LOGIN_PENDING: a login is already pending") {
 		t.Errorf("the refusal beside a clean address = %q, want its code and words", got)
 	}

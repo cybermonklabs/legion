@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -57,7 +57,7 @@ func TestTheHelpersBrokerCallsFollowNoRedirect(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				b := &Broker{URL: cipheraddr.New(broker.URL), OperatorFile: operatorFile(t, "ada@example.com"), HTTP: httpClient}
+				b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", broker.URL), OperatorFile: operatorFile(t, "ada@example.com"), HTTP: httpClient}
 				t.Cleanup(b.Close)
 				ctx := context.Background()
 
@@ -105,7 +105,7 @@ func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
 	login := func(t *testing.T, address string) error {
 		t.Helper()
 		before := asked.Load()
-		b := &Broker{URL: cipheraddr.New(address), OperatorFile: operatorFile(t, "ada@example.com"), HTTP: srv.Client()}
+		b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", address), OperatorFile: operatorFile(t, "ada@example.com"), HTTP: srv.Client()}
 		t.Cleanup(b.Close)
 		_, err := b.Login(context.Background(), "helper-host")
 		if err == nil {
@@ -130,7 +130,7 @@ func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
 		}
 		// Still the broker's refusal, of its status alone: not an unknown outcome, and no word of it.
 		var be *BrokerError
-		if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !be.code.IsEmpty() || err.Error() != "broker 400: "+cipheraddr.WordsNotPrinted {
+		if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !be.code.IsEmpty() || err.Error() != "broker 400: "+brokerWordsNotPrinted {
 			t.Errorf("the refusal is %q, want the broker's 400 as a refusal of its status alone", err)
 		}
 		if outcomeUnknown(err) {
@@ -166,7 +166,7 @@ func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
 // BrokerError with the status and the code the helper acts on. Beside a clean address the broker's
 // words and code are what a person acts on, and print. Whether a refusal's text is withheld is
 // decided from the address where do builds the refusal, and never read back from what the refusal
-// says: a clean broker whose words are cipheraddr.WordsNotPrinted itself is a clean broker still,
+// says: a clean broker whose words are configaddr.Address.WordsNotPrinted itself is a clean broker still,
 // and its refusal of the renew names its code.
 func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	var asked atomic.Int64
@@ -198,7 +198,7 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 		log := slog.New(slog.NewJSONHandler(&out, nil))
 		s := &Server{
 			Registry: NewRegistry(filepath.Join(t.TempDir(), "sessions.json")),
-			Broker:   &Broker{URL: cipheraddr.New(address), HTTP: srv.Client(), Log: log, SignIns: signIns},
+			Broker:   &Broker{URL: configaddr.New("AGENT_SECRETS_URL", address), HTTP: srv.Client(), Log: log, SignIns: signIns},
 			Hostname: "testhost", Log: log, MinRenew: time.Second,
 		}
 		t.Cleanup(s.Broker.Close)
@@ -231,7 +231,7 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	// renew is the renew of enrollment-1 at address, and the Broker it ran on, for a revoke after.
 	renew := func(t *testing.T, address string) (*Broker, error) {
 		t.Helper()
-		b := &Broker{URL: cipheraddr.New(address), HTTP: srv.Client(), SignIns: signIns}
+		b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", address), HTTP: srv.Client(), SignIns: signIns}
 		t.Cleanup(b.Close)
 		_, err := b.renewIdentity(context.Background(), identity{EnrollmentID: "enrollment-1", Key: key})
 		return b, err
@@ -292,7 +292,7 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	})
 
 	t.Run("a clean address whose words are the marker", func(t *testing.T) {
-		words = cipheraddr.WordsNotPrinted
+		words = brokerWordsNotPrinted
 		_, err := renew(t, srv.URL)
 		var be *BrokerError
 		if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !be.HasCode("INVALID_SLOT") {
@@ -327,7 +327,7 @@ func TestAnOlderBrokersNotLiveVerdictHoldsBesideACredentialedAddress(t *testing.
 		"an address carrying a credential": strings.Replace(srv.URL, "://", "://demouser7q:demopass9z-not-a-secret@", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			b := &Broker{URL: cipheraddr.New(address), HTTP: srv.Client()}
+			b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", address), HTTP: srv.Client()}
 			t.Cleanup(b.Close)
 			for id, wantEnded := range map[string]bool{"ended": true, "skewed": false} {
 				_, err := b.renewIdentity(context.Background(), identity{EnrollmentID: id, Key: key})

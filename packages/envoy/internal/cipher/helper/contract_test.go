@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -69,7 +69,7 @@ func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile strin
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	cr.srv = &Server{
 		Registry: NewRegistry(sessionsPath),
-		Broker:   &Broker{URL: cipheraddr.New(broker.URL), OperatorFile: broker.OperatorFile, MachineFile: machineFile, HTTP: client, Log: log},
+		Broker:   &Broker{URL: configaddr.New("AGENT_SECRETS_URL", broker.URL), OperatorFile: broker.OperatorFile, MachineFile: machineFile, HTTP: client, Log: log},
 		Hostname: "contract-test-host",
 		PeerOf:   PeerOf,
 		Log:      log,

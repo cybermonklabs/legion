@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -223,7 +223,7 @@ func cmdEnrollPod(service, tokenFile, out string, projects podProjects, stdout, 
 // names the paths the run used, as the GCP forms' retry commands name the credentials file that
 // signed them in. Every other line names them by their flags (outDir, outKeyFile,
 // --pod-token-file).
-func enrolPod(service, tokenFile, out string, projects podProjects, base cipheraddr.Address, prefix string, stdout, stderr io.Writer) int {
+func enrolPod(service, tokenFile, out string, projects podProjects, base configaddr.Address, prefix string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	// refuse prints line and, where this directory holds a key, records line beside it. A run
 	// that has not reached enrollSessionKey yet leaves no key of its own, but an earlier run's
@@ -313,16 +313,16 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 	fmt.Fprintf(stderr, "%s --pod: enrolled; keep this lease alive with: AGENT_SECRETS_KEY_DIR=%s agent-secrets renew --pod-token-file %s\n",
 		prefix, shellWord(out), shellWord(tokenFile))
 	// The enrollment is the broker's, so it prints as the broker's address lets its answer print
-	// (cipheraddr.Address.Words); the file above keeps it as it came.
+	// (configaddr.Address.Words); the file above keeps it as it came.
 	fmt.Fprintln(stdout, idWords(base, enrollmentID))
 	return 0
 }
 
 // podRefusal is the one stderr line a refused login or enrolment prints: what was refused, which
 // pod the token names, the HTTP status, the broker's code and words as the rule for remote text
-// reads them - the status and cipheraddr.WordsNotPrinted alone where the answer's text is
+// reads them - the status and configaddr.Address.WordsNotPrinted alone where the answer's text is
 // withheld (apiError.answered) - and the broker it asked. It never prints the token.
-func podRefusal(prefix, what string, identity podIdentity, base cipheraddr.Address, err error) string {
+func podRefusal(prefix, what string, identity podIdentity, base configaddr.Address, err error) string {
 	var refused *apiError
 	if errors.As(err, &refused) {
 		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, refused.answered(), brokerSource(base))

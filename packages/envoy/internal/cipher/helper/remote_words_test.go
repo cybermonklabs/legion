@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -51,14 +51,14 @@ func TestTheStoppedTradeLogsTheBrokersWordsAsTheRuleReadsThem(t *testing.T) {
 				t.Fatal(err)
 			}
 			machine, err := cipherclient.New(cipherclient.Config{
-				BrokerURL: cipheraddr.New(broker.URL), Key: key, HTTP: broker.Client(), Subject: cipherclient.NewProjectedToken(tokenFile),
+				BrokerURL: configaddr.New("AGENT_SECRETS_URL", broker.URL), Key: key, HTTP: broker.Client(), Subject: cipherclient.NewProjectedToken(tokenFile),
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			var logged syncBuffer
 			b := &Broker{
-				URL: cipheraddr.New(broker.URL), Identity: machine, HTTP: broker.Client(),
+				URL: configaddr.New("AGENT_SECRETS_URL", broker.URL), Identity: machine, HTTP: broker.Client(),
 				Log: slog.New(slog.NewTextHandler(&logged, nil)), OperatorFile: filepath.Join(t.TempDir(), "no-operator-here"),
 			}
 			t.Cleanup(b.Close)
@@ -100,7 +100,7 @@ func TestABrokerErrorPrintsTheBrokersWordsAsTheRuleReadsThem(t *testing.T) {
 				t.Fatal(err)
 			}
 			signIns := &stubSignIns{authority: &cipherclient.Authority{Key: key, CredentialID: "credential-1", Operator: "ada@example.com"}}
-			b := &Broker{URL: cipheraddr.New(srv.URL), HTTP: srv.Client(), SignIns: signIns}
+			b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", srv.URL), HTTP: srv.Client(), SignIns: signIns}
 			t.Cleanup(b.Close)
 			_, err = b.renewIdentity(context.Background(), identity{EnrollmentID: "enrollment-1", Key: key})
 			var be *BrokerError

@@ -34,7 +34,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
@@ -83,17 +83,17 @@ func exitUsage(err error) int {
 
 // commonFlags is every subcommand's shared connection and approver configuration.
 type commonFlags struct {
-	broker    cipheraddr.Address
+	broker    configaddr.Address
 	tokenFile string
 	login     string
 }
 
 // registerCommonFlags registers the flags every subcommand shares; --broker is a
-// cipheraddr.Address from the moment flag parses it.
+// configaddr.Address from the moment flag parses it.
 func registerCommonFlags(fs *flag.FlagSet) *commonFlags {
 	c := &commonFlags{}
 	fs.Func("broker", "broker base `URL` (default $AGENT_SECRETS_URL)", func(raw string) error {
-		c.broker = cipheraddr.New(raw)
+		c.broker = configaddr.New("--broker", raw)
 		return nil
 	})
 	fs.StringVar(&c.tokenFile, "account-token-file", os.Getenv("AGENT_SECRETS_ACCOUNT_TOKEN_FILE"),
@@ -105,7 +105,7 @@ func registerCommonFlags(fs *flag.FlagSet) *commonFlags {
 func (c *commonFlags) validate() error {
 	if c.broker.Empty() {
 		// Read here, not as the flag's default, so the usage text names no address at all.
-		c.broker = cipheraddr.New(os.Getenv("AGENT_SECRETS_URL"))
+		c.broker = configaddr.New("AGENT_SECRETS_URL", os.Getenv("AGENT_SECRETS_URL"))
 	}
 	if c.broker.Empty() {
 		return errors.New("--broker (or AGENT_SECRETS_URL) is required")
@@ -141,7 +141,7 @@ func (c *commonFlags) client() (*apiClient, error) {
 // ---------------------------------------------------------------------------
 
 type apiClient struct {
-	base  cipheraddr.Address
+	base  configaddr.Address
 	token string
 	http  *http.Client
 }
@@ -149,21 +149,21 @@ type apiClient struct {
 // apiError is a refusal in the broker's {"code":...,"error":...} error envelope: the HTTP status
 // it came with, and its code and words, held as redact.RemoteText, which prints only the rule's
 // reading of them, under every verb, in JSON and in a log field. Error, Format and LogValue print
-// the code and the words each as the address lets it print (cipheraddr.Address.WordsOf): beside a
+// the code and the words each as the address lets it print (configaddr.Address.WordsOf): beside a
 // clean address as the field prints itself, so a field the rule cannot read prints as
 // redact.WordsNotReadable while the status and the other field still print; beside an address
 // that is not clean, where whoever answers can repeat the credential it carries in any text of its
-// answer, cipheraddr.WordsNotPrinted, so of the answer the refusal prints its status alone.
+// answer, the address's WordsNotPrinted, so of the answer the refusal prints its status alone.
 type apiError struct {
 	Status int
-	base   cipheraddr.Address
+	base   configaddr.Address
 	code   redact.RemoteText
 	reason redact.RemoteText
 }
 
 func (e *apiError) Error() string {
 	if !e.base.Clean() {
-		return fmt.Sprintf("%s (HTTP %d)", cipheraddr.WordsNotPrinted, e.Status)
+		return fmt.Sprintf("%s (HTTP %d)", e.base.WordsNotPrinted(), e.Status)
 	}
 	return fmt.Sprintf("%s: %s (HTTP %d)", e.base.WordsOf(e.code), e.base.WordsOf(e.reason), e.Status)
 }
@@ -272,7 +272,7 @@ func cmdMachineApprove(args []string, stdout, stderr io.Writer) int {
 	}
 	if !rec.State.Equal("pending") {
 		// The state is the broker's text, so it prints as the address lets the text of its answer
-		// print (cipheraddr.Address.WordsOf), as the call's refusal prints its words.
+		// print (configaddr.Address.WordsOf), as the call's refusal prints its words.
 		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: code %s names a machine login that is %s, not pending\n", *code, client.base.WordsOf(rec.State))
 		return 1
 	}

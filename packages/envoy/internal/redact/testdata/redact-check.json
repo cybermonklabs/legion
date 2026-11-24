@@ -1,7 +1,7 @@
 {
   "about": "The inventory packages/envoy/scripts/check-redact-remote-text.sh and cmd/redact-gate run: each row a requirement of the redaction of remote text, a test, and for a print-site row its function, the name its test captures the production output under, and its mutation. A Go row's package is relative to packages/envoy; a Bun row's file and every mutation's file are relative to the repository root, and a Bun row's test is its full name in Bun's JUnit report.",
   "gate": {
-    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing. The box's and the answer's own printers - (redact.Answer).Words, redact.Header, (cipheraddr.Address).WordsOf and a RemoteText printed - are not in rule: each prints the rule's reading and holds no text a call of it could hand out raw, so no one replacement of such a call leaks, and a mutation row could bind none of them; a site that prints through them is held by its print-site row and by its holder's print row instead. row_timeout, in whole seconds, is the time the test of one row may take, its own budget: twice the longest correct row the gate measured on the shared box under its load, 24s (daemon-answer-words-rate-limit) in the full check of 2026-11-21 at 20:21Z-21:05Z, load about 900-1000 on 288 CPUs. No run is bounded by it alone: each run's bound adds four times its start-up run, which the same run measures (cmd/redact-gate's runTest for a row; check-redact-remote-text.sh for a package, whose budget is row_timeout once per top-level test it runs).",
+    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing. The box's and the answer's own printers - (redact.Answer).Words, redact.Header, (configaddr.Address).WordsOf and a RemoteText printed - are not in rule: each prints the rule's reading and holds no text a call of it could hand out raw, so no one replacement of such a call leaks, and a mutation row could bind none of them; a site that prints through them is held by its print-site row and by its holder's print row instead. row_timeout, in whole seconds, is the time the test of one row may take, its own budget: twice the longest correct row the gate measured on the shared box under its load, 24s (daemon-answer-words-rate-limit) in the full check of 2026-11-21 at 20:21Z-21:05Z, load about 900-1000 on 288 CPUs. No run is bounded by it alone: each run's bound adds four times its start-up run, which the same run measures (cmd/redact-gate's runTest for a row; check-redact-remote-text.sh for a package, whose budget is row_timeout once per top-level test it runs).",
     "base": "origin/main",
     "rule": [
       "github.com/sjawhar/envoy/internal/redact.Remote",
@@ -12,9 +12,9 @@
       "github.com/sjawhar/envoy/internal/redact.Tokens",
       "github.com/sjawhar/envoy/oauth2call.Field",
       "github.com/sjawhar/envoy/oauth2call.Tokens",
-      "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
-      "(github.com/sjawhar/envoy/cipheraddr.Address).Cause",
-      "(github.com/sjawhar/envoy/cipheraddr.Address).Error"
+      "(github.com/sjawhar/envoy/configaddr.Address).Words",
+      "(github.com/sjawhar/envoy/configaddr.Address).Cause",
+      "(github.com/sjawhar/envoy/configaddr.Address).Error"
     ],
     "printers": [
       "github.com/sjawhar/envoy/internal/redact.ruled",
@@ -2627,9 +2627,9 @@
     {
       "id": "r4-withheld-beside-credential",
       "requirement": "r4-unchanged",
-      "package": "./cipheraddr",
+      "package": "./configaddr",
       "test": "TestAnAnswersWordsPrintOnlyBesideACleanAddress",
-      "production": "cipheraddr.Address.Words"
+      "production": "configaddr.Address.Words"
     },
     {
       "id": "e2e-brokerclient-renewal-log",
@@ -2643,7 +2643,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/helper",
       "test": "TestTheStoppedTradeLogsTheBrokersWordsAsTheRuleReadsThem",
-      "production": "helper.Broker.Start: the ERROR line prints through cipheraddr.Address.Error; the sentence's and sanitized's rows each hold one of the two"
+      "production": "helper.Broker.Start: the ERROR line prints through configaddr.Address.Error; the sentence's and sanitized's rows each hold one of the two"
     },
     {
       "id": "e2e-helper-login",
@@ -2725,13 +2725,13 @@
     {
       "id": "brokeraddr-words",
       "requirement": "r3-each-site",
-      "package": "./cipheraddr",
+      "package": "./configaddr",
       "test": "TestEachMarkerNamesItsOwnCase",
-      "production": "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
-      "function": "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
-      "capture": "cipheraddr.Words",
+      "production": "(github.com/sjawhar/envoy/configaddr.Address).Words",
+      "function": "(github.com/sjawhar/envoy/configaddr.Address).Words",
+      "capture": "configaddr.Words",
       "mutation": {
-        "file": "packages/envoy/cipheraddr/brokeraddr.go",
+        "file": "packages/envoy/configaddr/address.go",
         "preimage": "redact.Field(text)",
         "replacement": "text"
       }
@@ -4876,7 +4876,7 @@
       "requirement": "r4-unchanged",
       "package": "./internal/cipherclient",
       "test": "TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords",
-      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post: the refusal through the address's Error (cipheraddr.Address.Error), which withholds its words beside an address that is not clean",
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post: the refusal through the address's Error (configaddr.Address.Error), which withholds its words beside an address that is not clean",
       "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post",
       "capture": "brokerclient.refusal-beside-credential",
       "mutation": {
@@ -4890,7 +4890,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/fragment",
-      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: the code as the address lets the answer's text print (cipheraddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: the code as the address lets the answer's text print (configaddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
       "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade",
       "capture": "brokerclient.retried-trade/fragment",
       "mutation": {
@@ -4904,14 +4904,14 @@
       "requirement": "r4-unchanged",
       "package": "./internal/cipherclient",
       "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/user-information",
-      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with user information the code prints as cipheraddr.WordsNotPrinted, as the trade's error withholds it"
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with user information the code prints as configaddr.Address.WordsNotPrinted, as the trade's error withholds it"
     },
     {
       "id": "brokerclient-retried-trade-query",
       "requirement": "r4-unchanged",
       "package": "./internal/cipherclient",
       "test": "TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint/query",
-      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with a query the code prints as cipheraddr.WordsNotPrinted, as the trade's error withholds it"
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).retriedTrade: beside an address with a query the code prints as configaddr.Address.WordsNotPrinted, as the trade's error withholds it"
     },
     {
       "id": "brokerclient-retried-trade-clean",
@@ -4960,7 +4960,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher-devrelay",
       "test": "TestALookedUpStatePrintsAsTheAddressLetsItPrint/fragment",
-      "production": "agent-secrets-devrelay cmdMachineApprove: the looked-up state as the address lets the answer's text print (cipheraddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
+      "production": "agent-secrets-devrelay cmdMachineApprove: the looked-up state as the address lets the answer's text print (configaddr.Address.WordsOf), beside an address whose fragment carries a credential no request record holds",
       "function": "github.com/sjawhar/envoy/cmd/cipher-devrelay.cmdMachineApprove",
       "capture": "devrelay.machine-approve-state/fragment",
       "mutation": {
@@ -4974,7 +4974,7 @@
       "requirement": "r4-unchanged",
       "package": "./cmd/cipher-devrelay",
       "test": "TestALookedUpStatePrintsAsTheAddressLetsItPrint/user-information",
-      "production": "agent-secrets-devrelay cmdMachineApprove: beside an address with user information the state prints as cipheraddr.WordsNotPrinted, as the call's refusal withholds its words"
+      "production": "agent-secrets-devrelay cmdMachineApprove: beside an address with user information the state prints as configaddr.Address.WordsNotPrinted, as the call's refusal withholds its words"
     },
     {
       "id": "devrelay-machine-approve-state-clean",
@@ -5492,21 +5492,21 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/request",
-      "production": "agent-secrets cmdRequest: request_id, state and detail held as redact.RemoteText with the request's record, printed through idWordsOf and cipheraddr.Address.WordsOf (printDetail)"
+      "production": "agent-secrets cmdRequest: request_id, state and detail held as redact.RemoteText with the request's record, printed through idWordsOf and configaddr.Address.WordsOf (printDetail)"
     },
     {
       "id": "agentsecrets-answer-words-request-pending",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/request-pending",
-      "production": "agent-secrets cmdRequest and waitingOn: the approver and approve_url held as redact.RemoteText with the request's record, printed through cipheraddr.Address.WordsOf"
+      "production": "agent-secrets cmdRequest and waitingOn: the approver and approve_url held as redact.RemoteText with the request's record, printed through configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-status",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/status",
-      "production": "agent-secrets cmdStatus: state, grant_id, decision.by and detail held as redact.RemoteText with the read's record, printed through cipheraddr.Address.WordsOf and idWordsOf"
+      "production": "agent-secrets cmdStatus: state, grant_id, decision.by and detail held as redact.RemoteText with the read's record, printed through configaddr.Address.WordsOf and idWordsOf"
     },
     {
       "id": "agentsecrets-answer-words-status-pending",
@@ -5520,14 +5520,14 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/self",
-      "production": "agent-secrets cmdSelf: enrollment_id, kind, operator and each grant's ids held as redact.RemoteText with the read's record, printed through idWordsOf and cipheraddr.Address.WordsOf"
+      "production": "agent-secrets cmdSelf: enrollment_id, kind, operator and each grant's ids held as redact.RemoteText with the read's record, printed through idWordsOf and configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-exec-denied",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-denied",
-      "production": "agent-secrets cmdExec and deniedBecause: the request id and the detail held as redact.RemoteText with the request's record, printed through idWordsOf and cipheraddr.Address.WordsOf"
+      "production": "agent-secrets cmdExec and deniedBecause: the request id and the detail held as redact.RemoteText with the request's record, printed through idWordsOf and configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-exec-pending",
@@ -5576,7 +5576,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/exec-left-out",
-      "production": "agent-secrets reportLeftOut: each github_left_out entry and account as the rule reads it with the release's credentials redacted (Answer.Decode, Answer.Said, cipheraddr.Address.WordsOf), and a profile only where this run asked for it (releasedName)"
+      "production": "agent-secrets reportLeftOut: each github_left_out entry and account as the rule reads it with the release's credentials redacted (Answer.Decode, Answer.Said, configaddr.Address.WordsOf), and a profile only where this run asked for it (releasedName)"
     },
     {
       "id": "agentsecrets-answer-words-ttl-revoke",
@@ -5597,14 +5597,14 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/grant-list",
-      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record, printed through idWordsOf and cipheraddr.Address.Words of the rule's reading"
+      "production": "agent-secrets grantRow: each cell's field held as redact.RemoteText with the list's record, printed through idWordsOf and configaddr.Address.Words of the rule's reading"
     },
     {
       "id": "agentsecrets-answer-words-machine-list",
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestABrokerAnswerPrintsNoCredentialItsRequestCarried/machine-list",
-      "production": "agent-secrets machineRow: the credential id, host and approver held as redact.RemoteText with the list's record, printed through idWordsOf and cipheraddr.Address.WordsOf"
+      "production": "agent-secrets machineRow: the credential id, host and approver held as redact.RemoteText with the list's record, printed through idWordsOf and configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-login",
@@ -5632,7 +5632,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestARereadAnswerPrintsNoProofItEchoes/reread-reason",
-      "production": "agent-secrets reread: the reread's reason held as redact.RemoteText (Reread) with the signed reread's record, printed through cipheraddr.Address.WordsOf"
+      "production": "agent-secrets reread: the reread's reason held as redact.RemoteText (Reread) with the signed reread's record, printed through configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-reread-type",
@@ -5646,7 +5646,7 @@
       "requirement": "r3-each-site",
       "package": "./cmd/cipher",
       "test": "TestARereadAnswerPrintsNoProofItEchoes/retag-type",
-      "production": "agent-secrets rereadRetag and servedTypeName: the reread's type held as redact.RemoteText (Reread), compared as it came and printed through cipheraddr.Address.WordsOf"
+      "production": "agent-secrets rereadRetag and servedTypeName: the reread's type held as redact.RemoteText (Reread), compared as it came and printed through configaddr.Address.WordsOf"
     },
     {
       "id": "agentsecrets-answer-words-userinfo-email",

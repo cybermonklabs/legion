@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // TestABrokerRefusalReadsAsOneLine: a refusal from a broker at a clean address reads as one line
@@ -55,7 +55,7 @@ func TestABrokerRefusalReadsAsOneLine(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]string{"code": row.code, "error": row.words})
 			}))
 			defer srv.Close()
-			_, err := newClient(cipheraddr.New(srv.URL)).do(context.Background(), http.MethodGet, srv.URL+"/v1/requests/req-1", nil, nil)
+			_, err := newClient(configaddr.New("AGENT_SECRETS_URL", srv.URL)).do(context.Background(), http.MethodGet, srv.URL+"/v1/requests/req-1", nil, nil)
 			var refusal *apiError
 			if !errors.As(err, &refusal) {
 				t.Fatalf("the refusal read as %v, want an *apiError", err)

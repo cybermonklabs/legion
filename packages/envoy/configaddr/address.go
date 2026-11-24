@@ -1,16 +1,20 @@
-// Package cipheraddr holds the secrets broker's configured address (AGENT_SECRETS_URL, and every
-// setting that names the same broker) in a type no output can print whole. Such an address may
-// carry a user name and a password (http://user:password@host:port), and a plain string holding it
-// prints both wherever a log field, an error or a line on stderr names the broker. An Address
-// prints only what internal/redact's URL prints - the address as written when it is provably a
-// plain http(s) URL, and redact.NotPrinted otherwise - under every fmt verb, as a slog value, and
-// as a field of a struct fmt prints. Its value is read through Raw, to build a request to the
-// broker and, without printing it, by the few checks Raw names.
+// Package configaddr holds a configured address - the URL a setting names, such as the secrets
+// broker's (AGENT_SECRETS_URL), the Envoy listener Dispatch delivers through (ENVOY_URL), the
+// listener the broker notifies (BROKER_ENVOY_URL) or the broker Dispatch relays to
+// (DISPATCH_AGENT_SECRETS_URL) - in a type no output can print whole. Such an address may carry a
+// user name and a password (http://user:password@host:port), a query value or a fragment value,
+// and a plain string holding it prints each wherever a log field, an error or a line on stderr
+// names it. An Address prints only what internal/redact's URL prints - the address as written when
+// it is provably a plain http(s) URL, and redact.NotPrinted otherwise - under every fmt verb, as a
+// slog value, and as a field of a struct fmt prints. Its value is read through Raw, to build a
+// request to the address and, without printing it, by the few checks Raw names. Each Address
+// carries the name of the setting it was read from (Setting), and its own words name that setting
+// (WordsNotPrinted).
 //
 // It is a package of its own, outside internal/, because packages/daemon's `legion controller
-// start` holds the address too, and Go's internal-package rule refuses that module every package
-// under github.com/sjawhar/envoy/internal/.
-package cipheraddr
+// start` holds the broker's address too, and Go's internal-package rule refuses that module every
+// package under github.com/sjawhar/envoy/internal/.
+package configaddr
 
 import (
 	"fmt"
@@ -19,26 +23,36 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// Address is a configured broker address. Its zero value is no address, and prints empty.
+// Address is a configured address and the name of the setting it was read from. Its zero value is
+// no address, names no setting, and prints empty.
 //
 // The address sits behind a *string so that fmt cannot print it where it asks the Address for no
 // method: an Address in a struct's unexported field, or under %p, fmt prints field by field through
 // reflection, and it prints a *string it finds there as the memory address it holds, never as the
 // text it points to. A string field would print as written there, and so would a pointer to a
 // struct, which fmt follows when it reports a verb a pointer does not take, such as %s. Two
-// Addresses made from the same text are therefore not ==.
+// Addresses made from the same text are therefore not ==. The setting's name is a plain string:
+// it is a name the code wrote, which carries no credential, and prints as written wherever fmt
+// reaches it.
 type Address struct {
-	raw *string
+	raw     *string
+	setting string
 }
 
-// New is raw as an Address, kept exactly as written: a caller that trims or checks the value does
-// so before, as it would with the string.
-func New(raw string) Address {
+// New is raw, the value of the setting named setting (an environment variable, or a flag such as
+// --broker), as an Address, kept exactly as written: a caller that trims or checks the value does
+// so before, as it would with the string. An empty raw is no address (Empty), which still names
+// its setting.
+func New(setting, raw string) Address {
 	if raw == "" {
-		return Address{}
+		return Address{setting: setting}
 	}
-	return Address{&raw}
+	return Address{&raw, setting}
 }
+
+// Setting is the name of the setting the address was read from, which the Address's own words
+// name (WordsNotPrinted), and "" for the zero Address.
+func (a Address) Setting() string { return a.setting }
 
 // Raw is the address as configured, credential included. It builds a request to the broker: its
 // URL, the URL its proof signs, the audience of a request object it carries, and the OAuth
@@ -66,9 +80,17 @@ func (a Address) Empty() bool { return a.raw == nil }
 func (a Address) Clean() bool { return redact.Clean(a.Raw()) }
 
 // WordsNotPrinted is what a message prints in place of the text of an answer from an address that
-// is not clean (Words). It is a different case from redact.WordsNotReadable, which Words prints
-// beside a clean address in place of a field the rule for remote text cannot read.
-const WordsNotPrinted = "(not printed: the broker's address is not clean)"
+// is not clean (Words): "(not printed: the address <setting> names is not clean)", naming the
+// setting the address was read from, so the reader knows which setting to make clean. The zero
+// Address, which names no setting, says "(not printed: the address is not clean)". It is a
+// different case from redact.WordsNotReadable, which Words prints beside a clean address in place
+// of a field the rule for remote text cannot read.
+func (a Address) WordsNotPrinted() string {
+	if a.setting == "" {
+		return "(not printed: the address is not clean)"
+	}
+	return "(not printed: the address " + a.setting + " names is not clean)"
+}
 
 // Words is text that whoever answered a request built from Raw wrote - a refusal's words, its
 // code, the answer id it names, a value it quotes - as a message may print it. Beside a clean
@@ -78,7 +100,7 @@ const WordsNotPrinted = "(not printed: the broker's address is not clean)"
 // (redact.OneLine), Go-quoted where it holds a control character, so a line break or an escape
 // sequence in an answer cannot start a line of its own in the message that prints it. Beside any
 // other address it is WordsNotPrinted: whoever answers at an address that is not clean, the
-// broker or anyone who can answer for it, can repeat the credential the address carries in any
+// server or anyone who can answer for it, can repeat the credential the address carries in any
 // text of its answer, so a message made from such an answer prints its status and
 // WordsNotPrinted, and no other part of it. A caller that tells answers apart by their text reads
 // that text as it came, never what Words answers, and prints it nowhere. A decoder's error for an
@@ -88,7 +110,7 @@ func (a Address) Words(text string) string {
 	if a.Clean() {
 		return redact.Field(text)
 	}
-	return WordsNotPrinted
+	return a.WordsNotPrinted()
 }
 
 // WordsOf is Words of a field held as a redact.RemoteText: the field as it prints itself beside a
@@ -97,7 +119,7 @@ func (a Address) WordsOf(field redact.RemoteText) string {
 	if a.Clean() {
 		return field.String()
 	}
-	return WordsNotPrinted
+	return a.WordsNotPrinted()
 }
 
 // String is the address as a message may print it: redact.URL of it.

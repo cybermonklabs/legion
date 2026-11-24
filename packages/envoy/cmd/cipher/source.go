@@ -31,7 +31,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
@@ -56,14 +56,14 @@ type source struct {
 }
 
 // brokerSource is the source naming the broker at base, with its store still unread.
-func brokerSource(base cipheraddr.Address) source {
+func brokerSource(base configaddr.Address) source {
 	return source{host: brokerHost(base)}
 }
 
 // brokerHost is base's host and port when base prints as written (redact.URL), and
 // redact.NotPrinted when it does not (user info, a query, an escape, no http(s) scheme, anything
 // its allow-list does not prove clean), so a credential in the variable never prints.
-func brokerHost(base cipheraddr.Address) string {
+func brokerHost(base configaddr.Address) string {
 	shown := base.String()
 	parsed, err := url.Parse(shown)
 	if err != nil || parsed.Host == "" {
