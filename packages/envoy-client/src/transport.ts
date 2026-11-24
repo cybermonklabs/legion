@@ -11,6 +11,7 @@ import {
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
+import { RemoteText, redactRemoteText } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
@@ -145,12 +146,6 @@ const RoleWireSchema = z.object({
   // the listener omits it where the claim carries no mark, and a listener predating the field
   // sends none, so an absent one means no mark.
   handed_back: z.boolean().optional(),
-});
-
-const RoleHeldWireSchema = z.object({
-  error: z.string(),
-  role: z.string(),
-  holder: z.string(),
 });
 
 /**
@@ -791,12 +786,19 @@ export type PublishResult = {
  * 1762...)"), and an agent reading only the message cannot tell a peer that stopped answering
  * from one that ended — which is the mistake this change exists to stop (dispatch://INFRA-392,
  * R7). A body that names no state adds nothing, so an older listener's message is what it
- * always was.
+ * always was. The holder is the listener's word, so it prints as the rule reads it, each of
+ * `carried` (the credentials the request carried) redacted first.
  */
-function refusalStateText(parsed: z.infer<typeof ErrorWireSchema>): string {
+function refusalStateText(
+  parsed: z.infer<typeof ErrorWireSchema>,
+  carried: readonly string[]
+): string {
   const state = parsed.holder_state ?? parsed.state;
   if (state === undefined) return "";
-  const who = parsed.holder === undefined ? "That session" : `Holder ${parsed.holder}`;
+  const who =
+    parsed.holder === undefined
+      ? "That session"
+      : `Holder ${redactRemoteText(parsed.holder, carried)}`;
   // A listener that can name no registration at all sends none (the field is omitted, or 0):
   // the state alone is said, since a made-up time would read as knowledge nobody has.
   const seen =
@@ -808,19 +810,41 @@ function refusalStateText(parsed: z.infer<typeof ErrorWireSchema>): string {
   return ` ${sentences.join(" ")}`;
 }
 
+/** What an {@link EnvoyApiError} keeps of the answer: the request and the status, which this
+ *  client names, and the body, which the listener or something in its place wrote. */
+export interface EnvoyApiErrorDetails {
+  readonly method: string;
+  /** The request's URL as text names it (`requestForText`): as built on a plain base, and the
+   *  base's fixed phrase otherwise. */
+  readonly url: string;
+  readonly status: number;
+  /** The answer's body as it came, held as a {@link RemoteText}: every way it prints, it prints as
+   *  the rule reads it, with the credentials the request carried redacted. */
+  readonly responseBody: RemoteText;
+}
+
+/**
+ * The listener's refusal, or an answer something in its place wrote. Each of its words the
+ * listener wrote (`code`, `reason`, `holder`, `expected`, `refused` and the body) is held as a
+ * {@link RemoteText} that carries the credentials the request carried, so it prints only as the
+ * rule reads it, one of those credentials echoed back redacted; code that branches on one compares
+ * through the box (`reason.equals`, `refused[i].equals`), and a holder's id comes back only through
+ * `holder.sendBack()`. The state, the last registration, the claim and the wait are closed values.
+ */
 export class EnvoyApiError extends Error {
   readonly name = "EnvoyApiError";
-  readonly expected: readonly string[] | undefined;
+  readonly details: EnvoyApiErrorDetails;
+  readonly expected: readonly RemoteText[] | undefined;
   /** The listener's machine-readable `code`, when its error body carries one. */
-  readonly code: string | undefined;
+  readonly code: RemoteText | undefined;
   /**
    * Why the listener refused, when its error body carries one: one of the names
    * `ErrorWireSchema.reason` lists above, such as the reason a registration no session consumer
    * can be given is refused with, or `sender_rate_limited`.
    */
-  readonly reason: string | undefined;
+  readonly reason: RemoteText | undefined;
   /** The session the refusal is about: a role's holder, where its body names one. */
-  readonly holder: string | undefined;
+  readonly holder: RemoteText | undefined;
   /** That session's state as the listener's record put it, when the body names one: a refused
    *  send's `state`, a lapsed role's `holder_state`. */
   readonly sessionState: SessionState | undefined;
@@ -839,22 +863,19 @@ export class EnvoyApiError extends Error {
   readonly retryAfterSeconds: number | undefined;
   /** The topics a registration's project refusal names (`topic_not_in_project`,
    *  `repository_not_in_project`), each as the registration carried it, when the body names any. */
-  readonly refused: readonly string[] | undefined;
+  readonly refused: readonly RemoteText[] | undefined;
 
   /**
-   * `details.responseBody` is the answer's body as it came, which the readers of a refusal's
-   * fields parse (a role's holder, `phase-reminder.ts`'s reason). The message names it only where
-   * it is the listener's error JSON; any other body was written by something in the listener's
-   * place, which can echo the request back, so the message names it through `bodyForText`: one
-   * line with `shown.tokens` (the credential's secret, and the tokens the client presented lately)
-   * and any `Authorization`, `Bearer` or `DPoP` value redacted, and the origin a redirect pointed
-   * at (`shown.redirectTo`). Neither is kept.
+   * `answer.responseBody` is the answer's body as it came. The message names the listener's error
+   * JSON by its words, each as the rule reads it with `shown.tokens` (the credential's secret, and
+   * the tokens the client presented lately) redacted; any other body was written by something in
+   * the listener's place, which can echo the request back, so the message names it through
+   * `bodyForText`: one line with those tokens and any `Authorization`, `Bearer` or `DPoP` value
+   * redacted, as the rule reads it, and the origin a redirect pointed at (`shown.redirectTo`).
    */
   constructor(
-    readonly details: {
+    answer: {
       readonly method: string;
-      /** The request's URL as text names it (`requestForText`): as built on a plain base, and the
-       *  base's fixed phrase otherwise. */
       readonly url: string;
       readonly status: number;
       readonly responseBody: string;
@@ -863,11 +884,14 @@ export class EnvoyApiError extends Error {
   ) {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
     try {
-      const result = ErrorWireSchema.safeParse(JSON.parse(details.responseBody));
+      const result = ErrorWireSchema.safeParse(JSON.parse(answer.responseBody));
       if (result.success) parsed = result.data;
     } catch {
       // A body that is not JSON is no error of the listener's: the message names it below.
     }
+    const tokens = shown.tokens ?? "";
+    const carried = typeof tokens === "string" ? [tokens] : [...tokens];
+    const said = (field: string): string => redactRemoteText(field, carried);
     const redirected =
       shown.redirectTo === undefined
         ? ""
@@ -876,18 +900,25 @@ export class EnvoyApiError extends Error {
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
       parsed === undefined
-        ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.tokens ?? "", "the listener's error JSON")}`
-        : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
+        ? `${answer.method} ${answer.url} failed with ${answer.status}${redirected}: ${bodyForText(answer.responseBody, tokens, "the listener's error JSON")}`
+        : `${said(parsed.error)}${parsed.reason === undefined ? "" : ` (reason: ${said(parsed.reason)})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.map(said).join(", ")})`}${refusalStateText(parsed, carried)}`
     );
-    this.expected = parsed?.expected;
-    this.code = parsed?.code;
-    this.reason = parsed?.reason;
-    this.holder = parsed?.holder;
+    const held = (field: string): RemoteText => new RemoteText(field, carried);
+    this.details = {
+      method: answer.method,
+      url: answer.url,
+      status: answer.status,
+      responseBody: held(answer.responseBody),
+    };
+    this.expected = parsed?.expected?.map(held);
+    this.code = parsed?.code === undefined ? undefined : held(parsed.code);
+    this.reason = parsed?.reason === undefined ? undefined : held(parsed.reason);
+    this.holder = parsed?.holder === undefined ? undefined : held(parsed.holder);
     this.sessionState = parsed?.holder_state ?? parsed?.state;
     this.lastSeen = parsed?.last_seen;
     this.claimReleased = parsed?.claim_released;
     this.retryAfterSeconds = parsed?.retry_after_seconds;
-    this.refused = parsed?.refused;
+    this.refused = parsed?.refused?.map(held);
   }
 }
 
@@ -1449,19 +1480,16 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       try {
         raw = await post("/v1/roles/set", body, { actingSession: input.sessionID });
       } catch (error) {
-        // A soft claim refused by a live holder is an outcome, not a failure:
-        // the listener answers 409 with the holder's id.
-        if (error instanceof EnvoyApiError && error.details.status === 409) {
-          let answer: unknown;
-          try {
-            answer = JSON.parse(error.details.responseBody);
-          } catch {
-            // A 409 whose body did not arrive, or is not JSON, names no holder: it stays the refusal.
-            throw error;
-          }
-          const held = RoleHeldWireSchema.safeParse(answer);
-          if (held.success) return { claimed: false, holder: held.data.holder };
-        }
+        // A soft claim refused by a live holder is an outcome, not a failure: the listener
+        // answers 409 with the holder's id. The id is the listener's word, kept only where a
+        // print of it shows it whole (`sendBack`), as Dispatch's client keeps a holder's
+        // (`keptSessionID`); a 409 that names no such holder, or whose body did not arrive or is
+        // not JSON, stays the refusal.
+        const holder =
+          error instanceof EnvoyApiError && error.details.status === 409
+            ? error.holder?.sendBack()
+            : undefined;
+        if (holder !== undefined) return { claimed: false, holder };
         throw error;
       }
       return {

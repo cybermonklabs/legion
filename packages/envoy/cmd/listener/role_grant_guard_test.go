@@ -222,9 +222,10 @@ func requireGuardState(t *testing.T, registry *store.Registry, role, holder stri
 }
 
 // roleHeldAnswer is the body of the 409 POST /v1/roles/set gives a soft claim it refused a held
-// role, decoded as packages/envoy-client's setRole reads it (RoleHeldWireSchema): the error, the
-// role and the session holding it. setRole answers it as a claim not granted naming that holder,
-// which both harnesses wait out while the holder is their own session.
+// role: the error, the role and the session holding it. packages/envoy-client's setRole reads the
+// holder from it (EnvoyApiError's holder, sent back where a print of it shows it whole) and answers
+// a claim not granted naming that holder, which both harnesses wait out while the holder is their
+// own session.
 type roleHeldAnswer struct {
 	Error  string `json:"error"`
 	Role   string `json:"role"`

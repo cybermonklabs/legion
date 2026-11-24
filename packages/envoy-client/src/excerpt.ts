@@ -6,6 +6,7 @@
 // Envoy transport (`transport.ts`) a body that is not the listener's error JSON, and the operator's
 // live-events probe (`scripts/e2e/lib/dispatch-live-events.ts`) a whoami answer with no event_head.
 
+import { readRemoteText, WORDS_NOT_READABLE } from "@legion/contracts/remote-text";
 import { textHead } from "./ask-answer";
 
 const REDACTED = "[redacted]";
@@ -80,27 +81,30 @@ function redactTokens(text: string, tokens: readonly string[]): string {
  * the proof the credential signed for that one request, which is none of `tokens`), the value
  * after `Bearer` or `DPoP`, and every value shaped as a JWS (`eyJ…` `.` `…` `.` `…`, a proof or a
  * JWT) wherever it stands, so an echo the gateway quoted inside a JSON string (`\"`), as HTML
- * (`&quot;`) or as the second value of a list is redacted too. All of it runs before the cut to
- * one line, so a cut never leaves a credential's first characters behind. The text is the
- * answerer's, and the excerpt is built on the host's event loop, so only the first
- * `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time: a tag holds no
- * `<`, a script or style block left open runs to the end, and a JWS is matched only from the start
- * of a run of base64url characters.
+ * (`&quot;`) or as the second value of a list is redacted too. What is left then passes the rule
+ * for another party's words (`readRemoteText`, `@legion/contracts/remote-text`), which removes a
+ * URL's user information and its query and fragment values, and fails closed: where it cannot read
+ * every URL the text quotes with certainty, the excerpt is `WORDS_NOT_READABLE` and quotes nothing.
+ * All of it runs before the cut to one line, so a cut never leaves a credential's first characters
+ * behind. The text is the answerer's, and the excerpt is built on the host's event loop, so only
+ * the first `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time: a tag
+ * holds no `<`, a script or style block left open runs to the end, and a JWS is matched only from
+ * the start of a run of base64url characters.
  */
 export function excerpt(text: string, tokens: Tokens): string {
   const trimmed = (typeof tokens === "string" ? [tokens] : tokens).map((token) => token.trim());
   const plain = redactTokens(text, trimmed)
     .replace(/<(script|style)\b[^<>]*>(?:[\s\S]*?<\/\1\s*>|[\s\S]*$)/gi, " ")
     .replace(/<[^<>]*>/g, " ");
-  return textHead(
-    plain
-      .replace(
-        /(\b(?:authorization|dpop)["']?\s*[:=]\s*(?:\[\s*)?["']?(?:(?:bearer|basic|digest|token|dpop)\s+)?)[^\s"'<>,;\]]+/gi,
-        `$1${REDACTED}`
-      )
-      .replace(/(\b(?:bearer|dpop)\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
-      .replace(/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g, REDACTED)
-  );
+  const scrubbed = plain
+    .replace(
+      /(\b(?:authorization|dpop)["']?\s*[:=]\s*(?:\[\s*)?["']?(?:(?:bearer|basic|digest|token|dpop)\s+)?)[^\s"'<>,;\]]+/gi,
+      `$1${REDACTED}`
+    )
+    .replace(/(\b(?:bearer|dpop)\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
+    .replace(/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g, REDACTED);
+  const read = readRemoteText(scrubbed);
+  return read === undefined ? WORDS_NOT_READABLE : textHead(read);
 }
 
 /**

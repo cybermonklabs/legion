@@ -710,7 +710,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       // from one address, carries no `sender_rate_limited` reason.
       if (
         error instanceof EnvoyApiError &&
-        error.reason === "sender_rate_limited" &&
+        error.reason?.equals("sender_rate_limited") === true &&
         error.retryAfterSeconds !== undefined
       ) {
         return { kind: "rate-limited", retryAfterSeconds: error.retryAfterSeconds, error };
