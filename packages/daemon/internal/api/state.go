@@ -984,9 +984,16 @@ type ClaimView struct {
 	// questions. LastReady dates the death's cause: a death older than it is one the agent running
 	// now has already survived. The claim drops its start failure when its agent says it is ready
 	// (supervise.Claim.LastStartFailure says which older claims can still hold one from before).
-	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
-	LastStartFailure string     `json:"lastStartFailure,omitempty"`
-	LastReady        *time.Time `json:"lastReady,omitempty"`
+	// LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside each
+	// (causeTimesContract): each is absent when its cause is, and beside a cause an earlier release
+	// recorded, which wrote no time (causeInstant). A cause recorded again with the same text
+	// carries its new time, so a reader tells a death of an hour ago from one of days ago, which the
+	// text alone does not say.
+	LastDeathCause     string     `json:"lastDeathCause,omitempty"`
+	LastDeathAt        *time.Time `json:"lastDeathAt,omitempty"`
+	LastStartFailure   string     `json:"lastStartFailure,omitempty"`
+	LastStartFailureAt *time.Time `json:"lastStartFailureAt,omitempty"`
+	LastReady          *time.Time `json:"lastReady,omitempty"`
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
@@ -1124,11 +1131,13 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// When the agent last began and last ended a turn, and when it last said it could be
 		// prompted, each absent until it happens: they are what tells a worker still making
 		// progress from one wedged in a turn, and the ready is what dates the death's cause below.
-		LastTurnStart:    instant(c.LastTurnStart),
-		LastTurnEnd:      instant(c.LastTurnEnd),
-		LastReady:        instant(c.LastReady),
-		LastDeathCause:   c.LastDeathCause,
-		LastStartFailure: c.LastStartFailure,
+		LastTurnStart:      instant(c.LastTurnStart),
+		LastTurnEnd:        instant(c.LastTurnEnd),
+		LastReady:          instant(c.LastReady),
+		LastDeathCause:     c.LastDeathCause,
+		LastDeathAt:        causeInstant(c.LastDeathCause, c.LastDeathAt),
+		LastStartFailure:   c.LastStartFailure,
+		LastStartFailureAt: causeInstant(c.LastStartFailure, c.LastStartFailureAt),
 		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
@@ -1137,6 +1146,17 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		PendingCause:   c.PendingCause,
 		LeakCheckCause: c.LeakCheckCause,
 	}
+}
+
+// causeInstant is the time the daemon recorded cause, as a claim view and the operator's claim
+// view serve it beside the cause (supervise.Claim.LastDeathAt and LastStartFailureAt): nil where
+// the cause is empty, so a view never carries a time beside no cause, and nil beside a cause an
+// earlier release recorded, which wrote no time.
+func causeInstant(cause string, at time.Time) *time.Time {
+	if cause == "" {
+		return nil
+	}
+	return instant(at)
 }
 
 // StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the

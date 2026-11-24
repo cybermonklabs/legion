@@ -314,22 +314,24 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, assignmentPlanContract,
-	// which states that contract in its header as every plugin from shapedAnswersContract on
-	// does, is served at the recorded contract at or below it (recordedContractAtOrBelow),
-	// OwnerPlanContract, so it stands below that row alone and the log holds that row's line and
-	// nothing else. This subtest does not catch a strip applied beside the loop, because it reads
-	// both its expectation and its answer from stateNarrowings; the subtests below, which name
-	// their lines as literals, are what catch that.
+	// told what it lost: a caller one contract below the highest row, causeTimesContract, which
+	// states that contract in its header as every plugin from shapedAnswersContract on does, is
+	// served at the recorded contract at or below it (recordedContractAtOrBelow),
+	// assignmentPlanContract, so it stands below that row alone and the log holds that row's line
+	// and nothing else. This subtest does not catch a strip applied beside the loop, because it
+	// reads both its expectation and its answer from stateNarrowings; the subtests below, which
+	// name their lines as literals, are what catch that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
 		state := populatedState(t)
 		highest := stateNarrowings[len(stateNarrowings)-1].contract
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), highest-1)
 
-		for _, row := range assignmentsOf(t, body, "LEGION-209") {
-			if _, carried := row["plan"]; carried {
-				t.Errorf("the body served to a caller below %d carries an assignment's `plan`, the key that contract added: %v",
-					highest, row)
+		for _, view := range claimViews(t, body) {
+			for _, key := range []string{"lastDeathAt", "lastStartFailureAt"} {
+				if _, carried := view[key]; carried {
+					t.Errorf("the body served to a caller below %d carries a claim view's `%s`, a key that contract added: %v",
+						highest, key, view)
+				}
 			}
 		}
 		want := narrowingsExpected(state, highest-1)

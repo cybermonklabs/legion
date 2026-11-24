@@ -3398,4 +3398,27 @@ package api
 // From this entry the last number of answers.go's SupportedContracts is
 // `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
 // open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 220
+//
+// 243: dispatch://INFRA-5645 -- each claim view of `GET /legion/v1/state` and of `GET
+// /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
+// `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
+// 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
+// which wrote no time (`api.ClaimView`, `causeInstant`). The claim keeps both in the store's
+// `claims` table (`20261124073512_claim_cause_times`), so a daemon restart keeps them, and the
+// daemon writes each with its cause and at no other time: at every death and every failed start
+// it records, one whose text is the same as the cause it replaces included, and, for the start
+// failure, at the agent's ready that drops it (`supervise.Claim.LastDeathAt`). The records of 243
+// hold the two keys on every claim view, and no record below 243 does: a caller whose contract
+// (the one it states, else its pod's lowest) is below 243 is served every claim view without
+// them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`). The operator's claim view
+// (`api.OperatorClaim`, which `legion claims list --json` prints) carries the same two keys; the
+// operator routes are not served down, since their reader is the `legion` built with this daemon.
+// No value of an enumerated field moves, and no request a plugin sends changes.
+// (This entry takes 243, above each number another open pull request declared. A reading of
+// `const DaemonAPIVersion` at the head of each of the 138 of the 513 open pull requests of this
+// repository that change version.go, made at 2026-11-24T07:23:50Z, found every number from 221
+// to 242 declared and nothing above 242, so 243 was the lowest number above main's 220 that no
+// open pull request declared at that reading. From this entry the last number of answers.go's
+// SupportedContracts is `api.causeTimesContract`, after `assignmentPlanContract`. Read the base's
+// own number and every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 243

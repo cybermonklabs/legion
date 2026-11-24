@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+    A claim's two causes carry the time the daemon recorded them. The claim view of
+    `GET /legion/v1/state` and of an issue's record, and the operator's claim view that
+    `legion claims list --json` prints, give `lastDeathAt` beside `lastDeathCause` and
+    `lastStartFailureAt` beside `lastStartFailure`, in RFC 3339, each absent when its cause is.
+    The daemon writes each time with its cause, again for a cause whose text is the same as the
+    one it replaces, and drops the start failure's time with the start failure when the agent is
+    ready. A migration adds the two columns to the `claims` table, so a restart keeps them; a cause
+    recorded before it carries no time. Daemon API contract 243: a caller below it is served
+    neither key.
+time: 2026-11-24T08:00:01Z
+custom:
+    Issue: INFRA-5645

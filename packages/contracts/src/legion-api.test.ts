@@ -2715,10 +2715,11 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
-  // above 199: the repositories block's, and contract 220's, which takes `plan` off each
-  // assignment, so the golden's rows are compared without it. One value strip stands above 199 as
-  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
+  // above 199: the repositories block's; contract 220's, which takes `plan` off each assignment;
+  // and contract 243's, which takes `lastDeathAt` and `lastStartFailureAt` off each claim view; so
+  // the golden's rows and claim views are compared without them. One value strip stands above 199
+  // as well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
   // row is served here without its `source`, every other field of it and every other row as the
   // state golden holds them.
   const { daemonApiVersion } = z
@@ -2742,18 +2743,36 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
+  const withoutCauseTimes = (view: unknown): unknown => {
+    if (!isJsonObject(view)) {
+      return view;
+    }
+    const { lastDeathAt: _deathAt, lastStartFailureAt: _startFailureAt, ...kept } = view;
+    return kept;
+  };
   const issues = Object.fromEntries(
-    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => [
-      key,
-      issue.assignments === undefined
-        ? issue
-        : {
-            ...issue,
-            assignments: (issue.assignments as Record<string, unknown>[]).map(
-              ({ plan: _plan, ...row }) => row
-            ),
-          },
-    ])
+    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
+      const narrowed: Record<string, unknown> = { ...issue };
+      if (issue.assignments !== undefined) {
+        narrowed.assignments = (issue.assignments as Record<string, unknown>[]).map(
+          ({ plan: _plan, ...row }) => row
+        );
+      }
+      if (issue.architect !== undefined) {
+        narrowed.architect = withoutCauseTimes(issue.architect);
+      }
+      if (isJsonObject(issue.workers)) {
+        narrowed.workers = Object.fromEntries(
+          Object.entries(issue.workers).map(([role, worker]) => [
+            role,
+            isJsonObject(worker) && worker.claim !== undefined
+              ? { ...worker, claim: withoutCauseTimes(worker.claim) }
+              : worker,
+          ])
+        );
+      }
+      return [key, narrowed];
+    })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
   expect(capabilities.some((row) => row.source === "caches")).toBeTrue();

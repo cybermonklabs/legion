@@ -324,9 +324,16 @@ const legionClaimView = z.object({
    * faults. `lastReady` is when the claim's agent last said it could be prompted, which dates the
    * death: a death older than it is one the agent running now has already survived. The daemon
    * drops the start failure when the agent says it is ready, so one it records is from after
-   * `lastReady`; a claim an older daemon left waiting can still carry one from before. */
+   * `lastReady`; a claim an older daemon left waiting can still carry one from before.
+   * `lastDeathAt` and `lastStartFailureAt` (contract 243) are when the daemon recorded the cause
+   * beside each: absent when that cause is, and beside a cause a daemon before 243 recorded, which
+   * wrote no time. A cause recorded again with the same text carries its new time. A caller in a
+   * pod whose plugin declares a contract below 243 is served neither key (the daemon's
+   * `withoutCauseTimes`). */
   lastDeathCause: nonEmptyString.optional(),
+  lastDeathAt: timestamp.optional(),
   lastStartFailure: nonEmptyString.optional(),
+  lastStartFailureAt: timestamp.optional(),
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
@@ -1777,10 +1784,14 @@ export const LegionOperatorClaimResponse = z.object({
   /** Why the claim's process was last found gone, why its last start did not produce a running
    * agent, and when its agent last said it could be prompted; each absent until it happens. The
    * two causes answer separate questions and never overwrite each other. `lastReady` dates the
-   * death; the daemon drops the start failure when the agent says it is ready.
+   * death; the daemon drops the start failure when the agent says it is ready. `lastDeathAt` and
+   * `lastStartFailureAt` (contract 243) are when the daemon recorded the cause beside each, absent
+   * when that cause is and beside a cause a daemon before 243 recorded.
    * `legion claims list --json` serves them. */
   lastDeathCause: nonEmptyString.optional(),
+  lastDeathAt: timestamp.optional(),
   lastStartFailure: nonEmptyString.optional(),
+  lastStartFailureAt: timestamp.optional(),
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. These routes are the only surface a

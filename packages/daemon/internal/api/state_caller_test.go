@@ -1029,15 +1029,17 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 
 // servedShape applies to want, a body decoded from the state this contract writes, what an older
 // caller is served that no column of the tables calling it names: the stand-ins of keys a
-// contract removed, and two bands of keys this contract writes. A caller below checkRoleContract
+// contract removed, and three bands of keys this contract writes. A caller below checkRoleContract
 // is served each issue's check without `role` (api's withoutCheckRole); a caller below
 // fixAttemptsContract is served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of
-// 3 in the settings block (withFixAttempts, withMaxFixAttempts); and a caller below
+// 3 in the settings block (withFixAttempts, withMaxFixAttempts); a caller below
 // stateMachineContract is served the issue without the seven keys that contract added
-// (withoutStateMachineFields). Every other key of the settings block is served as this contract
-// writes it, since no reader types it (answers.go's typedSettings). One contract decides the
-// stand-ins, because the two sides of a caller's shaping part only below ServingFloor, which is
-// below fixAttemptsContract as every number this is called with is.
+// (withoutStateMachineFields); and a caller below causeTimesContract is served each claim view
+// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes), which every row of those
+// tables but the ones served this daemon's own body is. Every other key of the settings block is
+// served as this contract writes it, since no reader types it (answers.go's typedSettings). One
+// contract decides the stand-ins, because the two sides of a caller's shaping part only below
+// ServingFloor, which is below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	settings := want["settings"].(map[string]any)
 	if contract < fixAttemptsContract {
@@ -1055,6 +1057,9 @@ func servedShape(want map[string]any, contract int) {
 		}
 		if check, carries := issue["check"].(map[string]any); carries && contract < checkRoleContract {
 			delete(check, "role")
+		}
+		if contract < causeTimesContract {
+			deleteCauseTimes(issue)
 		}
 		if contract >= stateMachineContract {
 			continue
@@ -1081,6 +1086,24 @@ func servedShape(want map[string]any, contract int) {
 func deleteTurnRecord(view map[string]any) {
 	for _, key := range []string{"lastTurnStart", "lastTurnEnd", "lastDeathCause", "lastStartFailure", "lastReady"} {
 		delete(view, key)
+	}
+}
+
+// deleteCauseTimes takes off every decoded claim view of issue the two keys causeTimesContract
+// added to it, which a caller below that contract is served without (api's withoutCauseTimes).
+func deleteCauseTimes(issue map[string]any) {
+	views := []any{issue["architect"]}
+	workers, _ := issue["workers"].(map[string]any)
+	for _, worker := range workers {
+		if worker, ok := worker.(map[string]any); ok {
+			views = append(views, worker["claim"])
+		}
+	}
+	for _, view := range views {
+		if view, ok := view.(map[string]any); ok {
+			delete(view, "lastDeathAt")
+			delete(view, "lastStartFailureAt")
+		}
 	}
 }
 

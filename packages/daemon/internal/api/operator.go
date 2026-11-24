@@ -142,10 +142,14 @@ type OperatorClaim struct {
 	// different faults. LastReady dates the death's cause — a death older than it is one the
 	// running agent has already survived. The claim drops its start failure when its agent says it
 	// is ready (supervise.Claim.LastStartFailure says which older claims can still hold one from
-	// before).
-	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
-	LastStartFailure string     `json:"lastStartFailure,omitempty"`
-	LastReady        *time.Time `json:"lastReady,omitempty"`
+	// before). LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside
+	// each, absent when that cause is and beside a cause an earlier release recorded, as on the
+	// claim view (ClaimView, causeInstant).
+	LastDeathCause     string     `json:"lastDeathCause,omitempty"`
+	LastDeathAt        *time.Time `json:"lastDeathAt,omitempty"`
+	LastStartFailure   string     `json:"lastStartFailure,omitempty"`
+	LastStartFailureAt *time.Time `json:"lastStartFailureAt,omitempty"`
+	LastReady          *time.Time `json:"lastReady,omitempty"`
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord, api.StepView),
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
 	// These routes are the only surface a controller's record reaches: internal/projection puts
@@ -300,33 +304,35 @@ func (r PodUpdateRounds) MarshalJSON() ([]byte, error) {
 // list).
 func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 	view := OperatorClaim{
-		Token:            c.Token,
-		Tree:             c.Tree,
-		Issue:            c.Issue,
-		Role:             c.Role,
-		Generation:       c.Generation,
-		State:            string(c.State),
-		Session:          c.Session,
-		SessionFile:      c.SessionFile,
-		Locator:          c.Locator,
-		Budgets:          BudgetsViewOf(c.Budgets),
-		UncertainStreak:  c.UncertainStreak,
-		SuspendedBy:      string(c.SuspendedBy),
-		SuspensionHeld:   c.SuspensionHeld,
-		SuspensionHeldBy: string(c.SuspensionHeldBy),
-		Compacting:       c.Compacting,
-		ProcessGone:      c.ProcessGone,
-		PluginContract:   c.PluginContract,
-		UpdateRound:      c.UpdateRound,
-		UpdateHead:       c.UpdateHead,
-		LastTurnStart:    instant(c.LastTurnStart),
-		LastTurnEnd:      instant(c.LastTurnEnd),
-		LastDeathCause:   c.LastDeathCause,
-		LastStartFailure: c.LastStartFailure,
-		LastReady:        instant(c.LastReady),
-		Step:             StepViewOf(step),
-		Failure:          FailureViewOf(c),
-		LeakCheckCause:   c.LeakCheckCause,
+		Token:              c.Token,
+		Tree:               c.Tree,
+		Issue:              c.Issue,
+		Role:               c.Role,
+		Generation:         c.Generation,
+		State:              string(c.State),
+		Session:            c.Session,
+		SessionFile:        c.SessionFile,
+		Locator:            c.Locator,
+		Budgets:            BudgetsViewOf(c.Budgets),
+		UncertainStreak:    c.UncertainStreak,
+		SuspendedBy:        string(c.SuspendedBy),
+		SuspensionHeld:     c.SuspensionHeld,
+		SuspensionHeldBy:   string(c.SuspensionHeldBy),
+		Compacting:         c.Compacting,
+		ProcessGone:        c.ProcessGone,
+		PluginContract:     c.PluginContract,
+		UpdateRound:        c.UpdateRound,
+		UpdateHead:         c.UpdateHead,
+		LastTurnStart:      instant(c.LastTurnStart),
+		LastTurnEnd:        instant(c.LastTurnEnd),
+		LastDeathCause:     c.LastDeathCause,
+		LastDeathAt:        causeInstant(c.LastDeathCause, c.LastDeathAt),
+		LastStartFailure:   c.LastStartFailure,
+		LastStartFailureAt: causeInstant(c.LastStartFailure, c.LastStartFailureAt),
+		LastReady:          instant(c.LastReady),
+		Step:               StepViewOf(step),
+		Failure:            FailureViewOf(c),
+		LeakCheckCause:     c.LeakCheckCause,
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{

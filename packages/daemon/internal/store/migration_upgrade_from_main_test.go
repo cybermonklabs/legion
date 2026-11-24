@@ -151,10 +151,13 @@ import (
 // these but one and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its
 // default, 0, on every row it finds. So the design news stays the last word of that check.
 // dispatch://INFRA-5463's clear of the start failure of a claim whose agent is up
-// (20261123212127) is applied after all of these and touches no outbox_kind_check: it empties
-// claims.last_start_failure on every claim stored ready, working or idle, a column this list's
-// 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
+// (20261123212127) is applied after all of these but one and touches no outbox_kind_check: it
+// empties claims.last_start_failure on every claim stored ready, working or idle, a column this
+// list's 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
+// dispatch://INFRA-5645's cause times (20261124073512) are applied after all of these and touch
+// no outbox_kind_check: they add claims.last_death_at and claims.last_start_failure_at, null on
+// every row they find, so they need no row of their own here.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -166,7 +169,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714,
-	20261123165139, 20261123212127,
+	20261123165139, 20261123212127, 20261124073512,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -185,9 +188,9 @@ var thisBranchsMigrations = []int{
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the plan
-// of an experiment's draw (20261123165139) and dispatch://INFRA-5463's 20261123212127. That is why
-// the loop below holds the list rather than counting it, so that a version added above any of them
-// is named here rather than read as main's.
+// of an experiment's draw (20261123165139), dispatch://INFRA-5463's 20261123212127 and
+// dispatch://INFRA-5645's 20261124073512. That is why the loop below holds the list rather than
+// counting it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

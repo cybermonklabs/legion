@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The plugin speaks daemon API contract 243, the number the daemon of the same release declares:
+  the claim views `read_state` and `read_record` serve carry `lastDeathAt` and
+  `lastStartFailureAt`, the time the daemon recorded each of the claim's two causes.
+time: 2026-11-24T08:00:01Z
+custom:
+    Issue: INFRA-5645
