@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import * as legionApi from "@legion/contracts/legion-api";
@@ -1519,14 +1528,13 @@ interface AnswerRow {
   }[];
 }
 
-/** `answers.json`, the daemon's table of the answers a plugin parses. */
-function answerRows(): AnswerRow[] {
-  return JSON.parse(
-    readFileSync(
-      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/answers.json"),
-      "utf8"
-    )
-  );
+/** Where this checkout holds the daemon API fixtures. */
+const DAEMON_API_FIXTURES = path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api");
+
+/** The daemon's table of the answers a plugin parses, for the build whose daemon API fixtures are
+ * `fixtureDir`: its `answers.json`. */
+function answerRows(fixtureDir: string): AnswerRow[] {
+  return JSON.parse(readFileSync(path.join(fixtureDir, "answers.json"), "utf8"));
 }
 
 /** The client's own source, parsed once. The table census reads its parse sites, and the
@@ -1539,14 +1547,11 @@ const clientSource = once(() => {
 /** The parse sites of the client's source, read once. */
 const clientParseSites = once(() => parseSites(clientSource()));
 
-test("every answer the client parses is a row of the daemon's table, and every row is parsed", () => {
-  const { sites, problems } = clientParseSites();
-  // Fails closed: a call this pass could not read is named here, never passed over.
-  expect(problems).toEqual([]);
-  // A pass that read no call at all would leave every comparison below holding vacuously.
-  expect(sites.length).toBeGreaterThan(0);
-
-  const rows = answerRows();
+/** What the table census finds wrong between the client and the table of the build whose daemon
+ * API fixtures are `fixtureDir`: each answer the client parses that no row holds, and each row no
+ * parse site of the client parses. */
+function tableMismatches(fixtureDir: string): string[] {
+  const rows = answerRows(fixtureDir);
   const unmatched = new Map<string, AnswerRow[]>();
   for (const row of rows) {
     const key = answerKey(row.noBody, row.routes);
@@ -1554,7 +1559,7 @@ test("every answer the client parses is a row of the daemon's table, and every r
   }
 
   const wrong: string[] = [];
-  for (const answer of clientAnswers(sites)) {
+  for (const answer of clientAnswers(clientParseSites().sites)) {
     const key = answerKey(answer.noBody, answer.routes);
     const rowsHere = unmatched.get(key);
     if (rowsHere !== undefined && rowsHere.length > 0) {
@@ -1572,7 +1577,16 @@ test("every answer the client parses is a row of the daemon's table, and every r
       );
     }
   }
-  expect(wrong).toEqual([]);
+  return wrong;
+}
+
+test("every answer the client parses is a row of the daemon's table, and every row is parsed", () => {
+  const { sites, problems } = clientParseSites();
+  // Fails closed: a call this pass could not read is named here, never passed over.
+  expect(problems).toEqual([]);
+  // A pass that read no call at all would leave every comparison below holding vacuously.
+  expect(sites.length).toBeGreaterThan(0);
+  expect(tableMismatches(DAEMON_API_FIXTURES)).toEqual([]);
 });
 
 /** The state schema's own `settings`, unwrapped as the read-set census walks a schema. */
@@ -1585,6 +1599,19 @@ function stateSettings(): z.ZodObject {
   return settings;
 }
 
+/** The settings keys the table of the build whose daemon API fixtures are `fixtureDir` types at
+ * that build's own contract, sorted. */
+function declaredSettings(fixtureDir: string): string[] {
+  // The daemon's own contract is the tree's: L plus its count of entry fixtures.
+  const contract = daemonContract({}, fixtureDir);
+  const declaring = answerRows(fixtureDir).filter((row) => row.typedSettings !== undefined);
+  expect(declaring.map((row) => row.id)).toEqual(["state"]);
+  return (declaring[0]?.typedSettings ?? [])
+    .filter((setting) => setting.since <= contract && (setting.until ?? contract) >= contract)
+    .map((setting) => setting.key)
+    .sort();
+}
+
 // The settings census: the keys the daemon's table declares a reader types at its own contract
 // are the keys `legionSettings` types. The daemon's records of the state hold a settings key path
 // exactly where its table types the key (`typedSettings` in `answers.json`, answers.go's
@@ -1592,19 +1619,60 @@ function stateSettings(): z.ZodObject {
 // refuses and no record catches, and a row typing a key this schema does not name holds every
 // later legion.yaml change to a record no reader needs.
 test("the settings keys answers.json types at the daemon's own contract are the keys legionSettings types", () => {
-  // The daemon's own contract is this tree's: L plus its count of entry fixtures.
-  const contract = daemonContract({}, import.meta.dir);
-  const declaring = answerRows().filter((row) => row.typedSettings !== undefined);
-  expect(declaring.map((row) => row.id)).toEqual(["state"]);
-  const declared = (declaring[0]?.typedSettings ?? [])
-    .filter((setting) => setting.since <= contract && (setting.until ?? contract) >= contract)
-    .map((setting) => setting.key)
-    .sort();
-
   const typed = Object.keys(stateSettings().def.shape).sort();
   // A schema typing no key would leave the comparison below holding for an empty table.
   expect(typed.length).toBeGreaterThan(0);
-  expect(declared).toEqual(typed);
+  expect(declaredSettings(DAEMON_API_FIXTURES)).toEqual(typed);
+});
+
+// Both censuses read the table of the build, and an entry fixture adds rows to that table as
+// `answers.json` holds them: an entry that adds an answer the client parses adds its row, and one
+// that types a settings key adds the key to the state's row. So a tree whose entry adds a row or a
+// key holds both censuses as the tree whose `answers.json` holds it does. This tree is the
+// checkout's fixtures with one row the client parses and one key the state's row types taken out
+// of `answers.json`, and put back by one entry fixture that ranks after every other.
+test("a row and a settings key an entry fixture adds are in the daemon's table for both censuses", () => {
+  const rows = answerRows(DAEMON_API_FIXTURES);
+  const moved = rows.find((row) => row.typedSettings === undefined);
+  const state = rows.find((row) => row.id === "state");
+  const key = state?.typedSettings?.find((setting) => setting.until === undefined)?.key;
+  if (moved === undefined || state === undefined || key === undefined) {
+    throw new Error(
+      "answers.json holds no row without typed settings, or no state's row typing a key to the daemon's own contract"
+    );
+  }
+  const root = mkdtempSync(path.join(tmpdir(), "daemon-client-entry-"));
+  try {
+    const fixtureDir = path.join(root, "packages", "contracts", "fixtures", "daemon-api");
+    cpSync(DAEMON_API_FIXTURES, fixtureDir, { recursive: true });
+    const frozen = rows
+      .filter((row) => row !== moved)
+      .map((row) =>
+        row === state
+          ? { ...row, typedSettings: row.typedSettings?.filter((setting) => setting.key !== key) }
+          : row
+      );
+    writeFileSync(path.join(fixtureDir, "answers.json"), JSON.stringify(frozen));
+    mkdirSync(path.join(fixtureDir, "contracts"), { recursive: true });
+    const entry = {
+      answers: [],
+      routes: [],
+      answerRows: [
+        { id: moved.id, routes: moved.routes, noBody: moved.noBody },
+        { id: state.id, routes: [], noBody: state.noBody, typedSettings: [{ key }] },
+      ],
+      enumeratedRows: [],
+    };
+    writeFileSync(
+      path.join(fixtureDir, "contracts", "99991231235959_entry-rows.json"),
+      JSON.stringify(entry)
+    );
+
+    expect(tableMismatches(fixtureDir)).toEqual([]);
+    expect(declaredSettings(fixtureDir)).toEqual(Object.keys(stateSettings().def.shape).sort());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // The premise both the census above and the daemon's settings records rest on, as
