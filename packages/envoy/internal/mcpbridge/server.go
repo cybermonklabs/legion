@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type ServerState int32
@@ -27,6 +29,9 @@ type Server interface {
 	State() ServerState
 	WaitForExit() error
 	ReadResource(uri string) ([]resourceContent, error)
+	// Words is text the server wrote - a notification's URI, a topic rendered from one - as its
+	// words, which print only as the rule for remote text reads them.
+	Words(text string) redact.RemoteText
 }
 
 func NewServer(cfg ServerConfig, onNotify func(uri string)) Server {
@@ -59,6 +64,15 @@ func NewManagedServer(cfg ServerConfig, onNotify func(uri string)) *ManagedServe
 func (s *ManagedServer) Name() string       { return s.cfg.Name }
 func (s *ManagedServer) State() ServerState { return ServerState(s.state.Load()) }
 
+// Words is text the child wrote, as its words (childWords).
+func (s *ManagedServer) Words(text string) redact.RemoteText { return childWords(text) }
+
+// childWords is text a managed server's child wrote on its standard output - a JSON-RPC error's
+// message, a notification's URI - as the server's words: a RemoteText, which prints only as the
+// rule reads it. The child answers no request this process sent over HTTP, so there is no request
+// record to hold the words with (redact.Carried).
+func childWords(text string) redact.RemoteText { return redact.NewRemoteText(text) }
+
 func (s *ManagedServer) Start() error {
 	cmd := exec.Command(s.cfg.Command[0], s.cfg.Command[1:]...)
 	cmd.Stderr = os.Stderr
@@ -85,7 +99,7 @@ func (s *ManagedServer) Start() error {
 		data = append(data, '\n')
 		_, err := s.stdin.Write(data)
 		return err
-	}, s.onNotify, s.stopCh)
+	}, childWords, s.onNotify, s.stopCh)
 	go s.readLoop()
 	if err := s.session.initialize(); err != nil {
 		s.kill()

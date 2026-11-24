@@ -64,6 +64,9 @@ func (b *Bridge) makeHandler(cfg *ServerConfig) func(uri string) {
 	return func(uri string) { b.handleNotification(cfg, uri) }
 }
 
+// handleNotification reads the resource uri names and publishes it. uri, and the topic rendered
+// from it, are the server's words, so each line prints them through the server's Words; so does
+// the line for a failed publish, whose error can quote the topic.
 func (b *Bridge) handleNotification(cfg *ServerConfig, uri string) {
 	b.mu.Lock()
 	var server Server
@@ -79,12 +82,12 @@ func (b *Bridge) handleNotification(cfg *ServerConfig, uri string) {
 		return
 	}
 	if _, err := cfg.RenderTopic(uri); err != nil {
-		log.Printf("mcp-bridge: %s: URI does not match pattern: %s", cfg.Name, uri)
+		log.Printf("mcp-bridge: %s: URI does not match pattern: %s", cfg.Name, server.Words(uri))
 		return
 	}
 	contents, err := server.ReadResource(uri)
 	if err != nil {
-		log.Printf("mcp-bridge: %s: resources/read failed for %s: %v", cfg.Name, uri, err)
+		log.Printf("mcp-bridge: %s: resources/read failed for %s: %v", cfg.Name, server.Words(uri), err)
 		return
 	}
 	envelope, err := BuildEnvelope(cfg, uri, contents)
@@ -97,10 +100,10 @@ func (b *Bridge) handleNotification(cfg *ServerConfig, uri string) {
 		return
 	}
 	if err := b.client.Publish(envelope); err != nil {
-		log.Printf("mcp-bridge: %s: publish failed: %v", cfg.Name, err)
+		log.Printf("mcp-bridge: %s: publish failed: %s", cfg.Name, server.Words(err.Error()))
 		return
 	}
-	log.Printf("mcp-bridge: %s: published to %s", cfg.Name, envelope.Topic)
+	log.Printf("mcp-bridge: %s: published to %s", cfg.Name, server.Words(envelope.Topic))
 }
 
 func (b *Bridge) monitor(s Server, cfg *ServerConfig) {

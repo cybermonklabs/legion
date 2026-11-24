@@ -103,7 +103,7 @@ func (s *HTTPServer) Start() error {
 			return fmt.Errorf("POST to %s: status %d: %s", redact.Field(s.messageURL), postResp.StatusCode, refused.Words())
 		}
 		return nil
-	}, s.onNotify, s.stopCh)
+	}, s.Words, s.onNotify, s.stopCh)
 
 	// 4. Start read loop for SSE events.
 	go s.readLoop(scanner)
@@ -143,6 +143,13 @@ func (s *HTTPServer) WaitForExit() error {
 // ReadResource calls resources/read via HTTP POST and returns the content.
 func (s *HTTPServer) ReadResource(uri string) ([]resourceContent, error) {
 	return s.session.readResource(uri)
+}
+
+// Words is text the server wrote on its event stream, as its words: held with the record of the
+// stream's request (redact.StreamedWords), whose configured URL can carry a user name and password
+// that net/http sends as Basic Authorization, so whatever echoes those prints none of them.
+func (s *HTTPServer) Words(text string) redact.RemoteText {
+	return redact.StreamedWords(s.sseResp, text)
 }
 
 func (s *HTTPServer) closeSSE() {
