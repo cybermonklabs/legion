@@ -2238,16 +2238,7 @@ const REVIEWED_WAIT_SITES: readonly {
 /** The scan row's own limit, sized to what reading the hook's modules as one program costs, not to
  *  the package's 60 s: 4.4 to 4.9 s wall, 10 s of CPU and 551 MB on the dev box; 38.6 s wall alone
  *  and up to 54.7 s beside other rows in a shared two-CPU pod (Legion's review 6011857098). It
- *  starts no child and cannot hang, so its limit only keeps a slow machine from deciding it. Its
- *  work is CPU bound, and on a loaded host it takes most of what the claude-envoy job has: over 20
- *  runs it cost up to 257 693 ms at the 48 rung (the Job infra-1580-r27sc48-9cj2g of the cluster's
- *  `builds` namespace, two CPUs and 8 GiB, 57 busy loops for the 48 rung, row A 32.6 s) and up to
- *  233 205 ms at the 32 rung (infra-1580-r27sc32-sr2vl, 36 busy loops, row A 31.8 s), both at
- *  58517f21, 20 of 20 each; in this file run whole at the 80 rung, 79 to 315 s over 5 runs
- *  (infra-1580-r27ow-46ct9), a pass past this limit because the scan's body is synchronous, which
- *  bun's limit does not interrupt. Six times any of these is past the job's whole 600 s, so the
- *  job decides: this limit stays below it, and the row's rung is 48, where it holds 20 of 20 at
- *  1.2 times its worst. */
+ *  starts no child and cannot hang, so its limit only keeps a slow machine from deciding it. */
 const SCAN_ROW_LIMIT_MS = 300_000
 
 /** claude-envoy's TypeScript settings, which the scan reads the hook's modules with. */

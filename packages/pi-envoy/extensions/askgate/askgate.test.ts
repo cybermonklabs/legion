@@ -2668,11 +2668,12 @@ console.log(JSON.stringify(args, null, 2));
       ["quoted", "dispatch_comment", "verdict", "allow"],
       ["cd", "dispatch_ask", "verdict", "allow"],
     ]);
-    // A hang guard: what can hang is a gate call. Worst measured cost: 8 304 ms in askgate.test.ts
-    // run whole at the 96 rung in the tester's Job infra-1580-t26-k7-fg5jd of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (140 busy loops, row A 34.4 s), at fe0e876b. Main's
-    // 30_000 is 3.6 times that, so this takes 60_000, 7.2 times it.
-  }, 60_000);
+    // A hang guard: what can hang is a gate call, whose model `bind`'s default answers at once.
+    // Sized from the tester's round 27: worst measured cost 14 501 ms over 20 runs at the 96 rung
+    // in the Job infra-1580-t27-j14-z4bf4 of the cluster's `builds` namespace, two CPUs and 8 GiB
+    // (140 busy loops, row A 39.5 s), at 06d187e7. Six times it passes 80_000, so this takes the
+    // file's ceiling, 120_000, 8.3 times it.
+  }, 120_000);
   // A program word an expansion names or the shell expands, the old scan's "unreadable program".
   for (const command of [
     "$HOME/bin/dispatch comment --issue X-1 --body hi",
@@ -3111,12 +3112,12 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
               "so AskGate removed it before the call ran"
             );
           }
-          // A hang guard: what can hang is a gate call. Worst measured cost of a row of this
-          // template: 8 800 ms in askgate.test.ts run whole at the 96 rung in the Job
-          // infra-1580-aw-j452l of the cluster's `builds` namespace, two CPUs and 8 GiB (140 busy
-          // loops, row A 39.4 s), at 2a77b2b8. Main's 30_000 is 3.4 times that, so this takes
-          // 60_000, 6.8 times it.
-        }, 60_000);
+          // A hang guard: what can hang is a gate call, whose model answers at once. Sized from
+          // the tester's round 27: worst measured cost of a row of this template 12 866 ms over 20
+          // runs at the 96 rung in the Job infra-1580-t27-j14-z4bf4 of the cluster's `builds`
+          // namespace, two CPUs and 8 GiB (140 busy loops, row A 39.5 s), at 06d187e7. 80_000 is
+          // 6.2 times it.
+        }, 80_000);
 
     // #2161, reviewer round 16: the call's own `cd` is continued over two lines, so the command's
     // line ends on the text's second line. Bash removes the continuation before it reads the
@@ -3466,10 +3467,10 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     ]) {
       expect((await g.bash(command, command))?.reason).not.toContain(NOTE);
     }
-    // A hang guard: what can hang is a gate call. Worst measured cost: 8 293 ms in askgate.test.ts
-    // run whole at the 96 rung in the tester's Job infra-1580-t26-k7-fg5jd (140 busy loops, row A
-    // 34.4 s), at fe0e876b. Main's 30_000 is 3.6 times that, so this takes 60_000, 7.2 times it.
-  }, 60_000);
+    // A hang guard: what can hang is a gate call, whose model answers at once. Sized from the
+    // tester's round 27: worst measured cost 12 812 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-t27-j14-z4bf4 (140 busy loops, row A 39.5 s), at 06d187e7. 80_000 is 6.2 times it.
+  }, 80_000);
   // Oh My Pi reads no CDPATH ("(c2)" below): from `bin`, its bash tool takes `cd sub &&` as the
   // directory `bin/sub`, which does not exist, and runs nothing. So the gate reads no file from
   // the directory CDPATH names, and says it cannot read the call.

@@ -6974,11 +6974,11 @@ console.log(JSON.stringify(args));
       expect(recordWrites).toEqual({ uploads: 1, appends: 2 });
       await run.shutdown();
       // A hang guard: what can hang is a gated call or the record's write, whose model and
-      // Dispatch are stand-ins in this process. Worst measured cost: 6 518 ms in envoy.test.ts run
-      // whole at the 96 rung in the tester's Job infra-1580-t25-wf2-np8hv of the cluster's
-      // `builds` namespace, two CPUs and 8 GiB (216 busy loops, row A 37.6 s), at b5a8b94f. Main's
-      // 30_000 is 4.6 times that, so this takes 60_000, 9.2 times it.
-    }, 60_000);
+      // Dispatch are stand-ins in this process. Sized from the tester's round 27: worst measured
+      // cost 21 903 ms over 20 runs at the 96 rung in the Job infra-1580-t27-j1-l27pc of the
+      // cluster's `builds` namespace, two CPUs and 8 GiB (137 busy loops, row A 31.6 s), at
+      // 06d187e7. Main's 30_000 was below six times it, so this takes 140_000, 6.4 times it.
+    }, 140_000);
 
     /** Appends to the session's ledger a gated write the CLI logged as unmarked. */
     const appendUnmarked = () =>
@@ -24539,11 +24539,12 @@ console.log(JSON.stringify(args));
     // A hang guard, not a bound on work: what can hang is the wait for the start's follow, the
     // start, the keeper's reconnect or the shutdown (`clock.wait`, `clock.waitOn`), which has no
     // bound of turns, because each waits on a trade that reads the pod's token from disk, real
-    // I/O. Worst measured cost: 21 887.67 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-k6-fhhlx of the cluster's `builds` namespace, two CPUs and 8 GiB (224 busy
-    // loops, at which row A's runs took 37.5 s against the calibration's 31.2 s), 2026-11-22T10:04Z
-    // to 10:17Z. 150_000 is 6.9 times the worst.
-  }, 150_000);
+    // I/O. Worst measured cost: 26 206 ms in envoy.test.ts run whole at the 96 rung in the
+    // tester's Job infra-1580-t27-j1-l27pc of the cluster's `builds` namespace, two CPUs and 8 GiB
+    // (137 busy loops, row A 31.6 s), at 06d187e7; 21 887.67 ms over 20 runs at
+    // the 96 rung in the Job infra-1580-krows-k6-fhhlx (224 busy loops, row A 37.5 s),
+    // 2026-11-22T10:04Z to 10:17Z. 160_000 is 6.1 times the worst.
+  }, 160_000);
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
@@ -26854,11 +26855,11 @@ describe("consumer delivery", () => {
         1,
         JSON.stringify({ event_id: "evt-deep", source: "agent", topic: AGENT, payload: nested })
       );
-      // The answer that settles the frame: `done` once it is taken, `nak` once it failed.
+      // The answer that settles the frame: `done` once it is taken, `nak` once it failed. No
+      // deadline: main's `until` took one (30_000 here), this file's ends at the row's limit.
       await until(
         () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak"),
-        "the frame's settling answer",
-        30_000
+        "the frame's settling answer"
       );
 
       expect(session.replies(inbox)).toEqual(["received", "done"]);
@@ -26876,14 +26877,21 @@ describe("consumer delivery", () => {
       stopSink();
       await session.stop();
     }
-    // A hang guard: what can hang is the consumer's boot or its delivery of the frame, and the
-    // parse of a payload nested 9,999 deep is the row's work. Worst measured cost: 60 004 ms in
-    // envoy.test.ts run whole at the 96 rung in the Job infra-1580-r27wf-4rk46 of the cluster's
-    // `builds` namespace, two CPUs and 8 GiB (148 busy loops, row A 39.8 s), at 82306880, where the
-    // package's 250 s was 4.2 times it. 390_000 is 6.5 times it, and a hang of it fits what the
-    // pi-envoy job's `timeout-minutes: 15` leaves beside its 314 s at 82306880 (CI run
-    // 45394586867).
-  }, 390_000);
+    // A hang guard: what can hang is the consumer's boot or its delivery of the frame. The row's
+    // own cost is CPU work, not a wait: the parse and the card's encoding of a payload nested 9,999
+    // deep, which overflows the encoder's stack (3.0 to 3.3 s of user CPU in 3.4 to 3.7 s of wall
+    // time with no load, against 0.7 s for a row that boots nothing). So its rung is 32 busy loops,
+    // 16 per CPU, below this file's 96: at 96 it cost up to 407 996 ms over 20 runs, one run past
+    // the 390_000 it had then (the tester's Job infra-1580-t27-j1-l27pc of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB, 137 busy loops, row A 31.6 s, at 06d187e7), and up to 107 425
+    // ms (infra-1580-r28np96-55dhk, 122 busy loops, row A 35.1 s); at 48, up to 112 946 ms
+    // (infra-1580-r28np48-lkphb, 97 busy loops for the 48 rung, row A 32.7 s). Six times any of
+    // these is past what the pi-envoy job leaves one hang: its `timeout-minutes: 15` less its 308 s
+    // at 06d187e7 (CI run 45437325102) leaves 592 s. At 32 it is 20 of 20, charged 8 285 / 31 938 /
+    // 71 686 ms (min / median / max), in the Job infra-1580-r28np32-z7t7q (76 busy loops for the 32
+    // rung, row A 37.6 s), at 06d187e7 with this round's changes, and 440_000 is 6.1 times that
+    // worst, inside the job's room.
+  }, 440_000);
 
   test("a NATS reconnect begins a new epoch and registers it at once", async () => {
     const session = await bootConsumer("consumer-reconnect");

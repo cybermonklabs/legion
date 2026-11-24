@@ -518,14 +518,23 @@ describe("exportJjSessionAttribution", () => {
     expect(await readdir(dir)).toEqual([]);
   });
 
-  /** The jj commands the templates row below runs, counted: the row's bound is that count times
-   *  each command's own hang guard, so a loaded machine running jj slowly fails nothing, and the
-   *  row holds the count to the commands it ran. A fixed 60 s for the whole row once decided it at
-   *  a load of about 1,400, where its jj work took 46 s and more. */
+  /** The jj commands the templates row below runs, counted: the row holds the count to the
+   *  commands it ran (`ran`), so a command added or lost fails it by name. A fixed 60 s for the
+   *  whole row once decided it at a load of about 1,400, where its jj work took 46 s and more. */
   const TEMPLATE_ROW_JJ_COMMANDS = 34;
   /** Each jj command's hang guard in that row: far above one command on a loaded machine, so a
    *  jj that never ends fails naming its command. */
   const JJ_COMMAND_MS = 60_000;
+  /** The templates row's own limit: the room the pi-shared job leaves one hang, not six times a
+   *  reading. Sized from the tester's round 27: over 20 runs of this file at the 240 rung a run
+   *  charged up to 442 299 ms, this row's but for the 22.9 s its other rows took together (the
+   *  Job infra-1580-t27-j3-99kcl of the cluster's `builds` namespace, two CPUs and 8 GiB, 417 busy
+   *  loops for the 240 rung, row A 35.3 s), and the row 300 338 ms in infra-1580-t27-j15-tx7cm, at
+   *  06d187e7. Six times either is past the job's room: its
+   *  `timeout-minutes: 10` less its 45 s at 06d187e7 (CI run 45437325102) leaves 555 s. The count
+   *  times each command's guard (2 070 000 ms), the limit before, was past the job's whole 600 s.
+   *  So the room decides 540_000, 1.2 times the worst. */
+  const TEMPLATE_ROW_LIMIT_MS = 540_000;
 
   // The one case here that runs the real jj, which is not on every host: it skips where PATH has
   // none, except on GitHub Actions, where the pi-shared job installs one and a skip would hide
@@ -632,8 +641,7 @@ describe("exportJjSessionAttribution", () => {
       // The count the row's bound is made of is the commands it ran.
       expect(ran).toBe(TEMPLATE_ROW_JJ_COMMANDS);
     },
-    // Each counted command's guard, and room for the row's own file work around them.
-    TEMPLATE_ROW_JJ_COMMANDS * JJ_COMMAND_MS + 30_000
+    TEMPLATE_ROW_LIMIT_MS
   );
 });
 
