@@ -11,14 +11,14 @@ import (
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	type apiErrorTwin = struct {
 		Status  int
-		Code    string
 		Message string
+		own     string
 		said    string
 	}
 	type apiErrorExported = struct {
 		Status  int
-		Code    string
 		Message string
+		Own     string
 		Said    string
 	}
 	for _, h := range []oauth2calltest.Holder{

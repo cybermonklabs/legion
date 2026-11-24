@@ -383,7 +383,7 @@ func TestALoginTheBrokerRefusesIsFailedAndAsksNoOne(t *testing.T) {
 	for i, code := range []string{"ACCOUNT_NOT_LISTED", "TOKEN_EXPIRED"} {
 		_, err := c.Login(context.Background())
 		var api *APIError
-		if !errors.As(err, &api) || api.Code != code {
+		if !errors.As(err, &api) || !api.HasCode(code) {
 			t.Fatalf("login %d = %v, want the broker's %s", i, err, code)
 		}
 		if got := c.LoginStatus().State; got != "failed" || c.snapshot().cred != nil {
@@ -725,7 +725,7 @@ func TestAProofDuringALoginPOSTReturnsWithinItsDeadline(t *testing.T) {
 // isNoCredential reports whether err is the client's NO_MACHINE_CREDENTIAL, its message naming why.
 func isNoCredential(err error, why string) bool {
 	var api *APIError
-	return errors.As(err, &api) && api.Status == 0 && api.Code == "NO_MACHINE_CREDENTIAL" && strings.Contains(api.Message, why) && !IsPermanent(err)
+	return errors.As(err, &api) && api.Status == 0 && api.HasCode("NO_MACHINE_CREDENTIAL") && strings.Contains(api.Message, why) && !IsPermanent(err)
 }
 
 func TestEnrollSendsTheContractBodyAndReadsACreatedEnrollment(t *testing.T) {
@@ -885,7 +885,7 @@ func TestEnrollRetriesWithoutTheNewFieldsOnAnOlderBroker(t *testing.T) {
 			broker.enrollAnswers = c.answers
 			_, err := client.Enroll(context.Background(), c.in)
 			var api *APIError
-			if !errors.As(err, &api) || api.Status != http.StatusBadRequest || api.Code != c.code || !IsPermanent(err) {
+			if !errors.As(err, &api) || api.Status != http.StatusBadRequest || !api.HasCode(c.code) || !IsPermanent(err) {
 				t.Fatalf("Enroll = %v, want the permanent 400 %s", err, c.code)
 			}
 			broker.mu.Lock()
@@ -940,7 +940,7 @@ func TestEnrollRefusalsCarryTheCodeAndPermanence(t *testing.T) {
 		if !errors.As(err, &api) {
 			t.Fatalf("%d: err %v is not an *APIError", tc.status, err)
 		}
-		if api.Status != tc.status || api.Code != tc.code || api.Message != "why" || api.Permanent() != tc.permanent || IsPermanent(err) != tc.permanent ||
+		if api.Status != tc.status || !api.HasCode(tc.code) || api.Message != "why" || api.Permanent() != tc.permanent || IsPermanent(err) != tc.permanent ||
 			api.TokenExpired() != tc.tokenExpired {
 			t.Fatalf("%d %s: %+v permanent=%t tokenExpired=%t", tc.status, tc.code, api, api.Permanent(), api.TokenExpired())
 		}
@@ -1072,7 +1072,7 @@ func TestARefusalBodyThatIsNotTheContractsShapeFallsBackToUNKNOWN(t *testing.T) 
 	if !errors.As(err, &api) {
 		t.Fatalf("err %v is not an *APIError", err)
 	}
-	if api.Code != "UNKNOWN" || api.Message != "<html>Bad Gateway</html>" {
+	if !api.HasCode("UNKNOWN") || api.Message != "<html>Bad Gateway</html>" {
 		t.Fatalf("api = %+v, want code UNKNOWN and the raw body as the message", api)
 	}
 	if api.Permanent() || IsPermanent(err) {

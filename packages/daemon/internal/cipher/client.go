@@ -170,23 +170,36 @@ type Enrollment struct {
 	LeaseExpires time.Time
 }
 
-// APIError is the broker's refusal: its status and the contract's `code`. Code and Message are what
-// the error prints: the broker's code and error as the rule reads them, or this client's own code
-// (UNKNOWN for a body that is not the contract's shape, NO_MACHINE_CREDENTIAL). said is the
-// broker's code as it came, held as its words (oauth2call.RemoteText), which TokenExpired and
-// RegistrarNotListed decide on: the rule's reading of a code that shares a run of eight with a
-// value the request carried - a pod token - is cut, and a refusal decided on it would be one the
-// broker did not make. Status 0 (never a broker status) marks a refusal manufactured client-side:
-// this client has no live launcher credential to authenticate with.
+// APIError is the broker's refusal: its status, the contract's `code` and its error. said is the
+// broker's code as it came, held as its words (oauth2call.RemoteText), which HasCode decides on
+// and Error prints as the rule reads it: the rule's reading of a code that shares a run of eight
+// with a value the request carried - a pod token - is cut, and a refusal decided on it would be one
+// the broker did not make. own is this client's own code, where the broker named none (UNKNOWN for
+// a body that is not the contract's shape, NO_MACHINE_CREDENTIAL). Message is what the error
+// prints after the code: the broker's error as the rule reads it, or this client's own words.
+// Status 0 (never a broker status) marks a refusal manufactured client-side: this client has no
+// live launcher credential to authenticate with.
 type APIError struct {
 	Status  int
-	Code    string
 	Message string
+	own     string
 	said    oauth2call.RemoteText
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("broker answered %d %s: %s", e.Status, e.Code, e.Message)
+	if e.said.IsEmpty() {
+		return fmt.Sprintf("broker answered %d %s: %s", e.Status, e.own, e.Message)
+	}
+	return fmt.Sprintf("broker answered %d %s: %s", e.Status, e.said, e.Message)
+}
+
+// HasCode reports whether the refusal's code is code: the broker's code compared as it came, or
+// this client's own code where the broker named none.
+func (e *APIError) HasCode(code string) bool {
+	if e.said.IsEmpty() {
+		return e.own == code
+	}
+	return e.said.Equal(code)
 }
 
 // Permanent is a refusal a retry cannot change: every 4xx but 429, POD_TOKEN_EXPIRED and
@@ -201,7 +214,7 @@ func (e *APIError) Permanent() bool {
 // TokenExpired is the broker refusing the pod token presented because it has expired
 // (POD_TOKEN_EXPIRED, as the broker's code came): the key stands, and the pod's current token
 // enrolls it.
-func (e *APIError) TokenExpired() bool { return e.said.Equal("POD_TOKEN_EXPIRED") }
+func (e *APIError) TokenExpired() bool { return e.HasCode("POD_TOKEN_EXPIRED") }
 
 // RegistrarNotListed is the broker refusing a pod-session registration with 403
 // POD_REGISTRAR_NOT_LISTED, as its code came: its BROKER_POD_REGISTRARS does not pair the daemon's
@@ -209,7 +222,7 @@ func (e *APIError) TokenExpired() bool { return e.said.Equal("POD_TOKEN_EXPIRED"
 // so a later write of the same registration can succeed with nothing about the daemon changed.
 // Every other 403 stays permanent.
 func (e *APIError) RegistrarNotListed() bool {
-	return e.Status == http.StatusForbidden && e.said.Equal("POD_REGISTRAR_NOT_LISTED")
+	return e.Status == http.StatusForbidden && e.HasCode("POD_REGISTRAR_NOT_LISTED")
 }
 
 // IsPermanent reports whether err is a refusal a retry cannot change: a permanent broker refusal
@@ -481,7 +494,7 @@ type enrollmentAnswer struct {
 // Enroll is POST /v1/enrollments for a pod, authenticated with a launcher proof. A 201 is a fresh
 // enrollment and a 200 the live one with the same thumbprint (the idempotent re-enrollment the
 // contract adopted); both are the enrollment to record. With no live launcher credential — not yet
-// won, or just refused — it returns a non-permanent *APIError{Code: "NO_MACHINE_CREDENTIAL"}, so
+// won, or just refused — it returns a non-permanent *APIError coded NO_MACHINE_CREDENTIAL, so
 // the caller retries after the next token login. Any other broker answer is an *APIError, a
 // transport failure a plain error.
 //
@@ -900,7 +913,7 @@ func (c *Client) noCredentialError() error {
 	case "issued":
 		message = "the broker refused the launcher credential this call proved; a newer one is held"
 	}
-	return &APIError{Code: "NO_MACHINE_CREDENTIAL", Message: message}
+	return &APIError{own: "NO_MACHINE_CREDENTIAL", Message: message}
 }
 
 // answerBytes bounds the answer of every broker call but Carried (carriedAnswerBytes): none of
@@ -975,7 +988,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 func refusal(status int, answered oauth2call.Answer, cut bool) error {
 	var body oauth2call.CodedRefusal
 	if answered.Decode(&body) != nil || body.Code.IsEmpty() {
-		return &APIError{Status: status, Code: "UNKNOWN", Message: redact.Read(answered.Words().String(), cut)}
+		return &APIError{Status: status, own: "UNKNOWN", Message: redact.Read(answered.Words().String(), cut)}
 	}
-	return &APIError{Status: status, Code: body.Code.String(), Message: body.Error.String(), said: body.Code}
+	return &APIError{Status: status, Message: body.Error.String(), said: body.Code}
 }

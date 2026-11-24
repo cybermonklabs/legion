@@ -190,7 +190,7 @@ func TestContractOnlyTheListedAccountWithALiveTokenLogsIn(t *testing.T) {
 		client := &Client{URL: rig.URL, TokenFile: daemonTokenFile(t, rig, c.account, c.lifetime)}
 		_, err := client.Login(ctx)
 		var api *APIError
-		if !errors.As(err, &api) || api.Code != c.code || client.LoginStatus().State != "failed" {
+		if !errors.As(err, &api) || !api.HasCode(c.code) || client.LoginStatus().State != "failed" {
 			t.Fatalf("%s: Login = %v, state %q; want %s and failed", c.name, err, client.LoginStatus().State, c.code)
 		}
 	}
@@ -206,7 +206,7 @@ func TestContractOnlyTheListedAccountWithALiveTokenLogsIn(t *testing.T) {
 	}
 	_, err := c.Login(ctx)
 	var api *APIError
-	if !errors.As(err, &api) || api.Code != "ACCOUNT_NOT_LISTED" {
+	if !errors.As(err, &api) || !api.HasCode("ACCOUNT_NOT_LISTED") {
 		t.Fatalf("Login once the account is unlisted = %v, want ACCOUNT_NOT_LISTED", err)
 	}
 }
@@ -270,7 +270,7 @@ func TestContractARegistrationIsAuthenticatedByTheDaemonsOwnToken(t *testing.T) 
 		client := &Client{URL: rig.URL, TokenFile: daemonTokenFile(t, rig, c.account, time.Hour)}
 		_, err := client.RegisterPodSession(ctx, "pod-uid-registered", podToken, "ses_contract", testThumbprint, 1)
 		var api *APIError
-		if !errors.As(err, &api) || api.Status != c.status || api.Code != c.code {
+		if !errors.As(err, &api) || api.Status != c.status || !api.HasCode(c.code) {
 			t.Fatalf("%s: RegisterPodSession = %v, want %d %s", c.name, err, c.status, c.code)
 		}
 	}

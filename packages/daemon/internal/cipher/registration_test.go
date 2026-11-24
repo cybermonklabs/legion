@@ -219,7 +219,7 @@ func TestRegisterPodSessionPostsThePodToken(t *testing.T) {
 	broker.mu.Unlock()
 	_, err = c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint, 7)
 	var api *APIError
-	if !errors.As(err, &api) || api.Status != http.StatusForbidden || api.Code != "POD_ACCOUNT_NOT_LISTED" || !IsPermanent(err) {
+	if !errors.As(err, &api) || api.Status != http.StatusForbidden || !api.HasCode("POD_ACCOUNT_NOT_LISTED") || !IsPermanent(err) {
 		t.Fatalf("a refused registration = %v, want a permanent *APIError 403 POD_ACCOUNT_NOT_LISTED", err)
 	}
 	for _, token := range []string{testPodToken, "the-rotated-token"} {
@@ -255,7 +255,7 @@ func TestARegistrarNotListedRefusalIsRetried(t *testing.T) {
 		{"ACCOUNT_NOT_LISTED", true},
 		{"UNKNOWN", true},
 	} {
-		if got := (&APIError{Status: http.StatusForbidden, Code: tc.code, said: oauth2calltest.Said(tc.code)}).Permanent(); got != tc.permanent {
+		if got := (&APIError{Status: http.StatusForbidden, said: oauth2calltest.Said(tc.code)}).Permanent(); got != tc.permanent {
 			t.Errorf("403 %s: Permanent() = %t, want %t", tc.code, got, tc.permanent)
 		}
 	}
