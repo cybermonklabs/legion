@@ -299,15 +299,16 @@ func seedUnrecorded(t *testing.T, pool *store.Pool, handoff string) {
 	}
 }
 
-// An implementer's completion moves its issue to testing only once the pull request is recorded,
-// and the record comes only from the opened webhook: one lost, or hours back in the queue, held
-// the issue in implementing with its pull request open on GitHub. The read looks up the open pull
-// request on the branch of each implementing issue with a recorded handoff and no open record, and
-// applies the opened the webhook would have carried, which records it and moves the issue on; a
-// pull request the record holds closed is applied as its reopen. It names the repository as a
-// webhook's fact does, the spelling GitHub intake hears it by when the heard set names it
-// (heardSpelling), so the webhooks that follow find the record. An issue whose implementer has not
-// completed, or whose pull request is recorded open or merged, costs no read.
+// An implementer's completion moves its issue to its task's next step (testing, in the default
+// steps) only once the pull request is recorded, and the record comes only from the opened
+// webhook: one lost, or hours back in the queue, held the issue in implementing with its pull
+// request open on GitHub. The read looks up the open pull request on the branch of each
+// implementing issue with a recorded handoff and no open record, and applies the opened the
+// webhook would have carried, which records it and moves the issue on; a pull request the record
+// holds closed is applied as its reopen. It names the repository as a webhook's fact does, the
+// spelling GitHub intake hears it by when the heard set names it (heardSpelling), so the webhooks
+// that follow find the record. An issue whose implementer has not completed, or whose pull
+// request is recorded open or merged, costs no read.
 func TestTheReadRecordsAnOpenPullRequestWhoseOpenedHasNotArrived(t *testing.T) {
 	t.Parallel()
 	opened := time.Date(2026, 10, 26, 19, 30, 0, 0, time.UTC)

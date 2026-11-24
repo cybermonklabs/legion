@@ -1,5 +1,12 @@
 package startup
 
+// The server.started envelope packages/daemon's intake decodes, which this package's
+// TestTheBuiltEnvelopeIsTheSharedFixture holds its own build to: the one read here of a file
+// of another module, and the one the envoy_go filter had to grow a pattern for, since it
+// matched no file under packages/daemon and a change to that fixture alone therefore ran the
+// daemon's jobs and not this one (dispatch://INFRA-1413).
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/server-started.json TestTheBuiltEnvelopeIsTheSharedFixture
+
 import (
 	"context"
 	"encoding/json"

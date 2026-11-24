@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # What the head's own installs under the fault left on this runner: every tool is held to the
 # version its row pins, the docker provider plugin's tarball to its row's digest, the Bun install
-# to the bunx beside it, and the fault proxy is asked how many requests to github.com it refused
-# since the probe, which is the half a version and a digest cannot say.
+# to the bunx beside it, and the fault proxy is asked how many requests to github.com and to
+# get.helm.sh it refused since the probe, which is the half a version and a digest cannot say.
 #
 # Who runs it: the step "Check every tool is the version its row pins" of
 # .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job; the comments below say what each of
@@ -32,6 +32,9 @@ wrong=""
 "$proof" version-answers elan "$(elan --version)" || wrong="$wrong elan"
 "$proof" version-answers uv "$("$LEGION_TEST_UV" --version)" || wrong="$wrong uv"
 "$proof" version-answers pulumi-cli "$(pulumi version)" || wrong="$wrong pulumi-cli"
+# The runner image carries a helm of its own at another version, so this reading is also what
+# tells the helm install-helm put first on PATH from the image's.
+"$proof" version-answers helm "$(helm version --short)" || wrong="$wrong helm"
 # The docker provider plugin prints no version of its own: nothing is installed, and
 # what the action hands back is the tarball the live tests are given. Its reading is
 # therefore the row's own digest, read by the one digest reader of this repository.
@@ -55,12 +58,15 @@ ci_tools_verify pulumi-docker "$tarball" "the docker provider plugin tarball thi
 # not join the list below, whose sentence is about versions.
 bunx='read'
 "$proof" installed-bunx || bunx=refused
-# The other half of every reading above: how many requests to github.com the fault
-# proxy refused since the probe, and which. A version says which tool is here and a
+# The other half of every reading above: how many requests to github.com and to get.helm.sh the
+# fault proxy refused since the probe, and which. A version says which tool is here and a
 # digest says it is the pinned one; neither can say that the first source did not
 # serve it, because a row's two sources are one binary by design. The 504s say it.
+# get.helm.sh is read on its own because helm's install is the one that asks it: a count of
+# github.com alone would pass with helm read from its primary.
 refusals='read'
 "$proof" refusals github.com || refusals=refused
+"$proof" refusals get.helm.sh || refusals=refused
 if [ -n "$wrong" ]; then
   echo "::error::$wrong answered a version its row does not pin, so the source that served it served something else" >&2
 fi

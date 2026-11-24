@@ -120,7 +120,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // merging, and the merger's claim carries the same token as the one its worker took. Then
 // Store.Migrate applies the rest of this head's migrations, as a deployment's roll does:
 // 20261029120700 moves the issues in `awaiting_merge` to merging, 20261110233602 takes the slot
-// mark off every queued start of a phase past the review, and the fill of 20261111225552 puts
+// mark off every queued start of accepting, retro or merging, and the fill of 20261111225552 puts
 // each merger at entry 1, given and served, which is where a merger that took its merging task
 // stands after the upgrade. The fill records no task for that entry: it reads only a start that
 // still carries the slot mark, and S's (below), the one start the old record still holds, has

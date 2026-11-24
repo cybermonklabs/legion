@@ -661,14 +661,18 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	return b
 }
 
-// waitFor polls cond until it is true or 5s pass, whichever comes first, failing the test on
-// timeout. A login's first token poll comes a second after its device authorization (the
-// interval the fake names).
+// waitFor polls cond every 5 ms until it is true, failing the test when it never is. Its one bound
+// is testwait's margin before the test binary's deadline (testwait.UntilPolling), so a host too
+// loaded to reach cond within a fixed span is not a failure: with a span of 5 s, a test process
+// frozen 12 s at a time failed TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs here, though the
+// helper did what the test waited for. A login's first token poll comes a second after its device
+// authorization (the interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
-		t.Fatal("condition never became true")
-	}
+	testwait.UntilPolling(t, 5*time.Millisecond, "the condition waitFor asks for", func() (bool, bool) {
+		held := cond()
+		return held, held
+	})
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {

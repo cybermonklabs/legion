@@ -11,9 +11,13 @@ first sections below.
 
 ## The suite, its two lanes and the budget rule every job follows
 
-Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
-with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
-on everything else, and the nightly workflow calls it with the full lane. The rows are spread
+Every browser job of the Dispatch suite, in one place. ci.yaml calls it from two jobs, each with
+a literal lane: dispatch-browser-pr with the pull-request lane on a pull request, and
+dispatch-browser with the full lane in the merge queue, on a dispatched run and on a pull request
+labelled `full-ci` or `lane:dispatch_browser`; the nightly workflow calls it with the full lane,
+under the job id dispatch-browser. Each caller passes its own id as `job`, which GitHub puts
+before every job name of this file (`dispatch-browser-pr / shard (1)`) and which starts every
+artifact name, so two callers of one run share no artifact. The rows are spread
 over four shard machines, the three `-alone` projects get a machine each, the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
@@ -23,9 +27,9 @@ Two lanes, one input. `pull-request` runs the projects a pull request is held to
 `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
 fake-embedder job, which holds a check of the pull request it is on; `full` runs every
 parallel project, the three `-alone` ones, the two-process job, the visual review and that
-same embedder job, over every row. So an unlabelled pull request pays for the rows that
-answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
-run pay for the rest, each of which has the wall time for them.
+same embedder job, over every row. So a pull request pays for the rows that answer it, and the
+merge queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the rest,
+each of which has the wall time for them.
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -68,11 +72,12 @@ No permissions: block, and that is not what decides this workflow's scopes. A ca
 runs under the calling job's `permissions:`, and a caller that declares none hands it the
 default GITHUB_TOKEN permissions rather than its own workflow's block (GitHub's
 reusable-workflow reference, "Supported keywords for jobs that call a reusable workflow").
-ci.yaml's dispatch-browser job declares what these jobs need: `contents: read` for every job's
-checkout, and the merge job's `actions: read` (it reads the run's jobs through the API) and
-`checks: write` (the ci-ok report it ends with, which only that call turns on).
-dispatch-browser-nightly.yaml's full job declares the first two: its call passes no
-`ci-ok-changes` either, so the report step skips there and no check is posted.
+ci.yaml's dispatch-browser and dispatch-browser-pr jobs each declare what these jobs need:
+`contents: read` for every job's checkout, and the merge job's `actions: read` (it reads the
+run's jobs through the API) and `checks: write` (the ci-ok report it ends with, which only
+ci.yaml's calls turn on). dispatch-browser-nightly.yaml's dispatch-browser job declares the
+first two: its call passes no `ci-ok-changes` either, so the report step skips there and no
+check is posted.
 
 ## Why GOPROXY falls through to direct
 
@@ -90,10 +95,11 @@ three commands, built once here and handed to the shard and alone jobs in one
 artifact.
 
 Why the build is a job of this file rather than of each caller: an artifact is visible only
-inside the run that uploaded it, and both callers run this file - ci.yaml's dispatch-browser
-job and dispatch-browser-nightly.yaml's full job. A build left in one caller would hand the
-other's run nothing, and that run's shard and alone jobs would fail downloading an artifact
-their run never held.
+inside the run that uploaded it, and every caller runs this file - ci.yaml's dispatch-browser
+and dispatch-browser-pr jobs and dispatch-browser-nightly.yaml's dispatch-browser job. A build
+left in one caller would hand the others' runs nothing, and their shard and alone jobs would
+fail downloading an artifact their run never held. The artifact is `<job>-binaries`, named for
+the caller, so the two callers of a pull request labelled `full-ci` each download their own.
 
 Why those two jobs do not build the binaries themselves: they run in a container, and
 .github/scripts/ci_filter_coverage.py's shell_reason counts a `container:` as something that
@@ -105,9 +111,9 @@ instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVE
 run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
 
 It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
-already decided the call. ci.yaml's dispatch-browser job holds the `dispatch_browser` filter
-and the merge-group attempt term, and the nightly calls this file unconditionally, so a
-condition here could only hold back a run its caller had asked for.
+already decided the call. ci.yaml's two callers hold the `dispatch_browser` and
+`dispatch_browser_pr` outputs and the merge-group attempt term, and the nightly calls this file
+unconditionally, so a condition here could only hold back a run its caller had asked for.
 
 ## The binaries job's budget
 
@@ -157,9 +163,9 @@ has to be slow in.
 
 ## Why the binaries artifact's name holds no run attempt
 
-One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
-failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
-the artifact this job uploaded on the attempt before.
+One name per caller for the whole run, `<job>-binaries`, with no `github.run_attempt` in it: a
+re-run of a run's failed jobs re-runs a shard or an alone leg without this one, and that attempt
+must find the artifact this job uploaded on the attempt before.
 
 ## The shard job, its stacks and its container
 
@@ -608,7 +614,7 @@ artifact holds the same two entries under the same names, which is what
 ## What the shard job collects after a run
 
 What the run left behind: in the job's own log, where a reader of a failed row looks
-first, and collected into the one directory the `dispatch-browser-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}` artifact takes. A failed row's
+first, and collected into the one directory the `${{ inputs.job }}-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}` artifact takes. A failed row's
 trace says what the browser saw; these say what its stack's own servers did, which is
 where a stack-only failure (a port, a migration, a server that never came up) is legible.
 CI read `docker logs dispatch-e2e-files` for the store before this job ran in a
@@ -821,7 +827,7 @@ the shard job's upload of this name is and for the reason it gives.
 ## What the alone job collects after a run
 
 What the run left behind: the stack's own server logs, in the job's own log and collected
-into the one directory the `dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}` artifact takes, beside the sampler's two files, which
+into the one directory the `${{ inputs.job }}-record-alone-${{ matrix.project }}-${{ github.run_attempt }}` artifact takes, beside the sampler's two files, which
 the browser step already wrote there. No file store runs on this machine, so there is no
 store log to collect.
 
@@ -893,7 +899,7 @@ connections read, which takes the two-minute floor until runs of it are measured
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. With budgets on the steps, the
-`if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
+`if: failure()` upload of `${{ inputs.job }}-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
 machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
@@ -1013,8 +1019,8 @@ on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second s
 A lane that skipped it would leave the claim unread until the merge queue.
 
 Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
-shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
-job reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
+shard and alone legs, and this job's own conclusion is what the calling job (ci.yaml's
+dispatch-browser or dispatch-browser-pr) reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
 null leg and is passed over by reading one, exactly as multiprocess is.
 
 No budget measured on this file's own runs yet, so the embedder job's two step budgets are derived from the
@@ -1127,8 +1133,8 @@ The step "Pull the stack's Postgres image" was added later, for the reason
 .github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason gives,
 and its pull is counted at the 120 s the browser step spent before the stack's first output
 on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
-it had. The reverse-order browser step runs the same rows on a new stack of the same size, with
-a new seed, and has the first step's 4-minute budget, so the job budget is 12 + 4 = 16 minutes.
+it had. The reverse-order browser step this job ran after it, with its own 4 minutes, is gone:
+the section on the guard that took its place says why.
 
 #4383 counted the steps without a budget at 314 s, the five columns' figure before the sixth
 was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at 333 s over the
@@ -1166,38 +1172,66 @@ repository's own package, so it fails here and says so.
 
 THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
 startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
-digest the two browser steps export (the first in .github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
-inside the first step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
+digest the browser step exports (.github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
+inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
 spent 120 s before the stack's first output, where five green visual jobs (134499880849,
 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
 past its budget at 250 s. Its log does not time the pull apart from the rest of that
 start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
-digest is written three times, here and in the two browser steps (the normal order and
-the reverse), and the three must stay the same: a pull of another digest here leaves the
-browser steps to pull their own inside their budgets again.
+digest is written twice, here and in the browser step's script, and the two must stay the same:
+a pull of another digest here leaves the browser step to pull its own inside its budget again.
 
-## Why the visual job runs its rows again in reverse order
+## Why each visual row stops its page's writes, and runs once
 
-The same rows again in reverse order, on a new stack and a new seed: the phone rows before
-the desktop rows, and each project's rows last first (packages/dispatch/e2e/visual-order.ts).
-One seed serves a whole run, so a row whose page reads a write another row made fails one
-of the two runs by its own name, and a baseline that holds another row's write is found
-here rather than as a flake. It runs when the normal run failed too, since that is when its
-answer says most, and not when the normal run never started: a setup step that failed
-leaves nothing for either run to compare. Its budget is the first step's, for the same
-rows on a new stack of the same size.
+One seed serves the whole visual run, so a page that wrote to the corpus as it drew would change
+what every row after it compares, and a baseline would hold another row's write. So no row's page
+may write: e2e/visual-guard.ts, installed on each row's page before it navigates, stops every
+request to `/api/` or to the sign-in routes beside it (`/auth/`) with a write method, every
+document-socket frame that would change a document
+(a Yjs update, or a sync reply whose structs or deletions change it), and every live-socket frame
+that is no subscribe or unsubscribe, and the row then fails with the list of what it stopped, by
+its own name. A read mark passes only exactly as the seed wrote it before any row
+(`markWhatTheShotPagesRead`, e2e/review-seed.ts, which writes the marks into the seed file): a
+reply the seed marked read, the spec's read at the version the seed wrote. Any other version, a
+lower one moving the read back included, is stopped. The editor's own stamps as it loads a
+document - a heading's id, an ordered list item's label, which Milkdown derives from the text and
+no rendering carries - are dropped without failing the row: the guard reads each frame against the
+server's document as the page was sent it and drops one that changes only those
+(`changesOnlyDerived`, web/src/features/doc/derived-attributes.ts, the classifier the editor's own
+pending-edit store reads). The first run of the guard stopped an update of 34 to 54 bytes that each
+of four documents sent as it loaded, with no person typing (job 137537803811).
 
-Its results go to `test-results-reverse` (Playwright's `--output`, which e2e/visual-run.sh
-passes on), so the normal run's stay in `test-results`, where a reader of a failed run
-looks for the shots, however this run ends.
+What a page cannot stop is a write the server makes while it answers. Three things close that.
+Each row resolves every API read its page made to the GET route the table serves it by (the
+committed OpenAPI document, which openapi_test.go holds to the table, a literal segment over a
+wildcard), and fails on a read of a route, or of no route, on a sign-in read, and on a live view
+kind, that packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json does not name. The
+Go test TestTheVisualShotReadsWriteOnlyTheirCaches (visual_shot_reads_test.go) sends every route
+that list names as the dashboard does, signed in with a session cookie, runs what GET /auth/whoami
+runs (the cookie's identity and the event feed's head, on a server whose event horizon nothing has
+built yet, as the page's first read finds it), and subscribes every view kind it names on GET
+/ws/live; it reads every statement each read, each view and the work they detach run, through the
+tracer TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with. A read may write the
+display-tree cache, the sign-in read nothing, and a live view the event horizon and a deploy run's
+warning record, each a table that test sees written on that channel; any other write fails it by
+the read or view and the table. It opens and closes a document's room as a page does and holds the
+room to writing nothing. And the seed waits, before any row draws, until the document service owes
+no document a settlement, and holds that the corpus records no check result and no pull request's
+head (`awaitNothingOwed`, e2e/review-seed.ts): an owed settlement runs when a page opens the room
+and writes a version the shot would draw, and a result's commit is one the Verification tab's read
+asks GitHub the pull request of, writing what it learns.
+
+This replaces a second run of every row in reverse order, on a new stack and a new seed, about 67
+s a job (p50 of 2026-11-22's full-lane runs). That run caught a write only when some later row's
+shot happened to draw it, and could not say a row passes alone; the guard names the row that
+wrote, whatever any other row draws, and stops the write before any other row can see it.
 
 ## Why the visual job's upload is always
 
 Always, not on failure alone: a reader of a green run wants the report too, and a run
 that wrote a baseline no tree holds yet - a route this layer gained - leaves it here,
 which is how that file reaches the pull request from a machine with no container. It
-holds both runs: the normal run's results under test-results, the reverse run's under
-test-results-reverse.
+holds the run's results under test-results.
 
 ## Why the visual upload keeps a pattern that matches no file
 
@@ -1303,7 +1337,7 @@ alone), so the zips land together and the counts land beside them rather than am
 `merge-reports` reads the zips of the directory it is given.
 
 No `merge-multiple`, so when more than one artifact matches, each is extracted into a
-directory named for it (dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip)
+directory named for it (dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip, for the dispatch-browser caller)
 and the step "Take the newest attempt of each leg's blob report" can tell the attempts
 apart. A run's artifact list holds every attempt's artifacts and this pattern matches
 them all; two attempts of one leg hold the same inner paths, so merging them into one
@@ -1406,10 +1440,11 @@ selection that no shard leg ran or that two ran.
 
 ## When the merge job posts ci-ok
 
-ci.yaml's call only: on a merge-group run whose group ci.yaml's dispatch-browser job's
-own result decides it posts the failing ci-ok at once, and on every other run it posts
-nothing, the verdict being ci.yaml's `ci-ok` job's own check run
-(.github/actions/ci-ok-report says how). This is the job that posts for that call: it
-needs every other job of this workflow, and the step is its last, which is the shape
-.github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to. The
-nightly workflow passes no `ci-ok-changes`, and the step skips.
+ci.yaml's calls only: on a merge-group run whose group the calling job's own result decides it
+posts the failing ci-ok at once, and on every other run it posts nothing, the verdict being
+ci.yaml's `ci-ok` job's own check run (.github/actions/ci-ok-report says how). It reports under
+the caller's id, the workflow's `job` input, so dispatch-browser and dispatch-browser-pr each
+report for themselves. This is the job that posts for that call: it needs every other job of
+this workflow, and the step is its last, which is the shape
+.github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to. The nightly
+workflow passes no `ci-ok-changes`, and the step skips.

@@ -1,6 +1,8 @@
 // packages/envoy/internal/cipher/config/config_test.go
 package config
 
+//ci:reads packages/envoy/docker/rds-global-bundle.pem TestLoadSignsInByIAMOnlyForAPasswordlessRDSURL and TestLoadLeavesAPasswordLibpqSuppliesToSignIn Load the URL whose sslrootcert is this bundle (rdsBundle), which pgx reads to build the root pool
+
 import (
 	"maps"
 	"net/netip"

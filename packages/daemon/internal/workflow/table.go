@@ -66,9 +66,10 @@ func hasOpenOrMergedPR(s Snapshot) bool { return s.HasOpenOrMergedPR }
 var Table = TableOf(phase.Order)
 
 // stepRows are the rows each phase of a line carries on its own role's trigger, in the table's
-// order: the step's move on to the next phase of the line (to ""), and the two returns, the
-// tester's fail and a review's request for changes, to implementing. A phase the line does not
-// hold carries none of them. Retro's move on is to merging, the phase after it in every line.
+// order: the step's move on to the next phase of the line (to ""), whichever phase the line puts
+// there, and the two returns, the tester's fail and a review's request for changes, to
+// implementing. A phase the line does not hold carries none of them. Retro's move on is to
+// merging, the phase after it in every line.
 var stepRows = []struct {
 	from    phase.Phase
 	trigger TriggerKind
@@ -85,16 +86,16 @@ var stepRows = []struct {
 	{phase.Retro, TriggerRetroCompleted, allow, ""},
 }
 
-// TableOf is the complete transition table of an issue whose task walks line, a subsequence of
-// phase.Order that holds implementing and ends in retro and merging (plan.Line of a plan
+// TableOf is the complete transition table of an issue whose task walks line: the phases of its
+// steps in the task's order, which holds implementing, then retro and merging (plan.Line of a plan
 // plan.Validate took). Rows, not switch-case scheduling, define every phase change. Its rows, in
 // this order: the gate's opening, out of admitted into the first phase of the line; each phase's
 // rows on its role's trigger (stepRows); the merge, out of merging into done; and a backward row
-// for each pair of the line. A head that conflicts with its base moves no phase (merge_forward.go).
-// A row into accepting starts nobody, because
-// accepting's role is the tree's architect; every other row into a phase of the line starts its
-// role. No row carries a status of its own: every status a row writes is its target phase's, which
-// PhaseStatus holds.
+// from each phase of the line to each phase before it in the line (backwardRows). A head that
+// conflicts with its base moves no phase (merge_forward.go). A row into accepting starts nobody,
+// because accepting's role is the tree's architect; every other row into a phase of the line
+// starts its role. No row carries a status of its own: every status a row writes is its target
+// phase's, which PhaseStatus holds.
 func TableOf(line []phase.Phase) []Row {
 	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], Effects: effectsInto(line[0])}}
 	for _, step := range stepRows {
@@ -124,27 +125,24 @@ func effectsInto(to phase.Phase) []EffectKind {
 	return []EffectKind{EffectStart, EffectNotice}
 }
 
-// backwardRows is the edge from every phase of line back to each phase of line before it. Like
-// every other row, each writes the status of the phase it enters, so a move back into planning
-// writes in_progress, the status an issue shows while Legion works it, rather than leaving
-// Dispatch showing the phase the issue left. The pairs come from phase.BackwardPairs, the one list
-// the config loader reads as well, in its order, so a pair added there becomes a row of each line
-// that holds its two phases, and TestBackwardRowsOfEachLineAreBackwardPairs holds the two equal.
-// A line is a subsequence of phase.Order, so a move back in it is a move back in phase.Order.
+// backwardRows is the edge from every phase of line back to each phase of line before it, by the
+// line's own order: each phase of the line paired with every phase before it in the line, in that
+// order. A line in today's order (a subsequence of phase.Order) so gets the pairs of
+// phase.BackwardPairs whose two phases it holds, in that list's order, and TableOf(phase.Order)
+// stays Table row for row; a line in another order goes back by its own order, so the line
+// `implementing reviewing testing` moves back from testing to reviewing, and not from reviewing to
+// testing, which is its move on (TestBackwardRowsOfEachLineAreItsOwnPairs). Like every other row,
+// each writes the status of the phase it enters, so a move back into planning writes in_progress,
+// the status an issue shows while Legion works it, rather than leaving Dispatch showing the phase
+// the issue left. No phase of a line waits for a merge somebody else makes, so no pair is carried
+// by a row above instead (dispatch://INFRA-714).
 func backwardRows(line []phase.Phase) []Row {
-	pairs := phase.BackwardPairs()
-	rows := make([]Row, 0, len(pairs))
-	for _, text := range pairs {
-		from, to, _ := phase.ParsePair(text)
-		// Every pair comes from BackwardPairs, so ParsePair reads each one, and every pair of
-		// that list whose two phases the line holds earns a row here: none of the phases waits
-		// for a merge somebody else makes, so there is no pair the rows above carry as a row of
-		// their own (dispatch://INFRA-714).
-		if !slices.Contains(line, from) || !slices.Contains(line, to) {
-			continue
+	rows := make([]Row, 0, len(line)*(len(line)-1)/2)
+	for at, from := range line {
+		for _, to := range line[:at] {
+			rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to,
+				Effects: []EffectKind{EffectStart, EffectNotice}})
 		}
-		rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to,
-			Effects: []EffectKind{EffectStart, EffectNotice}})
 	}
 	return rows
 }

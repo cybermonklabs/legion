@@ -70,6 +70,16 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		t.Fatalf("DEMO, which names none, runs %+v, want today's line", got)
 	}
 
+	// The steps in another order than today's load as the list writes them.
+	cfg, err = Load(writeConfigFile(t, defaultStepsFile("{default_steps: [implementer, reviewer, tester]}")), noEnv)
+	if err != nil {
+		t.Fatalf("Load([implementer, reviewer, tester]): %v", err)
+	}
+	want = []plan.Step{{Role: "implementer"}, {Role: "reviewer"}, {Role: "tester"}}
+	if got := cfg.Projects["ACME"].DefaultSteps; !reflect.DeepEqual(got, want) {
+		t.Fatalf("DefaultSteps = %+v, want %+v", got, want)
+	}
+
 	const yet = " This release of Legion does not carry it out yet."
 	for _, tc := range []struct {
 		name, value, refusal string
@@ -77,10 +87,11 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		{name: "no step", value: "[]", refusal: "projects.ACME.default_steps names no step"},
 		{name: "a role nobody defines", value: "[implementer, checker]",
 			refusal: "projects.ACME.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
-		{name: "another order than today's", value: "[reviewer, implementer]",
-			refusal: "projects.ACME.default_steps: task default names implementer at step 2 after reviewer at step 1, and this release runs the steps in the order planner, implementer, tester, reviewer, acceptance." + yet},
+		{name: "a step that reads a pull request before the implementer", value: "[reviewer, implementer]",
+			refusal: "projects.ACME.default_steps: step 1 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet},
 		{name: "a cause of each check", value: "[checker, reviewer]",
 			refusal: "projects.ACME.default_steps: task default has no step implementer." + yet +
+				" step 2 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet +
 				" step 1 of task default names the role checker, which neither the deployment nor the plan defines."},
 		{name: "a key", value: "[implementer, reviewer:r]",
 			refusal: "projects.ACME.default_steps: step 2 of task default names the key r." + yet},

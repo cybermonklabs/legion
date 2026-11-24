@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -279,7 +280,7 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 // suspended, with nothing relaunched and the mark exactly as it found it, and the next
 // stale-plugin pass raises the relaunch again (refreshPlugin, the daemon's refreshStalePlugins).
 // The mark costs no write of its own either: the launch that commits it writes the claim as it
-// starts (launchNow).
+// starts (commitPluginRelaunch, launchTries).
 //
 // The intent names one launch and no other: a later launch of this machine, raised by something
 // else, marks nothing for this relaunch. The launch that took it holds it by then — the gate
@@ -485,7 +486,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	}
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin)
+		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin, time.Time{})
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

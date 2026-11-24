@@ -139,7 +139,8 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 
 // walkTitles is the title of each issue of a run, in order. Dispatch refuses a new issue whose
 // title is a near copy of an open one's (POSSIBLE_DUPLICATE), so no two share a word that counts.
-var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated"}
+var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated",
+	"Fifth ticket runs reordered"}
 
 // on moves the walk's steps to issue key of the run.
 func (r *stepRecordsRig) on(key string) {
@@ -912,13 +913,15 @@ func (c *stepClaimant) send(frame shimwire.Frame) {
 
 // take waits for the daemon's next task of this claim and starts the turn that works it, its
 // model answering first: the claim's machine reads a connection's frames in order, so once the
-// turn's start shows the claim working, the answer before it has been read too.
-func (c *stepClaimant) take() {
+// turn's start shows the claim working, the answer before it has been read too. It answers the
+// prompt that carried the task, which a walk reads where it holds what the claim was told.
+func (c *stepClaimant) take() shimwire.Prompt {
 	c.r.t.Helper()
 	prompt := c.receive()
 	c.answer()
 	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	c.waitState(supervise.StateWorking)
+	return prompt
 }
 
 // receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged
