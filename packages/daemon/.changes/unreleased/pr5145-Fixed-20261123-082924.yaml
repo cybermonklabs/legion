@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    A burst of facts no longer holds every connection of the daemon's database pool. Each fact used
+    to hold a connection while it waited on the fact lock, so a burst larger than the pool, such as
+    many restored claims failing together at boot, made every other read wait for the whole burst:
+    `legion state`, the API, and the boot's read of which terminal facts are already applied, whose
+    budget could run out and end the boot. A fact now waits for its pool's turn before it takes a
+    connection, so one connection per pool waits on the lock. Facts already apply one at a time, so
+    this costs no throughput.
+time: 2026-11-23T08:29:24Z
+custom:
+    Issue: INFRA-1075

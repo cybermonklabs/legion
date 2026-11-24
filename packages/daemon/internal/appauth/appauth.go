@@ -230,6 +230,11 @@ type Manager struct {
 	// token mode has no entry: its read is the token_command's run, which runTokenCommand shares.
 	pendingInstallations map[AppRole]*pendingInstallations
 	commands             map[scope]*commandRun
+	// loginReleases holds, per App role in token mode, the installation AppLogin took from the
+	// command's release of every installation and has not yet read the App's login under
+	// (loginRelease): a later AppLogin of the role reads under it while it is fresh, so a login
+	// read that failed after its release runs the command no second time for it.
+	loginReleases map[AppRole]releasedInstallation
 	// keys holds each App private key parsed, by its PEM text (generateJWT).
 	keys map[string]*rsa.PrivateKey
 
@@ -334,6 +339,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		pendingIdentities:    map[string]*pendingIdentity{},
 		pendingInstallations: map[AppRole]*pendingInstallations{},
 		commands:             map[scope]*commandRun{},
+		loginReleases:        map[AppRole]releasedInstallation{},
 		keys:                 map[string]*rsa.PrivateKey{},
 		refusals:             map[scope]refusedNarrowingAt{},
 		saidShortfalls:       map[saidShortfall]bool{},

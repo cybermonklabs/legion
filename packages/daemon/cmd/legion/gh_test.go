@@ -2305,7 +2305,10 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 // read answers, nothing on standard output and exit 1, which the check reads as an unknown
 // visibility and refuses. The guard's reads come back through `legion gh` to the stand-in gh: the
 // REST read, then, with the installation's REST limit spent, the GraphQL read, then a stand-in
-// git's ls-remote, which can answer only public. Neither stream carries the shared check's own
+// git's ls-remote, which can answer only public. Where gh's REST read fails on its connection to
+// GitHub, the read through curl comes next, and it is a stand-in curl's (testCurlEnv) that records
+// itself beside them: the system's curl would carry a token of the bundle to api.github.com, and
+// the row's verdict would be the network's. Neither stream carries the shared check's own
 // refusal, which only the check prints.
 //
 // The read is fresh: the check reads another remote of a push with it, and counts the commits of
@@ -2344,6 +2347,17 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	graphQLNotFound := graphQL(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`, 1)
 	lists := "printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "\nexit 0\n"
 	refused := "echo 'fatal: could not read Username for '\\''https://github.com'\\'': terminal prompts disabled' >&2\nexit 128\n"
+	// tlsTimeout is gh's REST read failing on its connection before GitHub answered anything, in the
+	// one line gh 2.98.0 printed for a TLS handshake that never finished (leakguard's
+	// ghTransportFailure), so the guard reads through curl next.
+	tlsTimeout := "echo 'Get \"https://api.github.com/repos/" + slug + "\": net/http: TLS handshake timeout' >&2\nexit 1\n"
+	// curlAnswers is the read through curl answered by GitHub with visibility; curlUnreached is a curl
+	// that could not connect, exit 7, which the guard reads as no answer from GitHub and follows
+	// with ls-remote. A case that names no curl answer gets curlUnreached.
+	curlAnswers := func(visibility string) string {
+		return "printf '%s\\r\\n' 'HTTP/2 200' ''\nprintf '%s\\n' '{\"visibility\":\"" + visibility + "\"}'\nexit 0\n"
+	}
+	curlUnreached := "echo 'curl: (7) Failed to connect to api.github.com port 443 after 0 ms: Could not connect to server' >&2\nexit 7\n"
 	// keptFiles is each file of the guard's kept visibility answers under state, with its content.
 	keptFiles := func(t *testing.T, state string) map[string]string {
 		t.Helper()
@@ -2394,6 +2408,8 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		slug          string
 		rest, graphql string
 		git           string
+		// curl is the stand-in curl's answer, curlUnreached where it is empty.
+		curl string
 		// kept is whether the guard holds a kept public answer for the repository when the read
 		// is made.
 		kept bool
@@ -2416,6 +2432,8 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		{name: "REST and GraphQL are limited and ls-remote is refused", rest: restSpent, graphql: graphQLLimited, git: refused, reads: "rest\ngraphql\ngit\n"},
 		{name: "REST is limited and GraphQL could not resolve the repository", rest: restSpent, graphql: graphQLNotFound, git: lists, reads: "rest\ngraphql\n"},
 		{name: "REST fails another way", rest: restFails, graphql: answers("PRIVATE"), git: lists, reads: "rest\n"},
+		{name: "gh cannot finish its TLS handshake and curl answers private", rest: tlsTimeout, curl: curlAnswers("private"), git: lists, want: "private\n", reads: "rest\ncurl\n"},
+		{name: "gh and curl cannot reach GitHub and ls-remote answers", rest: tlsTimeout, git: lists, want: "public\n", reads: "rest\ncurl\ngit\n"},
 		{name: "an unserved owner's repository ls-remote lists", slug: "other-owner/invented-repo", rest: rest("private"), git: lists, want: "public\n", reads: "git\n"},
 		{name: "an unserved owner's repository GitHub asks ls-remote a credential for", slug: "other-owner/invented-repo", rest: rest("private"), git: refused, reads: "git\n"},
 	} {
@@ -2439,10 +2457,17 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
 				t.Fatal(err)
 			}
+			// The stand-in curl runs with only the names leakguard.TokenChildKeeps keeps, which hold
+			// no GH_STANDIN_RECORD, so its record's path is written into it. It reads the token the
+			// guard hands it on its standard input, as curl does, and keeps none of it.
+			curl := filepath.Join(t.TempDir(), "curl")
+			if err := os.WriteFile(curl, []byte("#!/bin/sh\ncat >/dev/null\necho curl >> '"+record+"'\n"+cmp.Or(tc.curl, curlUnreached)), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			code, stdout, stderr := legionGh(t, map[string]string{
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 				"PATH": wrappers + ":" + bin + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
-				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: repo,
+				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: repo, testCurlEnv: curl,
 			}, leakguard.VisibilityReadArgs(repo)...)
 			switch {
 			case tc.want != "" && (code != 0 || stdout != tc.want):

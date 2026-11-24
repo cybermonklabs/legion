@@ -290,10 +290,11 @@ func applyMigrationsByHand(t *testing.T, st *store.Store, set []migrations.Migra
 // waits in accepting while its children work, and the two in merging, are each granted a row,
 // because that is the rule the migration was written for — a merger merges the pull request
 // itself, so its phase is work — and the boot's own first pass takes those three rows back: an
-// issue holds a row until its work is past its review, except while it waits on another issue
-// (blockers.waitsOf), and accepting, retro and merging are past it (record.KeepsSlot). The cap then does the draining: the surplus is above it, so the
-// root that never ran takes nothing while the count stands at or above the cap, and takes a
-// row at the first pass where the count is under it.
+// issue holds a row while it stands in a phase that keeps one, except while it waits on another
+// issue (blockers.waitsOf), and accepting, retro and merging keep none (record.KeepsSlot). The
+// cap then does the draining: the surplus is above it, so the root that never ran takes nothing
+// while the count stands at or above the cap, and takes a row at the first pass where the count
+// is under it.
 func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -378,8 +379,8 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 
 	// The count falls as each issue finishes, and nothing new starts while it stands at the cap:
 	// the loop admits while the holders are under the cap, never at it. The two in merging are
-	// finished first, and neither frees a row: their work stands past its review, so the first
-	// pass above took the rows the migration granted them back.
+	// finished first, and neither frees a row: merging keeps none, so the first pass above took
+	// the rows the migration granted them back.
 	finish(t, pool, records, heldReady)
 	finish(t, pool, records, merging)
 	finish(t, pool, records, building)
@@ -434,8 +435,8 @@ func finish(t *testing.T, pool *store.Pool, records record.Store, key string) {
 			return err
 		}
 		// Its work is over, which on this release is the phase the merge leaves: merging is the
-		// merger's own phase, which holds no slot, since it is past the issue's review
-		// (record.PhaseKeepsSlot), and the merge's close is what ends the issue.
+		// merger's own phase, which holds no slot (record.PhaseKeepsSlot), and the merge's close
+		// is what ends the issue.
 		issue.Phase, issue.Status, issue.DispatchStatus = phase.Done, "done", "done"
 		return records.PutIssue(ctx, tx, *issue)
 	}); err != nil {

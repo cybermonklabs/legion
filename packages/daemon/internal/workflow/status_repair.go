@@ -101,7 +101,7 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 		// to repair for a write that never left the outbox.
 		if issue.Status != want {
 			issue.Status = want
-			if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+			if err := e.WriteIssue(ctx, tx, issue); err != nil {
 				return err
 			}
 		}
