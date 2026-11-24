@@ -63,8 +63,8 @@ run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses envoy, naming its file" \
   "$(has_line "UNKNOWN: envoy: ${deployment} envoy/Pulumi.yaml declares no project name, so no key of envoy/Pulumi.prod.yaml is known to be its own")"
-check "refuses dispatch, naming its file" \
-  "$(has_line "UNKNOWN: dispatch: cannot read ${deployment} dispatch/Pulumi.yaml: gh: Not Found (HTTP 404)")"
+check "refuses dispatch, naming its file, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: dispatch: cannot read ${deployment} dispatch/Pulumi.yaml: gh failed (HTTP 404); its own words are kept in KEPT")"
 check "never reads envoy's pin" "$(lacks "$envoy_pin" "$calls")"
 check "never reads dispatch's pin" "$(lacks "$dispatch_listener_pin" "$calls")"
 check "prints one line for each refused pin" "$(is "$(grep -cE '^UNKNOWN: (envoy|dispatch): ' "$out")" 2)"
@@ -81,8 +81,10 @@ compare "$ahead_rev" ahead 0
 compare "$identical_rev" identical 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the disagreement" \
-  "$(has_line "UNKNOWN: envoy platforms disagree: linux/amd64 names ${legion} at ${ahead_rev}, linux/arm64 names ${legion} at ${identical_rev}")"
+check "refuses UNKNOWN naming the disagreement, the platforms' labels kept" \
+  "$(has_kept_line "UNKNOWN: envoy platforms disagree on the source or revision they name; their labels are kept in KEPT")"
+check "the kept file holds what each platform names" \
+  "$(is "$(kept_text "UNKNOWN: envoy platforms disagree")" "linux/amd64 names ${legion} at ${ahead_rev}, linux/arm64 names ${legion} at ${identical_rev}")"
 check "the verdict is never GATE OPEN" "$(lacks "GATE OPEN" "$out")"
 
 echo "case: --listeners, an index of attestation entries alone"
@@ -168,8 +170,8 @@ compare "$ahead_rev" ahead 0
 compare "$other_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the record it could not read" \
-  "$(has_line "UNKNOWN: envoy: built from ${old_name}, and the repository renames of ${deployment}'s Legion projects could not be read: cannot read ${deployment} legion/Pulumi.prod.yaml: gh: Not Found (HTTP 404)")"
+check "refuses UNKNOWN naming the record it could not read, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: envoy: built from ${old_name}, and the repository renames of ${deployment}'s Legion projects could not be read: cannot read ${deployment} legion/Pulumi.prod.yaml: gh failed (HTTP 404); its own words are kept in KEPT")"
 check "makes no compare call for its revision" "$(lacks "...${other_rev}" "$calls")"
 
 echo "case: --listeners, a pin built under the old name when legion/Pulumi.yaml is missing"
@@ -185,7 +187,7 @@ compare "$other_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the file it could not read, never a guessed record" \
-  "$(has_line "UNKNOWN: envoy: built from ${old_name}, and the repository renames of ${deployment}'s Legion projects could not be read: cannot read ${deployment} legion/Pulumi.yaml: gh: Not Found (HTTP 404)")"
+  "$(has_kept_line "UNKNOWN: envoy: built from ${old_name}, and the repository renames of ${deployment}'s Legion projects could not be read: cannot read ${deployment} legion/Pulumi.yaml: gh failed (HTTP 404); its own words are kept in KEPT")"
 check "makes no compare call for its revision" "$(lacks "...${other_rev}" "$calls")"
 check "still reads and compares envoy-cluster" "$(has_line "PASS: envoy-cluster runs ${ahead_rev} (ahead of ${commit})")"
 
@@ -349,11 +351,14 @@ compare "abcdef" ahead 0
 compare "${ahead_rev}a" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses upper-case hex" \
-  "$(has_line "UNKNOWN: envoy: ${envoy_pin} names revision AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, which is no commit id")"
-check "refuses 6 hex digits" "$(has_line "UNKNOWN: envoy-cluster: ${cluster_pin} names revision abcdef, which is no commit id")"
-check "refuses 41 hex digits" "$(has_line "UNKNOWN: dispatch: ${dispatch_listener_pin} names revision ${ahead_rev}a, which is no commit id")"
-check "refuses a ref name" "$(has_line "UNKNOWN: dispatch-server: ${server_pin} names revision main, which is no commit id")"
+check "refuses upper-case hex, kept" \
+  "$(has_kept_line "UNKNOWN: envoy: ${envoy_pin} names a revision that is no commit id, kept in KEPT")"
+check "the kept file holds that revision" "$(is "$(kept_text "UNKNOWN: envoy: ")" AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA)"
+check "refuses 6 hex digits, kept" "$(has_kept_line "UNKNOWN: envoy-cluster: ${cluster_pin} names a revision that is no commit id, kept in KEPT")"
+check "the kept file holds those 6 digits" "$(is "$(kept_text "UNKNOWN: envoy-cluster: ")" abcdef)"
+check "refuses 41 hex digits, kept" "$(has_kept_line "UNKNOWN: dispatch: ${dispatch_listener_pin} names a revision that is no commit id, kept in KEPT")"
+check "refuses a ref name, kept" "$(has_kept_line "UNKNOWN: dispatch-server: ${server_pin} names a revision that is no commit id, kept in KEPT")"
+check "the kept file holds the ref name" "$(is "$(kept_text "UNKNOWN: dispatch-server: ")" main)"
 check "makes no compare call" "$(lacks "/compare/" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 

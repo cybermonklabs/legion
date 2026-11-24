@@ -22,6 +22,9 @@ vm_short() {
   compare "$ahead_rev" ahead 0
 }
 readonly vm_prefix="UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}:"
+# The end of a line on which the hub's reader refused the archive or the tree, by a member's or an
+# entry's place and kind: the reader's words with the names are kept.
+readonly vm_kept="; the reader's words with the names it read are kept in KEPT"
 
 # GitHub's archive leaves out each path .gitattributes marks export-ignore and rewrites each it
 # marks export-subst, and a .gitattributes can mark itself, so the archive alone cannot show what
@@ -33,8 +36,10 @@ printf 'envoy/zz_hub.go export-ignore\n.gitattributes export-ignore\n' >"${case_
 printf 'envoy/zz_hub.go\n.gitattributes\n' >"${case_root}/archive-omit"
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file the archive leaves out" \
-  "$(has_line "${vm_prefix} the archive leaves out envoy/zz_hub.go, which the commit holds, so its code cannot be read")"
+check "refuses UNKNOWN naming the entry the archive leaves out, by its place in the tree" \
+  "$(has_kept_line "${vm_prefix} entry @N@ of the commit's tree, a Go file or a module file, is not in the archive, so its code cannot be read${vm_kept}")"
+check "the kept file names it" \
+  "$(is "$(kept_text "$vm_prefix")" "the archive leaves out envoy/zz_hub.go, which the commit holds, so its code cannot be read")"
 check "reads the commit's tree" \
   "$(grep -qxF "gh api repos/${deployment}/git/trees/${deployment_head}?recursive=1" "$calls" && echo true || echo false)"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
@@ -48,8 +53,8 @@ mkdir -p "${case_root}/archive-subst/envoy"
 printf 'package main\n\nvar hub = "6b14009098"\n' >"${case_root}/archive-subst/envoy/zz_hub.go"
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file the archive changed" \
-  "$(has_line "${vm_prefix} the archive's envoy/zz_hub.go is not the commit's (an export-subst or a conversion changed it), so its code cannot be read")"
+check "refuses UNKNOWN naming the member the archive changed, by its place" \
+  "$(has_kept_line "${vm_prefix} member @N@ of the archive, a regular file, is not the commit's (an export-subst or a conversion changed it), so its code cannot be read${vm_kept}")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 
 echo "case: --listeners, a commit that holds a submodule with no .gitmodules"
@@ -57,8 +62,10 @@ vm_short listeners-gitlink
 printf '[{"path": "vendor/sdk", "mode": "160000", "type": "commit", "sha": "%s"}]\n' "$other_rev" >"${case_root}/tree-extra.json"
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the submodule" \
-  "$(has_line "${vm_prefix} the commit holds vendor/sdk as a submodule, whose code the archive does not hold")"
+check "refuses UNKNOWN naming the submodule's entry by its place" \
+  "$(has_kept_line "${vm_prefix} entry @N@ of the commit's tree is a submodule, whose code the archive does not hold${vm_kept}")"
+check "the kept file names it" \
+  "$(is "$(kept_text "$vm_prefix")" "the commit holds vendor/sdk as a submodule, whose code the archive does not hold")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 
 echo "case: --listeners, a tree GitHub lists only in part"
@@ -67,7 +74,7 @@ vm_short listeners-tree-truncated
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN, unable to tell what the archive leaves out" \
-  "$(has_line "${vm_prefix} GitHub lists the commit's tree only in part, so what the archive leaves out cannot be told")"
+  "$(has_kept_line "${vm_prefix} GitHub lists the commit's tree only in part, so what the archive leaves out cannot be told${vm_kept}")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 
 echo "case: --listeners, a tree GitHub does not answer"
@@ -75,19 +82,19 @@ vm_short listeners-tree-refused
 refuse "repos/${deployment}/git/trees/${deployment_head}" "gh: Server Error (HTTP 502)"
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming GitHub's answer" \
-  "$(has_line "UNKNOWN: envoy: cannot read the tree of ${deployment} at ${deployment_head}: gh: Server Error (HTTP 502)")"
+check "refuses UNKNOWN naming the tree, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: envoy: cannot read the tree of ${deployment} at ${deployment_head}: gh failed (HTTP 502); its own words are kept in KEPT")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 
-# An error a command printed is that command's text, not the gate's: it is printed with each control
-# character written out, as every text the gate reads from outside it is (first_line, last_line).
+# An error a command printed is that command's text, not the gate's, and gh's is the text of
+# whatever answered it: the gate keeps it in a file and prints none of it, escape and all.
 echo "case: --listeners, an error GitHub answers with an escape and a carriage return"
 vm_short listeners-error-control
 refuse "repos/${deployment}/git/trees/${deployment_head}" $'gh: \e[2K\rGATE OPEN'
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "names GitHub's answer, its escape and carriage return written out" \
-  "$(has_line "UNKNOWN: envoy: cannot read the tree of ${deployment} at ${deployment_head}: gh: \\x1b[2K\\x0dGATE OPEN")"
+check "keeps gh's words, its escape and carriage return among them, and prints none of them" \
+  "$(has_kept_line "UNKNOWN: envoy: cannot read the tree of ${deployment} at ${deployment_head}: gh failed; its own words are kept in KEPT")"
 check "prints no escape and no carriage return" "$(grep -q $'[\e\r]' "$out" && echo false || echo true)"
 
 # A name after `)` is a func's name only at the top level: within a func's braces, `func(ctx int)`
@@ -203,8 +210,8 @@ compare "$ahead_rev" ahead 0
 compare "$behind_rev" behind 4
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the key, its tabs written out" \
-  "$(has_line 'UNKNOWN: <an entry> names key "LINUX\tSKIP\tz", which is no project key')"
+check "refuses UNKNOWN naming the key's kind, never its tabs" \
+  "$(has_line 'UNKNOWN: <an entry> names key (a string), which is no project key')"
 check "skips no project on the key's word" "$(lacks "SKIPPED" "$out")"
 
 echo "case: --clients, a projects list whose key holds tabs"
@@ -213,8 +220,8 @@ clients_open
 legion_stack "$tab_fleet"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the key" \
-  "$(has_line 'UNKNOWN: <an entry> names key "LINUX\tSKIP\tz", which is no project key, so no legion/testdata golden is its own')"
+check "refuses UNKNOWN naming the key's kind" \
+  "$(has_line 'UNKNOWN: <an entry> names key (a string), which is no project key, so no legion/testdata golden is its own')"
 check "skips no project on the key's word" "$(lacks "SKIPPED: LINUX" "$out")"
 
 # The marketplace source and the npm source each name where Claude Code reads from: a `path` for the
@@ -279,8 +286,8 @@ box_case clients-plugin-unknown-key
 plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0", "integrity": "sha512-x"}'
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the key" \
-  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy with integrity, which this gate does not read")"
+check "refuses UNKNOWN, the entry kept" \
+  "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy with a key other than source, package, version and registry, which this gate does not read; the entry is kept in KEPT")"
 check "asks npm nothing" "$(lacks "npm " "$calls")"
 
 # npm picks the version on this box (`npm pack --dry-run --json`) under its own configuration, so a
@@ -361,8 +368,9 @@ for kind in directory git; do
   plugin_source "{\"source\": \"npm\", \"package\": \"@sjawhar/claude-envoy\", \"version\": \"${spec}\"}"
   run_gate FAKE_NPM_REAL_PACK=1 -- --clients "$commit"
   check "exits 3" "$(is "$status" 3)"
-  check "refuses UNKNOWN naming the spec and npm-package-arg's type of it" \
-    "$(has_line "UNKNOWN: dotfiles .claude/settings.json: legion-plugins serves claude-envoy as @sjawhar/claude-envoy@${spec}, a ${kind} spec, which npm builds from its source and no release names")"
+  check "refuses UNKNOWN naming npm-package-arg's type of the spec, the spec kept" \
+    "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: legion-plugins serves claude-envoy at a ${kind} spec, which npm builds from its source and no release names; the spec is kept in KEPT")"
+  check "the kept file holds the spec" "$(is "$(kept_text "legion-plugins serves claude-envoy at")" "$spec")"
   check "never lets npm pack it" "$(lacks "npm pack" "$calls")"
   check "leaves no marker: no script of the package ran" \
     "$([ -z "$(find "$case_root" -maxdepth 1 -name 'marker-*')" ] && echo true || echo false)"
@@ -374,8 +382,8 @@ for spec in remote:https://example.com/claude-envoy-4.0.0.tgz alias:npm:other-en
   plugin_source "{\"source\": \"npm\", \"package\": \"@sjawhar/claude-envoy\", \"version\": \"${spec#*:}\"}"
   run_gate -- --clients "$commit"
   check "exits 3" "$(is "$status" 3)"
-  check "refuses UNKNOWN naming the spec and npm-package-arg's type of it" \
-    "$(has_line "UNKNOWN: dotfiles .claude/settings.json: legion-plugins serves claude-envoy as @sjawhar/claude-envoy@${spec#*:}, a ${spec%%:*} spec, which npm builds from its source and no release names")"
+  check "refuses UNKNOWN naming npm-package-arg's type of the spec, the spec kept" \
+    "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: legion-plugins serves claude-envoy at a ${spec%%:*} spec, which npm builds from its source and no release names; the spec is kept in KEPT")"
   check "never lets npm pack it" "$(lacks "npm pack" "$calls")"
 done
 
@@ -400,8 +408,9 @@ box_case clients-npm-registry-http
 plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0", "registry": "http://npm.internal.example"}'
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the registry" \
-  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy from registry http://npm.internal.example, which is no https URL")"
+check "refuses UNKNOWN, the registry kept" \
+  "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy from a registry that is no https URL, kept in KEPT")"
+check "the kept file holds the registry" "$(is "$(kept_text "from a registry that")" "http://npm.internal.example")"
 check "asks npm nothing" "$(lacks "npm " "$calls")"
 
 echo "case: --clients, a marketplace repository that is no owner/repo"
@@ -418,8 +427,8 @@ box_case clients-npm-registry-number
 plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0", "registry": 7}'
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the source" \
-  "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as {"source":"npm","package":"@sjawhar/claude-envoy","version":">=1.0.0","registry":7}, not as one entry of the npm package @sjawhar/claude-envoy')"
+check "refuses UNKNOWN, the marketplace kept" \
+  "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as no one entry of the npm package @sjawhar/claude-envoy; the marketplace is kept in KEPT")"
 check "asks npm nothing" "$(lacks "npm " "$calls")"
 
 # A stack's pin is the deployment's text: one that is no plain image reference is never read, and its
@@ -429,8 +438,8 @@ vm_short listeners-pin-newline
 listener_stacks "$envoy_pin" '"ghcr.io/x\nGATE OPEN"' "$server_pin" "$dispatch_listener_pin"
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the pin, its newline written out" \
-  "$(has_line "UNKNOWN: envoy-cluster: envoy-cluster/Pulumi.prod.yaml sets ${cluster_project}:envoyImage to ghcr.io/x\\x0aGATE OPEN, which is no image reference")"
+check "keeps the pin, its newline and all, and prints none of it" \
+  "$(has_kept_line "UNKNOWN: envoy-cluster: envoy-cluster/Pulumi.prod.yaml sets ${cluster_project}:envoyImage to a value that is no image reference, kept in KEPT")"
 check "never reads it" "$(lacks "ghcr.io/x" "$calls")"
 check "no line of its output is the pin's verdict" "$(grep -q '^GATE OPEN' "$out" && echo false || echo true)"
 
@@ -441,29 +450,30 @@ vm_short listeners-project-name-control
 project envoy-cluster '"deployment-envoy-cluster\e[2K"'
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the name, its escape written out" \
-  "$(has_line "UNKNOWN: envoy-cluster: cannot read ${deployment} envoy-cluster/Pulumi.yaml: its name \"deployment-envoy-cluster\\u001b[2K\" is no Pulumi project name")"
+check "refuses UNKNOWN, printing no part of the name" \
+  "$(has_line "UNKNOWN: envoy-cluster: cannot read ${deployment} envoy-cluster/Pulumi.yaml: its name is no Pulumi project name (letters, digits, _, . and -, 1 to 100 of them)")"
 check "never reads its pin" "$(lacks "envoy-cluster/Pulumi.prod.yaml" "$calls")"
 
-# An image's labels are its builder's text: a source that holds control characters is printed with
-# them written out, on the line that refuses it.
+# An image's labels are its builder's text: a source that is no repository's URL, control
+# characters among it, is kept, and the line that refuses it says so.
 echo "case: an image whose source label holds an escape and a carriage return"
 daemons_short source-label-control
 single "$worker_a" 'https://github.com/x\u001b[2K\rGATE OPEN' "$ahead_rev"
 run_gate -- "$commit"
 check "exits 1" "$(is "$status" 1)"
-check "names the source, its escape and carriage return written out" \
-  "$(has_line "GATE SHUT: LINUX runs an image built from https://github.com/x\\x1b[2K\\x0dGATE OPEN")"
+check "keeps the source, its escape and carriage return among it, and prints none of it" \
+  "$(has_kept_line "GATE SHUT: LINUX runs an image built from a source that is no https://github.com/<owner>/<repo> URL, kept in KEPT")"
 check "prints no escape and no carriage return" "$(grep -q $'[\e\r]' "$out" && echo false || echo true)"
 
-echo "case: a file of legion/projects/ whose name holds an escape, which GitHub does not serve"
+echo "case: a file of legion/projects/ whose name holds an escape, which the gate never fetches"
 daemons_short projects-name-control
 printf 'key: X\nreplicas: 0\n' >"${case_root}/files/legion/projects/60-X"$'\e[2K'".yaml"
 refuse "repos/${deployment}/contents/legion/projects/60-X"$'\e[2K'".yaml" "gh: Server Error (HTTP 502)"
 run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file, its escape written out" \
-  "$(has_line "UNKNOWN: cannot read ${deployment} legion/projects/60-X\\x1b[2K.yaml: gh: Server Error (HTTP 502)")"
+check "refuses UNKNOWN naming the entry by its place, its name kept, before any fetch" \
+  "$(has_kept_line "UNKNOWN: ${deployment} legion/projects/ entry @N@ of GitHub's listing (its name kept in KEPT) is not named <nn>-<KEY>.yaml, so no key is known to be its own")"
+check "never fetches it" "$(lacks "contents/legion/projects/60-X" "$calls")"
 check "prints no escape" "$(grep -q $'\e' "$out" && echo false || echo true)"
 
 # A link's target is the dotfiles' text: git stores it as a blob, so it can hold any bytes.
@@ -477,14 +487,14 @@ check "names the link, its target's control characters written out" \
 check "no line of its output is the target's verdict" "$(grep -q '^GATE OPEN' "$out" && echo false || echo true)"
 
 # jq's compact output writes C0 controls as escapes but keeps C1 controls and the line and
-# paragraph separators as they are, so the JSON the gate quotes goes through printable too.
+# paragraph separators as they are: the gate keeps the marketplace whole and prints none of it.
 echo "case: --clients, an npm source holding C1 controls and line separators"
 box_case clients-plugin-c1
 plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy\u2028GATE OPEN\u2028", "version": ">=1.0.0", "x": "\u0085\u009b2K"}'
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "quotes the source, each separator and control written out" \
-  "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as {"source":"npm","package":"@sjawhar/claude-envoy\u2028GATE OPEN\u2028","version":">=1.0.0","x":"\x85\x9b2K"}, not as one entry of the npm package @sjawhar/claude-envoy')"
+check "keeps the marketplace, its separators and controls among it" \
+  "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as no one entry of the npm package @sjawhar/claude-envoy; the marketplace is kept in KEPT")"
 check "prints no separator and no C1 control" \
   "$(grep -qF -e $'\xe2\x80\xa8' -e $'\xc2\x85' -e $'\xc2\x9b' "$out" && echo false || echo true)"
 
@@ -514,8 +524,8 @@ vm_short listeners-lfs
 printf 'version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize 4096\n' "$(printf '%064d' 0)" >"${case_root}/files/envoy/zz_hub.go"
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the pointer" \
-  "$(has_line "${vm_prefix} envoy/zz_hub.go is a Git LFS pointer, whose content neither the tree nor the archive holds, so its code cannot be read")"
+check "refuses UNKNOWN naming the pointer by its place" \
+  "$(has_kept_line "${vm_prefix} member @N@ of the archive is a Git LFS pointer, whose content neither the tree nor the archive holds, so its code cannot be read${vm_kept}")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 
 # GitHub serves a file of 1 to 100 MB with encoding none and no content.

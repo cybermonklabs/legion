@@ -69,10 +69,16 @@ readonly dispatch_listener_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e004"
 #     FAKE_ROOT/marketplaces/<owner>/<repo>.json; any other path of such a repository, read raw:
 #     FAKE_ROOT/marketplaces/<owner>/<repo>/<path>.
 # An endpoint with a file at FAKE_ROOT/refuse/<endpoint with / as _> fails with that file's text.
-# Any other call is refused as unexpected.
+# `gh auth token` prints FAKE_GH_TOKEN, the token the gate's output is filtered for, and fails as
+# gh does for no login when it is empty. Any other call is refused as unexpected.
 cat >"${temporary_dir}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf 'gh %s\n' "$*" >>"${FAKE_CALLS:?}"
+if [ "$*" = "auth token" ]; then
+  [ -n "${FAKE_GH_TOKEN:-}" ] || { echo "no oauth token found for github.com" >&2; exit 1; }
+  printf '%s\n' "$FAKE_GH_TOKEN"
+  exit 0
+fi
 [ "$1" = api ] || { echo "fake gh: unexpected command: $*" >&2; exit 2; }
 shift
 endpoint=""
@@ -108,6 +114,8 @@ case "$path" in
     if [ -f "${FAKE_ROOT}/encoding-none" ] && grep -qxF -- "${path#repos/"${FAKE_DEPLOYMENT}"/contents/}" "${FAKE_ROOT}/encoding-none"; then
       encoding=none
     fi
+    # FAKE_ROOT/encoding/<path with / as _> holds an encoding GitHub names no file by, for a case.
+    [ ! -f "${FAKE_ROOT}/encoding/${path//\//_}" ] || encoding=$(<"${FAKE_ROOT}/encoding/${path//\//_}")
     case "$query" in
       .content) ;;
       ".encoding, .content") echo "$encoding" ;;
@@ -242,6 +250,8 @@ fi
 [ "$1 $2 $3" = "buildx imagetools inspect" ] && [ "$5" = --format ] || { echo "fake docker: unexpected command: $*" >&2; exit 2; }
 dir="${FAKE_ROOT:?}/images/${4//[\/:@]/_}"
 [ -f "$dir/mediatype" ] || { echo "ERROR: $4: not found" >&2; exit 1; }
+# FAKE_DOCKER_SAYS is what a registry answering in its own place has docker say, for a case.
+[ -z "${FAKE_DOCKER_SAYS:-}" ] || { printf '%s\n' "$FAKE_DOCKER_SAYS" >&2; exit 1; }
 mediatype=$(<"$dir/mediatype")
 case "$6" in
   '{{json .Manifest.MediaType}}') printf '%s' "$mediatype" ;;
@@ -349,12 +359,13 @@ gate_under_test="$script"
 
 # new_case starts a scenario of its own: no stack file, no image, no comparison, no release tag and
 # an empty HOME yet, each stack's Pulumi.yaml declaring its default project name, and an envoy/
-# program that declares the VM hub, as every deployment did before the hub's removal.
+# program that declares the VM hub, as every deployment did before the hub's removal. The case's tmp/
+# is the gate's TMPDIR, where it leaves the words it keeps (has_kept_line and kept_text read them).
 new_case() {
   case_root="${temporary_dir}/case-$1"
   mkdir -p "${case_root}/files/legion" "${case_root}/files/envoy" "${case_root}/files/envoy-cluster" \
     "${case_root}/files/dispatch" "${case_root}/images" "${case_root}/compare" "${case_root}/tags" \
-    "${case_root}/refuse" "${case_root}/marketplaces" "${case_root}/npm" "${case_root}/home"
+    "${case_root}/refuse" "${case_root}/marketplaces" "${case_root}/npm" "${case_root}/home" "${case_root}/tmp"
   project legion "$legion_project"
   project envoy "$envoy_project"
   project envoy-cluster "$cluster_project"
@@ -569,8 +580,10 @@ listener_stacks() {
 
 # run_bare [--unset <variable>]... [env assignments...] -- [gate arguments...]: runs the gate in
 # the current case with exactly the arguments given, HOME the case's own and no CLAUDE_CONFIG_DIR
-# of the machine running this test unless an assignment gives one, each --unset variable taken out
-# of its environment last; sets $status.
+# of the machine running this test unless an assignment gives one, TMPDIR the case's tmp/, gh's token
+# harness_token and no token variable of the machine's (an assignment may give either), each --unset
+# variable taken out of its environment last; sets $status.
+readonly harness_token="fake-gh-token-Qz7Xv9LmWp3R"
 run_bare() {
   local unsets=() assignments=()
   while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
@@ -587,8 +600,9 @@ run_bare() {
   : >"$err"
   : >"$calls"
   status=0
-  env -u CLAUDE_CONFIG_DIR PATH="${temporary_dir}/bin:${PATH}" HOME="${case_root}/home" FAKE_CALLS="$calls" \
-    FAKE_ROOT="$case_root" FAKE_DEPLOYMENT="$deployment" FAKE_HEAD="$deployment_head" "${assignments[@]}" \
+  env -u CLAUDE_CONFIG_DIR -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+    PATH="${temporary_dir}/bin:${PATH}" HOME="${case_root}/home" TMPDIR="${case_root}/tmp" FAKE_CALLS="$calls" \
+    FAKE_ROOT="$case_root" FAKE_DEPLOYMENT="$deployment" FAKE_HEAD="$deployment_head" FAKE_GH_TOKEN="$harness_token" "${assignments[@]}" \
     env "${unsets[@]}" bash "$gate_under_test" "$@" >"$out" 2>"$err" || status=$?
 }
 # run_gate [--unset <variable>]... [env assignments...] -- [gate arguments...]: run_bare with
@@ -646,3 +660,37 @@ has_line() { grep -qxF -- "$1" "$out" && echo true || echo false; }
 lacks() { grep -qF -- "$1" "$2" && echo false || echo true; }
 last_line_is() { [ "$(tail -n 1 "$out")" = "$1" ] && echo true || echo false; }
 is() { [ "$1" = "$2" ] && echo true || echo false; }
+# The gate keeps a word of another party's in a file of its words directory under the case's tmp/
+# and names the file in the line (daemon-release-gate.sh: keep, said). A line a case expects writes
+# each such file as KEPT, and a place in an archive or a tree (member 10) as @N@, which the order of
+# the fixture's files decides.
+# has_kept_line <line>: whether the gate printed <line>, each KEPT in it a file of the case's words
+# directory and each @N@ a number.
+has_kept_line() {
+  python3 - "$1" "$out" "${case_root}/tmp/daemon-release-gate-words." <<'PY'
+import re
+import sys
+
+line, out, prefix = sys.argv[1:4]
+kept = re.escape(prefix) + r"[A-Za-z0-9]+/[a-z0-9-]+\.[A-Za-z0-9]+"
+pattern = re.compile(kept.join("[0-9]+".join(re.escape(bit) for bit in part.split("@N@")) for part in line.split("KEPT")))
+with open(out, encoding="utf-8", errors="surrogateescape") as handle:
+    print("true" if any(pattern.fullmatch(text.rstrip("\n")) for text in handle) else "false")
+PY
+}
+# kept_text <text>: what the first file the gate names in the first line holding <text> keeps, or
+# nothing; a twin reads it to show the words the line left out were the other party's.
+kept_text() {
+  local path
+  path=$(grep -F -- "$1" "$out" | head -n 1 | grep -oE "${case_root}/tmp/daemon-release-gate-words\.[A-Za-z0-9]+/[a-z0-9-]+\.[A-Za-z0-9]+" | head -n 1) || true
+  [ -z "$path" ] || cat -- "$path"
+}
+# holds_run <text> <credential>: whether <text> holds a run of 8 characters of <credential>, the
+# record rule's run (redacttest.Piece).
+holds_run() {
+  local at
+  for ((at = 0; at + 8 <= ${#2}; at++)); do
+    [[ $1 != *"${2:at:8}"* ]] || return 0
+  done
+  return 1
+}

@@ -37,8 +37,9 @@ box_case versions-npm-build
 printf '4.0.0+build.1\n' >"${case_root}/npm/${npm_answer}"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the version, which no release tag carries" \
-  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: claude-envoy 4.0.0+build.1 is no exact release version")"
+check "refuses UNKNOWN, the version kept, which no release tag carries" \
+  "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: claude-envoy names a version that is no exact release version, kept in KEPT")"
+check "the kept file holds the version" "$(is "$(kept_text "UNKNOWN: dotfiles .claude/settings.json: ")" "4.0.0+build.1")"
 
 # Each answer below is npm's whole answer, printed as it is (`.raw`): none is the one package named
 # @sjawhar/claude-envoy that `npm pack --dry-run --json` answers, so the gate reads it as no answer.
@@ -64,8 +65,10 @@ echo "case: --clients, npm cannot be reached"
 box_case versions-npm-down
 run_gate FAKE_NPM_DOWN=1 -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming npm's answer" \
-  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm cannot resolve @sjawhar/claude-envoy@>=1.0.0: npm error code ENOTFOUND")"
+check "refuses UNKNOWN, npm's words kept" \
+  "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: npm cannot resolve @sjawhar/claude-envoy@>=1.0.0: npm failed; its own words are kept in KEPT")"
+check "the kept file holds npm's words" \
+  "$(grep -qF "npm error code ENOTFOUND" <<<"$(kept_text "npm cannot resolve")" && echo true || echo false)"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: --clients, a marketplace with two claude-envoy entries"
@@ -74,8 +77,8 @@ printf '{"name": "legion-plugins", "plugins": [{"name": "claude-envoy", "source"
   >"${case_root}/marketplaces/example-org/plugins.json"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN, choosing neither" \
-  "$(grep -q '^UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as .*2 entries name claude-envoy' "$out" && echo true || echo false)"
+check "refuses UNKNOWN, choosing neither, the marketplace kept" \
+  "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as no one entry of the npm package @sjawhar/claude-envoy; the marketplace is kept in KEPT")"
 check "asks npm nothing" "$(lacks "npm " "$calls")"
 
 echo "case: --clients, a marketplace that serves claude-envoy from no npm package"
@@ -84,16 +87,19 @@ printf '{"name": "legion-plugins", "plugins": [{"name": "claude-envoy", "source"
   >"${case_root}/marketplaces/example-org/plugins.json"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the source" \
-  "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as {"source":"github","repo":"example-org/claude-envoy"}, not as one entry of the npm package @sjawhar/claude-envoy')"
+check "refuses UNKNOWN, the marketplace kept, not its source printed" \
+  "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as no one entry of the npm package @sjawhar/claude-envoy; the marketplace is kept in KEPT")"
+check "the kept marketplace holds the source it served" \
+  "$(grep -qF 'example-org/claude-envoy' <<<"$(kept_text "UNKNOWN: dotfiles .claude/settings.json: ")" && echo true || echo false)"
 
 echo "case: --clients, a developer-box pin that is no exact version"
 box_case versions-pin-range
 dotfiles "^17.40.0"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the pin" \
-  "$(has_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy ^17.40.0 is no exact release version")"
+check "refuses UNKNOWN, the pin kept" \
+  "$(has_kept_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy names a version that is no exact release version, kept in KEPT")"
+check "the kept file holds the pin" "$(is "$(kept_text "UNKNOWN: dotfiles omp/plugins/package.json: ")" "^17.40.0")"
 
 echo "case: --clients, a pin with a leading zero in its pre-release"
 box_case versions-pin-leading-zero
@@ -101,8 +107,8 @@ dotfiles "17.41.0-01"
 tag "pi-envoy-v17.41.0-01" "$ahead_rev"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the pin" \
-  "$(has_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy 17.41.0-01 is no exact release version")"
+check "refuses UNKNOWN, the pin kept" \
+  "$(has_kept_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy names a version that is no exact release version, kept in KEPT")"
 
 echo "case: --clients, a pre-release pin a release tag names"
 box_case versions-pre-release
@@ -118,16 +124,18 @@ box_case versions-no-tag
 dotfiles "17.99.0"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the tag and GitHub's answer" \
-  "$(has_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy 17.99.0 has no release tag pi-envoy-v17.99.0 in cybermonklabs/legion: gh: No commit found for SHA: refs/tags/pi-envoy-v17.99.0 (HTTP 422)")"
+check "refuses UNKNOWN naming the tag, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy 17.99.0 has no release tag pi-envoy-v17.99.0 in cybermonklabs/legion: gh failed (HTTP 422); its own words are kept in KEPT")"
+check "the kept file holds gh's words" \
+  "$(is "$(kept_text "UNKNOWN: dotfiles omp/plugins/package.json: ")" "gh: No commit found for SHA: refs/tags/pi-envoy-v17.99.0 (HTTP 422)")"
 
 echo "case: --clients, a release tag GitHub answers with no commit id"
 box_case versions-tag-not-commit
 tag pi-envoy-v17.40.0 "main"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the answer, never comparing it" \
-  "$([ "$(has_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy 17.40.0 has no release tag pi-envoy-v17.40.0 in cybermonklabs/legion: GitHub answered main, which is no commit id")" = true ] && lacks "...main" "$calls" || echo false)"
+check "refuses UNKNOWN, the answer kept, never comparing it" \
+  "$([ "$(has_kept_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy 17.40.0 has no release tag pi-envoy-v17.40.0 in cybermonklabs/legion: GitHub answered something that is no commit id, kept in KEPT")" = true ] && lacks "...main" "$calls" || echo false)"
 
 # What the marketplace and the dotfiles name is their text, not the gate's: it is printed with each
 # control character written as \x<hh>, so neither can start a line of the gate's output.
@@ -137,8 +145,8 @@ printf '{"name": "legion-plugins", "plugins": [{"name": "claude-envoy", "source"
   >"${case_root}/marketplaces/example-org/plugins.json"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "names the range, its newline written out" \
-  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm cannot resolve @sjawhar/claude-envoy@x\\x0aGATE OPEN: npm error code E404")"
+check "keeps the range, its newline and all, and prints none of it" \
+  "$(has_kept_line "UNKNOWN: dotfiles .claude/settings.json: npm cannot resolve @sjawhar/claude-envoy@<the version kept in KEPT>: npm failed; its own words are kept in KEPT")"
 check "no line of its output is the range's verdict" "$(grep -q '^GATE OPEN' "$out" && echo false || echo true)"
 
 echo "case: --clients, a dotfiles pin that holds a newline and a verdict"
@@ -146,6 +154,6 @@ box_case versions-pin-newline
 dotfiles '17.40.0\nGATE OPEN'
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "names the pin, its newline written out" \
-  "$(has_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy 17.40.0\\x0aGATE OPEN is no exact release version")"
+check "keeps the pin, its newline and all, and prints none of it" \
+  "$(has_kept_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy names a version that is no exact release version, kept in KEPT")"
 check "no line of its output is the pin's verdict" "$(grep -q '^GATE OPEN' "$out" && echo false || echo true)"

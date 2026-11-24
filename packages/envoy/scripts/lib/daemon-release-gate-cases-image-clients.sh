@@ -71,8 +71,10 @@ clients_open
 worker_image "$lean_image" "$ahead_rev" no-claude-envoy
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the image and the package it could not find" \
-  "$(has_line "UNKNOWN: LINUX image: ${lean_image} carries no @sjawhar/claude-envoy at /opt/legion/claude-envoy/package.json: cat: /opt/legion/claude-envoy/package.json: No such file or directory")"
+check "refuses UNKNOWN naming the image and the package it could not find, the command's words kept" \
+  "$(has_kept_line "UNKNOWN: LINUX image: ${lean_image} carries no @sjawhar/claude-envoy at /opt/legion/claude-envoy/package.json: cat failed; its own words are kept in KEPT")"
+check "the kept file holds the command's words" \
+  "$(is "$(kept_text "UNKNOWN: LINUX image: ")" "cat: /opt/legion/claude-envoy/package.json: No such file or directory")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 # Control: a gate that reads pi-envoy alone in an image opens on the fixture above, whose image
@@ -97,8 +99,8 @@ clients_open
 worker_image "$infra_image" "$ahead_rev" no-pi-envoy
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the package it could not find" \
-  "$(has_line "UNKNOWN: INFRA image: ${infra_image} carries no @sjawhar/pi-envoy at /opt/legion/pi-envoy/package.json: cat: /opt/legion/pi-envoy/package.json: No such file or directory")"
+check "refuses UNKNOWN naming the package it could not find, the command's words kept" \
+  "$(has_kept_line "UNKNOWN: INFRA image: ${infra_image} carries no @sjawhar/pi-envoy at /opt/legion/pi-envoy/package.json: cat failed; its own words are kept in KEPT")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: --clients, an image whose client root holds another package"
@@ -108,8 +110,9 @@ printf '{"name": "@example-org/claude-plugin", "version": "1.0.0"}\n' \
   >"$(image_dir "$lean_image")/fs/opt/legion/claude-envoy/package.json"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the package it found" \
-  "$(has_line "UNKNOWN: LINUX image: ${lean_image}'s /opt/legion/claude-envoy/package.json names @example-org/claude-plugin, not @sjawhar/claude-envoy")"
+check "refuses UNKNOWN saying it found another package, the manifest kept" \
+  "$(has_kept_line "UNKNOWN: LINUX image: ${lean_image}'s /opt/legion/claude-envoy/package.json names another package, not @sjawhar/claude-envoy; the manifest is kept in KEPT")"
+check "the kept manifest names the package it found" "$(grep -qF '@example-org/claude-plugin' <<<"$(kept_text "UNKNOWN: LINUX image: ")" && echo true || echo false)"
 
 echo "case: --clients, an image whose legion names no commit"
 new_case clients-no-commit
@@ -117,8 +120,9 @@ clients_open
 worker_image "$lean_image" "$ahead_rev" no-commit
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN quoting what legion version printed" \
-  "$(has_line "UNKNOWN: LINUX image: ${lean_image}'s /opt/legion/bin/legion version names no build commit: legion (devel)")"
+check "refuses UNKNOWN, what legion version printed kept" \
+  "$(has_kept_line "UNKNOWN: LINUX image: ${lean_image}'s /opt/legion/bin/legion version names no build commit; its first line is kept in KEPT")"
+check "the kept file holds what it printed" "$(is "$(kept_text "UNKNOWN: LINUX image: ")" "legion (devel)")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: --clients, an image with no legion to run"
@@ -127,8 +131,10 @@ clients_open
 rm "$(image_dir "$lean_image")/legion-version"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming docker's answer, not its help hint" \
-  "$(grep -qxF "UNKNOWN: LINUX image: cannot run ${lean_image}'s /opt/legion/bin/legion version: docker: Error response from daemon: failed to create task for container: exec: \"/opt/legion/bin/legion\": stat /opt/legion/bin/legion: no such file or directory: unknown" "$out" && echo true || echo false)"
+check "refuses UNKNOWN, docker's words kept, its help hint among them" \
+  "$(has_kept_line "UNKNOWN: LINUX image: cannot run ${lean_image}'s /opt/legion/bin/legion version: docker failed; its own words are kept in KEPT")"
+check "the kept file holds docker's words" \
+  "$(grep -qF "docker: Error response from daemon: failed to create task for container" <<<"$(kept_text "UNKNOWN: LINUX image: ")" && echo true || echo false)"
 
 echo "case: --clients, an image the registry does not answer for"
 new_case clients-image-unreadable
@@ -136,8 +142,8 @@ clients_open
 rm -r "$(image_dir "$lean_image")"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming docker's answer, not its help hint" \
-  "$(has_line "UNKNOWN: LINUX image: cannot run ${lean_image}: docker: Error response from daemon: manifest for ${lean_image} not found: manifest unknown")"
+check "refuses UNKNOWN, docker's words kept" \
+  "$(has_kept_line "UNKNOWN: LINUX image: cannot run ${lean_image}: docker failed; its own words are kept in KEPT")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: --clients, a project on a tmux host"
@@ -203,7 +209,7 @@ worker_image "$session_image" "$ahead_rev" no-claude-envoy
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the image and the package it could not find" \
-  "$(has_line "UNKNOWN: sessions image: ${session_image} carries no @sjawhar/claude-envoy at /opt/legion/claude-envoy/package.json: cat: /opt/legion/claude-envoy/package.json: No such file or directory")"
+  "$(has_kept_line "UNKNOWN: sessions image: ${session_image} carries no @sjawhar/claude-envoy at /opt/legion/claude-envoy/package.json: cat failed; its own words are kept in KEPT")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: --clients, a deployment with no sessions/ stack"
@@ -212,8 +218,8 @@ clients_open
 rm -r "${case_root}/files/sessions"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file it could not read" \
-  "$(has_line "UNKNOWN: sessions image: cannot read ${deployment} sessions/Pulumi.yaml: gh: Not Found (HTTP 404)")"
+check "refuses UNKNOWN naming the file it could not read, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: sessions image: cannot read ${deployment} sessions/Pulumi.yaml: gh failed (HTTP 404); its own words are kept in KEPT")"
 check "never runs the sessions image" "$(lacks "$session_image" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
@@ -244,8 +250,9 @@ clients_open
 printf 'config:\n  %s:image: "--privileged %s"\n' "$sessions_project" "$session_image" >"${case_root}/files/sessions/Pulumi.prod.yaml"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the pin" \
-  "$(has_line "UNKNOWN: sessions image: sessions/Pulumi.prod.yaml sets ${sessions_project}:image to --privileged ${session_image}, which is no image reference")"
+check "refuses UNKNOWN naming the setting, the pin kept" \
+  "$(has_kept_line "UNKNOWN: sessions image: sessions/Pulumi.prod.yaml sets ${sessions_project}:image to a value that is no image reference, kept in KEPT")"
+check "the kept file holds the pin" "$(is "$(kept_text "UNKNOWN: sessions image: ")" "--privileged ${session_image}")"
 check "never runs docker with it" "$(lacks "--privileged" "$calls")"
 
 # An image is read only by digest: under a tag, docker would run whatever image it holds by that name,
@@ -297,8 +304,8 @@ clients_open
 rm "${case_root}/files/legion/testdata/linux-legion.yaml"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the file it could not read" \
-  "$(has_line "UNKNOWN: LINUX daemonImage ${daemon_label}: cannot read ${deployment} legion/testdata/linux-legion.yaml: gh: Not Found (HTTP 404)")"
+check "refuses UNKNOWN naming the file it could not read, gh's words kept" \
+  "$(has_kept_line "UNKNOWN: LINUX daemonImage ${daemon_label}: cannot read ${deployment} legion/testdata/linux-legion.yaml: gh failed (HTTP 404); its own words are kept in KEPT")"
 check "still reads INFRA's" \
   "$(has_line "PASS: INFRA daemonImage ${daemon_label} runs pi-envoy ${linked_envoy} from pi-envoy-v${linked_envoy} at ${ahead_rev} (ahead of ${commit})$(linked_note INFRA)")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
@@ -311,7 +318,7 @@ for shape in not-yaml not-mapping plugins-not-mapping; do
   case "$shape" in
     not-yaml)
       printf 'runtime: [\n' >"$file"
-      expected="UNKNOWN: LINUX daemonImage ${daemon_label}: ${deployment} legion/testdata/linux-legion.yaml is not YAML: "
+      expected="UNKNOWN: LINUX daemonImage ${daemon_label}: ${deployment} legion/testdata/linux-legion.yaml is not YAML (line "
       ;;
     not-mapping)
       printf -- '- project: LINUX\n' >"$file"
@@ -319,7 +326,7 @@ for shape in not-yaml not-mapping plugins-not-mapping; do
       ;;
     plugins-not-mapping)
       printf 'runtime:\n  kubernetes:\n    plugins: latest\n' >"$file"
-      expected="UNKNOWN: LINUX daemonImage ${daemon_label}: ${deployment} legion/testdata/linux-legion.yaml sets runtime.kubernetes.plugins to \"latest\", which names no pi_envoy this gate can read"
+      expected="UNKNOWN: LINUX daemonImage ${daemon_label}: ${deployment} legion/testdata/linux-legion.yaml sets runtime.kubernetes.plugins to a value that names no pi_envoy this gate can read"
       ;;
   esac
   run_gate -- --clients "$commit"
@@ -344,8 +351,9 @@ clients_open
 plugins_line "$worker_a" "plugins @sjawhar/pi-legion 19.28.1"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN quoting the line" \
-  "$(has_line "UNKNOWN: LINUX daemonImage ${daemon_label}: ${worker_a}'s /opt/legion/bin/legion version prints \"plugins @sjawhar/pi-legion 19.28.1\" as its second line, which names no @sjawhar/pi-envoy version")"
+check "refuses UNKNOWN, the line kept" \
+  "$(has_kept_line "UNKNOWN: LINUX daemonImage ${daemon_label}: ${worker_a}'s /opt/legion/bin/legion version prints a second line that names no @sjawhar/pi-envoy version, kept in KEPT")"
+check "the kept file holds the line" "$(is "$(kept_text "UNKNOWN: LINUX daemonImage ")" "plugins @sjawhar/pi-legion 19.28.1")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 echo "case: --clients, a project with no daemonImage runs its daemon from its image"
@@ -373,8 +381,8 @@ legion_stack "    - replicas: 1
       daemonImage: ${worker_a}"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the key" \
-  "$(has_line "UNKNOWN: <an entry with no key> names key null, which is no project key, so no legion/testdata golden is its own")"
+check "refuses UNKNOWN naming the key's kind" \
+  "$(has_line "UNKNOWN: <an entry with no key> names key (null), which is no project key, so no legion/testdata golden is its own")"
 check "never runs its image" "$(lacks "$worker_a" "$calls")"
 
 # Text read from an image is printed with each control character written as \x<hh>, so no image
@@ -386,8 +394,8 @@ printf '{"name": "@example-org/claude-plugin\\nGATE OPEN\\n#", "version": "1.0.0
   >"$(image_dir "$lean_image")/fs/opt/legion/claude-envoy/package.json"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the package, its newlines written out" \
-  "$(has_line "UNKNOWN: LINUX image: ${lean_image}'s /opt/legion/claude-envoy/package.json names @example-org/claude-plugin\\x0aGATE OPEN\\x0a#, not @sjawhar/claude-envoy")"
+check "refuses UNKNOWN saying it found another package, the manifest with its newlines kept" \
+  "$(has_kept_line "UNKNOWN: LINUX image: ${lean_image}'s /opt/legion/claude-envoy/package.json names another package, not @sjawhar/claude-envoy; the manifest is kept in KEPT")"
 check "no line of its output is the image's GATE OPEN" "$(grep -qxF "GATE OPEN" "$out" && echo false || echo true)"
 check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
 
@@ -397,5 +405,5 @@ clients_open
 printf 'legion (devel)\rGATE OPEN\n' >"$(image_dir "$lean_image")/legion-version"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN quoting the line, its carriage return written out" \
-  "$(has_line "UNKNOWN: LINUX image: ${lean_image}'s /opt/legion/bin/legion version names no build commit: legion (devel)\\x0dGATE OPEN")"
+check "refuses UNKNOWN, the line with its carriage return kept, not printed" \
+  "$(has_kept_line "UNKNOWN: LINUX image: ${lean_image}'s /opt/legion/bin/legion version names no build commit; its first line is kept in KEPT")"

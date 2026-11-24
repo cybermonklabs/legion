@@ -138,6 +138,22 @@
 # (printable), so none can start or rewrite a line of the gate's own. A usage error, a missing
 # --deployment, both modes, or a --dotfiles without --clients among them, exits 2 and reads nothing.
 #
+# Whatever answers gh's calls in GitHub's place holds gh's token, and whatever answers docker's in a
+# registry's holds docker's login, which for ghcr.io is gh's token in the example below; each writes
+# its tool's error and its answer. So the gate prints no word of a failed call's own (gh's, docker's,
+# npm's, or a reader's over their answer): each is kept in a file of a directory the run leaves,
+# `daemon-release-gate-words.<random>` under TMPDIR, and the line names the file and, for gh, the
+# three digits of its `(HTTP nnn)`. An answer the gate does not take (a status no comparison names,
+# a field of the wrong type, a value that is no image reference, commit id, project key or source)
+# is named by its field and kind, its text kept the same way; an archive's member and a tree's entry
+# are named by their place and kind, as leakguard's unpack of a served tarball names one. A reading
+# that holds to its grammar (an image reference, a source, a file and line) is printed, and so is
+# every other line, through one filter: each run of 8 characters of the token gh uses (`gh auth
+# token`, and GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN where set) is
+# written as [redacted], the record rule the Go code applies. A run shorter than 8 characters, and a
+# credential the gate does not hold (docker's own login for a registry, npm's), are not filtered; a
+# run with no token to filter by says so on stderr.
+#
 # It needs bash, gh (signed in with read access to the deployment repository and cybermonklabs/legion),
 # docker with buildx, jq, base64, python3 with PyYAML and, for --clients, npm. Docker must be able to
 # read each pin's registry (and, for --clients, to pull and run each image), with logins made into a
@@ -151,7 +167,8 @@
 # `gcloud auth configure-docker <region>-docker.pkg.dev`, run with that DOCKER_CONFIG set, makes
 # docker ask docker-credential-gcloud instead of keeping a token that expires within the hour.
 # With only the ghcr.io login, every Artifact Registry image prints UNKNOWN.
-# A pin docker cannot read prints UNKNOWN with docker's own answer, never GATE OPEN.
+# A pin docker cannot read prints UNKNOWN naming the file that keeps docker's own answer, never GATE
+# OPEN.
 set -euo pipefail
 
 usage() {
@@ -195,10 +212,18 @@ readonly legion_source="https://github.com/cybermonklabs/legion"
 # A plain image reference: nothing in it a shell, docker's own options or a tab-separated line of
 # the gate's could read as anything else.
 readonly image_reference='^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$'
+# A file of legion/projects/ the deployment's legion program reads (projectFileRule): <nn>-<KEY>.yaml.
+readonly project_file_name='^[0-9]{2}-[A-Z][0-9A-Z]*\.yaml$'
 
 work=$(mktemp -d)
 readonly work
-trap 'rm -rf "$work"' EXIT
+# The words a failed call left, and the answers the gate did not take, kept past the run for the
+# operator to read; removed at the end when the run kept none.
+words=$(mktemp -d "${TMPDIR:-/tmp}/daemon-release-gate-words.XXXXXX")
+readonly words
+# The readers' stderr is printed at the end, through the same filter as every line (redact_lines,
+# below); the trap keeps the exit status the run ends with.
+trap 'if [ -f "$work/stderr" ]; then redact_lines <"$work/stderr" >&2 || true; fi; rm -rf "$work"; rmdir "$words" 2>/dev/null || true' EXIT
 
 shut=0
 unknown=0
@@ -226,21 +251,103 @@ print("".join(shown(c) for c in sys.argv[1]))
 first_line() { printable "$(head -n 1 "$1")"; }
 last_line() { printable "$(tail -n 1 "$1")"; }
 
+# keep <tool> <file>: copies <file> into the run's words directory and prints the copy's path. It
+# runs inside a command substitution too, so the copy's name is mktemp's, never a counter.
+keep() {
+  local kept
+  kept=$(mktemp "${words}/$1.XXXXXX")
+  cp -- "$2" "$kept"
+  printf '%s' "$kept"
+}
+
+# keep_text <tool> <text>: keep for <text>, an answer the gate did not take.
+keep_text() {
+  printf '%s\n' "$2" >"$work/kept"
+  keep "$1" "$work/kept"
+}
+
+# said <tool> <file>: the gate's own words for a <tool> call that failed, whose stderr is <file>:
+# that it failed, the three digits of gh's closing `(HTTP nnn)` where its last line ends so, and
+# the kept copy of <file> that holds the rest. Nothing else of <file> is printed: its words are the
+# answering party's, which holds the call's token.
+said() {
+  local status="" last=""
+  [ ! -s "$2" ] || last=$(tail -n 1 "$2")
+  if [[ $last =~ \(HTTP\ ([0-9]{3})\)$ ]]; then status=" (HTTP ${BASH_REMATCH[1]})"; fi
+  if [ -s "$2" ]; then
+    printf '%s failed%s; its own words are kept in %s' "$1" "$status" "$(keep "$1" "$2")"
+  else
+    printf '%s failed%s and said nothing' "$1" "$status"
+  fi
+}
+
+# The credentials the gate's output is filtered for: the token gh uses, as `gh auth token` reads it
+# (its config, or the environment variable that overrides it), and each token variable gh reads,
+# one a line in a file only this user reads, never in a process's arguments.
+(
+  umask 077
+  {
+    gh auth token 2>/dev/null || true
+    printf '\n%s\n%s\n%s\n%s\n' "${GH_TOKEN:-}" "${GITHUB_TOKEN:-}" "${GH_ENTERPRISE_TOKEN:-}" "${GITHUB_ENTERPRISE_TOKEN:-}"
+  } >"$work/tokens"
+)
+if ! grep -qE '^.{8,}$' "$work/tokens"; then
+  echo "daemon-release-gate.sh: gh auth token answered no token, and no token variable is set, so no line below is filtered for one" >&2
+fi
+
+# redact_lines: stdin to stdout, line by line as each arrives, with every run of 8 characters of a
+# credential in $work/tokens written as [redacted], a stretch of such runs that touch or overlap as
+# one. A token shorter than 8 characters has no such run and is not filtered.
+redact_lines() {
+  python3 -c '
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="surrogateescape") as handle:
+    tokens = [t for t in handle.read().split("\n") if len(t) >= 8]
+pieces = {t[i : i + 8] for t in tokens for i in range(len(t) - 7)}
+out = sys.stdout.buffer
+for raw in iter(sys.stdin.buffer.readline, b""):
+    line = raw.decode("utf-8", "surrogateescape")
+    hidden = [False] * len(line)
+    for piece in pieces:
+        at = line.find(piece)
+        while at >= 0:
+            hidden[at : at + 8] = [True] * 8
+            at = line.find(piece, at + 1)
+    shown, i = [], 0
+    while i < len(line):
+        if hidden[i]:
+            while i < len(line) and hidden[i]:
+                i += 1
+            shown.append("[redacted]")
+        else:
+            shown.append(line[i])
+            i += 1
+    out.write("".join(shown).encode("utf-8", "surrogateescape"))
+    out.flush()
+' "$work/tokens"
+}
+
 # fetch <path> <dest>: the text of <path> in the deployment repository on its default branch, into
-# <dest>; on failure sets $fetch_error to what could not be done and GitHub's or base64's first
-# line, and returns 1. GitHub serves a file of 1 to 100 MB with encoding `none` and no content, so
-# any encoding but base64 is a file the gate could not read, never an empty one.
+# <dest>; on failure sets $fetch_error to what could not be done, in the gate's own words (said), and
+# returns 1. <path> is the gate's own or a name it held to its grammar first. GitHub serves a file of
+# 1 to 100 MB with encoding `none` and no content, so any encoding but base64 is a file the gate could
+# not read, never an empty one; an encoding GitHub does not name is kept, not printed.
 fetch() {
   local answer encoding content=""
   fetch_error=""
   if ! answer=$(gh api "repos/${deployment}/contents/$1" --jq '.encoding, .content' 2>"$work/err"); then
-    fetch_error="cannot read ${deployment} $(printable "$1"): $(first_line "$work/err")"
+    fetch_error="cannot read ${deployment} $(printable "$1"): $(said gh "$work/err")"
     return 1
   fi
   encoding=${answer%%$'\n'*}
   [[ $answer != *$'\n'* ]] || content=${answer#*$'\n'}
+  if [ "$encoding" = none ]; then
+    fetch_error="cannot read ${deployment} $(printable "$1"): GitHub serves it with encoding none and no content, as it serves a file over 1 MB"
+    return 1
+  fi
   if [ "$encoding" != base64 ]; then
-    fetch_error="cannot read ${deployment} $(printable "$1"): GitHub serves it with encoding $(printable "$encoding") and no content, as it serves a file over 1 MB"
+    fetch_error="cannot read ${deployment} $(printable "$1"): GitHub serves it with an encoding that is neither base64 nor none, kept in $(keep_text gh "$encoding")"
     return 1
   fi
   if ! printf '%s' "$content" | base64 -d >"$2" 2>"$work/err"; then
@@ -250,7 +357,7 @@ fetch() {
 }
 
 # stack_file <path>: fetch <path> into $work/stack.yaml. An unreadable file is UNKNOWN, named with
-# GitHub's answer.
+# the file that keeps GitHub's answer.
 stack_file() {
   if ! fetch "$1" "$work/stack.yaml"; then
     printf 'UNKNOWN: %s\n' "$fetch_error"
@@ -272,7 +379,6 @@ project_of() {
     return 1
   fi
   if ! project=$(python3 - "$work/project.yaml" 2>"$work/err" <<'PY'
-import json
 import re
 import sys
 
@@ -284,11 +390,12 @@ try:
 except UnicodeDecodeError:
     sys.exit("it is not UTF-8 text")
 except yaml.YAMLError as error:
-    sys.exit(f"it is not YAML: {str(error).splitlines()[0]}")
+    mark = getattr(error, "problem_mark", None)
+    sys.exit(f"it is not YAML (line {mark.line + 1}, column {mark.column + 1})" if mark else "it is not YAML")
 name = document.get("name") if isinstance(document, dict) else None
 if isinstance(name, str) and name.strip():
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name.strip()):
-        sys.exit(f"its name {json.dumps(name.strip())} is no Pulumi project name")
+        sys.exit("its name is no Pulumi project name (letters, digits, _, . and -, 1 to 100 of them)")
     print(name.strip())
 PY
   ); then
@@ -315,10 +422,12 @@ entries_error=""
 # program did before the files. A Pulumi.yaml or stack file it cannot read, a listing that fails
 # other than as a missing directory, a file it cannot read, one that is not one mapping, and one
 # that program refuses (projectFileRule: a name that is not `<nn>-<KEY>.yaml`, or a `key` that is not
-# that KEY) leave entries_state failed, with entries_error naming it.
+# that KEY) leave entries_state failed, with entries_error naming it. An entry of the listing is
+# named by its name only once that name holds to projectFileRule, and otherwise by its place in
+# GitHub's listing, its name kept (keep_text): the listing is GitHub's answer.
 load_entries() {
   [ "$entries_state" = unread ] || return 0
-  local names name directory=1 legion_project
+  local names name directory=1 legion_project index=0 entry
   entries_state=failed
   if ! project_of legion; then
     entries_error=$project_error
@@ -341,7 +450,7 @@ load_entries() {
     # quote an HTTP 404 included, is a listing that failed.
     if ! [[ $(tail -n 1 "$work/err") =~ ^gh:\ .*\(HTTP\ 404\)$ ]]; then
       entries_state=failed
-      entries_error="cannot list ${deployment} legion/projects: $(first_line "$work/err")"
+      entries_error="cannot list ${deployment} legion/projects: $(said gh "$work/err")"
       return 0
     fi
     names=""
@@ -354,14 +463,31 @@ load_entries() {
   fi
   while IFS=$'\t' read -r type url name; do
     [ -n "$name" ] || continue
+    index=$((index + 1))
+    if [[ $name =~ $project_file_name ]]; then
+      entry="${deployment} legion/projects/${name}"
+    else
+      entry="${deployment} legion/projects/ entry ${index} of GitHub's listing (its name kept in $(keep_text gh "$name"))"
+    fi
     if [ "$type" != file ]; then
       entries_state=failed
-      entries_error="${deployment} legion/projects/$(printable "$name") is a $(printable "$type"), which this gate does not read as a project file"
+      case "$type" in
+        dir | symlink | submodule) entries_error="${entry} is a ${type}, which this gate does not read as a project file" ;;
+        *) entries_error="${entry} is of a type GitHub names no entry by, kept in $(keep_text gh "$type"), which this gate does not read as a project file" ;;
+      esac
       return 0
     fi
     if [ "$url" = none ]; then
       entries_state=failed
-      entries_error="${deployment} legion/projects/$(printable "$name") is listed as a file with no download URL, as GitHub lists a submodule, which this gate does not read as a project file"
+      entries_error="${entry} is listed as a file with no download URL, as GitHub lists a submodule, which this gate does not read as a project file"
+      return 0
+    fi
+    # The deployment's legion program refuses a file it cannot name a project by
+    # (projectFileRule), so the gate reads none: and a name that holds to the rule is the one text of
+    # the listing the gate puts in a path or a line.
+    if ! [[ $name =~ $project_file_name ]]; then
+      entries_state=failed
+      entries_error="${entry} is not named <nn>-<KEY>.yaml, so no key is known to be its own"
       return 0
     fi
     if ! fetch "legion/projects/$name" "$work/projects/$name"; then
@@ -385,20 +511,23 @@ if has_directory == "1":
     # <nn>-<KEY>.yaml and its key that KEY (projectFileRule), so the gate takes neither as a project.
     rule = re.compile(r"[0-9]{2}-([A-Z][A-Z0-9]*)\.yaml")
     for name in sorted(os.listdir(directory)):
+        # Each name held to the rule before it was fetched (load_entries); this is the rule's second
+        # reading, never the first, and it prints no name it refuses.
         named = rule.fullmatch(name)
         if not named:
-            sys.exit(f"legion/projects/{name} is not named <nn>-<KEY>.yaml, so no key is known to be its own")
+            sys.exit("legion/projects/ holds a file that is not named <nn>-<KEY>.yaml, so no key is known to be its own")
         try:
             with open(os.path.join(directory, name), encoding="utf-8") as handle:
                 documents = list(yaml.safe_load_all(handle))
         except UnicodeDecodeError:
             sys.exit(f"legion/projects/{name} is not UTF-8 text")
         except yaml.YAMLError as error:
-            sys.exit(f"legion/projects/{name} is not YAML: {str(error).splitlines()[0]}")
+            mark = getattr(error, "problem_mark", None)
+            sys.exit(f"legion/projects/{name} is not YAML" + (f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""))
         if len(documents) != 1 or not isinstance(documents[0], dict):
             sys.exit(f"legion/projects/{name} is not one mapping of a project's settings")
         if documents[0].get("key") != named.group(1):
-            sys.exit(f"legion/projects/{name} declares key {documents[0].get('key')!r}, not {named.group(1)}")
+            sys.exit(f"legion/projects/{name} declares a key that is not {named.group(1)}")
         entries.append(documents[0])
     found, missing = bool(entries), "legion/projects/ holds no file"
 else:
@@ -410,7 +539,8 @@ else:
         except UnicodeDecodeError:
             sys.exit("legion/Pulumi.prod.yaml is not UTF-8 text")
         except yaml.YAMLError as error:
-            sys.exit(f"legion/Pulumi.prod.yaml is not YAML: {str(error).splitlines()[0]}")
+            mark = getattr(error, "problem_mark", None)
+            sys.exit("legion/Pulumi.prod.yaml is not YAML" + (f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""))
         if not isinstance(document, dict) or not isinstance(document.get("config") or {}, dict):
             sys.exit("legion/Pulumi.prod.yaml is not a mapping with a config mapping")
         listed = (document.get("config") or {}).get(key)
@@ -446,7 +576,9 @@ PY
 # verdict. A field of the wrong type (a replicas that is no count, as YAML's false would equal 0; a
 # daemon that is no boolean) or an image that is no plain reference (a tab in it would cut this
 # line, and the gate would read another image) is INVALID, never a project skipped or an image cut
-# short. When the deployment declares no project it prints ERROR and where it looked.
+# short. A field the gate does not take is named by its kind (a string, a number), never its text,
+# and so is a runtime it does not know: the files are GitHub's answer. When the deployment declares
+# no project it prints ERROR and where it looked.
 daemon_pins() {
   python3 - "$work/entries.json" "$1" "$image_reference" <<'PY'
 import json
@@ -457,6 +589,25 @@ with open(sys.argv[1]) as handle:
     loaded = json.load(handle)
 clients = sys.argv[2] == "clients"
 reference = re.compile(sys.argv[3])
+
+
+def kind(value):
+    """the kind of a value the gate does not take, which it prints in the value's place."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, list):
+        return "a list"
+    if isinstance(value, dict):
+        return "a mapping"
+    return "a value of another kind"
+
+
 if not loaded["found"]:
     print(f"ERROR\tdeclares no project: {loaded['missing']}")
     sys.exit(0)
@@ -465,15 +616,15 @@ for entry in loaded["entries"]:
     if not (isinstance(named, str) and re.fullmatch(r"[A-Z][A-Z0-9]*", named)):
         label = "<an entry with no key>" if named is None else "<an entry>"
         golden_note = ", so no legion/testdata golden is its own" if clients else ""
-        print(f"{label}\tINVALID\tkey {json.dumps(named)}, which is no project key{golden_note}")
+        print(f"{label}\tINVALID\tkey ({kind(named)}), which is no project key{golden_note}")
         continue
     key = named
     replicas, daemon, runtime = entry.get("replicas"), entry.get("daemon"), entry.get("runtime")
     if "replicas" in entry and (isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 0):
-        print(f"{key}\tINVALID\treplicas {json.dumps(replicas)}, which is no count of replicas")
+        print(f"{key}\tINVALID\treplicas ({'a negative number' if isinstance(replicas, int) and not isinstance(replicas, bool) else kind(replicas)}), which is no count of replicas")
         continue
     if "daemon" in entry and not isinstance(daemon, bool):
-        print(f"{key}\tINVALID\tdaemon {json.dumps(daemon)}, which is neither true nor false")
+        print(f"{key}\tINVALID\tdaemon ({kind(daemon)}), which is neither true nor false")
         continue
     images = {field: entry[field] for field in ("daemonImage", "image") if entry.get(field) not in (None, "")}
     bad = [field for field, image in images.items() if not (isinstance(image, str) and reference.fullmatch(image))]
@@ -484,9 +635,9 @@ for entry in loaded["entries"]:
     elif runtime == "tmux":
         print(f"{key}\tHOST")
     elif runtime not in (None, "", "kubernetes"):
-        print(f"{key}\tRUNTIME\t{runtime if isinstance(runtime, str) and runtime.isprintable() else json.dumps(runtime)}")
+        print(f"{key}\tRUNTIME\t({kind(runtime)})")
     elif bad:
-        print(f"{key}\tINVALID\t{bad[0]} {json.dumps(images[bad[0]])}, which is no image reference")
+        print(f"{key}\tINVALID\t{bad[0]} ({kind(images[bad[0]])}), which is no image reference")
     elif not images:
         print(f"{key}\tNOIMAGE")
     elif clients:
@@ -515,7 +666,8 @@ try:
 except UnicodeDecodeError:
     sys.exit("it is not UTF-8 text")
 except yaml.YAMLError as error:
-    sys.exit(f"it is not YAML: {str(error).splitlines()[0]}")
+    mark = getattr(error, "problem_mark", None)
+    sys.exit(f"it is not YAML (line {mark.line + 1}, column {mark.column + 1})" if mark else "it is not YAML")
 if not isinstance(document, dict):
     sys.exit("it is not a mapping")
 config = document.get("config") or {}
@@ -540,30 +692,51 @@ labels_of() {
     revision=$(jq -r '.["org.opencontainers.image.revision"] // ""' <<<"$1" 2>"$work/err")
 }
 
+# A source label the gate prints and compares: a GitHub repository's URL. A source of any other
+# shape is the registry's text alone, so its line names the file that keeps it.
+readonly source_url='^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+
+# shown_source: $source as a line of the gate's names it: itself when it is a repository's URL, else
+# the kept copy.
+shown_source() {
+  if [[ $source =~ $source_url ]]; then
+    printf '%s' "$source"
+  else
+    printf 'a source that is no https://github.com/<owner>/<repo> URL, kept in %s' "$(keep_text docker "$source")"
+  fi
+}
+
 # read_pin <key> <ref>: sets $source and $revision from ref's labels and returns 0, or prints
-# UNKNOWN naming what it could not read and returns 1.
+# UNKNOWN naming what it could not read and returns 1. docker's own words for a read that failed,
+# and an answer of its the gate does not take (a media type it names no reading for, a platform that
+# is no <os>/<arch>[/<variant>], labels that are no JSON or that disagree), are kept, not printed:
+# whatever answers docker in the registry's place holds docker's login for it.
 read_pin() {
   local key=$1 ref=$2 mediatype labels platforms platform answers="" first="" disagree=0
   source=""
   revision=""
   if ! mediatype=$(inspect "$ref" '{{json .Manifest.MediaType}}'); then
-    printf 'UNKNOWN: %s: cannot read %s: %s\n' "$key" "$ref" "$(first_line "$work/err")"
+    printf 'UNKNOWN: %s: cannot read %s: %s\n' "$key" "$ref" "$(said docker "$work/err")"
     return 1
   fi
   case "$mediatype" in
     *image.index*|*manifest.list*)
       if ! platforms=$(inspect "$ref" '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}} {{end}}'); then
-        printf 'UNKNOWN: %s: cannot list the platforms of %s: %s\n' "$key" "$ref" "$(first_line "$work/err")"
+        printf 'UNKNOWN: %s: cannot list the platforms of %s: %s\n' "$key" "$ref" "$(said docker "$work/err")"
         return 1
       fi
       for platform in $platforms; do
         [ "$platform" != unknown/unknown ] || continue
+        if ! [[ $platform =~ ^[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?$ ]]; then
+          printf 'UNKNOWN: %s: %s lists a platform that is no <os>/<arch>[/<variant>], kept in %s\n' "$key" "$ref" "$(keep_text docker "$platform")"
+          return 1
+        fi
         if ! labels=$(inspect "$ref" "{{json (index .Image \"$platform\").Config.Labels}}"); then
-          printf 'UNKNOWN: %s: cannot read the %s image of %s: %s\n' "$key" "$(printable "$platform")" "$ref" "$(first_line "$work/err")"
+          printf 'UNKNOWN: %s: cannot read the %s image of %s: %s\n' "$key" "$platform" "$ref" "$(said docker "$work/err")"
           return 1
         fi
         if ! labels_of "$labels"; then
-          printf 'UNKNOWN: %s: the %s labels of %s are not JSON: %s\n' "$key" "$(printable "$platform")" "$ref" "$(first_line "$work/err")"
+          printf 'UNKNOWN: %s: the %s labels of %s are not JSON; they are kept in %s\n' "$key" "$platform" "$ref" "$(keep_text docker "$labels")"
           return 1
         fi
         if [ -z "$first" ]; then
@@ -578,22 +751,22 @@ read_pin() {
         return 1
       fi
       if [ "$disagree" = 1 ]; then
-        printf 'UNKNOWN: %s platforms disagree: %s\n' "$key" "$(printable "$answers")"
+        printf 'UNKNOWN: %s platforms disagree on the source or revision they name; their labels are kept in %s\n' "$key" "$(keep_text docker "$answers")"
         return 1
       fi
       ;;
     *image.manifest*|*distribution.manifest.v2*)
       if ! labels=$(inspect "$ref" '{{json .Image.Config.Labels}}'); then
-        printf 'UNKNOWN: %s: cannot read the labels of %s: %s\n' "$key" "$ref" "$(first_line "$work/err")"
+        printf 'UNKNOWN: %s: cannot read the labels of %s: %s\n' "$key" "$ref" "$(said docker "$work/err")"
         return 1
       fi
       if ! labels_of "$labels"; then
-        printf 'UNKNOWN: %s: the labels of %s are not JSON: %s\n' "$key" "$ref" "$(first_line "$work/err")"
+        printf 'UNKNOWN: %s: the labels of %s are not JSON; they are kept in %s\n' "$key" "$ref" "$(keep_text docker "$labels")"
         return 1
       fi
       ;;
     *)
-      printf 'UNKNOWN: %s: %s has media type %s, which is neither an image nor an index\n' "$key" "$ref" "$(printable "$mediatype")"
+      printf 'UNKNOWN: %s: %s has a media type that is neither an image nor an index, kept in %s\n' "$key" "$ref" "$(keep_text docker "$mediatype")"
       return 1
       ;;
   esac
@@ -672,19 +845,19 @@ judge() {
   if [ "$repo" != cybermonklabs/legion ]; then
     load_aliases
     if [ "$aliases_state" = failed ]; then
-      printf "UNKNOWN: %s: built from %s, and the repository renames of %s's Legion projects could not be read: %s\n" "$key" "$(printable "$source")" "$deployment" "$aliases_error"
+      printf "UNKNOWN: %s: built from %s, and the repository renames of %s's Legion projects could not be read: %s\n" "$key" "$(shown_source)" "$deployment" "$aliases_error"
       unknown=$((unknown + 1))
       return
     fi
     if ! grep -qxF -- "$repo" "$work/aliases"; then
-      printf 'GATE SHUT: %s runs an image built from %s\n' "$key" "$(printable "$source")"
+      printf 'GATE SHUT: %s runs an image built from %s\n' "$key" "$(shown_source)"
       shut=$((shut + 1))
       return
     fi
-    via="; built as $(printable "$source"), which the repositoryRenames of the deployment's Legion projects make one repository with $legion_source"
+    via="; built as $(shown_source), which the repositoryRenames of the deployment's Legion projects make one repository with $legion_source"
   fi
   if ! [[ $revision =~ ^[0-9a-f]{7,40}$ ]]; then
-    printf 'UNKNOWN: %s: %s names revision %s, which is no commit id\n' "$key" "$ref" "$(printable "$revision")"
+    printf 'UNKNOWN: %s: %s names a revision that is no commit id, kept in %s\n' "$key" "$ref" "$(keep_text docker "$revision")"
     unknown=$((unknown + 1))
     return
   fi
@@ -694,32 +867,40 @@ judge() {
 # compare_revision <key> <what it runs> <revision> <note>: compares <revision>, a commit id, with
 # <commit> in cybermonklabs/legion and prints <key>'s line, saying it runs <what it runs> and ending
 # in <note>: PASS when GitHub answers `ahead` or `identical` with `behind_by` 0, GATE SHUT when it
-# is behind or diverged, UNKNOWN otherwise.
+# is behind or diverged, UNKNOWN otherwise. GitHub's status is printed only as one of its four
+# words and behind_by only as a count; any other answer, and gh's words for a call that failed, are
+# kept, not printed.
 compare_revision() {
-  local key=$1 runs=$2 revision=$3 via=$4 answer status behind_by
+  local key=$1 runs=$2 revision=$3 via=$4 answer status behind_by by
   if ! answer=$(gh api "repos/cybermonklabs/legion/compare/${commit}...${revision}" --jq '{status,behind_by}' 2>"$work/err"); then
-    printf 'UNKNOWN: %s: cannot compare %s...%s in cybermonklabs/legion: %s\n' "$key" "$commit" "$revision" "$(first_line "$work/err")"
+    printf 'UNKNOWN: %s: cannot compare %s...%s in cybermonklabs/legion: %s\n' "$key" "$commit" "$revision" "$(said gh "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
   if ! IFS=$'\t' read -r status behind_by < <(jq -r '[.status, .behind_by] | @tsv' <<<"$answer" 2>"$work/err"); then
-    printf 'UNKNOWN: %s: cannot read GitHub'\''s comparison of %s...%s: %s\n' "$key" "$commit" "$revision" "$(printable "$answer")"
+    printf "UNKNOWN: %s: GitHub's comparison of %s...%s cannot be read; it is kept in %s\n" "$key" "$commit" "$revision" "$(keep_text gh "$answer")"
     unknown=$((unknown + 1))
     return
   fi
+  by=$behind_by
+  [[ $by =~ ^[0-9]+$ ]] || by="a count that is no number, kept in $(keep_text gh "$answer")"
   case "$status:$behind_by" in
     ahead:0) printf 'PASS: %s runs %s (ahead of %s)%s\n' "$key" "$runs" "$commit" "$via" ;;
     identical:0) printf 'PASS: %s runs %s (identical to %s)%s\n' "$key" "$runs" "$commit" "$via" ;;
     behind:*)
-      printf 'GATE SHUT: %s runs %s (behind %s by %s)%s\n' "$key" "$runs" "$commit" "$(printable "$behind_by")" "$via"
+      printf 'GATE SHUT: %s runs %s (behind %s by %s)%s\n' "$key" "$runs" "$commit" "$by" "$via"
       shut=$((shut + 1))
       ;;
     diverged:*)
-      printf 'GATE SHUT: %s runs %s (diverged from %s, behind by %s)%s\n' "$key" "$runs" "$commit" "$(printable "$behind_by")" "$via"
+      printf 'GATE SHUT: %s runs %s (diverged from %s, behind by %s)%s\n' "$key" "$runs" "$commit" "$by" "$via"
       shut=$((shut + 1))
       ;;
+    ahead:* | identical:*)
+      printf 'UNKNOWN: %s: GitHub compared %s...%s as %s, behind by %s\n' "$key" "$commit" "$revision" "$status" "$by"
+      unknown=$((unknown + 1))
+      ;;
     *)
-      printf 'UNKNOWN: %s: GitHub compared %s...%s as %s, behind by %s\n' "$key" "$commit" "$revision" "$(printable "$status")" "$(printable "$behind_by")"
+      printf "UNKNOWN: %s: GitHub's comparison of %s...%s names none of its statuses (ahead, behind, diverged, identical); it is kept in %s\n" "$key" "$commit" "$revision" "$(keep_text gh "$answer")"
       unknown=$((unknown + 1))
       ;;
   esac
@@ -754,7 +935,7 @@ stack_pin() {
     return 1
   fi
   if ! [[ $pin =~ $image_reference ]]; then
-    printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets %s to %s, which is no image reference\n' "$key" "$stack" "$setting" "$(printable "$pin")"
+    printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets %s to a value that is no image reference, kept in %s\n' "$key" "$stack" "$setting" "$(keep_text gh "$pin")"
     unknown=$((unknown + 1))
     return 1
   fi
@@ -779,87 +960,91 @@ source "${gate_lib}/daemon-release-gate-read-image-clients.sh"
 # shellcheck source=lib/daemon-release-gate-read-developer-box.sh
 source "${gate_lib}/daemon-release-gate-read-developer-box.sh"
 
-if [ "$mode" = listeners ]; then
-  # envoy's listenerImage is read only by the VM hub's listener, and the hub's removal deletes the
-  # key with it, so the leg decides from the deployment's program whether the hub is declared
-  # (vm_hub) before it reads that pin: a declared hub whose pin is gone stays UNKNOWN, and a program
-  # that declares none, every file of it read, reads no VM pin.
-  if ! vm_hub; then
-    unknown=$((unknown + 1))
-  elif [ "$hub" = yes ]; then
-    printf 'VM HUB: %s at %s %s\n' "$hub_use" "$hub_head" "$hub_how"
-    listener envoy envoy listenerImage
+# Every line the gate prints from here passes redact_lines: stdout as each line comes, stderr at the
+# end (the EXIT trap). errexit ends the run with the group's status, which pipefail hands on.
+{
+  if [ "$mode" = listeners ]; then
+    # envoy's listenerImage is read only by the VM hub's listener, and the hub's removal deletes the
+    # key with it, so the leg decides from the deployment's program whether the hub is declared
+    # (vm_hub) before it reads that pin: a declared hub whose pin is gone stays UNKNOWN, and a
+    # program that declares none, every file of it read, reads no VM pin.
+    if ! vm_hub; then
+      unknown=$((unknown + 1))
+    elif [ "$hub" = yes ]; then
+      printf 'VM HUB: %s at %s %s\n' "$hub_use" "$hub_head" "$hub_how"
+      listener envoy envoy listenerImage
+    else
+      printf 'NO VM HUB: envoy/ at %s declares no gcp:NatsHub\n' "$hub_head"
+    fi
+    listener envoy-cluster envoy-cluster envoyImage
+    # dispatch's listener runs listenerImage and nothing else: the deployment's dispatch/main.go
+    # requires that key (loadSettings) and pinListenerImage sets the listener's container from it,
+    # leaving envoyImage to the Dispatch server. A stack that sets none runs no listener this gate
+    # can read, so it is UNKNOWN rather than a reading of the server's image. The server's
+    # envoyImage is judged under a key of its own, dispatch-server.
+    listener dispatch dispatch listenerImage
+    listener dispatch-server dispatch envoyImage
   else
-    printf 'NO VM HUB: envoy/ at %s declares no gcp:NatsHub\n' "$hub_head"
+    load_entries
+    if [ "$entries_state" = failed ]; then
+      printf 'UNKNOWN: %s\n' "$entries_error"
+      unknown=$((unknown + 1))
+      : >"$work/pins"
+    elif ! daemon_pins "$mode" >"$work/pins" 2>"$work/err"; then
+      printf 'UNKNOWN: cannot read %s legion projects: %s\n' "$deployment" "$(said python3 "$work/err")"
+      unknown=$((unknown + 1))
+    fi
+    while IFS=$'\t' read -r key what detail golden; do
+      case "$what:$mode" in
+        SKIP:*) printf 'SKIPPED: %s runs no daemon (%s)\n' "$key" "$detail" ;;
+        READ:clients) client_image "$key" "$detail" ;;
+        DAEMON:clients) client_daemon "$key" "$detail" "$golden" ;;
+        READ:*) judge "$key" "$detail" ;;
+        NOIMAGE:*)
+          printf 'UNKNOWN: %s runs a daemon and names neither daemonImage nor image\n' "$key"
+          unknown=$((unknown + 1))
+          ;;
+        HOST:clients)
+          printf 'UNKNOWN: %s runs its sessions on a tmux host (runtime: tmux), whose clients this gate does not read\n' "$key"
+          unknown=$((unknown + 1))
+          ;;
+        HOST:*)
+          printf 'UNKNOWN: %s runs its daemon on a tmux host (runtime: tmux), from host.legionWorker, an image this gate does not read\n' "$key"
+          unknown=$((unknown + 1))
+          ;;
+        RUNTIME:*)
+          printf 'UNKNOWN: %s names runtime %s, which this gate does not know, so it reads no image for its daemon\n' "$key" "$detail"
+          unknown=$((unknown + 1))
+          ;;
+        INVALID:*)
+          printf 'UNKNOWN: %s names %s\n' "$key" "$detail"
+          unknown=$((unknown + 1))
+          ;;
+        *)
+          printf 'UNKNOWN: %s %s\n' "$deployment" "$what"
+          unknown=$((unknown + 1))
+          ;;
+      esac
+    done <"$work/pins"
+    if [ "$compared" -eq 0 ] && [ "$unknown" -eq 0 ]; then
+      echo "UNKNOWN: the deployment's Legion projects run no daemon, so no pin was read"
+      unknown=1
+    fi
+    if [ "$mode" = clients ]; then
+      # The agent sessions the deployment's sessions/ stack launches run the image it pins, and the
+      # developer box delivers to its own sessions through the clients its dotfiles install.
+      sessions_image
+      dotfiles_clients
+    fi
   fi
-  listener envoy-cluster envoy-cluster envoyImage
-  # dispatch's listener runs listenerImage and nothing else: the deployment's dispatch/main.go requires
-  # that key (loadSettings) and pinListenerImage sets the listener's container from it, leaving
-  # envoyImage to the Dispatch server. A stack that sets none runs no listener this gate can read,
-  # so it is UNKNOWN rather than a reading of the server's image. The server's envoyImage is judged
-  # under a key of its own, dispatch-server.
-  listener dispatch dispatch listenerImage
-  listener dispatch-server dispatch envoyImage
-else
-  load_entries
-  if [ "$entries_state" = failed ]; then
-    printf 'UNKNOWN: %s\n' "$entries_error"
-    unknown=$((unknown + 1))
-    : >"$work/pins"
-  elif ! daemon_pins "$mode" >"$work/pins" 2>"$work/err"; then
-    printf 'UNKNOWN: cannot read %s legion projects: %s\n' "$deployment" "$(first_line "$work/err")"
-    unknown=$((unknown + 1))
-  fi
-  while IFS=$'\t' read -r key what detail golden; do
-    case "$what:$mode" in
-      SKIP:*) printf 'SKIPPED: %s runs no daemon (%s)\n' "$key" "$detail" ;;
-      READ:clients) client_image "$key" "$detail" ;;
-      DAEMON:clients) client_daemon "$key" "$detail" "$golden" ;;
-      READ:*) judge "$key" "$detail" ;;
-      NOIMAGE:*)
-        printf 'UNKNOWN: %s runs a daemon and names neither daemonImage nor image\n' "$key"
-        unknown=$((unknown + 1))
-        ;;
-      HOST:clients)
-        printf 'UNKNOWN: %s runs its sessions on a tmux host (runtime: tmux), whose clients this gate does not read\n' "$key"
-        unknown=$((unknown + 1))
-        ;;
-      HOST:*)
-        printf 'UNKNOWN: %s runs its daemon on a tmux host (runtime: tmux), from host.legionWorker, an image this gate does not read\n' "$key"
-        unknown=$((unknown + 1))
-        ;;
-      RUNTIME:*)
-        printf 'UNKNOWN: %s names runtime %s, which this gate does not know, so it reads no image for its daemon\n' "$key" "$detail"
-        unknown=$((unknown + 1))
-        ;;
-      INVALID:*)
-        printf 'UNKNOWN: %s names %s\n' "$key" "$detail"
-        unknown=$((unknown + 1))
-        ;;
-      *)
-        printf 'UNKNOWN: %s %s\n' "$deployment" "$what"
-        unknown=$((unknown + 1))
-        ;;
-    esac
-  done <"$work/pins"
-  if [ "$compared" -eq 0 ] && [ "$unknown" -eq 0 ]; then
-    echo "UNKNOWN: the deployment's Legion projects run no daemon, so no pin was read"
-    unknown=1
-  fi
-  if [ "$mode" = clients ]; then
-    # The agent sessions the deployment's sessions/ stack launches run the image it pins, and the
-    # developer box delivers to its own sessions through the clients its dotfiles install.
-    sessions_image
-    dotfiles_clients
-  fi
-fi
 
-if [ "$shut" -gt 0 ]; then
-  echo "GATE SHUT"
-  exit 1
-fi
-if [ "$unknown" -gt 0 ]; then
-  echo "UNKNOWN"
-  exit 3
-fi
-echo "GATE OPEN"
+  if [ "$shut" -gt 0 ]; then
+    echo "GATE SHUT"
+    exit 1
+  fi
+  if [ "$unknown" -gt 0 ]; then
+    echo "UNKNOWN"
+    exit 3
+  fi
+  echo "GATE OPEN"
+} 2>"$work/stderr" | redact_lines
