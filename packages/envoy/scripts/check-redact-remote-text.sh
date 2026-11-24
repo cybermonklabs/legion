@@ -554,7 +554,9 @@ that a guarded_package entry names holds at run time beyond what the reflection 
 it (the one read guardedPackageRead in packages/envoy/cmd/redact-gate/guarded.go states), which
 counts a func field as holding nothing and reads no type's methods, since a func's captured values
 are out of reflect's reach and its results and a method's are reached only through a method the
-census refuses;
+census refuses; a credential cut into pieces shorter than redact.TokenPiece (8 characters) in
+another party's words, which prints, since the rule redacts only runs of 8 or more of its
+characters, and which reads whole once the gaps between the pieces are taken out;
 and that the list of remote fields, which the spec's census and review settle, is complete. The
 two forms the fixture's known-residual rows pin print by design: a bare "label: secret@host",
 with no scheme and no key before it (split-user-info-bare), and the same form as a JSON key's
