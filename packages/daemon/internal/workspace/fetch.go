@@ -1232,12 +1232,11 @@ func feedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.
 // on the provisioning token as it stands when the attempt starts (renew). It answers the attempt
 // that succeeded. Each attempt's stderr is scrubbed of every token held (fetchCredential.scrub),
 // and the classifiers decide on that, git's phrases as git wrote them; what leaves the process of
-// it, the error this answers and the line a retry logs, is read once more by the fail-closed rule
-// (oauth2call.Field), which prints a stderr it cannot read as clean as WordsNotReadable, and on one
-// line. It reads the text after the URL rule, as remote.shown does and for its reason: a redirect
-// refusal read before it would print as WordsNotReadable. The error names the attempt's argv
-// through the same filter (fetchCredential.words): the delta's refspecs name the branch GitHub's
-// HEAD names (fetchInto), GitHub's words.
+// it, the error this answers and the line a retry logs, prints as every stderr of the fetch's does
+// (fetchCredential.shown, as feedGitWithin prints one): the filter's text read once more by the
+// fail-closed rule, on one line, the log line's with git's lines joined by " | ". The error names
+// the attempt's argv through the same filter (fetchCredential.words): the delta's refspecs name
+// the branch GitHub's HEAD names (fetchInto), GitHub's words.
 func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, transfer feedTransfer, held *fetchCredential, deadline time.Time) (Result, error) {
 	now := request.Clock.Now()
 	if _, err := remaining(request, deadline, "the "+transfer.verb+" from GitHub"); err != nil {
@@ -1247,10 +1246,9 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 		if err := held.renew(); err != nil {
 			return Result{}, fmt.Errorf("%s attempt %d: %w", transfer.verb, attempt, err)
 		}
-		result, runErr := runCommandTimeout(ctx, run, transfer.argv, held.env, transfer.dir, deadline.Sub(now))
-		result.Stderr = held.scrub(result.Stderr)
-		shown := result
-		shown.Stderr = oauth2call.Field(strings.TrimSpace(result.Stderr))
+		ran, runErr := runCommandTimeout(ctx, run, transfer.argv, held.env, transfer.dir, deadline.Sub(now))
+		result, shown := ran, ran
+		result.Stderr, shown.Stderr = held.scrub(ran.Stderr), held.shown(ran.Stderr)
 		_, failed := checkedResult(held.words(transfer.argv), shown, runErr)
 		if failed == nil {
 			return result, nil
@@ -1269,7 +1267,7 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 			return Result{}, fmt.Errorf("%w\n%s attempt %d failed, and a retry in %s would start past the fetch's %s bound", failed, transfer.verb, attempt, wait, request.bound())
 		}
 		request.Log(fmt.Sprintf("%s attempt %d failed; retrying in %s: %s", transfer.verb, attempt, wait,
-			oauth2call.Field(strings.ReplaceAll(strings.TrimSpace(result.Stderr), "\n", " | "))))
+			held.shown(strings.ReplaceAll(strings.TrimSpace(ran.Stderr), "\n", " | "))))
 		if transfer.destination != "" {
 			if err := rolefile.RemoveTree(transfer.destination); err != nil {
 				return Result{}, fmt.Errorf("remove what %s attempt %d left at %s: %w", transfer.verb, attempt, transfer.destination, err)
