@@ -857,11 +857,12 @@ as uncached input — a mean of 576,083 tokens, a median of 493,636 and a nineti
 1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
 about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
 twenty minutes. A restart forgets each waiting wake's moment. The launches it finds unfinished, a
-claim launching with no process, go back into the pacing in the order their tasks were queued, the
-oldest first, so among those a claim that waited before the restart goes ahead of work owed after
-it; the stale-plugin pass and the relaunches of processes found dead take their turns as they
-reach the gate, and while the project is paused the unfinished launches wait for the resume
-instead. Read what the pacing still holds before you act on anything below:
+claim launching with no process, and the relaunches of processes the previous daemon found dead go
+back into the pacing in one order, the order their tasks were queued, the oldest first, so among
+those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
+pass takes its turns as it reaches the gate, and while the project is paused the unfinished
+launches wait for the resume instead. Read what the pacing still holds before you act on anything
+below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -885,8 +886,8 @@ their turns.
 
 A claim whose process the daemon found dead before the restart is on that list as well.
 Its record says the death was charged, and the boot raises the relaunch that death raised again, in
-the restart's own wave beside the launches the previous daemon did not finish, without waiting for
-the runtime to report the death a second time.
+the restart's own wave and in one order with the launches the previous daemon did not finish,
+without waiting for the runtime to report the death a second time.
 Until its turn, such a claim reads the state it was in when its process died, most often `working`
 or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
 was killed for memory and restarted, `launcher reports no child; container roles restarted`), and

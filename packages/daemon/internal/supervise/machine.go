@@ -3714,7 +3714,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	}
 	uncharged := m.endUncharged("died")
 	if m.claim.DeathCharged {
-		return m.relaunchDeath(ctx, ended, uncharged)
+		return m.relaunchDeath(ctx, ended, uncharged, time.Time{})
 	}
 	m.claim.DeathCharged = true
 	if m.chargeDeath() {
@@ -3737,20 +3737,21 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), m.relaunchDeath(ctx, ended, uncharged))
+	return errors.Join(m.persist(ctx), m.relaunchDeath(ctx, ended, uncharged, time.Time{}))
 }
 
 // relaunchDeath is the relaunch a death of the claim's process raises, ended being how that
 // process ended (endDied): the same session after the death's one launch failure
-// (relaunchAfterFailure), or, for an end endUncharged charges nothing (uncharged), through launch,
-// which charges no launch failure and waits no backoff. died raises it at every report of the
+// (relaunchAfterFailure), or, for an end endUncharged charges nothing (uncharged), a launch
+// that charges no launch failure and waits no backoff. died raises it at every report of the
 // death, and relaunchRecordedDeath at the boot that finds the death recorded, so the two raise
-// one relaunch the same way.
-func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged bool) error {
+// one relaunch the same way. turn is the moment the boot reserved for that relaunch
+// (RecordedDeath.Turn), and the zero time for died, whose relaunch the gate reserves.
+func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged bool, turn time.Time) error {
 	if uncharged {
-		return m.launch(ctx, ended)
+		return m.launchAfter(ctx, false, false, false, turn, ended)
 	}
-	return m.relaunchAfterFailure(ctx, CauseDied, ended)
+	return m.relaunchAfterFailure(ctx, CauseDied, ended, turn)
 }
 
 // relaunchRecordedDeath is the RecordedDeath row: a boot finds the claim's record saying the
@@ -3768,6 +3769,7 @@ func (m *Machine) relaunchDeath(ctx context.Context, ended string, uncharged boo
 // the death decided first, nor over a suspension held for the claim, which the report of the
 // death ends where it lands (died, endHeld): run here, a launch the burst lets straight out would
 // let the process go with the hold (letGo), and the claim would run where it should be suspended.
+// The turn such a replay carries is left spent, as a dropped wake leaves its token spent.
 func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 	recorded := ev.(RecordedDeath)
 	switch {
@@ -3782,7 +3784,7 @@ func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.log.Warn("supervise: relaunching a process the previous daemon found dead; its relaunch did not survive the restart",
 		"incarnation", m.claim.Locator.Incarnation, "generation", m.claim.Generation, "lastDeathCause", m.claim.LastDeathCause)
-	return m.relaunchDeath(ctx, endDied(m.claim.LastDeathCause), m.endUncharged("died"))
+	return m.relaunchDeath(ctx, endDied(m.claim.LastDeathCause), m.endUncharged("died"), recorded.Turn)
 }
 
 // endUncharged is whether the end of the claim's process is charged nothing, and it logs why

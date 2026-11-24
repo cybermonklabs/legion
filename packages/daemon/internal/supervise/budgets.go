@@ -118,10 +118,15 @@ var FailureCauses = []FailureCause{
 // ending is why the process the claim still records is let go, in the daemon's words, which the
 // launch records with what that process ended (launch, letGo); noEnd where the caller let it go
 // already (registrationDeadline).
-func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string) error {
+//
+// turn is the moment the caller already reserved for this relaunch in the wake pacing, as
+// launchAfter takes it, and the zero time for every caller but the boot's replay of a recorded
+// death (RecordedDeath.Turn). The retry of a refused relaunch passes the zero time: it is raised
+// anew, so it reserves afresh.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string, turn time.Time) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, cause, ending)
+			return m.relaunchAfterFailure(ctx, cause, ending, time.Time{})
 		}, err)
 	}
 	if !m.deathLaunchFailureCharged(cause) {
@@ -131,7 +136,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, time.Time{}, ending)
+	return m.launchAfter(ctx, true, false, false, turn, ending)
 }
 
 // deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of
