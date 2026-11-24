@@ -27,7 +27,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legionbench"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -41,11 +40,12 @@ import (
 //     writes a line for each frame Dispatch sends, with the time it arrived, and waits for its
 //     snapshot.
 //  3. For -duration (10 minutes) it appends issue events through the API at -rate (0.26 a second,
-//     ten times 812,386 events in 365 days): a comment on an issue the board shows, by the session
-//     of the Legion role the issue's phase belongs to, so the event is the issue's phase work and
-//     moves its stored facts at this head. It records the moment it sent each one. With -facts it
-//     reads, every 100 ms, the updated_at of the stored row of each issue it comments on and of each
-//     issue above it, and records each move: the issue_facts changes the events cause.
+//     ten times 812,386 events in 365 days): an issue.updated of an issue the board shows, its
+//     title edited by a session of the Legion role the issue's phase belongs to, so the view wakes
+//     at both builds and the event is a new input of the issue's facts at this head
+//     (appendEvents). It records the moment it sent each one. With -facts it reads, every 100 ms,
+//     the updated_at of the stored row of each issue it edits and of each issue above it, and
+//     records each move: the issue_facts changes the events cause.
 //  4. Once the window and a grace for the last pushes have passed, it stops the probe and judges:
 //     for each event the first push after it, within 2 s; for each facts change the first push that
 //     carries its entry (the delta's `maps.issues`), within 2 s of the row's updated_at; and the
@@ -195,7 +195,7 @@ func drive(args []string) error {
 	}
 	if len(cards) == 0 {
 		r.fail("the board shows no card, so no event can be appended on an issue it shows")
-		return errors.New("no card to comment on")
+		return errors.New("no card to append an event on")
 	}
 	r.result("board cards=%d", len(cards))
 	parents, err := readParents(ctx, pool, o.project, cards)
@@ -444,9 +444,10 @@ func readFrames(path string) ([]frame, error) {
 	return frames, nil
 }
 
-// card is one card of the board: its issue and its phase.
+// card is one card of the board: its issue, its title and its phase.
 type card struct {
 	Key   string `json:"key"`
+	Title string `json:"title"`
 	Phase string `json:"phase"`
 }
 
@@ -530,9 +531,16 @@ type appended struct {
 	Status   int       `json:"status"`
 }
 
-// appendEvents appends total comments, one each 1/rate seconds from start, on the cards in order,
-// round and round, each by the session of the role the card's phase belongs to, and answers each
-// with its times. A comment the server refuses is a FAIL line, and is no event of the judgement.
+// appendEvents appends total issue events, one each 1/rate seconds from start, on the cards in
+// order, round and round, and answers each with its times. Each is an issue.updated: a PATCH of the
+// card's title, which the board shows, so the live hub recomputes the view at main's tip as at this
+// head (an issue.updated of an issue a view names marks it, where a comment marks no view) and the
+// recompute has a change to push. Each is written by a session of its own, titled as the Legion
+// role the card's phase belongs to works the issue (`Legion <role> · <KEY>`): the facts read each
+// session's first event of an issue as a role event (metrics' readRoleEvents), so the edit is a new
+// input of the issue's facts and moves its stored row at this head; a second event by a session
+// already in the history would move nothing. A write the server refuses is a FAIL line, and is no
+// event of the judgement.
 func appendEvents(ctx context.Context, r *report, o driveOptions, token string, order []card, total int, start time.Time) []appended {
 	interval := time.Duration(float64(time.Second) / o.rate)
 	var events []appended
@@ -547,9 +555,27 @@ func appendEvents(ctx context.Context, r *report, o driveOptions, token string, 
 		if role == "" {
 			role = "implementer"
 		}
-		payload := fmt.Sprintf(`{"body":%q,"actor":%s}`, fmt.Sprintf("Bench note %d on %s by its %s.", index+1, target.Key, role),
-			legiontest.SessionActor(role, target.Key))
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, o.url+"/api/v1/issues/"+target.Key+"/comments", strings.NewReader(payload))
+		type origin struct {
+			SessionTitle string `json:"session_title"`
+		}
+		type actor struct {
+			Kind   string `json:"kind"`
+			ID     string `json:"id"`
+			Origin origin `json:"origin"`
+		}
+		payload, err := json.Marshal(struct {
+			Title string `json:"title"`
+			Actor actor  `json:"actor"`
+		}{
+			Title: fmt.Sprintf("%s · bench edit %d", target.Title, index+1),
+			Actor: actor{Kind: "session", ID: fmt.Sprintf("s-%s-%s-bench-%d", role, target.Key, index+1),
+				Origin: origin{SessionTitle: "Legion " + role + " · " + target.Key}},
+		})
+		if err != nil {
+			r.fail("event %d on %s: %v", index+1, target.Key, err)
+			continue
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPatch, o.url+"/api/v1/issues/"+target.Key, bytes.NewReader(payload))
 		if err != nil {
 			r.fail("event %d on %s: %v", index+1, target.Key, err)
 			continue
