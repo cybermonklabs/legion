@@ -407,11 +407,12 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 
 // A failed step's report can name the step of its task that the task returns to (returnTo):
 // any earlier step of the same task, not only the step of the type implementation that the
-// steps' types give, and the agent of that step gets the report. A report that names the failed
-// step itself or a later one, or a place no step of the task holds, is refused and changes
-// nothing, so the agent reports again (RETURN_REFUSED), as a backward move that no row serves is
-// refused today. An issue with no plan rows has no step to name: a report naming one is refused,
-// and the same report naming none returns to implementing as today.
+// steps' types give, and the agent of that step is started again in its own session, the
+// tester's notice naming as fields the head it tested and the check that does not pass there. A
+// report that names the failed step itself or a later one, or a place no step of the task holds,
+// is refused and changes nothing, so the agent reports again (RETURN_REFUSED), as a backward move
+// that no row serves is refused today. An issue with no plan rows has no step to name: a report
+// naming one is refused, and the same report naming none returns to implementing as today.
 func TestReturnToNamesAnEarlierStep(t *testing.T) {
 	// planned is LEGION-208 walking the steps planner implementer tester, standing in testing at
 	// step 3, its implementer started once, with its check failed at headOne, the head the
@@ -429,7 +430,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		return pool, engine, root
 	}
 
-	t.Run("returnTo 1 returns the task to the planner, which gets the tester's report", func(t *testing.T) {
+	t.Run("returnTo 1 returns the task to the planner, started again in its own session", func(t *testing.T) {
 		pool, engine, root := planned(t)
 		planners, implementers := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner)), len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 
@@ -442,9 +443,18 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
-		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). Handoff commit: " + headOne + "."
-		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) || !strings.Contains(start.Task, "k1: no (fail)") {
-			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q and the check that failed, k1: no (fail)", start, report)
+		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning {
+			t.Fatalf("the planner's start = %+v, want a start of planning in its own session", start)
+		}
+		var back []record.Notice
+		for _, notice := range noticesOf(t, pool, root.Key, "phase-finished") {
+			if notice.Role == claim.RoleTester {
+				back = append(back, notice)
+			}
+		}
+		if want := []record.FailingCheck{failingOf("k1", "no", "fail")}; len(back) != 1 || back[0].Phase != phase.Testing ||
+			back[0].Head != headOne || !reflect.DeepEqual(back[0].Failing, want) || back[0].WaitsFor != "" || len(back[0].Waiting) != 0 {
+			t.Fatalf("the tester's phase-finished notices = %+v, want one of the move back, with the head %s and failing %+v", back, headOne, want)
 		}
 		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got > implementers {
 			t.Fatalf("the return wrote %d starts of the implementer, want none: the report named the planner", got-implementers)
