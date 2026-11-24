@@ -227,7 +227,9 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 	select {
 	case frame := <-frames:
 		t.Fatalf("the holder received a frame past the %d published: %+v", messages, frame)
-	case <-time.After(listenerWaitBound(t)):
+	// A quiet window: the second this waits is what the row asserts, that no frame comes past the
+	// ones published, so it keeps its own span.
+	case <-time.After(time.Second):
 	}
 	if len(keys) != messages {
 		t.Fatalf("the holder received %d distinct dedupe keys over %d frames, want %d: a publish was forwarded twice", len(keys), messages, messages)
