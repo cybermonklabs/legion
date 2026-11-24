@@ -107,6 +107,15 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 				diagHeld = slices.Clone(xidDiagHeld)
 				diagPopulate = slices.Clone(xidDiagPopulate)
 				diagAbsentHeld = xidAbsentPages(diagHeld)
+				if os.Getenv("PLANT") == "mapbetween" {
+					// DIAGNOSTIC BRANCH: 256 KiB of anonymous writable memory mapped between
+					// the hold and the read this test takes after it, one page of it touched.
+					plant, plantErr := unix.Mmap(-1, 0, 256<<10, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+					if plantErr != nil {
+						t.Fatalf("plant: map the block: %v", plantErr)
+					}
+					plant[0] = 1
+				}
 				mapped, named = xidTracerMappings(t)
 				absent = xidAbsentPages(mapped)
 				runtime.Gosched()
