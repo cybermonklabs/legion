@@ -155,7 +155,7 @@ export function rowAuthor(scope: Locator): Locator {
 }
 
 /** The rows of the Contents list, wherever it is drawn: the pane, or the Outline sheet. */
-export function contentsEntries(scope: Locator): Locator {
+export function drawnContentsEntries(scope: Locator): Locator {
   return scope.locator("[data-contents-entry]");
 }
 

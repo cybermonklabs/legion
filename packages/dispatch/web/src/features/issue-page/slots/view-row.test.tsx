@@ -12,7 +12,8 @@ import { KeymapProvider } from "../../shell/KeymapProvider";
 import { issueDetails, KEY, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { readComment, TWO_THREADS } from "../outline-fixtures";
-import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
+import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER } from "../page-words";
+import type { Filter } from "../presets";
 import { ProvidersSlot } from "./providers";
 import { ViewRowSlot } from "./view-row";
 
@@ -60,10 +61,9 @@ function blocksWithStep(id: string): never {
   ) as never;
 }
 
-/** What the row draws once every read has answered: the spec's two statements, and the two
- *  threads the reader began, which are Conversation's entries. */
-const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
-  conversation: "2",
+/** The counts once every read has answered: two statements and no decisions, steps or checks.
+ *  Conversation draws no count. */
+const ANSWERED_COUNTS: Readonly<Record<Filter, string>> = {
   decisions: "0",
   plan: "0",
   spec: "2",
@@ -204,8 +204,8 @@ test("the view row draws no count while a read of the tree stands failed", async
   }
 });
 
-// Conversation counts the threads the reader began, so until the reader's login has answered it
-// counts none of them: every read of the tree holding its answer is not enough on its own.
+// Decisions' flag counts decisions marked `waiting`, which the tree does not mark until the
+// reader's login has answered. The tree's other reads holding their answers is not enough.
 test("the view row draws no count while the reader's login is out, and the real counts once it has answered", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -286,7 +286,7 @@ test("under a words filter the view row draws no count while the names read is o
 // The names read is read under the set of addresses the tree holds, so a read that brings a node
 // whose words cite a new address reads the names again, of a new set. The names in hand stand
 // while that read is out, as the last answer the names read gave, so under a words filter the
-// row keeps drawing its counts meanwhile, the new node counted among them.
+// row keeps drawing its counts meanwhile.
 test("under a words filter the view row keeps drawing its counts while the names read of a new set of addresses is out", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -309,7 +309,7 @@ test("under a words filter the view row keeps drawing its counts while the names
       expect(
         drawnCounts(view.container),
         "the row did not draw its counts once the names read of the first set had answered"
-      ).toEqual({ conversation: "0", decisions: "0", plan: "1", spec: "0", verification: "0" })
+      ).toEqual({ decisions: "0", plan: "1", spec: "0", verification: "0" })
     );
 
     // The comments are read again, and answer a new thread too, by the reader, whose words hold
@@ -329,7 +329,7 @@ test("under a words filter the view row keeps drawing its counts while the names
     expect(
       drawnCounts(view.container),
       "the row did not draw its counts with the names read of the new set out"
-    ).toEqual({ conversation: "1", decisions: "0", plan: "1", spec: "0", verification: "0" });
+    ).toEqual({ decisions: "0", plan: "1", spec: "0", verification: "0" });
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -415,7 +415,7 @@ test("under a words filter the view row of an issue that holds no node draws no 
       expect(
         drawnCounts(view.container),
         "the row did not draw its counts once the names read of the issue's own key had answered"
-      ).toEqual({ conversation: "0", decisions: "0", plan: "0", spec: "0", verification: "0" })
+      ).toEqual({ decisions: "0", plan: "0", spec: "0", verification: "0" })
     );
   } finally {
     view.unmount();

@@ -6,7 +6,6 @@ import { createElement, useEffect } from "react";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
-import { contentsEntries } from "./contents-entries";
 import { FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { type ContentsEntry, ContentsList, contentsOf } from "./IssueContents";
 import type { TreeNode } from "./issue-tree";
@@ -14,9 +13,8 @@ import { CONTROL_LABELS, type NodeType } from "./page-words";
 import { SENTENCE_TABLE } from "./sentence-table";
 
 /**
- * The Contents list's entries (R14): each question and each thread the
- * reader began, nested under the nearest entry above it, over a tree built by hand. The issue
- * itself is no entry: the header is the issue.
+ * The Contents list's entries, nested under the nearest entry above them, over a tree built
+ * by hand. The issue itself is no entry: the header is the issue.
  */
 
 /** One node of a hand-built tree. A requirement here is one of the issue's own spec, which the
@@ -60,8 +58,8 @@ function shape(entries: readonly ContentsEntry[]): string[] {
   );
 }
 
-/** A question holding a statement with a question under it and a thread of the reader's;
- *  beside it, threads of another person, of an agent and of the reader, and a transcluded copy. */
+/** A question holding a nested question and the reader's comment thread. Beside it are other
+ *  people's turns, the reader's messages with and without a statement, and a transcluded ask. */
 const nested = node("CORE-1", "issue", [
   node("ask-1", "ask", [
     node("requirement-1", "requirement", [node("ask-2", "ask")]),
@@ -71,7 +69,8 @@ const nested = node("CORE-1", "issue", [
   ]),
   node("comment-bob", "comment", [], { author: bob }),
   node("message-agent", "message", [], { author: agent }),
-  node("message-mine", "message", [], { author: alice }),
+  node("message-mine", "message", [node("requirement-2", "requirement")], { author: alice }),
+  node("message-alone", "message", [], { author: alice }),
   node("ask-1-again", "ask", [], { transcluded: true }),
 ]);
 
@@ -107,7 +106,7 @@ const counted = node("CORE-1", "issue", [
   ]),
 ]);
 
-test("the list holds each question and each thread the reader began, nested, and no issue", () => {
+test("the list holds the questions and qualifying threads nested in tree order, and no issue", () => {
   expect(shape(contentsOf(nested, "alice"))).toEqual([
     "ask-1: ask-2, comment-mine",
     "message-mine",
@@ -254,35 +253,6 @@ test("a list drawn more than 30 s after whoami answered asks for it nothing", ()
   } finally {
     view.unmount();
     whoAmI.mockRestore();
-  }
-});
-
-// The view row's Conversation count is `contentsEntries` (`slots/view-row.tsx`), so the count
-// and the list read one rule: under the issue, and under each entry at every depth, the list
-// holds as many entries as the count says.
-test("the list holds as many entries as the view row's Conversation count", () => {
-  const cases: readonly (readonly [TreeNode, string | undefined])[] = [
-    [nested, "alice"],
-    [mine, undefined],
-    [mine, "Alice"],
-    [copied, "alice"],
-    [counted, "alice"],
-  ];
-  const drawn = (entries: readonly ContentsEntry[]): number =>
-    entries.reduce((total, entry) => total + 1 + drawn(entry.children), 0);
-  for (const [root, viewer] of cases) {
-    const entries = contentsOf(root, viewer);
-    const listed: Record<string, number> = { [root.id]: drawn(entries) };
-    const counts: Record<string, number> = { [root.id]: contentsEntries(root, viewer) };
-    const walk = (list: readonly ContentsEntry[]): void => {
-      for (const entry of list) {
-        listed[entry.node.id] = drawn(entry.children);
-        counts[entry.node.id] = contentsEntries(entry.node, viewer);
-        walk(entry.children);
-      }
-    };
-    walk(entries);
-    expect(listed).toEqual(counts);
   }
 });
 

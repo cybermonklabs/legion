@@ -500,8 +500,8 @@ test("the five controls are toggles with an address each, one line at every widt
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}`);
 
-    // The toolbar Filters: five toggles in R7's order, each named by its view's word alone and
-    // described by its signal, whose count is the seed's.
+    // The toolbar Filters: five toggles in order, each named by its view's word alone. The four
+    // filters are described by their signals, with the seed's counts. Conversation has no count.
     await expect(presetToolbar(page), "no toolbar named Filters holds the five").toHaveCount(1);
     await expect(presetToggles(page)).toHaveCount(5);
     expect(
@@ -517,12 +517,15 @@ test("the five controls are toggles with an address each, one line at every widt
         "aria-pressed",
         preset === "conversation" ? "true" : "false"
       );
+      if (preset === "conversation") continue;
       await expect(presetCount(page, preset)).toHaveText(String(SEEDED_COUNTS[preset]));
       await expect(
         toggle,
         `${PRESET_NAMES[preset]} is not described by its count`
       ).toHaveAccessibleDescription(new RegExp(`^${SEEDED_COUNTS[preset]}\\b`));
     }
+    await expect(presetCount(page, "conversation"), "Conversation drew a count").toHaveCount(0);
+    await expect(presetToggle(page, "conversation")).toHaveAccessibleDescription("");
 
     // A press turns a view on and the others off, a second press turns it off, and each state
     // is its own address.

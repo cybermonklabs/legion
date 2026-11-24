@@ -55,14 +55,12 @@ export interface ContentsEntry {
 }
 
 /**
- * The entries of the list, read off the tree the outline draws: each node the Contents rule
- * makes an entry (`isContentsEntry`) - an ask, and a comment or message the reader wrote that
- * begins a thread - each under the nearest such entry above it in the tree, in the tree's own
- * order, so the list holds as many entries as the view row's Conversation count says
- * (`contentsEntries`). The issue itself is no entry: the header is the issue, as the outline
- * draws no row of it. A node drawn under a second parent is listed once, at its own place, and
- * counted once: a transcluded copy and the branch under it are the same nodes as at the edited
- * place, so they are neither listed nor counted again.
+ * The entries of the list, read off the tree the outline draws by `isContentsEntry`: asks,
+ * comment threads the reader began, and message threads the reader began with a non-message
+ * node placed in them. Each sits under the nearest entry above it, in the tree's order. The
+ * issue itself is no entry: the header is the issue, as the outline draws no row of it. A
+ * transcluded copy and the branch under it are neither listed nor counted again: the list
+ * reads those nodes at their own place.
  *
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
  * to it, so a node counts once, on the entry whose branch it is read in (the prototype's

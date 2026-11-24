@@ -18,6 +18,7 @@ import {
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
 import {
   createAsk,
+  createMessage,
   editArtifact,
   getArtifact,
   getAsk,
@@ -79,9 +80,9 @@ import {
 } from "./issue-page-i";
 import {
   becauseLines,
-  contentsEntries,
   contentsLineFaults,
   decidedByCells,
+  drawnContentsEntries,
   expectOnScreen,
   focusBranchControl,
   ownWords,
@@ -277,7 +278,7 @@ test("a Contents entry draws a node's first line, cut at a word", async ({ brows
     words.set(openQuestion, indexed ?? "");
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
-    const entries = contentsEntries(contentsPane(page));
+    const entries = drawnContentsEntries(contentsPane(page));
     await expect
       .poll(() => entries.count(), { message: "the Contents pane draws no entry at 1440 px" })
       .toBeGreaterThan(0);
@@ -350,7 +351,7 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
     await gotoIssue(page, `/issues/${seeded.key}`);
     if (phone) await outlineControl(page).click();
     await expect
-      .poll(() => contentsEntries(phone ? outlineSheet(page) : contentsPane(page)).count(), {
+      .poll(() => drawnContentsEntries(phone ? outlineSheet(page) : contentsPane(page)).count(), {
         message: `the Contents list draws no entry at ${size.width} px`,
       })
       .toBeGreaterThan(0);
@@ -416,14 +417,10 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
   });
 });
 
-// R2, from the Contents clause of the checkpoint's `one panel of properties holds no
-// conversation list @phone`: each question and each of the reader's own threads is an entry, a
-// press or Enter goes to its node in the outline, the entry the reader is in is marked, and Focus
-// branch draws that branch alone, then the whole outline again. Below 1024 px the list is in the
-// Outline sheet, which a choice closes, by pointer and by Enter from the foot of the page; where
-// that choice leaves the focused row is the next row's. No view is turned on between the two
-// readings of Focus branch: the outline drawn again after a view is the outline's own rows' to
-// read.
+// Enter or a press on a Contents entry goes to its node in the outline and marks the entry.
+// Focus branch draws that branch alone, then the whole outline again. Below 1024 px choosing an
+// entry in the Outline sheet closes it. The reader's message is drawn in the outline but has no
+// entry: no node was placed under it. Spec has a count, but Conversation does not.
 // SLOW(>=2s): the whole seeded issue, two loads of the page, and six moves of the focus and the
 // toggle, each waited on until the outline redraws.
 test("a Contents entry goes to its node, and Focus branch draws that branch alone @phone", async ({
@@ -432,6 +429,9 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const question = blockNodeId(specSlug, seeded.openQuestion.blockId);
+    // The API call uses the same login as `phase`.
+    const message = await createMessage(seeded.key, { body: "I have read the spec." });
+    const statements = (await getIssueCoverage(seeded.key)).requirements ?? [];
 
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     // The outline draws the tree read by read, and the issue read alone puts a child first:
@@ -447,6 +447,19 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
     await expectIssuePageDrawn(page);
     await expect.poll(() => nodeRows(page).count()).toBeGreaterThan(0);
     await expectLoadSettled(traffic);
+    await expect(
+      nodeRow(page, message.id),
+      "the reader's message is not in the outline"
+    ).toHaveCount(1);
+    await expect(
+      presetCount(page, "spec"),
+      "Spec does not show the number of statements"
+    ).toHaveText(String(statements.length));
+    await expect(presetCount(page, "conversation"), "Conversation drew a count").toHaveCount(0);
+    await expect(
+      contentsPane(page).locator(`[data-contents-entry="${message.id}"]`),
+      "the reader's message with no node under it is an entry of the Contents list"
+    ).toHaveCount(0);
     const firstRow = (await drawnRows(page)).find((row) => row.visible)?.id;
     expect(firstRow, "the outline draws no first row").toBeDefined();
     await nodeRows(page).first().focus();
