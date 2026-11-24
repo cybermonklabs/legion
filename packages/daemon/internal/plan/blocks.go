@@ -6,8 +6,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-
-	"github.com/sjawhar/envoy/steprecord"
 )
 
 // The two types of block a plan holds. Every other block of the document is its prose.
@@ -51,10 +49,6 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 		if block.Type == RoleBlockType {
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
-		}
-		if !steprecord.TaskIDHolds(block.ID) {
-			return Plan{}, fmt.Errorf("the task %s has an id of %d bytes outside the form of a task id, %s, so Dispatch could record none of its steps",
-				quoted(block.ID), len(block.ID), steprecord.TaskIDRule)
 		}
 		task, err := taskOf(block)
 		if err != nil {
