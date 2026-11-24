@@ -296,29 +296,43 @@ func TestTheBackfillLeavesARecordWhoseNonMergingTasksPullRequestIsOnAnotherRepos
 }
 
 // Where the pull request of each task is on the repository Dispatch resolves, in any case, the
-// record is filled. LEGION-1's plan is the one above, with a's #7 on ACME/Widgets and b's #8 on
-// acme/widgets: the record is filled with acme/widgets, GitHub's spelling acme/widgets beside it,
-// and nothing is left.
+// record is filled with acme/widgets, GitHub's spelling acme/widgets beside it, and nothing is
+// left. Two plans: the one above, with a's #7 on ACME/Widgets and b's #8 on acme/widgets; and a and
+// b, running, each needing nothing, so each merges by itself, with a's #7 on acme/widgets and b's
+// #8 on ACME/Widgets.
 //
 // The fault it catches is a record left over a pull request on its own repository spelled in
 // another case (its control: the backfill comparing the repositories by exact text, under which
-// the record is left over #7).
+// the record is left over #7 in the first plan and over #8, the second merge's, in the second).
 func TestTheBackfillFillsARecordWhoseEveryTaskPullRequestIsOnTheResolvedRepository(t *testing.T) {
 	t.Parallel()
-	pool, records := isolatedOutboxPool(t), record.NewStore()
-	seedTaskPullRequests(t, pool, records,
-		[]record.PlanTask{{Task: "a", State: record.TaskDone},
-			{Task: "b", Needs: []string{"a"}, Merges: true, State: record.TaskRunning}},
-		map[string]record.PullRequest{"a": {Repo: "ACME/Widgets", Number: 7}, "b": {Repo: "acme/widgets", Number: 8}})
-	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"})
-	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
-	left, logged := backfillLogged(t, pool, records, client, t.TempDir(),
-		newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{})
-	if left {
-		t.Fatalf("backfill left a record, logging:\n%s\nwant LEGION-1 filled", logged)
-	}
-	if got := recordedIssue(t, &workflowRuntime{pool: pool, records: records, log: quietLogger()}, "LEGION-1"); got.Repo != "acme/widgets" || got.GitHubRepo != "acme/widgets" {
-		t.Fatalf("LEGION-1 = %s (GitHub's %s), want acme/widgets (GitHub's acme/widgets)", got.Repo, got.GitHubRepo)
+	for _, tc := range []struct {
+		name  string
+		tasks []record.PlanTask
+		prs   map[string]record.PullRequest
+	}{
+		{"a task that does not merge and one that merges",
+			[]record.PlanTask{{Task: "a", State: record.TaskDone}, {Task: "b", Needs: []string{"a"}, Merges: true, State: record.TaskRunning}},
+			map[string]record.PullRequest{"a": {Repo: "ACME/Widgets", Number: 7}, "b": {Repo: "acme/widgets", Number: 8}}},
+		{"two tasks that merge",
+			[]record.PlanTask{{Task: "a", State: record.TaskRunning}, {Task: "b", State: record.TaskRunning}},
+			map[string]record.PullRequest{"a": {Repo: "acme/widgets", Number: 7}, "b": {Repo: "ACME/Widgets", Number: 8}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool, records := isolatedOutboxPool(t), record.NewStore()
+			seedTaskPullRequests(t, pool, records, tc.tasks, tc.prs)
+			github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"})
+			client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
+			left, logged := backfillLogged(t, pool, records, client, t.TempDir(),
+				newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{})
+			if left {
+				t.Fatalf("backfill left a record, logging:\n%s\nwant LEGION-1 filled", logged)
+			}
+			if got := recordedIssue(t, &workflowRuntime{pool: pool, records: records, log: quietLogger()}, "LEGION-1"); got.Repo != "acme/widgets" || got.GitHubRepo != "acme/widgets" {
+				t.Fatalf("LEGION-1 = %s (GitHub's %s), want acme/widgets (GitHub's acme/widgets)", got.Repo, got.GitHubRepo)
+			}
+		})
 	}
 }
 
