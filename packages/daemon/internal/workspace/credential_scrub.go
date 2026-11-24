@@ -22,17 +22,19 @@ func (r remote) shown(text string) string {
 	return oauth2call.Field(strings.TrimSpace(r.scrub(text)))
 }
 
-// scrubTokens is text with each of tokens, the provisioning tokens a run of git held, taken out
-// wherever git, or whatever answered in GitHub's place, wrote it back: each token whole replaced by
-// ***, and then every run of oauth2call.TokenPiece characters of a token, or of the Basic
-// credential git sends with it (Authorization: Basic base64(provisioningUser:token)), redacted by
-// the rule envoy prints a request's echo by (oauth2call.Tokens), in the text as git wrote it and in
-// its percent-decoded reading (redactDecoded). A redirect's Location can carry a token cut short
-// or percent-encoded, and an ERR packet or a sideband line the Authorization header git sent; none
-// of those is the token as written. A token shorter than the piece is redacted only whole, as the
-// rule redacts one. Fetch's classifiers decide on what this answers (transientCloneFailure,
-// outsideVolumeFailure), and it replaces only runs of a credential's characters: a GitHub token
-// (ghs_ and letters and digits) and a base64 value hold no space, and every phrase the classifiers
+// scrubTokens is text with each of tokens, the tokens a run holds - the provisioning tokens git
+// presented, and in a fetch from the repository cache the cache's bearer too (Fetch) - taken out
+// wherever git, or whatever answered in GitHub's or the cache's place, wrote it back: each token
+// whole replaced by ***, and then every run of oauth2call.TokenPiece characters of a token, or of
+// the Basic credential git sends with it (Authorization: Basic base64(provisioningUser:token)),
+// redacted by the rule envoy prints a request's echo by (oauth2call.Tokens), in the text as git
+// wrote it and in its percent-decoded reading (redactDecoded). A redirect's Location can carry a
+// token cut short or percent-encoded, an ERR packet or a sideband line the Authorization header git
+// sent, and a ref's name a token in either form; none of those is the token as written. A token
+// shorter than the piece is redacted only whole, as the rule redacts one. Fetch's classifiers
+// decide on what this answers (transientCloneFailure, outsideVolumeFailure), and it replaces only
+// runs of a credential's characters: a GitHub token (ghs_ and letters and digits), the cache's
+// bearer (hexadecimal digits) and a base64 value hold no space, and every phrase the classifiers
 // match holds one but SSL_ERROR_SYSCALL, a run of which only a token beginning ghs_SYSCALL holds.
 func scrubTokens(text string, tokens ...string) string {
 	var credentials []string
