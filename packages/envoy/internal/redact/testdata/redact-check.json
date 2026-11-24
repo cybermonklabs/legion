@@ -11777,8 +11777,8 @@
       "capture": "mcpbridge.redirect-followed/session",
       "mutation": {
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
-        "preimage": "redirects.SameOrigin(http.DefaultClient).Post",
-        "replacement": "func() *http.Client { _ = redirects.SameOrigin; return http.DefaultClient }().Post"
+        "preimage": "poster := redirects.SameOrigin(http.DefaultClient)",
+        "replacement": "poster := http.DefaultClient"
       }
     },
     {
@@ -11791,8 +11791,8 @@
       "capture": "mcpbridge.redirect-followed/basic",
       "mutation": {
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
-        "preimage": "redirects.SameOrigin(http.DefaultClient).Post",
-        "replacement": "func() *http.Client { _ = redirects.SameOrigin; return http.DefaultClient }().Post"
+        "preimage": "poster := redirects.SameOrigin(http.DefaultClient)",
+        "replacement": "poster := http.DefaultClient"
       }
     },
     {
@@ -13503,8 +13503,8 @@
       "capture": "loadtest.register-redirect/followed",
       "mutation": {
         "file": "packages/envoy/loadtest/sessions.go",
-        "preimage": "redirects.Refused(&http.Client{Timeout: 10 * time.Second})",
-        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: 10 * time.Second} }()"
+        "preimage": "redirects.Refused(shortClient)",
+        "replacement": "func() (c listenerclient.Client) { _ = redirects.Refused; c.HTTP = shortClient; return c }().HTTP"
       }
     },
     {
