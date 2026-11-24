@@ -626,7 +626,7 @@ func installedCheck(t *testing.T, tag string) string {
 		members[name] = leakguardtest.Member{Body: body, Mode: mode}
 	}
 	raw := leakguardtest.GitHubTarball(t, members)
-	body, _, err := leakguard.PackTarballManifest(bytes.NewReader(raw))
+	body, _, err := leakguard.PackTarballManifest(leakguardtest.Answer(raw))
 	if err != nil {
 		t.Fatal(err)
 	}

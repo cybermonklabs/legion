@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -198,9 +197,9 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		}
 		return Served{}, errors.New(Cause(what, nil))
 	}
-	// The tarball is data the daemon unpacks and serves, streamed through oauth2call.StreamAnswer;
-	// PackTarballManifest bounds what it unpacks.
-	body, manifest, err := PackTarballManifest(oauth2call.StreamAnswer(response, math.MaxInt64))
+	// The tarball is data the daemon unpacks and serves, streamed from the answer, whose record an
+	// error naming a member is read with (PackTarballManifest); the pack bounds what it unpacks.
+	body, manifest, err := PackTarballManifest(response)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Served{}, s.readFailure(ctx, tag, bound, err)

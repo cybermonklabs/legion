@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"io"
 	"maps"
+	"net/http"
 	"slices"
 	"testing"
 )
@@ -53,6 +55,13 @@ func Tarball(t testing.TB, members map[string]Member) []byte {
 			writeMember(t, archive, name, members[name])
 		}
 	})
+}
+
+// Answer is raw as the body of GitHub's answer to a read of the check's repository's tarball, the
+// shape leakguard.PackTarballManifest reads. No request led to it, so it carries no credential to
+// redact, and a member's name prints as it came.
+func Answer(raw []byte) *http.Response {
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(raw))}
 }
 
 // gzipTar writes a gzipped tarball whose members write adds, and answers its bytes.

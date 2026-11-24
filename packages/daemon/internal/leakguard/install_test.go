@@ -82,7 +82,7 @@ func wholeCheck(t *testing.T, launcher string) []byte {
 // digest the pack answers beside it is the source's to read (TestTheServedBodyIsTheDirectoryAloneWithItsDigest).
 func served(t *testing.T, raw []byte) []byte {
 	t.Helper()
-	body, _, err := PackTarballManifest(bytes.NewReader(raw))
+	body, _, err := PackTarballManifest(leakguardtest.Answer(raw))
 	if err != nil {
 		t.Fatalf("pack: %v", err)
 	}
@@ -177,7 +177,7 @@ func membersOf(t *testing.T, body []byte) map[string]packedMember {
 // paths, with their bytes and modes, and nothing of the rest of the repository nor its prefix.
 func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 	files := theCheck(answersItsHelp)
-	body, _, err := PackTarballManifest(bytes.NewReader(leakguardtest.GitHubTarball(t, files)))
+	body, _, err := PackTarballManifest(leakguardtest.Answer(leakguardtest.GitHubTarball(t, files)))
 	if err != nil {
 		t.Fatalf("pack: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 // whose directory misses a file of the manifest, one whose manifest file is past the read limit and
 // one that holds a manifest file twice are each refused by name, with no body and no digest. A
 // missing manifest file is refused rather than hashed as a digest with a gap, and a second copy of
-// one rather than hashed as whichever copy came last.
+// one rather than hashed as whichever copy came last: as any member at a path another took is.
 func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -297,11 +297,11 @@ func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 				}
 				return raw.Bytes()
 			},
-			want: `holds the manifest file "` + leakguardtest.ReadmeName + `" more than once`,
+			want: `holds the member "` + leakguardtest.TarballPrefix + `leak-check/` + leakguardtest.ReadmeName + `", which is at a path another of its members takes`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body, manifest, err := PackTarballManifest(bytes.NewReader(tc.raw(t)))
+			body, manifest, err := PackTarballManifest(leakguardtest.Answer(tc.raw(t)))
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("pack = %v, want %q", err, tc.want)
 			}

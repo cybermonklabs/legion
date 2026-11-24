@@ -11,12 +11,16 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
+	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -82,26 +86,31 @@ const (
 // was passed from the buffer's own over.
 var errOverLimit = errors.New("over the read limit")
 
-// PackTarballManifest reads a GitHub tarball of the check's repository (gzip, then tar), and
-// answers its leak-check directory alone, packed into a new gzipped tarball whose member paths are
-// the directory's own — no repository prefix and no leading `leak-check/` — with each file's bytes
-// and mode as the tarball has them, and the manifest digest (Manifest) of the exact bytes of the
-// manifest files it packs. That body is what the daemon serves to a pod's launcher
-// (InstallServed). Each manifest file streams through its sha256 as it is written into the body,
-// so the source need not unpack or copy the body it already holds.
+// PackTarballManifest reads GitHub's answer to a read of the check's repository's tarball, its body
+// a stream of data (oauth2call.StreamAnswer; gzip, then tar), and answers its leak-check directory
+// alone, packed into a new gzipped tarball whose member paths are the directory's own — no
+// repository prefix and no leading `leak-check/` — with each file's bytes and mode as the tarball
+// has them, and the manifest digest (Manifest) of the exact bytes of the manifest files it packs.
+// That body is what the daemon serves to a pod's launcher (InstallServed). Each manifest file
+// streams through its sha256 as it is written into the body, so the source need not unpack or copy
+// the body it already holds.
 //
 // It refuses a member of that directory that is neither a directory nor a regular file, a member
-// whose path does not stay inside it, a tarball with no such directory, one whose directory holds
-// no regular file or misses a file of the manifest, a manifest file past manifestFileLimit or
-// there twice, a tarball over maxTarballBytes and a directory that packs over maxPackedBytes.
-// Each error is a predicate of the tarball, written to follow
-// `the tarball of <the repository> at <tag> ` in the cause sentence the daemon builds of it
-// (Cause), and comes with no body and no digest.
-func PackTarballManifest(r io.Reader) ([]byte, string, error) {
-	in := &io.LimitedReader{R: r, N: maxTarballBytes + 1}
+// whose path is no clean path inside it, one at a path another member took (but a directory where
+// there is one) and one below a regular file — so the body holds no member the pod's unpack
+// (unpackServed) fails on — a tarball with no such directory, one whose directory holds no regular
+// file or misses a file of the manifest, a manifest file past manifestFileLimit, a tarball over
+// maxTarballBytes and a directory that packs over maxPackedBytes. Each error is a predicate of the
+// tarball, written to follow `the tarball of <the repository> at <tag> ` in the cause sentence the
+// daemon builds of it (Cause), and comes with no body and no digest. A member's name is the
+// answering party's words, which whatever answers in GitHub's place can write the read's token
+// into: an error names it only as the rule reads it, with the credentials the requests that led to
+// answer carried redacted (oauth2call.StreamedWords).
+func PackTarballManifest(answer *http.Response) ([]byte, string, error) {
+	in := &io.LimitedReader{R: oauth2call.StreamAnswer(answer, math.MaxInt64), N: maxTarballBytes + 1}
 	out := &cappedBuffer{left: maxPackedBytes}
 	sums := make(map[string][sha256.Size]byte, len(ManifestFiles))
-	files, found, err := pack(in, out, sums)
+	files, found, err := pack(in, answer, out, sums)
 	switch {
 	case in.N <= 0:
 		return nil, "", fmt.Errorf("is over the %d MiB this daemon reads of one", maxTarballBytes>>20)
@@ -136,12 +145,13 @@ func isManifestFile(name string) bool {
 	return false
 }
 
-// pack copies the leak-check directory of the tarball r carries into a gzipped tarball written to
-// w, and answers how many files it wrote and whether the directory was there at all. Each manifest
-// file is hashed into sums, by its name, as its bytes stream into the packed tarball. GitHub's
-// tarball of a repository holds every member under one `<owner>-<repo>-<sha>/` directory, so the
-// members this reads are `<that>/leak-check/…` (memberPath).
-func pack(r io.Reader, w io.Writer, sums map[string][sha256.Size]byte) (files int, found bool, err error) {
+// pack copies the leak-check directory of the tarball r carries, answer's body, into a gzipped
+// tarball written to w, and answers how many files it wrote and whether the directory was there at
+// all. Each manifest file is hashed into sums, by its name, as its bytes stream into the packed
+// tarball. GitHub's tarball of a repository holds every member under one `<owner>-<repo>-<sha>/`
+// directory, so the members this reads are `<that>/leak-check/…` (memberPath). A member's name is
+// decided on as it came and printed only as oauth2call.StreamedWords reads it, with answer's record.
+func pack(r io.Reader, answer *http.Response, w io.Writer, sums map[string][sha256.Size]byte) (files int, found bool, err error) {
 	zipped, err := gzip.NewReader(r)
 	if err != nil {
 		return 0, false, fmt.Errorf("could not be read: %w", err)
@@ -149,6 +159,7 @@ func pack(r io.Reader, w io.Writer, sums map[string][sha256.Size]byte) (files in
 	archive := tar.NewReader(zipped)
 	out := gzip.NewWriter(w)
 	packed := tar.NewWriter(out)
+	placed := map[string]bool{}
 	for {
 		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
@@ -165,37 +176,43 @@ func pack(r io.Reader, w io.Writer, sums map[string][sha256.Size]byte) (files in
 		if rel == "" {
 			continue
 		}
-		if !filepath.IsLocal(rel) {
-			return 0, false, fmt.Errorf("holds the member %q, which is no path inside %s/", header.Name, checkDirectory)
+		dir := header.Typeflag == tar.TypeDir
+		name := rel
+		if dir {
+			name = strings.TrimSuffix(rel, "/")
+		}
+		// fs.ValidPath takes "." as the directory itself, which no member but its own entry is.
+		if !fs.ValidPath(name) || name == "." {
+			return 0, false, fmt.Errorf("holds the member %q, which is no path inside %s/", oauth2call.StreamedWords(answer, header.Name), checkDirectory)
+		}
+		if !dir && header.Typeflag != tar.TypeReg {
+			return 0, false, fmt.Errorf("holds the member %q, which is neither a directory nor a regular file", oauth2call.StreamedWords(answer, header.Name))
+		}
+		if refusal := place(placed, name, dir); refusal != "" {
+			return 0, false, fmt.Errorf("holds the member %q, which %s", oauth2call.StreamedWords(answer, header.Name), refusal)
 		}
 		mode := int64(header.FileInfo().Mode().Perm())
-		switch header.Typeflag {
-		case tar.TypeDir:
-			err = packed.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: strings.TrimSuffix(rel, "/") + "/", Mode: mode, ModTime: header.ModTime})
-		case tar.TypeReg:
-			manifest := isManifestFile(rel)
-			if manifest {
-				if header.Size > manifestFileLimit {
-					return 0, false, fmt.Errorf("holds the manifest file %q, which is over the %d MiB read limit", rel, manifestFileLimit>>20)
-				}
-				if _, twice := sums[rel]; twice {
-					return 0, false, fmt.Errorf("holds the manifest file %q more than once", rel)
-				}
+		if dir {
+			err = packed.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: name + "/", Mode: mode, ModTime: header.ModTime})
+		} else {
+			// name is one of ManifestFiles where manifest is set, so the refusal prints this
+			// package's own words.
+			manifest := isManifestFile(name)
+			if manifest && header.Size > manifestFileLimit {
+				return 0, false, fmt.Errorf("holds the manifest file %q, which is over the %d MiB read limit", name, manifestFileLimit>>20)
 			}
-			err = packed.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: rel, Mode: mode, Size: header.Size, ModTime: header.ModTime})
+			err = packed.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: name, Mode: mode, Size: header.Size, ModTime: header.ModTime})
 			if err == nil {
 				if !manifest {
 					_, err = io.Copy(packed, archive)
 				} else {
 					sum := sha256.New()
 					if _, err = io.Copy(io.MultiWriter(packed, sum), archive); err == nil {
-						sums[rel] = [sha256.Size]byte(sum.Sum(nil))
+						sums[name] = [sha256.Size]byte(sum.Sum(nil))
 					}
 				}
 			}
 			files++
-		default:
-			return 0, false, fmt.Errorf("holds the member %q, which is neither a directory nor a regular file", header.Name)
 		}
 		if err != nil {
 			return 0, false, fmt.Errorf("could not be packed: %w", err)
@@ -238,6 +255,36 @@ func memberPath(name string) (string, bool) {
 		return "", true
 	}
 	return strings.CutPrefix(rest, checkDirectory+"/")
+}
+
+// place takes name, a member's clean path inside the check's directory, into placed — each path
+// a member the pack took sits at: true for a directory, a directory member's or the parent of any
+// member, and false for a regular file — and answers why the pod's unpack (unpackServed) would fail
+// on it, or "" where it would not: a member below a regular file, whose parent the unpack cannot
+// make, and one at a path another member took, where the unpack writes no file (writeMember's
+// O_EXCL) and makes no directory over a file. A directory where there is one is made again as it
+// was. Every path placed holds has its parents placed as directories, so the walk up stops at the
+// first parent placed.
+func place(placed map[string]bool, name string, dir bool) string {
+	if wasDir, taken := placed[name]; taken && !(wasDir && dir) {
+		return "is at a path another of its members takes"
+	}
+	for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
+		if wasDir, taken := placed[parent]; taken {
+			if !wasDir {
+				return "is below another of its members, a regular file"
+			}
+			break
+		}
+	}
+	placed[name] = dir
+	for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
+		if _, taken := placed[parent]; taken {
+			break
+		}
+		placed[parent] = true
+	}
+	return ""
 }
 
 // ServedInstall is what InstallServed installs: the body the daemon served
@@ -361,7 +408,11 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 // carries the leak-check directory's own paths, so every member is written at its own path under
 // dir. A member whose path does not stay inside dir and one that is neither a directory nor a
 // regular file fail the unpack rather than being skipped, and no file is written over another
-// (writeMember's O_EXCL): a body holding either is not the body PackTarballManifest makes.
+// (writeMember's O_EXCL): a body holding either is not the body PackTarballManifest makes, which
+// refuses every member this fails on. A member's name is GitHub's words, or those of whatever
+// answered the daemon's read in GitHub's place, which can hold the read's token, and the pod holds
+// no record of that read to redact it with: an error names a member by its place in the body and
+// its kind alone (servedFailure).
 func unpackServed(body []byte, dir string) (int, error) {
 	zipped, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
@@ -369,7 +420,7 @@ func unpackServed(body []byte, dir string) (int, error) {
 	}
 	archive := tar.NewReader(zipped)
 	files := 0
-	for {
+	for member := 1; ; member++ {
 		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
 			return files, nil
@@ -378,26 +429,59 @@ func unpackServed(body []byte, dir string) (int, error) {
 			return files, err
 		}
 		if !filepath.IsLocal(header.Name) {
-			return files, fmt.Errorf("the member %q is no path inside the check's directory", header.Name)
+			return files, fmt.Errorf("member %d, %s, is no path inside the check's directory", member, memberKind(header.Typeflag))
 		}
 		target := filepath.Join(dir, header.Name)
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
-				return files, err
+				return files, servedFailure(member, header.Typeflag, err)
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return files, err
+				return files, servedFailure(member, header.Typeflag, err)
 			}
 			if err := writeMember(target, archive, header.FileInfo().Mode().Perm()); err != nil {
-				return files, err
+				return files, servedFailure(member, header.Typeflag, err)
 			}
 			files++
 		default:
-			return files, fmt.Errorf("the member %q is neither a directory nor a regular file", header.Name)
+			return files, fmt.Errorf("member %d, %s, is neither a directory nor a regular file", member, memberKind(header.Typeflag))
 		}
 	}
+}
+
+// servedFailure is err, the failed write of the served body's member at place member, of kind
+// typeflag, as an error that names the member by its place and kind, and of a failure on a path the
+// operation and the system's reason alone: the path holds the member's name. It unwraps to that
+// reason, so a full disk still reads as one.
+func servedFailure(member int, typeflag byte, err error) error {
+	if onPath := (*fs.PathError)(nil); errors.As(err, &onPath) {
+		err = fmt.Errorf("%s: %w", onPath.Op, onPath.Err)
+	}
+	return fmt.Errorf("member %d, %s, could not be written: %w", member, memberKind(typeflag), err)
+}
+
+// memberKind names the kind of tar member typeflag marks, as an error that names a member by its
+// place and kind says it.
+func memberKind(typeflag byte) string {
+	switch typeflag {
+	case tar.TypeReg:
+		return "a regular file"
+	case tar.TypeDir:
+		return "a directory"
+	case tar.TypeSymlink:
+		return "a symbolic link"
+	case tar.TypeLink:
+		return "a hard link"
+	case tar.TypeChar:
+		return "a character device"
+	case tar.TypeBlock:
+		return "a block device"
+	case tar.TypeFifo:
+		return "a fifo"
+	}
+	return "a member of another kind"
 }
 
 // writeMember writes content to path as a new file of mode: O_EXCL, so a file already at path,
