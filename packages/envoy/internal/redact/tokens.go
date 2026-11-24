@@ -182,11 +182,7 @@ func requestTokens(r *http.Request) []string {
 				tokens = append(tokens, password)
 			}
 		}
-		for name, values := range r.URL.Query() {
-			if !publicField(r, name) {
-				tokens = append(tokens, values...)
-			}
-		}
+		tokens = append(tokens, QueryTokens(r, r.URL.Query())...)
 	}
 	return append(tokens, requestBodyValues(r)...)
 }

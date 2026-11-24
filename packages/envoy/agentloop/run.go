@@ -104,6 +104,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	r.drain(stream)
 
 	result := r.result()
+	result.carried = transport.credentials
 	switch failure := r.failure(); {
 	case failure != nil:
 		return result, failure
@@ -475,7 +476,7 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 		// "stop" with no content, which is otherwise an empty answer or, where the
 		// request asked for a Final object, a malformed one.
 		if refusal := r.calls[len(result.Steps)-1].refusal; len(refusal) > 0 {
-			result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the last reply is a refusal: %.500q", refusal)
+			result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the last reply is a refusal: %.500q", result.Words(string(refusal)))
 			return
 		}
 	}
@@ -485,13 +486,13 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 		// length: Anthropic ends a reply this way both for max_tokens, the run's own
 		// bound, and for a prompt past the model's context window.
 		result.Fault, result.Detail = FaultLength, fmt.Sprintf("the provider cut the last reply off for %s, with the run's output token bound at %d",
-			reason.Raw, r.req.Bounds.OutputTokens)
+			result.finishReason(reason.Raw), r.req.Bounds.OutputTokens)
 		return
 	case provider.FinishReasonContentFilter:
-		result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the provider stopped the last reply: %s", reason.Raw)
+		result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the provider stopped the last reply: %s", result.finishReason(reason.Raw))
 		return
 	case provider.FinishReasonError:
-		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("the last reply ended in an error: %s", reason.Raw)
+		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("the last reply ended in an error: %s", result.finishReason(reason.Raw))
 		return
 	case provider.FinishReasonToolCalls:
 		result.Fault, result.Detail = FaultCalls, fmt.Sprintf("the last of %d model calls still called a tool", r.req.Bounds.Calls)
@@ -501,15 +502,37 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 		return
 	}
 	if err := stream.OutputError(); err != nil {
-		result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("%v: %.500q", err, result.Text)
+		result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("%s: %.500q", result.Words(err.Error()), result.Words(result.Text))
 		return
 	}
 	value, ok := stream.OutputValue().(json.RawMessage)
 	if !ok {
-		result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the last reply is no object of the form: %.500q", result.Text)
+		result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the last reply is no object of the form: %.500q", result.Words(result.Text))
 		return
 	}
 	result.Value = value
+}
+
+// knownFinishReasons are the provider's own finish reasons the pinned SDKs report for a reply that
+// ended on its length, on a filter or on an error, the reasons finish names: openai-compatible's
+// length and content_filter (providers/openai-compatible convert_response.go mapFinishReason),
+// openai's max_output_tokens, content_filter and error (providers/openai finish_reason.go and
+// stream_adapter.go), and anthropic's max_tokens, model_context_window_exceeded, content_filter and
+// refusal (providers/anthropic convert_response.go mapFinishReason). Each SDK maps every other raw
+// value to Other, which finish does not name.
+var knownFinishReasons = map[string]bool{
+	"length": true, "content_filter": true, "max_output_tokens": true, "error": true,
+	"max_tokens": true, "model_context_window_exceeded": true, "refusal": true,
+}
+
+// finishReason is raw, the provider's own finish reason, as a Detail names it: as it came when it
+// is one the pinned SDKs report (knownFinishReasons), and otherwise as the model's words are read
+// (Words), since it is then text a provider's stream carried that no list here vouches for.
+func (r Result) finishReason(raw string) string {
+	if knownFinishReasons[raw] {
+		return raw
+	}
+	return r.Words(raw)
 }
 
 // refused is whether a call's output items hold a refusal.

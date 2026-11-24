@@ -80,6 +80,13 @@ const LIST_REQUEST = ["GET /*"];
  *  with no path, https://api.github.com by default): a base with a path would need its own route. */
 const GRAPHQL = ["POST /graphql"];
 
+/** Azure OpenAI's chat completions, by deployment and on the v1 API: the routes the Azure REST API
+ *  reference gives api-version on, at the root of the resource's endpoint. */
+const AZURE_CHAT_COMPLETIONS = [
+  "POST /openai/deployments/{deployment}/chat/completions",
+  "POST /openai/v1/chat/completions",
+];
+
 export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
   { place: "header", name: "Accept", source: "RFC 9110 §12.5.1" },
   { place: "header", name: "Content-Length", source: "RFC 9110 §8.6" },
@@ -318,6 +325,13 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
     source:
       "POST /graphql (GitHub GraphQL API, Using pagination in the GraphQL API (docs.github.com/en/graphql/guides/using-pagination-in-the-graphql-api): a query's variables.after, a connection's after argument): the endCursor GitHub answered for the page before, GitHub's own position in the results, which the request for the next page sends back",
     routes: GRAPHQL,
+  },
+  {
+    place: "field",
+    name: "api-version",
+    source:
+      "POST /openai/deployments/{deployment}/chat/completions and POST /openai/v1/chat/completions (Azure OpenAI in Microsoft Foundry Models REST API reference, learn.microsoft.com/azure/ai-foundry/openai/reference and learn.microsoft.com/azure/ai-foundry/openai/latest): the api-version query parameter, the API version a request asks for, a date such as 2024-10-21 or v1 or preview",
+    routes: AZURE_CHAT_COMPLETIONS,
   },
 ];
 

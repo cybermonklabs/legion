@@ -178,7 +178,10 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	url := strings.TrimSuffix(req.Model.Endpoint.BaseURL, "/") + decidePath
 	post, err := http.NewRequestWithContext(callCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, err)
+		// net/url's error quotes the URL it could not parse whole, user information and query
+		// included, so the endpoint is named only as redact.URL reads it and the failure by its
+		// class (redact.Cause).
+		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint %s: %w", SystemOne, redact.URL(req.Model.Endpoint.BaseURL), redact.Cause(err, req.Model.Endpoint.BaseURL))
 	}
 	post.Header.Set("Content-Type", "application/json")
 	client := newModelTransport(req.Model.Endpoint).client()

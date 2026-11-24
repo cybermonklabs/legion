@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -87,7 +88,8 @@ func resolveAnswerer(env settingValues, embedderPlace string) (answererConfig, e
 
 // chatEndpoint is the base URL /chat/completions is appended to, as the row name names it: it is
 // required, and an absolute https URL with a host and no query or fragment, since the client
-// builds the route and the query itself.
+// builds the route and the query itself. A value it refuses is named only as redact.URL reads it:
+// a value that is not a clean URL can carry a user name, a password or a query value.
 func chatEndpoint(env settingValues, name, place string) (string, error) {
 	endpoint := strings.TrimSpace(env.get(name))
 	if endpoint == "" {
@@ -95,7 +97,7 @@ func chatEndpoint(env settingValues, name, place string) (string, error) {
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
-		return "", fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name, endpoint)
+		return "", fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name, redact.URL(endpoint))
 	}
 	return endpoint, nil
 }

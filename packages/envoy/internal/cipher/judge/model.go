@@ -38,7 +38,9 @@ type Verdict struct {
 	// answer outside the two words, an error — carries Deny beside that error, and the run
 	// hands the request to its person rather than refusing it: only a verdict refuses.
 	Word string
-	// Reason is the model's own reason, clamped and filtered (D12).
+	// Reason is the model's own reason, read as agentloop.Result.Words reads the model's words
+	// (the run's own credentials redacted, then the rule for remote text), then clamped and
+	// filtered (D12): it reaches the requesting agent's refusal, the log and the row.
 	Reason string
 }
 
@@ -174,8 +176,8 @@ var finalSchema = json.RawMessage(`{
 //
 // Every outcome is a verdict. A fault of any kind, an answer outside the two words and an error
 // all come back as Deny with the error beside them, for the row and the log, and the run hands
-// such a request to its person; the third answer is the raw reply, clamped and filtered, for an
-// answer that did not parse, and is empty for one that did.
+// such a request to its person; the third answer is the raw reply (rawAnswer), for an answer that
+// did not parse, and is empty for one that did.
 func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, string, error) {
 	block, err := json.Marshal(data)
 	if err != nil {
@@ -196,9 +198,9 @@ func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, st
 	})
 	switch {
 	case err != nil:
-		return Verdict{Word: Deny}, result.Usage, record.Sanitize(result.Text, maxRawAnswer), err
+		return Verdict{Word: Deny}, result.Usage, rawAnswer(result, result.Text), err
 	case result.Fault != "":
-		return Verdict{Word: Deny}, result.Usage, record.Sanitize(result.Text, maxRawAnswer),
+		return Verdict{Word: Deny}, result.Usage, rawAnswer(result, result.Text),
 			fmt.Errorf("the model run ended in %s: %s", result.Fault, result.Detail)
 	}
 	var answer struct {
@@ -206,12 +208,30 @@ func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, st
 		Reason  string `json:"reason"`
 	}
 	if err := json.Unmarshal(result.Value, &answer); err != nil {
-		return Verdict{Word: Deny}, result.Usage, record.Sanitize(string(result.Value), maxRawAnswer),
+		return Verdict{Word: Deny}, result.Usage, rawAnswer(result, string(result.Value)),
 			fmt.Errorf("the model's answer could not be read: %w", err)
 	}
 	if answer.Verdict != Grant && answer.Verdict != Deny {
-		return Verdict{Word: Deny}, result.Usage, record.Sanitize(string(result.Value), maxRawAnswer),
-			fmt.Errorf("the model answered the verdict %q, which is neither grant nor deny", record.ClampRunes(answer.Verdict, 20))
+		return Verdict{Word: Deny}, result.Usage, rawAnswer(result, string(result.Value)),
+			fmt.Errorf("the model answered the verdict %q, which is neither grant nor deny", record.ClampRunes(result.Words(unrefused(answer.Verdict)), 20))
 	}
-	return Verdict{Word: answer.Verdict, Reason: record.Sanitize(answer.Reason, maxReasonRunes)}, result.Usage, "", nil
+	return Verdict{Word: answer.Verdict, Reason: record.Sanitize(result.Words(unrefused(answer.Reason)), maxReasonRunes)}, result.Usage, "", nil
+}
+
+// rawAnswer is text, the model's reply as it came, as the row keeps it for a reader rather than
+// for anything to read (D12): the answer's data, so a URL the model wrote stays as it came, with
+// every credential the run itself put on its requests redacted (agentloop.Result.WithoutTokens),
+// since whatever answers in the model's place can echo the identity token the judge presented,
+// then clamped.
+func rawAnswer(result agentloop.Result, text string) string {
+	return record.Sanitize(result.WithoutTokens(unrefused(text)), maxRawAnswer)
+}
+
+// unrefused is text with every rune no reason may carry dropped (record.ReasonRefuses) and
+// nothing cut. The judge drops them before it reads the model's words, not after: the rule for
+// remote text quotes a field that holds a control character (redact.OneLine), whose escapes no
+// later filter can take out again, and a credential the model split with such runes into pieces
+// too short for redact.Tokens is whole again once they are gone.
+func unrefused(text string) string {
+	return record.Sanitize(text, len(text))
 }
