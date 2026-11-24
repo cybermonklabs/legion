@@ -5,16 +5,22 @@
  * `agent-secrets LEGION_SLACK_BOT_TOKEN --reason … --wait 0s -- bun -e <poster>`: the client asks the
  * broker as this session, and only once the grant is live replaces itself with the poster, the
  * token in the poster's environment alone. The session's process never holds the token. The reply
- * travels on the poster's stdin, and the poster prints one line of JSON saying what Slack answered.
+ * travels on the poster's stdin with the URL to post it to, and the poster prints one line of JSON
+ * saying what Slack answered.
  */
 
 import { BlockList, isIP } from "node:net";
+import { joinUrl } from "@legion/contracts/url-join";
 
 /** The broker's agent secret holding the Legion Slack app's bot token (`xoxb-…`). */
 export const SLACK_BOT_TOKEN_SECRET = "LEGION_SLACK_BOT_TOKEN";
 
-/** Moves Slack's Web API (`https://slack.com/api`) for a stand-in; read from the session's
- * environment, held to https or a loopback host, and handed to the poster. */
+/** Slack's Web API, where the reply is posted unless SLACK_POST_API_URL moves it. */
+const SLACK_API_URL = "https://slack.com/api";
+
+/** Moves Slack's Web API (SLACK_API_URL) for a stand-in; read from the session's environment and
+ * held to https or a loopback host. The poster is handed chat.postMessage joined onto its path,
+ * its query kept (`joinUrl`). */
 const SLACK_POST_API_URL_VARIABLE = "SLACK_POST_API_URL";
 
 /** How long the broker request and the post may take together before the tool stops waiting. The
@@ -98,12 +104,13 @@ const SLACK_ERROR_CODES = [
 ];
 
 /** The poster, run by `bun -e` in the process the broker's client becomes, the one process that
- * holds the token. It reads the reply from stdin and LEGION_SLACK_BOT_TOKEN from its environment,
- * and prints one JSON line and nothing else, to stdout alone: `{ts, channel}` for a posted reply,
- * each shaped as Slack's ids are; `{refused}` with one of Slack's own error codes, or `{refused:
- * null}` for any other; `{unanswered: true}` when Slack did not answer (the reply may have been
- * posted); `{invalid}`, a fixed description, for an answer that is not Slack's. No part of a
- * response body crosses, and the line has the token cut out of it before it is written. */
+ * holds the token. It reads the reply and the URL to post it to from stdin, and
+ * LEGION_SLACK_BOT_TOKEN from its environment, and prints one JSON line and nothing else, to
+ * stdout alone: `{ts, channel}` for a posted reply, each shaped as Slack's ids are; `{refused}`
+ * with one of Slack's own error codes, or `{refused: null}` for any other; `{unanswered: true}`
+ * when Slack did not answer (the reply may have been posted); `{invalid}`, a fixed description,
+ * for an answer that is not Slack's. No part of a response body crosses, and the line has the
+ * token cut out of it before it is written. */
 const POSTER = `
 const codes = ${JSON.stringify(Object.fromEntries(SLACK_ERROR_CODES.map((code) => [code, true])))};
 const token = process.env.LEGION_SLACK_BOT_TOKEN || "";
@@ -119,12 +126,11 @@ try {
     out({ invalid: "the poster's environment carries no LEGION_SLACK_BOT_TOKEN" });
     process.exit(0);
   }
-  const base = (process.env.SLACK_POST_API_URL || "https://slack.com/api").replace(/\\/+$/, "");
   let status = 0;
   let raw = "";
   try {
     sent = true;
-    const response = await fetch(base + "/chat.postMessage", {
+    const response = await fetch(input.url, {
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify({ channel: input.channel, thread_ts: input.thread_ts, text: input.text }),
@@ -320,6 +326,12 @@ export async function postSlackReply(
       `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host; nothing was posted`
     );
   }
+  // The method joined onto the API's path, the API URL's query kept as its query. Appended to the
+  // URL's text, it sat inside a query (`/api?team=T1/chat.postMessage`) and asked `/api`.
+  const url = joinUrl(
+    override === undefined || override === "" ? SLACK_API_URL : override,
+    "chat.postMessage"
+  ).href;
   const { PATH: searchPath = "" } = env;
   const client = Bun.which("agent-secrets", { PATH: searchPath });
   if (client === null) {
@@ -337,7 +349,7 @@ export async function postSlackReply(
     {
       env,
       stdin: new Blob([
-        JSON.stringify({ channel: reply.channel, thread_ts: reply.threadTs, text: reply.text }),
+        JSON.stringify({ url, channel: reply.channel, thread_ts: reply.threadTs, text: reply.text }),
       ]),
       stdout: "pipe",
       stderr: "pipe",
