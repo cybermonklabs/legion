@@ -1,13 +1,28 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
+import { useEffect, useRef, useState } from "react";
+import {
+  ApiError,
+  api,
+  apiErrorMessage,
+  issuePatchRequest,
+  statusChangeRequest,
+  type WriteRequest,
+} from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
+import {
+  cardHasOpenChild,
+  dryRunStatusChange,
+  isParentStatusConflict,
+  optionInput,
+} from "../issue/parent-status/useParentStatusMove";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, useWrites } from "../writes/write-store";
+import { IN_WORK_STATUSES, statusText } from "./board-model";
 import { type IssueListing, listingName } from "./issues-table-data";
 import {
   buildItems,
@@ -33,13 +48,28 @@ interface DuplicateEpic {
   keys: readonly string[];
   title: string;
   message: string;
+  /** The reader said yes to the new epic's move into work before its first create. */
+  intoWork?: true;
 }
 /** An action waiting on the reader's yes, with everything the dialog says and does. */
 interface Confirmation {
   title: string;
   body: string;
+  /** Each change the action makes first, which the dialog lists under its body. */
+  changes?: readonly string[];
   confirmLabel: string;
   run: () => void;
+  /** Told of a Cancel, an Escape or a press on the backdrop, beside the dialog closing: what a
+   *  Finish that waits on the answer hears. */
+  cancel?: () => void;
+}
+/** What a question says, before the page knows what its yes and its Cancel do. */
+type Question = Omit<Confirmation, "cancel" | "run">;
+/** What an action that moves issues under an epic is, as the question it asks says it: what the
+ *  action does (`lead`), said before the question's own sentences, and its name. */
+interface TargetAction {
+  readonly lead?: string;
+  readonly noun: "merge" | "move";
 }
 /** The epic whose name the reader is typing: a new one for the selected issues, or a rename. */
 export type EpicNaming =
@@ -52,12 +82,76 @@ export type EpicNaming =
 const mergeReason = (into: string, title: string) =>
   `Merged into ${into} (“${title}”) from the issues table.`;
 
-/** What an interrupted action of each kind says it left behind, and how it is finished. The
- *  record's kind union is the only list of kinds: a new one fails to compile until both are
- *  written for it. */
+/** The status change that takes an epic into work with each parent above it that is not in work
+ *  (`include_parent`): what an action sends before it moves issues under an epic the rule needs in
+ *  work (D12). */
+const INTO_WORK = optionInput("in_progress", "include_parent");
+
+/** Whether moving `moving` under `target` needs `target` in work first: an issue in work under an
+ *  epic that is not in work, or any open issue under a done epic. A new epic, which is no issue
+ *  yet, is `undefined`: it is not in work. */
+function targetMustMove(
+  target: Pick<IssueSummary, "status"> | undefined,
+  moving: readonly Pick<IssueSummary, "status">[]
+): boolean {
+  if (target?.status === "done") return moving.length > 0;
+  return (
+    (target === undefined || !IN_WORK_STATUSES.has(target.status)) &&
+    moving.some((issue) => IN_WORK_STATUSES.has(issue.status))
+  );
+}
+
+/** The steps of an interrupted action that Finish decides afresh rather than sending again: the
+ *  move of its epic into work, which the guard makes or finds it need not (`intoWorkOnFinish`),
+ *  and a merge's close of its source, which `closeMerge` sends only once no issue is open under
+ *  the source (`refuseHeldClose`). Every other step is a write Finish sends again once the kind's
+ *  guard, where it has one, lets it through (`resendsStep`). */
+function afreshSteps(record: TableAction): readonly string[] {
+  return record.kind === "merge" && record.source !== undefined
+    ? ["intoWork", record.source]
+    : ["intoWork"];
+}
+
+/** Whether Finish sends the refused write of a step of `record` again: every step but those it
+ *  decides afresh (`afreshSteps`). */
+function resendsStep(record: TableAction): (step: string) => boolean {
+  const afresh = afreshSteps(record);
+  return (step) => !afresh.includes(step);
+}
+
+/** Whether the listing `current` holds the merge's source `source` as done. */
+function sourceClosed(current: readonly IssueSummary[], source: string): boolean {
+  return current.find((issue) => issue.key === source)?.status === "done";
+}
+
+/** What an interrupted action of each kind says it left behind, how Finish guards it, and how it
+ *  is finished. The record's kind union is the only list of kinds: a new one fails to compile
+ *  until each is written for it. */
 interface ResumableAction {
   describe: (record: TableAction) => string;
-  resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<void>;
+  /**
+   * The one guard of every parent write and every move into work that Finish and `resume` make
+   * (D12: the table asks whatever the setting). From the listing `current`, and the dry run of the
+   * epic's move into work where the listing shows the epic out of work, it decides whether the
+   * moves the action still makes need its epic in work. Where they do, it asks the action's own
+   * question, and on a yes makes that move into work. It refuses an epic the kind refuses, and
+   * answers false for a Cancel, or for the table going away while it asks, with nothing written
+   * and the action left to finish. Answering true, it has dropped the refused writes of the steps
+   * Finish decides afresh (`afreshSteps`) from Pending changes.
+   *
+   * Its callers, each before the writes it guards:
+   * - `finish`, before it sends any refused write of the action again (`recovery.settle`);
+   * - merge's `resume`, before it moves the issues left under the source and closes the source;
+   * - New epic's `resume`, before it adopts the issues.
+   * Start next's rank writes change no parent and no status, so it has no guard (`null`): Finish
+   * reads no listing for it and sends its refused writes again unasked. No other path of this file
+   * finishes an action, and the table has no undo: the first runs (`moveTo`, `askMerge`,
+   * `newEpic`) ask before their own first write.
+   */
+  guard: ((record: TableAction, current: readonly IssueSummary[]) => Promise<boolean>) | null;
+  /** Finishes the action, and answers whether it did: false where the reader cancelled the
+   *  question its guard asks, which wrote nothing, so the action stays to be finished. */
+  resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<boolean>;
 }
 
 export function useIssueTableActions({
@@ -80,6 +174,11 @@ export function useIssueTableActions({
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
   const [naming, setNaming] = useState<EpicNaming>();
   const [confirming, setConfirming] = useState<Confirmation>();
+  /** Answers the question a Finish waits on (`askOnFinish`) while it is open. */
+  const answering = useRef<((yes: boolean) => void) | undefined>(undefined);
+  // The table going away ends the question a Finish waits on, as a Cancel does: the Finish ends,
+  // with nothing more written, rather than wait on a dialog nobody can see.
+  useEffect(() => () => answering.current?.(false), []);
   // The project a write of this table may name, which a scoped table has none of: the epic
   // actions are withheld rather than sent against a listing that belongs to no project.
   const project = "project" in listing ? listing.project : undefined;
@@ -149,10 +248,12 @@ export function useIssueTableActions({
         else refused.push({ error, key });
       }
       const refusedKeys = refused.map(({ key }) => key).join(", ");
+      // The refusal in its own words: `String` of an error leads with its class's name.
+      const why = refused[0]?.error;
       const unsaved =
         refused[0] === undefined
           ? ""
-          : ` Changes not saved: ${refusedKeys}. ${String(refused[0].error)}`;
+          : ` Changes not saved: ${refusedKeys}. ${why instanceof Error ? why.message : String(why)}`;
       // A change whose key Dispatch still holds is asked again under it, and one whose key ran out
       // (`SendExpiredError`) is a new write, so each group is said with its own Retry's promise.
       const notes = [
@@ -218,6 +319,189 @@ export function useIssueTableActions({
     });
     return false;
   };
+  /** The table's rows of `keys`, as it last read them. */
+  const listed = (keys: readonly string[]) => issues.filter((issue) => keys.includes(issue.key));
+  /** Which of `rows` are in work, as the question says it: `CORE-1 “…” is in work`. */
+  const inWorkOf = (rows: readonly IssueSummary[]) => {
+    const working = rows
+      .filter((issue) => IN_WORK_STATUSES.has(issue.status))
+      .map(({ key }) => key);
+    return `${named(working)} ${working.length === 1 ? "is" : "are"} in work`;
+  };
+  /** Sends the status change the reader said yes to: `epic` into work, with each parent above it
+   *  that is not (`INTO_WORK`), before the moves it lets in. Its key is a step of the action `id`,
+   *  so Finish waits on it, and where it was refused or stopped makes it afresh (`afreshSteps`). */
+  const moveIntoWork = async (epic: string, id?: string) => {
+    const write = newSendKey();
+    recovery.record({ intoWork: write }, id);
+    try {
+      const answer = await request(
+        statusChangeRequest(epic, INTO_WORK),
+        `Move ${epic} into work from the issues table`,
+        epic,
+        write
+      );
+      if (answer !== null) mergeIssue(client, answer.issue);
+    } catch (error) {
+      // A change the reader stopped in Pending changes may have been made, which its words say in
+      // place of the error's own, a composer's. Finish makes a step of an action again: it checks
+      // the epic again and asks before it moves it. A Retry in Pending changes would send the move
+      // past those checks.
+      const what = `the move of ${epic} into work`;
+      const why =
+        error instanceof SendStoppedError
+          ? id === undefined
+            ? `${stoppedWriteNote(what, "made", { method: "POST", stopped: error })} Retry it in Pending changes.`
+            : stoppedWriteNote(what, "made", {
+                anew: `Finish the interrupted action: it checks ${epic} again and asks before it moves it.`,
+              })
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      throw new Error(`No issue moved to ${epic}. ${why}`, { cause: error });
+    }
+  };
+  /**
+   * The question `askTarget` asks before the moves of `rows` under the epic `target` (D12), from
+   * the dry run of the epic's move into work (`INTO_WORK`): undefined where that finds the rule
+   * needs no move. The dry run reads the epic as Dispatch holds it now, which the listing may be
+   * behind. The question lists each change the dry run names; `action.lead` is said before its
+   * own sentences.
+   */
+  const targetQuestion = async (
+    target: string,
+    rows: readonly IssueSummary[],
+    action: TargetAction
+  ): Promise<Question | undefined> => {
+    const answer = await dryRunStatusChange(client, target, INTO_WORK);
+    const changed = answer.changed ?? [];
+    if (changed.length === 0 || !targetMustMove(answer.issue, rows)) return undefined;
+    const { key, title } = answer.issue;
+    const done = answer.issue.status === "done";
+    const why = done
+      ? `The epic ${key} “${title}” is done. A done epic holds no open issue.`
+      : `${inWorkOf(rows)}, and the epic ${key} “${title}” is not. An epic stays in work while an issue under it is in work.`;
+    return {
+      title: done ? `Reopen ${key} too?` : `Move ${key} into work too?`,
+      body: [action.lead, why, `Before the ${action.noun}, Dispatch makes these changes:`]
+        .filter((sentence) => sentence !== undefined)
+        .join(" "),
+      // A dry run's entries carry no issue: the epic is the answer's own, and a parent above it
+      // is named as the listing holds it, or by its key alone.
+      changes: changed.map((entry) => {
+        const known =
+          entry.key === key ? title : issues.find((issue) => issue.key === entry.key)?.title;
+        const issue = known === undefined ? entry.key : `${entry.key} “${known}”`;
+        return `${issue} moves to ${statusText(entry.status)}`;
+      }),
+      confirmLabel: done ? "Reopen it too" : "Move into work too",
+    };
+  };
+  /** What the table says where the dry run of `target`'s move into work was not answered. */
+  const checkFailed = (target: string, error: unknown) =>
+    `Nothing moved: Dispatch could not check ${target}. ${apiErrorMessage(error, "The page could not reach Dispatch.")}`;
+  /**
+   * Starts an action that moves the issues `moving` under the epic `target` (D12). Where Dispatch's
+   * rule needs the epic in work first, the page sends the dry run of its move into work and asks
+   * one question (`targetQuestion`): a yes is `go(true)`, which makes that status change before
+   * the action's own writes, and a Cancel writes nothing. Where the rule needs nothing, as the
+   * dry run finds the epic too, it is `go(false)` at once.
+   */
+  const askTarget = (
+    target: string,
+    moving: readonly string[],
+    action: TargetAction,
+    go: (intoWork: boolean) => void
+  ) => {
+    const rows = listed(moving);
+    const held = issues.find((issue) => issue.key === target);
+    // An epic the listing no longer holds may have closed since it was picked, which only the dry
+    // run can tell: the table's open listing leaves a closed issue out.
+    if (held === undefined ? rows.length === 0 : !targetMustMove(held, rows)) {
+      go(false);
+      return;
+    }
+    setBusy(true);
+    setNotice(undefined);
+    targetQuestion(target, rows, action).then(
+      (question) => {
+        setBusy(false);
+        if (question === undefined) go(false);
+        else setConfirming({ ...question, run: () => go(true) });
+      },
+      (error: unknown) => {
+        setBusy(false);
+        setNotice({ kind: "error", text: checkFailed(target, error) });
+      }
+    );
+  };
+  /** Puts `question` to the reader while a Finish of the action `id` holds the table busy, and
+   *  answers their yes: false for a Cancel, or for the table going away while it asks. */
+  const askOnFinish = async (id: string, question: Question): Promise<boolean> => {
+    if (!recovery.active(id)) return false;
+    const answer = Promise.withResolvers<boolean>();
+    answering.current = answer.resolve;
+    setConfirming({
+      ...question,
+      cancel: () => answer.resolve(false),
+      run: () => answer.resolve(true),
+    });
+    const yes = await answer.promise;
+    answering.current = undefined;
+    return yes;
+  };
+  /** Whether a Finish of `record` goes on past its guard's question `question`, where there is
+   *  one (`askOnFinish`): false for a Cancel, for the table going away while it asks, or for the
+   *  action no longer in hand, with nothing written. Going on, it first drops the refused writes
+   *  of the steps Finish decides afresh (`afreshSteps`) from Pending changes. */
+  const goOnFinish = async (
+    record: TableAction,
+    question: Question | undefined
+  ): Promise<boolean> => {
+    if (question !== undefined && !(await askOnFinish(record.id, question))) return false;
+    if (!recovery.active(record.id)) return false;
+    recovery.discard(record.id, afreshSteps(record));
+    return true;
+  };
+  /**
+   * The guard's part for an epic that exists (`ResumableAction.guard`): whether a Finish of
+   * `record` goes on to move `rows` under the epic `target`, which the listing holds as `epic`.
+   * Where the listing shows the rule needs nothing, it goes on at once, with no dry run. Else it
+   * sends the dry run of the epic's move into work, and where that finds a change, asks
+   * `askTarget`'s question (`goOnFinish`): a Cancel, or the table going away while it asks, is
+   * false, with nothing written. Going on, it first drops the refused writes of the steps Finish
+   * decides afresh (`afreshSteps`), then on a yes makes the epic's move into work
+   * (`moveIntoWork`) as a step of the action. Called by merge's guard and New epic's.
+   */
+  const intoWorkOnFinish = async (
+    record: TableAction,
+    target: string,
+    epic: Pick<IssueSummary, "status"> | undefined,
+    rows: readonly IssueSummary[],
+    action: TargetAction
+  ): Promise<boolean> => {
+    let question: Question | undefined;
+    if (targetMustMove(epic, rows)) {
+      try {
+        question = await targetQuestion(target, rows, action);
+      } catch (error) {
+        throw new Error(checkFailed(target, error), { cause: error });
+      }
+    }
+    if (!(await goOnFinish(record, question))) return false;
+    if (question !== undefined) await moveIntoWork(target, record.id);
+    return true;
+  };
+  /** The question New epic asks before its create where an issue it moves is in work (D12), from
+   *  the listing: the epic is no issue yet, so no dry run can name its changes. `name` is the
+   *  epic as the question calls it. Its first run asks it, and its guard asks it again before a
+   *  refused create goes again. */
+  const newEpicQuestion = (name: string, rows: readonly IssueSummary[]): Question => ({
+    title: `Move ${name} into work too?`,
+    body: `${inWorkOf(rows)}, and a new epic is not. An epic stays in work while an issue under it is in work. Dispatch makes the epic and then makes this change:`,
+    changes: [`${name} moves to ${statusText("in_progress")}`],
+    confirmLabel: "Move into work too",
+  });
   const moveTo = (keys: readonly string[], epic: string | null) => {
     const open = openSelected(keys);
     const skipped = skippedClosed(keys.length - open.length);
@@ -229,7 +513,13 @@ export function useIssueTableActions({
       (epic === null
         ? `Took ${named(open)} out of ${open.length === 1 ? "its epic" : "their epics"}.`
         : `Moved ${named(open)} to the epic “${titleOf(epic)}”.`) + skipped;
-    void perform(said, () => apply(open.map((key) => ({ key, input: { parent: epic } }))));
+    const move = (intoWork: boolean) =>
+      void perform(said, async () => {
+        if (intoWork && epic !== null) await moveIntoWork(epic);
+        return apply(open.map((key) => ({ key, input: { parent: epic } })));
+      });
+    if (epic === null) move(false);
+    else askTarget(epic, open, { noun: "move" }, move);
   };
   /** The rank writes of a start-next action, sent in order, stopping the moment the reader
    *  dismisses it. One loop and one guard serve the first attempt and the resume; `failure`
@@ -312,7 +602,17 @@ export function useIssueTableActions({
     }
     runQueued(queued);
   };
-  const newEpic = async (keys: readonly string[], chosenTitle?: string, force = false) => {
+  /** `title` is the name the reader gave, `force` makes the epic past a near copy Dispatch named,
+   *  and `intoWork` is the reader's yes to the new epic's move into work, which the action asks
+   *  for before its create where an issue it moves is in work (D12). */
+  const newEpic = async (
+    keys: readonly string[],
+    {
+      force = false,
+      intoWork,
+      title: chosenTitle,
+    }: { readonly force?: boolean; readonly intoWork?: true; readonly title?: string } = {}
+  ) => {
     if (project === undefined || unansweredEpic || !canBegin()) return;
     const open = openSelected(keys);
     const skipped = skippedClosed(keys.length - open.length);
@@ -331,7 +631,17 @@ export function useIssueTableActions({
     if (!title) return;
     setNaming(undefined);
     setDuplicateEpic(undefined);
-    const record = recovery.begin({ kind: "newEpic", keys: open });
+    const rows = listed(open);
+    if (intoWork === undefined && targetMustMove(undefined, rows)) {
+      setConfirming({
+        ...newEpicQuestion(`“${title}”`, rows),
+        run: () => void newEpic(keys, { force, intoWork: true, title }),
+      });
+      return;
+    }
+    // The title goes with the record: a Finish whose create was refused asks this run's question
+    // again, before the epic has a key.
+    const record = recovery.begin({ kind: "newEpic", keys: open, title });
     const key = newSendKey();
     recovery.record({ create: key }, record.id);
     await perform(
@@ -370,6 +680,8 @@ export function useIssueTableActions({
           return undefined;
         }
         mergeIssue(client, epic);
+        if (intoWork) await moveIntoWork(epic.key, record.id);
+        if (!recovery.active(record.id)) return undefined;
         const changed = await apply(
           open.map((key) => ({ key, input: { parent: epic.key } })),
           record.id
@@ -382,7 +694,7 @@ export function useIssueTableActions({
         const refused = writes.rows().find((row) => row.key === key);
         if (refused) writes.discard(refused.id);
         recovery.dismiss();
-        setDuplicateEpic({ keys, title, message: error.message });
+        setDuplicateEpic({ keys, title, message: error.message, intoWork });
       }
     );
   };
@@ -396,10 +708,54 @@ export function useIssueTableActions({
     if (title && title !== titleOf(key))
       void perform(`Renamed the epic to “${title}”.`, () => apply([{ key, input: { title } }]));
   };
-  const closeMerge = async (record: TableAction, resumed: boolean) => {
+  /**
+   * Refuses the close of a merge's source `source` while an issue the merge does not move is open
+   * under it: the table reads its own project alone, and a child can be in another project.
+   * `current` is the listing read just before the close. Its row of the source counts the source's
+   * children in every project (`progress.children`), so only where that row shows one not done
+   * does the page send the dry run of the source's close. Dispatch answers that dry run as the
+   * rule is on, whatever its setting, and its `409 PARENT_STATUS_CONFLICT` names each issue that
+   * holds the close: the refusal names each one with its project. A dry run that is not answered
+   * refuses the close too. Either refusal comes before the merge's reason, with nothing written.
+   * Its one caller is `closeMerge`, before its first write.
+   */
+  const refuseHeldClose = async (source: string, current: readonly IssueSummary[]) => {
+    const row = current.find((issue) => issue.key === source);
+    if (row === undefined || !cardHasOpenChild(row)) return;
+    try {
+      await dryRunStatusChange(client, source, { status: "done" });
+    } catch (error) {
+      if (!isParentStatusConflict(error))
+        throw new Error(
+          `The source epic ${source} remains open: Dispatch could not check the issues under it. ${apiErrorMessage(error, "The page could not reach Dispatch.")}`,
+          { cause: error }
+        );
+      const held = (error.issues ?? []).map(
+        ({ key, title }) => `${key} “${title}” (project ${issueProject(key)})`
+      );
+      throw new Error(
+        `The source epic ${source} remains open: ${held.join(", ")} still ${held.length === 1 ? "needs" : "need"} to move.`,
+        { cause: error }
+      );
+    }
+  };
+  /**
+   * Closes the merge's source as the last step of the merge `record`, and writes nothing once the
+   * action is no longer in hand. First it refuses a close that an open issue under the source
+   * holds (`refuseHeldClose`), from the listing `current` that its caller read just before. Then
+   * it posts the merge reason on the source, except on a resume (`resumed`) that finds the reason
+   * already in the source's messages, and closes the source as done. Its callers are the merge's
+   * first run (`mergeEpic`) and merge's `resume`.
+   */
+  const closeMerge = async (
+    record: TableAction,
+    resumed: boolean,
+    current: readonly IssueSummary[]
+  ) => {
     const from = record.source;
     const into = record.target;
     if (!from || !into || !recovery.active(record.id)) return;
+    await refuseHeldClose(from, current);
     // Whether the reason was posted is the server's answer on a resume: a recorded key says
     // only that a write was made, and a write discarded in Pending changes leaves that key
     // behind. `settle` has already waited on any write of this action still in flight, so a
@@ -433,25 +789,36 @@ export function useIssueTableActions({
     if (recovery.active(record.id))
       await apply([{ key: from, input: { status: "done" } }], record.id);
   };
+  /** What a merge of `from` into `into` does, moving `moving` open issues, said before any
+   *  question it asks. */
+  const mergeLead = (from: string, into: string, moving: number) =>
+    `${moving} open ${moving === 1 ? "issue moves" : "issues move"} from ${from} “${titleOf(from)}” to ${into} “${titleOf(into)}”, and ${from} closes as done.`;
   /** What a merge is about to do, in the page, before any write: a merge closes an issue, so
-   *  it is the one table action that asks whatever the input device. */
+   *  it is the one table action that asks whatever the input device. Where the target must go
+   *  into work first, that question is the one the merge asks. */
   const askMerge = (from: string, into: string) => {
     if (!canBegin()) return;
-    const moving = mergeMembers(issues, from).length;
-    setConfirming({
-      title: "Merge this epic?",
-      body: `${moving} open ${moving === 1 ? "issue moves" : "issues move"} from ${from} “${titleOf(from)}” to ${into} “${titleOf(into)}”, and ${from} closes as done.`,
-      confirmLabel: "Merge",
-      run: () => void mergeEpic(from, into),
+    const members = mergeMembers(issues, from);
+    const lead = mergeLead(from, into, members.length);
+    askTarget(into, members, { lead, noun: "merge" }, (intoWork) => {
+      if (intoWork) void mergeEpic(from, into, true);
+      else
+        setConfirming({
+          title: "Merge this epic?",
+          body: lead,
+          confirmLabel: "Merge",
+          run: () => void mergeEpic(from, into),
+        });
     });
   };
-  const mergeEpic = (from: string, into: string) => {
+  const mergeEpic = (from: string, into: string, intoWork = false) => {
     if (!canBegin()) return;
     return perform(`Merged “${titleOf(from)}” into “${titleOf(into)}”.`, async () => {
       const descendants = await listAll();
       const members = mergeMembers(descendants, from);
       const record = recovery.begin({ kind: "merge", keys: members, source: from, target: into });
       try {
+        if (intoWork) await moveIntoWork(into, record.id);
         await apply(
           members.map((key) => ({ key, input: { parent: into } })),
           record.id
@@ -461,10 +828,82 @@ export function useIssueTableActions({
           `The source epic ${from} remains open. ${error instanceof Error ? error.message : String(error)}`
         );
       }
-      await closeMerge(record, false);
+      if (!recovery.active(record.id)) return undefined;
+      await closeMerge(record, false, await listAll());
       if (!recovery.active(record.id)) return undefined;
       recovery.dismiss();
       return members;
+    });
+  };
+  /** The issues a New epic still adopts: each of its open issues not yet under its epic. */
+  const adoptionsOf = (record: TableAction, current: readonly IssueSummary[]) =>
+    current.filter(
+      (issue) =>
+        record.keys.includes(issue.key) && issue.status !== "done" && issue.parent !== record.target
+    );
+  /**
+   * New epic's guard (`ResumableAction.guard`). An epic the page knows the key of is refused where
+   * the listing holds it gone or closed, and otherwise goes through `intoWorkOnFinish`. One whose
+   * create has not landed has no key, so no dry run: where its refused create still stands in
+   * Pending changes, the guard asks the first run's question (`newEpicQuestion`) from the listing
+   * before the create goes again, and on a yes sends the create (`recovery.settle`), then moves the
+   * new epic into work. A create the reader discarded, or one whose key never reached the page, is
+   * refused.
+   */
+  const newEpicGuard = async (record: TableAction, current: readonly IssueSummary[]) => {
+    const adopting = adoptionsOf(record, current);
+    const unknownKey =
+      "The created epic's key is still unknown. Retry its creation in Pending changes before finishing adoption.";
+    if (!record.target) {
+      if (record.writes.create === undefined)
+        throw new Error(
+          "The epic was never created: its creation was discarded. Nothing has been adopted. Dismiss this action and make the epic again."
+        );
+      if (!recovery.refused(record.id).includes("create")) throw new Error(unknownKey);
+      const name = record.title === undefined ? "the new epic" : `“${record.title}”`;
+      const question = targetMustMove(undefined, adopting)
+        ? newEpicQuestion(name, adopting)
+        : undefined;
+      if (!(await goOnFinish(record, question))) return false;
+      // With no issue in work, the create goes again with the action's other refused writes.
+      if (question === undefined) return true;
+      await recovery.settle(record, (step) => step === "create");
+      if (!recovery.active(record.id)) return false;
+      const made = recovery.current.current?.target;
+      if (made === undefined) throw new Error(unknownKey);
+      await moveIntoWork(made, record.id);
+      return true;
+    }
+    const epic = current.find((issue) => issue.key === record.target);
+    if (!epic || epic.status === "done")
+      throw new Error(
+        `The created epic ${record.target} is unavailable or closed. The selected issues have not been adopted.`
+      );
+    return intoWorkOnFinish(record, epic.key, epic, adopting, { noun: "move" });
+  };
+  /**
+   * Merge's guard (`ResumableAction.guard`). The moves a merge still makes are the refused moves
+   * Finish sends again and, while the source is open, the move of each issue left under it
+   * (`mergeMembers`). A target done or gone while one of those needs it in work is refused, as
+   * New epic's guard refuses a closed epic, rather than reopened unasked; one out of work goes
+   * through `intoWorkOnFinish`, with the merge's own question.
+   */
+  const mergeGuard = async (record: TableAction, current: readonly IssueSummary[]) => {
+    const source = record.source ?? "";
+    const into = record.target ?? "";
+    const left = sourceClosed(current, source) ? [] : mergeMembers(current, source);
+    const resends = resendsStep(record);
+    const resent = recovery.refused(record.id).filter((step) => step !== "reason" && resends(step));
+    const wanted = new Set([...left, ...resent]);
+    const moving = current.filter((issue) => issue.status !== "done" && wanted.has(issue.key));
+    const target = current.find((issue) => issue.key === into);
+    if (targetMustMove(target, moving) && (target === undefined || target.status === "done"))
+      throw new Error(
+        `The target epic ${into} is unavailable or closed. The source epic ${source} remains open, and its issues have not moved to it.`
+      );
+    return intoWorkOnFinish(record, into, target, moving, {
+      lead: mergeLead(source, into, moving.length),
+      noun: "merge",
     });
   };
 
@@ -472,75 +911,100 @@ export function useIssueTableActions({
     newEpic: {
       describe: (record) =>
         `New epic${record.target ? ` ${record.target}` : ""}: ${record.keys.join(", ")} are not yet adopted. Finish checks which open issues still need to move.`,
+      guard: newEpicGuard,
       resume: async (record, current) => {
-        // A creation still in Pending changes can be retried; one the reader discarded is gone
-        // with its step, so there is no epic and nothing to adopt — Finish says which it is.
-        if (!record.target)
-          throw new Error(
-            record.writes.create === undefined
-              ? "The epic was never created: its creation was discarded. Nothing has been adopted. Dismiss this action and make the epic again."
-              : "The created epic's key is still unknown. Retry its creation in Pending changes before finishing adoption."
-          );
-        const target = current.find((issue) => issue.key === record.target);
-        if (!target || target.status === "done")
-          throw new Error(
-            `The created epic ${record.target} is unavailable or closed. The selected issues have not been adopted.`
-          );
+        if (!(await newEpicGuard(record, current))) return false;
+        // Finish reads the record once the create has gone again, so by here the guard has
+        // refused an epic with no key, and `record.target` names the epic.
         await apply(
-          current
-            .filter(
-              (issue) =>
-                record.keys.includes(issue.key) &&
-                issue.status !== "done" &&
-                issue.parent !== record.target
-            )
-            .map((issue) => ({ key: issue.key, input: { parent: record.target } })),
+          adoptionsOf(record, current).map((issue) => ({
+            key: issue.key,
+            input: { parent: record.target },
+          })),
           record.id
         );
+        return true;
       },
     },
     startNext: {
       describe: (record) =>
         `Start next: ${record.keys.join(", ")} may still need to move up, in that order.`,
+      // Its rank writes change no parent and no status, so it has no guard: Finish sends them
+      // again unasked.
+      guard: null,
       resume: async (record, current) => {
         await runStartNext(
           record,
           buildItems(current, () => "")
         );
+        return true;
       },
     },
     merge: {
       describe: (record) =>
         `Merge ${record.source} into ${record.target}: remaining open issues, the merge reason and closing the source still need to be checked.`,
+      guard: mergeGuard,
       resume: async (record, current) => {
-        if (current.find((issue) => issue.key === record.source)?.status === "done") return;
-        const members = mergeMembers(current, record.source ?? "");
+        const source = record.source ?? "";
+        // A source closed since leaves no move to make and no guard to run, so the refused writes
+        // of the steps Finish decides afresh are dropped here, as the guard drops them where it
+        // answers true: a Retry of the move into work would need no merge.
+        if (sourceClosed(current, source)) {
+          recovery.discard(record.id, afreshSteps(record));
+          return true;
+        }
+        if (!(await mergeGuard(record, current))) return false;
+        const members = mergeMembers(current, source);
         await apply(
           members.map((key) => ({ key, input: { parent: record.target } })),
           record.id
         );
-        if (!recovery.active(record.id)) return;
-        const remaining = mergeMembers(await listAll(), record.source ?? "");
+        if (!recovery.active(record.id)) return true;
+        const latest = await listAll();
+        const remaining = mergeMembers(latest, source);
         if (remaining.length)
           throw new Error(
-            `The source epic ${record.source} remains open: ${remaining.join(", ")} still need to move.`
+            `The source epic ${source} remains open: ${remaining.join(", ")} still need to move.`
           );
-        await closeMerge(record, true);
+        await closeMerge(record, true, latest);
+        return true;
       },
     },
   };
+  /**
+   * Finishes the interrupted action. It waits on each write of the action still in flight and
+   * sends none again, then runs the kind's guard, where it has one, before the first write it
+   * sends: before the refused writes it sends again, where there are any, so that a Cancel writes
+   * nothing at all, and in `resume`, before resume's own writes, on the listing read after those
+   * sent again. A step the guard decides afresh (`afreshSteps`) is never sent again.
+   */
   const finish = () => {
     const interrupted = recovery.current.current;
     if (!interrupted) return;
     void perform("Finished the interrupted action.", async () => {
-      await recovery.settle(interrupted);
-      if (!recovery.active(interrupted.id)) return undefined;
-      const record = recovery.current.current;
+      await recovery.settle(interrupted, () => false);
+      // The record while it is still the one in hand, as the writes waited on left it: a create
+      // that landed names its epic.
+      const held = () => (recovery.active(interrupted.id) ? recovery.current.current : undefined);
+      const record = held();
       if (!record) return undefined;
+      const kind = kinds[record.kind];
+      const resend = resendsStep(record);
+      // Where no refused write goes again, the first write Finish sends is resume's own, which
+      // resume's guard stands before. A Cancel of the question a guard asks leaves the action to
+      // be finished, and writes nothing. A kind with no guard reads no listing here.
+      if (kind.guard !== null && recovery.refused(record.id).some(resend)) {
+        const current = await listAll();
+        if (!held() || !(await kind.guard(record, current))) return undefined;
+      }
+      const guarded = held();
+      if (!guarded) return undefined;
+      await recovery.settle(guarded, resend);
+      const settled = held();
+      if (!settled) return undefined;
       const current = await listAll();
-      if (!recovery.active(record.id)) return undefined;
-      await kinds[record.kind].resume(record, current);
-      if (!recovery.active(record.id)) return undefined;
+      if (!held() || !(await kind.resume(settled, current))) return undefined;
+      if (!held()) return undefined;
       recovery.dismiss();
       setUnansweredEpic(undefined);
       return record.keys;
@@ -563,7 +1027,12 @@ export function useIssueTableActions({
     naming,
     cancelNaming: () => setNaming(undefined),
     confirming,
-    cancelConfirming: () => setConfirming(undefined),
+    // A Cancel tells a Finish that waits on the answer (`askOnFinish`).
+    cancelConfirming: () => {
+      const waiting = confirming;
+      setConfirming(undefined);
+      waiting?.cancel?.();
+    },
     confirmed: () => {
       const waiting = confirming;
       setConfirming(undefined);

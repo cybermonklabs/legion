@@ -174,9 +174,12 @@ import (
 // (20261123224717) is applied after all of these but the waiting line's issue priority
 // (20261124060500) and touches no outbox_kind_check either: it adds issues.members_owed and marks
 // the roots whose re-admitted generation no promotion has opened.
-// The waiting line's issue priority (20261124060500) is applied after all of these and
-// touches no outbox_kind_check: it adds issues.priority, null on every row it finds, which reads
-// as an issue with no priority.
+// The waiting line's issue priority (20261124060500) is applied after all of these but #5349's
+// cause times (20261124073512) and touches no outbox_kind_check: it adds issues.priority, null on
+// every row it finds, which reads as an issue with no priority.
+// #5349's cause times (20261124073512) are applied after all of these and touch no
+// outbox_kind_check: they add claims.last_death_at, claims.last_start_failure_at and the digest of
+// the cause each dates, null on every row they find, so they need no row of their own here.
 // The production check's count of failed looks in a row (20261124131010) is applied after all of
 // these and touches no outbox_kind_check: it adds production_checks.failed_looks at its default,
 // 0, on every check it finds (migration_20261124131010_test.go reads it).
@@ -191,7 +194,8 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261120144241,
-	20261121170714, 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500, 20261124131010,
+	20261121170714, 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500,
+	20261124073512, 20261124131010,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -215,6 +219,7 @@ var thisBranchsMigrations = []int{
 // That is why the loop below holds the list rather than
 // counting it, so that a version added above any of them is named here rather than read as main's.
 // The waiting line's issue priority, 20261124060500, stands above them too.
+// #5349's cause times, 20261124073512, stand above every one of them, and the list names them too.
 // The production check's count of failed looks (20261124131010) stands above all of them.
 const mainsNewestMigration = 20261111212544
 
