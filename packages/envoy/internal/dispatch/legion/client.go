@@ -6,12 +6,12 @@
 // intake (intake.go) takes those events from the held durable bus.DispatchLegionStateDurable and
 // writes every value that moved in legion_observations, with one legion_reads row for each message
 // it applies. It reads the daemon's `GET /legion/v1/state` whole (Intake.readWhole, through this
-// file's Client) only for the reasons the ReadReason constants name (intake.go): a project with no
-// starting point, a boot that does not follow, a boot whose schema version moved, a gap the stream
-// no longer holds, a read owed since one failed, a message of another store and a message the
-// database refuses for good, and a project's reads start at least ReadRetryAfter apart. No timer
-// reads a daemon. So the Legion board (api/legion_board.go) and the four metrics (legion/metrics)
-// read Dispatch's own tables rather than a daemon.
+// file's Client) only for the reasons the ReadReason constants name (whole_read.go): a project
+// with no starting point, a boot that does not follow, a boot whose schema version moved, a gap
+// the stream no longer holds, a read owed since one failed, a message of another store and a
+// message the database refuses for good, and a project's reads start at least ReadRetryAfter
+// apart. No timer reads a daemon. So the Legion board (api/legion_board.go) and the four metrics
+// (legion/metrics) read Dispatch's own tables rather than a daemon.
 //
 // Two bounds hold a read (the plan's D14, the spec's contract 6): RequestTimeout on the call and
 // ResponseLimit, 64 MiB, on the body. The read asks for the route's observed view, which carries

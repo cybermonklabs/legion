@@ -207,7 +207,7 @@ type Observation struct {
 // (metrics' readStatusMarks).
 //
 // Each value is its field's one conversion (phaseValue and the rest below), which a state event
-// passes through too (intake.go), so a read and an event never encode one value differently.
+// passes through too (state_message.go), so a read and an event never encode one value differently.
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
 	// The three fields every issue carries and one claim each, and the project's two.
@@ -238,9 +238,9 @@ func (s State) Observations() []Observation {
 }
 
 // The one conversion of each observed field, from the field as a state document carries it to the
-// value legion_observations holds: a whole read's (Observations) and a state event's (intake.go's
-// stateEvent.observe, through changeObservation) alike, each of which decodes the daemon's value
-// into the field's own type here first.
+// value legion_observations holds: a whole read's (Observations) and a state event's
+// (state_message.go's stateEvent.observe, through changeObservation) alike, each of which decodes
+// the daemon's value into the field's own type here first.
 
 // phaseValue is an issue's phase.
 func phaseValue(phase string) json.RawMessage { return encodeValue(phase) }
