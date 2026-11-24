@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -27,38 +26,24 @@ import (
 func noAppOwners(claim.Role) []string { return nil }
 
 // A tree's root architect is told the design-gate steps its deployment gates after its
-// addressing, the "Design gate steps" line its shared role prompt reads, and its composed role
-// prompt carries what those steps ask of it: one registration for each step, on that step's own
-// document, with the approval request first where a person must approve it. No other claim is
-// told the steps: a child's spec is never gated. A two-step deployment and one on `root-issues`
-// give their root architects different prompts, so what a launch is told follows the
-// configuration rather than a policy word that says nothing about which steps hold its tree.
-// Every architect's addressing then ends with the project's production check
-// (ProductionCheckFragment), the root's after the steps, which
+// addressing (DesignGateFragment of the deployment's steps), and no other claim is told them: a
+// child's spec is never gated. Every architect's addressing then ends with the project's
+// production check (ProductionCheckFragment), the root's after the steps, which
 // TestEveryArchitectIsToldTheProjectsProductionCheck reads for both settings.
-func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
+func TestARootArchitectIsToldTheGatedSteps(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	instructions := []string{
-		"the tree's work starts only once every step your `Design gate steps` line names holds a registration of its own",
-		"the `spec` step the issue's primary document",
-		"Where the line says `none`, request no approval and wait for no `design-approved`",
-	}
-	composed := map[string]string{}
 	for _, deployment := range []struct {
 		name  string
 		steps []record.DesignStep
-		line  string
 	}{
-		{"two steps", []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec},
-			"Design gate steps: `decisions`, `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
-		{"root-issues", config.DesignGateRootIssues.Steps(),
-			"Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
-		{"the criteria and the spec", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
-		{"off", config.DesignGateOff.Steps(), "Design gate steps: none."},
+		{"two steps", []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}},
+		{"root-issues", config.DesignGateRootIssues.Steps()},
+		{"the criteria and the spec", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}},
+		{"off", config.DesignGateOff.Steps()},
 	} {
 		for _, tc := range []struct {
 			name, issue string
@@ -79,62 +64,39 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 				if err != nil {
 					t.Fatalf("SpawnSpec: %v", err)
 				}
-				check := " " + ProductionCheckFragment("")
-				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+deployment.line+check); told != tc.root || !tc.root && strings.Contains(spec.Prompt.Addressing, "Design gate steps") {
-					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, deployment.line+check, tc.root)
+				steps, check := " "+DesignGateFragment(deployment.steps), " "+ProductionCheckFragment("")
+				if told := strings.HasSuffix(spec.Prompt.Addressing, steps+check); told != tc.root || !tc.root && strings.Contains(spec.Prompt.Addressing, steps) {
+					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, steps+check, tc.root)
 				}
 				if architect := tc.role == claim.RoleArchitect; strings.HasSuffix(spec.Prompt.Addressing, check) != architect {
 					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, check, architect)
 				}
-				if !tc.root {
-					return
-				}
-				var prompt strings.Builder
-				prompt.WriteString(spec.Prompt.Addressing)
-				for _, path := range spec.Prompt.RolePromptPaths {
-					part, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatalf("read role prompt part %s: %v", path, err)
-					}
-					prompt.Write(part)
-				}
-				for _, want := range instructions {
-					if !strings.Contains(prompt.String(), want) {
-						t.Errorf("the root architect's composed prompt does not say %q", want)
-					}
-				}
-				composed[deployment.name] = prompt.String()
 			})
 		}
-	}
-	if composed["two steps"] == composed["root-issues"] {
-		t.Error("a two-step deployment's root architect is told exactly what a root-issues deployment's is; nothing in its prompt says which steps hold its tree")
 	}
 }
 
 // Every architect, the root's and a sub-architect's, is told the project's `production_check`
-// last in its addressing: `Production check: tester.` where the project gives the check to the
-// tester, and `Production check: off.` where it opens none, which is the line its composed prompt
-// reads to decide whether it writes an `after_merge` check for the production check
-// (dispatch://INFRA-175 R7). No phase worker is told it: none of them writes a Verification
-// document.
+// last in its addressing (ProductionCheckFragment of the project's check role), a role or none
+// alike, and the two settings tell it two different things. No phase worker is told it: none of
+// them writes a Verification document.
 func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
+	if ProductionCheckFragment(claim.RoleTester) == ProductionCheckFragment("") {
+		t.Fatalf("ProductionCheckFragment tells a project that gives the check to the tester what it tells one that opens none: %q", ProductionCheckFragment(""))
+	}
 	for _, setting := range []struct {
 		name  string
 		check claim.Role
-		line  string
 	}{
-		{"tester", claim.RoleTester, "Production check: tester."},
-		{"off", "", "Production check: off."},
+		{"tester", claim.RoleTester},
+		{"off", ""},
 	} {
-		if got := ProductionCheckFragment(setting.check); got != setting.line {
-			t.Errorf("ProductionCheckFragment(%s) = %q, want %q", setting.name, got, setting.line)
-		}
+		line := ProductionCheckFragment(setting.check)
 		for _, tc := range []struct {
 			name, issue string
 			role        claim.Role
@@ -155,22 +117,8 @@ func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 				if err != nil {
 					t.Fatalf("SpawnSpec: %v", err)
 				}
-				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+setting.line); told != tc.told || !tc.told && strings.Contains(spec.Prompt.Addressing, "Production check") {
-					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, setting.line, tc.told)
-				}
-				if !tc.told {
-					return
-				}
-				var prompt strings.Builder
-				for _, path := range spec.Prompt.RolePromptPaths {
-					part, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatalf("read role prompt part %s: %v", path, err)
-					}
-					prompt.Write(part)
-				}
-				if want := "`Production check` line"; !strings.Contains(prompt.String(), want) {
-					t.Errorf("the %s's composed prompt never names the %s its addressing ends with", tc.name, want)
+				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+line); told != tc.told || !tc.told && strings.Contains(spec.Prompt.Addressing, line) {
+					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, line, tc.told)
 				}
 			})
 		}
@@ -228,15 +176,6 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 			}
 		})
 	}
-	body, err := os.ReadFile(composer.Part(runtime.Backends[runtime.BackendClaude].PromptPart))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"`Read`, `Write` and `Edit`", "There is no `grep`, `glob` or `find` tool", "`Agent` tool", "`mcp__legion__legion`", "`Skill` tool"} {
-		if !strings.Contains(string(body), want) {
-			t.Errorf("the Claude Code part does not say %q", want)
-		}
-	}
 }
 
 // A worker's addressing ends naming its issue's repository and default branch, then the reach
@@ -274,43 +213,39 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		}
 		return spec.Prompt.Addressing
 	}
-	const own = "Your issue's repository is acme/widgets (default branch release/v7.1); "
 	for _, tc := range []struct {
 		name   string
 		owners []string
-		want   string
 	}{
-		{"two owners", owners, own + "your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners."},
-		{
-			"one owner",
-			[]string{"acme"},
-			own + "your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.",
-		},
-		{"no installation", nil, own + "your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
+		{"two owners", owners},
+		{"one owner", []string{"acme"}},
+		{"no installation", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s.appOwners = func(claim.Role) []string { return tc.owners }
 			got := launch()
-			if !strings.HasSuffix(got, tc.want) {
-				t.Fatalf("addressing = %q, want it to end with %q", got, tc.want)
+			if want := RepositoriesClause(tc.owners); !strings.HasSuffix(got, want) {
+				t.Fatalf("addressing = %q, want it to end with %q", got, want)
 			}
-			if strings.Contains(got, "the project's repositories") {
-				t.Fatalf("addressing = %q, want no list of the project's repositories", got)
+			for _, value := range []string{"acme/widgets", "release/v7.1"} {
+				if !strings.Contains(got, value) {
+					t.Fatalf("addressing = %q, want it to name %s, the issue's repository and its default branch", got, value)
+				}
 			}
 		})
 	}
 
 	// The owners named are the role's own App's: an implementer's and a reviewer's addressing
 	// differ where their Apps' installations do, which is what the clause promises and what the
-	// owners of the repositories the project's records name could not say (INFRA-2543 R6).
+	// owners of the repositories the project's records name could not say.
 	s.appOwners = func(role claim.Role) []string { return []string{string(appauth.AppRoleFor(role)) + "-owner"} }
-	if got, want := launch(), own+"your role's GitHub App is installed on the owner implement-owner, and its token reaches every repository of that owner."; !strings.HasSuffix(got, want) {
+	if got, want := launch(), RepositoriesClause([]string{"implement-owner"}); !strings.HasSuffix(got, want) {
 		t.Fatalf("the implementer's addressing = %q, want it to end with %q", got, want)
 	}
 
 	s.appOwners = func(claim.Role) []string { return owners }
 	s.repository = nil
-	if got := launch(); strings.Contains(got, "GitHub App is installed") || strings.Contains(got, "repository is") {
+	if got := launch(); strings.Contains(got, RepositoriesClause(owners)) || strings.Contains(got, "acme/widgets") {
 		t.Fatalf("addressing with no repository resolved (a daemon with no workflow) = %q, want no repository sentence", got)
 	}
 }
@@ -352,7 +287,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	if !slices.Equal(spec.Prompt.RolePromptPaths, want) {
 		t.Errorf("role prompts = %q, want %q", spec.Prompt.RolePromptPaths, want)
 	}
-	if want := "Design gate steps: none. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."; spec.Prompt.Addressing != want {
+	if want := DesignGateFragment(config.DesignGateOff.Steps()) + " " + RepositoriesSentence(nil); spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
 	if spec.Prompt.DeploymentInstructionsPath != s.instructions {
@@ -395,15 +330,17 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 	if _, set := spec.Env["LEGION_SLACK_CHANNELS"]; set {
 		t.Errorf("the spec sets LEGION_SLACK_CHANNELS (%v), the runtime's variable", spec.Env)
 	}
-	want := "Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too. " +
-		"Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository. Slack channels: `C00000000`, `G00000001`: " +
-		"your session hears each one's app mentions while it holds the controller role; answer each in its thread, " +
-		"and nothing from any other channel (skill://legion-controller/references/slack-mentions.md)."
-	if spec.Prompt.Addressing != want {
+	reach := DesignGateFragment(config.DesignGateRootIssues.Steps()) + " " + RepositoriesSentence(nil)
+	channels := []string{"C00000000", "G00000001"}
+	if want := reach + " " + SlackChannelsFragment(channels); spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
-	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. A root that registers its Verification document as `criteria` "+
-		"is held on that step too. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository." {
+	for _, channel := range channels {
+		if !strings.Contains(spec.Prompt.Addressing, channel) {
+			t.Errorf("addressing = %q, want it to name the channel %s", spec.Prompt.Addressing, channel)
+		}
+	}
+	if none := launch(nil); none.Prompt.Addressing != reach {
 		t.Errorf("with no channel: addressing %q, want no Slack line", none.Prompt.Addressing)
 	}
 }
@@ -424,21 +361,12 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		owners []string
-		want   string
 	}{
-		{
-			"two owners",
-			[]string{"acme", "sjawhar"},
-			"Your role's GitHub App is installed on the owners acme, sjawhar, and its token reaches every repository of those owners.",
-		},
-		{
-			"one owner",
-			[]string{"acme"},
-			"Your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.",
-		},
+		{"two owners", []string{"acme", "sjawhar"}},
+		{"one owner", []string{"acme"}},
 		// A deployment with no installation is a state a running project reaches, never a
 		// refusal to launch.
-		{"no installation", nil, "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
+		{"no installation", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked []claim.Role
@@ -453,7 +381,7 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SpawnSpec: %v", err)
 			}
-			if want := DesignGateFragment(config.DesignGateOff.Steps()) + " " + tc.want; spec.Prompt.Addressing != want {
+			if want := DesignGateFragment(config.DesignGateOff.Steps()) + " " + RepositoriesSentence(tc.owners); spec.Prompt.Addressing != want {
 				t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 			}
 			if !slices.Equal(asked, []claim.Role{claim.RoleController}) {

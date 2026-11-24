@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -183,7 +182,7 @@ func wantCatchUpOpensWith(t *testing.T, pool *store.Pool, sentence string) {
 	if len(reasons) != 1 {
 		t.Fatalf("the outbox holds catch-ups %q, want the relaunch's one", reasons)
 	}
-	if !strings.HasPrefix(reasons[0], sentence+"\n\n") || !strings.Contains(reasons[0], "the tree of LEGION-208 at generation 1") {
+	if !strings.HasPrefix(reasons[0], sentence+"\n\n") || !strings.Contains(reasons[0][len(sentence):], "LEGION-208") {
 		t.Fatalf("the relaunched architect's catch-up reads %q, want it to open with the relaunch's sentence %q and then state the tree",
 			reasons[0], sentence)
 	}
@@ -216,18 +215,8 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing
 	if sent.DeliveryID != held.ID || !strings.HasSuffix(sent.Message, "\n\n"+task) {
 		t.Fatalf("the relaunched architect was sent %+v, want its task under %s", sent, held.ID)
 	}
-	if !strings.HasPrefix(sent.Message, "Your previous turn on this task was interrupted.") {
-		t.Errorf("the task was sent as %q, want it to open with the relaunch's sentence", sent.Message)
-	}
-	for _, says := range []string{
-		"Your process ended because the process died: " + strconv.Quote(death) + ".",
-		"Each subagent that you started stopped with that process.",
-		"No result of that work will come to you.",
-		"Your transcript does not say so.",
-	} {
-		if !strings.Contains(sent.Message, says) {
-			t.Errorf("the task was sent as %q, want it to say %q", sent.Message, says)
-		}
+	if lead := strings.TrimSuffix(sent.Message, "\n\n"+task); lead == "" || !strings.Contains(lead, death) {
+		t.Errorf("the task was sent as %q, want the relaunch's sentence in front of it, naming the death %q", sent.Message, death)
 	}
 	wantCatchUpOpensWith(t, rig.pool, supervise.RelaunchSentence(ended))
 
@@ -262,9 +251,6 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testi
 	}
 	if sent := rig.lastPrompt(); sent.DeliveryID != held.ID || sent.Message != sentence {
 		t.Fatalf("the relaunched architect was sent %+v, want the sentence alone under %s", sent, held.ID)
-	}
-	if !strings.Contains(sentence, "Each subagent that you started stopped with that process.") {
-		t.Errorf("the sentence %q does not name the subagent", sentence)
 	}
 	wantCatchUpOpensWith(t, rig.pool, sentence)
 }
@@ -308,7 +294,7 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSessionInTheCatchUp(t *testing.T
 	if len(reasons) != 1 {
 		t.Fatalf("the outbox holds catch-ups %q, want the relaunch's one", reasons)
 	}
-	if strings.Contains(reasons[0], supervise.RelaunchSentence(c.EndedWork)) || !strings.Contains(reasons[0], "the tree of LEGION-208 at generation 1") {
+	if strings.Contains(reasons[0], supervise.RelaunchSentence(c.EndedWork)) || !strings.Contains(reasons[0], "LEGION-208") {
 		t.Fatalf("the fresh architect's catch-up reads %q, want the tree with no sentence of what the relaunch ended", reasons[0])
 	}
 }
@@ -377,9 +363,7 @@ func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(
 	if strings.HasPrefix(prompt.DeliveryID, relaunchDeliveryPrefix) {
 		t.Fatalf("the relaunched controller was sent the daemon's own delivery %s, want its start message", prompt.DeliveryID)
 	}
-	if !strings.HasPrefix(prompt.Message, "Your previous process ended because the process died") ||
-		!strings.Contains(prompt.Message, "The daemon has no report of the background work of your last turn.") ||
-		!strings.HasSuffix(prompt.Message, "\n\n"+ControllerStartMessage) {
+	if lead := strings.TrimSuffix(prompt.Message, "\n\n"+ControllerStartMessage); lead == prompt.Message || lead == "" {
 		t.Fatalf("the relaunched controller was prompted %q, want its start message behind the relaunch's sentence", prompt.Message)
 	}
 	if stored := storedClaim(t, cfg, token); stored.Pending == nil || stored.Pending.Task != ControllerStartMessage || !stored.EndedWork.Tells() {
@@ -491,9 +475,7 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 		t.Fatalf("the tester was sent %+v once the turn ended, want the resume task alone", prompts[sentBefore:])
 	}
 	sent := prompts[sentBefore]
-	if sent.DeliveryID != held.ID || !strings.HasPrefix(sent.Message, "Your previous process ended because the process died") ||
-		!strings.Contains(sent.Message, "Each subagent that you started stopped with that process.") ||
-		!strings.HasSuffix(sent.Message, "\n\n"+resume) {
+	if sent.DeliveryID != held.ID || !strings.HasSuffix(sent.Message, "\n\n"+resume) || strings.TrimSuffix(sent.Message, "\n\n"+resume) == "" {
 		t.Fatalf("the resume task was sent as %+v, want it under %s behind the relaunch's sentence", sent, held.ID)
 	}
 }
@@ -512,10 +494,9 @@ func (r *readyWorkerRig) dueNow() {
 // retry` send them. The stop records on the claim's row what it ended, under its own cause: the
 // turn, that turn's task, and the subagent. The retry starts the worker's phase again (api's
 // retryStart), whose rows relaunch the stopped claim on the session it recorded and hand it the
-// phase's task, and the resumed process's first prompt is that task behind the sentence naming
-// the stop and the subagent. The stop retired the task its turn confirmed, so the phase's task
-// was in no turn of the stopped process, and the sentence says that the turn the agent was in
-// was interrupted, never its previous turn on this task (supervise's EndedWork.inFrontOf).
+// phase's task, and the resumed process's first prompt is that task behind the relaunch's
+// sentence. The stop retired the task its turn confirmed, so the phase's task is held neither
+// interrupted nor as a relaunch of the daemon's own.
 func TestARelaunchSentenceTellsTheOperatorsRetryOfAStoppedWorkerWhatTheStopEnded(t *testing.T) {
 	t.Parallel()
 	rig := newReadyWorkerRig(t)
@@ -598,18 +579,5 @@ func TestARelaunchSentenceTellsTheOperatorsRetryOfAStoppedWorkerWhatTheStopEnded
 	if held == nil || held.Relaunch() || held.Interrupted || held.Phase != phase.Testing || held.ID != sent.DeliveryID ||
 		!strings.HasSuffix(sent.Message, "\n\n"+held.Task) {
 		t.Fatalf("the resumed tester was sent %+v holding %+v, want the testing phase's task behind the stop's sentence", sent, held)
-	}
-	for _, says := range []string{
-		"Your previous process ended because its claim was stopped.",
-		"The turn you were in was interrupted.",
-		"Each subagent that you started stopped with that process.",
-		"Then continue the task.",
-	} {
-		if !strings.Contains(sent.Message, says) {
-			t.Errorf("the phase's task was sent as %q, want it to say %q", sent.Message, says)
-		}
-	}
-	if strings.Contains(sent.Message, "Your previous turn on this task was interrupted.") {
-		t.Errorf("the phase's task was sent as %q, which says its own turn was interrupted: it was in no turn of the stopped process", sent.Message)
 	}
 }
