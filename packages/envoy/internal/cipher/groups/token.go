@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -71,14 +72,21 @@ func (d directoryToken) Token() (*oauth2.Token, error) {
 	if err != nil {
 		return nil, errors.New("the pod's own Google credentials gave no token")
 	}
-	// Only the email is escaped, and the verb is appended after, as the service-account minter
-	// builds its URL: an escaped colon reads to Google as a resource of its own.
-	endpoint := cmp.Or(d.o.IAMCredentialsURL, secrets.GoogleIAMCredentialsURL) +
-		"/v1/projects/-/serviceAccounts/" + url.PathEscape(d.o.Account) + ":generateAccessToken"
-	body, _ := json.Marshal(secrets.GenerateAccessTokenRequest{Scope: []string{Scope}, Lifetime: secrets.GoogleAccessTokenLifetime})
-	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	// The resource's path is joined onto the endpoint's path, its query kept and its fragment,
+	// which no request sends, dropped (urljoin.Join): the path appended to its text would sit
+	// inside a query or a fragment, and IAM would be asked another path. Only the email is
+	// escaped, and the verb is appended after, as the service-account minter builds its URL: an
+	// escaped colon reads to Google as a resource of its own. An endpoint that does not parse is
+	// refused in fixed words, since url.Parse's error quotes the URL whole, user information and
+	// query included.
+	mint, err := urljoin.Join(cmp.Or(d.o.IAMCredentialsURL, secrets.GoogleIAMCredentialsURL), "v1/projects/-/serviceAccounts/"+url.PathEscape(d.o.Account)+":generateAccessToken")
 	if err != nil {
-		return nil, fmt.Errorf("the token mint: %w", err)
+		return nil, errors.New("the token mint: the IAM Credentials URL does not parse")
+	}
+	body, _ := json.Marshal(secrets.GenerateAccessTokenRequest{Scope: []string{Scope}, Lifetime: secrets.GoogleAccessTokenLifetime})
+	request, err := http.NewRequest(http.MethodPost, mint.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, errors.New("the token mint: the URL it joined does not parse")
 	}
 	own.SetAuthHeader(request)
 	request.Header.Set("Content-Type", "application/json")
