@@ -13,6 +13,15 @@
  * `--cache <dir>` keeps each extracted report as <dir>/<run id>.json and reads it from there next
  * time instead of downloading it again.
  *
+ * Whatever answers gh's calls in GitHub's place holds gh's token and writes what gh says and
+ * answers, so the tool prints none of it: a failed call's own words, unzip's over what gh
+ * downloaded, and an answer it does not take (a listing that is no JSON, an artifact whose ids or
+ * commit are not of GitHub's shapes, a report that is no JSON) are each kept in a file of a
+ * directory it makes under TMPDIR and leaves in place, `shard-weights-words-<random>`, and the line
+ * it prints names the file and, for gh, the three digits of its closing `(HTTP nnn)`, as
+ * .github/scripts/gh-read.sh does. A run id and a commit are printed only once they hold to their
+ * shapes.
+ *
  * What it writes, for each row that ran: the seconds every attempt of it took, summed, since a
  * retry is time its leg spent; the median of that over the reports, so one slow runner, which
  * slows every row of its leg alike, moves no row's number; then the mean of those medians over
@@ -132,14 +141,53 @@ export function weightsOf(
   };
 }
 
-/** `gh` with these arguments, its stdout as bytes; a failed call ends the tool with its stderr. */
-function gh(args: readonly string[]): Buffer {
+/** The directory a failed call's words are kept in, made on the first one and left in place. */
+let keptDirectory: string | undefined;
+
+/** Keeps `words` in a file of the kept directory named `name`, and returns its path. */
+function keep(name: string, words: string | Uint8Array): string {
+  keptDirectory ??= mkdtempSync(join(tmpdir(), "shard-weights-words-"));
+  const file = join(keptDirectory, name);
+  writeFileSync(file, words);
+  return file;
+}
+
+/** The three digits of gh's closing `(HTTP nnn)`, the one part of its own words the tool prints. */
+export function httpStatus(stderr: string): string {
+  const status = /\(HTTP (\d{3})\)\s*$/.exec(stderr);
+  return status ? ` (HTTP ${status[1]})` : "";
+}
+
+/** `gh` with these arguments, its stdout as bytes. A failed call ends the tool naming `what` and the
+ *  file that keeps gh's own words, which are never printed. */
+function gh(what: string, name: string, args: readonly string[]): Buffer {
   const result = spawnSync("gh", args, { maxBuffer: 1 << 30 });
+  if (result.error) {
+    console.error(
+      `gh could not run for ${what} (${(result.error as NodeJS.ErrnoException).code ?? "no code"})`
+    );
+    process.exit(1);
+  }
   if (result.status !== 0) {
-    console.error(`gh ${args.join(" ")} exited ${result.status}:\n${result.stderr}`);
+    const stderr = result.stderr.toString();
+    console.error(
+      `gh's ${what} exited ${result.status ?? "on a signal"}${httpStatus(stderr)}; ` +
+        `its own words are in ${keep(`${name}.err`, stderr)}`
+    );
     process.exit(1);
   }
   return result.stdout;
+}
+
+/** `bytes` read as JSON; else the tool ends naming `what` and the file that keeps them, since a
+ *  parser's error quotes what it could not read. */
+function json<T>(what: string, name: string, bytes: Uint8Array): T {
+  try {
+    return JSON.parse(Buffer.from(bytes).toString("utf8")) as T;
+  } catch {
+    console.error(`${what} is no JSON; it is kept in ${keep(name, bytes)}`);
+    process.exit(1);
+  }
 }
 
 type Artifact = {
@@ -164,22 +212,33 @@ function mainReports(
 ): { run: number; commit: string; rows: Map<string, number> }[] {
   const runs: Artifact[] = [];
   for (let page = 1; page <= pagesAtMost && runs.length < count; page += 1) {
-    const listed = JSON.parse(
-      gh([
+    const listed = json<{ artifacts?: unknown }>(
+      `gh's listing of the ${artifactName} artifacts, page ${page}`,
+      `listing-${page}.answer`,
+      gh(`listing of the ${artifactName} artifacts, page ${page}`, `listing-${page}`, [
         "api",
         `repos/{owner}/{repo}/actions/artifacts?name=${artifactName}&per_page=100&page=${page}`,
-      ]).toString()
-    ) as { artifacts: readonly Artifact[] };
+      ])
+    );
+    if (!Array.isArray(listed.artifacts)) {
+      console.error(
+        `gh's listing of the ${artifactName} artifacts, page ${page}, holds no list of artifacts; ` +
+          `it is kept in ${keep(`listing-${page}.answer`, JSON.stringify(listed))}`
+      );
+      process.exit(1);
+    }
+    const artifacts = listed.artifacts as readonly Artifact[];
     runs.push(
-      ...listed.artifacts.filter(
+      ...artifacts.filter(
         (artifact) =>
           !artifact.expired &&
           artifact.workflow_run !== undefined &&
+          typeof artifact.workflow_run.head_branch === "string" &&
           (artifact.workflow_run.head_branch === "main" ||
             artifact.workflow_run.head_branch.startsWith("gh-readonly-queue/main/"))
       )
     );
-    if (listed.artifacts.length < 100) break;
+    if (artifacts.length < 100) break;
   }
   if (runs.length < count) {
     console.error(
@@ -188,20 +247,46 @@ function mainReports(
     );
     process.exit(1);
   }
-  return runs.slice(0, count).map((artifact) => {
+  return runs.slice(0, count).map((artifact, index) => {
     const run = artifact.workflow_run as NonNullable<Artifact["workflow_run"]>;
+    // The ids name files and the commit is printed and written: each only in GitHub's shape.
+    if (
+      !Number.isSafeInteger(artifact.id) ||
+      artifact.id < 1 ||
+      !Number.isSafeInteger(run.id) ||
+      run.id < 1 ||
+      typeof run.head_sha !== "string" ||
+      !/^[0-9a-f]{40}$/.test(run.head_sha)
+    ) {
+      console.error(
+        `main's full-lane artifact ${index + 1} of gh's listing has an id, a run id or a commit not ` +
+          `of GitHub's shape; it is kept in ${keep(`artifact-${index + 1}.answer`, JSON.stringify(artifact))}`
+      );
+      process.exit(1);
+    }
     const file = join(cache, `${run.id}.json`);
     if (!existsSync(file)) {
       const zip = join(cache, `${run.id}.zip`);
-      writeFileSync(zip, gh(["api", `repos/{owner}/{repo}/actions/artifacts/${artifact.id}/zip`]));
+      writeFileSync(
+        zip,
+        gh(`download of artifact ${artifact.id}`, `artifact-${artifact.id}`, [
+          "api",
+          `repos/{owner}/{repo}/actions/artifacts/${artifact.id}/zip`,
+        ])
+      );
       const unzip = spawnSync("unzip", ["-p", zip, "report.json"], { maxBuffer: 1 << 30 });
       if (unzip.status !== 0) {
-        console.error(`unzip -p ${zip} report.json exited ${unzip.status}:\n${unzip.stderr}`);
+        console.error(
+          `unzip -p ${zip} report.json exited ${unzip.status ?? "on a signal"}; ` +
+            `its own words are in ${keep(`unzip-${run.id}.err`, unzip.stderr ?? "")}`
+        );
         process.exit(1);
       }
       writeFileSync(file, unzip.stdout);
     }
-    const rows = rowTimes(JSON.parse(readFileSync(file, "utf8")));
+    const rows = rowTimes(
+      json(`the report of run ${run.id} (${file})`, `report-${run.id}.answer`, readFileSync(file))
+    );
     console.error(`run ${run.id} at ${run.head_sha.slice(0, 10)}: ${rows.size} rows`);
     return { commit: run.head_sha, rows, run: run.id };
   });
