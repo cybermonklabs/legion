@@ -70,6 +70,8 @@ func namesTheExpression(node ast.Node) bool {
 
 // sqlCode is a SQL text with its comments blanked, read by PostgreSQL's lexical rules, so that no
 // text a statement runs is blanked with them:
+//   - a line comment (`--`) ends at its line's end: a newline or a carriage return (scan.l's
+//     non_newline);
 //   - a quoted string ('…') and a quoted identifier ("…"), in each of which a doubled quote stands
 //     for one, are kept whole, so a `--` or a `/*` in one starts no comment; in an escape string (E'…')
 //     a backslash escapes the character after it, a quote among them;
@@ -87,7 +89,7 @@ func sqlCode(text string) string {
 		rest := text[at:]
 		switch {
 		case strings.HasPrefix(rest, "--"):
-			end := strings.IndexByte(rest, '\n')
+			end := strings.IndexAny(rest, "\n\r")
 			if end < 0 {
 				end = len(rest)
 			}
@@ -174,10 +176,30 @@ func sqlIdentifierByte(c byte) bool {
 	return c == '_' || c == '$' || c >= 0x80 || (c >= '0' && c <= '9') || (c|0x20 >= 'a' && c|0x20 <= 'z')
 }
 
-// ruleNeedle is the rule's needle, `coalesce(a.asked_of`, in every spelling SQL takes for it: any
-// qualifier or none (an alias, a table, a schema, a quoted name), a quoted column, any case, any
-// space. The count of the module's Go and the count of its .sql files both read it.
-var ruleNeedle = regexp.MustCompile(`(?i)\bcoalesce\s*\(\s*(?:(?:\w+|"[^"]*")\s*\.\s*)*(?:asked_of\b|"asked_of")`)
+// The SQL lexical rules ruleNeedle reads, as PostgreSQL's lexer has them (src/backend/parser/scan.l):
+//   - sqlSpace is a character of space between two tokens (scan.l's space). In the .sql count a
+//     comment between two tokens is space too, since sqlCode blanks each comment to one space.
+//   - sqlIdentifierCont is a character an unquoted identifier goes on with (ident_cont): a letter,
+//     `_`, a digit, `$` and any character past ASCII. Its first character is any of these but a
+//     digit or `$` (ident_start).
+//   - sqlIdentifier is one identifier: unquoted; quoted, in which a doubled quote stands for one;
+//     or quoted with Unicode escapes (U&"…"), with the UESCAPE clause that may follow it.
+const (
+	sqlSpace          = `[\t\n\v\f\r ]`
+	sqlIdentifierCont = `a-z0-9_$\x{80}-\x{10FFFF}`
+	sqlIdentifier     = `(?:[a-z_\x{80}-\x{10FFFF}][` + sqlIdentifierCont + `]*|(?:u&)?"(?:[^"]|"")*"(?:` +
+		sqlSpace + `*uescape` + sqlSpace + `*'[^']')?)`
+)
+
+// ruleNeedle is the rule's needle, `coalesce(a.asked_of`, in each spelling SQL's lexical rules give
+// it: `coalesce` in any case; any space; any number of qualifiers, each an identifier of any
+// spelling (an alias, a table, a schema); and the column, unquoted in any case and read whole, or
+// quoted, with or without U&. It does not decode a column whose quoted name spells a character
+// with a Unicode escape (U&"asked\005fof"). The count of the module's Go and the count of its .sql
+// files both read it. The Go count reads a file's text as it stands, so there a SQL comment inside
+// the needle is no space, and a quote that a Go string escapes (\") is no quote.
+var ruleNeedle = regexp.MustCompile(`(?i)\bcoalesce` + sqlSpace + `*\(` + sqlSpace + `*(?:` + sqlIdentifier +
+	sqlSpace + `*\.` + sqlSpace + `*)*(?:asked_of(?:[^` + sqlIdentifierCont + `]|$)|(?:u&)?(?-i:"asked_of"))`)
 
 // goRuleCopies is the number of copies of the rule in the text of a Go source.
 func goRuleCopies(text string) int {
@@ -360,8 +382,11 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		{"/* outer /* inner */ coalesce(ä.asked_of, 'fallback') */ select 1", 0},
 		// A line comment ends at a carriage return as it does at a newline (scan.l's non_newline).
 		{"-- a note\rselect coalesce(a.asked_of, i.assignee) from asks a", 1},
-		// A name is read whole: asked_of with a character past ASCII after it is another column.
+		// A name is read whole: asked_of with a character past ASCII, a `$` or a capital letter after
+		// it is another column.
 		{"select coalesce(a.asked_ofä, i.assignee) from asks a", 0},
+		{"select coalesce(a.asked_of$, i.assignee) from asks a", 0},
+		{"select coalesce(a.asked_ofX, i.assignee) from asks a", 0},
 	} {
 		if got := sqlRuleCount(planted.sql); got != planted.spelled {
 			t.Errorf("the .sql count finds %d copies of the rule in %q, want %d", got, planted.sql, planted.spelled)
