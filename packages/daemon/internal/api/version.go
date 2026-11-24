@@ -3165,6 +3165,9 @@ package api
 // sentence, and its key is unchanged, so every contract is served it. From this entry the last
 // number of answers.go's SupportedContracts is `api.startWaitTokenContract`, and
 // `strandedTokenContract` stays 222.
+// The state's `workers` and `architect` name only the claim record.WorkerClaim gives for the
+// issue and role, and every other claim is under `otherClaims`; the keys and shapes are
+// unchanged, so every contract is served this correction.
 // (This entry took 245, above the base's 222 (the entry above), at a reading of `const
 // DaemonAPIVersion` at refs/pull/<n>/head for each of the 514 open pull requests, made between
 // 2026-11-24T07:08:28Z and 07:09:16Z, which read all 514 and found 242 the highest number

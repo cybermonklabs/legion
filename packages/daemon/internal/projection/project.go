@@ -202,6 +202,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// The wakes the pacing holds, as the state names them beside the claim views that name
 	// their own: one list, set here, so the two readings come from one place.
 	projected := api.State{Issues: make(map[string]api.Issue, len(issues)), WakesWaiting: in.Wakes}
+	reachedClaims := make(map[record.PhaseRole]claim.Token)
 	for _, issue := range issues {
 		view := api.Issue{
 			Key:           issue.Key,
@@ -257,6 +258,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if err != nil {
 			return api.State{}, err
 		}
+		for _, item := range phases {
+			key := record.PhaseRole{Issue: issue.Key, Role: item.Role}
+			if _, read := reachedClaims[key]; !read {
+				reachedClaims[key], _ = record.WorkerClaim(projectToken, issue.Key, item.Role, phases)
+			}
+		}
 		// Each start that waits for the issue's pod, by its role and the claim it starts, each once
 		// (record.StartClaims): the claim its row names, or, for a row that names none, the claim the
 		// record gives the role's step, which is the claim the outbox's next try of that row acts on,
@@ -273,12 +280,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		for _, start := range starts {
 			view.StartWaitsForPod = append(view.StartWaitsForPod, api.StartWaitView{Role: start.Role, Token: start.Claim})
 		}
-		// Each role's row now (record.PhaseRowOf), the row with the highest entry: a role that
-		// stands at two steps of a task has a row for each, and its worker is served from the row of
-		// the step it works now or worked last, the row the admission pass weighs it against. The
-		// reviewer's row now is the round's: its decision is read from it, and so is what the round
-		// waits on from GitHub (mergeWaitView). The zero row is an issue whose reviewer has never
-		// had one.
+		// Each role's current row supplies its counts and handoff (record.PhaseRowOf), but its
+		// worker is the claim issue and role reach (record.WorkerClaim): the row's claim only
+		// while it runs a step, otherwise the role's own. A generation clear keeps the row's
+		// claim and clears its step. The reviewer's current row also supplies the round's
+		// decision and GitHub wait (mergeWaitView); its zero row means no round was recorded.
 		var reviewer record.PhaseRow
 		for _, item := range phases {
 			if now := record.PhaseRowOf(phases, item.Role); now.StepTask != item.StepTask || now.StepPlace != item.StepPlace {
@@ -287,7 +293,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			if item.Role == claim.RoleReviewer {
 				reviewer = item
 			}
-			claimView, live := claimViews[item.Claim]
+			claimView, live := claimViews[reachedClaims[record.PhaseRole{Issue: issue.Key, Role: item.Role}]]
 			if !live {
 				continue
 			}
@@ -429,15 +435,18 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				Workers: map[claim.Role]api.PhaseView{},
 			}
 		}
-		// A claim no entry shows yet takes its role's place (the architect, or a worker of a role
-		// no phases row named a live claim for); one whose role's place is taken by another claim
-		// is listed under otherClaims with its role, since two claims of one issue can hold one
-		// role and the state names every claim of the issue by its token.
+		// Only the claim issue and role reach takes the role's place. Before a step's start
+		// creates that claim, another claim of its role must not fill the empty place. An
+		// unrecorded issue has no rows, so WorkerClaim gives the role's own token.
+		token, read := reachedClaims[record.PhaseRole{Issue: current.Issue, Role: current.Role}]
+		if !read {
+			token, _ = record.WorkerClaim(projectToken, current.Issue, current.Role, nil)
+		}
 		_, workerShown := view.Workers[current.Role]
 		switch {
-		case current.Role == claim.RoleArchitect && view.Architect == nil:
+		case current.Token == token && current.Role == claim.RoleArchitect && view.Architect == nil:
 			view.Architect = &claimView
-		case current.Role != claim.RoleArchitect && !workerShown:
+		case current.Token == token && current.Role != claim.RoleArchitect && !workerShown:
 			view.Workers[current.Role] = api.PhaseView{Claim: claimView}
 		case !showsClaim(view, current.Token):
 			view.OtherClaims = append(view.OtherClaims, api.OtherClaimView{Role: current.Role, Claim: claimView})
