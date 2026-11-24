@@ -179,7 +179,9 @@ func (o *loadOptions) say(stdout io.Writer, result map[string]any) {
 // connect opens one tunnel to the bound host through the proxy and answers the connection the
 // CONNECT left behind. The answer is read with the CONNECT it answers (http.ReadResponse's req),
 // its Proxy-Authorization among it, so a print of a refusal's words redacts the credential the
-// CONNECT carried (redact.Carried), as ask's answer does its bearer.
+// CONNECT carried (redact.Carried), as ask's answer does its bearer. The CONNECT's headers are
+// written to the wire from that request (sent), so every header the proxy is sent is one the
+// answer's record holds.
 func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	// url.Parse's error quotes the whole URL, the grant's proxy password with it, so the error names
 	// the flag the URL came from instead.
@@ -193,7 +195,6 @@ func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	}
 	target := o.host + ":443"
 	bound := "https://" + target
-	request := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n"
 	sent, err := http.NewRequest(http.MethodConnect, bound, nil)
 	if err != nil {
 		conn.Close()
@@ -202,12 +203,15 @@ func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	if u.User != nil {
 		password, _ := u.User.Password()
 		credential := base64.StdEncoding.EncodeToString([]byte(u.User.Username() + ":" + password))
-		request += "Proxy-Authorization: Basic " + credential + "\r\n"
 		sent.Header.Set("Proxy-Authorization", "Basic "+credential)
 	}
-	request += "\r\n"
+	var request strings.Builder
+	request.WriteString("CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n")
+	// A strings.Builder's Write returns no error, so neither does Header.Write into it.
+	_ = sent.Header.Write(&request)
+	request.WriteString("\r\n")
 	_ = conn.SetDeadline(time.Now().Add(timeout))
-	if _, err := conn.Write([]byte(request)); err != nil {
+	if _, err := conn.Write([]byte(request.String())); err != nil {
 		conn.Close()
 		return nil, err
 	}
