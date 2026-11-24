@@ -64,6 +64,14 @@ var (
 	// CommitOnBranch, DefaultBranch and delivery's own pull-request reads all classify their
 	// answers by).
 	ErrRepositoryUnreadable = errors.New("the GitHub App cannot read the repository")
+	// ErrNotASHA is a read that takes a commit's SHA refusing a value that is not one: forty or
+	// sixty-four lowercase hex digits, the shape redact.ShapedSHA prints. Every caller passes a
+	// full SHA, though GitHub would answer a short one or a ref at the same paths; a value GitHub's
+	// own answers gave (a GraphQL head OID) can still be any text, and url.PathEscape keeps ':',
+	// '@', '=' and '&', so such a value would print in the target of every error and note of the
+	// request. The read refuses it before it builds a target, and names it by ShapedSHA's phrase
+	// alone. No retry changes the answer.
+	ErrNotASHA = errors.New("the read takes a commit's full SHA")
 )
 
 // responseLimit caps a GitHub API response body; a blob response is read
