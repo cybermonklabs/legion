@@ -28,7 +28,7 @@ func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `order by project_key, id`)
+	sources, err := querySources(r.Context(), s.deps.Store.Pool, who, `true`, `project_key, id`)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -46,7 +46,7 @@ func (s *server) listProjectArchitectureSources(w http.ResponseWriter, r *http.R
 		return
 	}
 	key := r.PathValue("key")
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id`, key)
+	sources, err := querySources(r.Context(), s.deps.Store.Pool, who, `project_key = $1`, `id`, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -72,7 +72,7 @@ func (s *server) getArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.PathValue("key")
 	slog.Warn("dispatch: GET /api/v1/projects/{key}/architecture-source called by a dispatch client older than this release; upgrade it, the route will be removed", "project", key)
-	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id limit 1`, key)
+	sources, err := querySources(r.Context(), s.deps.Store.Pool, who, `project_key = $1`, `id limit 1`, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -155,12 +155,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	// is not exactly the name of a branch the repository has (a commit SHA, a relative ref such as
 	// main~1, HEAD, a refs/ path) is refused like a missing branch, and a failed re-PUT leaves the
 	// stored source untouched.
-	var installationID int64
-	if refusal != nil {
-		err = refusal
-	} else {
-		installationID, err = s.checkArchitectureSource(r.Context(), who, owner, name, branch)
-	}
+	installationID, err := s.checkArchitectureSource(r.Context(), owner, name, branch)
 	if err != nil {
 		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) || errors.Is(err, githubapp.ErrNoBranch) {
 			writeError(w, "SOURCE_ACCESS", http.StatusConflict, err.Error())
@@ -308,7 +303,6 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	repo := owner + "/" + name
-	who, ok := s.sourceProjectVisible(w, r, key, func() { writeSourceNotFound(w, key, repo) })
 	source, err := s.deps.Architecture.Sync(r.Context(), key, repo)
 	switch {
 	case err == nil:

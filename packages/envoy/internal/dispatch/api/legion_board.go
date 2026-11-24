@@ -271,7 +271,7 @@ type legionBoardIssue struct {
 func (s *server) readLegionBoard(ctx context.Context, who model.Actor, project string) (*legionBoardPopulation, error) {
 	pool := s.deps.Store.Pool
 	viewer := refs.VisibilityArg(who)
-	if _, err := legion.GetSettings(ctx, pool, project, viewer); err != nil {
+	if _, err := legion.GetSettings(ctx, pool, project); err != nil {
 		return nil, err
 	}
 	population := &legionBoardPopulation{

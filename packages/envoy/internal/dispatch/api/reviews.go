@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -40,12 +39,10 @@ var approvalAskOptions = []model.AskOption{
 	{Label: docs.ApprovalOptionRequestChanges, Description: "Say what must change before it can be approved."},
 }
 
-// latestVersionNumber is the newest version an artifact has, nil when it has none or when who may
-// not read the document (documentVisible).
+// latestVersionNumber is the newest version an artifact has, nil when it has none.
 func latestVersionNumber(ctx context.Context, q queryer, who model.Actor, artifactID string) (*int, error) {
 	var latest *int
-	if err := q.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1 and `+documentVisible("$1", "$2"),
-		artifactID, refs.VisibilityArg(who)).Scan(&latest); err != nil {
+	if err := q.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&latest); err != nil {
 		return nil, fmt.Errorf("latest artifact version: %w", err)
 	}
 	return latest, nil
@@ -61,10 +58,9 @@ func settledVersionNumber(ctx context.Context, q queryer, who model.Actor, artif
 }
 
 // loadReviews is every review of the document, newest first in the order its events committed
-// (docs.ReviewOrder), read only where who may read the document (documentVisible).
+// (docs.ReviewOrder).
 func (s *server) loadReviews(ctx context.Context, q queryer, who model.Actor, artifactID string) ([]model.ArtifactReview, error) {
-	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 and `+
-		documentVisible("artifact_reviews.artifact_id", "$2")+` order by `+docs.ReviewOrder, artifactID, refs.VisibilityArg(who))
+	rows, err := q.Query(ctx, `select `+docs.ReviewColumns+` from artifact_reviews where artifact_id = $1 order by `+docs.ReviewOrder, artifactID)
 	if err != nil {
 		return nil, err
 	}
@@ -79,9 +75,8 @@ func (s *server) loadReviews(ctx context.Context, q queryer, who model.Actor, ar
 }
 
 // latestReviewsStatement reads the newest review of every document in $1, one row each
-// (docs.ReviewOrder decides which), of the documents the reader whose visibility argument is $2
-// may read; scanLatestReviews reads its rows.
-var latestReviewsStatement = `
+// (docs.ReviewOrder decides which); scanLatestReviews reads its rows.
+const latestReviewsStatement = `
 		select distinct on (artifact_id) ` + docs.ReviewColumns + `
 		from artifact_reviews where artifact_id = any($1::uuid[])
 		order by artifact_id, ` + docs.ReviewOrder + `
@@ -237,11 +232,10 @@ func queueApprovals(b *pgx.Batch, who model.Actor, artifacts []*model.Artifact) 
 	}
 	latestReviews := map[string]model.ArtifactReview{}
 	requests := map[string]openApprovalRequest{}
-	seen := refs.VisibilityArg(who)
-	b.Queue(latestReviewsStatement, ids, seen).Query(func(rows pgx.Rows) error {
+	b.Queue(latestReviewsStatement, ids).Query(func(rows pgx.Rows) error {
 		return scanLatestReviews(rows, latestReviews)
 	})
-	b.Queue(openApprovalAsksStatement, ids, seen).Query(func(rows pgx.Rows) error {
+	b.Queue(openApprovalAsksStatement, ids).Query(func(rows pgx.Rows) error {
 		return scanOpenApprovalRequests(rows, requests)
 	})
 	return func() { applyApprovals(byID, latestReviews, requests) }
@@ -390,6 +384,9 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	// What the reviewer sees, resolved before the transaction holds a connection: the approval
 	// request it answers is read as the reviewer may read it (closeAskTx).
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -589,6 +586,9 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// The coverage and the Verification document are read as the requester reads them, so the
 	// reader is resolved here, before the request holds a connection.
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	pool, err := s.readyPool()
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1162,6 +1162,9 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 		return
 	}
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
