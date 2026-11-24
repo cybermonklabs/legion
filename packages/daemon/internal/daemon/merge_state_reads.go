@@ -393,13 +393,24 @@ func (w *workflowRuntime) queueBaseMergeStates(repo, base string, issues []strin
 // rather than postponing it. A climb asked for an issue the batch already follows keeps the head
 // it follows (baseOwed). A ladder that is not running starts (readBaseMergeStates); one that is
 // is woken under the lock it reads its requests under, so it takes up a climb at once and a follow
-// at its next read. It only records and wakes.
+// at its next read. It only records and wakes (queueBaseReadLocked).
 func (w *workflowRuntime) queueBaseRead(repo ghrepo.Repository, base string, owed map[string]string, climb bool) {
-	if w.baseWake == nil || len(owed) == 0 {
-		return
-	}
-	key := baseReadKey(repo, base)
 	w.mergeStateMu.Lock()
+	key, starts := w.queueBaseReadLocked(repo, base, owed, climb)
+	w.mergeStateMu.Unlock()
+	if starts {
+		w.baseWake.add(key)
+	}
+}
+
+// queueBaseReadLocked is queueBaseRead's record, under mergeStateMu, so a caller can make it in
+// the same step as a check of its own (moveBase). It answers the batch's key and whether its ladder
+// is to be started, which the caller does once it has let the lock go (baseWake.add).
+func (w *workflowRuntime) queueBaseReadLocked(repo ghrepo.Repository, base string, owed map[string]string, climb bool) (string, bool) {
+	key := baseReadKey(repo, base)
+	if w.baseWake == nil || len(owed) == 0 {
+		return key, false
+	}
 	if w.baseReads == nil {
 		w.baseReads = map[string]*baseRead{}
 	}
@@ -432,10 +443,7 @@ func (w *workflowRuntime) queueBaseRead(repo ghrepo.Repository, base string, owe
 	if running {
 		nudge(read.wake)
 	}
-	w.mergeStateMu.Unlock()
-	if !running {
-		w.baseWake.add(key)
-	}
+	return key, !running
 }
 
 // leaveBaseLocked takes issue out of the batch it is owed a read in, if any, under mergeStateMu: a
@@ -483,13 +491,19 @@ func (w *workflowRuntime) leaveBase(key, issue string, asked uint64) {
 
 // moveBase moves issue from key's batch to the batch of base of repo, its place with it, when the
 // request that put it in key's was asked: the record, or GitHub's own read of the pull request,
-// holds it on that base now, so its reads go on there. A later request stands.
+// holds it on that base now, so its reads go on there. The check and the move are one step under
+// mergeStateMu: a newer request for the issue - a climb of its own, or the head that climb handed
+// over to a batch - either lands before it, and the move does nothing, or after it, and stands.
+// So no move decided on an older read puts back a head a newer one replaced.
 func (w *workflowRuntime) moveBase(key, issue string, place baseOwed, repo ghrepo.Repository, base string) {
 	w.mergeStateMu.Lock()
-	moves := w.ownsLocked(key, issue, place.asked)
+	destination, starts := "", false
+	if w.ownsLocked(key, issue, place.asked) {
+		destination, starts = w.queueBaseReadLocked(repo, base, map[string]string{issue: place.head}, place.climb)
+	}
 	w.mergeStateMu.Unlock()
-	if moves {
-		w.queueBaseRead(repo, base, map[string]string{issue: place.head}, place.climb)
+	if starts {
+		w.baseWake.add(destination)
 	}
 }
 

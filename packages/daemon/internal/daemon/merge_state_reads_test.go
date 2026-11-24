@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1144,5 +1145,79 @@ func TestAWakeAloneEndsNoFollowWhileAPullRequestIsOwed(t *testing.T) {
 	}
 	if running, _ := ladders(w); running != 0 {
 		t.Fatalf("%d ladders are marked running after the batch ended, want none", running)
+	}
+}
+
+// A move of a pull request to the batch of the base it is on now (moveBase) is decided on a read
+// of its old base's batch, and a newer head can reach the new base's batch in the meantime: a
+// climb of the pull request's own, which took it and handed the head it still read `unknown` over
+// (followOnBase). The move checks that the old batch still holds the pull request under the read's
+// request, and moves it, in one step, so the newer head stands whichever lands first: a move after
+// the newer handover does nothing, and a newer handover after the move replaces the moved head.
+// Many moves and handovers raced on two goroutines hold that in every interleaving the scheduler
+// gives them, the one where the handover lands between the old batch's check and the move among
+// them, which lost the newer head before the two were made one step.
+func TestAMoveDecidedOnAnOlderReadKeepsTheNewerHeadHandedOver(t *testing.T) {
+	t.Parallel()
+	w := readRuntime(nil, "", quietLogger())
+	repo := ghrepo.MustParse("acme/widgets")
+	from, to := baseReadKey(repo, "main"), baseReadKey(repo, "release")
+	// owedOnMain puts CAPTURE-1 in main's batch alone, following old, and answers its place there
+	// as a read of that batch takes it up.
+	owedOnMain := func() baseOwed {
+		w.mergeStateMu.Lock()
+		defer w.mergeStateMu.Unlock()
+		place := baseOwed{head: "old", asked: 1}
+		w.baseReads = map[string]*baseRead{from: {repo: repo, base: "main", asks: 1, wake: make(chan struct{}, 1),
+			owed: map[string]baseOwed{"CAPTURE-1": place}}}
+		w.baseReadOf = map[string]string{"CAPTURE-1": from}
+		return place
+	}
+	handOver := func() { w.queueBaseRead(repo, "release", map[string]string{"CAPTURE-1": "newer"}, false) }
+	followed := func() (string, string) {
+		w.mergeStateMu.Lock()
+		defer w.mergeStateMu.Unlock()
+		held := w.baseReadOf["CAPTURE-1"]
+		if read := w.baseReads[held]; read != nil {
+			return held, read.owed["CAPTURE-1"].head
+		}
+		return held, ""
+	}
+
+	place := owedOnMain()
+	handOver()
+	w.moveBase(from, "CAPTURE-1", place, repo, "release")
+	if held, head := followed(); held != to || head != "newer" {
+		t.Fatalf("after the newer handover and then the older move, CAPTURE-1 is followed by %q at %q; want release's batch at newer", held, head)
+	}
+
+	place = owedOnMain()
+	w.moveBase(from, "CAPTURE-1", place, repo, "release")
+	handOver()
+	if held, head := followed(); held != to || head != "newer" {
+		t.Fatalf("after the older move and then the newer handover, CAPTURE-1 is followed by %q at %q; want release's batch at newer", held, head)
+	}
+
+	for round := range 2000 {
+		place := owedOnMain()
+		start := make(chan struct{})
+		var both sync.WaitGroup
+		both.Add(2)
+		go func() {
+			defer both.Done()
+			<-start
+			runtime.Gosched()
+			w.moveBase(from, "CAPTURE-1", place, repo, "release")
+		}()
+		go func() {
+			defer both.Done()
+			<-start
+			handOver()
+		}()
+		close(start)
+		both.Wait()
+		if held, head := followed(); held != to || head != "newer" {
+			t.Fatalf("round %d: with the older move and the newer handover raced, CAPTURE-1 is followed by %q at %q; want release's batch at newer", round, held, head)
+		}
 	}
 }
