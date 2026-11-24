@@ -208,6 +208,9 @@ type AppContextOptions struct {
 	// GoingRunEvents wakes the streams of a command-bar run's events; cmd/dispatch registers it on
 	// its listener hub for api.GoingRunEventsChannel. See api.Deps.GoingRunEvents.
 	GoingRunEvents *api.GoingRunEventSignal
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
+	// See api.Deps.ParentStatusRule.
+	ParentStatusRule api.ParentStatusRule
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -278,6 +281,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		BuildCommit:            opts.BuildCommit,
 		GoingRuns:              opts.GoingRuns,
 		GoingRunEvents:         opts.GoingRunEvents,
+		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)

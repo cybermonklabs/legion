@@ -163,6 +163,9 @@ type workflowRuntime struct {
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration
+	// outboxSweep is how often the outbox sweeps its lanes (overrides.outboxSweep), which attach
+	// hands the outbox (outbox.sweepEvery); zero is outboxLease.
+	outboxSweep time.Duration
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -370,6 +373,14 @@ type appCallBounds struct {
 	retry bootprobe.Retry
 	// rateLimits is how the start waits for GitHub's rate limit (rateLimitPolicy).
 	rateLimits rateLimitPolicy
+	// clock is the time every wait of the start's App calls reads and waits on: GitHub's rate
+	// limit (startWaits) and the waits between attempts, transient, pending or waiting
+	// (bootprobe.RunOn). Production's is the wall clock; a test's moves on by each wait at once, so
+	// a wait for GitHub's reset or for the minute a refusal that names no time asks costs the test
+	// nothing. It is not openWorkflow's clock: the machines' test clocks (daemon_test.go's
+	// stillClock) return from Sleep at once without moving, so a rate-limit wait on them would never
+	// end and the start would spin.
+	clock bootprobe.Clock
 }
 
 // productionAppCalls are the bounds a daemon's start runs on. An attempt lasts 15 s. The wait
@@ -389,6 +400,7 @@ func productionAppCalls() appCallBounds {
 		attempt:    15 * time.Second,
 		retry:      bootprobe.Retry{Initial: 5 * time.Second, Max: 30 * time.Second, Attempts: 5},
 		rateLimits: rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute},
+		clock:      bootprobe.WallClock{},
 	}
 }
 
@@ -463,11 +475,11 @@ func appAttempt(waits *startWaits, call string, attempt func(context.Context) er
 // have reached their end, a refusal naming the call, the time the start waited, and GitHub's last
 // answer with its message. limited is false for every other err.
 func limitOutcome(err error, waits *startWaits, call string) (outcome bootprobe.Outcome, limited bool) {
-	answer, githubWait, limited := bootLimit(err)
+	answer, limited := bootLimit(err)
 	if !limited {
 		return bootprobe.Outcome{}, false
 	}
-	until, waited, ended := waits.wait(call, answer, githubWait)
+	until, waited, ended := waits.wait(call, answer)
 	if ended {
 		return bootprobe.Outcome{Refusal: fmt.Errorf("the %s waited %s for GitHub's rate limit, the most a start waits, and GitHub still refuses it: GitHub answered %s %s with %s: %s: %w",
 			call, bootprobe.ShownWait(waited), answer.Method, answer.Path, limitSummary(answer), answer.Body, err)}, true
@@ -486,17 +498,17 @@ func limitSummary(answer *githubrest.Answer) string {
 
 // bootLimit is GitHub's answer to an App call of the start that failed with err — the App logins
 // read or the key proof, whose error carries the answer appauth read (appauth.AnswerError) — when
-// that answer is GitHub's rate limit (answerLimit), with how long GitHub asks the start to wait.
-func bootLimit(err error) (*githubrest.Answer, time.Duration, bool) {
+// that answer is GitHub's rate limit (answerLimit). How long GitHub asks the start to wait the
+// start reads from the answer's headers at its own time (startWaits.wait).
+func bootLimit(err error) (*githubrest.Answer, bool) {
 	var refused *appauth.AnswerError
 	if !errors.As(err, &refused) {
-		return nil, 0, false
+		return nil, false
 	}
-	wait, limited := answerLimit(refused.Answer)
-	if !limited {
-		return nil, 0, false
+	if _, limited := answerLimit(refused.Answer); !limited {
+		return nil, false
 	}
-	return refused.Answer, wait, true
+	return refused.Answer, true
 }
 
 // rateLimitPolicy is how the start waits for GitHub's rate limit (dispatch://INFRA-2597/spec R4):
@@ -508,39 +520,42 @@ type rateLimitPolicy struct {
 }
 
 // startWaits is one start's waits for GitHub's rate limit on one start's bounds (their
-// rateLimits) and one clock, now: the App logins read and then the key proof, which openWorkflow
-// runs one after the other (wait). end
-// is the start's end, zero until its first wait sets it Bound after that wait begins; noTime is the
-// last wait each App call took for a refusal that named no time; and waited is the time the start
-// has spent in its waits. bounds are the start's App-call bounds, whose attempt and retry the
-// start's calls run on (appAttempt, appLoginsAtBoot, proveAppKeys).
+// rateLimits) and their clock, which bootprobe.RunOn waits on too: the App logins read and then the
+// key proof, which openWorkflow runs one after the other (wait). end is the start's end, zero
+// until its first wait sets it Bound after that wait begins; noTime is the last wait each App call
+// took for a refusal that named no time; and waited is the time the start has spent in its waits.
+// bounds are the start's App-call bounds, whose attempt and retry the start's calls run on
+// (appAttempt, appLoginsAtBoot, proveAppKeys).
 type startWaits struct {
 	bounds appCallBounds
-	now    func() time.Time
 	end    time.Time
 	noTime map[string]time.Duration
 	waited time.Duration
 }
 
-// newStartWaits is one start's waits on bounds and the clock now.
-func newStartWaits(bounds appCallBounds, now func() time.Time) *startWaits {
-	return &startWaits{bounds: bounds, now: now, noTime: map[string]time.Duration{}}
+// newStartWaits is one start's waits on bounds.
+func newStartWaits(bounds appCallBounds) *startWaits {
+	return &startWaits{bounds: bounds, noTime: map[string]time.Duration{}}
 }
 
 // wait is the wait for GitHub's rate limit on the start's App call call (the logins read, the key
-// proof), asked as soon as the call's attempt returned with answer, GitHub's refusal, from which
-// answerLimit read githubWait. Where GitHub named a time (namesTime), the wait is githubWait with
-// at most Max; where it named none, NoTime for the call's first such refusal of the start and two
-// times its wait before for each further one. It says until when, at the start's end at the
-// latest, and the time the start has waited so far, this wait included (register); or, once now is
-// at or past the start's end, ended, with no wait: the call then ends the start.
-func (s *startWaits) wait(call string, answer *githubrest.Answer, githubWait time.Duration) (until time.Time, waited time.Duration, ended bool) {
-	now := s.now()
+// proof), asked as soon as the call's attempt returned with answer, GitHub's refusal. Where GitHub
+// named a time, the wait is the one its headers ask for at the bounds' clock's now
+// (LimitHeaders.WaitAt) with at most Max; where it named none, NoTime for the call's first such
+// refusal of the start and two times its wait before for each further one. It says until when, at
+// the start's end at the latest, and the time the start has waited so far, this wait included
+// (register); or, once now is at or past the start's end, ended, with no wait: the call then ends
+// the start. GitHub's wait is read at now rather than taken from answer.RetryAfter, which
+// githubrest read on the host's clock, so the wait, its until and the start's end are on one
+// clock.
+func (s *startWaits) wait(call string, answer *githubrest.Answer) (until time.Time, waited time.Duration, ended bool) {
+	now := s.bounds.clock.Now()
 	if !s.end.IsZero() && !now.Before(s.end) {
 		return now, s.waited, true
 	}
-	wait := min(githubWait, s.bounds.rateLimits.Max)
-	if !namesTime(answer.Limit, now) {
+	wait, named := answer.Limit.WaitAt(now)
+	wait = min(wait, s.bounds.rateLimits.Max)
+	if !named {
 		wait = s.bounds.rateLimits.NoTime
 		if last, ok := s.noTime[call]; ok {
 			wait = 2 * last
@@ -566,18 +581,6 @@ func (s *startWaits) register(begin, until time.Time) (time.Time, time.Duration)
 	return until, s.waited
 }
 
-// namesTime is whether limit, the rate-limit headers of GitHub's answer, names when the limit ends,
-// as GitHub's REST documentation reads them: a Retry-After of more than 0 seconds, or no call left
-// (X-RateLimit-Remaining 0) with an X-RateLimit-Reset still ahead of now. A 403 named by its body
-// alone, and a reset already past, name none.
-func namesTime(limit githubrest.LimitHeaders, now time.Time) bool {
-	if seconds, err := strconv.Atoi(limit.RetryAfter); err == nil && seconds > 0 {
-		return true
-	}
-	reset, err := strconv.ParseInt(limit.Reset, 10, 64)
-	return limit.Remaining == "0" && err == nil && time.Unix(reset, 0).After(now)
-}
-
 // appLoginsAtBoot reads each App's bot login under its own JWT (appauth.Logins), which needs no
 // installation, so a daemon serving no repository yet still knows the review App's login, as one
 // attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError) and
@@ -593,7 +596,7 @@ func namesTime(limit githubrest.LimitHeaders, now time.Time) bool {
 func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits, log *slog.Logger) (string, error) {
 	const call = "GitHub App logins read"
 	logins := map[appauth.AppRole]string{}
-	err := bootprobe.Run(ctx, call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
+	err := bootprobe.RunOn(ctx, waits.bounds.clock, call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, read := logins[role]; read {
 				continue
@@ -637,7 +640,7 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits
 func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installed *appauth.Installed, waits *startWaits, log *slog.Logger) error {
 	const call = "GitHub App key proof"
 	owners := make(map[appauth.AppRole][]string, len(appauth.Roles))
-	err := bootprobe.Run(ctx, call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
+	err := bootprobe.RunOn(ctx, waits.bounds.clock, call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, proved := owners[role]; proved {
 				continue
@@ -751,7 +754,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	log.Info("legion workflow boot stage", "stage", "appauth")
 	// One policy and one clock for every wait of the start for GitHub's rate limit: the App logins
 	// read, then the key proof (appCallBounds.rateLimits).
-	waits := newStartWaits(w.callBounds(), time.Now)
+	waits := newStartWaits(w.callBounds())
 	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, waits, log)
 	if err != nil {
 		return nil, err
@@ -1815,6 +1818,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
+	w.outbox.sweepEvery = w.outboxSweep
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1835,9 +1839,10 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 //
 // Its one reader, keptRepository, asks it of an issue the workflow does not record. IssueSandbox
 // answers a Sandbox its store holds absent only where a release kept it with the issue's volume
-// (ReleaseIssue), and the store authorizes neither the release nor the close of an issue it holds
-// no row of (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers
-// present for as long as it lives.
+// (ReleaseIssue) or where it is going: being deleted, or taken by the runtime's own delete. The
+// store authorizes neither the release nor the close of an issue it holds no row of
+// (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers present for as
+// long as it lives, until a delete takes it with the workspace on it.
 func workspaceHeldBy(rt runtime.Runtime, stateDir string) func(issue string, repo ghrepo.Repository) bool {
 	if pods, ok := rt.(issuePods); ok {
 		return func(issue string, _ ghrepo.Repository) bool {

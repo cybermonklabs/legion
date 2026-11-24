@@ -24,6 +24,26 @@
    `not-refused:hover:` never lights a refused button, and no look has to be stated twice. */
 @custom-variant refused (&:is(:disabled, [aria-disabled="true"]));
 
+/* The end room of a scroller under the foot's floats (`hooks/useFootInset.ts` says what that is
+   and how a scroller takes it). Not inherited: a scroller holding no room of its own reads 0,
+   never the room of a scroller around it. */
+@property --foot-clearance {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* The spacer at the end of the content of a scroller marked `after`. A pseudo-element inherits
+   from its own element, and a property registered as not inherited reaches it only by an explicit
+   `inherit`: without it the spacer reads the initial 0px, whatever room its scroller holds. */
+[data-foot-clearance="after"]::after {
+  --foot-clearance: inherit;
+  content: "";
+  display: block;
+  flex: none;
+  height: var(--foot-clearance);
+}
+
 /* Dispatch has no theme toggle: every surface follows the OS `prefers-color-scheme`, which is
    exactly Tailwind v4's default `dark:` variant (a `@media (prefers-color-scheme: dark)` query,
    built into `@import "tailwindcss"` with no `@custom-variant` override here). Components import

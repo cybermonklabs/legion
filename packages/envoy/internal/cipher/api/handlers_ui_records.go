@@ -217,6 +217,9 @@ func (s *server) decideMachineLogin(w http.ResponseWriter, r *http.Request, reco
 	case errors.Is(err, machine.ErrKeyHoldsLiveCredential):
 		writeError(w, http.StatusConflict, "KEY_HOLDS_LIVE_CREDENTIAL", err.Error())
 		return
+	case errors.Is(err, machine.ErrKeyBindsReadToken):
+		writeError(w, http.StatusConflict, "KEY_BINDS_READ_TOKEN", err.Error())
+		return
 	case errors.Is(err, machine.ErrServiceLogsInWithToken):
 		writeError(w, http.StatusBadRequest, "SERVICE_LOGS_IN_WITH_TOKEN", err.Error())
 		return

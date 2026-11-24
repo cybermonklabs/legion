@@ -985,6 +985,10 @@ const (
 	goingExcludedTestHook   = "a test hook, which a deployment serves only with its test hooks on"
 	goingExcludedBar        = "the command bar's own route"
 	goingExcludedDaemon     = "only the Legion daemon writes it: every other caller is refused (403)"
+	// The status change writes several issues, each in a transaction of its own, so no landing of
+	// one request records it and no Undo walks it back; the bar refuses an update that sets one of
+	// its options (goingUnsendable) and changes each issue in a row of its own, through the PATCH.
+	goingExcludedStatusChange = "a status change with an option: the bar changes each issue on its own"
 )
 
 // goingExcludedRoutes is every route a person's credential may call that no tool calls, by
@@ -1030,6 +1034,7 @@ var goingExcludedRoutes = map[string]string{
 	"PUT /api/v1/issues/{key}/steps/{id}":                           goingExcludedDaemon + " STEP_WRITER",
 	"PUT /api/v1/issues/{key}/steps/{id}/rating":                    goingExcludedDaemon + " STEP_WRITER",
 	"PUT /api/v1/issues/{key}/plans/{id}":                           goingExcludedDaemon + " STEP_WRITER",
+	"POST /api/v1/issues/{key}/status-change":                       goingExcludedStatusChange,
 	"POST /api/v1/live/_test/disconnect":                            goingExcludedTestHook,
 	"POST /api/v1/live/_test/rotate":                                goingExcludedTestHook,
 	"POST /api/v1/artifacts/_test/quiesce":                          goingExcludedTestHook,

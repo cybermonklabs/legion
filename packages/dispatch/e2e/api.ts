@@ -443,6 +443,18 @@ export function patchIssue(
   return patch("/api/v1/issues/{key}", { body: input, params: { key } }, options);
 }
 
+/** `POST /api/v1/issues/{key}/status-change`: the issue's status, with what happens to the open
+ *  issues under it or the issues above it (`include_children`, `unlink_children`,
+ *  `include_parent`) so that each parent's status stays in line with its children's. With
+ *  `dry_run` it writes nothing and answers what the call would change. */
+export function changeIssueStatus(
+  key: string,
+  input: Body<"/api/v1/issues/{key}/status-change", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/issues/{key}/status-change", { body: input, params: { key } }, options);
+}
+
 /** `POST /api/v1/issues/{key}/results`: one result of one check, recorded on `issue`, which
  *  need not be the issue whose Verification document holds the check. The answer carries the
  *  stored result and the pull-request body line it implies. */

@@ -115,7 +115,7 @@ func goingServedInProcess(ctx context.Context) bool {
 }
 
 // recordedAnswer is what a handler answers, kept whole: an in-process route's answer to a going
-// call, and a test hook's acknowledgement of what its handler's error writer wrote. The first
+// call (a test hook's acknowledgement is an errorAnswer, handler_errors.go). The first
 // status written is the answer's, and a body written with none is a 200's, as net/http's own
 // writer has it. A limit above 0 keeps that much of the body and drops the rest, marking the
 // answer cut, while the handler writes on as though all of it was taken. It has no Unwrap, Flush

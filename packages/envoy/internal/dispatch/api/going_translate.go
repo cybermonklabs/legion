@@ -154,7 +154,10 @@ func (e goingUntranslatable) Error() string { return string(e) }
 // it runs on and the bar has no way to open; a `ref`, the dispatch:// reference the command finds
 // a comment's, a suggestion's or an edit's place by, where the bar places a write by the issue,
 // project and document the call names; an upload with no text; a closing `reason` on an update
-// that does not close the issue, which the update posts only before a close; and a sync's source
+// that does not close the issue, which the update posts only before a close; an update that sets
+// an option of the status change (include_children, unlink_children, include_parent), whose route
+// writes several issues, each in a transaction of its own, which no landing of one request records
+// and no Undo walks, where the bar makes each issue's change a row of its own; and a sync's source
 // repository not written as owner/name, the two segments its route's path takes. An ask's `ref`
 // is none of these: the question carries it as a line of its own (goingAskBody). None needs a
 // read or a row, so GoingCaller refuses such a call before it holds the call to the tool's rule
@@ -209,6 +212,11 @@ func goingUnsendable(action string, arguments map[string]any) string {
 			return "the bar cannot send an upload with no text, since it uploads only the text the answer writes. Ask again with the text to upload written in your question."
 		}
 	case "dispatch_issue_update":
+		for _, option := range []string{optionIncludeChildren, optionUnlinkChildren, optionIncludeParent} {
+			if arguments[option] == true {
+				return "the bar cannot change the issues under or above an issue together with it in one change, since it takes back a change one issue at a time. Ask again for each issue's change on its own."
+			}
+		}
 		if _, noted := arguments["reason"].(string); noted && arguments["status"] != "done" {
 			return "the bar cannot send an update with a closing note that does not close the issue, since the note is posted only as the issue is marked done. Ask again to close the issue, or for the update without the note."
 		}

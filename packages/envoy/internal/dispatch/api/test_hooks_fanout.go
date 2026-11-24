@@ -480,7 +480,7 @@ func (s *server) runTestHook(ctx context.Context, call testHookCall) (int, []byt
 		s.shutAllLiveSockets(contracts.LiveSocketMaxAgeClose, liveSocketMaxAgeReason)
 	case hookQuiesceDocuments:
 		if err := s.deps.Docs.Quiesce(ctx); err != nil {
-			answer := &recordedAnswer{header: http.Header{}}
+			answer := &errorAnswer{header: http.Header{}}
 			s.writeHandlerError(answer, err)
 			return answer.status, answer.body.Bytes()
 		}

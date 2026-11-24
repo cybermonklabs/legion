@@ -20,11 +20,17 @@ generated.
 ## `web/src/api`
 
 - **`client.ts`'s transport** — `FetchImplementation`, `UploadImplementation`,
-  `UploadProgress`, `ErrorPayload`, `RequestBounds`, `WriteMethod`, `WriteRequest<T>`,
-  `WriteBounds`, `ArtifactOwner`, `WriteVerb`. These are the page's rules about how a request is
-  sent and how its answer is kept, not what either carries: the silence deadline, the keepalive
-  bound, the replay shape a kept write is stored as, and which of three routes an upload's owner
-  picks.
+  `UploadProgress`, `RequestBounds`, `WriteMethod`, `WriteRequest<T>`, `WriteBounds`,
+  `ArtifactOwner`, `WriteVerb`. These are the page's rules about how a request is sent and how
+  its answer is kept, not what either carries: the silence deadline, the keepalive bound, the
+  replay shape a kept write is stored as, and which of three routes an upload's owner picks.
+- **`client.ts`'s `ErrorPayload`** — what `ApiError` reads from any refusal's body, whatever
+  route gave it: the `{code, error}` every refusal carries, and the members the richer refusals
+  add, each typed from the generated document. `state` is `STATE_STALE`'s, `candidates` the
+  choice `ID_AMBIGUOUS`, `POSSIBLE_DUPLICATE` and an anchored quote list, `issues` what
+  `PARENT_STATUS_CONFLICT` names (`ParentStatusConflictIssue`), and `changed` what a refused
+  `POST /api/v1/issues/{key}/status-change` already changed (`StatusChangeEntry`). The client
+  reads the body before it knows which refusal it holds, so one shape takes every member.
 - **`client.ts`'s projections of generated types** — `CreateArtifactReviewInput` is
   `Body<"/api/v1/artifacts/{id}/reviews", "post">`, `ErrorCandidate` is the union of the
   candidate shapes a refusal carries, and `ReferenceSourceKind` is read off that route's own

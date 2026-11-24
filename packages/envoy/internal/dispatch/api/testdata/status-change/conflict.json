@@ -1,0 +1,16 @@
+{
+  "status": 409,
+  "body": {
+    "code": "PARENT_STATUS_CONFLICT",
+    "error": "this change would leave a parent's status out of line with its children's. ACME-5 (todo) is a child of ACME-4 and is not done. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+    "issues": [
+      {
+        "key": "ACME-5",
+        "title": "Child in work",
+        "status": "todo",
+        "relation": "child"
+      }
+    ],
+    "changed": []
+  }
+}
