@@ -18,6 +18,7 @@ import (
 	"golang.org/x/oauth2/google/externalaccount"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 )
@@ -195,7 +196,13 @@ func metadataEnv(env []string, address string) []string {
 // exchange the pod's token again once the token they hold has less than tokenEarlyRefresh left,
 // reading the token file at each exchange, so the token the kubelet rotates is the one sent.
 type metadataServer struct {
-	// ctx is the launcher's, carrying the exchanges' bounded HTTP client.
+	// ctx is the launcher's, carrying the exchanges' bounded HTTP client, which follows no
+	// redirect (redirects.Refused, beneath oauth2call.RefusalClient, which keeps its base's rule):
+	// Google's security token service, the one host an exchange asks (no impersonation is
+	// configured), answers no redirect an exchange must follow, and a followed one would send the
+	// pod's token on to the host the Location names, in the form a 307 or 308 sends again and in
+	// the query of a Location that quotes it. A 3xx is the exchange's failure by its status, which
+	// x/oauth2 names (`status code 302`), its Location neither asked nor printed.
 	ctx                 context.Context
 	pool, audience      string
 	tokenFile, tokenURL string
@@ -252,7 +259,7 @@ func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format
 	accounts := []string{"default/", cfg.WorkloadPool + "/"}
 	slices.Sort(accounts)
 	return &metadataServer{
-		ctx:       context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Timeout: exchangeTimeout})),
+		ctx:       context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(redirects.Refused(&http.Client{Timeout: exchangeTimeout}))),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,
 		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, sessionproxy.STSTokenURL),
