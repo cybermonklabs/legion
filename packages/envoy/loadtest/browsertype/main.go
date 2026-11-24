@@ -32,6 +32,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // fragmentName is the Y.XmlFragment the docs package keeps a document's ProseMirror tree in (its
@@ -85,12 +86,17 @@ func run(args []string) int {
 		for p := range cfg.peers {
 			index := a*cfg.peers + p
 			results[index] = result{artifact: artifact, peer: p}
+			room, err := roomURL(cfg.baseURL, artifact)
+			if err != nil {
+				results[index].err = err
+				continue
+			}
 			wg.Go(func() {
 				random := rand.New(rand.NewPCG(cfg.seed, uint64(index)))
 				// Each peer is a person of its own, as a browser is: <person>-<peer>.
 				header := http.Header{}
 				header.Set(cfg.identityHeader, fmt.Sprintf("%s-%d", cfg.person, p))
-				typePeer(ctx, cfg, roomURL(cfg.baseURL, artifact), header, random, &results[index])
+				typePeer(ctx, cfg, room, header, random, &results[index])
 			})
 		}
 	}
@@ -193,16 +199,26 @@ func (l *stringList) String() string     { return strings.Join(*l, ",") }
 func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 
 // roomURL is artifact's document websocket at base, at the schema version the dashboard presents,
-// so the room takes the peer's edits rather than holding it read-only.
-func roomURL(base *url.URL, artifact string) string {
-	room := *base
+// so the room takes the peer's edits rather than holding it read-only. The room's path is joined
+// onto base's path and the schema version follows base's own query, which is kept
+// (urljoin.JoinURL): writing the room's query over base's dropped a configured one
+// (http://host/dispatch?key=K reached /dispatch/ws/doc/<artifact>?schema_version=N and the server
+// was asked without key=K), and appending the path to base's text would have put it inside that
+// query instead. base's fragment, which no request sends, is dropped. urljoin.ErrRef is the only
+// error, and this ref, fixed text with a url.PathEscape element in it, never draws it; a peer that
+// somehow did is refused by the room it could not name, never by a text that quotes base.
+func roomURL(base *url.URL, artifact string) (string, error) {
+	ref := "/ws/doc/" + url.PathEscape(artifact) +
+		"?" + url.Values{"schema_version": {strconv.Itoa(pmdoc.SchemaVersion())}}.Encode()
+	room, err := urljoin.JoinURL(base, ref)
+	if err != nil {
+		return "", fmt.Errorf("-url names no room for this document: %w", err)
+	}
 	room.Scheme = "ws"
 	if base.Scheme == "https" {
 		room.Scheme = "wss"
 	}
-	room.Path = strings.TrimSuffix(base.Path, "/") + "/ws/doc/" + url.PathEscape(artifact)
-	room.RawQuery = url.Values{"schema_version": {strconv.Itoa(pmdoc.SchemaVersion())}}.Encode()
-	return room.String()
+	return room.String(), nil
 }
 
 // typePeer connects one peer, waits until it holds the room's document, and types until ctx ends,
