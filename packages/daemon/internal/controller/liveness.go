@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/listenerwire"
@@ -13,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // probeTimeout bounds one role lookup, so a hung listener answers Unknown rather than holding the
@@ -54,21 +54,29 @@ type ProberOptions struct {
 // (`ENVOY_SESSION_LIVE_WINDOW`), and names the holder's state in the 404 it answers for any
 // other, so the daemon keeps no staleness window of its own to drift from it.
 type Prober struct {
+	// lookup is the role lookup's URL, "" where the Envoy URL does not parse (NewProber).
 	lookup string
 	token  string
 	log    *slog.Logger
 	client *http.Client
 }
 
-// NewProber is a Prober over opts. Its lookup follows no redirect (redirects.Refused): it carries
-// the listener's bearer, which a followed redirect would hand the host the Location names, and a
-// 3xx is the listener's refusal, which the probe reads as Unknown.
+// NewProber is a Prober over opts. Its lookup goes to the controller token's role route joined
+// onto the Envoy URL's path (urljoin.Join), the URL's query kept, where the route appended to the
+// URL's text would sit inside its query or its fragment and the listener would be asked another
+// path; an Envoy URL that does not parse or names no host leaves it no lookup, and each probe then
+// answers Unknown in fixed words, since url.Parse's error quotes the URL whole. The lookup follows
+// no redirect (redirects.Refused): it carries the listener's bearer, which a followed redirect
+// would hand the host the Location names, and a 3xx is the listener's refusal, which the probe
+// reads as Unknown.
 func NewProber(opts ProberOptions) *Prober {
 	p := &Prober{
-		lookup: strings.TrimRight(opts.EnvoyURL, "/") + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
 		token:  opts.EnvoyToken,
 		log:    opts.Log,
 		client: redirects.Refused(&http.Client{Timeout: probeTimeout}),
+	}
+	if lookup, err := urljoin.Join(opts.EnvoyURL, "/v1/roles/"+url.PathEscape(string(claim.ControllerToken(opts.Project)))); err == nil {
+		p.lookup = lookup.String()
 	}
 	if p.log == nil {
 		p.log = slog.Default()
@@ -91,11 +99,17 @@ func NewProber(opts ProberOptions) *Prober {
 // Probe says whether session — the one registered with the current controller capability — is
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
 // both sessions or the holder's state. A lookup that could not be made or got no answer logs its
-// failure through oauth2call.Unanswered.
+// failure through oauth2call.Unanswered; one whose URL http.NewRequest refuses (url.URL.String can
+// write text url.Parse refuses) logs no other name of that URL, whose text holds its user
+// information and its query whole.
 func (p *Prober) Probe(ctx context.Context, session string) Liveness {
+	if p.lookup == "" {
+		p.log.Warn("controller liveness: the Envoy URL is not an absolute URL with a host (it is not printed)")
+		return Unknown
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.lookup, nil)
 	if err != nil {
-		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", oauth2call.Unanswered(err, nil, ""))
+		p.log.Warn("controller liveness: build the role lookup", "error", oauth2call.Unanswered(err, nil, ""))
 		return Unknown
 	}
 	if p.token != "" {
