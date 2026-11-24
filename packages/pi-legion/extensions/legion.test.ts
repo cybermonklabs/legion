@@ -232,7 +232,6 @@ const environmentKeys = [
   "LEGION_CONTROLLER_SECRET_FILE",
   "DISPATCH_TOKEN_FILE",
   "LEGION_WORKSPACE_RECREATED",
-  "LEGION_WORKSPACE_RESTORED",
   "DISPATCH_STATE_DIR",
   "ENVOY_CONFIG_FILE",
   "OMP_PROFILE",
@@ -1242,7 +1241,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       tree: "REPO-42",
       issue: "REPO-43",
     });
-    // A role of the deployment (contract 255), `checker`, works a step as a phase worker does.
+    // A role of the deployment (contract 258), `checker`, works a step as a phase worker does.
     const checker = classifySession({
       LEGION_ROLE: "checker",
       LEGION_TREE: "REPO-42",
@@ -3695,7 +3694,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       }
     });
 
-    // A role of the deployment (contract 255) comes due after the six, at the twelfth tick, so a
+    // A role of the deployment (contract 258) comes due after the six, at the twelfth tick, so a
     // pod's roles still start their attempts on ticks of their own.
     test("a role of the deployment comes due after the six, at the twelfth tick", async () => {
       const due = CAPABILITY_FIRST_DUE_TICK + LEGION_ROLES.length;
@@ -7313,7 +7312,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
     expect(await beforeAgentStart({ prompt: "task" }, context)).toEqual({
       message: {
         customType: "legion-workspace-recreated",
-        content: expect.stringContaining("it holds what was pushed to legion/REPO-43"),
+        content: expect.stringContaining("from what was pushed to legion/REPO-43"),
         display: true,
         details: { id },
       },

@@ -476,9 +476,11 @@ func valueStripCases() map[string]valueStripCase {
 				}
 				served := waitingLineFieldsServed(t, mixed)
 				for key, member := range waitingLineFieldsServed(t, whole) {
-					want := member
+					// The band of priorityContract follows the pod's highest contract too, and
+					// 133 is below it, so no member is served the priority that placed it.
+					want := maps.Clone(member)
+					delete(want, "priority")
 					if member["kind"] == waitingOnIssue {
-						want = maps.Clone(member)
 						delete(want, "kind")
 					}
 					if !reflect.DeepEqual(served[key], want) {

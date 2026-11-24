@@ -361,7 +361,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 			if _, err := r.pool.Exec(r.ctx, `update outbox set lease_until = $2 where id = $1`, held, r.dueNow()); err != nil {
 				t.Fatalf("let P's row's lease lapse: %v", err)
 			}
-			// The outbox's sweep, every outboxLease of the wall clock, wakes P's lane.
+			// The outbox's sweep, every pauseRigOutboxSweep of the wall clock, wakes P's lane.
 			testwait.WithinPolling(t, 2*time.Minute, 200*time.Millisecond, "P's worker's launch to reserve the last turn", func() bool {
 				return len(r.rt.launches())-before+len(r.state().WakesWaiting) == others+1
 			})
@@ -371,7 +371,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 				if launch.claim == worker(P) {
 					letOut = launch.at
 					// Every sweep that read the clock before this turn has run.
-					time.Sleep(5 * r.o.orphanSweep)
+					r.awaitFullSweep()
 				}
 				if replaced := r.replacedPods(P); replaced != 0 {
 					t.Fatalf("P's pod was replaced %d times by %s after the resume, at the launch of %s, while P's worker had not yet been let out of the pacing",
@@ -391,7 +391,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 
 			// The roles get what was left of their grace once the pacing let P's worker out.
 			r.clock.advanceTo(letOut.Add(left - time.Minute))
-			time.Sleep(5 * r.o.orphanSweep)
+			r.awaitFullSweep()
 			if replaced := r.replacedPods(P); replaced != 0 {
 				t.Fatalf("P's pod was replaced %d times a minute before the bound moved to the let-out, want none", replaced)
 			}

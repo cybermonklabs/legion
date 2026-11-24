@@ -241,3 +241,39 @@ func TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep(t *testing.T) {
 		})
 	}
 }
+
+// The pod start gate puts the worker of the issue's open phase first among the starts no request
+// raised (supervise.Deps.PhaseRole, workflowRuntime.phaseRole), and at step that worker is the role
+// of the running step, read with the issue, which the phase alone does not name: the checker with
+// the task of `implementer checker linter` at step 2, the linter at step 3. The control is the
+// issue at implementing, whose implementer the phase names.
+func TestPhaseRoleAnswersTheRoleOfTheRunningStep(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		phase phase.Phase
+		at    int
+		want  claim.Role
+	}{
+		{"the task at the checker's step 2", phase.Step, 2, "checker"},
+		{"the task at the linter's step 3", phase.Step, 3, stepStartLinter},
+		{"the control: implementing", phase.Implementing, 0, claim.RoleImplementer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			putOutboxIssue(t, pool, records, record.Issue{Key: stepStartKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: stepStartKey, Title: "Workflow", Phase: tc.phase, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			if tc.at > 0 {
+				seedStepStartPlan(t, pool, records, tc.at)
+			}
+			got, err := (&workflowRuntime{pool: pool, records: records}).phaseRole(context.Background(), stepStartKey)
+			if err != nil {
+				t.Fatalf("phaseRole: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("phaseRole of %s (%s) = %q, want %q, the worker of its open phase", stepStartKey, tc.name, got, tc.want)
+			}
+		})
+	}
+}

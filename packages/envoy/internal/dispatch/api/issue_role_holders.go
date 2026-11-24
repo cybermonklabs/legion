@@ -18,7 +18,7 @@ import (
 
 // An issue's role holders are the sessions that hold its Legion roles, each with the claim it holds
 // its role by (issue_role_holders, migrations 20261116163813_issue_role_holders and
-// 20261124181916_issue_role_holders_by_session). Two claims of one issue can hold one role — the
+// 20261124213825_issue_role_holders_by_session). Two claims of one issue can hold one role — the
 // agent of a key on a step of another role, beside that role's own claim of an earlier version of
 // the plan — so a role can have more than one session, and each session holds one role. The
 // Legion daemon is the one party that gives a session a role. It publishes the live set of each
@@ -67,7 +67,7 @@ import (
 // (legionclaim.IsRole), so the shape spells the grammar and lists no roles. The claim is the
 // Legion claim token of the issue the session runs (legionclaim.CutClaimToken), and works_step
 // is true for the claim the daemon's record gives the role's step: two claims of one issue can
-// hold one role, and the way back of 20261124181916 keeps that claim's session where it folds a
+// hold one role, and the way back of 20261124213825 keeps that claim's session where it folds a
 // role back to one session. A daemon before that release names neither, which reads as no claim
 // and no step.
 type issueRoleHolder struct {

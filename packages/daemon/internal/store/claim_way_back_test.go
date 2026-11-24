@@ -18,7 +18,7 @@ import (
 
 // planStepAgentMigrationFile is the migration whose header carries the way back of the release that
 // names each step's agent.
-const planStepAgentMigrationFile = "20261124181911_plan_step_agent.up.sql"
+const planStepAgentMigrationFile = "20261124213820_plan_step_agent.up.sql"
 
 // headerWayBackOf is the transaction the header of the embedded migration file carries between its
 // psql heredoc and the heredoc's terminator, with the comment marker and the opener's indent taken
@@ -106,7 +106,7 @@ func TestTheWayBackTakesTheClaimOffEachRowTheReleaseBeforeDecodes(t *testing.T) 
 	}{
 		{kind: "supervise", shape: record.SuperviseRequest{},
 			payload: `{"op":"start","tree":"LEGION-208","role":"tester",` + keyed + `,"generation":1,"phase":"testing","entry":2,"task":"Test it."}`},
-		{kind: "issue_bundle", shape: record.IssueBundle{},
+		{kind: "issue_bundle", shape: record.IssueWorkspaceCheck{},
 			payload: `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester",` + keyed + `}`},
 		{kind: "update_ask", shape: record.UpdateAsk{},
 			payload: `{"role":"tester",` + keyed + `,"round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"Push your work."}`},

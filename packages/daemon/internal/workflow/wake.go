@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"slices"
 	"strconv"
@@ -126,12 +127,35 @@ type WakeStop int
 
 const (
 	// StoppedByRelease: an idle release stopped the session and took its pod, which the wake
-	// brings back as a fresh pod with the workspace the release saved.
+	// brings back as a fresh pod. The release took the pod only because no working copy and no
+	// bookmark of its workspace held a commit origin does not hold and no working-copy change was in
+	// it (WorkspaceAfterRelease).
 	StoppedByRelease WakeStop = iota
 	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
 	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759).
 	StoppedByPause
 )
+
+// WorkspaceAfterRelease is what a role woken after an idle release is told of its workspace, in
+// the daemon's wake task (WakeTask) and in the notice the role's plugin writes when its launcher
+// finds the workspace made again (WORKSPACE_AFTER_RELEASE in
+// packages/pi-shared/src/workspace-recreated.ts). The two say it in the same words, so a woken
+// role reads one account of its workspace, and what they say is what the daemon knows: the
+// release's check keeps a pod whose workspace holds a commit on a working copy or a local bookmark
+// that no branch or tag on origin holds, or a working-copy change (internal/daemon's
+// checkIssueWorkspace, the shim's workspaceWorkRevset), and a pod whose disk went with it comes
+// back with a workspace that provisioning made from the issue's pushed branch. The read does not
+// count a commit that no working copy and no bookmark reaches, a side head a role left with
+// `jj new <base>`, so the release can take one, and the text says so: it never says that nothing
+// unpushed was lost, nor that unpushed work was kept, since the daemon keeps none. A kept volume is
+// the one disk that does not go, which is why the second sentence is conditional. The text is the data file
+// workspace-after-release.txt beside this one, embedded here and read by the plugin's test
+// (packages/pi-shared/src/workspace-recreated.test.ts), which holds its copy to it byte for byte;
+// the file's one line ends in a newline, which the text does not carry.
+var WorkspaceAfterRelease = strings.TrimSuffix(workspaceAfterReleaseFile, "\n")
+
+//go:embed workspace-after-release.txt
+var workspaceAfterReleaseFile string
 
 // WakeTask is the one task a woken role is given, the sentence its first turn reads before
 // anything else: what stopped its session, which wake brought it back and what that wake was
@@ -152,7 +176,7 @@ const (
 // read only when its footer names the entry that stands. The text here names no entry itself.
 func WakeTask(kind, detail string, stop WakeStop) string {
 	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. "
+		WorkspaceAfterRelease + " Your session is as you left it. "
 	away, backstop := "while your pod was gone", "the release's backstop"
 	if stop == StoppedByPause {
 		preamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +
@@ -485,16 +509,29 @@ func OpenWorker(ctx context.Context, phases record.PhaseReader, tx pgx.Tx, proje
 	return record.ReadWorkerClaim(ctx, phases, tx, project, issue.Key, role)
 }
 
+// OpenRoleAt is OpenRoleOf of an issue at phase p whose running step's role is stepRole: the reader
+// that holds the two and not the whole issue (pods.IdleView) names the worker of the open phase
+// through it. There is no reading of the phase alone: at step the worker is the role the issue's
+// plan names, so a reader that names it from the phase names none there, and a role of the
+// deployment would get no workspace check and no place first at the pod start gate. It answers
+// which role a workspace check reads through and which live claim of a pod has a phase reminder
+// armed in it. Backstops name their worker's claim through OpenWorker instead.
+func OpenRoleAt(p phase.Phase, stepRole claim.Role) claim.Role {
+	return OpenRoleOf(record.Issue{Phase: p, StepRole: stepRole})
+}
+
 // OpenRoleOf is the worker of issue's open phase, and "" where there is none: the role that works
 // the issue at its phase (record.Issue.RoleAt), which for step is the role of its running step,
 // read with the issue, and none for the architect's phases (admitted and accepting), which are the
-// architect's own turn rather than a worker's, nor for a phase no role works. It is the one
+// architect's own turn rather than a worker's, and for a phase no role works. It is the one
 // statement of "the worker of the open phase" each path that brings a worker back to its work
 // reads: which ready claim is sent its phase's task (readyWorkerTask), which suspended claim the
 // boot resumes (suspendedPhaseOwners), which claim the silence repair prompts
-// (phaseWorkerRecord) and which role a CI settlement wakes (wakeOnSettlement). A held issue
-// stands in held, which no role works, so none of those paths gives its worker anything until a
-// release of the hold gives the phase back.
+// (phaseWorkerRecord), which role a CI settlement wakes (wakeOnSettlement), which role a pause's
+// stop arms a backstop for (internal/daemon's projectPause.stopTx) and which start the pod start
+// gate puts first (internal/daemon's workflowRuntime.phaseRole). A held issue stands in held,
+// which no role works, so none of those paths gives its worker anything until a release of the
+// hold gives the phase back.
 func OpenRoleOf(issue record.Issue) claim.Role {
 	if role := issue.RoleAt(issue.Phase); role != claim.RoleArchitect {
 		return role

@@ -3542,12 +3542,120 @@ package api
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
 //
-// 255: the roles a deployment defines run steps of an issue's task. An issue whose running step is
+// 246: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
+// body) carries `podHold`, the standing hold of the issue's pod: why the
+// idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
+// is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
+// spell it), `firstAt` the first pass of the hold's streak, `at` its newest pass, and `detail`
+// what that word leaves out, cut to its first 200 characters and absent where the record holds
+// none. The daemon reads it from `pod_holds` in the state's own snapshot, one statement for the
+// whole project (store.StandingPodHoldsTx), and writes the key only for an issue whose pod a hold
+// stands on: a pod the rule has not held, one it released and one whose streak a later pass ended
+// carry none. A plugin below 246 reads each issue with a strict schema that names no `podHold`,
+// so a caller below 246 is served every issue without it (shaping.go's podHoldContract and
+// withoutPodHold, its row of stateNarrowings). The caller is placed as 193 places every caller of
+// the state: a plugin from 228 to 245 states its contract and is served 228's keys. No enumerated
+// field arrives: `reason` is a string a reader takes whole, so a hold a later rule adds is read
+// rather than refused. `packages/contracts/src/legion-api.ts` mirrors the key on its issue and
+// takes each of its four members as optional, since no plugin code reads them
+// (LEGION_ANSWER_READS).
+// (This entry took 221 at first, the lowest number above main's 205 that no open pull request
+// declared at a reading of every open pull request of cybermonklabs/legion that ended at
+// 2026-11-22T04:57Z. 220 to 222 had been named for three changes, #4930 among them, and 223 for
+// #4805, before each of them declared its number, so 221 was taken twice. This entry moved to 224,
+// the lowest number above 223 that no open pull request declares and that no change had been named
+// for. A reading of every open pull request that ended at 2026-11-22T06:08:16Z found 206 (#3712
+// and #4940), 207 (#3993 and #4432), 208 (#4175), 209 (#4049), 210 (#4661), 211 (#2230), 212
+// (#4030, #4392, #4540 and #4580), 213 (#4553), 214 (#4592), 215 (#4065 and #4596), 216 (#4173,
+// #4180, #4182, #4193, #4259 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219 (#4611),
+// 220 (#4930), 221 (this change at its first number) and 223 (#4805) declared, and none above 223.
+// The forward merge of 2026-11-24 that brought in e14345bf brought main's 228 (INFRA-1575's entry,
+// over 213, 217, 219 and 220). A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// each open pull request whose files touch this file, made between 2026-11-24T09:38:10Z and
+// 09:42:57Z, found 229 (#2230), 230 (#4580), 231 (#4540), 233 (#4173, #4180, #4182, #4193 and
+// #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592),
+// 240 (#3831 and #5271), 241 (#4771 and #5307), 242 (#4596) and 243 (#5349) declared, and 244 had
+// been named for another change before it declared it, so this entry moved to 245, above every
+// number an open pull request declares or a change had been named for. A second reading, between
+// 2026-11-24T11:29:31Z and 11:32:10Z, found 245 declared by #5158 as well, with 244 (#3831 and
+// #5365), 243 (#5349) and 242 (#4596) below it, so this entry moved to 246, above every number an
+// open pull request declares.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (INFRA-4508's
+// entry, right above this one), and a reading of the open heads that change this file, between
+// 2026-11-24T12:30:11Z and 12:32:24Z, found 246 declared by this change alone (245 by #5158,
+// 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
+// again at every forward merge rather than from this line.)
+//
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
+// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
+// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
+// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
+// priority for, whose band stands after P3. The records of 250 hold `issues.*.priority` and
+// `issues.*.waitingLine.priority`, and no record below 250 does: a caller whose contract (the one
+// it states, else its pod's) is below 250 is served every issue without either key (the band of
+// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
+// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
+// band and part rather than within the part across the whole line, and `admission.waiting` and
+// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
+// when main declared 220, with no reading of the other open pull requests. A reading of `const
+// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
+// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
+// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
+// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
+// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
+// 229 to 231 and 233 to 243 declared and nothing above 243, so this entry kept 244. Then #3831
+// took 244, the numbers from 245 to 249 were given to other changes, and this entry moved to 250.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b23a brought main's 232 (#5271's entry
+// above), below 250, so this entry kept 250. The forward merge of 2026-11-24 that brought in
+// 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
+// main's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 256: #5349 -- each claim view of `GET /legion/v1/state` and of `GET
+// /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
+// `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
+// 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
+// which wrote no time, except after a rollback (the migration's header; `api.ClaimView`). The
+// claim keeps both in the store's `claims` table (`20261124073512_claim_cause_times`), so a
+// daemon restart keeps them, and each is set and cleared only together with its cause, so a
+// cause recorded again with the same text carries its new time (the rule
+// `supervise.Claim.LastDeathAt` states). The store writes each time with a digest of the cause it
+// dates, which no key serves, and reads the time back only beside that cause (the claim store's
+// causeTime). The records of 256
+// hold the two keys on every claim view, and no record below 256 does: a caller whose contract
+// (the one it states, else its pod's lowest) is below 256 is served every claim view without
+// them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`), so a plugin from 250 to
+// 255 is served 250's keys. The operator's claim view
+// (`api.OperatorClaim`, which `legion claims list --json` prints) carries the same two keys; the
+// operator routes are not served down, since their reader is the `legion` built with this daemon.
+// No value of an enumerated field moves, and no request a plugin sends changes.
+// (This entry took 243 at first, above each number another open pull request declared. A reading
+// of `const DaemonAPIVersion` at the head of each of the 138 of the 513 open pull requests of this
+// repository that change version.go, made at 2026-11-24T07:23:50Z, found every number from 221
+// to 242 declared and nothing above 242, so 243 was the lowest number above main's 220 that no
+// open pull request declared at that reading. The forward merge of 2026-11-24 that brought in
+// e14345bfc8 brought main's 228 (#4590), below 243, so this entry kept 243, and the forward
+// merge of 2026-11-24 that brought in d27405712c brought main's 232 (#5271), below it too, so it
+// kept 243 again. The forward merge of 2026-11-24 that brought in 7e75126fae brought main's 246
+// (#4960), above 243. A reading of version.go at the head of each of the 473
+// open pull requests of this repository, between 2026-11-24T15:34:44Z and 15:48:04Z, found 55
+// that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
+// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
+// changes, so this entry moved to 256, above every number an open pull request
+// declares or a change had been named for. From this entry the last number of answers.go's
+// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
+// of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
+// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 258: the roles a deployment defines run steps of an issue's task. An issue whose running step is
 // of such a role stands at a new phase, `step`, of `GET /legion/v1/state`'s `phase`, `heldFrom` and
 // a claim view's `pendingTask.phase`, and names that role in a new key, `issues.<key>.stepRole`; a
 // stranded claim and a waiting wake may name such a role. An issue names, in a new key
 // `issues.<key>.startWaitsForPod`, the roles whose start waits because its pod was built before the
-// deployment defined them, absent where none waits. A caller whose contract is below 255 is served
+// deployment defined them, absent where none waits. A caller whose contract is below 258 is served
 // an issue at step as at work, at `implementing`, its hold from step as one from `implementing`, a
 // pending task at step as one at `implementing`, no `stepRole`, no `startWaitsForPod` (a plugin
 // before memoryContract reads an issue as a strict object and would refuse the whole state over
@@ -3560,12 +3668,12 @@ package api
 // /legion/v1/phase/backward` takes such a role's grant, and one optional field, `returnTo`, the
 // place of the step the move returns to (below 1 `400 INVALID_RETURN_TO`; a place the workflow may
 // not name, or a `to` that is not the phase that step runs as, `409 BACKWARD_REFUSED`). `readBody`
-// refuses an unknown field, so a plugin sending `returnTo` to a daemon below 255 would have the
+// refuses an unknown field, so a plugin sending `returnTo` to a daemon below 258 would have the
 // move refused; the bump is why the two never meet (`deploymentRolesContract`). `fresh_session`
 // and `compact` name the roles `architect, planner, implementer, tester, reviewer, merger, or a role
 // of this deployment`. From this entry the last number of answers.go's SupportedContracts is
-// `api.deploymentRolesContract`, after 232.
-// (This entry takes 255, the lowest number above main's 232 and above every number an open pull
+// `api.deploymentRolesContract`, after `api.causeTimesContract` (256).
+// (This entry took 255, the lowest number above main's 232 and above every number an open pull
 // request declared, and outside 246 to 250, which another change holds: a reading of `const
 // DaemonAPIVersion` at the head of each of the 480 open pull requests, made between
 // 2026-11-24T13:09:22Z and 13:11:08Z, read all 480 and found 254 the highest declared, and 229 to
@@ -3574,46 +3682,49 @@ package api
 // brought main's 220; by the forward merge that brought main's 228 another open pull request
 // declared 243 and others declared numbers up to 251, so this entry moved to 252; by the forward
 // merge that brought main's 232 another open pull request declared 254, so this entry moved to 255.
-// Read main's own number and every open pull request again at the next merge rather than from this
-// line.)
+// The forward merge that brought main's 246 (the pod hold's entry) kept 255: a reading of the 477
+// open pull requests, made between 2026-11-24T15:59:22Z and 16:01:21Z, read all 477 and found 255
+// declared by this change alone. The forward merge that brought main's 250 and 256 (the entries
+// above this one) moved this entry to 258, the lowest number above main's 256 that no open pull
+// request declared: a reading of `const DaemonAPIVersion` at the head of each of the 486 open pull
+// requests, made between 2026-11-24T19:07:20Z and 19:10:45Z, read 485 of them and found 255 (this
+// change at its earlier number), 256 (#5428), 257 (#4580), 261 (#5332), 262 (#5204) and 265
+// (#5285) at 255 or above. Read main's own number and every open pull request again at the next
+// merge rather than from this line.)
 //
 // 259: a claim of `GET /legion/v1/state`'s `strandedClaims` names its claim token in a new key,
 // `strandedClaims.*.token`. Two claims of one issue can hold one role, a keyed agent's on another
 // role's step among them, so the issue and the role no longer name one claim; the boot's log line
 // and `legion state` read who suspended each stranded claim by that token (api.Suspenders), so
 // each takes the move its own suspender calls for. A caller whose contract is below 259 is served
-// each stranded claim without the key (one band of shaping.go at `strandedTokenContract`): a
-// plugin before INFRA-1048 reads a stranded claim as a strict object and would refuse the whole
-// state over it. A release of `POST /legion/v1/claims/release-records` names the tokens of the
-// claims it suspended in a new key, `releases.*.claims` (api.ReleaseRecord), absent on a release
-// that suspended none and on one recorded before this release: a release's mark matches the claims
+// each stranded claim without the key (one band of shaping.go at `strandedTokenContract`): an
+// earlier plugin reads a stranded claim as a strict object and would refuse the whole state over
+// it. A release of `POST /legion/v1/claims/release-records` names the tokens of the claims it
+// suspended in a new key, `releases.*.claims` (api.ReleaseRecord), absent on a release that
+// suspended none and on one recorded before this release: a release's mark matches the claims
 // it suspended by their tokens, so two claims of one role are two claims, and `roles` names each
 // role once. A resume of the same answer names the token of the claim its wake brought back in a
-// new key, `resumes.*.claim` (api.ResumeRecord), absent on a wake recorded before 20261124181912:
-// each claim of a role can be woken, and the stranded report reads a wake by that claim. A caller
-// below 259 is served each release and each resume without these keys (withoutRecordClaims). A
-// claim view of the state and of the issue record names its claim's token, `token`
-// (api.ClaimView), and an issue lists each claim neither its `architect` nor its `workers` shows,
-// with its role, in `otherClaims` (api.Issue.OtherClaims): `workers` holds one entry per role, so
-// the other claim of a role a keyed agent works the step of was absent from the state. A caller
-// below 259 is served the issues without either (withoutClaimTokens). A row a pause holds
-// (api.PauseHeldView) that names no claim, a merge-queue message or a row the release before
-// wrote, names in `claim` the worker on its role's step, the claim its executor reaches, where it
-// named the role's own token; the key and its shape are unchanged, so every contract is served
-// it. The controller's `POST /legion/v1/claims/fresh-session` and `POST /legion/v1/claims/compact`
-// take a claim's token in a new member, `claim` (api.ClaimRequest), a claim of the issue that
-// holds the role the body names: the issue and the role reach the claim that works the role's
-// step, and the other claim of that role a notice can name was out of the controller's reach. A
-// plugin sends it only when it names one, since a daemon below 259 refuses an unknown member.
-// `POST /legion/v1/handoff/complete` refuses, at every contract, a completion from a claim of the
-// role that does not work the role's step the record names, `HANDOFF_NOT_THE_STEPS_WORKER`, and
-// the same report from two claims of one role is two completions, so neither is answered
-// `HANDOFF_ALREADY_RECORDED` for the other's. From this entry the last number of answers.go's
-// SupportedContracts is
-// `api.strandedTokenContract`, and `deploymentRolesContract` stays 255.
-// (This entry takes 259, the number the merge wave's lead gave it, above the base's 255 (the
-// deployment roles, the entry above) and above every number an open pull request declared: it
-// first took 222, the lowest free number at a reading of 2026-11-22, and moved to 259 at the carry
-// of the base's 9e8474ff2db, whose 255 stands above the 222 it held. Read main's own number and
-// every open pull request again at the next merge rather than from this line.)
+// new key, `resumes.*.claim` (api.ResumeRecord), absent on a wake recorded before the claim-resume
+// migration: each claim of a role can be woken, and the stranded report reads a wake by that
+// claim. A caller below 259 is served each release and each resume without these keys
+// (withoutRecordClaims). A claim view of the state and of the issue record names its claim's
+// token, `token` (api.ClaimView), and an issue lists each claim neither its `architect` nor its
+// `workers` shows, with its role, in `otherClaims` (api.Issue.OtherClaims): `workers` holds one
+// entry per role, so the other claim of a role a keyed agent works the step of was absent from
+// the state. A caller below 259 is served the issues without either (withoutClaimTokens). A row
+// a pause holds (api.PauseHeldView) that names no claim, a merge-queue message or a row the release
+// before wrote, names in `claim` the worker on its role's step, the claim its executor reaches,
+// where it named the role's own token; the key and its shape are unchanged, so every contract is
+// served it. The controller's `POST /legion/v1/claims/fresh-session` and
+// `POST /legion/v1/claims/compact` take a claim's token in a new member, `claim`
+// (api.ClaimRequest), a claim of the issue that holds the role the body names: the issue and the
+// role reach the claim that works the role's step, and the other claim of that role a notice can
+// name was out of the controller's reach. A plugin sends it only when it names one, since a daemon
+// below 259 refuses an unknown member. `POST /legion/v1/handoff/complete` refuses, at every
+// contract, a completion from a claim of the role that does not work the role's step the record
+// names, `HANDOFF_NOT_THE_STEPS_WORKER`, and the same report from two claims of one role is two
+// completions, so neither is answered `HANDOFF_ALREADY_RECORDED` for the other's. From this entry
+// the last number of answers.go's SupportedContracts is `api.strandedTokenContract`, and
+// `deploymentRolesContract` stays 258. This entry's 259 stands above the base's 258; read main's
+// own number and every open pull request again before a push rather than from this history.
 const DaemonAPIVersion = 259
