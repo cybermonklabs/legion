@@ -313,3 +313,14 @@ func TestTheArchitectAnswersAPlanTaskInItsThread(t *testing.T) {
 		composedSays(t, composer, claim.RoleArchitect, isRoot, decision)
 	}
 }
+
+// A completion refused HANDOFF_HEAD_MERGED_FORWARD moves nothing, but it is no unspent fact, so
+// intake.ApplyFact keeps its key (only a refused check report or an unspent fact gives its key
+// back), and the same call again is answered HANDOFF_ALREADY_RECORDED. The part every phase
+// worker shares says so, and no longer says that nothing was recorded. This shows the text is
+// loaded, never that a role follows it.
+func TestAMergedForwardRefusalIsKeptSoTheSameCallIsAnsweredAsReceived(t *testing.T) {
+	holdsAndRetires(t, "go/worker-common.md", partText(t, "go/worker-common.md"),
+		[]string{"is refused with `HANDOFF_HEAD_MERGED_FORWARD`; it moves nothing, and the daemon keeps the refusal, so the same call again is answered `HANDOFF_ALREADY_RECORDED`."},
+		[]string{"`HANDOFF_HEAD_MERGED_FORWARD`, and nothing was recorded"})
+}
