@@ -3476,6 +3476,30 @@
           "packages/envoy/oauth2call/oauth2calltest/oauth2calltest.go"
         ],
         "capture": "dispatch.certificate-names/forged-issuer"
+      },
+      {
+        "row": "leakguard-redirect-authorization-other-port",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/leakguard/hop_token_test.go"],
+        "capture": "leakguard.redirect-authorization/other-port"
+      },
+      {
+        "row": "appauth-answer-words-installation-id-gone",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/appauth/installation_id_words_test.go"],
+        "capture": "appauth.answer-words/installation-id-gone"
+      },
+      {
+        "row": "appauth-answer-words-installation-id-suspended",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/appauth/installation_id_words_test.go"],
+        "capture": "appauth.answer-words/installation-id-suspended"
+      },
+      {
+        "row": "appauth-answer-words-installation-id-limited",
+        "base": "472691e2057f31b65a93752540da80abf6ed6f46",
+        "files": ["packages/daemon/internal/appauth/installation_id_words_test.go"],
+        "capture": "appauth.answer-words/installation-id-limited"
       }
     ],
     "boundary_fields": {
@@ -6208,13 +6232,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/refused",
-      "production": "githubrest call and getPages: GitHub's answer to a later page names the page by its number after the read's name (Answer.Path, refusal), never the path GitHub's Link header wrote",
-      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).refusal",
+      "production": "githubrest Client.call and GetPages: GitHub's answer to a later page names the page by its number after the read's name (Answer.Path, ShownPath of the call's shown name), never the path GitHub's Link header wrote",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
       "capture": "githubrest.answer-words/next-page-refused",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
-        "preimage": "path := shown",
-        "replacement": "path := \"\""
+        "preimage": "ShownPath(c.API, request.URL, shown)",
+        "replacement": "ShownPath(c.API, request.URL, \"\")"
       }
     },
     {
@@ -8889,13 +8913,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/app-refused",
-      "production": "appauth Manager.checkAppID: GitHub's answer to GET /apps/<slug> names the read by the slug as ShownLogin prints its bot login (AnswerError's Answer.Path, transientAs), never by the path it asked, which holds the slug as it came",
+      "production": "appauth Manager.checkAppID: GitHub's answer to GET /apps/<slug> names the read by the slug as ShownLogin prints its bot login (AnswerError's Answer.Path, through send), never by the path it asked, which holds the slug as it came",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).checkAppID",
       "capture": "appauth.answer-words/viewer-app-refused",
       "mutation": {
         "file": "packages/daemon/internal/appauth/tokencommand.go",
-        "preimage": "refusalBody(response), \"/apps/\"+shown,",
-        "replacement": "refusalBody(response), \"\","
+        "preimage": "m.send(request, \"read \"+what, \"/apps/\"+shown)",
+        "replacement": "m.send(request, \"read \"+what, \"\")"
       }
     },
     {
@@ -8917,12 +8941,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/app-unanswered",
-      "production": "appauth Manager.checkAppID: a GET /apps/<slug> that got no answer is named by the shown slug (oauth2call.Unanswered), never by the URL it asked, which holds the slug as it came",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).checkAppID",
+      "production": "appauth Manager.send for checkAppID: a GET /apps/<slug> that got no answer is named by the shown slug (oauth2call.Unanswered), never by the URL it asked, which holds the slug as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).send",
       "capture": "appauth.answer-words/viewer-app-unanswered",
       "mutation": {
-        "file": "packages/daemon/internal/appauth/tokencommand.go",
-        "preimage": "oauth2call.Unanswered(err, request, \"/apps/\"+shown)",
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "oauth2call.Unanswered(err, request, shown)",
         "replacement": "err"
       }
     },
@@ -8959,13 +8983,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/user-refused",
-      "production": "appauth Manager.botIdentity: GitHub's answer to GET /users/<login> names the read by the login as ShownLogin prints it (AnswerError's Answer.Path, transientAs), never by the path it asked, which holds the login as it came",
+      "production": "appauth Manager.botIdentity: GitHub's answer to GET /users/<login> names the read by the login as ShownLogin prints it (AnswerError's Answer.Path, through send), never by the path it asked, which holds the login as it came",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).botIdentity",
       "capture": "appauth.answer-words/viewer-user-refused",
       "mutation": {
         "file": "packages/daemon/internal/appauth/appauth.go",
-        "preimage": "refusalBody(response), shown,",
-        "replacement": "refusalBody(response), \"\","
+        "preimage": "\"GitHub App bot identity lookup\", \"/users/\"+githubrest.ShownLogin(login))",
+        "replacement": "\"GitHub App bot identity lookup\", \"\")"
       }
     },
     {
@@ -8973,8 +8997,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/user-unanswered",
-      "production": "appauth Manager.botIdentity: a GET /users/<login> that got no answer is named by the shown login (oauth2call.Unanswered), never by the URL it asked, which holds the login as it came",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).botIdentity",
+      "production": "appauth Manager.send for botIdentity: a GET /users/<login> that got no answer is named by the shown login (oauth2call.Unanswered), never by the URL it asked, which holds the login as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).send",
       "capture": "appauth.answer-words/viewer-user-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/appauth/appauth.go",
@@ -9477,14 +9501,14 @@
       "requirement": "r1-fail-closed",
       "package": "./cmd/redact-gate",
       "test": "TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage",
-      "production": "cmd/redact-gate reflection census (structural.go, reflection): a guarded_package entry passes a reflect.Value.FieldByName with a constant name only under a guard holding its value's type to a package whose import closure holds no box and no external error type, which declares no generic type, every field of that name FieldByName reaches typed with no interface and no type parameter, and a result that is only the receiver of methods that answer closed values; every other shape is refused"
+      "production": "cmd/redact-gate reflection census (guarded.go, guardedPackageRead): a guarded_package entry passes only the one read guardedPackageRead states; every shape that breaks one of its conditions is refused, each with its reason"
     },
     {
       "id": "gate-guarded-package-export-data",
       "requirement": "r1-fail-closed",
       "package": "./cmd/redact-gate",
       "test": "TestAGuardedReadReadsAnotherPackagesEmbeddedStructFromItsExportData",
-      "production": "cmd/redact-gate reflection census (structural.go, fieldsNamed and sourceChecked): another package's struct a guarded package embeds is read with its unexported fields from that package's export data, as the gate lists a module, and an interface field of it is refused"
+      "production": "cmd/redact-gate reflection census (guarded.go, fieldsNamed and sourceChecked): another package's struct a guarded package embeds is read with its unexported fields from that package's export data, as the gate lists a module, and an interface field of it is refused"
     },
     {
       "id": "daemon-redact-unanswered",
@@ -10996,13 +11020,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestARefusalAfterAFollowedRedirectNamesNoRunOfTheCredential/app-slug",
-      "production": "appauth Manager.appSlug through answeredAs: GitHub's answer after a followed same-origin redirect names the request the Manager sent (GET /app, githubrest.PathUnder of request.URL), never response.Request.URL, the Location the answering party wrote with the App's JWT in it",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answeredAs",
+      "production": "appauth Manager.appSlug through send, transient and answered: GitHub's answer after a followed same-origin redirect names the request the Manager sent (GET /app, githubrest.ShownPath of request.URL), never response.Request.URL, the Location the answering party wrote with the App's JWT in it",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answered",
       "capture": "appauth.followed-path/app-slug",
       "mutation": {
         "file": "packages/daemon/internal/appauth/appauth.go",
-        "preimage": "githubrest.PathUnder(m.baseURL, request.URL)",
-        "replacement": "githubrest.PathUnder(m.baseURL, response.Request.URL)"
+        "preimage": "githubrest.ShownPath(m.baseURL, request.URL, shown)",
+        "replacement": "githubrest.ShownPath(m.baseURL, response.Request.URL, shown)"
       }
     },
     {
@@ -11010,13 +11034,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestARefusalAfterAFollowedRedirectNamesNoRunOfTheCredential/exchange",
-      "production": "appauth Manager.exchange through transient and answeredAs: the token exchange's refusal after a followed same-origin redirect names POST /app/installations/<id>/access_tokens, the request the Manager sent, never the Location holding the App's JWT",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answeredAs",
+      "production": "appauth Manager.exchange through transient and answered: the token exchange's refusal after a followed same-origin redirect names POST /app/installations/<id>/access_tokens, the request the Manager sent (githubrest.ShownPath of request.URL), never the Location holding the App's JWT",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answered",
       "capture": "appauth.followed-path/exchange",
       "mutation": {
         "file": "packages/daemon/internal/appauth/appauth.go",
-        "preimage": "githubrest.PathUnder(m.baseURL, request.URL)",
-        "replacement": "githubrest.PathUnder(m.baseURL, response.Request.URL)"
+        "preimage": "githubrest.ShownPath(m.baseURL, request.URL, shown)",
+        "replacement": "githubrest.ShownPath(m.baseURL, response.Request.URL, shown)"
       }
     },
     {
@@ -11024,13 +11048,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestARefusalAfterAFollowedRedirectNamesNoRunOfTheCredential/viewer",
-      "production": "appauth Manager.viewerLogin through transient and answeredAs: token mode's viewer read refused after a followed same-origin redirect names POST /graphql, the request the Manager sent, never the Location holding the released installation token",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answeredAs",
+      "production": "appauth Manager.viewerLogin through send, transient and answered: token mode's viewer read refused after a followed same-origin redirect names POST /graphql, the request the Manager sent (githubrest.ShownPath of request.URL), never the Location holding the released installation token",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answered",
       "capture": "appauth.followed-path/viewer",
       "mutation": {
         "file": "packages/daemon/internal/appauth/appauth.go",
-        "preimage": "githubrest.PathUnder(m.baseURL, request.URL)",
-        "replacement": "githubrest.PathUnder(m.baseURL, response.Request.URL)"
+        "preimage": "githubrest.ShownPath(m.baseURL, request.URL, shown)",
+        "replacement": "githubrest.ShownPath(m.baseURL, response.Request.URL, shown)"
       }
     },
     {
@@ -11052,13 +11076,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestTheStartsRateLimitRefusalNamesNoPathARedirectWrote/followed",
-      "production": "daemon limitOutcome: the start's rate-limit refusal prints the path of appauth's answer, which after a followed same-origin redirect is GET /app, the read the daemon sent, never the Location holding the App's JWT (appauth answeredAs)",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answeredAs",
+      "production": "daemon limitOutcome: the start's rate-limit refusal prints the path of appauth's answer, which after a followed same-origin redirect is GET /app, the read the daemon sent, never the Location holding the App's JWT (appauth answered, githubrest.ShownPath of request.URL)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).answered",
       "capture": "daemon.followed-path/followed",
       "mutation": {
         "file": "packages/daemon/internal/appauth/appauth.go",
-        "preimage": "githubrest.PathUnder(m.baseURL, request.URL)",
-        "replacement": "githubrest.PathUnder(m.baseURL, response.Request.URL)"
+        "preimage": "githubrest.ShownPath(m.baseURL, request.URL, shown)",
+        "replacement": "githubrest.ShownPath(m.baseURL, response.Request.URL, shown)"
       }
     },
     {
@@ -11754,7 +11778,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestCausePrintsACertificateFailureByItsWords/constraint",
-      "production": "redact.Cause and redact.Error (checked, transportWords): a TLS handshake that failed on an authority's name constraint that excludes a name the certificate holds (x509.CertificateInvalidError quotes the name), built prints by the fixed words for its type (tlsErrorWords), never x509's text, unwrapping so errors.As finds the certificate failure and its x509 type",
+      "production": "redact.Cause and redact.Error (checked, transportWords): a TLS handshake that failed on an authority's name constraint that excludes a name the certificate holds (x509.CertificateInvalidError, reason CANotAuthorizedForThisName, quotes the name), built prints by the fixed words for its type and reason (tlsErrorWords, x509InvalidWords), never x509's text, unwrapping so errors.As finds the certificate failure and its x509 type",
       "capture": "redact.certificate-names/cause-constraint"
     },
     {
@@ -11800,7 +11824,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestUnansweredPrintsACertificateFailureByItsWords/constraint",
-      "production": "redact.Unanswered and oauth2call.Unanswered (unansweredFailure, transportWords): a request whose TLS handshake failed on an authority's name constraint that excludes a name the certificate holds (x509.CertificateInvalidError quotes the name), built is named and its failure printed by the fixed words for its type, never x509's text, unwrapping to net/http's error",
+      "production": "redact.Unanswered and oauth2call.Unanswered (unansweredFailure, transportWords): a request whose TLS handshake failed on an authority's name constraint that excludes a name the certificate holds (x509.CertificateInvalidError, reason CANotAuthorizedForThisName, quotes the name), built is named and its failure printed by the fixed words for its type and reason (tlsErrorWords, x509InvalidWords), never x509's text, unwrapping to net/http's error",
       "capture": "redact.certificate-names/unanswered-constraint"
     },
     {
@@ -11840,6 +11864,259 @@
       "test": "TestACertificateFailureOfADispatchReadPrintsNoNameTheCertificateHolds/forged-issuer",
       "production": "daemon dispatch HTTPClient.answer: a Dispatch read whose TLS handshake failed on a certificate for the host sent with a forged authority (x509.UnknownAuthorityError names the candidate authority's common name) prints the failure through oauth2call.Unanswered by fixed words, never x509's text, and is still a refusal of the transport (TransportRefusal reads its type through errors.As), never a TransientError",
       "capture": "dispatch.certificate-names/forged-issuer"
+    },
+    {
+      "id": "leakguard-redirect-authorization-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheTarballReadSendsNoRedirectTheToken/twin",
+      "production": "the stand-in of the tarball read's redirect row: a client that follows the API address's 302 under net/http's own policy sends the stand-in on the same host name at another port (redirectstest.Sent) the token, in the Authorization net/http copies onto the redirect's request, so the row can see a token sent on"
+    },
+    {
+      "id": "leakguard-redirect-authorization-other-port",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheTarballReadSendsNoRedirectTheToken/other-port",
+      "production": "leakguard Source.read: the tarball read follows redirects on a copy of its client whose CheckRedirect (tokenless, dropToken) deletes Authorization from every redirect's request and keeps Go's bound of ten requests, so a 302 from the API's address to the same host name at another port, which net/http's own policy sends the Authorization, is followed and sent no token",
+      "function": "github.com/sjawhar/legion/daemon/internal/leakguard.dropToken",
+      "capture": "leakguard.redirect-authorization/other-port",
+      "mutation": {
+        "file": "packages/daemon/internal/leakguard/source.go",
+        "preimage": "next.Header.Del(\"Authorization\")",
+        "replacement": "_ = next.Header"
+      }
+    },
+    {
+      "id": "leakguard-redirect-authorization-control",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/leakguard",
+      "test": "TestTheTarballReadSendsNoRedirectTheToken/control",
+      "production": "the control of the tarball read's redirect row: GitHub's 302 to another host name whose Location carries the download's own signed query is still followed, and the read serves the tarball that host answers, which it answers only to that query and no Authorization"
+    },
+    {
+      "id": "gate-reflection-fields-iterator",
+      "requirement": "r1-fail-closed",
+      "package": "./cmd/redact-gate",
+      "test": "TestTheReflectionCensusListsAReadThroughFields",
+      "production": "cmd/redact-gate reflection census (structural.go, reflectionMethods): a read of the box's text through reflect.Value.Fields, go 1.27's iterator over a struct's fields, is listed and, with no inventory entry, refused, as the same read through Field is; every method of the toolchain's reflect.Value named Field... is in the census's list"
+    },
+    {
+      "id": "appauth-answer-words-installation-id-gone",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAnInstallationIDThatEchoesTheAppJWTPrintsNoneOfIt/gone",
+      "production": "appauth Manager.discoverInstallations: an installation id GitHub's discovery answer lists that is not a decimal number is refused there (numbered), so the mint's error for an installation gone (\"installation <id> on <owner> answers\") never names an id as it came, which can echo the JWT the mint's calls carry",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).discoverInstallations",
+      "capture": "appauth.answer-words/installation-id-gone",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "if !numbered(id) {",
+        "replacement": "if false && !numbered(id) {"
+      }
+    },
+    {
+      "id": "appauth-answer-words-installation-id-suspended",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAnInstallationIDThatEchoesTheAppJWTPrintsNoneOfIt/suspended",
+      "production": "appauth Manager.discoverInstallations: an installation id that is not a decimal number is refused at discovery (numbered), so grantedPermissions' suspension refusal (\"GitHub answers installation <id> with suspended_at\") never names an id as it came, which can echo the JWT the installation read carried",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).discoverInstallations",
+      "capture": "appauth.answer-words/installation-id-suspended",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "if !numbered(id) {",
+        "replacement": "if false && !numbered(id) {"
+      }
+    },
+    {
+      "id": "appauth-answer-words-installation-id-limited",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAnInstallationIDThatEchoesTheAppJWTPrintsNoneOfIt/limited",
+      "production": "appauth Manager.discoverInstallations: an installation id that is not a decimal number is refused at discovery (numbered), so no installation read or token exchange asks for it in its path, which GitHub's answer an error carries names (AnswerError's Answer.Path), the path a caller that reads the answer prints",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).discoverInstallations",
+      "capture": "appauth.answer-words/installation-id-limited",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "if !numbered(id) {",
+        "replacement": "if false && !numbered(id) {"
+      }
+    },
+    {
+      "id": "redact-certificate-words-hostname",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/hostname",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords): a TLS handshake that failed on a self-signed certificate valid for another name alone, which the client trusts (x509.HostnameError names every name it is valid for), prints by its type's fixed words (x509HostnameWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type under both",
+      "capture": "redact.certificate-words/hostname",
+      "function": "github.com/sjawhar/envoy/internal/redact.tlsErrorWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return x509HostnameWords, true",
+        "replacement": "return e.Error(), true"
+      }
+    },
+    {
+      "id": "redact-certificate-words-unknown-authority",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/unknown-authority",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords): a TLS handshake that failed on a certificate for the host sent with a forged authority (x509.UnknownAuthorityError names the candidate authority's common name) prints by its type's fixed words (x509AuthorityWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type under both",
+      "capture": "redact.certificate-words/unknown-authority",
+      "function": "github.com/sjawhar/envoy/internal/redact.tlsErrorWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return x509AuthorityWords, true",
+        "replacement": "return e.Error(), true"
+      }
+    },
+    {
+      "id": "redact-certificate-words-unverified",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/unverified",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords): a certificate crypto/tls could not verify for a reason that is no x509 type (*tls.CertificateVerificationError over the macOS verifier's words, which name the certificate), built, prints crypto/tls's fixed words alone (tlsUnverifiedWords), never the text it wraps, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its type under both",
+      "capture": "redact.certificate-words/unverified",
+      "function": "github.com/sjawhar/envoy/internal/redact.tlsErrorWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return tlsUnverifiedWords, true",
+        "replacement": "return e.Error(), true"
+      }
+    },
+    {
+      "id": "redact-certificate-words-record",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/record",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords): a record the server sent that is not TLS (tls.RecordHeaderError), built, prints by its type's fixed words (tlsRecordWords), never its own text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its type under both",
+      "capture": "redact.certificate-words/record"
+    },
+    {
+      "id": "redact-certificate-words-name-not-permitted",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/name-not-permitted",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a TLS handshake that failed on a certificate a trusted authority's name constraint does not permit (x509.CertificateInvalidError, reason CANotAuthorizedForThisName, whose Detail quotes the name) prints by that reason's fixed words (x509NameNotPermittedWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/name-not-permitted",
+      "function": "github.com/sjawhar/envoy/internal/redact.x509InvalidWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return x509NameNotPermittedWords",
+        "replacement": "return e.Error()"
+      }
+    },
+    {
+      "id": "redact-certificate-words-not-authorized-to-sign",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/not-authorized-to-sign",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a certificate x509 refuses as not authorized to sign (x509.CertificateInvalidError, reason NotAuthorizedToSign), built with a certificate and a Detail that name the certificate's name, prints by that reason's fixed words (x509NotAuthorizedToSignWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/not-authorized-to-sign"
+    },
+    {
+      "id": "redact-certificate-words-expired",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/expired",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a certificate x509 refuses as expired or not yet valid (x509.CertificateInvalidError, reason Expired, whose text holds its Detail, on macOS the system's words that name the certificate), built with a Detail that names the certificate's name, prints by that reason's fixed words (x509ExpiredWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/expired",
+      "function": "github.com/sjawhar/envoy/internal/redact.x509InvalidWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return x509ExpiredWords",
+        "replacement": "return e.Error()"
+      }
+    },
+    {
+      "id": "redact-certificate-words-too-many-intermediates",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/too-many-intermediates",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a chain x509 refuses for its path length constraint (x509.CertificateInvalidError, reason TooManyIntermediates), built with a certificate and a Detail that name the certificate's name, prints by that reason's fixed words (x509TooManyIntermediatesWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/too-many-intermediates"
+    },
+    {
+      "id": "redact-certificate-words-incompatible-usage",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/incompatible-usage",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a certificate x509 refuses for its key usage (x509.CertificateInvalidError, reason IncompatibleUsage), built with a certificate and a Detail that name the certificate's name, prints by that reason's fixed words (x509IncompatibleUsageWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/incompatible-usage"
+    },
+    {
+      "id": "redact-certificate-words-name-mismatch",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/name-mismatch",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a certificate whose issuer name does not match its parent's subject (x509.CertificateInvalidError, reason NameMismatch), built with a certificate and a Detail that name the certificate's name, prints by that reason's fixed words (x509NameMismatchWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/name-mismatch"
+    },
+    {
+      "id": "redact-certificate-words-no-san",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/no-san",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a leaf with no SAN extension under an issuer with name constraints (x509.CertificateInvalidError, reason NameConstraintsWithoutSANs, which go1.27.3 no longer returns), built with a certificate and a Detail that name the certificate's name, prints by that reason's fixed words (x509NoSANWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/no-san"
+    },
+    {
+      "id": "redact-certificate-words-unconstrained-name",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/unconstrained-name",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a leaf with a name of a type its issuer's constraints do not cover (x509.CertificateInvalidError, reason UnconstrainedName, whose text holds its Detail), built with a Detail that names the certificate's name, prints by that reason's fixed words (x509UnconstrainedNameWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/unconstrained-name",
+      "function": "github.com/sjawhar/envoy/internal/redact.x509InvalidWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return x509UnconstrainedNameWords",
+        "replacement": "return e.Error()"
+      }
+    },
+    {
+      "id": "redact-certificate-words-too-many-constraints",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/too-many-constraints",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a certificate whose names need more constraint comparisons than the limit allows (x509.CertificateInvalidError, reason TooManyConstraints, for which x509 has no words of its own), built with a certificate and a Detail that name the certificate's name, prints by that reason's fixed words (x509TooManyConstraintsWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/too-many-constraints"
+    },
+    {
+      "id": "redact-certificate-words-ext-key-usage",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/ext-key-usage",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): an issuer not authorized for an extended key usage (x509.CertificateInvalidError, reason CANotAuthorizedForExtKeyUsage, whose text holds its Detail), built with a Detail that names the certificate's name, prints by that reason's fixed words (x509ExtKeyUsageWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/ext-key-usage",
+      "function": "github.com/sjawhar/envoy/internal/redact.x509InvalidWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return x509ExtKeyUsageWords",
+        "replacement": "return e.Error()"
+      }
+    },
+    {
+      "id": "redact-certificate-words-no-valid-chains",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/no-valid-chains",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): a certificate with no valid chain (x509.CertificateInvalidError, reason NoValidChains, whose text holds its Detail), built with a Detail that names the certificate's name, prints by that reason's fixed words (x509NoValidChainsWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/no-valid-chains",
+      "function": "github.com/sjawhar/envoy/internal/redact.x509InvalidWords",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/url.go",
+        "preimage": "return x509NoValidChainsWords",
+        "replacement": "return e.Error()"
+      }
+    },
+    {
+      "id": "redact-certificate-words-unknown-reason",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEachCertificateFailurePrintsItsOwnPhrase/unknown-reason",
+      "production": "redact.Cause and redact.Unanswered (transportWords, tlsErrorWords, x509InvalidWords): an x509.CertificateInvalidError whose reason go1.27.3's x509 does not name, built with a certificate and a Detail that name the certificate's name, prints by fixed words of its own (x509UnknownReasonWords) after crypto/tls's, never x509's text, beside a clean address and in Unanswered's line; errors.Is finds the failure and errors.As its x509 type and reason under both",
+      "capture": "redact.certificate-words/unknown-reason"
     }
   ],
   "bun": [
@@ -14242,6 +14519,37 @@
       "site": "envoy's redact.Cause, redact.Error and redact.Unanswered (url.go's transport and tlsError, printed by checked and unansweredFailure) and the daemon's redact.Unanswered (its failure and transport) printed a TLS record or certificate failure by its own text, which they called the transport's fixed words: x509's text names every name the answering party's certificate is valid for (HostnameError) and a candidate authority's common name (UnknownAuthorityError), so whatever answered in a server's place could put the request's credential into a printed error or log line, whether the client trusted its certificate or not; round 8 had routed new sites through Cause (the listener's edge repository read, the wake notice, Dispatch's agent-secrets client, the introspection)",
       "source": "the quality review of round 8",
       "guard": "redact-certificate-names-cause-wrong-host-trusted"
+    },
+    {
+      "site": "leakguard Source.read: the tarball read followed GitHub's redirect under net/http's own policy, which copies Authorization onto a redirect to the API's host name at any port or to a name under it, so a 302 from the API's address to another port of its host was sent the installation token",
+      "source": "the round-9 decisions of #4368",
+      "guard": "leakguard-redirect-authorization-other-port"
+    },
+    {
+      "site": "packages/envoy/cmd/redact-gate/structural.go reflectionMethods: a read of the box's text through go 1.27's reflect.Value.Fields, which the reflection census did not list",
+      "source": "the round-8 quality review",
+      "guard": "gate-reflection-fields-iterator",
+      "note": "found by the sibling search of the round-8 quality review's finding 3, whose method lists left out go 1.27's Fields and Methods; no production code calls Fields, so it is no leak"
+    },
+    {
+      "site": "appauth Manager.mint: an installation gone was named by its id as the discovery answer listed it (\"installation <id> on <owner> answers\"), which whatever answered in GitHub's place could make the App's JWT the discovery and the mint's later calls carried",
+      "source": "the round-8 quality review",
+      "guard": "appauth-answer-words-installation-id-gone"
+    },
+    {
+      "site": "appauth Manager.grantedPermissions: a suspension's refusal named the installation by its id as the discovery answer listed it (\"GitHub answers installation <id> with suspended_at\"), the App's JWT whole where the answer echoed it",
+      "source": "the round-8 quality review",
+      "guard": "appauth-answer-words-installation-id-suspended"
+    },
+    {
+      "site": "appauth Manager.grantedPermissions and Manager.exchange: the installation read and the token exchange asked for the installation id as the discovery answer listed it, and the path of GitHub's answer the error carried (AnswerError's Answer.Path) held the App's JWT whole where the answer echoed it",
+      "source": "the round-8 quality review",
+      "guard": "appauth-answer-words-installation-id-limited"
+    },
+    {
+      "site": "envoy's tlsErrorWords (url.go), the one rule by which redact.Cause, redact.Error and redact.Unanswered print a TLS certificate failure, printed x509.CertificateInvalidError by one fixed phrase whatever its reason, so an expired certificate, a name an authority does not permit and a chain with no valid path all read alike; the owner decided one fixed phrase for each reason (go1.27.3's crypto/x509 names eleven) and for a reason it does not name, each fixed text and never x509's own, which for five reasons holds a Detail that can quote the certificate the answering party sent",
+      "source": "the round-9 decisions of #4368",
+      "guard": "redact-certificate-words-name-not-permitted"
     }
   ]
 }
