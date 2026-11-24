@@ -66,6 +66,24 @@ func TestTheWaitingLinePutsAP0ChildOfAP1TreeAheadOfAP1RootWhoseWorkCameBackAndAP
 	if got, want := linePriorityKeys(line), []string{"LEGION-11", "LEGION-20", "LEGION-30"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the line = %v, want %v: the P0 child first, then the P1 root whose work came back, then the P2 root ranked first on the board", got, want)
 	}
+	// Each entry keeps the part and kind the line gives it today, says the priority that placed
+	// it, and counts its place within its own band and part.
+	want := []struct {
+		priority Priority
+		part     LinePart
+		kind     LineKind
+		place    int
+	}{
+		{P0, PartStarting, LineFirstPhase, 1},
+		{P1, PartReturned, LineReturning, 1},
+		{P2, PartStarting, LineQueuedRoot, 1},
+	}
+	for i, entry := range line {
+		if w := want[i]; entry.Priority != w.priority || entry.Part != w.part || entry.Kind != w.kind || entry.PartPlace != w.place {
+			t.Errorf("%s stands at %v in part %v as %v, place %d; want %v in part %v as %v, place %d",
+				entry.Issue.Key, entry.Priority, entry.Part, entry.Kind, entry.PartPlace, w.priority, w.part, w.kind, w.place)
+		}
+	}
 }
 
 // An issue with no priority of its own waits at its tree root's priority, an issue with none on
@@ -105,5 +123,24 @@ func TestTheWaitingLinePlacesAnIssueWithNoPriorityAtItsRootsAndOneWithNoneOnEith
 	want := []string{"LEGION-41", "LEGION-80", "LEGION-50", "LEGION-70", "LEGION-60"}
 	if got := linePriorityKeys(line); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the line = %v, want %v: the child at its P0 root's priority, the two P1 roots by rank, the P3 root, and the root with none last", got, want)
+	}
+	// The child is placed at its root's P0 and its own priority stays none: the inherited
+	// priority orders the line and nothing else. The two P1 roots count 1st and 2nd of their band
+	// and part.
+	for _, entry := range line {
+		switch entry.Issue.Key {
+		case "LEGION-41":
+			if entry.Priority != P0 || entry.Issue.Priority != NoPriority {
+				t.Errorf("LEGION-41 stands at %v with its own priority %v, want P0 from its root and none of its own", entry.Priority, entry.Issue.Priority)
+			}
+		case "LEGION-80", "LEGION-50":
+			if wantPlace := map[string]int{"LEGION-80": 1, "LEGION-50": 2}[entry.Issue.Key]; entry.PartPlace != wantPlace {
+				t.Errorf("%s is place %d of its band and part, want %d", entry.Issue.Key, entry.PartPlace, wantPlace)
+			}
+		case "LEGION-60":
+			if entry.Priority != NoPriority || entry.PartPlace != 1 {
+				t.Errorf("LEGION-60 stands at %v, place %d, want no priority, place 1 of its band", entry.Priority, entry.PartPlace)
+			}
+		}
 	}
 }
