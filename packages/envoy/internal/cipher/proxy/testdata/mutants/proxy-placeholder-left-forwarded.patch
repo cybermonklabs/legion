@@ -8,13 +8,14 @@
 
 --- a/packages/envoy/internal/cipher/proxy/bound.go
 +++ b/packages/envoy/internal/cipher/proxy/bound.go
-@@ -500,7 +500,8 @@
- 	// service, with an answer that names no reason. So the request is refused here and nothing of
- 	// it goes upstream, with a line naming the grant the placeholder was minted for. The body is
- 	// not read (the Body above), so a placeholder in it is not seen.
--	if left, carried := leftoverPlaceholder(header, r.URL.Path, r.URL.RawPath, rawQuery); carried {
+@@ -529,7 +529,8 @@
+ 	// end: an AWS call it signs with the body's hash, and a Limited name's post it reads to find
+ 	// the channel. net/http fills the map as it reads the last chunk, so they are here and they
+ 	// are scanned. A request whose body is streamed to the service - every other call - sends
+ 	// its trailers after this point, and nothing before the forward can hold them.
+-	if left, carried := leftoverPlaceholder(header, r.Trailer, r.URL.Path, r.URL.RawPath, rawQuery); carried {
 +	// MUTANT: a placeholder left after the swap goes upstream with the request.
-+	if left, carried := leftoverPlaceholder(header, r.URL.Path, r.URL.RawPath, rawQuery); false && carried {
++	if left, carried := leftoverPlaceholder(header, r.Trailer, r.URL.Path, r.URL.RawPath, rawQuery); false && carried {
  		refused := info.callFor(chosen)
  		refused.placeholderGrant = s.placeholderGrant(r.Context(), left)
  		s.refuse(w, r, refused, http.StatusForbidden, codePlaceholderLeft, placeholderLeft)

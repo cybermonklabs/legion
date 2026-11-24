@@ -517,13 +517,19 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	header.Del("Proxy-Connection")
 	// A placeholder the request still carries after the swap would leave the proxy with it: an
 	// ended grant's, another session's, a grant's beside the one this request is handled for, or
-	// one outside the headers its entry names - in another header, the path or the query. While
-	// its grant lives a placeholder is the password of that grant's connections to this port, so
-	// one a service reads opens the port to whoever reads it there; an ended one only fails at the
-	// service, with an answer that names no reason. So the request is refused here and nothing of
-	// it goes upstream, with a line naming the grant the placeholder was minted for. The body is
-	// not read (the Body above), so a placeholder in it is not seen.
-	if left, carried := leftoverPlaceholder(header, r.URL.Path, r.URL.RawPath, rawQuery); carried {
+	// one outside the headers its entry names - in another header, a trailer, the path or the
+	// query. While its grant lives a placeholder is the password of that grant's connections to
+	// this port, so one a service reads opens the port to whoever reads it there; an ended one
+	// only fails at the service, with an answer that names no reason. So the request is refused
+	// here and nothing of it goes upstream, with a line naming the grant the placeholder was
+	// minted for. The body is not read (the Body above), so a placeholder in it is not seen.
+	//
+	// r.Trailer holds the trailers of a request whose body this proxy has already read to the
+	// end: an AWS call it signs with the body's hash, and a Limited name's post it reads to find
+	// the channel. net/http fills the map as it reads the last chunk, so they are here and they
+	// are scanned. A request whose body is streamed to the service - every other call - sends
+	// its trailers after this point, and nothing before the forward can hold them.
+	if left, carried := leftoverPlaceholder(header, r.Trailer, r.URL.Path, r.URL.RawPath, rawQuery); carried {
 		refused := info.callFor(chosen)
 		refused.placeholderGrant = s.placeholderGrant(r.Context(), left)
 		s.refuse(w, r, refused, http.StatusForbidden, codePlaceholderLeft, placeholderLeft)

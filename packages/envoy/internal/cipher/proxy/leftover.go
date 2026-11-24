@@ -19,28 +19,27 @@ import (
 const placeholderLeft = "this request still carries a placeholder after the swap - one no live grant of this session swaps on this host, or one outside the headers its entry names - so it is not sent: send a live grant's placeholder, in the header its entry names"
 
 // leftoverPlaceholder is the first placeholder a request about to go upstream still carries, and
-// false when it carries none: in a header, in the value itself or inside the Basic credential it
-// is - which reads at least what the swap reads, a Basic scheme in any case, a payload with or
-// without base64 padding and one that is no UTF-8 among them, the safe side for a refusal - and
-// then in the path, its raw form, the query as written and the query unescaped (lenientUnescape),
-// so no escape that is no escape, and no pair url.ParseQuery would skip, hides a placeholder.
-// A placeholder is one as the broker mints it (placeholderIn). Headers are read in headersOf's
-// order only once one has been found to carry one, so which placeholder a line names does not
-// depend on the run, and a request that carries none - every request the swap served - costs no
-// sort. The unescape is read last and only where it says something the query as written did not:
-// a query the unescape leaves as written has been read already, and one it changes is not
-// unescaped at all once an earlier text has answered.
-func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (string, bool) {
-	for _, values := range header {
-		for _, v := range values {
-			if headerPlaceholder(v) == "" {
-				continue
-			}
-			for _, h := range headersOf(header) {
-				if placeholder := headerPlaceholder(h[1]); placeholder != "" {
-					return placeholder, true
-				}
-			}
+// false when it carries none: in a header or a trailer, in the value itself or inside the Basic
+// credential it is - which reads at least what the swap reads, a Basic scheme in any case, a
+// payload with or without base64 padding and one that is no UTF-8 among them, the safe side for
+// a refusal - and then in the path, its raw form, the query as written and the query unescaped
+// (lenientUnescape), so no escape that is no escape, and no pair url.ParseQuery would skip,
+// hides a placeholder. A placeholder is one as the broker mints it (placeholderIn). Each map is
+// read in headersOf's order only once one of its values has been found to carry one, so which
+// placeholder a line names does not depend on the run, and a request that carries none - every
+// request the swap served - costs no sort. The unescape is read last and only where it says
+// something the query as written did not: a query the unescape leaves as written has been read
+// already, and one it changes is not unescaped at all once an earlier text has answered.
+//
+// The trailer map holds the trailers of a request whose body this proxy has already read - an
+// AWS call it signs, a Limited name's post it reads - which net/http fills as it reads the last
+// chunk. A request whose body is streamed to the service sends its trailers after this point,
+// so they are not in the map and no scan before the forward could hold them (the comment at the
+// call in serveBound says which paths those are).
+func leftoverPlaceholder(header, trailer http.Header, path, rawPath, rawQuery string) (string, bool) {
+	for _, fields := range [...]http.Header{header, trailer} {
+		if placeholder, carried := fieldsPlaceholder(fields); carried {
+			return placeholder, true
 		}
 	}
 	for _, text := range [...]string{path, rawPath, rawQuery} {
@@ -51,6 +50,26 @@ func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (st
 	if unescaped := lenientUnescape(rawQuery); unescaped != rawQuery {
 		if placeholder := placeholderIn(unescaped); placeholder != "" {
 			return placeholder, true
+		}
+	}
+	return "", false
+}
+
+// fieldsPlaceholder is the first placeholder one map of header fields carries, read in
+// headersOf's order once any value of the map has been found to carry one, and "" when none
+// does. The two passes are what keeps the line's placeholder the same between two runs of one
+// request while a request that carries none sorts nothing.
+func fieldsPlaceholder(fields http.Header) (string, bool) {
+	for _, values := range fields {
+		for _, v := range values {
+			if headerPlaceholder(v) == "" {
+				continue
+			}
+			for _, h := range headersOf(fields) {
+				if placeholder := headerPlaceholder(h[1]); placeholder != "" {
+					return placeholder, true
+				}
+			}
 		}
 	}
 	return "", false
