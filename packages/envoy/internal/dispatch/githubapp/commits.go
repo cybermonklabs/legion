@@ -23,17 +23,21 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// readRepositoryJSON performs one GET of path (an API path under the API origin) with an
-// installation token, through Client.Read, and answers the body of a read of repoFull whose
-// answer is JSON, classified by CheckRepositoryResponse: a status the caller names in handled
-// comes back as its own status for the caller to read, any other failure as the error that rule
-// names.
+// readRepositoryJSON performs one GET of path (an API path with its own query, joined onto the
+// API origin) with an installation token, through Client.Read, and answers the body of a read of
+// repoFull whose answer is JSON, classified by CheckRepositoryResponse: a status the caller names
+// in handled comes back as its own status for the caller to read, any other failure as the error
+// that rule names, which names the URL the read asked (target).
 func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull string, handled ...int) (redact.Answer, int, error) {
+	target, err := c.target(path)
+	if err != nil {
+		return redact.Answer{}, 0, err
+	}
 	body, status, header, err := c.Read(ctx, token, path)
 	if err != nil {
 		return redact.Answer{}, status, err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, handled...); err != nil {
+	if err := CheckRepositoryResponse(status, header, body, repoFull, target, handled...); err != nil {
 		return redact.Answer{}, status, err
 	}
 	return body, status, nil
@@ -60,11 +64,15 @@ const objectsPerPage = 100
 // body, with 304 Not Modified handled, since the caller reads that status itself. It reads
 // within pollResponseLimit rather than responseLimit.
 func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path, repoFull, etag string) (redact.Answer, int, string, error) {
+	target, err := c.target(path)
+	if err != nil {
+		return redact.Answer{}, 0, "", err
+	}
 	body, status, header, err := c.ReadConditionalWithin(ctx, token, path, etag, pollResponseLimit)
 	if err != nil {
 		return redact.Answer{}, status, "", err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, http.StatusNotModified); err != nil {
+	if err := CheckRepositoryResponse(status, header, body, repoFull, target, http.StatusNotModified); err != nil {
 		return redact.Answer{}, status, "", err
 	}
 	// GitHub repeats the ETag on a 304; when it does not, the empty value travels to the caller,
@@ -155,7 +163,10 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 	if c == nil {
 		return false, ErrNoAppKey
 	}
-	target := c.base + repoPath(owner, repo) + "/commits/" + url.PathEscape(sha)
+	target, err := c.target(repoPath(owner, repo) + "/commits/" + url.PathEscape(sha))
+	if err != nil {
+		return false, err
+	}
 	body, status, header, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeSHA, "", nil, responseLimit)
 	if err != nil {
 		return false, err

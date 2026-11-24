@@ -102,7 +102,7 @@ func TestATransportErrorAfterALongURLStillNamesItsCause(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	branch := strings.Repeat("枝", 60)
-	whole := client.base + "/repos/acme/web/git/ref/heads/" + url.PathEscape(branch)
+	whole := client.base.String() + "/repos/acme/web/git/ref/heads/" + url.PathEscape(branch)
 	shownURL := ShownBody(whole)
 	if shownURL == whole {
 		t.Fatalf("the URL is %d bytes, which ShownBody shows whole; the test needs one it cuts", len(whole))
@@ -320,7 +320,7 @@ func TestABlobErrorShowsTheTreesShaAndPathToABound(t *testing.T) {
 				fmt.Fprint(w, row.answer)
 			})
 			listing := Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: row.path, SHA: row.sha, Size: row.size}}}
-			target := client.base + "/repos/acme/web/git/blobs/" + url.PathEscape(row.sha)
+			target := client.base.String() + "/repos/acme/web/git/blobs/" + url.PathEscape(row.sha)
 			want := strings.ReplaceAll(row.want, "{target}", ShownBody(target))
 
 			_, err := client.DirFiles(context.Background(), "ghs_test", "acme", "web", listing)
@@ -390,7 +390,7 @@ func TestAStatusErrorShowsItsTargetToABound(t *testing.T) {
 					githubtest.Unexpected(t, w, r)
 				}
 			})
-			whole := client.base + row.target
+			whole := client.base.String() + row.target
 			shown := ShownBody(whole)
 			if shown == whole || len(whole) > nextLinkMaxBytes {
 				t.Fatalf("the target is %d bytes; the test needs one that ShownBody cuts, of at most nextLinkMaxBytes (%d)", len(whole), nextLinkMaxBytes)

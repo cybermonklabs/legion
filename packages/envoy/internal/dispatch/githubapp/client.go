@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -312,9 +313,13 @@ func WithLimits(limits Limits) Option {
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
-	app  auth.AppConfig
-	key  *rsa.PrivateKey
-	base string
+	app auth.AppConfig
+	key *rsa.PrivateKey
+	// base is the API origin of every call, parsed once (New). Each call's own path is joined
+	// onto it, its path onto the origin's and the origin's query ahead of the call's own
+	// (target), where a path appended to the origin's text sat inside the origin's query and
+	// GitHub was asked the origin's own path with that query's last value changed.
+	base *url.URL
 	http *http.Client
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
@@ -357,9 +362,12 @@ const installationsCacheTTL = 10 * time.Minute
 
 // New builds a client from the loaded App credentials. It returns (nil, nil)
 // when app is nil or carries no private key — the caller keeps the nil client
-// and methods answer ErrNoAppKey — and an error only for a malformed key, so
-// a misconfigured deployment fails at boot. base overrides the GitHub API
-// origin (DISPATCH_GITHUB_API_BASE); empty means api.github.com.
+// and methods answer ErrNoAppKey — and an error for a malformed key or a base
+// that is not an absolute URL with a host, so a misconfigured deployment fails
+// at boot. Neither error prints the base: url.Parse's own quotes it whole, its
+// user information and query included, so the base's refusal is
+// urljoin.ErrBase's fixed words (Join). base overrides the GitHub API origin
+// (DISPATCH_GITHUB_API_BASE); empty means api.github.com.
 func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 	if app == nil || app.PEM == "" {
 		return nil, nil
@@ -371,10 +379,14 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 	if base == "" {
 		base = defaultBase
 	}
+	origin, err := urljoin.Join(base, "")
+	if err != nil {
+		return nil, fmt.Errorf("the GitHub API base URL: %w", err)
+	}
 	c := &Client{
 		app:  *app,
 		key:  key,
-		base: strings.TrimSuffix(base, "/"),
+		base: origin,
 		// No Timeout here: request applies RequestTimeout to each call's own context instead,
 		// so a caller that needs a shorter one sets it on the context it passes.
 		http:           redirects.SameOrigin(&http.Client{}),
@@ -462,7 +474,10 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	if err != nil {
 		return Installation{}, err
 	}
-	target := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/installation"
+	target, err := c.target(repoPath(owner, repo) + "/installation")
+	if err != nil {
+		return Installation{}, err
+	}
 	body, status, header, err := c.do(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt)
 	if err != nil {
 		return Installation{}, err
@@ -521,7 +536,10 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 		}
 		var installations []Installation
 		for page := 1; ; page++ {
-			target := fmt.Sprintf("%s/app/installations?per_page=100&page=%d", c.base, page)
+			target, err := c.target(fmt.Sprintf("/app/installations?per_page=100&page=%d", page))
+			if err != nil {
+				return nil, err
+			}
 			body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
 			if err != nil {
 				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
@@ -664,10 +682,10 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 	return names, nil
 }
 
-// Read performs GET path (an API path with its query, under the API origin) with an
-// installation token, returning GitHub's complete answer when it fits within the response limit,
-// as a redact.Answer: the data decodes through it, and its words print with every credential the
-// request carried redacted.
+// Read performs GET path (an API path with its query, joined onto the API origin: target) with
+// an installation token, returning GitHub's complete answer when it fits within the response
+// limit, as a redact.Answer: the data decodes through it, and its words print with every
+// credential the request carried redacted. A path that is no relative reference is refused.
 func (c *Client) Read(ctx context.Context, token, path string) (redact.Answer, int, http.Header, error) {
 	return c.ReadWithin(ctx, token, path, responseLimit)
 }
@@ -686,7 +704,11 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 	if c == nil {
 		return redact.Answer{}, 0, nil, ErrNoAppKey
 	}
-	return c.request(ctx, c.TokenScope(token), http.MethodGet, c.base+path, "Bearer "+token, mediaTypeJSON, etag, nil, limit)
+	target, err := c.target(path)
+	if err != nil {
+		return redact.Answer{}, 0, nil, err
+	}
+	return c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeJSON, etag, nil, limit)
 }
 
 // GraphQL posts query/variables to the API origin's /graphql endpoint with an installation token,
@@ -742,7 +764,10 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 		}
 	}
 	installation := c.TokenScope(token)
-	target := c.base + "/graphql"
+	target, err := c.target("/graphql")
+	if err != nil {
+		return redact.Answer{}, 0, nil, err
+	}
 	body, status, header, err := c.send(ctx, installation, http.MethodPost, target, "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
 	if err != nil {
 		return body, status, header, err
@@ -826,7 +851,10 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 	if err != nil {
 		return cachedToken{}, err
 	}
-	target := c.base + "/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens"
+	target, err := c.target("/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens")
+	if err != nil {
+		return cachedToken{}, err
+	}
 	body, status, header, err := c.do(ctx, AppScope, http.MethodPost, target, "Bearer "+jwt)
 	if err != nil {
 		return cachedToken{}, err
@@ -875,7 +903,10 @@ func (c *Client) CheckSource(ctx context.Context, owner, repo string) (Source, e
 	if err != nil {
 		return Source{}, err
 	}
-	target := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
+	target, err := c.target(repoPath(owner, repo))
+	if err != nil {
+		return Source{}, err
+	}
 	body, status, _, err := c.do(ctx, InstallationScope(installation.ID), http.MethodGet, target, "Bearer "+token)
 	if err != nil {
 		return Source{}, err
@@ -899,6 +930,25 @@ func (c *Client) TokenScope(token string) string {
 		return InstallationScope(minted.installation)
 	}
 	return ""
+}
+
+// target is the URL of a call at ref, an API path with its own query where it has one: ref joined
+// onto the API origin (base, urljoin.JoinURL), the origin's path with ref's path joined onto it,
+// the origin's query first and ref's after it, user information, host and port kept, and no
+// fragment. Every call of this package asks the URL this builds. ref appended to the origin's
+// text would sit inside the origin's query where it has one, which would ask GitHub the origin's
+// own path with the query's last value changed; the deliveries listing's next page link is the
+// one URL this package asks that it does not build, GitHub's own, held to this origin (nextLink).
+//
+// A ref this package writes is fixed text and elements url.PathEscape wrote, which draws no
+// error. A caller's own path (Read) that is no relative reference, or that holds a scheme, a
+// host or a fragment, is urljoin.ErrRef, whose words quote neither the path nor the origin.
+func (c *Client) target(ref string) (string, error) {
+	joined, err := urljoin.JoinURL(c.base, ref)
+	if err != nil {
+		return "", fmt.Errorf("the GitHub API path of the call: %w", err)
+	}
+	return joined.String(), nil
 }
 
 func (c *Client) do(ctx context.Context, scope, method, target, authorization string) (redact.Answer, int, http.Header, error) {
@@ -1093,8 +1143,10 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 	if c == nil {
 		return "", ErrNoAppKey
 	}
-	target := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) +
-		"/commits/" + url.PathEscape(branch)
+	target, err := c.target(repoPath(owner, repo) + "/commits/" + url.PathEscape(branch))
+	if err != nil {
+		return "", err
+	}
 	body, status, _, err := c.request(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, mediaTypeSHA, "", nil, responseLimit)
 	if err != nil {
 		return "", err
@@ -1127,8 +1179,10 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 	if c == nil {
 		return "", ErrNoAppKey
 	}
-	target := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) +
-		"/git/ref/heads/" + url.PathEscape(branch)
+	target, err := c.target(repoPath(owner, repo) + "/git/ref/heads/" + url.PathEscape(branch))
+	if err != nil {
+		return "", err
+	}
 	body, status, _, err := c.do(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token)
 	if err != nil {
 		return "", err
@@ -1190,8 +1244,10 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		return Dir{}, ErrNoAppKey
 	}
 	dir = strings.Trim(dir, "/")
-	target := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) +
-		"/git/trees/" + url.PathEscape(sha+":"+dir)
+	target, err := c.target(repoPath(owner, repo) + "/git/trees/" + url.PathEscape(sha+":"+dir))
+	if err != nil {
+		return Dir{}, err
+	}
 	body, status, _, err := c.do(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token)
 	if err != nil {
 		return Dir{}, err
@@ -1250,10 +1306,10 @@ func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listin
 			return nil, err
 		}
 	}
-	repoBase := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
+	repoRef := repoPath(owner, repo)
 	files := make(map[string][]byte, len(listing.Files))
 	for _, file := range listing.Files {
-		content, err := c.blob(ctx, token, repoBase, file.Path, file.SHA)
+		content, err := c.blob(ctx, token, repoRef, file.Path, file.SHA)
 		if err != nil {
 			return nil, err
 		}
@@ -1262,12 +1318,16 @@ func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listin
 	return files, nil
 }
 
-// blob reads the blob sha, the file at path, under token. sha and path come from GitHub's tree
-// answer (Dir), so every error blob answers shows sha, path and the target that holds sha as
-// ShownBody shows GitHub's text: blob's own errors, send's (which shows its target so), and
-// notes.CheckSize's, which blob gives the path as ShownBody shows it.
-func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([]byte, error) {
-	target := repoBase + "/git/blobs/" + url.PathEscape(sha)
+// blob reads the blob sha, the file at path, under token, at repoRef, the repository's own API
+// path. sha and path come from GitHub's tree answer (Dir), so every error blob answers shows sha,
+// path and the target that holds sha as ShownBody shows GitHub's text: blob's own errors, send's
+// (which shows its target so), and notes.CheckSize's, which blob gives the path as ShownBody
+// shows it.
+func (c *Client) blob(ctx context.Context, token, repoRef, path, sha string) ([]byte, error) {
+	target, err := c.target(repoRef + "/git/blobs/" + url.PathEscape(sha))
+	if err != nil {
+		return nil, err
+	}
 	body, status, _, err := c.doLimited(ctx, c.TokenScope(token), http.MethodGet, target, "Bearer "+token, blobResponseLimit)
 	if err != nil {
 		return nil, err
