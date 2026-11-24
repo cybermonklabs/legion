@@ -504,7 +504,6 @@ const legionGatedStepView = z.object({
 const legionSlotView = z.object({
   index: z.number().int().nonnegative().optional(),
   admittedAt: timestamp.optional(),
-  lentTo: issueKey.optional(),
 });
 
 /** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
@@ -1053,7 +1052,6 @@ const legionAdmission = z.object({
   trees: z.array(issueKey).optional(),
   blocked: z.array(legionBlockedIssue).optional(),
   held: z.array(legionHeldIssue).optional(),
-  free: z.number().int().nonnegative().optional(),
 });
 
 /** `api.ControllerLocator` — the record of the session registered as the project's controller: the
@@ -2231,7 +2229,6 @@ const ISSUE_RECORD_READS = [
   "slot",
   "slot.index",
   "slot.admittedAt",
-  "slot.lentTo",
 ] as const;
 
 /**
