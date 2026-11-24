@@ -232,6 +232,17 @@ func TestTheHeadlessFragmentHoldsTheWorkersSharedRules(t *testing.T) {
 	}
 }
 
+// Each phase worker's role part is headed by its role: its first line is `# Legion <Role>`, as
+// `# Legion Planner` heads roles/planner.md. Taking the heading out of a role part fails here and
+// names that part. This shows the text is loaded, never that a role follows it.
+func TestEachPhaseWorkersRolePartIsHeadedByItsRole(t *testing.T) {
+	for _, role := range phaseRoles {
+		if heading := "# Legion " + strings.ToUpper(role[:1]) + role[1:]; !strings.HasPrefix(rolePart(t, role+".md"), heading+"\n") {
+			t.Errorf("roles/%s.md does not start with its heading %q", role, heading)
+		}
+	}
+}
+
 // The runtimes join the parts byte for byte, so each starts with a heading and ends with one
 // newline.
 func TestEveryPartStartsWithAHeadingAndEndsWithOneNewline(t *testing.T) {

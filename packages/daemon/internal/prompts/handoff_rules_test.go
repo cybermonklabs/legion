@@ -216,16 +216,10 @@ func TestThePlannerNamesEachTasksSkillsAndDocs(t *testing.T) {
 // whose `serves` names a requirement that a check it runs serves. The reviewer reads those of
 // every task. Each reads the `skills` and `docs` attributes of the task's block where the block has
 // them, else the `Skills:` and `Docs:` lines, and a task that names none gives the role nothing
-// beyond its own skills. The planner and the merger read no task's lines. Each phase part also
-// keeps its `# Legion <Role>` heading. Taking "the attributes" out of the implementer's reading
-// clause fails here (d-pins' negative control). This shows the text is loaded, never that a role
-// follows it.
+// beyond its own skills. The planner and the merger read no task's lines. Taking "the attributes"
+// out of the implementer's reading clause fails here (d-pins' negative control). This shows the
+// text is loaded, never that a role follows it.
 func TestEachReaderReadsTheSkillsAndDocsOfItsTasks(t *testing.T) {
-	for _, role := range phaseRoles {
-		if heading := "# Legion " + strings.ToUpper(role[:1]) + role[1:]; !strings.Contains(rolePart(t, role+".md"), heading) {
-			t.Errorf("roles/%s.md omits its heading %q", role, heading)
-		}
-	}
 	const lines = "else the `Skills:` and `Docs:` lines of its text"
 	for _, tc := range []struct {
 		part  string
