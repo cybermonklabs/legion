@@ -532,6 +532,49 @@ func TestClaimCauseTimesSurviveAReload(t *testing.T) {
 	want(onlyClaim(t, store), "holding a time beside no start failure", at(21), time.Time{})
 }
 
+// After a rollback and a roll-forward, a row can hold a start failure beside an older failure's
+// time: the release before 20261124073512 names no last_start_failure_at, so a start failure it
+// drops at its agent's ready leaves that failure's time standing, and a failure it records later
+// is written beside the old time. This release drops the start failure, with its time, at every
+// ready (supervise's ready), so a start failure's time before last_ready is never the time of the
+// failure the row holds: the claim reads that start failure back with no time, and its death's
+// time, which no ready clears, as it stands (dispatch://INFRA-5645).
+func TestAStartFailureTimeBeforeTheReadyIsReadAsNone(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	c.State = supervise.StateLaunching
+	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 ended: OOMKilled", at(2)
+	c.LastStartFailure, c.LastStartFailureAt = "the launcher refused the start: the pod was not ready", at(5)
+	c.LastReady = at(10)
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the rolled-back claim: %v", err)
+	}
+
+	got := onlyClaim(t, store)
+	if got.LastStartFailure != c.LastStartFailure || !got.LastStartFailureAt.IsZero() {
+		t.Errorf("the rolled-back claim read back its start failure %q at %v, want %q with no time: a time before its ready %v dates an older failure",
+			got.LastStartFailure, got.LastStartFailureAt, c.LastStartFailure, c.LastReady)
+	}
+	if !got.LastDeathAt.Equal(at(2)) {
+		t.Errorf("the rolled-back claim read back its death at %v, want %v: a death before the ready is one the agent survived", got.LastDeathAt, at(2))
+	}
+
+	c.LastStartFailureAt = at(12)
+	if got := putAndRead(t, store, c); !got.LastStartFailureAt.Equal(at(12)) {
+		t.Errorf("a start failure recorded after the ready read back at %v, want %v", got.LastStartFailureAt, at(12))
+	}
+}
+
+// putAndRead writes c and reads it back as the only claim.
+func putAndRead(t *testing.T, store *Store, c supervise.Claim) supervise.Claim {
+	t.Helper()
+	if err := store.PutClaim(context.Background(), c); err != nil {
+		t.Fatalf("put claim %s: %v", c.Token, err)
+	}
+	return onlyClaim(t, store)
+}
+
 // What the daemon charged for the death of the process a claim records round-trips: a restart
 // builds every claim from this table and has charged nothing of its own, so a claim restored
 // without this is charged a second death for the one dead process it stands over, which costs

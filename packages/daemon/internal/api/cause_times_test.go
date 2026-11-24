@@ -133,7 +133,7 @@ func TestALastDeathCarriesItsTime(t *testing.T) {
 	m, _ := h.supervisor.Machine(token)
 	const detail = "pod legion-legion-209 (uid 8fdd52cc) ended: init container workspace-init exited 1"
 	if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
-		Locator: *m.Claim().Locator, Kind: runtime.Gone, At: causeRecordedAt, Detail: detail}}); err != nil {
+		Locator: *m.Claim().Locator, Kind: runtime.Gone, At: causeRecordedAt.Add(-time.Minute), Detail: detail}}); err != nil {
 		t.Fatalf("the death of %s: %v", token, err)
 	}
 	relaunched := m.Claim().Generation

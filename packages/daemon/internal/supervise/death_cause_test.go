@@ -215,7 +215,7 @@ func TestAClaimCauseTimeIsRecordedAgainForTheSameText(t *testing.T) {
 	died := func() {
 		t.Helper()
 		h.rt.ScriptResume(fake.SpawnResult{Err: errBoom})
-		h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), Detail: detail}})
+		h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now().Add(-time.Minute), Detail: detail}})
 		h.wantState(StateLaunching)
 	}
 	want := func(what string, death, startFailure time.Time) {
@@ -258,6 +258,31 @@ func TestAClaimCauseTimeIsRecordedAgainForTheSameText(t *testing.T) {
 	h.must(StreamTurnEnd{Claim: testToken})
 	h.advance(10 * time.Minute)
 	want("after a turn and ten minutes", second, time.Time{})
+}
+
+// The boot's clear of a start failure an earlier release kept past its agent's ready drops the
+// failure's time with it, and leaves a claim whose agent has not been ready since as it stands,
+// time and all (DropStaleStartFailure, dispatch://INFRA-5645).
+func TestTheBootsClearOfAStaleStartFailureTakesItsTime(t *testing.T) {
+	for _, tc := range []struct {
+		state   ClaimState
+		dropped bool
+	}{{StateReady, true}, {StateWorking, true}, {StateIdle, true}, {StateLaunching, false}, {StateSuspended, false}} {
+		c := Claim{State: tc.state, LastStartFailure: "the launcher refused the start", LastStartFailureAt: epoch,
+			LastDeathCause: "gone: OOMKilled", LastDeathAt: epoch}
+		if got := DropStaleStartFailure(&c); got != tc.dropped {
+			t.Errorf("DropStaleStartFailure of a %s claim = %v, want %v", tc.state, got, tc.dropped)
+		}
+		if tc.dropped && (c.LastStartFailure != "" || !c.LastStartFailureAt.IsZero()) {
+			t.Errorf("a %s claim kept the start failure %q at %v after the clear, want neither", tc.state, c.LastStartFailure, c.LastStartFailureAt)
+		}
+		if !tc.dropped && (c.LastStartFailure == "" || !c.LastStartFailureAt.Equal(epoch)) {
+			t.Errorf("a %s claim holds the start failure %q at %v after the boot, want it kept at %v", tc.state, c.LastStartFailure, c.LastStartFailureAt, epoch)
+		}
+		if !c.LastDeathAt.Equal(epoch) {
+			t.Errorf("a %s claim's death time is %v after the boot, want it kept at %v", tc.state, c.LastDeathAt, epoch)
+		}
+	}
 }
 
 // A claim rebuilt from the store answers with the causes and the ready time it was written with:

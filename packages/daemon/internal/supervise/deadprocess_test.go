@@ -395,7 +395,7 @@ func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *test
 	h, stopped := sessionStops(t)
 	h.reach(StateWorking)
 	held := h.pending()
-	cause := h.claim().LastDeathCause
+	cause, at := h.claim().LastDeathCause, h.claim().LastDeathAt
 	h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 	if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
 		t.Fatalf("the read of the claim's process answered %q, want %q", got, ProcessGone)
@@ -420,8 +420,9 @@ func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *test
 	if p := h.pending(); p.ID != held.ID || p.ConfirmedAt.IsZero() || p.Interrupted {
 		t.Errorf("the claim holds %+v, want the dead turn's task as it stood, %+v", p, held)
 	}
-	if c := h.claim().LastDeathCause; c != cause {
-		t.Errorf("the claim records its last death as %q after the refused take-back, want the cause it held before, %q", c, cause)
+	if c := h.claim(); c.LastDeathCause != cause || !c.LastDeathAt.Equal(at) {
+		t.Errorf("the claim records its last death as %q at %v after the refused take-back, want the cause and time it held before, %q at %v",
+			c.LastDeathCause, c.LastDeathAt, cause, at)
 	}
 
 	h.store.fail("PutDelivery", nil)
@@ -433,8 +434,12 @@ func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *test
 	if !slices.Equal(*stopped, []string{session}) {
 		t.Errorf("stopped sessions %v, want the dead process's own session once", *stopped)
 	}
-	if c := h.claim().LastDeathCause; c != gone {
-		t.Errorf("the suspended claim records its last death as %q, want the read's own account %q", c, gone)
+	if c := h.claim(); c.LastDeathCause != gone || !c.LastDeathAt.Equal(h.clock.Now()) {
+		t.Errorf("the suspended claim records its last death as %q at %v, want the read's own account %q at the daemon's clock, %v",
+			c.LastDeathCause, c.LastDeathAt, gone, h.clock.Now())
+	}
+	if stored := h.store.load(testToken); stored.LastDeathCause != gone || !stored.LastDeathAt.Equal(h.clock.Now()) {
+		t.Errorf("the stored claim records its last death as %q at %v, want %q at %v", stored.LastDeathCause, stored.LastDeathAt, gone, h.clock.Now())
 	}
 }
 
