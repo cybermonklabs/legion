@@ -3756,6 +3756,42 @@
         "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
         "files": ["packages/envoy/internal/dispatch/docs/docstest/dial_words_test.go"],
         "capture": "docstest.dial-words/status-line"
+      },
+      {
+        "row": "workspace-cache-url-unparsed-tar",
+        "base": "76b153ccf18dc8b11684f8854c219d184257631c",
+        "files": ["packages/daemon/internal/workspace/cache_url_join_test.go"],
+        "capture": "workspace.cache-url/unparsed-tar"
+      },
+      {
+        "row": "workspace-cache-url-unparsed-health",
+        "base": "76b153ccf18dc8b11684f8854c219d184257631c",
+        "files": ["packages/daemon/internal/workspace/cache_url_join_test.go"],
+        "capture": "workspace.cache-url/unparsed-health"
+      },
+      {
+        "row": "judge-dispatch-url-unparsed",
+        "base": "76b153ccf18dc8b11684f8854c219d184257631c",
+        "files": ["packages/envoy/internal/cipher/judge/dispatch_url_join_test.go"],
+        "capture": "judge.dispatch-url/unparsed"
+      },
+      {
+        "row": "agentloop-decide-url-unparsed",
+        "base": "76b153ccf18dc8b11684f8854c219d184257631c",
+        "files": ["packages/envoy/agentloop/decide_url_join_test.go"],
+        "capture": "agentloop.decide-url/unparsed"
+      },
+      {
+        "row": "loadtest-cloudsql-api-url-unparsed",
+        "base": "0e525790638b98f4b81a05f95037ef9b10f0c782",
+        "files": ["packages/envoy/loadtest/cloudsqlcpu_url_join_test.go"],
+        "capture": "loadtest.cloudsql-api-url/unparsed"
+      },
+      {
+        "row": "loadtest-cloudsql-token-url-unparsed",
+        "base": "0e525790638b98f4b81a05f95037ef9b10f0c782",
+        "files": ["packages/envoy/loadtest/cloudsqlcpu_token_url_test.go"],
+        "capture": "loadtest.cloudsql-token-url/unparsed"
       }
     ],
     "boundary_fields": {
@@ -7744,8 +7780,8 @@
       "capture": "workspace.status-line/token-refused",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "whose token this pod holds\", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode)",
-        "replacement": "whose token this pod holds\", request.CacheURL, cache, path, response.Status"
+        "preimage": "whose token this pod holds\", request.CacheURL, asked, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "whose token this pod holds\", request.CacheURL, asked, response.Status"
       }
     },
     {
@@ -7786,8 +7822,8 @@
       "capture": "workspace.status-line/tar-redirected",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "which this pod never follows\", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode)",
-        "replacement": "which this pod never follows\", request.CacheURL, cache, path, response.Status"
+        "preimage": "which this pod never follows\", request.CacheURL, asked, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "which this pod never follows\", request.CacheURL, asked, response.Status"
       }
     },
     {
@@ -13589,6 +13625,304 @@
         "preimage": "redact.Class(err)",
         "replacement": "err"
       }
+    },
+    {
+      "id": "workspace-cache-url-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAskGoesToThePathJoinedOntoTheCacheURL/query",
+      "production": "workspace askCache: a --cache-url with a path and a query (http://host/cache?sig=...) asks that path joined with the ask's, the query kept (url.URL.JoinPath: /cache/healthz?sig=...), where /healthz appended to the URL's text sat inside the query (/cache?sig=.../healthz) and the cache was asked /cache"
+    },
+    {
+      "id": "workspace-cache-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAskGoesToThePathJoinedOntoTheCacheURL/query-trailing-slash",
+      "production": "workspace askCache: a --cache-url whose path ends in a slash and that has a query (http://host/cache/?sig=...) asks /cache/healthz?sig=..., where /healthz appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "workspace-cache-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAskGoesToThePathJoinedOntoTheCacheURL/fragment",
+      "production": "workspace askCache: a --cache-url with a fragment (http://host/cache#...) asks /cache/healthz and the ask's URL holds no fragment, which no request sends, where /healthz appended to the URL's text sat inside the fragment and the cache was asked /cache"
+    },
+    {
+      "id": "workspace-cache-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAskGoesToThePathJoinedOntoTheCacheURL/no-query",
+      "production": "workspace askCache: a --cache-url with a path and no query (http://host/cache) asks /cache/healthz, as before the join"
+    },
+    {
+      "id": "workspace-cache-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed --cache-url rows: http.NewRequest's error for that URL quotes its user information and its query's token, so the rows can see one printed"
+    },
+    {
+      "id": "workspace-cache-url-unparsed-tar",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheURLThatDoesNotParsePrintsNoneOfIt/unparsed-tar",
+      "production": "workspace askCache: a --cache-url that url.Parse refuses fails the tar's ask in askCache's own words, which unpackCache returns, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included",
+      "capture": "workspace.cache-url/unparsed-tar"
+    },
+    {
+      "id": "workspace-cache-url-unparsed-health",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheURLThatDoesNotParsePrintsNoneOfIt/unparsed-health",
+      "production": "workspace askCache: a --cache-url that url.Parse refuses is cacheNotReady's reason in askCache's own words, which the wait logs and fails in, never url.Parse's error, which quotes the URL whole",
+      "capture": "workspace.cache-url/unparsed-health"
+    },
+    {
+      "id": "workspace-cache-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed --cache-url row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its query's token, so the row can see them printed"
+    },
+    {
+      "id": "workspace-cache-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "workspace askCache: a --cache-url url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the ask in askCache's own words, never http.NewRequest's error, which quotes that URL whole",
+      "capture": "workspace.cache-url/reparsed"
+    },
+    {
+      "id": "judge-dispatch-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestADispatchReadGoesToTheRouteJoinedOntoTheDispatchURL/query",
+      "production": "judge Dispatch.get: a Dispatch URL with a path and a query (http://host/dispatch?sig=...) reads its path joined with each route, the query kept and the token presented (url.URL.JoinPath: /dispatch/api/v1/issues/<key>?sig=...), where the route appended to the URL's text sat inside the query and Dispatch was asked /dispatch"
+    },
+    {
+      "id": "judge-dispatch-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestADispatchReadGoesToTheRouteJoinedOntoTheDispatchURL/query-trailing-slash",
+      "production": "judge Dispatch.get: a Dispatch URL whose path ends in a slash and that has a query (http://host/dispatch/?sig=...) reads /dispatch/api/v1/...?sig=..., where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "judge-dispatch-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestADispatchReadGoesToTheRouteJoinedOntoTheDispatchURL/fragment",
+      "production": "judge Dispatch.get: a Dispatch URL with a fragment (http://host/dispatch#...) reads /dispatch/api/v1/... and the read's URL holds no fragment, which no request sends, where the route appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "judge-dispatch-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestADispatchReadGoesToTheRouteJoinedOntoTheDispatchURL/no-query",
+      "production": "judge Dispatch.get: a Dispatch URL with a path and no query (http://host/dispatch) reads /dispatch/api/v1/..., as before the join, each read presenting the token its account reads"
+    },
+    {
+      "id": "judge-dispatch-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestADispatchURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed Dispatch-URL row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "judge-dispatch-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestADispatchURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "judge Dispatch.get: a Dispatch URL that url.Parse refuses fails the read in the judge's own words, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included",
+      "capture": "judge.dispatch-url/unparsed"
+    },
+    {
+      "id": "judge-dispatch-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestADispatchURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed Dispatch-URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "judge-dispatch-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestADispatchURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "judge Dispatch.get: a Dispatch URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the read in the judge's own words, never http.NewRequest's error, which quotes that URL whole",
+      "capture": "judge.dispatch-url/reparsed"
+    },
+    {
+      "id": "cipherclient-iam-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestGenerateIDTokenGoesToTheResourceJoinedOntoTheIAMURL/query",
+      "production": "cipherclient generateIDToken: an IAM Credentials URL with a path and a query (http://host/iam?key=...) calls that path joined with the resource's, the query kept (url.URL.JoinPath: /iam/v1/projects/-/serviceAccounts/<account>:generateIdToken?key=...), where the path appended to the URL's text sat inside the query and IAM Credentials was asked /iam"
+    },
+    {
+      "id": "cipherclient-iam-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestGenerateIDTokenGoesToTheResourceJoinedOntoTheIAMURL/query-trailing-slash",
+      "production": "cipherclient generateIDToken: an IAM Credentials URL whose path ends in a slash and that has a query (http://host/iam/?key=...) calls /iam/v1/...:generateIdToken?key=..., where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "cipherclient-iam-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestGenerateIDTokenGoesToTheResourceJoinedOntoTheIAMURL/fragment",
+      "production": "cipherclient generateIDToken: an IAM Credentials URL with a fragment (http://host/iam#...) calls /iam/v1/...:generateIdToken and the call's URL holds no fragment, which no request sends, where the path appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "cipherclient-iam-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestGenerateIDTokenGoesToTheResourceJoinedOntoTheIAMURL/no-query",
+      "production": "cipherclient generateIDToken: an IAM Credentials URL with a path and no query (http://host/iam) calls /iam/v1/...:generateIdToken, as before the join"
+    },
+    {
+      "id": "cipherclient-iam-url-refused-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAnIAMURLWithACredentialPrintsNoneOfIt/refused-twin",
+      "production": "the probe of the refused IAM-URL row: the call the row makes carries the URL's access token in its query, so a print of the call's URL would hold it"
+    },
+    {
+      "id": "cipherclient-iam-url-refused",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAnIAMURLWithACredentialPrintsNoneOfIt/refused",
+      "production": "cipherclient generateIDToken: a mint IAM Credentials refuses (403) names the service as redact.URL prints its configured URL, never the URL the call was made at, which carries that URL's user information and query",
+      "capture": "cipherclient.iam-url/refused"
+    },
+    {
+      "id": "cipherclient-iam-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAnIAMURLWithACredentialPrintsNoneOfIt/unparsed-twin",
+      "production": "the probe of the unparsed IAM-URL row: url.Parse's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "cipherclient-iam-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipherclient",
+      "test": "TestAnIAMURLWithACredentialPrintsNoneOfIt/unparsed",
+      "production": "cipherclient generateIDToken: an IAM Credentials URL that url.Parse refuses is named by its class (redact.Class), never url.Parse's error, which quotes the URL whole, its user information and query included",
+      "capture": "cipherclient.iam-url/unparsed"
+    },
+    {
+      "id": "agentloop-decide-url-query",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestADecisionGoesToThePathJoinedOntoTheBaseURL/query",
+      "production": "agentloop Decide: a base URL with a path and a query (http://host/base?sig=...) posts to that path joined with the System One path, the query kept (url.URL.JoinPath: /base/v1/systemone?sig=...), where the path appended to the URL's text sat inside the query and the endpoint was asked /base"
+    },
+    {
+      "id": "agentloop-decide-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestADecisionGoesToThePathJoinedOntoTheBaseURL/query-trailing-slash",
+      "production": "agentloop Decide: a base URL whose path ends in a slash and that has a query (http://host/base/?sig=...) posts to /base/v1/systemone?sig=..., where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "agentloop-decide-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestADecisionGoesToThePathJoinedOntoTheBaseURL/fragment",
+      "production": "agentloop Decide: a base URL with a fragment (http://host/base#...) posts to /base/v1/systemone and the post's URL holds no fragment, which no request sends, where the path appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "agentloop-decide-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestADecisionGoesToThePathJoinedOntoTheBaseURL/no-query",
+      "production": "agentloop Decide: a base URL with a path and no query (http://host/base) posts to /base/v1/systemone, as before the join"
+    },
+    {
+      "id": "agentloop-decide-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestASystemOneBaseURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed base-URL row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "agentloop-decide-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestASystemOneBaseURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "agentloop Decide: a base URL that url.Parse refuses fails the decision in fixed words with nothing reaching the wire, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included",
+      "capture": "agentloop.decide-url/unparsed"
+    },
+    {
+      "id": "loadtest-cloudsql-api-url-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestACloudSQLReadGoesToTheRouteJoinedOntoTheAPIURL/query",
+      "production": "loadtest readCloudSQLSeries: an -api URL with a path and a query (http://host/monitoring?key=...) reads that path joined with the timeSeries route, its own query kept ahead of the read's parameters (url.URL.JoinPath: /monitoring/v3/projects/<project>/timeSeries?key=...&filter=...), where the route appended to the URL's text sat inside the query and Cloud Monitoring was asked /monitoring"
+    },
+    {
+      "id": "loadtest-cloudsql-api-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestACloudSQLReadGoesToTheRouteJoinedOntoTheAPIURL/query-trailing-slash",
+      "production": "loadtest readCloudSQLSeries: an -api URL whose path ends in a slash and that has a query (http://host/monitoring/?key=...) reads /monitoring/v3/.../timeSeries?key=&..., where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "loadtest-cloudsql-api-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestACloudSQLReadGoesToTheRouteJoinedOntoTheAPIURL/fragment",
+      "production": "loadtest readCloudSQLSeries: an -api URL with a fragment (http://host/monitoring#...) reads /monitoring/v3/.../timeSeries and the read's URL holds no fragment, which no request sends, where the route appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "loadtest-cloudsql-api-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestACloudSQLReadGoesToTheRouteJoinedOntoTheAPIURL/no-query",
+      "production": "loadtest readCloudSQLSeries: an -api URL with a path and no query (http://host/monitoring) reads /monitoring/v3/.../timeSeries with the read's parameters alone, as before the join"
+    },
+    {
+      "id": "loadtest-cloudsql-api-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnAPIURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed -api URL row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "loadtest-cloudsql-api-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnAPIURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "loadtest readCloudSQLSeries: an -api URL that url.Parse refuses fails the read in fixed words, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included",
+      "capture": "loadtest.cloudsql-api-url/unparsed"
+    },
+    {
+      "id": "loadtest-cloudsql-api-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnAPIURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed -api URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "loadtest-cloudsql-api-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnAPIURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "loadtest readCloudSQLSeries: an -api URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the read in fixed words, never http.NewRequest's error, which quotes that URL whole",
+      "capture": "loadtest.cloudsql-api-url/reparsed"
+    },
+    {
+      "id": "loadtest-cloudsql-token-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestATokenURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed -token-url row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "loadtest-cloudsql-token-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestATokenURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "loadtest cloudsqlMetadataToken: a -token-url that url.Parse refuses fails cloudsql-cpu in fixed words, never http.NewRequest's error, which quotes the URL whole, its user information and query included",
+      "capture": "loadtest.cloudsql-token-url/unparsed"
     }
   ],
   "bun": [
@@ -16292,6 +16626,36 @@
       "site": "docstest DialContext: a dial with no handshake answer wrapped gorilla's error, which quotes a status line it could not read, and loadtest/browsertype printed it (found by this round's class search)",
       "source": "the round-9 decisions of #4368",
       "guard": "docstest-dial-words-status-line"
+    },
+    {
+      "site": "workspace askCache: each ask's URL was --cache-url's text with /healthz or /tar appended, so a configured query took the path into its last value and the cache was asked the configured path, and a URL that does not parse printed http.NewRequest's error, which quotes it whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "workspace-cache-url-query"
+    },
+    {
+      "site": "judge Dispatch.get: each read's URL was BROKER_JUDGE_DISPATCH_URL's text with the route appended, so a configured query took the route into its last value and Dispatch was asked the configured path, and a URL that does not parse printed http.NewRequest's error, which quotes it whole",
+      "source": "the round-9 decisions of #4368",
+      "guard": "judge-dispatch-url-query"
+    },
+    {
+      "site": "cipherclient generateIDToken: the call's URL was the IAM Credentials URL's text with the resource's path appended, so a configured query took that path into its last value and IAM Credentials was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "cipherclient-iam-url-query"
+    },
+    {
+      "site": "agentloop Decide: the decision's URL was the endpoint's base URL text with /v1/systemone appended, so a configured query took the path into its last value and the endpoint was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "agentloop-decide-url-query"
+    },
+    {
+      "site": "loadtest readCloudSQLSeries: each read's URL was the -api URL's text with the timeSeries route and the read's parameters appended, so a configured query took the route into its last value and Cloud Monitoring was asked the configured path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-cloudsql-api-url-query"
+    },
+    {
+      "site": "loadtest cloudsqlMetadataToken: a -token-url that does not parse printed http.NewRequest's error, which quotes the URL whole, its user information and query included",
+      "source": "the round-9 decisions of #4368",
+      "guard": "loadtest-cloudsql-token-url-unparsed"
     }
   ]
 }
