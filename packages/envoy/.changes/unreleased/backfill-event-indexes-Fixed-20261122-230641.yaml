@@ -17,7 +17,9 @@ body: |-
   them the planner read every row still naming no node for each batch. The block batch resolves
   each document version's event once per batch in every plan, and the block-reference batch checks
   each row's block node by its key. The run refuses to start, naming each, while any of the four
-  indexes is absent or invalid.
+  indexes is absent or invalid, and prints the statements that build each one again by hand: the
+  command migrates first, so such an index went missing after its version was recorded, and no
+  boot builds it again.
 time: 2026-11-22T23:06:41Z
 custom:
     Issue: backfill-event-indexes

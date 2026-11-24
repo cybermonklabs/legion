@@ -258,6 +258,13 @@ func analyzeWalkedColumns(ctx context.Context, database *store.Store) error {
 	return nil
 }
 
+// BackfillIndex is one index the backfill's reads stand on, and the version of the migration that
+// builds it.
+type BackfillIndex struct {
+	Name    string
+	Version int
+}
+
 // BackfillIndexes are the indexes the backfill's reads stand on (migrations 20261119020700 to
 // 20261119021000): the two its batches probe events through for each row's event
 // (BlockRowsStatement, CommentRowsStatement), and the two its walks read one batch through in
@@ -265,40 +272,100 @@ func analyzeWalkedColumns(ctx context.Context, database *store.Store) error {
 // that read reads a whole table, and the run takes time growing with the square of the data: on a
 // seeded database of 270,539 blocks and 28,338 comments the block and comment passes took 31
 // minutes without them.
-var BackfillIndexes = []string{
-	"events_artifact_version_number",
-	"events_comment_created_id",
-	"document_blocks_naming_no_node",
-	"block_refs_naming_no_node",
+var BackfillIndexes = []BackfillIndex{
+	{Name: "events_artifact_version_number", Version: 20261119020700},
+	{Name: "events_comment_created_id", Version: 20261119020800},
+	{Name: "document_blocks_naming_no_node", Version: 20261119020900},
+	{Name: "block_refs_naming_no_node", Version: 20261119021000},
 }
 
-// backfillIndexesNotUsable is the read requireBackfillIndexes makes: each of the indexes $1 names,
-// in its order, that the schema the runner made the tables in does not hold as a valid index, one
-// the planner may read. A concurrent build that failed leaves its index invalid, which the runner
-// drops and builds again only at its next run.
+// backfillIndexesNotUsable is the read requireBackfillIndexes makes: the place in $1, counted from
+// 1, of each of the indexes $1 names that the schema the runner made the tables in does not hold as
+// a valid index, one the planner may read, in their order; whether an index of that name stands
+// there invalid, as a concurrent build that failed leaves it; and that schema.
 const backfillIndexesNotUsable = `
-	select wanted.name
+	select wanted.place::int, i.indexrelid is not null, current_schema()
 	from unnest($1::text[]) with ordinality as wanted (name, place)
-	where not exists (
-		select 1 from pg_index i
-		where i.indexrelid = to_regclass(quote_ident(current_schema()) || '.' || quote_ident(wanted.name))
-		  and i.indisvalid)
+	left join pg_index i
+		on i.indexrelid = to_regclass(quote_ident(current_schema()) || '.' || quote_ident(wanted.name))
+	where i.indisvalid is not true
 	order by wanted.place`
 
 // requireBackfillIndexes refuses the run, naming each, while any of BackfillIndexes is absent or
 // invalid: the run would then read a whole table for each batch, for longer the more rows the
 // deployment holds, so a refusal before it writes anything costs less than a run that may not end.
+//
+// The command migrates the database before it runs this, so every index's version is recorded by
+// then, and the runner builds a recorded version no more: an index that is absent or invalid here
+// went so after its migration was recorded (its down file run by hand, or a concurrent build by
+// hand that failed), and no boot builds it again. So the refusal names the remedy that works in
+// that state, the build by hand (backfillIndexRemedy).
 func requireBackfillIndexes(ctx context.Context, database *store.Store) error {
-	rows, err := database.Pool.Query(ctx, backfillIndexesNotUsable, BackfillIndexes)
+	names := make([]string, len(BackfillIndexes))
+	for i, index := range BackfillIndexes {
+		names[i] = index.Name
+	}
+	rows, err := database.Pool.Query(ctx, backfillIndexesNotUsable, names)
 	if err != nil {
 		return fmt.Errorf("read whether the indexes the backfill reads through are valid: %w", err)
 	}
-	missing, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	type unusable struct {
+		place    int
+		invalid  bool
+		inSchema string
+	}
+	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (unusable, error) {
+		var u unusable
+		err := row.Scan(&u.place, &u.invalid, &u.inSchema)
+		return u, err
+	})
 	if err != nil {
 		return fmt.Errorf("read whether the indexes the backfill reads through are valid: %w", err)
 	}
-	if len(missing) > 0 {
-		return fmt.Errorf("refused: the index(es) %s, which this release's migrations 20261119020700 to 20261119021000 build, are absent or invalid, and without them each batch reads a whole table; let the boot's migrations build them, then run this again", strings.Join(missing, ", "))
+	if len(found) == 0 {
+		return nil
 	}
-	return nil
+	missing := make([]string, 0, len(found))
+	for _, u := range found {
+		missing = append(missing, BackfillIndexes[u.place-1].Name)
+	}
+	statements := []string{"set search_path to " + pgx.Identifier{found[0].inSchema}.Sanitize() + ";"}
+	for _, u := range found {
+		build, err := backfillIndexRemedy(BackfillIndexes[u.place-1], u.invalid)
+		if err != nil {
+			return fmt.Errorf("refused: the index(es) %s are absent or invalid, and the statements that build them again cannot be read: %w", strings.Join(missing, ", "), err)
+		}
+		statements = append(statements, build...)
+	}
+	return fmt.Errorf("refused: the index(es) %s are absent or invalid, and without them each batch reads a whole table. "+
+		"Their migrations' versions are recorded, so no boot builds them again: build them by hand with the statements below, "+
+		"each run on its own outside a transaction (as psql runs them, one per line, in its default autocommit), then run this again:\n  %s",
+		strings.Join(missing, ", "), strings.Join(statements, "\n  "))
+}
+
+// backfillIndexRemedy is the statements that build index again by hand: a drop of the index
+// where one of its name stands invalid, which its migration's create ... if not exists would
+// otherwise leave as it is, and then the migration's own statement, read from the migration the
+// runner applies (store.MigrationText) with its comments left out and its words joined by single
+// spaces, so it prints on one line.
+func backfillIndexRemedy(index BackfillIndex, invalid bool) ([]string, error) {
+	text, err := store.MigrationText(index.Version)
+	if err != nil {
+		return nil, err
+	}
+	var code []string
+	for _, line := range strings.Split(text, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "--") {
+			code = append(code, trimmed)
+		}
+	}
+	build := strings.Join(strings.Fields(strings.Join(code, " ")), " ")
+	if !strings.HasPrefix(build, "create index concurrently if not exists "+index.Name+" ") || !strings.HasSuffix(build, ";") ||
+		strings.Count(build, ";") != 1 {
+		return nil, fmt.Errorf("migration %d is not one statement building %s: %q", index.Version, index.Name, build)
+	}
+	if invalid {
+		return []string{"drop index concurrently if exists " + pgx.Identifier{index.Name}.Sanitize() + ";", build}, nil
+	}
+	return []string{build}, nil
 }
