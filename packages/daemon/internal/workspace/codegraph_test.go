@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -340,7 +342,7 @@ func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRea
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := runCodegraph(context.Background(), codegraphPath, dir, "status", "--json")
+	status, err := runCodegraph(context.Background(), clock.Real(), codegraphPath, dir, "status", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +377,7 @@ esac
 	// A process actually named "codegraph" in its own argv, so codegraphLockHeldByLiveProcess's
 	// /proc/<pid>/cmdline check — the PID-reuse hardening — sees what a real builder's PID would.
 	builderScript := filepath.Join(binDir, "codegraph-builder")
-	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nexec -a codegraph sleep 60\n"), 0o700); err != nil {
+	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nexec -a codegraph sleep 86400\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	builder := exec.Command(builderScript)
@@ -1192,33 +1194,56 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
 		}
 	})
+	// The two rows below hold the build's bound on a fake clock and move it only once the stub has
+	// done what the row needs done before the bound: printed its line, or died of its own signal. A
+	// stub a loaded machine starts slowly is then still ahead of its bound.
 	t.Run("a build its own bound ended: the timeout named", func(t *testing.T) {
 		bound := codegraphTimeout
 		codegraphTimeout = time.Second
 		t.Cleanup(func() { codegraphTimeout = bound })
 		callLog := filepath.Join(t.TempDir(), "calls.log")
 		dir := t.TempDir()
-		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; exec sleep 30 ;;\n")
+		printed := filepath.Join(t.TempDir(), "printed")
+		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; : > '"+printed+"'; exec sleep 86400 ;;\n")
 		captured := captureStderr(t)
+		c := clocktest.New(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		done := make(chan struct{})
+		go func() { defer close(done); warmCodegraphIndexOn(context.Background(), c, dir, time.Now()) }()
+		testwait.Eventually(t, "the stub's init to print its line", func() bool { _, err := os.Stat(printed); return err == nil })
+		c.AwaitArmed(t, "the build's bound", 1)
+		c.Advance(codegraphTimeout)
+		testwait.Receive(t, "the warm-up to return once its bound ended the build", done)
 		want := "[legion] codegraph init for " + dir + " timed out after 1s: parsing 512 files\n"
 		if stderr := captured(); !strings.Contains(stderr, want) {
 			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
 		}
 	})
 	// A build killed by some other signal before its bound, whose child then holds its pipes past
-	// the bound, was ended by that signal and not by the bound: the bound's cancel never ran.
+	// the bound, was ended by that signal and not by the bound: the bound's cancel never ran. The
+	// child marks once the build's shell is gone (reaped), and holds the pipes until the test lets
+	// them go, after the bound has ended.
 	t.Run("a build a signal ended before its bound, its pipes held past it: the signal named", func(t *testing.T) {
 		bound := codegraphTimeout
 		codegraphTimeout = time.Second
 		t.Cleanup(func() { codegraphTimeout = bound })
 		callLog := filepath.Join(t.TempDir(), "calls.log")
 		dir := t.TempDir()
-		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; sleep 2 & kill -KILL $$ ;;\n")
+		marks := t.TempDir()
+		gone, release := filepath.Join(marks, "gone"), filepath.Join(marks, "release")
+		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; ( while kill -0 $$ 2>/dev/null; do sleep 0.01; done; : > '"+gone+"'; while [ ! -f '"+release+"' ]; do sleep 0.01; done ) & kill -KILL $$ ;;\n")
 		captured := captureStderr(t)
+		c := clocktest.New(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
 
-		warmCodegraphIndex(context.Background(), dir, time.Now())
+		done := make(chan struct{})
+		go func() { defer close(done); warmCodegraphIndexOn(context.Background(), c, dir, time.Now()) }()
+		testwait.Eventually(t, "the build's shell to be gone with its pipes still held", func() bool { _, err := os.Stat(gone); return err == nil })
+		c.AwaitArmed(t, "the build's bound", 1)
+		c.Advance(codegraphTimeout)
+		if err := os.WriteFile(release, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		testwait.Receive(t, "the warm-up to return once the build's pipes were let go", done)
 		want := "[legion] codegraph init for " + dir + " was ended by signal: killed: parsing 512 files\n"
 		if stderr := captured(); !strings.Contains(stderr, want) {
 			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)

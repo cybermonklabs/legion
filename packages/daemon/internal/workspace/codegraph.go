@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -132,7 +133,13 @@ func WarmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
 	warmCodegraphIndex(ctx, dir, launched)
 }
 
-// warmCodegraphIndex builds a workspace's codegraph index before any worker needs it: the tester's
+// warmCodegraphIndex is warmCodegraphIndexOn on the real clock.
+func warmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
+	warmCodegraphIndexOn(ctx, clock.Real(), dir, launched)
+}
+
+// warmCodegraphIndexOn builds a workspace's codegraph index before any worker needs it, each
+// codegraph run bounded by codegraphTimeout on c (clock.Real but in a test): the tester's
 // `affected` and the reviewer's `impact`/`callers` queries need an index already built, not one
 // built on first use. Callers run it through WarmCodegraphIndexInBackground, outside any
 // provisioning serialization: indexing reads only the issue's own workspace directory. codegraph
@@ -159,7 +166,7 @@ func WarmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
 // DO_NOT_TRACK=1 disables both CodeGraph's telemetry and its update check (its bundled docs rank
 // DO_NOT_TRACK above CODEGRAPH_TELEMETRY above stored config above default-on), so an automatic,
 // non-opt-in warm-up never phones home.
-func warmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
+func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, dir string, launched time.Time) {
 	codegraphPath, err := exec.LookPath("codegraph")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up skipped for %s: %s\n", dir, err)
@@ -186,7 +193,7 @@ func warmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
 		return
 	}
 	defer release()
-	status, err := runCodegraph(ctx, codegraphPath, dir, "status", "--json")
+	status, err := runCodegraph(ctx, c, codegraphPath, dir, "status", "--json")
 	if ctx.Err() != nil {
 		fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s ended with its process before `codegraph status` finished\n", dir)
 		return
@@ -220,7 +227,7 @@ func warmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
 		subcommand = "index"
 	}
 	buildStarted := time.Now()
-	result, err := runCodegraph(ctx, codegraphPath, dir, subcommand)
+	result, err := runCodegraph(ctx, c, codegraphPath, dir, subcommand)
 	built := time.Since(buildStarted)
 	if ctx.Err() != nil {
 		fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up for %s ended with its process before `codegraph %s` finished; the next launch's warm-up repairs the index\n", dir, subcommand)
@@ -580,14 +587,14 @@ func codegraphEnvironment() []string {
 	return env
 }
 
-// runCodegraph runs one codegraph subcommand in dir, bounded by codegraphTimeout, with
+// runCodegraph runs one codegraph subcommand in dir, bounded by codegraphTimeout on c, with
 // codegraphEnvironment's minimal, explicit environment — never the caller's full environment. ctx
 // ending, or the timeout, SIGTERMs the child (CodeGraph 1.5.0 dies of it within about two seconds,
 // its SQLite closed) and kills it after codegraphStopGrace; either way Run returns once the
 // child is reaped, so a caller waiting on the warm-up is never held longer than that grace past
 // the end of its context.
-func runCodegraph(ctx context.Context, codegraphPath, dir string, args ...string) (codegraphResult, error) {
-	bounded, cancel := context.WithTimeout(ctx, codegraphTimeout)
+func runCodegraph(ctx context.Context, c clock.Clock, codegraphPath, dir string, args ...string) (codegraphResult, error) {
+	bounded, cancel := c.WithTimeout(ctx, codegraphTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(bounded, codegraphPath, args...)
 	cmd.Dir = dir
