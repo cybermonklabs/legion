@@ -321,6 +321,39 @@ func openPodHold(ctx context.Context, tx pgx.Tx, project, issue string) (bool, e
 	return holding, nil
 }
 
+// StandingPodHoldsTx is the standing hold of each pod of project, keyed by its issue, read
+// through the caller's transaction: the hold streak of that pod that no pass, release or other
+// reason has ended. The state route reads it in its own snapshot, so the holds it shows and every
+// other fact of that state come from one moment, and it is one statement for the whole project
+// rather than one read per issue.
+//
+// A pod holds one running streak at most, because RecordPodHold ends every other reason's
+// streak in the transaction that records a reason. The rows that were running when
+// 20261102154500_pod_hold_streaks gave a streak its end were all left running, one per reason a
+// pod was ever held for, so a pod may still carry more than one; the read answers the streak of
+// the newest pass, which is the reason the rule read last. A row's detail is answered whole:
+// what of it a reader is shown is that reader's to cut.
+func (s *Store) StandingPodHoldsTx(ctx context.Context, tx pgx.Tx, project string) (map[string]PodHold, error) {
+	rows, err := tx.Query(ctx, `select distinct on (issue) id, project, issue, reason, detail, first_at, at, passes
+		from pod_holds where project = $1 and not ended order by issue, at desc, id desc`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+	}
+	defer rows.Close()
+	holds := map[string]PodHold{}
+	for rows.Next() {
+		var h PodHold
+		if err := rows.Scan(&h.ID, &h.Project, &h.Issue, &h.Reason, &h.Detail, &h.FirstAt, &h.At, &h.Passes); err != nil {
+			return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+		}
+		holds[h.Issue] = h
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+	}
+	return holds, nil
+}
+
 // endPodHoldStreaks marks the running streaks of the pod ended through the caller's transaction.
 // A streak already ended is left as it is, so its first_at, at and passes stay what the passes
 // of that streak made them.

@@ -322,14 +322,14 @@ const legionClaimView = z.object({
    * became ready. Each is absent until it happens, and the two are separate because they answer
    * separate questions: a claim that cannot start and a claim that keeps dying are different
    * faults. `lastReady` is when the claim's agent last said it could be prompted. `lastDeathAt`
-   * and `lastStartFailureAt` (contract 243) are when the daemon recorded the cause beside each:
-   * absent when that cause is, and beside a cause a daemon before 243 recorded, which wrote no
+   * and `lastStartFailureAt` (contract 256) are when the daemon recorded the cause beside each:
+   * absent when that cause is, and beside a cause a daemon before 256 recorded, which wrote no
    * time, except after a rollback (the daemon's migration 20261124073512's header); a cause
    * recorded again with the same text carries its new time. `lastDeathAt` dates the
    * death: one before `lastReady` is a death the agent running now has survived. The daemon drops
    * the start failure, with its time, when the agent says it is ready, so one it records is from
    * after `lastReady`; a claim an older daemon left waiting can still carry one from before, with
-   * no time. A caller in a pod whose plugin declares a contract below 243 is served neither time
+   * no time. A caller in a pod whose plugin declares a contract below 256 is served neither time
    * (the daemon's `withoutCauseTimes`). */
   lastDeathCause: nonEmptyString.optional(),
   lastDeathAt: timestamp.optional(),
@@ -742,6 +742,23 @@ const legionAssignment = z.object({
   plan: nonEmptyString.optional(),
 });
 
+/** `api.PodHoldView` — the standing hold of an issue's pod (contract 246): why the daemon's idle
+ * rule keeps that pod running past the idle period. `reason` is the rule's own word for the hold
+ * (`workflow.IdleHold`'s name, as the daemon's hold records spell it: `background_work`, `image`,
+ * `delivery_waiting` and the rest), a string and not an enum, so a hold a later daemon adds is
+ * read rather than refused. `firstAt` is the first pass of the hold's streak and `at` its newest
+ * pass, so a reader tells a streak the passes still read from one whose passes stopped. `detail`
+ * is what the reason leaves out, such as the kinds a background-work hold's session reported, cut
+ * to its first 200 characters and absent where the record holds none. The daemon always writes
+ * `reason`, `firstAt` and `at`; the reader takes every member as optional, since no plugin code
+ * reads them (LEGION_ANSWER_READS). */
+const legionPodHold = z.object({
+  reason: nonEmptyString.optional(),
+  firstAt: timestamp.optional(),
+  at: timestamp.optional(),
+  detail: nonEmptyString.optional(),
+});
+
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
  * a role a later daemon adds is read rather than refused; the key list is held by the golden test
  * in `legion-api.test.ts`, not by this schema. A phase that has not run has no entry, so the value
@@ -924,6 +941,12 @@ const legionIssue = z.object({
    * from an issue no experiment holds an answer for, and from every issue of the body the route
    * serves a caller before 141, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
+  /** The standing hold of the issue's pod (contract 246, `legionPodHold`): present only while a
+   * hold of the idle rule stands on that pod, and absent for a pod the rule has not held, one it
+   * released and one whose streak a later pass ended. A daemon before contract 246 writes none,
+   * and a caller whose plugin declares a contract below 246 is served every issue without it
+   * (the daemon's `withoutPodHold`), which is why a reader takes it as optional. */
+  podHold: legionPodHold.optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
@@ -1866,8 +1889,8 @@ export const LegionOperatorClaimResponse = z.object({
   /** Why the claim's process was last found gone, why its last start did not produce a running
    * agent, and when its agent last said it could be prompted; each absent until it happens. The
    * two causes answer separate questions and never overwrite each other. `lastDeathAt` and
-   * `lastStartFailureAt` (contract 243) are when the daemon recorded the cause beside each, absent
-   * when that cause is and beside a cause a daemon before 243 recorded, except after a rollback
+   * `lastStartFailureAt` (contract 256) are when the daemon recorded the cause beside each, absent
+   * when that cause is and beside a cause a daemon before 256 recorded, except after a rollback
    * (the daemon's migration 20261124073512's header). `lastDeathAt` dates the
    * death: one before `lastReady` is a death the running agent survived. The daemon drops the
    * start failure, with its time, when the agent says it is ready.

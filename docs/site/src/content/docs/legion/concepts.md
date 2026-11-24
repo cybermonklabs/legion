@@ -737,9 +737,9 @@ still moving, and a call that carries a start and no end is the shape a turn tha
 leaves behind. The daemon's own backstop reads that record and nothing else before it ends such a
 turn (`worker_stall_backstop_hours` in
 [legion.yaml](/legion/legion/running-legion/#legionyaml)), and a person reads the same record
-three ways: `legion state`'s `agents in a tool call` line, which names each claim in an open call
-by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims list`, whose
-last column is that call for each claim, the project controller's — which is on no issue, and so
-on no part of the `legion state` line — included; and `GET /legion/v1/state`, the bytes
-`legion state --json` prints, under `issues.<KEY>.architect.step` and
+three ways: `legion state`'s `agents in a tool call` line, which names each working claim in an
+open call by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims
+list`, whose last column is that call for each claim, the project controller's — which is on no
+issue, and so on no part of the `legion state` line — included; and `GET /legion/v1/state`, the
+bytes `legion state --json` prints, under `issues.<KEY>.architect.step` and
 `issues.<KEY>.workers.<role>.claim.step`.

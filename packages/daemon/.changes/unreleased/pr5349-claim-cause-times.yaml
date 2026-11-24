@@ -9,5 +9,5 @@ body: |-
     ready. A migration adds the two times to the `claims` table, each beside a digest of the cause
     it dates, so a restart keeps them; a cause recorded before it carries no time, and so does a
     cause a rolled-back daemon rewrote with other text, since a time is served only beside the
-    cause whose digest it was stored with. Daemon API contract 243: a caller below it is served
+    cause whose digest it was stored with. Daemon API contract 256: a caller below it is served
     neither key.

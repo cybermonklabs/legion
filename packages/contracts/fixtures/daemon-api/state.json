@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 243,
-    "caller": 243
+    "daemon": 246,
+    "caller": 246
   },
   "admission": {
     "cap": 5,
@@ -146,9 +146,7 @@
         "lastTurnStart": "2026-09-22T09:16:40Z",
         "lastTurnEnd": "2026-09-22T09:16:58Z",
         "lastDeathCause": "the pane's process was gone at the daemon's read",
-        "lastDeathAt": "2026-09-22T09:15:21Z",
         "lastStartFailure": "the pod was not ready within the worker boot timeout",
-        "lastStartFailureAt": "2026-09-22T09:15:50Z",
         "lastReady": "2026-09-22T09:15:44Z",
         "step": {
           "at": "2026-09-22T09:16:58Z",
@@ -638,7 +636,13 @@
       "phaseEntry": 2,
       "givenEntry": 2,
       "treeMovedAt": "2026-09-20T16:42:58Z",
-      "quietHours": 40.583888888888886
+      "quietHours": 40.583888888888886,
+      "podHold": {
+        "reason": "background_work",
+        "firstAt": "2026-09-21T22:04:00Z",
+        "at": "2026-09-22T09:17:00Z",
+        "detail": "async-job"
+      }
     }
   },
   "pendingStatusWrites": [],

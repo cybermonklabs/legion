@@ -105,23 +105,32 @@ func newPauseRuntime(clock *waveClock) *pauseRuntime {
 	return rt
 }
 
+// Spawn and Resume record the launch once the embedded fake has answered, so the fake's own
+// record of the call, which lastLaunch reads for the launch's boot token, is in place before a test
+// that waits on launchesOf sees the launch. Recorded first, a test could read the claim's
+// previous launch from the fake and dial its shim with that launch's boot token, which the daemon
+// refuses as a stale worker generation. The launch's moment is the clock's at the ask.
 func (r *pauseRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
-	r.record(spec.Claim, false)
-	return r.Runtime.Spawn(ctx, spec)
+	at := r.clock.Now()
+	loc, err := r.Runtime.Spawn(ctx, spec)
+	r.record(spec.Claim, at, false)
+	return loc, err
 }
 
 func (r *pauseRuntime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
-	r.record(spec.Claim, true)
-	return r.Runtime.Resume(ctx, prev, spec)
+	at := r.clock.Now()
+	loc, err := r.Runtime.Resume(ctx, prev, spec)
+	r.record(spec.Claim, at, true)
+	return loc, err
 }
 
-func (r *pauseRuntime) record(token claim.Token, resumed bool) {
+func (r *pauseRuntime) record(token claim.Token, at time.Time, resumed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.runs = append(r.runs, waveLaunch{claim: token, at: r.clock.Now(), resumed: resumed})
+	r.runs = append(r.runs, waveLaunch{claim: token, at: at, resumed: resumed})
 }
 
-// launches is every launch so far, in the order the runtime was asked for them.
+// launches is every launch so far, in the order the runtime answered them.
 func (r *pauseRuntime) launches() []waveLaunch {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -137,6 +146,48 @@ func (r *pauseRuntime) launchesOf(token claim.Token) []waveLaunch {
 		}
 	}
 	return of
+}
+
+// The pause rig counts a launch only once the fake runtime holds its call, for a spawn and for a
+// resume alike: a test that waits on launchesOf and then reads the launch's boot token from the
+// fake (lastLaunch) reads that launch, never the claim's previous one.
+// TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch dials the relaunched spawn's
+// shim with that token; with the previous launch's token the daemon refused the hello as a stale
+// worker generation.
+func TestThePauseRigCountsALaunchOnceTheRuntimeHoldsItsCall(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	rt := newPauseRuntime(newWaveClock())
+	const token = claim.Token("legion-OTHERPROJECT-7-architect")
+	for _, method := range []string{"Spawn", "Resume"} {
+		before := len(rt.launchesOf(token))
+		counted := -1
+		inside := func(context.Context) error {
+			counted = len(rt.launchesOf(token))
+			return nil
+		}
+		rt.OnSpawn, rt.OnResume = inside, inside
+		spec := runtime.SpawnSpec{Claim: token, BootToken: "boot-of-the-" + method}
+		var err error
+		if method == "Spawn" {
+			_, err = rt.Spawn(ctx, spec)
+		} else {
+			_, err = rt.Resume(ctx, nil, spec)
+		}
+		if err != nil {
+			t.Fatalf("the %s: %v", method, err)
+		}
+		if counted != before {
+			t.Fatalf("while the runtime still ran the %s, the rig counted %d launches of %s, want the %d before it: a test that waits on the count reads the claim's previous launch from the runtime",
+				method, counted, token, before)
+		}
+		if got := len(rt.launchesOf(token)); got != before+1 {
+			t.Fatalf("after the %s the rig counts %d launches of %s, want %d", method, got, token, before+1)
+		}
+		if got := lastLaunch(t, rt.Runtime, token).BootToken; got != spec.BootToken {
+			t.Fatalf("after the %s the runtime's latest launch of %s carries boot token %q, want %q", method, token, got, spec.BootToken)
+		}
+	}
 }
 
 // holdPod is the issue's pod standing, as a launch of a role of it leaves it.

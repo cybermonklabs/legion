@@ -537,6 +537,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						delete(row.(map[string]any), "plan")
 					}
 				}
+				// The one key podHoldContract added, which rides only on an issue whose pod a
+				// hold stands on (withoutPodHold): every row below that contract loses it.
+				if tc.contract < podHoldContract {
+					delete(issue, "podHold")
+				}
 				// The issues' answer and the line's own fields are one contract and one
 				// strip, which state_caller_test's stripAnswerKeys states and this reads:
 				// below the contract a member keeps the place and the length
