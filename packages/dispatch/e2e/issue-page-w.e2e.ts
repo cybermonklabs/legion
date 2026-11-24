@@ -625,17 +625,16 @@ test("lenses are drawn under their node with the chain that triggered them @phon
       preMortemRow.locator("[data-lens-chain] ol"),
       "Show the whole chain draws more than one chain"
     ).toHaveCount(1);
-    // The chain's read is held for the load, so the poll above settled what this reads. The
-    // entries hold more than the one line statement 1's folded row draws.
+    // Statement 1's folded row draws less than its whole words. The poll waits until both
+    // chain entries' lines name statement 1 by its whole words.
     expect(statementLine, "statement 1's folded row draws its whole words").not.toBe(
       requirementText(1)
     );
-    for (const entry of await lensChainEntries(preMortemRow)) {
-      expect(
-        entry.line,
-        `the chain's ${entry.kind} does not name statement 1 by its whole words`
-      ).toBe(requirementText(1));
-    }
+    await expect
+      .poll(async () => (await lensChainEntries(preMortemRow)).map((entry) => entry.line), {
+        message: "the chain does not name statement 1 by its whole words for both lenses",
+      })
+      .toEqual([requirementText(1), requirementText(1)]);
 
     // Every word of the page's own is declared, and a kind's words, which the catalogue
     // stores, are drawn as stored words and never as the page's.
