@@ -38,7 +38,9 @@
 // Each run of stages 4 and 5 has a bound derived in the same run: row_timeout, the row's own
 // budget, plus four times its start-up run (runTest). A run past its bound is UNKNOWN, neither a
 // pass nor a failure: its stage stops, the gate prints the timeout's panic and the goroutine
-// running the test, and it exits 3 when nothing failed.
+// running the test, and it exits 3 when nothing failed. So is a run that skipped the row's test
+// or a subtest of it (go test's skip action, a Bun testcase's <skipped>), which the gate names:
+// stage 4 does not count it a pass, and stage 5 counts its mutant neither caught nor survived.
 //
 // -stage plan runs stages 1-3; -stage mutate runs 1-3 again and then 4 and 5. -report prints
 // the censuses' findings without judging them against rows. -controls runs the check's negative
@@ -289,7 +291,7 @@ type gate struct {
 	sources                   map[string]goSource        // each listed package's source and its build's export data (recordSource)
 	declared                  map[string]*checkedSource  // guarded packages type-checked from source, by package and build (sourceChecked)
 	failures                  int
-	unknowns                  int // runs past their bound (stages 4 and 5): neither a pass nor a failure
+	unknowns                  int // runs past their bound or that skipped a test (stages 4 and 5): neither a pass nor a failure
 	out                       io.Writer
 }
 
@@ -350,7 +352,8 @@ type options struct {
 }
 
 // run is one gate run. It answers the exit status: 0 passed, 1 a stage failed, 2 the inventory
-// was refused, 3 a run of stage 4 or 5 went past its bound and nothing failed (UNKNOWN).
+// was refused, 3 a run of stage 4 or 5 went past its bound or skipped a test and nothing failed
+// (UNKNOWN).
 func run(repo, inventoryPath string, o options, out io.Writer) int {
 	g := &gate{repo: repo, inventoryPath: inventoryPath, out: out}
 	if err := g.load(!o.report); err != nil {
@@ -445,10 +448,10 @@ func (g *gate) stop(stage int, name string) int {
 	return 1
 }
 
-// stopUnknown stops a stage none of whose runs failed but some went past their bound: their
-// verdict is UNKNOWN, so the gate's is too.
+// stopUnknown stops a stage none of whose runs failed but some went past their bound or skipped a
+// test: their verdict is UNKNOWN, so the gate's is too.
 func (g *gate) stopUnknown(stage int, name string) int {
-	fmt.Fprintf(g.out, "gate: stopped at stage %d (%s), UNKNOWN: %d runs went past their bound and none failed; run it again\n", stage, name, g.unknowns)
+	fmt.Fprintf(g.out, "gate: stopped at stage %d (%s), UNKNOWN: %d runs went past their bound or skipped a test and none failed; run it again\n", stage, name, g.unknowns)
 	return 3
 }
 
@@ -457,7 +460,8 @@ func (g *gate) fail(format string, args ...any) {
 	fmt.Fprintf(g.out, "FAIL "+format+"\n", args...)
 }
 
-// unknown reports a run past its bound, which is neither a pass nor a failure.
+// unknown reports a run past its bound or that skipped a test, which is neither a pass nor a
+// failure.
 func (g *gate) unknown(format string, args ...any) {
 	g.unknowns++
 	fmt.Fprintf(g.out, "UNKNOWN "+format+"\n", args...)
