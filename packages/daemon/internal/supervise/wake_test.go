@@ -483,6 +483,45 @@ func TestAnOperatorsRetryOfAWaitingClaimAPauseHoldsLaunchesNothing(t *testing.T)
 	}
 }
 
+// A launch the pause's gate held is refused a retry while the pause holds, and run by a retry once
+// the pause has ended and before the gate's own stop or the resume's event has let it out: a
+// person retrying a claim just after a resume is not answered "a queued claim is spawned, not
+// retried". It runs once, and the gate's stop, disarmed, runs nothing after it.
+func TestAnOperatorsRetryOfALaunchThePausesGateHeldRunsItOnceThePauseHasEnded(t *testing.T) {
+	var paused atomic.Bool
+	h := pacedHarness(t, wakeRate, func(d *Deps) {
+		d.Paused = func() (int64, bool) {
+			if paused.Load() {
+				return 7, true
+			}
+			return 0, false
+		}
+	})
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+
+	h.must(RequestSpawn{Claim: h.token})
+	paused.Store(true)
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	h.wantStarts(secondToken, 0)
+
+	err := h.postTo(second, RequestOperatorRetry{Claim: secondToken})
+
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.State != StateQueued {
+		t.Fatalf("the operator's retry under the pause answered %v, want a refusal naming %s", err, StateQueued)
+	}
+	h.wantStarts(secondToken, 0)
+
+	paused.Store(false)
+	h.mustPostTo(second, RequestOperatorRetry{Claim: secondToken})
+
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(secondToken, "kind=launch", "paced=false")
+	h.clock.Advance(2*wakeInterval + 2*wakePart)
+	second.Wait()
+	h.wantStarts(secondToken, 1)
+}
+
 // An operator's request no row of the state the gate found decides, and that is no retry, is
 // refused as that state refuses it — a queued claim is spawned, not resumed — and the refusal costs
 // the claim nothing: the wake it dropped is taken up again and runs at the moment it already held.

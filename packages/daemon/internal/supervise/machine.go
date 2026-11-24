@@ -1669,12 +1669,6 @@ type Machine struct {
 	// start is held here too, until the gate's grant fires TimerPodStart (askPod, wake.park,
 	// podStartDue), and a restart finds it as it finds a process-less wake.
 	wake *wake
-	// reservedTurn is the moment a spawn's caller reserved in the wake pacing for the launch this
-	// decision raises (RequestSpawn.Turn), which the gate takes in place of a reservation of its own
-	// (reserveWake); the zero time for every other launch. The spawn row sets it and clears it as
-	// it returns, so it never outlives the decision that carried it, and the gate takes it once: a
-	// retry that re-enters the gate later reserves afresh, as every retry does (launchAfter).
-	reservedTurn time.Time
 	// pluginRelaunch is the intent of the stale-plugin relaunch this machine is raising: the
 	// contract that relaunch is made for and the wake kind its launch waits under
 	// (pluginIntent, markPluginRelaunch), and nil whenever the launch being raised is not one.
@@ -2872,7 +2866,7 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // cause is why the process the claim still records is let go, which the let-go records with
 // what that process ended (letGo, recordEnd); noEnd for a launch that lets none go.
 func (m *Machine) launch(ctx context.Context, cause string) error {
-	return m.launchAfter(ctx, false, false, false, cause)
+	return m.launchAfter(ctx, false, false, false, time.Time{}, cause)
 }
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
@@ -2917,12 +2911,17 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // in the work the wake gate may run at its turn, never on the machine, where another launch
 // could read it. A retry raised anew from the top — the lifecycle check's (again) and every one
 // relaunchLater arms — is a request's no longer, and passes false.
-func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, cause string) error {
-	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, cause) }
+//
+// turn is the moment the request already reserved for this launch in the wake pacing
+// (RequestSpawn.Turn), which the gate takes in place of a reservation of its own, and the zero
+// time for every launch that reserved none. It travels with the launch as requested does, and a
+// retry raised anew from the top reserves afresh, passing the zero time.
+func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, turn time.Time, cause string) error {
+	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, time.Time{}, cause) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
-	return m.reserveWake(ctx, exempt, func(ctx context.Context) error {
+	return m.reserveWake(ctx, exempt, turn, func(ctx context.Context) error {
 		return m.launchNow(ctx, charged, exempt, requested, cause)
 	}, again)
 }
@@ -3162,7 +3161,7 @@ func (m *Machine) relaunchAtProbe(l launchTry) {
 // wake.again).
 func (m *Machine) launchFromTop(l launchTry) func(context.Context) error {
 	return m.retryHolding(l.intent, func(ctx context.Context) error {
-		return m.launchAfter(ctx, l.charged, l.exempt, false, noEnd)
+		return m.launchAfter(ctx, l.charged, l.exempt, false, time.Time{}, noEnd)
 	})
 }
 
@@ -3263,7 +3262,9 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 	m.logFarSideError(ctx, slog.LevelError, "supervise: the session store could not answer this start; trying it again every minute, charging nothing",
 		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
-	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, noEnd) })
+	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error {
+		return m.launchAfter(ctx, charged, exempt, false, time.Time{}, noEnd)
+	})
 	return errors.Join(err, m.persist(ctx))
 }
 

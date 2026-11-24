@@ -194,8 +194,8 @@ type wake struct {
 // reserveWake is the wake gate: it asks the pacing when this wake may run and, when that moment
 // is later than now, parks the wake on the machine until its turn (parkWake, wakeNow) and returns
 // with the caller's work left to that turn. A wake that need not wait runs that work here, having
-// written the line it writes as it goes (wakeRan). A spawn whose caller reserved its turn already
-// (RequestSpawn.Turn, Machine.reservedTurn) is given that moment and reserves none of its own.
+// written the line it writes as it goes (wakeRan). A launch whose caller reserved its turn already
+// (turn, RequestSpawn.Turn) is given that moment and reserves none of its own.
 //
 // A claim that records no process when the gate holds it — a spawn from queued, a rule resume
 // from suspended, a retry from failed or retired, a process already retired by the decision that
@@ -248,7 +248,7 @@ type wake struct {
 // instead (pauseHolds, pauseGate), whoever raised it. Every reservation this gate takes is told
 // to the daemon as the moment the pacing lets the launch out (wakeLetOut, decision 14), the one
 // that lets it out now included.
-func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(context.Context) error) error {
+func (m *Machine) reserveWake(ctx context.Context, exempt bool, turn time.Time, run, again func(context.Context) error) error {
 	kind := WakeLaunch
 	if intent := m.pluginRelaunch; intent != nil {
 		kind = intent.kind
@@ -273,8 +273,7 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 	now := m.deps.Clock.Now()
 	// A caller that reserved this launch's turn already, in an order of its own
 	// (RequestSpawn.Turn), was charged that moment, and a second reservation would charge it twice.
-	at, turn := now, m.reservedTurn
-	m.reservedTurn = time.Time{}
+	at := now
 	switch {
 	case turn.IsZero():
 		at = reserve(now)
@@ -774,20 +773,26 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 // runs it, so that launch runs here, unpaced, exactly as its turn would have run it: the claim is
 // put back launching, where the park wrote it (waitOnMachine), and the wake goes through runWake,
 // lifecycle recheck and all. ran is false, and nothing is done, for every other request, for a
-// claim whose gate-found state a retry row decides (failed, retired), for a launch the project
-// pause's gate holds, and for any launch while a project pause holds the claim (pauseHolds): the
-// API refuses the operator's retry while the project is paused (refusedWhilePaused), and a pause
-// that opened after that refusal was read holds this launch as it holds every other, so the retry
-// is refused and the wake parked again, for its turn to hand the pause's gate (wakeNow).
+// claim whose gate-found state a retry row decides (failed, retired), and for any launch while a
+// project pause holds the claim (pauseHolds): the API refuses the operator's retry while the
+// project is paused (refusedWhilePaused), and a pause that opened after that refusal was read
+// holds this launch as it holds every other, so the retry is refused and the wake parked again,
+// for its turn, or the pause's gate, to take it (wakeNow, pauseGate). A launch the pause's gate
+// held whose pause has ended, before the gate's own stop or the resume's event let it out
+// (pauseStopDue, resumePause), is let out here as those let it out (letOutHeldLaunch), unpaced.
 //
 // The launch takes no second token, as an operator's task over a parked launch takes none
 // (runParkedLaunchNow): the wakes behind it keep the turns they already hold.
 func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, dropped *wake) (ran bool, err error) {
-	if _, retry := ev.(RequestOperatorRetry); !retry || dropped == nil || dropped.pause != 0 || m.held != nil {
+	if _, retry := ev.(RequestOperatorRetry); !retry || dropped == nil || m.held != nil {
 		return false, nil
 	}
 	if _, paused := m.pauseHolds(); paused {
 		return false, nil
+	}
+	if dropped.pause != 0 {
+		dropped.pause = 0
+		m.disarm(TimerPause)
 	}
 	m.log.Info("supervise: an operator's retry reached a claim whose paced launch waits over no process; that launch runs now",
 		"kind", dropped.kind, "due", dropped.at, "state", dropped.state)

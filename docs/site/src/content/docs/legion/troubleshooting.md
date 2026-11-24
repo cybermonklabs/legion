@@ -858,9 +858,10 @@ as uncached input — a mean of 576,083 tokens, a median of 493,636 and a nineti
 about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
 twenty minutes. A restart forgets each waiting wake's moment. The launches it finds unfinished, a
 claim launching with no process, go back into the pacing in the order their tasks were queued, the
-oldest first, so a claim that waited before the restart goes ahead of work owed after it; while
-the project is paused they wait for the resume instead. Read what the pacing still holds before
-you act on anything below:
+oldest first, so among those a claim that waited before the restart goes ahead of work owed after
+it; the stale-plugin pass and the relaunches of processes found dead take their turns as they
+reach the gate, and while the project is paused the unfinished launches wait for the resume
+instead. Read what the pacing still holds before you act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
