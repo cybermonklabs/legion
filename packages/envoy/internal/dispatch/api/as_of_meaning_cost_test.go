@@ -1,8 +1,7 @@
 // as_of_meaning_cost_test.go holds the record of what the meaning arms of a search at a past time
-// cost at production's counts, on a corpus the test makes up from end to end, and of what three
-// present reads of asks cost with and without the index events_ask_state. The searches are sent
-// through the server, as TestAsOfCostOnACorpusCopy sends its reads (as_of_cost_test.go), whose
-// helpers this test shares.
+// cost at production's counts, on a corpus the test makes up from end to end. The searches are
+// sent through the server, as TestAsOfCostOnACorpusCopy sends its reads (as_of_cost_test.go),
+// whose helpers this test shares.
 package api
 
 import (
@@ -17,8 +16,6 @@ import (
 	"hash/fnv"
 	"math"
 	"math/rand/v2"
-	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -30,7 +27,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"text/tabwriter"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The environment of TestAsOfMeaningCostOnASyntheticCorpus: the database it builds the corpus in
@@ -197,11 +194,6 @@ const (
 	// asOfSyntheticLoaders is how many connections load the embeddings at once, each a COPY of a
 	// share of the windows, at most one for each CPU.
 	asOfSyntheticLoaders = 4
-	// asOfSyntheticAskRuns is how many times each present read of asks is sent.
-	asOfSyntheticAskRuns = 10
-	// asOfSyntheticAnswersWindow is the window a session's answers are read over: the route's own
-	// default, 72 hours.
-	asOfSyntheticAnswersWindow = 72 * time.Hour
 )
 
 // asOfSyntheticQueries are the words the timed searches send. No word of the vocabulary is one of
@@ -220,12 +212,6 @@ var asOfSyntheticQueries = []string{"wibbleflorp", "wuzzlequank", "wompatrix"}
 // ends at searchMeaningStatementBound (15 s) answers 500. Then it prints the sizes of events, of
 // the keyword table, of embeddings and of embeddings_cosine, and the time of each step of the
 // build.
-//
-// After the searches it times three present reads of asks, each with the index events_ask_state
-// and without it, ten runs each (asOfSyntheticAskReads): an issue's asks with their threads, one
-// ask, and a session's answers. It drops the index between the two, builds it again from its
-// migration afterwards, so a later run finds it, and prints a second table of each read's first
-// run, fastest, median and slowest.
 //
 // Why the data is synthetic: no text of production may leave production
 // (dispatch://INFRA-5539/spec#b-rd4-copy), and production's own embeddings cannot be copied, as
@@ -278,11 +264,12 @@ func TestAsOfMeaningCostOnASyntheticCorpus(t *testing.T) {
 		}
 	}
 	ctx := t.Context()
-	database, err := store.Open(ctx, asOfMeasurementURL(t, databaseURL))
+	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatalf("open the synthetic corpus's database: %v", err)
 	}
 	t.Cleanup(database.Pool.Close)
+	database = storetest.Reopened(t, database, asOfJITOff)
 	started := time.Now()
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the synthetic corpus's database: %v", err)
@@ -356,8 +343,6 @@ func TestAsOfMeaningCostOnASyntheticCorpus(t *testing.T) {
 		select 'index embeddings_cosine', pg_relation_size('public.embeddings_cosine'), 2
 		order by 3, 1`))
 	t.Logf("steps: %s", strings.Join(steps, "; "))
-
-	asOfSyntheticAskReads(t, database, &asOfCostRig{handler: handler, tracer: tracer}, newest)
 }
 
 // asOfSyntheticSetting is the value of the environment variable name, parsed by parse, or
@@ -1429,127 +1414,4 @@ func (c *asOfSyntheticCorpus) copyWindows(ctx context.Context, database *store.S
 		return fmt.Errorf("copy windows %d to %d: %w", from, to, err)
 	}
 	return nil
-}
-
-// asOfAskIndexRow is one row of the second table: a present read of asks, timed with the index
-// events_ask_state or without it.
-type asOfAskIndexRow struct {
-	index string
-	row   asOfCostRow
-}
-
-// asOfSyntheticAskReads times three present reads of asks, asOfSyntheticAskRuns runs each, first
-// with the index events_ask_state and then without it, and prints them as a second table: the
-// asks of the issue with the most asks, with their threads; that issue's ask with the most events;
-// and the answers of the session that opened the most answered asks, over the 72 hours before the
-// corpus's newest event (the route's own window, at the time production's reads were made), or
-// the latest part of them that the route takes, a week before now. It drops the index between the
-// two and builds it again from its migration after, as it does at the test's end if the test
-// stops between the two.
-func asOfSyntheticAskReads(t *testing.T, database *store.Store, rig *asOfCostRig, newest time.Time) {
-	t.Helper()
-	ctx := t.Context()
-	var issue, ask, session string
-	var issueAsks, askEvents, sessionAnswers int64
-	if err := database.Pool.QueryRow(ctx, `
-		select issue_key, count(*) from public.asks where issue_key is not null
-		 group by issue_key order by count(*) desc, issue_key limit 1`).Scan(&issue, &issueAsks); err != nil {
-		t.Fatalf("read the issue with the most asks: %v", err)
-	}
-	if err := database.Pool.QueryRow(ctx, `
-		select a.id::text, (select count(*) from public.events e
-		                     where e.payload->>'id' = a.id::text
-		                       and e.type in ('ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited')) as events
-		  from public.asks a where a.issue_key = $1
-		 order by events desc, a.id limit 1`, issue).Scan(&ask, &askEvents); err != nil {
-		t.Fatalf("read the ask of %s with the most events: %v", issue, err)
-	}
-	if err := database.Pool.QueryRow(ctx, `
-		select author->>'id', count(*) from public.asks where state = 'answered' and author->>'kind' = 'session'
-		 group by 1 order by count(*) desc, 1 limit 1`).Scan(&session, &sessionAnswers); err != nil {
-		t.Fatalf("read the session with the most answered asks: %v", err)
-	}
-	since := newest.Add(-asOfSyntheticAnswersWindow)
-	if earliest := time.Now().Add(-7*24*time.Hour + time.Minute); since.Before(earliest) {
-		t.Logf("the answers route takes no window that starts more than 7 days ago: it reads from %s, not from %s, 72 hours "+
-			"before the corpus's newest event", earliest.UTC().Format(time.RFC3339), since.UTC().Format(time.RFC3339))
-		since = earliest
-	}
-	answers := "/api/v1/agents/" + url.PathEscape(session) + "/answers?" + url.Values{"since": {since.UTC().Format(time.RFC3339)}}.Encode()
-	reads := []asOfCostTimed{
-		{fmt.Sprintf("an issue's asks GET /api/v1/issues/{key}/asks?state=all&thread=1: the issue with the most asks (%d)", issueAsks),
-			"/api/v1/issues/" + url.PathEscape(issue) + "/asks?state=all&thread=1"},
-		{fmt.Sprintf("an ask GET /api/v1/asks/{id}: that issue's ask with the most events (%d)", askEvents), "/api/v1/asks/" + ask},
-		{fmt.Sprintf("a session's answers GET /api/v1/agents/{session_id}/answers: the session with the most answered asks (%d), since %s",
-			sessionAnswers, since.UTC().Format(time.RFC3339)), answers},
-	}
-
-	statement := asOfMigrationIndex(t, "events_ask_state")
-	var valid bool
-	if err := database.Pool.QueryRow(ctx, `
-		select coalesce((select x.indisvalid from pg_index x where x.indexrelid = to_regclass('public.events_ask_state')), false)`).Scan(&valid); err != nil {
-		t.Fatalf("read whether events_ask_state stands: %v", err)
-	}
-	if !valid {
-		t.Logf("events_ask_state is missing or invalid (a run that stopped without it): building it from its migration")
-		if _, err := database.Pool.Exec(ctx, `drop index if exists public.events_ask_state`); err != nil {
-			t.Fatalf("drop the invalid events_ask_state: %v", err)
-		}
-		if _, err := database.Pool.Exec(ctx, statement); err != nil {
-			t.Fatalf("build events_ask_state: %v", err)
-		}
-	}
-	rows := []asOfAskIndexRow{}
-	for _, read := range reads {
-		rows = append(rows, asOfAskIndexRow{index: "with", row: rig.timeRuns(t, read.statement, "present", read.target, 0, asOfSyntheticAskRuns)})
-	}
-	if _, err := database.Pool.Exec(ctx, `drop index events_ask_state`); err != nil {
-		t.Fatalf("drop events_ask_state: %v", err)
-	}
-	built := false
-	t.Cleanup(func() {
-		if built {
-			return
-		}
-		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
-			t.Errorf("build events_ask_state again after the test stopped without it: %v", err)
-		}
-	})
-	for _, read := range reads {
-		rows = append(rows, asOfAskIndexRow{index: "without", row: rig.timeRuns(t, read.statement, "present", read.target, 0, asOfSyntheticAskRuns)})
-	}
-	started := time.Now()
-	if _, err := database.Pool.Exec(ctx, statement); err != nil {
-		t.Fatalf("build events_ask_state again: %v", err)
-	}
-	built = true
-	t.Logf("built events_ask_state again from its migration in %v", time.Since(started).Round(time.Millisecond))
-
-	request := httptest.NewRequest(http.MethodGet, answers, nil).WithContext(ctx)
-	request.Header.Set("X-Dispatch-User", asOfCostReader)
-	response := httptest.NewRecorder()
-	rig.handler.ServeHTTP(response, request)
-	var listed model.SessionAnswersResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &listed); response.Code != http.StatusOK || err != nil {
-		t.Fatalf("GET %s answered %d (%v): %.600s", answers, response.Code, err, response.Body.String())
-	}
-	t.Logf("the session's answers route lists %d items since %s", listed.Total, since.UTC().Format(time.RFC3339))
-	t.Logf("present reads of asks with and without events_ask_state:\n%s", asOfAskIndexTable(rows))
-}
-
-// asOfAskIndexTable is rows as a table of aligned columns: each read, whether events_ask_state
-// stood, its first run, its fastest, the median and its slowest, and how many runs it sent.
-func asOfAskIndexTable(rows []asOfAskIndexRow) string {
-	milliseconds := func(elapsed time.Duration) string {
-		return strconv.FormatFloat(float64(elapsed.Microseconds())/1000, 'f', 1, 64)
-	}
-	var table strings.Builder
-	writer := tabwriter.NewWriter(&table, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "read\tevents_ask_state\tfirst ms\tmin ms\tmedian ms\tmax ms\truns")
-	for _, row := range rows {
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n", row.row.statement, row.index, milliseconds(row.row.first),
-			milliseconds(row.row.fastest), milliseconds(row.row.median), milliseconds(row.row.slowest), row.row.runs)
-	}
-	_ = writer.Flush()
-	return table.String()
 }

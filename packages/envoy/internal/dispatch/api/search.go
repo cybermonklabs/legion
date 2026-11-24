@@ -1173,9 +1173,10 @@ const searchMeaningCommentJoinedProjection = `meaning_comment as (
 //   - The keyword arms of comments, asks and messages read each post's issue at the cut once for
 //     all its matched posts, and a post's own columns from its present row; a column a write
 //     changes they read from the shadow only where a filter or the page needs it
-//     (searchAsOfPosts, searchAsOfShown). A search that narrows by no status, author or time
-//     reads the issue and the present row only of the posts that can take one of their kind's
-//     places, ranked by the keyword table's columns first (searchAsOfBoundedPosts).
+//     (searchAsOfPosts, searchAsOfShown). A search that narrows by no status, author or time and
+//     whose query has a word to rank by reads the issue and the present row only of the posts that
+//     can take one of their kind's places, ranked by the keyword table's columns first
+//     (searchAsOfBoundedPosts).
 //   - The document arm reads each document's newest version at the cut (searchAsOfDocumentLegs).
 //   - The issue arms read the issues shadow, and every row filter reads the state at the cut.
 //   - A meaning arm walks its windows nearest first and keeps a window only when its item did not
@@ -1185,9 +1186,9 @@ const searchMeaningCommentJoinedProjection = `meaning_comment as (
 // A search at a cut does not broaden (D2): search_term_stats counts the present text only.
 
 // searchAsOfVersions is the members of a past-time statement's WITH list after q, for a search
-// that reads each post kind's matches whole (filtered: one that narrows by a status, an author or
-// a time, or whose query has no word to rank by; searchParameters.ranksFirstAtACut) or for one
-// that ranks them first:
+// that ranks each post kind's matches first (ranksFirst: one that narrows by no status, author or
+// time, and whose query has a word to rank by; searchParameters.ranksFirstAtACut) or for one that
+// reads them whole:
 //
 //   - text_versions, the keyword table at the cut. It is NOT MATERIALIZED, so that each read of
 //     it reaches the table's indexes. The arm of the issues the query names by key, the meaning
@@ -1200,16 +1201,16 @@ const searchMeaningCommentJoinedProjection = `meaning_comment as (
 //     production's event log, every comment of a cut, and more than two minutes for a search at
 //     the newest cut. It carries each match's rank (searchKeywordRank) in place of its vector, so
 //     its rows are small, and not the relation's deleted_at, which the relation reads from the
-//     post's present row by its primary key: text_posts reads that column from the row itself
-//     when filtered, and text_standing reads the index of the deleted posts when not. When not, it
-//     carries the version's project_key too, which text_standing narrows by.
-//   - The matched posts at the cut: text_posts when filtered (searchAsOfPosts), or the bounded
-//     pipeline when not (searchAsOfBoundedPosts, whose text_bounds binds the acting credential
-//     at seen).
+//     post's present row by its primary key: text_standing reads the index of the deleted posts
+//     when ranksFirst, and text_posts reads that column from the row itself when not. When
+//     ranksFirst, it carries the version's project_key too, which text_standing narrows by.
+//   - The matched posts at the cut: the bounded pipeline when ranksFirst (searchAsOfBoundedPosts,
+//     whose text_bounds binds the acting credential at seen), or text_posts when not
+//     (searchAsOfPosts).
 //   - text_issues, the issues of text_posts at the cut (searchAsOfIssues).
-func searchAsOfVersions(versions store.TextVersions, filtered bool, seen int) string {
+func searchAsOfVersions(versions store.TextVersions, ranksFirst bool, seen int) string {
 	columns, posts := "v.kind, v.id, ", searchAsOfPosts
-	if !filtered {
+	if ranksFirst {
 		columns, posts = "v.kind, v.id, v.project_key, ", searchAsOfBoundedPosts(seen)
 	}
 	return "text_versions as not materialized " + versions.SQL() + ",\n" +
@@ -1217,9 +1218,11 @@ func searchAsOfVersions(versions store.TextVersions, filtered bool, seen int) st
 		" as r from text_versions v, q where v.search @@ q.tsq),\n" + posts + searchAsOfIssues
 }
 
-// searchAsOfPosts is text_posts for a search that narrows by a status, an author or a time, which
-// the keyword arms of comments, asks and messages read with text_issues (searchAsOfIssues) in
-// place of the shadows of their items and of the items' issues (searchAsOfPostArms).
+// searchAsOfPosts is text_posts for a search that reads each post kind's matches whole: one that
+// narrows by a status, an author or a time, or whose query has no word to rank by
+// (searchParameters.ranksFirstAtACut). The keyword arms of comments, asks and messages read it
+// with text_issues (searchAsOfIssues) in place of the shadows of their items and of the items'
+// issues (searchAsOfPostArms).
 //
 // text_posts is each matched version of a comment, an ask or a message, with the post's columns
 // that no write changes after its insert - id, issue_key, artifact_id, author and created_at, as
@@ -1229,8 +1232,9 @@ func searchAsOfVersions(versions store.TextVersions, filtered bool, seen int) st
 // column of that row). The version at the cut proves the post was there at the cut: a post's
 // first version starts at the event that made it, and a version holds at the cut only once it has
 // started. So the present row stands for the shadow's in every column the arms rank and filter by.
-// Every row is read, since a filter may leave out any of them, and a row left out must take no
-// place in its kind's ranking.
+// Every row is read: a filter may leave out any of them, and a query with no word to rank by
+// ranks every row 0, so no bound on the rank can leave one out. A row a filter leaves out must
+// take no place in its kind's ranking.
 //
 // Measured on a copy of production's event log, the keyword-only statement for `issue` at the
 // copy's newest event (2026-11-24T13:41:25.812227Z): 55,084 versions match, 38,588 of them
@@ -1262,15 +1266,16 @@ var searchAsOfPosts = `text_posts as materialized (
 ),
 `
 
-// searchAsOfBoundedPosts is the post CTEs for a search that narrows by no status, author or
-// time: it reads a post's present row and its issue at the cut only for the posts that can
-// take one of their kind's places. ranked orders each kind's rows by own, r, updated_at and id,
-// and only its first $7 (contracts.SearchKindDepth) reach legs (searchQueryBodyReading,
-// searchMeaningRankedPage, where
-// the keyword rows of a kind are a list of their own). Every comment, ask and message row has own
-// false, and updated_at, which the issue at the cut gives, orders only rows of equal r. So a row
-// whose r is below the r of its kind's $7-th row by r takes no place, whatever its updated_at,
-// and each kind's rows are ranked by r first, from columns the keyword table holds:
+// searchAsOfBoundedPosts is the post CTEs for a search that ranks each post kind first
+// (searchParameters.ranksFirstAtACut): one that narrows by no status, author or time and whose
+// query has a word to rank by. It reads a post's present row and its issue at the cut only for the
+// posts that can take one of their kind's places. ranked orders each kind's rows by own, r,
+// updated_at and id, and only its first $7 (contracts.SearchKindDepth) reach legs
+// (searchQueryBodyReading, searchMeaningRankedPage, where the keyword rows of a kind are a list of
+// their own). Every comment, ask and message row has own false, and updated_at, which the issue at
+// the cut gives, orders only rows of equal r. So a row whose r is below the r of its kind's $7-th
+// row by r takes no place, whatever its updated_at, and each kind's rows are ranked by r first,
+// from columns the keyword table holds:
 //
 //   - text_standing is each matched version of a comment, an ask or a message that the project
 //     filter keeps, by the version's own project_key, and that names no post a delete has marked,
@@ -1377,14 +1382,14 @@ func searchAsOfLiteral(versions store.TextVersions) string {
 // item's search column. The issue arm joins the issues shadow by the version's id. The comment,
 // ask and message arms read text_posts and text_issues: what ranks a row, scores it and orders the
 // page (own, r, updated_at and id) and what the filters read comes from there. They are
-// searchAsOfPostArms for a search that narrows by a status, an author or a time (filtered), and
-// searchAsOfBoundedPostArms for one that does not. The columns a hit only shows that a write
-// changes - a comment's document as its anchor names it, an ask's documents and its typed block -
-// are null here and read for the page's rows alone (searchAsOfShown).
-func searchAsOfKeywordLegs(cut string, filtered bool) string {
-	posts := searchAsOfBoundedPostArms
-	if filtered {
-		posts = searchAsOfPostArms
+// searchAsOfBoundedPostArms for a search that ranks first (ranksFirst, searchAsOfBoundedPosts) and
+// searchAsOfPostArms for one that reads each post kind's matches whole. The columns a hit only
+// shows that a write changes - a comment's document as its anchor names it, an ask's documents and
+// its typed block - are null here and read for the page's rows alone (searchAsOfShown).
+func searchAsOfKeywordLegs(cut string, ranksFirst bool) string {
+	posts := searchAsOfPostArms
+	if ranksFirst {
+		posts = searchAsOfBoundedPostArms
 	}
 	rank := searchKeywordRank("v.search")
 	return `
@@ -1410,11 +1415,13 @@ func searchAsOfKeywordLegs(cut string, filtered bool) string {
 ` + posts
 }
 
-// searchAsOfPostArms is the comment, ask and message arms at the cut for a search that narrows by
-// a status, an author or a time: each matched post of text_posts (searchAsOfPosts), with its issue
-// at the cut from text_issues, narrowed by the project and the three filters as the present arms
-// narrow (searchKeywordLegs).
-var searchAsOfPostArms = `  select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, null::uuid, c.id::text, null::text,
+// searchAsOfCommentArm, searchAsOfAskArm and searchAsOfMessageArm are each post kind's arm at the
+// cut up to its last join: the columns of the kind's arm in searchKeywordLegs, read from text_posts
+// and text_issues. searchAsOfPostArms and searchAsOfBoundedPostArms hold them once and each ends
+// an arm with a tail of its own: the project test and the row filters in a search that reads each
+// post kind whole, the kind test alone in a search that ranks first.
+const (
+	searchAsOfCommentArm = `  select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, null::uuid, c.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name,
          coalesce(i.updated_at, c.created_at),
@@ -1422,56 +1429,49 @@ var searchAsOfPostArms = `  select 'comment' as kind, 'keyword', c.issue_key, c.
     from text_posts c
     left join text_issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
-    left join projects p on p.key = a.project_key, q
-   where c.kind = 'comment' and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-	searchRowFilters("i.status", "c.author", "coalesce("+searchAsOfEditedAt("comments", "c")+", c.created_at)") + `
-  union all
-  select 'ask' as kind, 'keyword', k.issue_key, null::uuid, null::uuid, k.id::text, null::text,
+    left join projects p on p.key = a.project_key`
+	searchAsOfAskArm = `  select 'ask' as kind, 'keyword', k.issue_key, null::uuid, null::uuid, k.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, null::text, null::text, null::text, coalesce(i.updated_at, k.created_at),
          false, k.r
     from text_posts k
-    left join text_issues i on i.key = k.issue_key, q
-   where k.kind = 'ask' and ($2 = '' or ` + searchAsOfAskProject + ` = $2)` +
-	searchRowFilters("i.status", "k.author", "coalesce("+searchAsOfEditedAt("asks", "k")+", k.created_at)") + `
-  union all
-  select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
+    left join text_issues i on i.key = k.issue_key`
+	searchAsOfMessageArm = `  select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, null::text, null::text, null::text, i.updated_at,
          false, m.r
-    from text_posts m join text_issues i on i.key = m.issue_key, q
+    from text_posts m join text_issues i on i.key = m.issue_key`
+)
+
+// searchAsOfPostArms is the comment, ask and message arms at the cut for a search that reads each
+// post kind's matches whole (searchAsOfPosts): each matched post of text_posts, with its issue at
+// the cut from text_issues, narrowed by the project and the three filters as the present arms
+// narrow (searchKeywordLegs).
+var searchAsOfPostArms = searchAsOfCommentArm + `, q
+   where c.kind = 'comment' and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
+	searchRowFilters("i.status", "c.author", "coalesce("+searchAsOfEditedAt("comments", "c")+", c.created_at)") + `
+  union all
+` + searchAsOfAskArm + `, q
+   where k.kind = 'ask' and ($2 = '' or ` + searchAsOfAskProject + ` = $2)` +
+	searchRowFilters("i.status", "k.author", "coalesce("+searchAsOfEditedAt("asks", "k")+", k.created_at)") + `
+  union all
+` + searchAsOfMessageArm + `, q
    where m.kind = 'message' and ($2 = '' or i.project_key = $2)` +
 	searchRowFilters("i.status", "m.author", "coalesce("+searchAsOfEditedAt("messages", "m")+", m.created_at)")
 
 // searchAsOfBoundedPostArms is the comment, ask and message arms at the cut for a search that
-// narrows by no status, author or time (searchAsOfBoundedPosts): the columns of searchAsOfPostArms
-// for each post at or above its kind's boundary, read from text_posts and text_issues, and each
-// row of text_standing below its kind's boundary with its id and its rank alone, which no leg
-// reaches and kinds counts. text_standing has applied the project filter, so these arms test none.
-const searchAsOfBoundedPostArms = `  select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, null::uuid, c.id::text, null::text,
-         null::text, null::text[],
-         i.title, i.status, p.key, a.slug, a.name,
-         coalesce(i.updated_at, c.created_at),
-         false, c.r
-    from text_posts c
-    left join text_issues i on i.key = c.issue_key
-    left join artifacts a on a.id = c.artifact_id
-    left join projects p on p.key = a.project_key
+// ranks first (searchAsOfBoundedPosts): the columns of searchAsOfPostArms for each post at or above
+// its kind's boundary, read from text_posts and text_issues, and each row of text_standing below
+// its kind's boundary with its id and its rank alone, which no leg reaches and kinds counts. The
+// search narrows by nothing but a project, and text_standing has applied that, so these arms test
+// none.
+const searchAsOfBoundedPostArms = searchAsOfCommentArm + `
    where c.kind = 'comment'
   union all
-  select 'ask' as kind, 'keyword', k.issue_key, null::uuid, null::uuid, k.id::text, null::text,
-         null::text, null::text[],
-         i.title, i.status, null::text, null::text, null::text, coalesce(i.updated_at, k.created_at),
-         false, k.r
-    from text_posts k
-    left join text_issues i on i.key = k.issue_key
+` + searchAsOfAskArm + `
    where k.kind = 'ask'
   union all
-  select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
-         null::text, null::text[],
-         i.title, i.status, null::text, null::text, null::text, i.updated_at,
-         false, m.r
-    from text_posts m join text_issues i on i.key = m.issue_key
+` + searchAsOfMessageArm + `
    where m.kind = 'message'
   union all
   select w.kind, 'keyword', null::text, null::uuid, null::uuid, w.id, null::text,
@@ -1606,24 +1606,24 @@ page as (
 // (searchAsOfKeywordLegs), their texts (searchAsOfTexts) and the page that reads what a hit shows
 // (searchAsOfShown). Which nodes the acting person may see is read as it stands now
 // (refs.VisibleKind and refs.VisibleEnd over graph_nodes, which keeps no history), so a past-time
-// search answers no node the reader may not see today. filtered is whether the search narrows by
-// a status, an author or a time (searchParameters.filtered), which chooses how the post arms read
-// their posts (searchAsOfVersions): a statement built with filtered false applies none of the
-// three filters to its posts, so it serves only a search that narrows by none of them.
-func searchAsOfQuery(versions store.TextVersions, filtered bool) string {
-	return searchQOpener(9) + searchAsOfVersions(versions, filtered, searchSeenParam) +
-		searchQueryBodyReading(searchAsOfKeywordLegs(searchAsOfLiteral(versions), filtered), searchFusedSQL, "", searchAsOfTexts, searchAsOfShown, searchSeenParam)
+// search answers no node the reader may not see today. ranksFirst is whether the search ranks each
+// post kind first (searchParameters.ranksFirstAtACut), which chooses how the post arms read their
+// posts (searchAsOfVersions): a statement built with ranksFirst true applies none of the three
+// filters to its posts, so it serves only a search that narrows by none of them.
+func searchAsOfQuery(versions store.TextVersions, ranksFirst bool) string {
+	return searchQOpener(9) + searchAsOfVersions(versions, ranksFirst, searchSeenParam) +
+		searchQueryBodyReading(searchAsOfKeywordLegs(searchAsOfLiteral(versions), ranksFirst), searchFusedSQL, "", searchAsOfTexts, searchAsOfShown, searchSeenParam)
 }
 
 // searchAsOfMeaningQuery is searchQueryMeaning at the cut of versions: the same seventeen
 // parameters, over searchAsOfMeaningBody. It has one shape: each meaning arm joins its owner and
 // narrows by the project and the three filters inside its candidate limit, as the joined shape
 // does (meaningOneProjectJoined), which answers for every row whether or not the fill of
-// embeddings.project_key labelled it. filtered chooses its keyword legs' reading of the posts, as
+// embeddings.project_key labelled it. ranksFirst chooses its keyword legs' reading of the posts, as
 // it does searchAsOfQuery's.
-func searchAsOfMeaningQuery(versions store.TextVersions, filtered bool) string {
-	return searchQOpener(12) + searchAsOfVersions(versions, filtered, searchMeaningSeenParam) +
-		searchAsOfMeaningBody(searchAsOfLiteral(versions), filtered, searchMeaningSeenParam)
+func searchAsOfMeaningQuery(versions store.TextVersions, ranksFirst bool) string {
+	return searchQOpener(12) + searchAsOfVersions(versions, ranksFirst, searchMeaningSeenParam) +
+		searchAsOfMeaningBody(searchAsOfLiteral(versions), ranksFirst, searchMeaningSeenParam)
 }
 
 // searchAsOfMeaningBody is searchQueryMeaningBody at the cut, a timestamptz literal: each meaning
@@ -1644,23 +1644,15 @@ func searchAsOfMeaningQuery(versions store.TextVersions, filtered bool) string {
 // Each arm walks its windows nearest first and tests each one as the scan hands it up
 // (searchAsOfWindows): the test holds what the arm's joins and filters held, so the arm's limit
 // counts the windows that pass them all, in the same order, and the arm then joins the item's
-// columns to the windows it kept. The arm joined those tables inside its ordered, limited select,
-// and the order of the joins was the planner's, which keeps no statistics of an expression of a
-// window's id: on TestAsOfMeaningCostOnASyntheticCorpus's corpus at scale 0.01, at its newest
-// event, it read the comments first, expecting 1 and getting 1,478, and read all 2,796 comment
-// windows again for each of them, 16,991 ms of a 20,786 ms statement, so every search with meaning
-// at that cut ended at searchMeaningStatementBound and answered 500. Walked so, the statement for
-// one of the test's words at that cut, EXPLAIN (ANALYZE, BUFFERS) with the server's search
-// settings and no time limit, took 2,245 ms on a first run and 358 ms on a second, against
-// 25,301 ms and 24,066 ms before.
+// columns to the windows it kept. searchAsOfWindows says why it walks so and what that costs.
 //
 // The keyword legs are the ones at the cut (searchAsOfKeywordLegs, whose reading of the posts
-// filtered chooses), the snippets come from the texts at the cut (searchAsOfTexts) and the page
+// ranksFirst chooses), the snippets come from the texts at the cut (searchAsOfTexts) and the page
 // reads what a hit shows (searchAsOfShown). seen is the parameter the acting credential is bound
 // at: each walk's test binds its own kind's visibility predicate, as searchQueryMeaningBody's
 // candidate CTEs do before their limits, so a node the acting person may not see takes no place
 // in the cut.
-func searchAsOfMeaningBody(cut string, filtered bool, seen int) string {
+func searchAsOfMeaningBody(cut string, ranksFirst bool, seen int) string {
 	project := meaningOneProjectJoined.candidateProject
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at, w.r
@@ -1747,7 +1739,7 @@ meaning_ask_candidates as (
     join messages m on m.id = w.item
     join issues i on i.key = m.issue_key
 ),
-` + searchMeaningMessageProjection + searchMeaningRankedPage(searchAsOfKeywordLegs(cut, filtered), searchFusedSQL, "", searchAsOfTexts, searchAsOfShown, seen)
+` + searchMeaningMessageProjection + searchMeaningRankedPage(searchAsOfKeywordLegs(cut, ranksFirst), searchFusedSQL, "", searchAsOfTexts, searchAsOfShown, seen)
 }
 
 // searchAsOfWindows is one meaning arm's walk at the cut, under the alias w: the windows of
@@ -2154,16 +2146,17 @@ func (s *server) runKeywordOnlyDegraded(ctx context.Context, parameters searchPa
 	return response, err
 }
 
-// runFusedSearchQuery runs searchQuery, or at a cut searchAsOfQuery for this search's filters,
-// assuming nodes > 0 or an issue named by key already, which its callers (runKeywordOnlyDegraded,
-// and runSearch itself for a request that asked for keywords only, both after runSearch's checks)
-// must have established first. The text is assumed already validated (length, non-empty after
-// trimming); an empty project searches every project, and an empty filter narrows nothing.
+// runFusedSearchQuery runs searchQuery, or at a cut searchAsOfQuery for whether this search ranks
+// first (searchParameters.ranksFirstAtACut), assuming nodes > 0 or an issue named by key already,
+// which its callers (runKeywordOnlyDegraded, and runSearch itself for a request that asked for
+// keywords only, both after runSearch's checks) must have established first. The text is assumed
+// already validated (length, non-empty after trimming); an empty project searches every project,
+// and an empty filter narrows nothing.
 func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	started := time.Now()
 	statement := searchQuery
 	if parameters.versions != nil {
-		statement = searchAsOfQuery(*parameters.versions, !parameters.ranksFirstAtACut())
+		statement = searchAsOfQuery(*parameters.versions, parameters.ranksFirstAtACut())
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, statement, searchQueryArguments(parameters)...)
 	if err != nil {
@@ -2190,7 +2183,7 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 // "$2 is empty, or it matches" predicate the planner would have to serve all three ways. The
 // arguments are the same seventeen whichever it is, $2 among them: the keyword legs read it in
 // all three. A search at a cut runs searchAsOfMeaningQuery, of one shape for each answer of
-// searchParameters.filtered, with the same arguments.
+// searchParameters.ranksFirstAtACut, with the same arguments.
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan), the bound on the statement among them. A statement the server ends at that
@@ -2207,7 +2200,7 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	var statement string
 	if parameters.versions != nil {
-		statement = searchAsOfMeaningQuery(*parameters.versions, !parameters.ranksFirstAtACut())
+		statement = searchAsOfMeaningQuery(*parameters.versions, parameters.ranksFirstAtACut())
 	} else {
 		// Each flag is read only where it can change the statement: a filtered search runs the
 		// joined one whatever the fill has reached, and a search naming no project runs the

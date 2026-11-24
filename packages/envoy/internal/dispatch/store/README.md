@@ -123,7 +123,7 @@ Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheCon
 `deleted_at` is the post's own delete mark as the post stands now, `comments.deleted_at` or `messages.deleted_at`, on every version of a deleted comment or message at every cut, and null on every other version, so a reader leaves out or marks every version of a deleted post.
 So a search at a cut hides a post deleted after the cut as soon as its delete commits, before the fill reads the delete.
 
-A past-time keyword search with no status, author or updated_since filter ranks posts by their keyword rank before reading their issues at the cut (`searchAsOfBoundedPosts`).
+A past-time keyword search with no status, author or updated_since filter, and whose query has a word to rank by, ranks posts by their keyword rank before reading their issues at the cut (`searchAsOfBoundedPosts`).
 To keep deleted posts out of that ranking without fetching the matched posts' rows, it anti-joins on `id` with `deleted_at is not null`.
 Two concurrent partial indexes serve those anti-joins, each with a `select 0` census:
 

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -142,7 +143,7 @@ func TestPresentAskReadsDoNotUseEventsAskState(t *testing.T) {
 	}
 	literals := make([]string, len(types))
 	for i, kind := range types {
-		literals[i] = "'" + strings.ReplaceAll(kind, "'", "''") + "'"
+		literals[i] = store.QuoteLiteral(kind)
 	}
 	if _, err := tx.Exec(ctx, `create index `+twin+` on events ((payload->>'id'), id desc)
 		include (created_at) where type in (`+strings.Join(literals, ", ")+")"); err != nil {

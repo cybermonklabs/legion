@@ -18,8 +18,8 @@
 -- only when it can prove that the condition of the read implies the predicate of the index. When
 -- the two lists do not agree, the answer stays correct, but the read does not use this index, or
 -- the index holds events that no read uses.
--- asof.TestTheAskStateIndexNamesTheTypesTheAsksShadowReads reads this file and compares the two
--- lists, and asof.TestTheShadowsUseTheirIndexes reads the plan.
+-- asof.TestEachEventIndexNamesTheTypesItsShadowReads reads this file and compares the two lists,
+-- and asof.TestTheShadowsUseTheirIndexes reads the plan.
 --
 -- Why `created_at is not null`. Every read of this index compares created_at with a cut (the asks
 -- shadow's `created_at <= cut`, asof.AsksChangedAfterStatement's `created_at > $2`), which

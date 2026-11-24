@@ -4,17 +4,17 @@
 -- built concurrently.
 --
 -- Why it exists. A message that has a present deleted_at gives no hit at any cut (decision 14 of
--- INFRA-4620's plan). A keyword search at a cut that narrows by no status, author or time ranks
--- each kind's matched posts by their rank alone first, and reads a post's own columns and its
--- issue at the cut only for the posts that can take one of the kind's places
--- (internal/dispatch/api, searchAsOfBoundedPosts). A deleted message must take no place in that
--- ranking, and reading each matched message's row to test its deleted_at is the read the ranking
--- exists to avoid: on a copy of production's event log (29,642 messages, 2026-11-24), the search
--- for `issue` at the copy's newest event matched 13,376 messages. This index holds the ids of
--- deleted messages alone. The anti-join tests `d.deleted_at is not null`, which implies the
--- predicate, so it can read the deleted ids without fetching the matching messages.
--- 20261124162630_comments_deleted is the same index for comments. The measured copy had no
--- deleted messages.
+-- INFRA-4620's plan). A keyword search at a cut that narrows by no status, author or time, and
+-- whose query has a word to rank by, ranks each kind's matched posts by their rank alone first,
+-- and reads a post's own columns and its issue at the cut only for the posts that can take one of
+-- the kind's places (internal/dispatch/api, searchAsOfBoundedPosts). A deleted message must take
+-- no place in that ranking, and reading each matched message's row to test its deleted_at is the
+-- read the ranking exists to avoid: on a copy of production's event log (29,642 messages,
+-- 2026-11-24), the search for `issue` at the copy's newest event matched 13,376 messages. This
+-- index holds the ids of deleted messages alone. The anti-join tests `d.deleted_at is not null`,
+-- which implies the predicate, so it can read the deleted ids without fetching the matching
+-- messages. 20261124162630_comments_deleted is the same index for comments. The measured copy had
+-- no deleted messages.
 --
 -- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
 -- runs one replica under a Kubernetes Deployment's `strategy: Recreate`

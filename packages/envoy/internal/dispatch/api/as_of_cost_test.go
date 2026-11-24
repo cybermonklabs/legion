@@ -21,10 +21,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // asOfCorpusURLEnv names the database that holds the copy of production's event log that
@@ -136,20 +138,20 @@ func (c *asOfCostTracer) take() (int, time.Duration) {
 }
 
 // asOfCostRow is one row of the printed table: what the row times, at which cut, how many times it
-// was sent, the first run's time, the median of the runs and the fastest and the slowest of them,
-// how many statements the last run sent and the longest of them, the bound the median is held
-// to, and the status each run answered, in the order of the runs. stopped is a read that the cap
-// stopped. A row the copy cannot time holds why in note.
+// was sent, the first run's time and the median of the runs, how many statements the last run sent
+// and the longest of them, the bound the median is held to, and the status each run answered, in
+// the order of the runs. stopped is a read that the cap stopped. A row the copy cannot time holds
+// why in note.
 type asOfCostRow struct {
-	statement, cut                  string
-	runs                            int
-	first, median, fastest, slowest time.Duration
-	statements                      int
-	longest                         time.Duration
-	bound                           time.Duration
-	answers                         []int
-	stopped                         bool
-	note                            string
+	statement, cut string
+	runs           int
+	first, median  time.Duration
+	statements     int
+	longest        time.Duration
+	bound          time.Duration
+	answers        []int
+	stopped        bool
+	note           string
 }
 
 // asOfCostRig sends the timed reads to the server, as asOfCostReader. A rig that records refusals
@@ -211,7 +213,7 @@ func (r *asOfCostRig) timeRuns(t *testing.T, statement, cut, target string, boun
 	row.runs = len(runs)
 	row.first = runs[0]
 	slices.Sort(runs)
-	row.fastest, row.median, row.slowest = runs[0], runs[len(runs)/2], runs[len(runs)-1]
+	row.median = runs[len(runs)/2]
 	return row
 }
 
@@ -293,11 +295,12 @@ func TestAsOfCostOnACorpusCopy(t *testing.T) {
 			"(TestAsOfCostOnACorpusCopy's doc comment says how); the test times reads at a cut on it")
 	}
 	ctx := t.Context()
-	database, err := store.Open(ctx, asOfMeasurementURL(t, databaseURL))
+	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatalf("open the corpus copy: %v", err)
 	}
 	t.Cleanup(database.Pool.Close)
+	database = storetest.Reopened(t, database, asOfJITOff)
 	if !asOfCorpusHoldsTheCopy(t, database) {
 		t.Skip("the database " + asOfCorpusURLEnv + " names holds no copy of the event log: corpus.events and public.events " +
 			"are empty or missing (TestAsOfCostOnACorpusCopy's doc comment says how to load it)")
@@ -394,26 +397,17 @@ func asOfCostReads(targets asOfCostTargets) []asOfCostTimed {
 	}
 }
 
-// asOfMeasurementURL is databaseURL with jit off on each connection, as production runs: Cloud SQL
-// does not support PostgreSQL's LLVM JIT (benchtime.Open says the same), and under the default
-// jit = on a measurement of these statements times their compilation, which production never pays.
-// On TestAsOfMeaningCostOnASyntheticCorpus's corpus, with jit on, EXPLAIN ANALYZE of a search with
-// meaning at a cut put 7.5 s of 8.3 s in compiling it. A URL that sets jit itself is kept as it is.
-func asOfMeasurementURL(t *testing.T, databaseURL string) string {
-	t.Helper()
-	parsed, err := url.Parse(databaseURL)
-	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
-		if strings.Contains(databaseURL, "jit=") {
-			return databaseURL
-		}
-		return databaseURL + " jit=off"
+// asOfJITOff is the change a measurement makes to its pool's configuration (storetest.Reopened): jit
+// off on each connection, as production runs. Cloud SQL does not support PostgreSQL's LLVM JIT
+// (benchtime.Open says the same), and under the default jit = on a measurement of these statements
+// times their compilation, which production never pays. On TestAsOfMeaningCostOnASyntheticCorpus's
+// corpus, with jit on, EXPLAIN ANALYZE of a search with meaning at a cut put 7.5 s of 8.3 s in
+// compiling it. A URL that sets jit itself keeps it as it is. The map is never nil: pgx makes it
+// when it parses the URL.
+func asOfJITOff(config *pgxpool.Config) {
+	if _, set := config.ConnConfig.RuntimeParams["jit"]; !set {
+		config.ConnConfig.RuntimeParams["jit"] = "off"
 	}
-	values := parsed.Query()
-	if values.Get("jit") == "" {
-		values.Set("jit", "off")
-	}
-	parsed.RawQuery = values.Encode()
-	return parsed.String()
 }
 
 // asOfCorpusHoldsTheCopy reports whether database holds a copy of the event log: rows in
