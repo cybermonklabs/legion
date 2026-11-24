@@ -10,8 +10,9 @@
 # selects every row of `hosted`, in name order, but a row carrying `"dispatch_only": true`: such
 # a proof runs on the commit its dispatch names alone (`gh workflow run e2e.yaml --ref <branch>`,
 # whose checkout is that branch's head), never on a label's merge commit or on the nightly's main,
-# because it runs an image published for one commit (shared-clone-kind.sh's worker image, which
-# worker-image.yaml publishes for a pull request's head).
+# because it runs the image of its checkout's own commit (shared-clone-kind.sh's worker image,
+# which worker-image.yaml publishes for a pull request's head, and for main's head only when
+# release.yaml's paths call it, so a nightly cannot rely on the tag existing yet).
 #
 # Every refusal names the file, the row and the remedy, and no input reaches a traceback. The
 # script prints one `::error::` line per problem and exits 1 on:

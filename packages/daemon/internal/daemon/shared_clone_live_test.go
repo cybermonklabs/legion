@@ -7,9 +7,8 @@
 // tens of megabytes, sharedCloneLiveRepository, through Agent Sandbox's controller and the gvisor
 // runtime class, as the Burstable and share volumes proofs launch theirs (startLiveRoots;
 // burstable_kind_test.go builds the runtime, shared_clone_kind_test.go holds the file's parts).
-// The first pod's workspace-fetch fills its feed from GitHub, the second's from the repository
-// cache the first launch made, and each pod's workspace-init provisions the issue's clone from its
-// feed: the code under proof. What the proof stands in for lies outside the clone, as the
+// The first pod's launch makes the repository cache, the second's feed comes from that cache,
+// and each pod's workspace-init provisions the issue's clone from its feed: the code under proof. What the proof stands in for lies outside the clone, as the
 // Burstable proof's does: the agent is a sleep stub, the store answers as the daemon's does for an
 // issue's first launch, and the roles' gh files hold a placeholder token.
 package daemon
@@ -30,7 +29,7 @@ import (
 
 // TestASharedCloneReadsTheFeedInAnIssuePodLive writes the proof's legion.yaml and launches two
 // issues' roots on sharedCloneLiveRepository: the first as the cache set's first launch, whose
-// launch makes the repository cache and whose feed comes from GitHub, and, once that cache is
+// launch makes the repository cache, and, once that cache is
 // Ready, the second, whose feed comes from the cache's tar (the e2e check cache-second-pod's pod).
 // It writes `<namespace>/<pod> <repository>` for the first and `<namespace>/<pod> <repository>
 // <cache Sandbox>` for the second to LEGION_E2E_RESULT, one line each, for the script, which reads

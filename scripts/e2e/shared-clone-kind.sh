@@ -7,7 +7,8 @@
 # each issue's root through Agent Sandbox v1.0.3's controller (internal/daemon's
 # shared_clone_live_test.go), as the share volumes proof's driver launches its pod, on a public
 # repository of some tens of megabytes. Two pods: the first issue's, whose launch makes the
-# repository's cache and whose workspace-fetch fills its feed from GitHub, and, once that cache is
+# repository's cache (its workspace-fetch fills the feed from the cache or from GitHub, whichever
+# the runtime's wait for the cache gives it, and the run prints which), and, once that cache is
 # Ready, a second issue's, whose feed comes from the cache's tar (the e2e check cache-second-pod).
 # The checks read each pod as its roles container sees it. Of the first: both init containers
 # ended 0, the container's kernel is gVisor's, the clone's alternates name the feed's objects and
@@ -37,8 +38,9 @@
 # workspace-init, so the image must be built from the commit under proof. That is why
 # .github/e2e-scripts.json marks this proof dispatch_only: e2e.yaml runs it on
 # `gh workflow run e2e.yaml --ref <branch> -f script=shared-clone-kind`, whose checkout is the
-# branch's head, and never on a label's merge commit or the nightly's main, for which no such
-# image is published. The cluster is lib/kind-sandbox.sh's, the run's own, and every kubectl call
+# branch's head, and never on a label's merge commit, for which no image is built, or the
+# nightly's main, whose image release.yaml builds only for a push whose paths call it, so the
+# nightly cannot rely on its tag existing yet. The cluster is lib/kind-sandbox.sh's, the run's own, and every kubectl call
 # names its kubeconfig and context, so the caller's kubeconfig is never read. The cluster is
 # deleted on any exit; SHARED_CLONE_EVIDENCE_DIR (default a fresh /tmp directory, kept and
 # printed) keeps the transcript, the legion.yaml and both issue pods' manifests as the API server
@@ -184,6 +186,7 @@ begin provision
 ends=$(kind_k -n legion get pod "$pod" -o jsonpath='{range .status.initContainerStatuses[*]}{.name}={.state.terminated.exitCode} {end}')
 [ "$ends" = "workspace-fetch=0 workspace-init=0 " ] || fail "the pod's init containers ended $ends, want workspace-fetch=0 workspace-init=0"
 note "init containers: $ends"
+note "workspace-fetch: $(kind_k -n legion logs "$pod" -c workspace-fetch | grep -E '^workspace-init fetch: ' | tail -1)"
 pass
 
 begin gvisor-kernel

@@ -4074,8 +4074,8 @@ The driver's `legion.yaml` reserves little for the pods (`sharedCloneLiveResourc
 |`binaries`|a static test binary of `TestASharedCloneReadsTheFeedInAnIssuePodLive` (`internal/daemon/shared_clone_live_test.go`, `-tags e2e`)|
 |`cluster`, `agent-sandbox`, `gvisor`|as `burstable-kind.sh`'s, through the lib|
 |`images`|the worker image, pulled into the node's containerd|
-|`launch`|the driver, in a busybox container on the kind network, writes the `legion.yaml` and launches two issues' roots on `tmux/tmux` through the runtime's `Spawn`, under `runtimeClassName: gvisor`, as `share-volumes-kind.sh`'s driver launches its pod: the first, whose `workspace-fetch` fills the feed from GitHub and whose launch makes the repository's cache, then, once that cache is Ready, the second|
-|`provision`|the first pod's `workspace-fetch` and `workspace-init` each ended 0|
+|`launch`|the driver, in a busybox container on the kind network, writes the `legion.yaml` and launches two issues' roots on `tmux/tmux` through the runtime's `Spawn`, under `runtimeClassName: gvisor`, as `share-volumes-kind.sh`'s driver launches its pod: the first, whose launch makes the repository's cache and whose `workspace-fetch` line the `provision` check prints, then, once that cache is Ready, the second|
+|`provision`|the first pod's `workspace-fetch` and `workspace-init` each ended 0, and its fetch's last line, which names where its feed came from, is printed|
 |`gvisor-kernel`|the `roles` container's kernel is gVisor's|
 |`alternates`|the clone's `.git/objects/info/alternates` is the feed's objects and nothing else, and its own `objects/pack` holds no pack|
 |`disk`|`du -sk` of the clone's `.git/objects` is under a tenth of the feed's `objects`; the control, a plain `git clone --no-checkout` of the same feed made in the container, takes about the feed's size|
