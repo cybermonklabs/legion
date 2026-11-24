@@ -682,14 +682,15 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := applyFacts(t, pool, engine)
 			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
 				Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 3, Status: "in_progress", DispatchStatus: "in_progress",
 				Rank: "U", HandedOver: true, LastDispatchSeq: 4})
 			seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
-			counted := record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Rounds: 3, ConflictRounds: 1,
-				BackwardMoves: map[string]int{"testing-implementing": 2}, CapTold: 3}
-			seedPhase(t, pool, counted)
+			counted := record.ReturnCounts{Pass: 4, Rounds: 3, ConflictRounds: 1, BackwardMoves: map[string]int{"testing-implementing": 2}, CapTold: 3}
+			seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Pass: counted.Pass, Rounds: counted.Rounds,
+				ConflictRounds: counted.ConflictRounds, BackwardMoves: counted.BackwardMoves, CapTold: counted.CapTold})
 			if tc.claims {
 				seedPhaseWorker(t, pool, root, claim.RoleArchitect, "")
 			}
@@ -723,9 +724,13 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 				if notice, ok := added[0].(record.Notice); !ok || notice.Kind != tc.told || notice.Role != claim.RoleArchitect {
 					t.Fatalf("the todo's notice = %+v, want a %s for the architect", added[0], tc.told)
 				}
+				// The notice reaches the architect that owns the issue its row names: the root's.
+				if onRoot := noticesOf(t, pool, root, tc.told); len(onRoot) != 1 {
+					t.Fatalf("the %s notices on %s's rows = %+v, want the one the todo wrote", tc.told, root, onRoot)
+				}
 			}
-			if got := phaseCounts(t, pool, root, claim.RoleImplementer); !reflect.DeepEqual(got, counted) {
-				t.Fatalf("the implementer's counts after the session's todo = %+v, want the %+v the hold left", got, counted)
+			if got := taskCounts(t, pool, engine, root, 3); !reflect.DeepEqual(got, counted) {
+				t.Fatalf("the counts after the session's todo = %+v, want the %+v the hold left", got, counted)
 			}
 		})
 	}
