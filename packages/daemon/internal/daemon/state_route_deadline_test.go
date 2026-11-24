@@ -69,6 +69,22 @@ func daemonBackends(t *testing.T, pool *store.Pool, application, condition strin
 	return count
 }
 
+// awaitOneLockWaiter waits until one backend of pool's own database waits on a lock
+// (backendWaitingOnALock): a statement the test started is blocked on a transaction the test holds.
+// It counts by database rather than by application name, since each test clones a database of its
+// own (isolatedOutboxPool), so the count reads that test's backends alone.
+func awaitOneLockWaiter(t *testing.T, pool *store.Pool, what string) {
+	t.Helper()
+	testwait.Eventually(t, what, func() bool {
+		var waiting int
+		if err := pool.QueryRow(context.Background(),
+			"select count(*) from pg_stat_activity where datname = current_database() and "+backendWaitingOnALock).Scan(&waiting); err != nil {
+			t.Fatalf("count the backends waiting on a lock: %v", err)
+		}
+		return waiting == 1
+	})
+}
+
 // A state read that does not finish is ended by the route's own deadline: the client is answered
 // a failure while it is still connected, the transaction is ended rather than left open, and the
 // connection goes back to the pool for the next caller.

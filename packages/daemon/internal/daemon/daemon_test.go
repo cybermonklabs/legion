@@ -275,6 +275,41 @@ func heldSocket(t *testing.T) (*os.File, int) {
 	return file, port
 }
 
+// takeHeldSocket takes the listener holdPortAt holds for address (heldListen) and returns a
+// descriptor of its own for that listening socket, closed when t ends: the descriptor is taken
+// before the listener closes, so the port is held throughout, and a test can hand it to one daemon
+// after another (heldSocketListen).
+func takeHeldSocket(t *testing.T, address string) *os.File {
+	t.Helper()
+	listener, err := heldListen("tcp", address)
+	if err != nil {
+		t.Fatalf("take the held port %s: %v", address, err)
+	}
+	file, err := listener.(*net.TCPListener).File()
+	_ = listener.Close()
+	if err != nil {
+		t.Fatalf("take the descriptor of %s: %v", address, err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+// heldSocketListen is the listen of a daemon on the loopback socket on port that the test holds
+// (heldSocket, takeHeldSocket) for longer than that daemon lives: each call takes a listener of a
+// descriptor of its own (net.FileListener), which the daemon closes when it stops, while the test's
+// descriptor keeps the socket listening, so a daemon started again on the port finds it never let
+// go. A call for any other address is refused rather than bound, as heldListen refuses an address
+// nothing holds.
+func heldSocketListen(socket *os.File, port int) func(network, address string) (net.Listener, error) {
+	held := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	return func(network, address string) (net.Listener, error) {
+		if network != "tcp" || address != held {
+			return nil, &net.AddrError{Err: "the test holds no socket for " + network + " there, only for tcp " + held, Addr: address}
+		}
+		return net.FileListener(socket)
+	}
+}
+
 // rebindHeldPorts hands cfg a freshly held API port. A daemon that has stopped closed the
 // listener it was handed, and from then on the port it used is any process's, so a test that
 // starts a second daemon on the same config holds one again first. The worker stream needs no
@@ -317,6 +352,8 @@ type stillClock struct{}
 func (stillClock) Now() time.Time { return time.Now() }
 
 func (stillClock) AfterFunc(time.Duration, func()) supervise.Cancel { return stopped{} }
+
+func (stillClock) At(time.Time, func()) supervise.Cancel { return stopped{} }
 
 func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
@@ -1138,8 +1175,8 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 }
 
 // startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
-// against a boot that never serves, not its speed, so it is testwait's bound (a minute, or the test
-// binary's own deadline less a second): a fixed 10 s failed a test about the stranded report (1 of
+// against a boot that never serves, not its speed, so it is a minute, or the test binary's own
+// deadline less a second (testwait.Bounded): a fixed 10 s failed a test about the stranded report (1 of
 // 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
 // other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {

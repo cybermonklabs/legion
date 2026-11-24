@@ -115,6 +115,9 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/api/comment_create.go": {
 		"createCommentFor": "the owner's lock, taken inside the comment's transaction " +
 			"(lockCommentOwner)",
+		"queueCommentRow": "the owner's lock, which every caller holds: the comment route's, " +
+			"taken inside its transaction (createCommentFor, lockCommentOwner), and the issue " +
+			"write's that leaves a comment (writeIssue, lockIssueOwners)",
 	},
 	"internal/dispatch/api/comment_delivery.go": {
 		"replyComment": "the comment's owner lock (lockedCommentAllowingClosed, lockOwnerOfComment)",
@@ -267,7 +270,7 @@ const versionTableException = "none, and none to take: the table is a migration 
 
 // holdTableException is why the broker's hold store's writers are on the census with no lock. Its
 // tables are the NATS writer hold's (nats_hold, nats_hold_log, nats_hold_records,
-// nats_hold_record_deletes and nats_cutover, migration 0042 of the broker's store), which
+// nats_hold_record_deletes and nats_cutover, migration 0043 of the broker's store), which
 // natshold.Store names at run time with its schema (Store.table), so this scan cannot read them
 // (unspelledTableWrites). None is an item row, and they live in the broker's database, which no
 // item's owner lock reaches.
@@ -410,6 +413,7 @@ const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entr
 var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
 	"internal/dispatch/api/comment_actions.go": {"recordOrphanedCommentAnchor": itemRowCallersTransaction},
+	"internal/dispatch/api/comment_create.go":  {"queueCommentRow": itemRowCallersTransaction},
 	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},
 	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
