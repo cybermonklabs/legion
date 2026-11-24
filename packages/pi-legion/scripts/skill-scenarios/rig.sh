@@ -2153,8 +2153,9 @@ scored_session() {
   phase=$(jq -r --arg key "$owner" '.issues[] | select(.key == $key) | .phase' "$texts/world-request.json")
   jq '[.issues[] | {key, tree, phase, status}]' "$texts/world-request.json" >"$texts/issues.json"
   # The daemon stand-in: the owner's claim, the world's issues, the label's contract and its
-  # register_plan, which reads the run's Dispatch itself, not through the proxy.
-  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$R/secrets/boot" "$owner_walk_project" "$owner" architect "$phase" \
+  # register_plan, which reads the run's Dispatch itself, not through the proxy. Its project is the
+  # project's token, lower case, as the daemon's claim.ProjectToken makes it from the Dispatch project.
+  start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$R/secrets/boot" "${owner_walk_project,,}" "$owner" architect "$phase" \
     --tree "$root" --issues "$texts/issues.json" --label "$co" --dispatch "http://127.0.0.1:$dispatch_port" "$work/services/dispatch-token"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
