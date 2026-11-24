@@ -5414,6 +5414,7 @@ That rule tells the worker to move back when its work is stale and to comment wh
 So the base arm passes that step as often as the head, which is why its control is retired.
 
 `APPROVED_VERSION_NEWS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the script's transcript and, in a `part-one.*` and a `part-two.*` directory of their own, the lib's transcript, the `nats-server`'s log, the daemon's own (`daemon.log`), Dispatch's (`dispatch.log`) and the driver's output (`proof.log`), and for part two `natsd.log`, `listener.log`, each pane's own output (`panes/`) and each run's session transcripts (`transcripts/`).
+
 ## check-states.sh
 
 ```sh
