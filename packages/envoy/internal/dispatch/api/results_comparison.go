@@ -635,7 +635,7 @@ func (c *comparisonReader) onNamedBranch(
 				unknown = true
 				continue
 			case mergeHeld:
-				switch c.holds(ctx, walked, result.CommitSHA, merge.commit) {
+				switch delivery.Holds {
 				case delivery.DoesNotHold:
 					answer = delivery.BranchDoesNotCarry
 					continue
