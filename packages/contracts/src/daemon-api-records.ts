@@ -464,7 +464,8 @@ function withAnswerRows(
 }
 
 /** `rows` with `entry`'s rows of `enumerated-fields.json` added, each value arriving at the
- *  entry's number and each row's values sorted by value. */
+ *  entry's number and each row's values sorted by value; `refused` names a row that adds a value
+ *  the row already holds. */
 function withEnumeratedRows(
   entry: NumberedEntry,
   rows: readonly EnumeratedFieldRow[],
@@ -480,12 +481,16 @@ function withEnumeratedRows(
       (row) => row.answer === added.answer && row.keyPath === added.keyPath
     );
     const before = after[at];
+    // The row grows value by value, as the daemon's gate grows it (`withEnumeratedRows` in
+    // `internal/api`), so a value an added row names twice is refused as one the row before held.
+    const held = new Set(before?.values.map(({ value }) => value));
     for (const value of added.values) {
-      if (before?.values.some((held) => held.value === value)) {
+      if (held.has(value)) {
         throw refused(
           `adds \`${value}\` to \`${added.keyPath}\` of the ${added.answer} answer in enumerated-fields.json, and that row holds it already`
         );
       }
+      held.add(value);
     }
     const values = [
       ...(before?.values ?? []),
