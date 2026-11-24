@@ -457,9 +457,17 @@ func grantedDuringAPause(t *testing.T) (h *harness, second *podRole, flag *pause
 	h.parks(second, RequestResume{Claim: second.token}, 0)
 
 	// The project pauses while the second's start waits, and the first role's load then ends: the
-	// gate grants the second's start during the pause.
+	// gate grants the second's start during the pause. The grant reaches the second's machine on a
+	// goroutine of its own (askPod) while the clock that ends the first's load is still moving, and
+	// its decision posts the pause's stop at once (pauseGate, TimerPause armed at 0), inside the span
+	// that clock moves over: a clock that has not stopped yet fires that stop too, and the stop runs
+	// before the wait below reads it posted. So the second's machine is held over the clock's move,
+	// as a decision of its own in flight holds it, and its grant is decided once the clock stops.
 	flag.set(7)
-	h.loadEnds(first)
+	h.registered(first)
+	second.m.mu.Lock()
+	h.clock.Advance(podLoadSettle)
+	second.m.mu.Unlock()
 	stopPosted := func() bool {
 		second.m.mu.Lock()
 		defer second.m.mu.Unlock()
