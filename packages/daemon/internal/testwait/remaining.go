@@ -6,9 +6,9 @@ import (
 )
 
 // giveUpMargin is how long before the test binary's deadline a wait bounded by Remaining gives
-// up: the time the failing test's cleanups and its failure have to run in before Go's alarm
-// panics the binary.
-const giveUpMargin = 30 * time.Second
+// up: margin, the time the failing test's cleanups and its failure have to run in before Go's
+// alarm panics the binary, the one Eventually and Until leave too.
+const giveUpMargin = margin
 
 // unboundedRemaining is Remaining's answer when the test binary has no deadline (-timeout 0):
 // 1 << 60 ns, about 36 years, a span no wait reaches. Callers multiply it by small factors (a

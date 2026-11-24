@@ -63,10 +63,10 @@ func TestContextEndsWhereAWaitGivesUpAndWithTheTest(t *testing.T) {
 	}
 }
 
-// A wait gives up the margin before the test binary's deadline, with no cap of its own: under go
-// test's default -timeout of ten minutes that is minutes past the minute Eventually once stopped
-// at. A *testing.T names that deadline; a testing.TB without Deadline reads it from the -timeout
-// flag and the process's start, which is no later than testing's own.
+// A wait gives up the margin before the test binary's deadline. A *testing.T names that deadline;
+// a testing.TB without Deadline reads it from the -timeout flag and the process's start, which is
+// no later than testing's own. That the wait then holds to that moment, with no cap of its own, is
+// TestEventuallyHasNoCapOfItsOwn's.
 func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	deadline, bounded := t.Deadline()
 	end, ok := giveUpAt(t)
@@ -79,12 +79,31 @@ func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	}
 }
 
+// Eventually has no cap of its own: on a clock that moves only as the wait waits, a condition that
+// holds 90 s in, past the minute Eventually once gave up at, is waited for under a deadline ten
+// minutes off. The wait asks once per pace, 9,001 times, and returns at the 90 s.
+func TestEventuallyHasNoCapOfItsOwn(t *testing.T) {
+	c := &steppedClock{now: time.Now()}
+	onClock(t, c)
+	start := c.Now()
+	asks := 0
+	Eventually(plantedDeadline{t, start.Add(10 * time.Minute)}, "a condition that holds 90 s in", func() bool {
+		asks++
+		return c.Now().Sub(start) >= 90*time.Second
+	})
+	if waited := c.Now().Sub(start); waited != 90*time.Second || asks != 9001 {
+		t.Fatalf("Eventually returned %s into its wait after %d asks, want 90s and 9001", waited, asks)
+	}
+}
+
 // A wait that gives up writes its line to stderr and fails the test with the same text, which
 // carries the wait's last reading where it has one, the reading it read last however many it
 // read. A wait that starts once the margin has passed, a wait in a cleanup included, asks once and
-// fails. The child plants each wait's deadline (plantedDeadline) and runs under what is left of
-// this binary's own deadline, so its alarm is no end a slow child reaches before its waits give
-// up: a child that ran into its alarm had a wait that did not give up.
+// fails, and its line says the moment had passed before it began, so the first give-up line in
+// time order, the one without that note, names the cause. The child plants each wait's deadline
+// (plantedDeadline) and runs under what is left of this binary's own deadline, so its alarm is no
+// end a slow child reaches before its waits give up: a child that ran into its alarm had a wait
+// that did not give up.
 func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	child := exec.Command(os.Args[0], "-test.run=^TestTheWaitsGiveUpChild$", "-test.timeout="+Remaining(t).String(), "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
@@ -99,15 +118,16 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	var reads int
 	if _, after, found := strings.Cut(stdout.String(), "the reading was asked "); !found {
 		t.Fatalf("the child logged no count of the reading's asks; its output:\n%s", &stdout)
-	} else if _, err := fmt.Sscanf(after, "%d", &reads); err != nil || reads < 1 {
-		t.Fatalf("the child's count of the reading's asks %.20q: %v", after, err)
+	} else if _, err := fmt.Sscanf(after, "%d", &reads); err != nil || reads != 6 {
+		t.Fatalf("the child's count of the reading's asks %.20q (%v), want 6: one a pace over the stepped clock's 50 ms, and one at its end", after, err)
 	}
 	name := "TestTheWaitsGiveUpChild/"
 	ending := " 30s before the test binary's deadline"
+	spent := ending + ", a moment that had passed before this wait began: the first give-up line in time order is the cause"
 	want := []string{
 		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + fmt.Sprintf(`; last read: reading\n%d`, reads),
-		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + ending,
-		"testwait: " + name + "cleanup: gave up waiting for a condition a cleanup waits for" + ending,
+		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + spent,
+		"testwait: " + name + "cleanup: gave up waiting for a condition a cleanup waits for" + spent,
 	}
 	written := strings.Split(stderr.String(), "\n")
 	for _, line := range want {
@@ -120,6 +140,9 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "the condition was asked 1 time(s)") {
 		t.Errorf("a wait that began after the margin did not ask exactly once; the child's output:\n%s", &stdout)
+	}
+	if first, later := slices.Index(written, want[0]), slices.Index(written, want[1]); first < 0 || later < first {
+		t.Errorf("the give-up with no note (line %d of stderr) does not come before the one that began past the margin (line %d); its stderr:\n%s", first, later, &stderr)
 	}
 }
 
@@ -143,17 +166,39 @@ type plantedDeadline struct {
 
 func (p plantedDeadline) Deadline() (time.Time, bool) { return p.at, true }
 
+// steppedClock is a clock that moves only when a wait waits on it: After(d) moves it d on and
+// answers at once.
+type steppedClock struct{ now time.Time }
+
+func (c *steppedClock) Now() time.Time { return c.now }
+
+func (c *steppedClock) After(d time.Duration) <-chan time.Time {
+	c.now = c.now.Add(d)
+	fired := make(chan time.Time, 1)
+	fired <- c.now
+	return fired
+}
+
+// onClock makes c the clock poll and asked read (waitClock) until t ends.
+func onClock(t *testing.T, c clock) {
+	t.Cleanup(func() { waitClock = realClock{} })
+	waitClock = c
+}
+
 // TestTheWaitsGiveUpChild is the child of TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure.
-// Its until wait gives up 50 ms after it begins, and each later wait begins past its margin. It
-// runs only when the parent re-executes this binary.
+// Its until wait runs on a stepped clock and gives up 50 ms of that clock after it begins, having
+// asked its reading six times; each later wait begins past its margin. It runs only when the
+// parent re-executes this binary.
 func TestTheWaitsGiveUpChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure")
 	}
 	t.Run("until", func(t *testing.T) {
+		c := &steppedClock{now: time.Now()}
+		onClock(t, c)
 		asks := 0
 		t.Cleanup(func() { t.Logf("the reading was asked %d time(s)", asks) })
-		Until(plantedDeadline{t, time.Now().Add(margin + 50*time.Millisecond)}, "a reading that never holds", func() (string, bool) {
+		Until(plantedDeadline{t, c.Now().Add(margin + 50*time.Millisecond)}, "a reading that never holds", func() (string, bool) {
 			asks++
 			return fmt.Sprintf("reading\n%d", asks), false
 		})
