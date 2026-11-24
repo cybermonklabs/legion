@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -559,7 +558,7 @@ func (r *eventStreamRelay) page(ctx context.Context, after, through int64) ([]mo
 	if r.readAfter != nil {
 		return r.readAfter(ctx, after, through)
 	}
-	return r.server.readEventsAfterID(ctx, model.Actor{}, after, through, maxEventReplay)
+	return r.server.readEventsAfterID(ctx, everyReader, after, through, maxEventReplay)
 }
 
 // publish fans one page out to g's subscribers and moves g's cursor to its last event, under mu.
