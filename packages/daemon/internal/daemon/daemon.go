@@ -459,7 +459,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// App's JWT mints no token for an owner (proveAppKeys); every other step of the boot that reads
 	// GitHub or writes a cache's credential mints the token that step needs. The fill of a record
 	// that lacks its repository columns (backfillRepositories) makes one read per such record,
-	// bounded by installReadAttempt, and a read that fails leaves the record for the refresher
+	// bounded by the read attempt bound (repositoryReadBounds.attempt), and a read that fails leaves the record for the refresher
 	// rather than refusing the boot. The one-time rename pass (renameAtBoot, below) reads GitHub for
 	// a configured pair only while a stored row still names the pair's `from` (renamePass.run). The
 	// refresher prepares the records' repositories once the API serves (prepareAtStart), beside
@@ -1841,6 +1841,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
+		// A claim write's bound counts from its connection: a boot relaunches every unfinished
+		// claim at once through the one pool, and a bound that counted the queue for it cut the
+		// last writes for the writes ahead of them (supervise.Deps.BoundWrite).
+		BoundWrite: store.BoundAfterAcquire,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,
 			PromptFailures: cfg.PromptFailureLimit,
@@ -3035,10 +3039,11 @@ type source struct {
 //
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
-// status, and ReleaseSlot and ReleaseSlotForWait, which take an issue's slot away, the tree's
-// close among them — asks for one read of the live records once its transaction commits (live,
-// the workflow's wakeLive, which holds one request at most), so the repository caches and legion
-// state follow the records without a timer. live is nil where no refresher runs.
+// status, and ReleaseSlot, ReleaseSlotForWait and ReleaseTreeSlots, which take slots away, the
+// tree's close and its root's re-admission among them — asks for one read of the live records once
+// its transaction commits (live, the workflow's wakeLive, which holds one request at most), so the
+// repository caches and legion state follow the records without a timer. live is nil where no
+// refresher runs.
 type projectRecords struct {
 	record.Store
 	project string
@@ -3071,6 +3076,15 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 	}
 	s.liveOnCommit(ctx)
 	return nil
+}
+
+func (s projectRecords) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
+	released, err := s.Store.ReleaseTreeSlots(ctx, tx, tree)
+	if err != nil {
+		return nil, err
+	}
+	s.liveOnCommit(ctx)
+	return released, nil
 }
 
 // liveOnCommit asks for a read of the live records once the transaction that wrote one commits

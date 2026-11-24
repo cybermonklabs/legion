@@ -1,12 +1,16 @@
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
+  ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_COMPONENTS,
+  MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { goBlankPattern } from "./go-blank";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
@@ -380,22 +384,25 @@ const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
 };
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, labels_add, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
-const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}.`;
+const ISSUE_UPDATE_LABELS_RULE = "labels_add goes without labels";
+const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}; ${ISSUE_UPDATE_LABELS_RULE}.`;
 
 /** The refusal of the part of dispatch_issue_update's rule `value` breaks, or undefined when it
- *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else,
- *  and the update names at least one field to change. `check` and `refusal` both read this one
- *  function, so the refusal never names a part the call kept. */
+ *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else;
+ *  labels replaces every label and labels_add adds to them, so a call names one of the two, as
+ *  the route refuses both; and the update names at least one field to change. `check` and
+ *  `refusal` both read this one function, so the refusal never names a part the call kept. */
 function issueUpdateProblem(value: unknown): string | undefined {
   const input = value as {
     readonly status?: unknown;
     readonly reason?: unknown;
     readonly title?: unknown;
     readonly labels?: unknown;
+    readonly labels_add?: unknown;
     readonly priority?: unknown;
     readonly assignee?: unknown;
     readonly external_links?: unknown;
@@ -417,10 +424,14 @@ function issueUpdateProblem(value: unknown): string | undefined {
       typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
     return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
   }
+  if (input.labels !== undefined && input.labels_add !== undefined) {
+    return `${ISSUE_UPDATE_LABELS_RULE}: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.`;
+  }
   const changesAField =
     typeof input.status === "string" ||
     typeof input.title === "string" ||
     Array.isArray(input.labels) ||
+    Array.isArray(input.labels_add) ||
     typeof input.priority === "number" ||
     input.priority === null ||
     typeof input.assignee === "string" ||
@@ -505,28 +516,48 @@ const readValidation: NonNullable<DispatchToolSpec["validation"]> = {
 /** Component attachment modes an issue write accepts. */
 export const ISSUE_COMPONENTS_MODES = ["inherit", "explicit", "none"] as const;
 
+/** The rule of a `components` argument's parts, which the server holds every issue write to. */
+const COMPONENTS_RULE = "components mode explicit names ids, and mode none names a reason.";
+
 /** The `components` argument of dispatch_issue and dispatch_issue_update. */
 function componentsArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
   return z
-    .object({
-      mode: z
-        .enum(ISSUE_COMPONENTS_MODES)
-        .describe(
-          "inherit: take the parent chain's attachment within the issue's own project (the default; deletes this issue's own). explicit: attach to ids. none: not architectural work, with reason."
-        ),
-      ids: z
-        .array(z.string({ min: 1 }), { min: 1, max: 50 })
-        .describe(
-          "For mode explicit: bare component ids from the project's architecture model (web, dispatch-server), not external ones."
-        )
-        .optional(),
-      reason: z
-        .string({ min: 1 })
-        .describe("For mode none: why this issue is not architectural (process, hiring, ops).")
-        .optional(),
-    })
+    .refineObject(
+      {
+        mode: z
+          .enum(ISSUE_COMPONENTS_MODES)
+          .describe(
+            "inherit: take the parent chain's attachment within the issue's own project (the default; deletes this issue's own). explicit: attach to ids, which it requires. none: not architectural work, with the reason it requires."
+          ),
+        ids: z
+          .array(z.string({ min: 1 }), { min: 1, max: MAX_ISSUE_COMPONENTS })
+          .describe(
+            "Required for mode explicit: bare component ids from the project's architecture model (web, dispatch-server), not external ones."
+          )
+          .optional(),
+        reason: z
+          .string({ min: 1 })
+          .describe(
+            "Required for mode none: why this issue is not architectural (process, hiring, ops)."
+          )
+          .optional(),
+      },
+      (value) => {
+        const input = value as {
+          readonly mode?: unknown;
+          readonly ids?: unknown;
+          readonly reason?: unknown;
+        };
+        if (input.mode === "explicit") return Array.isArray(input.ids) && input.ids.length > 0;
+        // The route trims the reason as Go's strings.TrimSpace does, which is not trim.
+        if (input.mode === "none")
+          return typeof input.reason === "string" && !goBlankPattern.test(input.reason);
+        return true;
+      },
+      COMPONENTS_RULE
+    )
     .describe(
-      "Attach the issue to architecture components. Attach the root before decomposing it; children inherit unless they choose."
+      `Attach the issue to architecture components. Attach the root before decomposing it; children inherit unless they choose. ${COMPONENTS_RULE}`
     );
 }
 
@@ -699,7 +730,7 @@ function handoffProblem(value: unknown): string | undefined {
   if (typeof phase === "string" && !HANDOFF_PHASE_PATTERN.test(phase)) return HANDOFF_PHASE_RULE;
   if (typeof body !== "string") return undefined;
   if (!isJsonObjectText(body)) {
-    return 'body is not one JSON object: a handoff body is a JSON object such as {"schemaVersion":1}';
+    return 'body is not one JSON object: a handoff body is a JSON object such as {"head":"<the commit your phase ended at>","note":"<one paragraph for the next role>"}';
   }
   return undefined;
 }
@@ -724,7 +755,7 @@ const reviewValidation: NonNullable<DispatchToolSpec["validation"]> = {
     const input = value as { readonly verdict?: unknown; readonly reason?: unknown };
     return (
       input.verdict !== "changes_requested" ||
-      (typeof input.reason === "string" && input.reason.trim() !== "")
+      (typeof input.reason === "string" && !goBlankPattern.test(input.reason))
     );
   },
   message: REVIEW_REASON_RULE,
@@ -925,7 +956,12 @@ export const dispatchToolSpecs = [
           "Ids of the deployment's priorities this issue advances, which dispatch priorities lists. A child inherits every priority the issues above it advance, so name here only what this issue adds."
         )
         .optional(),
-      external: z.string().describe("Optional external issue reference.").optional(),
+      external: z
+        .string()
+        .describe(
+          "Optional external issue reference, owner/repo#n: the GitHub issue to import into the project this call names. A reference already imported into that project answers its issue and creates nothing; one already imported into another project is refused with 400 EXTERNAL_PROJECT_MISMATCH."
+        )
+        .optional(),
       force: z
         .boolean()
         .describe(
@@ -937,8 +973,10 @@ export const dispatchToolSpecs = [
         .describe(`Optional initial primary-document markdown. ${SPEC_WRITING_POINTER}`)
         .optional(),
       labels: z
-        .array(z.string({ min: 1, max: 40 }), { max: 20 })
-        .describe("Optional initial labels, at most 20 labels of up to 40 characters.")
+        .array(z.string({ min: 1, max: ISSUE_LABEL_MAX }), { max: MAX_ISSUE_LABELS })
+        .describe(
+          `Optional initial labels, at most ${MAX_ISSUE_LABELS} labels of up to ${ISSUE_LABEL_MAX} characters.`
+        )
         .optional(),
       priority: z
         .number({ int: true, min: 0, max: 3 })
@@ -967,7 +1005,8 @@ export const dispatchToolSpecs = [
       before: "DSP-2",
     },
     description:
-      "Update an existing issue: move its lifecycle status, retitle it, replace its labels, set " +
+      "Update an existing issue: move its lifecycle status, retitle it, add labels to it or " +
+      "replace its labels, set " +
       "its priority, set or clear its assignee, link a URL (the pull request that delivers it, a " +
       "run, a document), set its " +
       "route, set or clear its parent, replace the issues it is blocked by, replace the " +
@@ -975,7 +1014,9 @@ export const dispatchToolSpecs = [
       "architecture components, set the repository it targets, or move it on its project's " +
       "board. Status is one of " +
       `${ISSUE_STATUSES.join(", ")}; outside Legion, move it yourself as the work advances; inside ` +
-      "Legion the daemon moves it. A non-empty external_links is " +
+      "Legion the daemon moves it. labels_add adds labels and keeps every label the issue holds; " +
+      "labels replaces the whole set, so a label it does not name is removed, and the two never " +
+      "go together. A non-empty external_links is " +
       "merged into the issue's existing links by URL, so linking the pull request you just opened " +
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
@@ -1017,9 +1058,15 @@ export const dispatchToolSpecs = [
         .describe("Replacement title, at most 1,000 characters.")
         .optional(),
       labels: z
-        .array(z.string({ min: 1, max: 40 }), { max: 20 })
+        .array(z.string({ min: 1, max: ISSUE_LABEL_MAX }), { max: MAX_ISSUE_LABELS })
         .describe(
-          "Replacement label set, at most 20 labels of up to 40 characters; replaces every existing label."
+          `Replacement label set, at most ${MAX_ISSUE_LABELS} labels of up to ${ISSUE_LABEL_MAX} characters; replaces every existing label, so a label it does not name is removed. To add labels and keep the others, use labels_add. Not with labels_add.`
+        )
+        .optional(),
+      labels_add: z
+        .array(z.string({ min: 1, max: ISSUE_LABEL_MAX }), { max: MAX_ISSUE_LABELS })
+        .describe(
+          `Labels to add, at most ${MAX_ISSUE_LABELS} of up to ${ISSUE_LABEL_MAX} characters: each is added to the labels the issue holds when the write lands, and every label it holds stays; the issue holds at most ${MAX_ISSUE_LABELS} in all. Not with labels.`
         )
         .optional(),
       // `.describe()` comes last here, unlike every other field. On the OMP host's Zod facade a
@@ -1448,7 +1495,12 @@ export const dispatchToolSpecs = [
       replace_with: z
         .string()
         .describe(
-          "Replacement text; a CR LF or a lone carriage return in it is written as a line feed."
+          "Replacement markdown for the quoted text. Text alone stays in the quoted text's block; whole blocks " +
+            "(paragraphs, lists, headings written with their #s) stand where the quoted text stood, and over a " +
+            "heading's whole text they take the heading's place, so a heading that stays is written with its #s. " +
+            "A table cell takes text alone. To move a section, write its blocks beside the whole text of the block " +
+            "where it goes, and suggest each moved block's text replaced with nothing where it stood (an emptied " +
+            "heading stays as its #s alone). A CR LF or a lone carriage return in it is written as a line feed."
         ),
       body: z.string().describe(`Optional rationale. ${BODY_BLOCK_RULE}`).optional(),
       occurrence: z
@@ -1660,7 +1712,7 @@ export const dispatchToolSpecs = [
     description:
       "Apply deterministic document edits: replace or delete quoted text, insert markdown at an anchor, retype an identified paragraph or typed block into a schema-declared typed block, delete or move a whole block by its id, or delete a table row or column in place. " +
       "Do not use it for review feedback or for reading; use dispatch comment, dispatch suggest, or dispatch doc-read instead. " +
-      "For replace, delete, and quote anchors, find text as rendered: inline Markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level. A find that opens with a list marker ('- ', '5. ', with an optional '[ ] ' or '[x] ' after it) and matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and a box matching only a task item in that state. A find or quote anchor stays inside one block, and in a table inside one cell: ' | ' is the boundary markdown writes between two cells, not text a cell holds, so a quote that runs across cells is refused, naming the cells; change several cells with one operation per cell in the same batch, and anchor on one cell's text. replace parses with as markdown, as insert parses its markdown: a with that parses to one paragraph is the new text of the matched span, and one that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, so a marker of a different kind from the block's own opens the block it names ('4. Design' is an ordered list, which a heading cannot hold) unless you escape it ('4\\. Design'). A with that opens with a marker of the same kind as the matched block's own would write it twice and is INVALID_OP - including prose that merely looks like one ('1999. was a year' into an ordered item), which you write as text by escaping it ('1999\\. was a year'). The exceptions are an item a find's list marker selected (it matched no text as written): replace(find=\"5. Old\", with=\"5. New\") gives the item the text 'New' under its own number, and a with that is the marker alone is INVALID_OP; and a heading rename whose find carried a heading marker: replace(find=\"## Old\", with=\"## New\") gives '## New', where a different level applies only when find named the heading's actual level (find \"## Old\" with \"### New\" makes it an h3), since '# ' selects a heading without naming its level. A task item (`- [ ]` / `- [x]`) is ticked the same way: when find matches from the start of the item's text and with opens with '[x] ' or '[ ] ', the opening sets the item's box and the rest is its new text (replace(find=\"Write it\", with=\"[x] Write it\") ticks it); the same opening over a plain list item or a paragraph stays literal text. Any non-empty with that renders to no text - whitespace alone - is INVALID_OP rather than a silent deletion; pass an empty with to delete the matched text on purpose - a list item, quote, typed block or footnote definition left holding only the emptied paragraph keeps it. " +
+      "For replace, delete, and quote anchors, find text as rendered: inline Markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level whose whole text is the rest. A find that opens with a list marker ('- ', '5. ', with an optional '[ ] ' or '[x] ' after it) and matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and a box matching only a task item in that state. A find or quote anchor stays inside one block, and in a table inside one cell: ' | ' is the boundary markdown writes between two cells, not text a cell holds, so a quote that runs across cells is refused, naming the cells; change several cells with one operation per cell in the same batch, and anchor on one cell's text. replace parses with as markdown, as insert parses its markdown: a with that parses to one paragraph is the new text of the matched span, and one that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, so a marker of a different kind from the block's own opens the block it names ('4. Design' is an ordered list, which a heading cannot hold) unless you escape it ('4\\. Design'). A with that opens with a marker of the same kind as the matched block's own would write it twice and is INVALID_OP - including prose that merely looks like one ('1999. was a year' into an ordered item), which you write as text by escaping it ('1999\\. was a year'). The exceptions are an item a find's list marker selected (it matched no text as written): replace(find=\"5. Old\", with=\"5. New\") gives the item the text 'New' under its own number, and a with that is the marker alone is INVALID_OP; and a heading rename whose find carried a heading marker: replace(find=\"## Old\", with=\"## New\") gives '## New', where a different level applies only when find named the heading's actual level (find \"## Old\" with \"### New\" makes it an h3), since '# ' selects a heading without naming its level. A task item (`- [ ]` / `- [x]`) is ticked the same way: when find matches from the start of the item's text and with opens with '[x] ' or '[ ] ', the opening sets the item's box and the rest is its new text (replace(find=\"Write it\", with=\"[x] Write it\") ticks it); the same opening over a plain list item or a paragraph stays literal text. Any non-empty with that renders to no text - whitespace alone - is INVALID_OP rather than a silent deletion; pass an empty with to delete the matched text on purpose - a list item, quote, typed block or footnote definition left holding only the emptied paragraph keeps it. " +
       "The blocks a with writes are refused, with the document unchanged, where the block holding the match cannot hold them: a heading and any cell of a table, which hold one line of text, and a typed block whose content rule they break - write that block's new text alone, and insert the blocks beside it. A hard break in with is INVALID_OP when the matched text is in a heading or a table cell, which are written on one line. In a table cell, with is the cell's text: write a | in it bare, in code too, since code whose text has an odd run of backslashes right before a | cannot be stored in a cell and is INVALID_OP, naming the cell. " +
       "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
       'Insert and move anchors also accept "start", "end", "heading:<exact heading text>", and "block:<id>"; dispatch doc-read --blocks lists every block\'s id, type, opening words and token, and each table\'s rows and cells with the indexes delete_row and delete_column take (GET /api/v1/artifacts/{artifact UUID}/blocks serves the same list). ' +
@@ -1694,7 +1746,7 @@ export const dispatchToolSpecs = [
               find: z
                 .string()
                 .describe(
-                  "Text of the target as rendered, for replace or delete; inline markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading. A delete of a block's entire text removes the block."
+                  "Text of the target as rendered, for replace or delete; inline markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level whose whole text is the rest. A delete of a block's entire text removes the block."
                 )
                 .optional(),
               with: z
@@ -2177,6 +2229,7 @@ export const dispatchToolSpecs = [
       "`Coverage: the spec marks no requirements`. Nothing is refused for a gap. " +
       `An issue read, and its dispatch://KEY/log, lists the issue's last ${DEFAULT_ISSUE_READ_EVENTS} events, oldest first; ` +
       "--events N lists the last N, and --all-events every one. " +
+      "An issue's dispatch://KEY/comments lists every comment on the issue. " +
       "A comment reply chain names the comment each nested reply answers as `Answers: <comment id>`. " +
       "An edited post reads with the time of its edit, and a deleted one with who deleted it and when, in place of its body; " +
       "--history, with a ref naming that comment or message, lists the post's history newest first: each body an edit or the delete replaced, with the actor and the time, and of a deleted post each entry's actor and time with no body. " +
@@ -2204,7 +2257,7 @@ export const dispatchToolSpecs = [
       ref: z
         .string()
         .describe(
-          "Optional dispatch:// reference: dispatch://KEY, dispatch://KEY/spec, " +
+          "Optional dispatch:// reference: dispatch://KEY, dispatch://KEY/spec, dispatch://KEY/comments, " +
             "dispatch://KEY/artifact/<slug>[@vN], dispatch://KEY/ask/<id>, dispatch://KEY/comment/<id>, " +
             "dispatch://KEY/message/<id>, dispatch://PROJECT/artifact/<slug>[@vN], and its " +
             "/ask/<id> and /comment/<id>; or the dashboard URL of one. A block: " +
@@ -2541,7 +2594,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_whoami",
     example: {},
     description:
-      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the fleet a broker token naming no person belongs to, or null. A broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
+      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or, for a broker token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, or null. A machine's broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with; an exchange entry's broker token that names its account writes, recorded under that account. project is the one project key your credential may write, or null when it names none.",
     arguments: () => ({}),
     strict: true,
   },
@@ -2558,7 +2611,7 @@ export const dispatchToolSpecs = [
     example: {
       issue: "DSP-1",
       phase: "implement",
-      body: '{"schemaVersion":1,"phase":"implement","issue":"DSP-1"}',
+      body: '{"head":"0123456789abcdef0123456789abcdef01234567","note":"Run the checks with bun test src/x.test.ts in packages/x."}',
     },
     description:
       "Record this session's handoff for one phase of an issue: the body, one JSON object, is " +

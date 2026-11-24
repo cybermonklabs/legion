@@ -359,11 +359,12 @@ The Go copies its tests hold the TypeScript to: src/dispatch-href.test.ts's "the
 reader's table is the same table" and src/dispatch-text-references.test.ts's "the Go
 reader's text table is the same table" read the Go reader's JSON tables,
 src/dispatch-block-ref.test.ts reads pmdoc's block pointer and typed block id
-tables, and scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
-Go contract, pmdoc's generated block schema and contracts' own generated TypeScript
-- is current. Not pmdoc/schema, the block schema those generated types are the
-shape of: this job generates that Go from packages/contracts/schemas, and reads no
-file of pmdoc/schema itself.
+tables, scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
+Go contract, the Go copy of the tool specs, pmdoc's generated block schema and contracts'
+own generated TypeScript - is current, and src/dispatch-tools.test.ts reads that Go copy
+of the tool specs for the rule and the bounds each tool states. Not pmdoc/schema, the
+block schema those generated types are the shape of: this job generates that Go from
+packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 
 ## contracts: `bun run check:api` renders schemas/dispatch-openapi.json into
 
