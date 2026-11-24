@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // A member of a GitHub answer that the daemon decodes as a plain string and decides on as it came -
@@ -19,39 +20,28 @@ import (
 // anything else: nothing else the answer wrote there prints, and every decision is still made on the
 // member as it came.
 
-// CommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
-// characters. GitHub spells every commit it reports this way.
-func CommitSHA(s string) bool {
-	if len(s) != 40 {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
 // NotACommit is what ShownSHA prints in place of a sha that is not a commit's.
 const NotACommit = "(a sha that is not a commit's)"
 
-// ShownSHA is sha, a commit a GitHub answer names, as a message may print it: the sha where it is a
-// commit's (CommitSHA), "" where it is empty, and NotACommit otherwise.
+// ShownSHA is sha, a commit a GitHub answer names, as a message may print it: the sha where it is
+// spelled as GitHub spells every commit it reports, forty lowercase hexadecimal characters
+// (reviewround.IsHead, the one test of that spelling), "" where it is empty, and NotACommit
+// otherwise.
 func ShownSHA(sha string) string {
-	if sha == "" || CommitSHA(sha) {
+	if sha == "" || reviewround.IsHead(sha) {
 		return sha
 	}
 	return NotACommit
 }
 
-// SHAKey is sha, a commit a GitHub answer names, as an event id names it: the sha where it is a
-// commit's (CommitSHA) or empty, and otherwise "not-a-commit-" and the hex SHA-256 of what the
-// answer wrote there. Two answers that differ there make two ids, as the sha as it came would, so a
-// fact applied once per id is still decided on the answer as it came; and the id, which a log line
-// or an error can print (intake.ApplyFact names it), names nothing the answer wrote.
+// SHAKey is sha, a commit a GitHub answer names, as an event id names it: the sha where it is
+// spelled as a commit (reviewround.IsHead) or empty, and otherwise "not-a-commit-" and the hex
+// SHA-256 of what the answer wrote there. Two answers that differ there make two ids, as the sha
+// as it came would, so a fact applied once per id is still decided on the answer as it came; and
+// the id, which a log line or an error can print (intake.ApplyFact names it), names nothing the
+// answer wrote.
 func SHAKey(sha string) string {
-	if sha == "" || CommitSHA(sha) {
+	if sha == "" || reviewround.IsHead(sha) {
 		return sha
 	}
 	digest := sha256.Sum256([]byte(sha))
