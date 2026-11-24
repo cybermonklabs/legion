@@ -263,7 +263,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		// the pass that opens it (HeldFor names no streak of it yet), before it is recorded.
 		if decision.Hold == workflow.IdleHoldUnownedOperatorSuspended && quiet && len(seen.StartsWaitingForPod) > 0 &&
 			seen.HeldFor != workflow.IdleHoldUnownedOperatorSuspended.String() {
-			w.tellPodWaitHeld(ctx, issue, seen)
+			w.tellPodWaitHeld(ctx, seen)
 		}
 		// This rule names one reason per pass and no kinds beside it, so its holds carry no
 		// detail, as the teardown's do not.
@@ -278,23 +278,23 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	return workflow.IdleHoldNone, true
 }
 
-// tellPodWaitHeld tells the controller of the starts that wait for issue's pod, which the
+// tellPodWaitHeld tells the controller of the starts that wait for view's pod, which the
 // operator's suspension of claims of view holds (podWaitHeldWords), each by the claim it starts
 // (record.StartClaims), the claim the outbox's start acts on and the served state names it by. A
 // start whose claim the rule cannot give, which only a role or an issue no token spells gives, is a
 // fault of the record, as the served state reads it: nothing is told, and the warning names the
 // start and why, as it does for a notice the outbox does not take.
-func (w *workflowRuntime) tellPodWaitHeld(ctx context.Context, issue string, view pods.IdleView) {
+func (w *workflowRuntime) tellPodWaitHeld(ctx context.Context, view pods.IdleView) {
 	starts, err := record.StartClaims(view.Project, view.Issue, view.StartsWaitingForPod, record.IdlePhaseRows(view))
 	if err != nil {
 		w.log.Warn("unowned release: could not name the starts that wait for a pod an operator's suspension holds; the controller is not told",
-			"issue", issue, "error", err)
+			"issue", view.Issue, "error", err)
 		return
 	}
 	notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: starts[0].Role,
-		Reason: podWaitHeldWords(issue, starts, operatorSuspended(view), w.idlePeriod)}
-	if _, err := w.enqueueOutbox(ctx, issue, notice); err != nil {
-		w.log.Warn("unowned release: could not tell the controller of a pod an operator's suspension holds", "issue", issue, "error", err)
+		Reason: podWaitHeldWords(view.Issue, starts, operatorSuspended(view), w.idlePeriod)}
+	if _, err := w.enqueueOutbox(ctx, view.Issue, notice); err != nil {
+		w.log.Warn("unowned release: could not tell the controller of a pod an operator's suspension holds", "issue", view.Issue, "error", err)
 	}
 }
 
