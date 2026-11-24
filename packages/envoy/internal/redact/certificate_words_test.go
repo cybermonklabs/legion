@@ -61,7 +61,7 @@ func phraseCases() []phraseCase {
 			Err: fmt.Errorf("x509: %s", "“"+redacttest.CertificateName+"” certificate is not standards compliant"),
 		}), "tls: failed to verify certificate", true,
 			func(err error) bool { return errors.As(err, new(*tls.CertificateVerificationError)) }},
-		{"record", builtFailure(tls.RecordHeaderError{Msg: "tls: first record does not look like a TLS handshake", RecordHeader: [5]byte{'n', 'o', 't', '-', 'a'}}),
+		{"record", builtFailure(tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake", RecordHeader: [5]byte{'n', 'o', 't', '-', 'a'}}),
 			wantRecordWords, false, func(err error) bool { return errors.As(err, new(tls.RecordHeaderError)) }},
 		{"name-not-permitted", handshakeFailure(redacttest.NameNotPermitted, true), wantNameNotPermitWords, true,
 			hasReason(x509.CANotAuthorizedForThisName)},
