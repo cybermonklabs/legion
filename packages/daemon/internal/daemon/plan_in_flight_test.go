@@ -378,8 +378,10 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 			counts = 1
 		}
 		if seeded != phase.Retro {
-			exec("the implementer's row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary,
-				last_handoff, completed_at) values ($1, 'implementer', $2, $3, $4, $4, '', 'implemented', $5, now() - interval '2 hours')`,
+			// B's check states drop phases.verdict (migration 20261121074614), so the release
+			// before's columns here are its own, with no verdict column.
+			exec("the implementer's row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, summary,
+				last_handoff, completed_at) values ($1, 'implementer', $2, $3, $4, $4, 'implemented', $5, now() - interval '2 hours')`,
 				key, string(r.tokenOf(key, claim.RoleImplementer)), stepRecordsHead, counts, "implement-record-"+key)
 		}
 	}
@@ -396,8 +398,8 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 		// a literal of that release's text: this release's engine (workflow's Engine.ResumeTask)
 		// reads the plan tables, which the store of the release before does not hold.
 		resume := fmt.Sprintf("Continue %s. Issue: %s. Phase: %s. Resume the existing phase work.", issue.title, key, seeded)
-		exec("the "+string(working)+"'s row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary,
-			last_handoff, entry, entry_task, entry_raised_at) values ($1, $2, $3, $4, 0, '', '', $5, 1, $6, now() - interval '1 hour')`,
+		exec("the "+string(working)+"'s row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, summary,
+			last_handoff, entry, entry_task, entry_raised_at) values ($1, $2, $3, $4, 0, '', $5, 1, $6, now() - interval '1 hour')`,
 			key, string(working), string(r.tokenOf(key, working)), handoff, last, resume)
 	}
 	claims := []claim.Role{claim.RoleArchitect}

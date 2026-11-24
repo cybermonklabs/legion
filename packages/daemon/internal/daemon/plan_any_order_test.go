@@ -259,15 +259,21 @@ func TestAnIssueOfTheReleaseBeforeGoesOn(t *testing.T) {
 }
 
 // approvedIntoRetro is the reviewer of the walk's issue taking its round in the session it was
-// resumed in and a person approving the pull request, and says whether the approval moved the
-// issue into its retro, the step after the review on the plan `implementer reviewer`. The error
-// names where the issue stands instead.
+// resumed in and sending its verdict `approve` with its completion of reviewing, and says whether
+// that approval moved the issue into its retro, the step after the review on the plan
+// `implementer reviewer`. The error names where the issue stands instead. A review on GitHub
+// decides no round here (workflow's RefusesRound), so the reviewer's completion is the round's
+// decision, as every other round of this package ends (stepRecordsRig.review).
 func (r *inFlightRig) approvedIntoRetro() error {
 	r.t.Helper()
 	reviewer := r.worker(claim.RoleReviewer)
 	reviewer.take()
+	req := api.HandoffCompleteRequest{Summary: "the work holds", Verdict: "approve", Commit: stepRecordsHead}
+	req.HandoffID, req.HandoffVersion = r.writeHandoff(reviewer.session, "review")
+	if status, body := r.complete(reviewer, req); status != http.StatusOK {
+		r.t.Fatalf("the reviewer's completion = %d %s, want 200", status, body)
+	}
 	reviewer.endTurn()
-	r.publishReview(r.number, "APPROVED")
 	var stands string
 	testwait.WithinPolling(r.t, stepRecordsWait, 100*time.Millisecond, r.key+" to leave reviewing at its reviewer's approval", func() bool {
 		stands = string(r.d.state().Issues[r.key].Phase)
