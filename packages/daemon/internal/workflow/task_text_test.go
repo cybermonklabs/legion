@@ -37,17 +37,11 @@ func lastStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) st
 }
 
 // completes applies role's completion of its step of LEGION-208 with the handoff record word-n at
-// version n, through the completion route (intake.ApplyFact), which writes the role's phases row.
+// version n, through the completion route (intake.ApplyFact), which writes the role's phases row,
+// under the claim of the step's worker (workerOr), as completesAs applies it.
 func completes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, word string, n int) {
 	t.Helper()
-	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: workerOr(t, pool, "LEGION-208", role, claim.Token(string(role)+"-claim")),
-		Summary: "done", Commit: "head", HandoffRecord: word + "-" + string(rune('0'+n)), HandoffVersion: n}
-	if role == claim.RoleTester {
-		fact.Verdict = "pass"
-	}
-	if result := applyFacts(t, pool, engine)(string(role)+"-"+word+"-"+string(rune('0'+n)), fact); result.Refusal != nil {
-		t.Fatalf("the %s's completion %s version %d was refused: %+v", role, word, n, result.Refusal)
-	}
+	completesAs(t, pool, engine, role, workerOr(t, pool, "LEGION-208", role, claim.Token(string(role)+"-claim")), word, n, "head")
 }
 
 // hasPrefix fails the test unless the task starts with want.
@@ -101,7 +95,7 @@ func withoutRoundsSentences(t *testing.T, pool *pgxpool.Pool, task string) strin
 // The task each agent of an owner's plan is told names its working copy, its task and its step in
 // it, each step of the task in order and the report of each earlier step, and, last of what the
 // task composes, the task's text inside a fence, which only the reviewer's two sentences of the
-// review round follow: the reviewer of the task `implementer reviewer` reads the implementer's
+// review round follow, or a review step's one sentence of its commit: the reviewer of the task `implementer reviewer` reads the implementer's
 // report, and the retro and the merger, which run no step, are told the task and its steps alone,
 // and read the runs of the steps from Dispatch.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
@@ -308,10 +302,10 @@ var readersNameALine = regexp.MustCompile("task(?:'s| with no| whose| names| has
 
 // Each label of a step's task that the prompts and the skills tell a worker to read is one the
 // task writes, and each the task writes is one they name: the label is one constant, every line is
-// built from it, and a rename on either side alone fails here. The forms the prompts spell out
-// with placeholders (go/worker-common.md) are the task's words exactly, once the placeholders hold
-// a step's values, and the form of the retro's and the merger's task, which runs no step, is the
-// end of their task.
+// built from it, and a rename on either side alone fails here. The forms of the task's lines, with
+// placeholders as go/worker-common.md writes them, are the task's words exactly once the
+// placeholders hold a step's values, and the prompts spell out the working copy's form; the form
+// of the retro's and the merger's task, which runs no step, is the end of their task.
 func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	readers := taskReaders(t)
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
@@ -328,7 +322,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 
 	labels := map[string]string{
 		phaseLabel: "`" + phaseLabel + ": ", workingCopyLabel: "`" + workingCopyLabel + ":", planTaskLabel: "`" + planTaskLabel + ":",
-		stepsLabel: "`" + stepsLabel + ":", taskTextLabel: "`" + taskTextLabel + ":", reportedLabel: "(<step>) " + reportedLabel + ":",
+		stepsLabel: "`" + stepsLabel + ":", taskTextLabel: "`" + taskTextLabel + ":", reportedLabel: "(<role>) " + reportedLabel + ":",
 		handoffLabel: "`" + handoffLabel + ":", pullRequestLabel: "`" + pullRequestLabel + ":", reasonLabel: "`" + reasonLabel + ":",
 	}
 	for label, named := range labels {
@@ -345,16 +339,15 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		}
 	}
 
+	if template := "`Working copy: branch legion/<KEY>, directory <dir>.`"; !strings.Contains(readers, template) {
+		t.Errorf("no prompt or skill a worker reads spells out %s", template)
+	}
 	for template, values := range map[string][]string{
 		"`Working copy: branch legion/<KEY>, directory <dir>.`":         {"<KEY>", "LEGION-208", "<dir>", "/work"},
 		"`Task: <id>. Step <i> of <n>: <step>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<step>", "reviewer"},
 		"`Steps: 1 <step>, 2 <step>, … then Legion's retro and merge.`": {"1 <step>, 2 <step>, …", "1 implementer:a, 2 reviewer"},
 		"`Step <j> (<step>) reported: <word> version <v>.`":             {"<j>", "1", "<step>", "implementer:a", "<word>", "implement", "<v>", "1"},
 	} {
-		if !strings.Contains(readers, template) {
-			t.Errorf("no prompt or skill a worker reads spells out %s", template)
-			continue
-		}
 		if want := strings.NewReplacer(values...).Replace(strings.Trim(template, "`")); !strings.Contains(written, " "+want) {
 			t.Errorf("the task %q does not say %q, the words of %s", written, want, template)
 		}
@@ -412,7 +405,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 		"a resume": resumeText(issue, at),
 	} {
 		t.Run(name, func(t *testing.T) {
-			told := namingTheReviewRound(composed, claim.RoleReviewer, phase.Reviewing, reviewer)
+			told := namingTheReviewRound(composed, claim.RoleReviewer, phase.Reviewing, reviewer, nil)
 			if !strings.HasSuffix(told, round) {
 				t.Fatalf("the reviewer's task %q does not end with the daemon's round %q", told, round)
 			}

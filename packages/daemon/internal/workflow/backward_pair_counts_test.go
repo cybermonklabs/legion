@@ -174,7 +174,7 @@ func TestEveryBackwardMoveIsCountedByItsPair(t *testing.T) {
 		t.Fatalf("after the four moves back the implementer's row counts %d passes, want 4: every move back raises the pass, whatever kind it is", pass)
 	}
 	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 1 || conflicts != 0 {
-		t.Fatalf("after the four moves back the implementer's row counts %d review rounds of which %d conflict rounds, want the one review's round and no conflict round: a round is a review that requested changes alone (recordRound), and none of these was made at a conflicting head", rounds, conflicts)
+		t.Fatalf("after the four moves back the implementer's row counts %d review rounds of which %d conflict rounds, want the one review's round and no conflict round: of these moves a review that requested changes alone opens a round (recordRound), and none of these was made at a conflicting head", rounds, conflicts)
 	}
 
 	// The fifth move is made while the record holds the pull request's own head conflicting with

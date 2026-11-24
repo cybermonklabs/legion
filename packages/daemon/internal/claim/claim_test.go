@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// The six words a role travels as: the pane's `LEGION_ROLE`, the register response's `role`, the
+// The six words Legion's own roles travel as (a role of the deployment travels as its name): the pane's `LEGION_ROLE`, the register response's `role`, the
 // `workers` key in the state the plugin reads. A renamed word is a cross-language break, so the
 // list is pinned here rather than left to the constant declarations.
 func TestRoleConstantsAreTheWireWords(t *testing.T) {

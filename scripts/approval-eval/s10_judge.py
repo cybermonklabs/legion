@@ -74,13 +74,17 @@ Each request, once, in the inventory's order (point 6):
 
 Stops. A request is started once its `started.json` is kept, before S10's code runs on it, and a
 request started and not finished is a deviation (`started`) that no later run judges again (point
-6): the next run records it so before it judges anything else. A stop writes nothing more for the
-request in flight, records itself, and leaves the stage `started` for the same command to resume:
-a SIGTERM or an interrupt; a sandbox that refuses to start a judge, since every later request
-would meet the same sandbox until its cause is cleared; a failed preflight; a Kubernetes API call
-that still fails once it has been tried again (`s10_job.py`), which is no fault of the request's;
-and a read-back that Bun cannot run. A Job that ran and gave no readable result is that request's
-own `sandbox` deviation.
+6): the next run records it so before it judges anything else. A stop records itself and leaves
+the stage `started` for the same command to resume: a SIGTERM or an interrupt; a sandbox that
+refuses to start a judge, since every later request would meet the same sandbox until its cause is
+cleared; a failed preflight; a Kubernetes API call that still fails once it has been tried again
+(`s10_job.py`), which is no fault of the request's; and a read-back that Bun cannot run. It writes
+nothing more for the request in flight, but for one case: a stop that comes while an outcome built
+whole is read back (a read-back that cannot run, or a signal then) keeps that outcome as
+`pending-outcome.json`, and the next run reads it back and commits it, judging nothing again. That
+request was judged once and completed; only the check before its commit did not run, so it is not
+the `started` deviation point 6 makes of a request started and not completed. A Job that ran and
+gave no readable result is that request's own `sandbox` deviation.
 An error of this driver also writes nothing more and leaves the stage `started`, but records no
 stop: it ends the command with its traceback. Only a run that gives every request of the
 inventory its outcome writes `outcomes.jsonl` and marks the stage written; a request that no run
@@ -128,6 +132,7 @@ from s10_store import (  # noqa: E402
     CODE_DIRECTORY,
     OUTCOME_FILE,
     OUTCOMES_FILE,
+    PENDING_FILE,
     PREFLIGHT_DIRECTORY,
     STARTED_FILE,
     STARTED_REASON,
@@ -184,7 +189,9 @@ BUN = "/usr/local/bin/bun"
 
 
 class Stopped(Exception):
-    """The run stops: it writes nothing more, and the same command resumes the stage."""
+    """The run stops, and the same command resumes the stage. It writes nothing more for the
+    request in flight, but for an outcome built whole whose read-back stopped: `judge_all` keeps
+    that one as `PENDING_FILE`."""
 
 
 # ---------- flags and the admission ----------
@@ -789,8 +796,11 @@ def read_back(context, line, outcome):
 
 
 def judge_all(context, stage, code, skill):
-    """Every request of the inventory its outcome, in its order: a request a run started and did not
-    finish is `started`, and every other is judged; each outcome read back before it is committed."""
+    """Every request of the inventory its outcome, in its order: a request whose outcome an earlier
+    run built and could not read back is that outcome (`PENDING_FILE`), refused unless it names that
+    request as the inventory does; a request a run started and did not finish is `started`; and
+    every other is judged. Each outcome is read back before it is committed; a read-back that does
+    not run keeps the outcome as pending and stops the run."""
     missing = {f"{CODE_DIRECTORY}/{name}": data for name, data in code.items()
                if not stage.has(f"{CODE_DIRECTORY}/{name}")}
     if missing:
@@ -802,11 +812,31 @@ def judge_all(context, stage, code, skill):
     for line in context.inputs.inventory:
         if stage.has(request_path(line["askId"], OUTCOME_FILE)):
             continue
-        if stage.has(request_path(line["askId"], STARTED_FILE)):
+        pending = request_path(line["askId"], PENDING_FILE)
+        if stage.has(pending):
+            outcome = json.loads(stage.read(pending))
+            # No outcome is committed in the place of another request's.
+            held = outcome if isinstance(outcome, dict) else {}
+            differ = [f"its {key} is {held.get(key)!r}, and the inventory's {line[key]!r}"
+                      for key in ("askId", "issueKey", "group", "cases") if held.get(key) != line[key]]
+            if differ:
+                raise CannotRun(f"{pending} is no outcome of the request it is kept for: {'; '.join(differ)}")
+        elif stage.has(request_path(line["askId"], STARTED_FILE)):
             outcome = deviation(line, "started", STARTED_REASON)
         else:
             outcome = judge(context, line)
-        outcome, files = read_back(context, line, outcome)
+        try:
+            outcome, files = read_back(context, line, outcome)
+        except (Stopped, KeyboardInterrupt):
+            # The outcome was built whole, and only the check before its commit did not run: it is
+            # kept, so the next run commits that outcome rather than recording the request started.
+            try:
+                data = json_bytes(outcome)
+            except (TypeError, ValueError):
+                data = None
+            if data is not None and not stage.has(pending):
+                stage.commit({pending: data})
+            raise
         stage.commit(files)
         print(f"  {line['askId']}: {outcome['outcome']} {outcome['verdict'] or outcome['deviation']['kind']}")
 

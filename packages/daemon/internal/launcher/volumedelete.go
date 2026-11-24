@@ -55,7 +55,7 @@ import (
 // out of containDeletions and nothing else changed, the swap case deleted the bait under the home
 // at that path's trial, on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3.
 //
-// What that bounds, exactly. All six roles of an issue pod run as one uid — the worker image's
+// What that bounds, exactly. Every role of an issue pod runs as one uid — the worker image's
 // unprivileged user, roleUID — so a role can already delete anything of /legion it can reach by
 // a path of its own, the other roles' caches and workspaces included. Containment takes none of
 // that away and claims to take none of it away: what a followed link reaches inside the

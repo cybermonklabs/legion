@@ -36,6 +36,7 @@ import (
 // second boot opens that run, which no start of this release counted (workflow's
 // OpenUncountedRuns), beside task a's.
 func TestARestartBetweenAStepsStartAndItsCompletion(t *testing.T) {
+	t.Parallel()
 	rig := func(t *testing.T) *ownerStepsRig {
 		return newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
 	}
@@ -158,6 +159,7 @@ func (r *ownerStepsRig) waitBoots(count int) {
 // The control clears the stopped task's hold with SQL before the second boot, and the boot's resume
 // by rule then starts the tester again.
 func TestABootResumesNoStoppedStepAndNoHeldParent(t *testing.T) {
+	t.Parallel()
 	t.Run("the boot", func(t *testing.T) {
 		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
 		stopped := r.stopAtTesting()

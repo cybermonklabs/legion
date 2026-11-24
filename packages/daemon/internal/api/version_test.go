@@ -118,7 +118,7 @@ func TestPodUpdateContractIsTheContractThatIntroducedTheOp(t *testing.T) {
 // renumber would serve a plugin that cannot parse them the new values. Above the daemon's own
 // contract, no caller could be served them.
 func TestTheOwnerPlanContractIsTheContractThatAddedThePlan(t *testing.T) {
-	const addedOwnerPlan = 211
+	const addedOwnerPlan = 219
 	if OwnerPlanContract != addedOwnerPlan {
 		t.Fatalf("OwnerPlanContract = %d, want %d, the contract whose entry in version.go added register_plan, stop_task, returnTo and the two new hold reasons",
 			OwnerPlanContract, addedOwnerPlan)

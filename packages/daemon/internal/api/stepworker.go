@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // workerToken is the claim of the agent that works role's step of issue now, read from the issue's
@@ -23,16 +24,13 @@ func (s *server) workerToken(ctx context.Context, issue string, role claim.Role)
 	if s.pool == nil || s.records == nil {
 		return "", errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	token, err := record.ReadWorkerClaim(ctx, s.records, tx, s.project, issue, role)
-	if err != nil {
-		return "", err
-	}
-	return token, tx.Commit(ctx)
+	var token claim.Token
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		token, err = record.ReadWorkerClaim(ctx, s.records, tx, s.project, issue, role)
+		return err
+	})
+	return token, err
 }
 
 // worksStep is the standing of a request on token, the claim the route read as the worker on

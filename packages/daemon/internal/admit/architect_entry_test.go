@@ -17,7 +17,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// phaseRow is role's phases row of issue, and the zero row where the record holds none.
+// phaseRow is role's phases row of issue now, its row with the highest entry (record.PhaseRowOf),
+// and the zero row where the record holds none.
 func phaseRow(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) record.PhaseRow {
 	t.Helper()
 	var rows []record.PhaseRow

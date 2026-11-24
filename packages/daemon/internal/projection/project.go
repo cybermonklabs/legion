@@ -38,8 +38,9 @@ type Inputs struct {
 	// Project is the Dispatch project whose pending status writes and held lifecycle rows the
 	// state lists.
 	Project string
-	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
-	// root's view answers its own state of; the empty list gates none.
+	// Steps are the design-gate steps the deployment gates (config.Gates.Steps). Each root's
+	// view answers the steps its tree is gated on, which these steps and the root's gate rows
+	// make (record.TreeSteps); the empty list gates none.
 	Steps []record.DesignStep
 	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// whose order each issue's `assignments` ride in (assignmentViews); the empty list declares
@@ -70,7 +71,8 @@ type Inputs struct {
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
 // role whose phase entry and given entry each issue's view carries is the role that works its
-// current phase (phase.RoleFor), and the two handshake times beside them are that role's claim's,
+// current phase (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running step),
+// and the two handshake times beside them are that role's claim's,
 // but for a tree's own root, whose times are its architect's claim's in every phase
 // (supervise.Claim.Handshake).
 func Project(ctx context.Context, in Inputs) (api.State, error) {
@@ -127,9 +129,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	// The roles of the starts that wait because their issue's pod lacks the slot of the start's
-	// claim or the role of its step, by issue: a start waiting on its backoff, which may have no
-	// claim to show yet.
+	// The starts that wait because their issue's pod lacks the slot of the start's claim or the
+	// role of its step, by issue, each with its role and the claim its row names: a start waiting
+	// on its backoff, which may have no claim to show yet. Each issue's view names them below,
+	// once its phases rows are read.
 	waitingForPod, err := in.Store.StartsWaitingForPod(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
@@ -154,9 +157,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// entry its phases row names. An issue's view reads them off the claim of the worker on the
 	// role's step (record.WorkerClaim over the issue's phases rows): the claim the role's row names
 	// while that row runs a step of the issue's plan, and otherwise the role's own claim, which is
-	// the claim the admission pass weighs. Two claims can hold one role — the agent of a key on a
-	// step of another role, beside that role's own claim of an earlier version of the plan — so
-	// the issue and the role do not name the claim, and the worker's token does.
+	// the claim the admission pass weighs. Two claims of one issue can hold one role, so the issue
+	// and the role do not name the claim, and the worker's token does.
 	entries := make(map[claim.Token]claimEntry, len(in.Claims))
 	for _, current := range in.Claims {
 		entries[current.Token] = claimEntry{given: current.GivenEntry, handshake: current.Handshake}
@@ -220,9 +222,6 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Ancestry: issue.Ancestry,
 			Workers:  map[claim.Role]api.PhaseView{},
 		}
-		for _, role := range waitingForPod[issue.Key] {
-			view.StartWaitsForPod = append(view.StartWaitsForPod, string(role))
-		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
 		// experiment named `memory` spelled out for the readers that knew it before any
@@ -260,19 +259,38 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if err != nil {
 			return api.State{}, err
 		}
+		// Each start that waits for the issue's pod, by its role and the claim it starts: the
+		// claim its row names, or, for a row that names none, the claim the record gives the
+		// role's step (record.WorkerClaim), which is the claim the outbox's next try of that row
+		// acts on (the outbox's start). Two claims of one issue can hold one role, so a role
+		// alone would name a second agent of the role as the role's own agent. The derivation
+		// fails only for a role or an issue no token spells, and the outbox derived this same
+		// claim from the same row's role and issue on the try that wrote its wait, so a failure
+		// is a fault of the record and fails the state rather than serving a start unnamed.
+		for _, start := range waitingForPod[issue.Key] {
+			token := start.Claim
+			if token == "" {
+				token, err = record.WorkerClaim(projectToken, issue.Key, start.Role, phases)
+				if err != nil {
+					return api.State{}, fmt.Errorf("name %s's start of %s that waits for its pod: %w",
+						issue.Key, start.Role, err)
+				}
+			}
+			named := api.StartWaitView{Role: start.Role, Token: token}
+			if !slices.Contains(view.StartWaitsForPod, named) {
+				view.StartWaitsForPod = append(view.StartWaitsForPod, named)
+			}
+		}
 		// Each role's row now (record.PhaseRowOf), the row with the highest entry: a role that
 		// stands at two steps of a task has a row for each, and its worker is served from the row of
 		// the step it works now or worked last, the row the admission pass weighs it against. The
 		// reviewer's row now is the round's: its decision is read from it, and so is what the round
 		// waits on from GitHub (mergeWaitView). The zero row is an issue whose reviewer has never
 		// had one.
-		var reviewer record.PhaseRow
+		reviewer := record.PhaseRowOf(phases, claim.RoleReviewer)
 		for _, item := range phases {
 			if now := record.PhaseRowOf(phases, item.Role); now.StepTask != item.StepTask || now.StepPlace != item.StepPlace {
 				continue
-			}
-			if item.Role == claim.RoleReviewer {
-				reviewer = item
 			}
 			claimView, live := claimViews[item.Claim]
 			if !live {
@@ -280,8 +298,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			}
 			// The architect is the issue's architect and no worker of its `workers` map, so no
 			// phase view is built for it. Its row is read all the same: the entry below is
-			// read off `phases` by the role that works the issue's phase (phase.RoleFor), which
-			// is the architect for a root at admitted.
+			// read off `phases` by the role that works the issue's phase (record.Issue.RoleAt),
+			// which is the architect for a root at admitted.
 			if item.Role == claim.RoleArchitect {
 				view.Architect = &claimView
 				continue
@@ -378,14 +396,17 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				ApprovedVersion: gate.ApprovedVersion,
 			}
 		}
-		// The deployment's gate as this root stands in it, one entry for each step it gates. Only
-		// a root holds gate rows — a child's work is held at its root's steps — so a child answers
-		// no entry at all rather than one unregistered step for each the deployment gates. The
-		// entries are the configured steps and not the rows: a row of a step the deployment no
-		// longer gates is kept in the record, where a deployment that gates it again reads its
-		// true state, and is in no entry here, since it holds nothing (classify.DesignGatesOpen).
+		// The tree's gate as this root stands in it, one entry for each step the tree is gated on
+		// (record.TreeSteps): each step the deployment gates, and criteria where the root's
+		// architect registered its Verification document beside a deployment that gates spec and
+		// not criteria, since that row holds the tree as the spec's does. Only a root holds gate
+		// rows — a child's work is held at its root's steps — so a child answers no entry at all
+		// rather than one unregistered step for each the deployment gates. The entries are the
+		// tree's steps and not the rows: a row of a step the deployment no longer gates is kept in
+		// the record, where a deployment that gates it again reads its true state, and is in no
+		// entry here, since it holds nothing (classify.DesignGatesOpen).
 		if issue.Key == issue.Tree {
-			view.GatedSteps = api.GatedStepViewsOf(in.Steps, gates)
+			view.GatedSteps = api.GatedStepViewsOf(record.TreeSteps(in.Steps, gates), gates)
 		}
 		if check, ok := checks[issue.Key]; ok {
 			view.Check = checkView(check)
@@ -547,13 +568,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// It reads the held list above for the sentence of most issues it answers, and it is not
 	// that list: the list says where every issue the daemon holds in the workflow stands and why
 	// nothing of it runs, and this answers why an issue is not working now. The two part at an
-	// issue whose work runs past its review, which the list names and this answers for not at
+	// issue whose work runs in accepting, retro or merging, which the list names and this answers for not at
 	// all; where they part and why is written once, with the arm that parts them
-	// (atWorkPastReview).
+	// (atWorkInSlotlessPhase).
 	//
-	// The running roots are the term that says an issue past its review is at work: it holds no
+	// The running roots are the term that says an issue in accepting, retro or merging is at work: it holds no
 	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
-	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
+	// on whether its tree runs at all (whyStates, atWorkInSlotlessPhase). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
 	// and a parked root's tree is neither.
@@ -561,11 +582,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
-	// tree's, so every issue of one tree carries the same two values — a child past its own
-	// review, which holds no slot, and a done child recorded under the tree among them, since
-	// what has stopped is the tree and not the issue a reader happens to hold. A tree that is no
-	// longer live is measured for nobody: its root is in no `admission.trees` entry, there is
-	// nothing of the deployment's left to wait on, and each of its issues carries neither key.
+	// tree's, so every issue of one tree carries the same two values — a child in accepting,
+	// retro or merging, which holds no slot, and a done child recorded under the tree among
+	// them, since what has stopped is the tree and not the issue a reader happens to hold. A
+	// tree that is no longer live is measured for nobody: its root is in no `admission.trees`
+	// entry, there is nothing of the deployment's left to wait on, and each of its issues carries
+	// neither key.
 	//
 	// The measure is read once for the whole state (quietTrees), from the records and the claims
 	// this pass already holds, and a live root is always one of its trees whatever its own

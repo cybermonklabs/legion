@@ -121,23 +121,25 @@ func holdsConnection(ctx context.Context) bool {
 
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side
 // for as long as the caller lives: ctx's deadline, cancellation and values, with a hold mark of
-// its own, always a fresh one. A worker that takes a connection — a transaction, a cursor — marks
-// only itself, so its siblings are still free to take theirs, and the pool still refuses each
-// worker a second connection of its own. A goroutine that runs beside others and reaches this
-// pool takes one. A caller that takes none is one the guard cannot see, since a context nothing
-// marked holds no connection as far as the pool can tell (holdsConnection): the sandbox
-// launcher's frame loop is such a caller, deleting a restored workspace bundle on a context made
-// from context.Background() (runtime/sandbox/launcher.go, restoreReported), and the pool refuses
-// it nothing.
+// its own, always a fresh one, and no commit scope. A worker that takes a connection — a
+// transaction, a cursor — marks only itself, so its siblings are still free to take theirs, and
+// the pool still refuses each worker a second connection of its own. A goroutine that runs beside
+// others and reaches this pool takes one. A caller that takes none is one the guard cannot see,
+// since a context nothing marked holds no connection as far as the pool can tell
+// (holdsConnection): the sandbox launcher's frame loop is such a caller, deleting a restored
+// workspace bundle on a context made from context.Background() (runtime/sandbox/launcher.go,
+// restoreReported), and the pool refuses it nothing.
 //
 // It differs from WithTransactionTracking, this package's other mark, by never reusing ctx's:
 // that one hands back the mark ctx already carries, which siblings sharing it would set and
 // clear under each other. A worker's mark is its own whatever the parent carries, so the caller
 // must start these goroutines outside any transaction or connection of this pool's — a
 // process-lifetime context, as the daemon's loops run off — since a fresh mark cannot see a
-// connection the parent holds.
+// connection the parent holds. For the same reason it holds no commit scope: a goroutine started
+// inside a TransactWith body would otherwise join that body's transaction, run statements on its
+// connection beside the body, and append to its hook list from a second goroutine.
 func ForConcurrentWorker(ctx context.Context) context.Context {
-	return context.WithValue(ctx, holdingKey{}, &holding{})
+	return context.WithValue(context.WithValue(ctx, holdingKey{}, &holding{}), commitHooksKey{}, (*commitScope)(nil))
 }
 
 // loggedSites is the calling stacks that have already logged a refusal: one line per distinct
@@ -162,7 +164,7 @@ const refusalDepth = 32
 
 // logRefusal logs a refusal once per distinct calling stack, with that stack, which is what names
 // the path to repair. The stack, read into a fixed array, is itself the key (loggedSites): a
-// function that only passes a call on to the pool — pgx.BeginFunc, a Store method, intake's
+// function that only passes a call on to the pool — TransactWith, a Store method, intake's
 // ApplyFact or any function of the daemon's own — stands in the stacks of all its callers without
 // making them one, so no caller's refusal silences another's. The stack is formatted only on a
 // stack's first refusal; a refusal of a stack already seen costs the read of its program counters
@@ -313,10 +315,10 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 // acquire hands out one of the pool's connections to a caller that must run its own work on the
 // connection after its transaction ends and before the connection returns to the pool. Store.apply
 // is the one such caller: it resets the session of the connection that a migration ran on
-// (releaseMigrationConn). A transaction from Begin cannot serve it, because pgx returns that
+// (releaseMigrationConn). A transaction from BeginTx cannot serve it, because pgx returns that
 // transaction's connection to the pool as the transaction ends. acquire runs the guard first, as
 // every other way this pool hands out a connection does. Then it marks the caller as holding a
-// connection, as begin does. The caller runs release only once the connection is back in the pool
+// connection, as BeginTx does. The caller runs release only once the connection is back in the pool
 // or closed, so the guard sees the connection for as long as the caller holds it. release is never
 // nil: for a context the pool cannot see, it does nothing.
 func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(), err error) {
@@ -330,31 +332,16 @@ func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(),
 	return conn, heldRelease(ctx), nil
 }
 
-// Begin opens a transaction and marks the caller as holding a connection. It is what
-// pgx.BeginFunc opens its transaction through, and with it Store.Tx, so every call site that
-// wraps a transaction in a function keeps working as it was written.
-func (p *Pool) Begin(ctx context.Context) (pgx.Tx, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	return p.begin(ctx, pgx.TxOptions{})
-}
-
 // BeginTx opens a transaction with options and marks the caller as holding a connection. It is
-// what pgx.BeginTxFunc opens its transaction through, and what intake.ApplyFact opens each
-// fact's with.
+// what TransactWith opens every transaction of the daemon through, and the pool's one way to a
+// transaction, so the boundary guard counts its one begin on pgx's pool. The transaction it gives
+// is always the store's own (storeTx), so every statement of it passes the argument rule. It
+// carries the release of the caller's hold mark, which does nothing for a context the pool cannot
+// see, as acquire's does.
 func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	return p.begin(ctx, options)
-}
-
-// begin is the body both transaction entry points share once their guard has passed. The
-// transaction it gives is always the store's own (storeTx), so every statement of it passes the
-// argument rule. It carries the release of the caller's hold mark, which does nothing for a
-// context the pool cannot see, as acquire's does.
-func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err

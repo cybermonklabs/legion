@@ -30,7 +30,7 @@ STATE_JSON is a saved body of `GET /legion/v1/state`. It maps each claim token t
 `otherClaims` (the claims of the issue neither of those shows, such as a role's own claim beside
 the agent of a key on that role's step), each of those a claim with `token` and `session`. The
 token is read from the claim, never composed from the issue and the role: two claims of one issue
-can hold one role, and a keyed agent's token ends in its agent's name, not in the role of its
+can hold one role, and a token ends in its agent's name, which need not be the role of its
 step. A state from a daemon below contract 222 names no `token`, and a claim there is mapped by
 `locator.claim` while it holds a process, and otherwise reported as unknown. The project
 controller's own claim, `legion-<project token>-controller`, maps to `controllerLocator.sessionId`

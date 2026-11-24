@@ -37,8 +37,8 @@ type stallDefaults struct {
 // to DEFAULT_STALL_LIMITS, to the per-role bounds the plugin resolves and to the watchdog's
 // DECLARED_DEADLINE_MOST_MS, so a number moved on one side alone fails a test on the other.
 func TestStallDefaultsGolden(t *testing.T) {
-	// RoleConfigRoles is every issue role and then the controller: the same set a session's
-	// LEGION_ROLE can hold, and so the set the bound has a default for.
+	// RoleConfigRoles is Legion's six issue roles and then the controller: the roles of Legion's a
+	// session's LEGION_ROLE can hold, and so the set the bound has a default for.
 	byRole := make(map[claim.Role]int64, len(RoleConfigRoles))
 	for _, role := range RoleConfigRoles {
 		byRole[role] = StallCallBoundFor(role).Milliseconds()

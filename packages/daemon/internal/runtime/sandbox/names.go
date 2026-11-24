@@ -111,7 +111,18 @@ const (
 	// at launcher.WorkloadIdentityTokenFile in it, the file the launcher reads under its roles
 	// directory. It is under RolesDir, which every role's namespace covers, so no role's process
 	// reads the token: a role that could would hold the pod's Google identity without the endpoint.
+	// The controller's pod mounts the token at ControllerWorkloadIdentityDir instead where its
+	// launcher runs the single-role form, which has no roles directory.
 	WorkloadIdentityDir = RolesDir + "/" + launcher.WorkloadIdentityDirName
+	// ControllerWorkloadIdentityDir is where the project controller's pod, run in a microVM whose
+	// deployment names the metadata endpoint, mounts that same projected token, read-only, at
+	// launcher.WorkloadIdentityTokenFile in it, where its launcher runs the single-role form: that
+	// launcher's fixed path under launcher.FixedRoot, as WorkloadIdentityDir is the roles
+	// launcher's under its roles directory (controllerPod.launcherContainer). That form has no
+	// role namespaces, so its agent can read the token. That gives the agent no identity it lacks:
+	// the endpoint its launcher serves it hands it access tokens of the same Workload Identity
+	// principal.
+	ControllerWorkloadIdentityDir = launcher.FixedRoot + "/" + launcher.WorkloadIdentityDirName
 	// SessionWriterDir is where a pod whose session database names a writer audience
 	// (ompsessions.Database.WriterAudience) mounts, read-only, the projected ServiceAccount token
 	// of that audience (sessionWriterTokenVolume), at launcher.SessionWriterTokenFile in it: the
@@ -358,11 +369,11 @@ const (
 	labelRole    = "legion.dev/role"
 )
 
-// labelSandbox marks a microVM issue pod, with the value SandboxMicroVM; a gVisor pod carries
-// none. It is the label a NetworkPolicy selects a microVM pod by. It is on the pod template alone
-// (podTemplate), and so on the pod, never on the Sandbox or its Secrets: a Sandbox is kept across
-// the pods it runs, which may run in either sandbox, while the template is rebuilt for every pod
-// from the sandbox the launch that builds it decided.
+// labelSandbox marks a microVM pod, an issue's or the project controller's, with the value
+// SandboxMicroVM; a gVisor pod carries none. It is the label a NetworkPolicy selects a microVM pod
+// by. It is on the pod template alone (podTemplate), and so on the pod, never on the Sandbox or its
+// Secrets: a Sandbox is kept across the pods it runs, which may run in either sandbox, while the
+// template is rebuilt for every pod from the sandbox the launch that builds it decided.
 const labelSandbox = "legion.dev/sandbox"
 
 // labelVolume marks the claim template of an issue's kept volume with the one value volumeKept:
@@ -391,11 +402,11 @@ const volumeResetAnnotation = "legion.dev/volume-reset"
 
 // secretsReleasedAnnotation is the release's record on the Sandbox of an issue's kept volume that
 // it deleted the Secrets the Sandbox owns: the provisioning Secret and the Secret of each slot of
-// its pod (podSlots, deleteIssueSecrets). Its value is the Sandbox's uid. The release writes it
-// once every delete has succeeded, so it is never on a Sandbox that still owns one of them. A
-// launch that keeps the Sandbox removes it before it writes the first Secret (relaunch, annotate).
-// A Sandbox that a launch creates carries none. IssueSandbox reads it: a Suspended kept Sandbox
-// that carries it holds nothing that a release can take.
+// its pod and of each role of the issue (podSlots, deleteIssueSecrets). Its value is the Sandbox's
+// uid. The release writes it once every delete has succeeded, so it is never on a Sandbox that
+// still owns one of them. A launch that keeps the Sandbox removes it before it writes the first
+// Secret (relaunch, annotate). A Sandbox that a launch creates carries none. IssueSandbox reads
+// it: a Suspended kept Sandbox that carries it holds nothing that a release can take.
 const secretsReleasedAnnotation = "legion.dev/secrets-released"
 
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,

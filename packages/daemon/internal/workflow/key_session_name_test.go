@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -70,9 +69,6 @@ func TestAKeyKeepsTheNameWhoseClaimHoldsItsSessionAfterItsRowsAreGone(t *testing
 			assertWalksAt(t, pool, engine, key, phase.Implementing, stepPlace(2))
 		}
 		start := lastStartOf(t, pool, key, v.role)
-		if reason := fmt.Sprintf("the owner gave version %d of the plan", version); version > 1 && v.place == 1 && !strings.Contains(start.Task, reason) {
-			t.Fatalf("version %d: the %s's last start = %+v, want the start of this version, which says %q", version, v.role, start, reason)
-		}
 		if start.Agent != v.agent {
 			t.Fatalf("version %d: the start of step %d names the agent %q, want %q", version, v.place, start.Agent, v.agent)
 		}

@@ -18,10 +18,12 @@ const claimSessionAgentVersion = 20261122120917
 const claimSessionAgentRelease = "the release that records the agent of a claim's session"
 
 // 20261122120917 adds claims.session_agent, the agent whose session a claim holds
-// (supervise.Claim.SessionAgent). Every claim the release before left takes the default, the empty
-// string, which records no agent: such a claim takes the agent of the next step's start that
-// reaches it, brought back or still running, and keeps the session it holds for that agent. A row
-// the release before inserts names no such column and takes the default.
+// (supervise.Claim.SessionAgent). Every claim the release before left whose name no key's plan row
+// holds, as here, takes the default, the empty string, which records no agent: such a claim takes
+// the agent of the next step's start that reaches it, brought back or still running, and keeps the
+// session it holds for that agent (a claim whose name a key's row holds records that key:
+// migration_20261122120917_keys_test.go). A row the release before inserts names no such column
+// and takes the default.
 //
 // This release also names a step's agent on each supervise start (record.SuperviseRequest.Agent),
 // a key the release before does not know: it decodes strictly, so a start left queued with it would

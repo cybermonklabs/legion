@@ -300,6 +300,34 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 			t.Fatalf("the task counts %+v, want one pass under accepting-testing and no round: the owner's own failed acceptance is no review round", counts)
 		}
 	})
+
+	// The owner's move back from accepting to the implementer counts a pass and no review round:
+	// only a review that requests changes counts one (recordRound). The review before it is the
+	// control: it raises the round count, so a read that cannot see the count fails there.
+	t.Run("the owner's move back to the implementer counts a pass and no round", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "acceptance:owner")
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		reviewRequestsChanges(t, pool, engine, root.Key)
+		if counts := taskOf(t, pool, engine, root.Key).Counts; counts.Rounds != 1 || counts.Pass != 1 {
+			t.Fatalf("after the review's request for changes the task counts %+v, want one round and one pass", counts)
+		}
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+		assertWalksAt(t, pool, engine, root.Key, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+		before := taskOf(t, pool, engine, root.Key).Counts
+
+		applyRefusingNothing(t, pool, engine, rootsMoveBack(t, pool, engine, root.Key, phase.Implementing, "the migration is missing"))
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		after := taskOf(t, pool, engine, root.Key).Counts
+		if after.Rounds != before.Rounds || after.Pass != before.Pass+1 || after.BackwardMoves["accepting-implementing"] != 1 {
+			t.Fatalf("the owner's move back took the task's counts from %+v to %+v, want the same rounds, one more pass and accepting-implementing 1", before, after)
+		}
+	})
 }
 
 // The control of TestAFailedStepReturnsAndNoCountStopsATask: its review that requests changes
@@ -317,9 +345,10 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
-	// The type is forged: no plan of this release writes it. Each failed step a plan can hold comes
-	// after its implementer (plan.Supported), so only a stored type that no plan gives reaches the
-	// stop this test asserts (returnTarget).
+	// The type is forged: no plan of this release writes it. Each failed step of Legion's a plan
+	// can hold comes after its implementer (plan.Supported), so only a stored type that no plan
+	// gives, or a role of the deployment standing before the implementer, reaches the stop this
+	// test asserts (returnTarget).
 	if _, err := pool.Exec(t.Context(), "update plan_steps set type = 'review' where issue = $1 and task = 'a' and position = 1", root.Key); err != nil {
 		t.Fatalf("store the implementer step's type as review: %v", err)
 	}

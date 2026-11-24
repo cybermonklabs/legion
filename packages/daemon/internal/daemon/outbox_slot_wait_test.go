@@ -13,27 +13,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
-
-// slotsRuntime is the fake runtime with an issue pod that holds every role of the deployment and
-// lacks each slot lacks names, with the uid of the pod (runtime.IssuePodRoles): a claim's slot is
-// the agent its token ends in (claim.Token.Slot), which the outbox asks as a name of the pod.
-type slotsRuntime struct {
-	*fake.Runtime
-	lacks map[claim.Role]string
-}
-
-func (r slotsRuntime) PodLacksRole(_ string, name claim.Role) (string, bool) {
-	pod, lacks := r.lacks[name]
-	return pod, lacks
-}
-
-func (slotsRuntime) SlotWaitsForCredential(string, claim.Agent) (string, bool, error) {
-	return "", true, nil
-}
 
 // The start of a second agent of one role, `…-implementer-2` on step 3 of `implementer reviewer
 // implementer`, waits on its row where the issue's pod lacks the slot of that agent's name, though
@@ -42,17 +24,9 @@ func (slotsRuntime) SlotWaitsForCredential(string, claim.Agent) (string, bool, e
 // nothing, and the agent `…-implementer`, whose slot the pod holds, runs on. Once the pod holds the
 // slot (its update round replaced it), the same row creates the claim and spawns it.
 func TestAStartOfAnAgentWhosePodLacksItsSlotWaits(t *testing.T) {
-	runner, sup, rt, issue := podWaitRunner(t, nil)
-	implementer, err := claim.AgentToken("legion", issue.Key, "implementer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := claim.AgentToken("legion", issue.Key, "implementer-2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	slots := slotsRuntime{Runtime: rt, lacks: map[claim.Role]string{"implementer-2": "pod-1"}}
-	sup.deps.Runtime = slots
+	lacks := map[claim.Role]string{"implementer-2": "pod-1"}
+	runner, sup, rt, issue := podWaitRunner(t, lacks)
+	implementer, second := agentClaimToken(t, issue.Key, "implementer"), agentClaimToken(t, issue.Key, "implementer-2")
 	start := func(id int64, token claim.Token) error {
 		row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Claim: token, Task: "Build it.", Generation: issue.Generation}, time.Now())
 		row.ID = id
@@ -63,7 +37,7 @@ func TestAStartOfAnAgentWhosePodLacksItsSlotWaits(t *testing.T) {
 	}
 	testwait.WithinPolling(t, 5*time.Second, 10*time.Millisecond, "the implementer's spawn", func() bool { return len(rt.CallsOf("Spawn")) == 1 })
 
-	err = start(98, second)
+	err := start(98, second)
 	if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
 		t.Errorf("the start of %s = %v, want a wait that is runtime.ErrAwaitsPodUpdate", second, err)
 	}
@@ -80,7 +54,7 @@ func TestAStartOfAnAgentWhosePodLacksItsSlotWaits(t *testing.T) {
 		t.Errorf("the claim %s is gone, want it running beside the wait", implementer)
 	}
 
-	delete(slots.lacks, "implementer-2")
+	delete(lacks, "implementer-2")
 	if err := start(98, second); err != nil {
 		t.Fatalf("the start of %s once its pod holds its slot = %v, want it to create its claim", second, err)
 	}
@@ -138,18 +112,14 @@ func TestAStartWithNoTaskOfAnAgentThePlanNoLongerNamesFinishesWithoutAWait(t *te
 		{name: "control: a start that carries a task", task: "Build it.", waits: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			runner, sup, rt, issue := podWaitRunner(t, nil)
-			second, err := claim.AgentToken("legion", issue.Key, "implementer-2")
-			if err != nil {
-				t.Fatal(err)
-			}
-			sup.deps.Runtime = slotsRuntime{Runtime: rt, lacks: map[claim.Role]string{"implementer-2": "pod-1"}}
+			runner, sup, rt, issue := podWaitRunner(t, map[claim.Role]string{"implementer-2": "pod-1"})
+			second := agentClaimToken(t, issue.Key, "implementer-2")
 			seedSlotWaitPlan(t, runner, issue, tc.second)
 			row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Claim: second,
 				Task: tc.task, Generation: issue.Generation}, time.Now())
 			row.ID = 99
 
-			err = runner.execute(context.Background(), row)
+			err := runner.execute(context.Background(), row)
 			if tc.waits {
 				if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
 					t.Fatalf("the start of %s = %v, want a wait for its pod's update round", second, err)

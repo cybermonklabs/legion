@@ -196,6 +196,7 @@ func reviewerDecision(t *testing.T, pool *store.Pool) (string, int) {
 // they decide nothing by webhook. A round held from reviewing records the decision for the retry
 // to end it on.
 func TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnTheRead(t *testing.T) {
+	t.Parallel()
 	const (
 		early = "2026-10-08T22:15:40Z"
 		late  = "2026-10-08T22:15:52Z"
@@ -257,7 +258,7 @@ func TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnTheRead(t *testing.T) {
 func holdFromReviewing(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(context.Background(), tx, "CAPTURE-1")
 		if err != nil {
 			return err
@@ -279,6 +280,7 @@ func holdFromReviewing(t *testing.T, pool *store.Pool) {
 // (workflow's RefusesRound). The issue stays in reviewing and the reviewer's row records
 // nothing, the read applying no review it passes over.
 func TestTheReviewsReadDecodesGitHubsOwnAnswer(t *testing.T) {
+	t.Parallel()
 	const head = "a2cd06879ab30d0e8fbeca82b2970826a2c3b6b3"
 	answer, err := os.ReadFile("testdata/legion-smoke-pull-550-reviews.json")
 	if err != nil {
@@ -311,6 +313,7 @@ func TestTheReviewsReadDecodesGitHubsOwnAnswer(t *testing.T) {
 // processed events do not catch it. The read reads the reviews in implementing too, and finds
 // nothing newer to apply; round 2's own review, once GitHub lists it, still ends round 2.
 func TestAReviewDecisionDeliveredTwiceActsOnce(t *testing.T) {
+	t.Parallel()
 	round1 := legionReview(11, "CHANGES_REQUESTED", captureHead, "2026-10-08T22:15:40Z", captureHead)
 	webhook := intake.PullRequestReview{Repo: "acme/widgets", Number: 86, ID: 11, SubmittedAt: time.Date(2026, 10, 8, 22, 15, 40, 0, time.UTC),
 		State: "changes_requested", CommitID: captureHead, HeadSHA: captureHead, Author: reviewReadApp, Body: "review 11" + legionFooter("ses-reviewer", captureHead)}
@@ -380,6 +383,7 @@ func TestAReviewDecisionDeliveredTwiceActsOnce(t *testing.T) {
 // sent back on the earlier request for changes, or ended in retro on the earlier approval of the
 // head. A later read finds nothing newer to apply.
 func TestADecidingReviewOutsideARoundDecidesNoLaterRound(t *testing.T) {
+	t.Parallel()
 	const stale = "2026-10-08T22:15:40Z"
 	for _, tc := range []struct {
 		from   phase.Phase
@@ -442,6 +446,7 @@ func TestADecidingReviewOutsideARoundDecidesNoLaterRound(t *testing.T) {
 // completes, and the round stays open and undecided with one round counted, rather than going back
 // to implementing a second time or on to retro on that review.
 func TestADecidingReviewBetweenRoundsDecidesNoLaterRound(t *testing.T) {
+	t.Parallel()
 	round1 := legionReview(11, "CHANGES_REQUESTED", captureHead, "2026-10-08T22:15:40Z", captureHead)
 	for _, state := range []string{"CHANGES_REQUESTED", "APPROVED"} {
 		t.Run(state, func(t *testing.T) {
@@ -488,6 +493,7 @@ func TestADecidingReviewBetweenRoundsDecidesNoLaterRound(t *testing.T) {
 // permission answer's own window - the next read neither asks about it again nor lets the approval
 // end the round. Its webhook, judged at delivery, would not have ended it either.
 func TestTheReadJudgesEachReviewOnce(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 	var reads, outsiderReads atomic.Int64
@@ -527,6 +533,7 @@ func TestTheReadJudgesEachReviewOnce(t *testing.T) {
 // alone, the person's review would cost a permission read and a warning on every read of the
 // issue until a newer review moved the pull request's newest deciding review past it.
 func TestTheReadKeepsAReviewRefusedAtEveryHead(t *testing.T) {
+	t.Parallel()
 	const passedOver = "this read passes over it and reads the review below it"
 	for _, tc := range []struct {
 		name            string
@@ -586,6 +593,7 @@ func TestTheReadKeepsAReviewRefusedAtEveryHead(t *testing.T) {
 // refused, and the reviewer's own, though older, decides the round. Without it the read would apply
 // the controller's review every two minutes and the workflow set it aside every time.
 func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 	captureHeadAt(t, pool, captureHead)
@@ -622,6 +630,7 @@ func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
 // token (workflow.Engine.ReviewerSession), so the controller's approval it lists is set aside and
 // kept as refused, and the round stays undecided, as in a later round.
 func TestTheReadSetsAsideAnotherSessionsReviewInTheReviewersFirstRound(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer})
 	captureHeadAt(t, pool, captureHead)
@@ -650,6 +659,7 @@ func TestTheReadSetsAsideAnotherSessionsReviewInTheReviewersFirstRound(t *testin
 // the reviewer's session is recorded, judges it again by that session, and sets aside and keeps one
 // naming another session, or applies one naming the reviewer's, which decides the round.
 func TestTheReadJudgesAReviewThatWaitedForTheReviewersSessionAgain(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// claim is the reviewer's claim before its agent registers: "empty" with no session, or
@@ -711,6 +721,7 @@ func TestTheReadJudgesAReviewThatWaitedForTheReviewersSessionAgain(t *testing.T)
 // decision nor a refusal; an approval whose footer names the head the record holds decides the
 // round through the same read, whatever commit_id GitHub lists it under.
 func TestAListedApprovalDecidesOnTheHeadItsFooterNamesAcrossAForcePush(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name     string
@@ -765,6 +776,7 @@ func TestAListedApprovalDecidesOnTheHeadItsFooterNamesAcrossAForcePush(t *testin
 // round. Read as the newest alone, the round would never be decided by this read or by any read
 // after it, the list keeping that newer review for ever.
 func TestARefusedListedReviewDoesNotHideTheApprovalBelowIt(t *testing.T) {
+	t.Parallel()
 	const (
 		early = "2026-10-08T22:15:40Z"
 		late  = "2026-10-08T22:15:52Z"
@@ -806,6 +818,7 @@ func TestARefusedListedReviewDoesNotHideTheApprovalBelowIt(t *testing.T) {
 // again and it decides the round. Applied at the first head and marked, it would be a review
 // nothing ever judged again.
 func TestAReviewRefusedForItsHeadDecidesOnceThatHeadArrives(t *testing.T) {
+	t.Parallel()
 	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
@@ -853,9 +866,10 @@ func TestAReviewRefusedForItsHeadDecidesOnceThatHeadArrives(t *testing.T) {
 // share it. The stand-in answers the first pull request's own read and refuses its reviews read; a
 // second open pull request is recorded, and nothing of either is read after the refusal.
 func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: "CAPTURE-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "CAPTURE-2", Project: "CAPTURE", Title: "second",
 			Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "V"}); err != nil {

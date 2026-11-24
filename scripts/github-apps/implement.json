@@ -13,5 +13,5 @@
     "security_events": "read",
     "statuses": "write"
   },
-  "description": "Legion implementer and merger: writes branches and pull requests, and merges READY heads."
+  "description": "Legion implementer, merger and each role a deployment gives this App: writes branches and pull requests, and merges READY heads."
 }

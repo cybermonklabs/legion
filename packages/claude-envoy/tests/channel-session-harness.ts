@@ -243,7 +243,7 @@ export class FakeNats implements ChannelConnection {
   }
 
   /** nats.js reports a status event: `reconnect`, say. */
-  emitStatus(type: string): void {
+  emitStatus(type: ChannelConnectionStatus["type"]): void {
     this.statuses.push({ type })
     this.statusWaiter?.resolve()
   }
@@ -373,14 +373,6 @@ export function settled(): Promise<void> {
   setImmediate(resolve)
   return promise
 }
-
-/**
- * How long a test waits for a channel-server process it spawned to start: its first stderr line,
- * or its first dial. Most of a start is Bun loading and compiling this package, which a loaded
- * machine slows most: a server once wrote nothing for 15 s at a load of 700 on 288 cores, and
- * another had not dialed after 8 s at a load of 450, so a start gets 30 s.
- */
-export const SERVER_START_MS = 30_000
 
 /**
  * Polls `condition` every 5 ms until it holds; fails after `deadlineMs` (5 s by default) naming

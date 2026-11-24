@@ -3,15 +3,29 @@
  * inside a checkout's daemon module, which is how it reaches the daemon's internal packages. The
  * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
  * construction. The exceptions are `daemon-pane.go`'s own copies of the daemon's table of the
- * handoff words, its resolution of the real gh, and its join and write of a system prompt, which
- * the program carries because one program runs against each label's checkout of the daemon module,
- * and an older one names them otherwise or lacks them; each one's comment says so. An architect's
- * prompt is composed by the daemon's own function, in `daemon-pane-architect.go`, which is built in
- * only where the checkout declares that function (`daemonPaneOverlay`). `workerPane` builds a phase
- * worker's whole pane environment over it, and `composeRolePrompt` the prompt a launch of any role
- * starts with.
+ * handoff words, its resolution of the real gh, its join and write of a system prompt, the parts of
+ * a step of a role of the deployment (`stepPromptPaths`), the sentence that tells an architect
+ * the roles of its deployment (`deploymentRolesLine`) and the sentence of its production check
+ * (`productionCheckLine`), which the program carries because one program runs against each label's
+ * checkout of the daemon module, and an older one names them otherwise or lacks them; each one's
+ * comment says so, and `daemon-pane_test.go`, which `goInDaemonModule` runs with the program in
+ * this checkout's module, holds the last three to the daemon's own functions. Where the checkout
+ * declares daemon.ArchitectAddressing, an architect's prompt is composed by that function instead,
+ * in `daemon-pane-architect.go`, which is built in only there (`daemonPaneOverlay`). `workerPane`
+ * builds a phase worker's whole pane environment over it, `composeRolePrompt` the prompt a launch
+ * of any role starts with, and `composeStepPrompt` the prompt a launch of a step of a role of the
+ * rig's deployment starts with.
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
@@ -32,17 +46,16 @@ const ARCHITECT_PART = path.join(import.meta.dir, "daemon-pane-architect.go");
  * column 0, where a comment naming it has `//`. */
 const ARCHITECT_ADDRESSING = /^func ArchitectAddressing\(/m;
 
-/** The files `go run -overlay` builds daemon-pane.go with in `module`, each keyed by the path it
- * takes there: the program, and `daemon-pane-architect.go` beside it where a file of the module's
- * internal/daemon package, not a test's, declares daemon.ArchitectAddressing. A checkout older
- * than that function lacks it, and a build with a call it cannot resolve fails in every mode, so
- * there the program is built alone: it serves every mode and role as it did, and refuses an
- * architect's prompt, naming the function the checkout lacks. A checkout that declares the
- * function with other parameters fails the build in every mode, as one whose AddressingFragment
- * takes other parameters does. */
-export function daemonPaneOverlay(module: string): Record<string, string> {
-  const command = path.join(module, "cmd", "daemon-pane");
-  const overlay: Record<string, string> = { [path.join(command, "main.go")]: PROGRAM };
+/** The files daemon-pane.go is built with in `module`, each keyed by its name under
+ * `<module>/cmd/daemon-pane/`: the program, and `daemon-pane-architect.go` beside it as
+ * `architect.go` where a file of the module's internal/daemon package, not a test's, declares
+ * daemon.ArchitectAddressing. A checkout older than that function lacks it, and a build with a call
+ * it cannot resolve fails in every mode, so there the program is built alone: it serves every mode
+ * and role as it did, and composes an architect's addressing with its own restatements of that
+ * checkout's daemon. A checkout that declares the function with other parameters fails the build in
+ * every mode, as one whose AddressingFragment takes other parameters does. */
+function daemonPaneFiles(module: string): Record<string, string> {
+  const files: Record<string, string> = { "main.go": PROGRAM };
   const daemon = path.join(module, "internal", "daemon");
   const declared = readdirSync(daemon).some(
     (file) =>
@@ -50,42 +63,98 @@ export function daemonPaneOverlay(module: string): Record<string, string> {
       !file.endsWith("_test.go") &&
       ARCHITECT_ADDRESSING.test(readFileSync(path.join(daemon, file), "utf8"))
   );
-  if (declared) overlay[path.join(command, "architect.go")] = ARCHITECT_PART;
-  return overlay;
+  if (declared) files["architect.go"] = ARCHITECT_PART;
+  return files;
 }
 
-/** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
- * there is none), and returns its stdout. */
-export function runDaemonPane(module: string, args: readonly string[], input?: string): string {
+/** The files `go run -overlay` builds daemon-pane.go with in `module` (daemonPaneFiles), each keyed
+ * by the path it takes there. */
+export function daemonPaneOverlay(module: string): Record<string, string> {
+  const command = path.join(module, "cmd", "daemon-pane");
+  return Object.fromEntries(
+    Object.entries(daemonPaneFiles(module)).map(([name, file]) => [path.join(command, name), file])
+  );
+}
+
+/** Runs `go <command> -overlay <overlay> ./cmd/daemon-pane ...args` in `module`, a checkout's
+ * daemon module, where the overlay puts each of `files` (a file's name under
+ * `<module>/cmd/daemon-pane/`, and the rig's file that stands there), with `input` on its stdin
+ * (the caller's own stdin when there is none), and returns its stdout. It throws, with what the
+ * command printed, when the command exits other than 0. */
+export function goInDaemonModule(
+  module: string,
+  files: Record<string, string>,
+  command: "run" | "test",
+  args: readonly string[],
+  input?: string
+): string {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "daemon-pane-"));
+  const directory = path.join(module, "cmd", "daemon-pane");
+  // `go test` vets the package and runs its test binary in the package's own directory, which
+  // only the overlay holds, so a test run makes that directory, empty, and removes it after.
+  const made = command === "test" && !existsSync(directory);
   try {
     const overlay = path.join(scratch, "overlay.json");
-    writeFileSync(overlay, JSON.stringify({ Replace: daemonPaneOverlay(module) }));
-    const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {
+    const replace = Object.fromEntries(
+      Object.entries(files).map(([name, file]) => [path.join(directory, name), file])
+    );
+    writeFileSync(overlay, JSON.stringify({ Replace: replace }));
+    if (made) mkdirSync(directory);
+    const go = ["go", command, "-overlay", overlay, "./cmd/daemon-pane", ...args];
+    const result = Bun.spawnSync(go, {
       cwd: module,
       stdin: input === undefined ? "inherit" : new TextEncoder().encode(input),
       stdout: "pipe",
       stderr: "pipe",
     });
     if (result.exitCode !== 0) {
+      const printed = [result.stderr.toString().trim(), result.stdout.toString().trim()];
       throw new Error(
-        `daemon-pane ${args.join(" ")} in ${module} exited ${result.exitCode}: ${result.stderr.toString().trim()}`
+        `go ${command} ./cmd/daemon-pane ${args.join(" ")} in ${module} exited ${result.exitCode}: ${printed.filter((text) => text !== "").join("\n")}`
       );
     }
     return result.stdout.toString();
   } finally {
+    if (made && existsSync(directory)) rmdirSync(directory);
     rmSync(scratch, { recursive: true, force: true });
   }
 }
 
+/** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
+ * there is none), and returns its stdout. */
+export function runDaemonPane(module: string, args: readonly string[], input?: string): string {
+  return goInDaemonModule(module, daemonPaneFiles(module), "run", args, input);
+}
+
 /** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go
  * `prompt`): the role's parts, a blank line, then its addressing, which for an architect goes on
- * with the deployment's roles and models and, for the architect of a tree's root (`root`), the
- * design gate steps, byte for byte as the daemon writes the prompt file. The claim is the rig's:
- * its issue is the root of its tree, or a child under that root. Throws for an architect in a
- * checkout whose daemon declares no ArchitectAddressing (`daemonPaneOverlay`). */
+ * with what the daemon tells every architect after it (daemon.ArchitectAddressing, where the
+ * module's daemon declares it: the deployment's roles and models, for the architect of a tree's
+ * root (`root`) the design gate steps, then the production check), and in an older module with the
+ * roles of the rig's deployment where its daemon has the key `roles`, for the root's architect then
+ * with the design gate steps, and for every architect ends with the production check where its
+ * daemon has the key `production_check`, byte for byte as the daemon writes the prompt file. The
+ * claim is the rig's: its issue is the root of its tree, or a child under that root. */
 export function composeRolePrompt(module: string, role: LegionRole, root: boolean): string {
   return runDaemonPane(module, ["prompt", role, root ? "root" : "child"]);
+}
+
+/** The two roles of the rig's deployment (daemon-pane.go's `rigRoles`): the checker, whose steps
+ * are of the type testing, and the critic, of the type review. */
+export type RigRole = "checker" | "critic";
+
+/** The prompt a launch of a step of `role` starts with, as the daemon in `module` composes it
+ * (daemon-pane.go `prompt step`): the headless part every phase worker is told, the role's own
+ * prompt file, `promptFile`, then the daemon's part every phase worker ends with, a blank line, then
+ * the addressing of the rig's claim of that role on a child issue, byte for byte as the daemon
+ * writes the prompt file. It throws where the module's daemon has no key `roles`, since no launch
+ * of that daemon starts a role of a deployment. */
+export function composeStepPrompt(
+  module: string,
+  promptFile: string,
+  role: RigRole = "checker"
+): string {
+  return runDaemonPane(module, ["prompt", "step", path.resolve(promptFile), role]);
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot

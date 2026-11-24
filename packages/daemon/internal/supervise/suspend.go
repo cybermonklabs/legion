@@ -22,13 +22,16 @@ var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to en
 var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing was stopped")
 
 // suspend stops the process and keeps the session. The daemon's own suspension ends the claim's
-// phase (the workflow suspends a worker only when its issue closes or its run is over), so a task
-// queued for a phase and still pending unconfirmed (acknowledged and then refused, or lost to the
-// transport) is retired with it (settle): the next resume is started with its new phase's task,
-// never handed the finished one's. A task of no phase — an operator's own, an architect's — is
-// not the workflow's to end, and neither is the phase task of a claim whose idle pod was released:
-// that suspension ends no phase, and the wake that brings the pod back resumes the claim with the
-// task it kept (SuspendSource.RetiresPhaseTask).
+// phase or its step: the workflow suspends a worker when its issue closes or its run is over, and
+// the outbox suspends a claim when its next step is of another role or another agent's
+// (internal/daemon's prepareClaimForStep), before it gives the claim that role and resumes it on
+// its session, or leaves the session behind for the other agent. So a task queued for a phase and
+// still pending unconfirmed (acknowledged and then refused, or lost to the transport) is retired
+// with it (settle): the next resume is started with its new phase's or step's task, never handed
+// the finished one's. A task of no phase — an operator's own, an architect's — is not the
+// workflow's to end, and neither is the phase task of a claim whose idle pod was released: that
+// suspension ends no phase, and the wake that brings the pod back resumes the claim with the task
+// it kept (SuspendSource.RetiresPhaseTask).
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -179,6 +182,13 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // behind it keeps the turn it already holds, exactly as a wake dropped for a request that does not
 // wait leaves them (dropWakeFor, reparkWake).
 //
+// A claim whose launch waits for its issue pod's start does not wait either (askPod, wake.park):
+// the launch has let its process go and parked on the machine with no process started, waiting
+// only for another role's session load, and a suspension, a release or a deletion of the pod
+// never waits (dispatch://INFRA-5297). It is decided where it arrives by the same branch, and the
+// suspension takes its start out of the pod's gate as a suspension at the end of its decision
+// (suspended, endPodPark), where the launch writes that it was cut short.
+//
 // A claim whose process still runs is untouched by any of this. The gate left such a claim exactly
 // as it stood (parkWake), so its suspend is decided by the row of the state it still holds — and a
 // launch that did start a process reaches the hold here as it always did, since that process is
@@ -218,8 +228,10 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 			Reason: "the claim's launch has not registered, and this suspension is not one that is held for it"}
 	}
 	if m.wake != nil && m.claim.Locator == nil {
-		m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
-			"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+		if m.wake.park == nil {
+			m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
+				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+		}
 		return m.suspendedFor(ctx, request, true)
 	}
 	if m.wake != nil && request.Pause != 0 {
@@ -414,6 +426,10 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 // A process still recorded here is one whose stop the runtime refused and the suspension let go
 // all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
 // did land records it (endSuspended, letGo), and the record goes to the store with this write.
+//
+// A launch its issue pod's gate holds leaves the gate as this suspension's at the end of the
+// decision, so the start the gate grants next names a suspension as what ended its wait
+// (endPodPark, podSuspension).
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by

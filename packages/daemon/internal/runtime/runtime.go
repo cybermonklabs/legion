@@ -213,10 +213,11 @@ var ErrPodGone = errors.New("the pod the locator records is not there")
 // locator: an update round whose claims record no pod — every claim suspended, since a suspension
 // lets the process go and its locator with it (supervise's letGo) — has no claim left to ask
 // PodDrift through, and only the issue to ask by (internal/daemon's podlessRound). A pod other
-// than the round's own, or none, is that round's pod gone, and the round ends; the round's own
-// pod, or no answer, leaves it waiting. A runtime whose processes run in no pod implements
-// nothing here, and the daemon then reads no answer, which a round never needs from it, since
-// such a runtime answers no drift and so opens no pod round.
+// than the round's own, or none, is that round's pod gone, and the round ends. The round's own pod
+// is replaced by the issue where nothing holds it (IssuePodReplacer), and otherwise, or with no
+// answer, the round waits. A runtime whose processes run in no pod implements nothing here, and
+// the daemon then reads no answer, which a round never needs from it, since such a runtime
+// answers no drift and so opens no pod round.
 type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
 }
@@ -251,8 +252,8 @@ func (e AwaitsPodUpdate) Unwrap() error { return ErrAwaitsPodUpdate }
 // without a name, and that pod's uid (PodLacksRole), a name the caller asks both as the slot of a
 // claim (claim.Token.Slot: the agent the claim's token ends in, which can be a name no role has,
 // `implementer-2`, and which the pod's launcher of that name serves) and as the role of its step,
-// whose own resources a launch needs too, since a keyed agent's slot and its step's role can be
-// two names; and whether the launcher of slot in the issue's live pod starts a child only once the
+// whose own resources a launch needs too, since a slot is named by its agent, not by its step's
+// role; and whether the launcher of slot in the issue's live pod starts a child only once the
 // slot's gh files hold the start's credential (SlotWaitsForCredential), with the pod's uid where
 // it does not: a launcher of an image before that wait, which a re-role into its slot waits out
 // until the pod's update round or its release. SlotWaitsForCredential refuses a slot no claim
@@ -275,7 +276,8 @@ type PlanSlotsDrift interface {
 }
 
 // PodLacks is what an issue pod lacks of a launch whose claim runs in slot (claim.Token.Slot, its
-// agent's name, which the pod's launcher of the role of that name serves) on a step of role, where
+// agent's name, which the pod's launcher of that name serves, a role's or a plan agent's such as
+// `implementer-2`) on a step of role, where
 // lacks says whether the pod was built without a name: the role's name alone for a claim named for
 // its role, whose slot and role are one name; "<role>, the role of its step" or "<slot>, the slot
 // of the claim's agent" where the pod lacks one of two names; both where it lacks the two; and ""
@@ -301,6 +303,28 @@ func PodLacks(lacks func(name claim.Role) bool, slot claim.Agent, role claim.Rol
 		return string(slot) + ", the slot of the claim's agent"
 	}
 	return ""
+}
+
+// IssuePodReplacer ends the pod of an update round that has no role process in it, asked by the
+// issue alone, and returns when the runtime no longer has that pod. It is ReplacePod for a round
+// with no claim left to name the pod through: every role of the pod is suspended or between
+// launches, so no claim records a locator in it, and ReplacePod has no process to act through
+// (internal/daemon's podlessRound and roundWithNoProcessInItsPod, dispatch://INFRA-4109 R7).
+// Without it such a round holds the pod, and the issue's next launch goes into a pod that the
+// round is about to replace.
+//
+// podUID is the round's own pod. The call is a no-op returning nil where the runtime holds no
+// Sandbox of the issue, where the Sandbox is already suspended, and where the pod the Sandbox
+// holds is not podUID: there is then no pod of that round to end. It creates nothing in its
+// stead, as ReplacePod creates nothing: the issue's next launch builds a pod from the current
+// configuration.
+//
+// due is the caller's last word, with ReplacePod's contract: it is asked under whatever the
+// runtime holds the pod with and immediately before the runtime ends anything, nil goes on, and
+// any error is returned having changed nothing. A runtime whose processes run in no pod
+// implements nothing here.
+type IssuePodReplacer interface {
+	ReplaceIssuePod(ctx context.Context, issue, podUID string, due func(context.Context) error) error
 }
 
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
@@ -361,14 +385,49 @@ type IssueVolumeReader interface {
 // the workspace on it go. A kept volume does not go: the release keeps the Sandbox that owns it
 // (IssueReleaser), and the pod after the release takes no saved work that volume holds
 // (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
-// the save is then the one copy of the unpushed work. The claim is named by its token, since the
-// agent that works a role's step can run in a claim another role started (a keyed agent): its
+// the save is then the one copy of the unpushed work. The claim is named by its token, since two
+// claims of one issue can hold one role (record.WorkerClaim): its
 // process must run, as the shim builds the bundle with the jj and git of the workspace it already
 // works in. A runtime whose processes share no workspace implements nothing here, and the release
 // of such a pod saves nothing because there is no such pod.
 type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, token claim.Token) (WorkspaceBundle, error)
 }
+
+// WorkspaceWorkReader asks one live claim's process whether the issue workspace every claim of the
+// issue shares holds work that no branch or tag on origin holds. It is the read a pod update round
+// makes before it replaces a pod without waiting for every role, so that the replacement can name
+// what goes with the pod, and it is one runtime call so that INFRA-3271 can make the same read with
+// its own reading (spec R1 of INFRA-4109). The claim is named by its token, as WorkspaceBundler's
+// is, since the agent that works a role's step can run in a claim another role started (a keyed
+// agent), and it must be one whose process runs in the issue's pod: its shim reads the workspace
+// with the jj it already works with. The read keeps nothing of the work and saves no bundle; the
+// one thing it writes is jj's snapshot of the working copy (Conn.WorkspaceWork). A runtime whose
+// processes share no workspace implements nothing here.
+type WorkspaceWorkReader interface {
+	WorkspaceWork(ctx context.Context, issue string, token claim.Token) (WorkspaceWork, error)
+}
+
+// WorkspaceWork is what one read of an issue's workspace found (WorkspaceWorkReader). Work is a
+// commit under a workspace's working copy or a local bookmark that no branch or tag on origin
+// holds. A commit with no change and no description is no work, and neither is a commit a fetch
+// left visible or a side head that no working copy and no bookmark reaches (the shim's
+// workspaceWorkRevset says why).
+type WorkspaceWork struct {
+	// Head is the commit id of the working copy the read was made in.
+	Head string
+	// Changed is that working-copy commit holding a change: it is not empty.
+	Changed bool
+	// Commits are the first work commit ids, newest first, at most
+	// shimwire.MaxWorkspaceWorkCommits of them.
+	Commits []string
+	// Count is how many work commits there are in all, those Commits lists included.
+	Count int
+}
+
+// HoldsWork is whether the read found work: a change in the working copy, or a commit origin does
+// not hold.
+func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
 
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
 // created at podCreated, to restore, and what that ask did to the bundle. It is the other half
@@ -449,6 +508,23 @@ type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, kep
 // and the guard's kill line in the pod's own log is then the one record of the kill.
 type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
 
+// ControllerMemoryGuardKilled is the daemon's reading of one process the controller pod's launcher
+// ended with SIGKILL because the pod was near its memory limit, which the memory guard of a gVisor
+// controller pod does, or, in a microVM controller pod, one that the pod's own kernel stopped
+// because the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the controller's session), which
+// the launcher's guest watch names (shimwire.LauncherMemoryKill): the controller's own pod runs the
+// guard or the guest watch as an issue pod in the same sandbox does, and the daemon tells the
+// project's controller which of its programs ended and why. The session gives it the claim token
+// its connection authenticated for, the uid of the pod the launcher runs in and the report, the
+// first two the session's own and never the report's. The controller's pod is of no issue, so
+// there is no issue to name, and MemoryGuardKilled, whose note is told to a role of an issue, has
+// nothing to take it with.
+//
+// It takes the wire's own frame for the reason MemoryGuardKilled does, and an error is returned
+// to the session, which logs it and drops the report, as MemoryGuardKilled's is.
+type ControllerMemoryGuardKilled func(ctx context.Context, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
+
 // VolumeReported is the daemon's reading of one sweep of an issue pod's volume, as the cache
 // trimmer in that pod's launcher process reported it: the launcher sends at most one such frame
 // per sweep that ended with the volume still above its low mark, none for a sweep the settings
@@ -472,6 +548,15 @@ type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token
 // comment says of its delete). The report that the trimmer switched itself off is its last, and
 // one dropped here is not sent again.
 type VolumeReported func(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error
+
+// RoundPodEnds is the daemon's reading of the pod update round over a live issue pod a launch
+// would keep: whether the round open over podUID, the live pod of token's issue, has ended by the
+// daemon's rule for a round with no role process in its pod (internal/daemon's
+// roundPodEndsAtLaunch, dispatch://INFRA-4109 R7). The runtime asks it under the pod's launch turn.
+// A yes has the launch replace the pod as the round's own replacement and start its role in a new
+// pod, so the role is launched once rather than into a pod the round is about to replace. An error
+// fails the launch as any of its steps does.
+type RoundPodEnds func(ctx context.Context, token claim.Token, podUID string) (bool, error)
 
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and
@@ -868,8 +953,8 @@ type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, erro
 // step the claim is launched for; at a refresh, the role the slot's process was launched as where
 // the slot records that launch for the stored claim's generation or a later one, and otherwise the
 // claim's stored role (the sandbox runtime's slotAppRole, the tmux runtime's paneRole). It is never
-// the slot's name: a keyed agent's slot is named by its agent, and that agent can do a step of
-// another role. Each write of a slot's gh credential asks it, so a re-roled claim's slot holds the
+// the slot's name: a slot is named by its agent (claim.Token.Slot), not by its step's role.
+// Each write of a slot's gh credential asks it, so a re-roled claim's slot holds the
 // App of the role its process was launched as.
 func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
 	if actsAs == nil {

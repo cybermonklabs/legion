@@ -339,7 +339,7 @@ test(
   "an Envoy tool called while the start dials NATS again is told the dial's last failure, and not once the connection is up",
   async () => {
     const broker = new FakeNatsServer()
-    const gate = natsGate(Number(new URL(broker.url).port))
+    const gate = natsGate(broker.url)
     const held = Promise.withResolvers<void>()
     const listener = Bun.serve({
       port: 0,

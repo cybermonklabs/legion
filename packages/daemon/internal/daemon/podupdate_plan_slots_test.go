@@ -44,10 +44,7 @@ func TestTheSweepReadsAnIssuesPlanSlotsOnceForItsPod(t *testing.T) {
 	slotsReason := "slots architect, planner, implementer, tester, reviewer, merger, now architect, planner, implementer, tester, reviewer, merger, implementer-2"
 	var group []supervise.Claim
 	for _, agent := range []claim.Agent{"implementer", "implementer-2", "reviewer"} {
-		token, err := claim.AgentToken("legion", issue, agent)
-		if err != nil {
-			t.Fatal(err)
-		}
+		token := agentClaimToken(t, issue, agent)
 		group = append(group, supervise.Claim{Token: token, Locator: &runtime.Locator{Claim: token, Sandbox: &runtime.SandboxLocator{Name: "legion-legion-208", PodUID: "pod-1"}}})
 	}
 	for _, tc := range []struct {

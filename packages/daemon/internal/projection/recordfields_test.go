@@ -180,10 +180,10 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		t.Errorf("supervise.Claim.DeathCharged stands in %q for %q, want %q with a reason of its own: it is the supervisor's accounting of one dead process",
 			entry.Column, entry.Reason, api.ColumnWithheld)
 	}
-	// The memory-only cases: the store writes none of the four, so the state route — which reads
+	// The memory-only cases: the store writes none of the five, so the state route — which reads
 	// its claims from the store — would serve a constant for them while the operator route reads
 	// the live machine.
-	for _, field := range []string{"ProcessGone", "SuspensionHeld", "SuspensionHeldBy", "Compacting"} {
+	for _, field := range []string{"ProcessGone", "SuspensionHeld", "SuspensionHeldBy", "Compacting", "UnrecordedRefusal"} {
 		if entry := claimTable[field]; entry.Column != api.ColumnOperator {
 			t.Errorf("supervise.Claim.%s stands in %q, want %q: the store never writes it, so the state route would serve a constant for it",
 				field, entry.Column, api.ColumnOperator)

@@ -95,8 +95,10 @@ func (p TaskPlace) Started() bool {
 
 // Rank orders the places of one task's line: no act first, then each step by its place, then the
 // retro, then the merge. It is the one order of a task's places: a move back is a move to a lower
-// rank (workflow's Walk.MovesBack), and the place of a role nearest where a task stands is read by
-// it (NearestPlace).
+// rank (workflow's Walk.MovesBack), a step that ran stands at a lower rank than the place the task
+// stands at, whatever phase each runs as (every step of a role the deployment defines runs as
+// step, so only the place tells two of them apart), and the place of a role nearest where a task
+// stands is read by it (NearestPlace).
 func (p TaskPlace) Rank() int {
 	switch p.Kind {
 	case PlaceStep:
@@ -183,8 +185,10 @@ type PlanStep struct {
 	Type       plan.Type
 	AgentKey   string
 	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
-	// gives before the step is written and nothing else writes. A step of the key owner holds
-	// none (20261117213545 named every other step a release before the column wrote).
+	// gives before the step is written and nothing else writes. A step of the key owner holds none.
+	// 20261123203837 named every other step a release before the column wrote, except where the
+	// first form of that migration ran: a row it left holds "" and reads as no name, and the third
+	// pass of NameAgents leaves such a step to its fourth.
 	Agent claim.Agent
 }
 
@@ -218,7 +222,7 @@ func (s PlanStep) PlanAgent() plan.Agent {
 // none for a step of the key owner, since its agent is the tree's architect, whose token names the
 // tree and no name on the issue, and the stored name otherwise.
 func (s PlanStep) AgentName() claim.Agent {
-	return claim.Agent(plan.StoredAgentName(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}, string(s.Agent)))
+	return claim.Agent(plan.StoredAgentName(s.AgentKey, string(s.Agent)))
 }
 
 // StepToken is the claim token of the agent of step, a step of issue, whose tree is tree, in

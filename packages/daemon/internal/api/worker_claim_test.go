@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -24,7 +25,7 @@ func keyedTester(t *testing.T, h *harness, keyed claim.Token) {
 	parent := "LEGION-208"
 	h.recordIssue(record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent,
 		Project: testProject, Title: "LEGION-209", Parent: &parent, Phase: phase.Testing, Generation: 1, Status: "in_progress"})
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: keyed,
 			StepTask: "a", StepPlace: 2, Entry: 2})
 	}); err != nil {
@@ -106,8 +107,8 @@ func movesTheTesterStep(t *testing.T, h *harness) claim.Token {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: later,
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: later,
 			StepTask: "a", StepPlace: 2, Entry: 3})
 	}); err != nil {
 		t.Fatalf("move the tester's step of LEGION-209 to %s: %v", later, err)

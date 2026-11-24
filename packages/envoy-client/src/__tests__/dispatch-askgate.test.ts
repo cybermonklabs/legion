@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
@@ -69,8 +70,9 @@ const server = Bun.serve({
         advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
       });
     }
+    // A refusal, so a write this stub has no route for is answered once and never asked again.
     record();
-    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
+    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 400 });
   },
 });
 afterAll(() => server.stop(true));
@@ -166,6 +168,7 @@ function environment(
   extra: Record<string, string | undefined>
 ): Record<string, string | undefined> {
   return {
+    ...bunCacheOff,
     HOME: stateDir,
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
     DISPATCH_TOKEN: TOKEN,

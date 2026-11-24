@@ -48,6 +48,7 @@ func (s *movingRecords) Issue(ctx context.Context, tx pgx.Tx, key string) (*reco
 // the step again under the machine's lock (supervise.Machine.Rerole). The control is the same
 // start with no move back: the claim takes the tester's role and is resumed on its session.
 func TestAStartsReroleForAStepTheIssueLeftIsNotMade(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		moveBack bool
@@ -143,6 +144,7 @@ func TestAStartsReroleForAStepTheIssueLeftIsNotMade(t *testing.T) {
 // back's own start resumes it as the implementer on the session it recorded and hands it the
 // implementer's task.
 func TestAHeldSuspensionAMoveBackOvertakesCostsOneSuspendAndResume(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

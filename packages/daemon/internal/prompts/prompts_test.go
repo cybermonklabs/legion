@@ -51,7 +51,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 	}
 	// Every operation the legion tool gives an architect besides register_gate
 	// (packages/pi-legion/src/tools.ts), which a prompt that never names it leaves unused.
-	architectOperations := []string{"`release_children`", "`park_child`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
+	architectOperations := []string{"`release_children`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
 
 	for _, tc := range []struct {
 		name     string
@@ -215,15 +215,7 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 	if err != nil {
 		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
 	}
-	var text strings.Builder
-	for _, path := range parts.RolePromptPaths {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text.Write(body)
-	}
-	return text.String()
+	return readJoined(t, parts.RolePromptPaths...)
 }
 
 // No role's handoff is a commit: each is a record on the Dispatch issue, so no phase worker's
@@ -353,6 +345,21 @@ func foldWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
+// readJoined is the bytes of each of paths, read in order and joined; a read that fails ends the
+// test (t.Fatalf), naming the path.
+func readJoined(t *testing.T, paths ...string) string {
+	t.Helper()
+	var text strings.Builder
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text.Write(body)
+	}
+	return text.String()
+}
+
 // ruleParagraphs are the blank-line-separated paragraphs of a composed prompt that hold marker,
 // each folded to one line: a paragraph is the span a reader takes the rule and its framing from,
 // so it is the span a test asks what the rule calls its case. A composed prompt holds one per
@@ -380,6 +387,51 @@ func clauses(text string) []string {
 		}
 	}
 	return found
+}
+
+// blocks are the blocks of text, each folded to one line: each blank-line paragraph cut before
+// every line that starts an item of a list (startsListItem), so a paragraph and each item of a
+// list in it are blocks of their own. A block is the span a reader takes one item's rule from:
+// the words of one item limit no other.
+func blocks(text string) []string {
+	var found []string
+	for _, paragraph := range strings.Split(text, "\n\n") {
+		block := ""
+		for _, line := range strings.Split(paragraph, "\n") {
+			if block != "" && startsListItem(line) {
+				found, block = append(found, foldWhitespace(block)), ""
+			}
+			block += line + "\n"
+		}
+		found = append(found, foldWhitespace(block))
+	}
+	return found
+}
+
+// startsListItem says whether line, past its indent, starts an item of a list: `- `, or a number
+// of any length and `. `, so `10. ` starts an item as `1. ` does.
+func startsListItem(line string) bool {
+	item := strings.TrimLeft(line, " ")
+	digits := len(item) - len(strings.TrimLeft(item, "0123456789"))
+	return strings.HasPrefix(item, "- ") || digits > 0 && strings.HasPrefix(item[digits:], ". ")
+}
+
+// Each item of a list is a block of its own (blocks), a numbered item of two digits as much as
+// one of one, so a check that one item names a step cannot pass on the words of its neighbour. A
+// wrapped line that starts with a number but no `. ` after it stays in the item it continues.
+func TestBlocksGiveEachItemOfAListABlockOfItsOwn(t *testing.T) {
+	var text strings.Builder
+	text.WriteString("Steps:\n")
+	want := []string{"Steps:"}
+	for n := 1; n <= 11; n++ {
+		fmt.Fprintf(&text, "%d. Step %d,\n   10 files.\n", n, n)
+		want = append(want, fmt.Sprintf("%d. Step %d, 10 files.", n, n))
+	}
+	text.WriteString("  - A nested item.\n\nA closing paragraph.")
+	want = append(want, "- A nested item.", "A closing paragraph.")
+	if got := blocks(text.String()); !reflect.DeepEqual(got, want) {
+		t.Errorf("blocks =\n%q\nwant\n%q", got, want)
+	}
 }
 
 // clauseHolds says whether one clause of text (clauses) holds each of terms, in the order given:
@@ -607,9 +659,14 @@ func TestTheRootArchitectPartNamesTheGatedSteps(t *testing.T) {
 }
 
 // retiredGatePhrases are the words the step list replaced. A prompt that still carries one tells
-// its reader to look on the addressing line for a sentence the daemon no longer writes.
+// its reader to look on the addressing line for a sentence the daemon no longer writes. The last
+// three are the registration words option b' replaced (dispatch://INFRA-175, Design 7): a root
+// with a Verification document registers it as `criteria` under a line that names `spec` alone,
+// not only where the line names both, and each document is registered at the version the
+// approval question names for it, which a request for two documents prints once for each.
 var retiredGatePhrases = []string{"gates.design: root-issues", "gates.design: off", "Design gate policy",
-	"either design gate policy", "The gate records one document"}
+	"either design gate policy", "The gate records one document",
+	"Where the line names both `criteria` and `spec`", "at the version the request returned", "at the version it returned"}
 
 // The controller reads the same addressing line as a root architect, so its own prompt names the
 // steps sentence and carries none of the words that sentence replaced. Its text is read folded:
@@ -624,15 +681,7 @@ func TestTheControllerPartNamesTheGatedSteps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ControllerPromptPaths(headless %t): %v", headless, err)
 		}
-		var text strings.Builder
-		for _, path := range paths {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			text.Write(body)
-		}
-		folded := foldWhitespace(text.String())
+		folded := foldWhitespace(readJoined(t, paths...))
 		if !strings.Contains(folded, "`Design gate steps:`") {
 			t.Errorf("the composed controller prompt (headless %t) never names the `Design gate steps:` line it reads its steps off", headless)
 		}
@@ -664,7 +713,7 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		"once the branch has an open pull request",
 		"an empty one when your work is complete",
 		"tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-		"The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
+		"The merger pushes only a merge of the base forward, and makes this read after that push as any role does",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger} {
@@ -749,22 +798,21 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	}
 }
 
-// The task of a later review round names the commit the reviewer's own newest deciding review of
-// its step read (` Last reviewed commit: <sha>.`, which workflow's namingTheReviewRound writes from
-// record.PhaseRow.ReviewedHead, the row of the reviewer's step; the first round of a later reviewer
-// step starts from the row of the reviewer step before it), so the reviewer can read the difference
-// from that commit rather than the whole change again. The composed reviewer prompt therefore names
-// the field, the function that writes it into the task, and whose review sets it: the session the
+// The task of a later review round names the commit the newest deciding review of the reviewer's
+// own agent on the task read (` Last reviewed commit: <sha>.`, which workflow's namingTheReviewRound
+// writes from record.PhaseRow.ReviewedHead), so the reviewer can read the difference from that
+// commit rather than the whole change again. The composed reviewer prompt therefore names the
+// field, the function that writes it into the task, and whose review sets it: the session the
 // daemon recorded on the claim it started the reviewer under, in the first round as in every later
 // one, in a review whose Legion footer names the entry on the reviewer's row (` Review entry: <n>.`,
 // the task's last sentence, record.PhaseRow.Entry, which the task of a wake ends with too) while
-// that row holds the entry's task. The core part names the commit in the daemon part's words, the
-// head the Legion footer of the reviewer's own newest deciding review of its step named, since a
-// deciding review whose footer names no entry or another one moves no commit. It says to read the
-// difference from that commit and each thread, gives the thermonuclear pair that same diff, keeps
-// every defect seen outside it a finding, and names the three cases that read the whole change
-// again. The pair's old sentence, which ran it over the whole change in every round, is gone. This
-// shows the text is loaded, never that a reviewer follows it.
+// that row holds the entry's task. It says to read the difference from that commit and each thread,
+// takes that commit as the earlier head the review sizes itself to, names in each task of the
+// thermonuclear pair the diff it reviews, keeps every defect seen outside it a finding, and reads
+// the whole change where the commit is no ancestor of the head. The pair's old sentence, which ran
+// it over the whole change in every round, is gone, and so is the unchanged-diff fingerprint, which
+// dispatch://INFRA-4406 R1 deleted from the role prompts. This shows the text is loaded, never that
+// a reviewer follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -779,25 +827,25 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
 		"Your task names the entry of your round as its last sentence, `Review entry: <n>.`: the number of your entry into the round, which the daemon keeps on your phase row (`PhaseRow.Entry` in `packages/daemon/internal/record/record.go`) and raises at each new entry.",
 		"The task a wake gives you once your pod was released and brought back ends with it too, as each task of the round does.",
-		"When the task of a round names `Last reviewed commit: <commit>`, the head the Legion footer of your own newest deciding review of your step named (the daemon part below says which review that is), or in the first round of a later reviewer step the commit the reviewer step before it holds, read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
 		"an `APPROVE` or a `REQUEST_CHANGES` your session submitted as the review App whose footer names the entry your row holds, and which the daemon took as its round's decision while your row held that entry's task, which a new generation's clear empties until the daemon enters you again.",
 		"A `COMMENT`, a review the daemon set aside, a person's review and a review whose footer names no entry or another than your row's, such as one of a round before a new generation or a carried hand-over's promotion entered you again, leave it where it stands.",
-		"the head read by the newest of your own deciding reviews of your step whose footer named the entry of its round; each reviewer step of a task keeps its own commit, and the first round of a later reviewer step names the one the reviewer step before it holds.",
-		"Each reviewer step of a task has a phase row of its own, and the first round of a later reviewer step starts from the row of the reviewer step before it, so its task names the commit that row holds.",
 		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
-		"over the diff that round reads, when that diff touches runtime code",
-		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
+		"over the diff that round reads, when that diff touches runtime code, and name that diff in each agent's task",
 		"The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other",
-		"Read the whole change again, and give the pair the whole change, in two cases: the task names no commit,",
-		"the commit is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0)",
-		"After a forward merge of the base, read the merge as the next paragraph says",
+		"On a new head, that commit is your earlier head, unless it is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0): then you read the whole change, as for `none`.",
+		"Size your review to the change you read: review again only what it can affect, and confirm the rest by naming the earlier head.",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
 		}
 	}
-	if retired := "Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code"; strings.Contains(text, retired) {
-		t.Errorf("the composed reviewer prompt still says %q", retired)
+	for _, retired := range []string{
+		"Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code",
+		"fingerprint",
+	} {
+		if strings.Contains(text, retired) {
+			t.Errorf("the composed reviewer prompt still says %q", retired)
+		}
 	}
 }
 

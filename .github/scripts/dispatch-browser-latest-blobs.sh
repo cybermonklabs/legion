@@ -13,50 +13,109 @@
 # green.
 #
 # So the merge job downloads without `merge-multiple`, which leaves each artifact in a directory
-# named for it, and this script picks the directories to merge. The semantics are the ones
-# .github/scripts/ci-ok-report.sh already gives the same problem for the jobs' ci-ok reports
-# (`group_by(.job) | map(max_by(.attempt | tonumber))`): the highest attempt of a leg wins, and a
-# leg the re-run did not run keeps the artifact of the attempt that ran it, since a failed-only
-# re-run uploads nothing for the legs that were green.
+# named for it whenever more than one matches, and this script picks the directories to merge.
+# The semantics are the ones .github/scripts/ci-ok-report.sh already gives the same problem for
+# the jobs' ci-ok reports (`group_by(.job) | map(max_by(.attempt | tonumber))`): the highest
+# attempt of a leg wins, and a leg the re-run did not run keeps the artifact of the attempt that
+# ran it, since a failed-only re-run uploads nothing for the legs that were green.
 #
-# It takes the directory `actions/download-artifact` filled and the directory to write:
-#   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>
-# Each entry of <download-dir> must be a directory named `dispatch-browser-blob-<leg>-<attempt>`,
-# where <attempt> is the run of digits at the end and <leg> is everything between the prefix and
-# it (`shard-1`, `alone-webkit-alone`). A name that does not read is a failure, not a file passed
-# over: a blob silently dropped is a merged report short of a leg's rows, which reads as a
-# shorter suite rather than as an error.
+# It takes the directory `actions/download-artifact` filled, the directory to write, and the id
+# of the job that calls the workflow, the merge job's `${{ inputs.job }}`:
+#   .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <job>
+# Every artifact name of the workflow starts with that id, so the blob artifacts of ci.yaml's two
+# callers, which a pull request labelled full-ci runs in one run, are told apart by it
+# (`dispatch-browser-blob-shard-1-1` and `dispatch-browser-pr-blob-shard-1-1`); the download
+# step's pattern already takes only this caller's.
+#
+# That directory comes in one of two layouts, and which one is the run's, not this job's: it is
+# how many artifacts the download's pattern matches that decides it, and a run's artifact list
+# holds every attempt's artifacts.
+#
+# Several artifacts matched: each entry of <download-dir> must be a directory named
+# `<job>-blob-<leg>-<attempt>`, where <attempt> is the run of digits at the end and <leg> is
+# everything between the prefix and it (`shard-1`, `alone-webkit-alone`). A name that does not
+# read is a failure, not a file passed over: a blob silently dropped is a merged report short of
+# a leg's rows, which reads as a shorter suite rather than as an error.
+#
+# One artifact matched: actions/download-artifact extracts it into <download-dir> itself and not
+# into a directory named for it; the note that cites the action's source is
+# .github/ci-notes/dispatch-browser.md#why-every-legs-blob-report-is-downloaded-without-merge-multiple-and-the-two-layouts-it-lands-in.
+# So <download-dir> holds that artifact's blob-report/ and rows/ at its top. A run whose pattern
+# matches one artifact - one leg uploaded a blob, on one attempt - downloads it so, and read as
+# an entry's name, blob-report/ is no leg's artifact: the step failed that run's merge job when
+# it had a blob to merge. No artifact the pattern matches is named blob-report or rows, so
+# either of those at the top is this layout, and any other entry beside them is a failure. One
+# artifact is one leg at one attempt, so there is nothing to choose and it is taken whole; its
+# name, which holds the attempt, is not on disk, so the line this prints names the files it took.
 #
 # It writes <out-dir>/blob-report and <out-dir>/rows, holding each leg's selected attempt's files
-# and no other's, and prints one line per leg saying which attempt it took and which it passed
-# over - the merge job's log is where a reader looks when a re-run's number surprises them.
+# and no other's. Where several artifacts matched it prints one line per leg saying which attempt
+# it took and which it passed over - the merge job's log is where a reader looks when a re-run's
+# number surprises them; where one matched it prints one line naming the files it took.
 #
 # An empty or absent <download-dir> is not a failure here: it writes the two empty directories
 # and says so. The merge step after it already fails when there is nothing to merge, and the
 # merge job's reading one names the legs that owed a blob.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>
+# Run from anywhere: .github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <job>
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Take the newest attempt of each
 # leg's blob report", and its tests in ci.yaml's test job, at "Test the browser lane's blob
 # attempt selection".
 set -euo pipefail
 shopt -s inherit_errexit
 
-if [ "$#" -ne 2 ]; then
-  echo "::error::dispatch-browser-latest-blobs.sh takes the download directory and the" \
-    "directory to write, and was given $# argument(s):" \
-    ".github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir>"
+if [ "$#" -ne 3 ] || [ -z "$3" ]; then
+  echo "::error::dispatch-browser-latest-blobs.sh takes the download directory, the directory" \
+    "to write and the id of the job that calls dispatch-browser.yaml, and was given $#" \
+    "argument(s):" \
+    ".github/scripts/dispatch-browser-latest-blobs.sh <download-dir> <out-dir> <job>"
   exit 1
 fi
 download_dir=$1
 out_dir=$2
-prefix=dispatch-browser-blob-
+prefix=$3-blob-
 
 mkdir -p "$out_dir/blob-report" "$out_dir/rows"
 
 if [ ! -d "$download_dir" ] || [ -z "$(ls -A "$download_dir" 2>/dev/null)" ]; then
   echo "No leg's blob artifact was downloaded into $download_dir, so $out_dir/blob-report and" \
     "$out_dir/rows are empty."
+  exit 0
+fi
+
+# One artifact, extracted into <download-dir> itself: the head says why this is its own layout.
+if [ -e "$download_dir/blob-report" ] || [ -e "$download_dir/rows" ]; then
+  strays=()
+  while IFS= read -r -d '' path; do
+    name=${path##*/}
+    case "$name" in
+      blob-report | rows) [ -d "$path" ] || strays+=("$name") ;;
+      *) strays+=("$name") ;;
+    esac
+  done < <(find "$download_dir" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+  if [ "${#strays[@]}" -gt 0 ]; then
+    for name in "${strays[@]}"; do
+      echo "::error::$download_dir/$name is not part of a leg's blob report: $download_dir" \
+        "holds blob-report/ or rows/ at its top, which is how actions/download-artifact" \
+        "extracts an artifact when exactly one matched, and a leg's artifact holds the" \
+        "directories blob-report/ and rows/ and nothing else. This entry is in that one" \
+        "artifact: upload only those two directories from the leg in" \
+        ".github/workflows/dispatch-browser.yaml."
+    done
+    exit 1
+  fi
+  held=
+  for part in blob-report rows; do
+    [ ! -d "$download_dir/$part" ] || held="$held${held:+ and }$part/"
+  done
+  cp -R "$download_dir/." "$out_dir/"
+  list=
+  while IFS= read -r -d '' file; do
+    list="$list${list:+, }$file"
+  done < <(cd "$out_dir" && find blob-report rows -type f -print0 | LC_ALL=C sort -z)
+  echo "$download_dir holds $held at its top, which is how actions/download-artifact extracts" \
+    "an artifact when exactly one matched, rather than into a directory named for it. One" \
+    "artifact is one leg at one attempt, so it is taken whole: ${list:-no file}."
   exit 0
 fi
 

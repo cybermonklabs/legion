@@ -64,7 +64,7 @@ func withSessionStore(lines string) string { return kubernetesWith(sessionStoreL
 // included: a file session would die with the pod's disk.
 const sessionStoreRefusal = "runtime.kubernetes.session_store must name a store that keeps sessions in a database, and is required (INFRA-80):" +
 	" an issue pod's disk is the pod's own ephemeral volume, deleted with the pod, so a session kept as a file on it ('pvc', also what an omitted session_store means) dies with it," +
-	" the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three such failures retire the claim"
+	" the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three such failures fail the claim"
 
 func TestLoadForValidationSettlesEveryMemberOfTheKubernetesBlock(t *testing.T) {
 	path := writeConfigFile(t, kubernetesFile+`    issue_volume: 30Gi

@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `scripts/listener-deploy-probe.sh --request-timeout <s>` sets how long each request may take,
+  its connection included (default 3 s, as before; a decimal is allowed). The connection alone
+  still gets 1 s.
+time: 2026-11-22T19:49:14Z
+custom:
+    Issue: listener-deploy-probe-request-timeout

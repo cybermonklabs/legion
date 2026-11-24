@@ -90,10 +90,18 @@ func wakeClaim(token claim.Token, state ClaimState) Claim {
 // wake limiter, over the claim given.
 func (h *harness) machineFor(c Claim) *Machine {
 	h.t.Helper()
+	return h.machineUnder(h.ctx, c)
+}
+
+// machineUnder is machineFor with the machine built on ctx, which a test ends for that machine
+// alone as a stopping daemon ends every machine's (shutdown); the claim is stored on the
+// harness's own.
+func (h *harness) machineUnder(ctx context.Context, c Claim) *Machine {
+	h.t.Helper()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
 		h.t.Fatal(err)
 	}
-	m, err := NewMachine(h.ctx, h.deps, c)
+	m, err := NewMachine(ctx, h.deps, c)
 	if err != nil {
 		h.t.Fatalf("new machine for %s: %v", c.Token, err)
 	}
@@ -1988,7 +1996,7 @@ func TestAnOperatorsDeliveryOverAParkedRelaunchNeverReachesTheDeadProcess(t *tes
 // The park over a process that is still booting, which the launch at its turn would retire: the
 // park disarms that process's boot interval and registration deadline (parkWake), so nothing but
 // the launch retires it. Running the launch where the operator's task arrives arms the new
-// process's own timers (launchNow, armBoot), and the claim goes on being watched: the agent that
+// process's own timers (launchTries, armBoot), and the claim goes on being watched: the agent that
 // never registers has its deadline, and the deadline retires its process and relaunches.
 //
 // The negative control is the launch dropped where it is run (dropWakeFor widened to a claim

@@ -35,6 +35,12 @@ const restoreRefPrefix = "legion-restore-"
 // this holds them in memory — never in a role's private directory, which each start clears — and
 // the first role's start applies the whole, digest-checked body once, before any role of the pod
 // runs. A pod the daemon sends no bundle to restores nothing and waits for nothing.
+//
+// The first start also records the workspace in use, on the workspace's own disk
+// (workspace.MarkInUse), before any role runs there. From then on every slice that is not one
+// already taken is refused, by this process and by any launcher after it over the same disk, so
+// no bundle is restored over work a role has done. The record goes with the pod's disk, and a
+// workspace provisioning creates again holds none.
 type bundleRestore struct {
 	mu sync.Mutex
 	// sequence is the id of the slice sequence being assembled, with the count, the digest and
@@ -63,15 +69,25 @@ type bundleRestore struct {
 	// start starts each jj and git of the restore (restoreWorkspace): the launcher's pidGuard,
 	// which holds each one out of PID 1's reaper until its own wait has read its exit.
 	start procgroup.Starter
+	// workspace is the pod's workspace (Config.Workspace), the one directory the restore works
+	// and records in use, and "" for a launcher that works none, which restores nothing.
+	workspace string
 }
 
-// newBundleRestore is a pod's restore, whose jj and git start starts. A nil start panics here, at
-// the launcher's start, rather than at the pod's first put-back.
-func newBundleRestore(start procgroup.Starter) *bundleRestore {
+// The answers to a slice the restore refuses whatever its sequence: one over a workspace a
+// restore or a role has started on, and one to a launcher that works no workspace at all.
+const (
+	workspaceInUseRefusal = "a restore or a role has started on this pod's workspace, so a bundle is not restored over its work"
+	noWorkspaceRefusal    = "this launcher works no workspace, so it restores no bundle"
+)
+
+// newBundleRestore is a pod's restore into workspace, whose jj and git start starts. A nil start
+// panics here, at the launcher's start, rather than at the pod's first put-back.
+func newBundleRestore(start procgroup.Starter, workspace string) *bundleRestore {
 	if start == nil {
 		panic("launcher: the workspace restore was given no starter")
 	}
-	return &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: start}
+	return &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: start, workspace: workspace}
 }
 
 // restoreResult is what one start's call on the pod's restore answers: whether the workspace
@@ -87,6 +103,10 @@ type restoreResult struct {
 // launcher holds the bundle and will restore it before the pod's first role starts. The daemon
 // keeps its own copy past that answer and drops it only on the restore's own outcome, which the
 // launcher reports in a launcher_restored of its own (apply, manager.reportRestore).
+//
+// A slice already taken is answered as it was. Every other slice is refused once a restore or a
+// role has started on the workspace (fence), whatever its sequence: the rest of a sequence that
+// began before the first start, and every slice to a launcher restarted over the same disk.
 func (r *bundleRestore) receive(frame shimwire.LauncherBundle) shimwire.LauncherBundleResult {
 	if err := frame.Validate(); err != nil {
 		return shimwire.LauncherBundleResult{ID: frame.ID, Index: frame.Index, Error: err.Error()}
@@ -100,6 +120,9 @@ func (r *bundleRestore) receive(frame shimwire.LauncherBundle) shimwire.Launcher
 				Error: "launcher_bundle reused an id with a different payload"}
 		}
 		return prior
+	}
+	if refusal := r.fence(); refusal != "" {
+		return shimwire.LauncherBundleResult{ID: frame.ID, Index: frame.Index, Error: refusal}
 	}
 	if frame.ID != r.sequence {
 		r.sequence, r.count, r.digest, r.release = frame.ID, frame.Count, frame.SHA256, frame.Release
@@ -120,11 +143,28 @@ func (r *bundleRestore) receive(frame shimwire.LauncherBundle) shimwire.Launcher
 			return shimwire.LauncherBundleResult{ID: frame.ID, Index: frame.Index,
 				Error: fmt.Sprintf("launcher_bundle sequence rebuilt to %s, not the %s its slices declared", got, frame.SHA256)}
 		}
-		r.body, r.applied, r.notice = whole, false, ""
+		r.body = whole
 		result.Held = true
 	}
 	r.results[key] = result
 	return result
+}
+
+// fence is why the restore refuses a slice it has not taken, and "" when it takes one: a launcher
+// with no workspace restores nothing, and a workspace this process has applied to, or that a
+// record on its disk marks in use (workspace.InUse), takes no bundle. A record that cannot be read
+// counts as one. It is called under mu.
+func (r *bundleRestore) fence() string {
+	if r.workspace == "" {
+		return noWorkspaceRefusal
+	}
+	if r.applied {
+		return workspaceInUseRefusal
+	}
+	if inUse, err := workspace.InUse(r.workspace); inUse || err != nil {
+		return workspaceInUseRefusal
+	}
+	return ""
 }
 
 // sliceAt is the payload already held for one slice of id, nil when that is not the sequence
@@ -153,48 +193,64 @@ func joined(slices [][]byte) []byte {
 	return body
 }
 
-// apply restores the held bundle into the workspace env names, once per pod, and answers what the
-// start that called it has to say: nothing at all when no bundle was sent, when one was already
-// restored with nothing to say, or when the generation works no workspace. A second role starting
-// while the restore runs waits here for it and is given the same notice.
-func (r *bundleRestore) apply(ctx context.Context, env []string) restoreResult {
+// apply records the workspace in use and restores the held bundle into it, once per pod, before
+// the start that called it runs its role, and answers what that start has to say: nothing at all
+// when no bundle was sent, when one was already restored with nothing to say, when the workspace
+// was in use before this process applied, or when the generation or the launcher works no
+// workspace. A second role starting while the restore runs waits here for it and is given the
+// same notice.
+//
+// It fails closed. A workspace it cannot record in use is its error, and the start must run no
+// role there: a later launcher over that workspace would find no record and could restore a
+// bundle over the role's work. The error leaves the restore as it was, a held body still held, so
+// the next start tries the record again, and slices are still taken, since no role has started.
+func (r *bundleRestore) apply(ctx context.Context, env []string) (restoreResult, error) {
 	// A manager built without one — a test's, which serves no daemon that could send a bundle —
-	// restores nothing and waits for nothing.
-	if r == nil {
-		return restoreResult{}
+	// restores nothing and waits for nothing, as does a role or a launcher that works no
+	// workspace.
+	if r == nil || r.workspace == "" || envValue(env, "LEGION_WORKSPACE") == "" {
+		return restoreResult{}, nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// The restore has run: it is answered from what it left, since the body it read went with
 	// it. This is read before the body, which a restore that has run no longer holds.
 	if r.applied {
-		return restoreResult{Restored: r.restored, Notice: r.notice}
+		return restoreResult{Restored: r.restored, Notice: r.notice}, nil
 	}
-	if r.body == nil {
-		return restoreResult{}
-	}
-	dir := envValue(env, "LEGION_WORKSPACE")
-	if dir == "" {
-		return restoreResult{}
+	// A record that cannot be read counts as in use, as it does for a slice (fence).
+	inUse, err := workspace.InUse(r.workspace)
+	inUse = inUse || err != nil
+	if err := workspace.MarkInUse(r.workspace); err != nil {
+		return restoreResult{}, fmt.Errorf("mark the workspace %s in use before a role starts on it: %w", r.workspace, err)
 	}
 	r.applied = true
-	bundle, err := shimwire.ParseWorkspaceBundle(r.body)
+	if r.body == nil {
+		return restoreResult{}, nil
+	}
 	// The joined body is the bundle's bytes a second time: the slices hold the same bytes, and
 	// they stay, since a repeated slice is answered by comparing it with the one held (sliceAt).
 	// The join is let go here instead, so a 40 MiB bundle is not resident twice for the pod's
-	// whole life; nothing reads it again, since every later apply is answered above.
+	// whole life; nothing reads it again, since every later apply is answered above. A workspace
+	// already in use is restored nothing: the work there is a role's, and the bundle stays in the
+	// daemon's database, as for every restore that cannot run.
+	body := r.body
 	r.body = nil
+	if inUse {
+		return restoreResult{}, nil
+	}
+	bundle, err := shimwire.ParseWorkspaceBundle(body)
 	if err != nil {
 		r.notice = fmt.Sprintf("the released workspace's saved work could not be read (%v); this workspace holds only what was pushed,"+
 			" and the bundle of release %d stays in the daemon's database, which sends it to no pod again", err, r.release)
 	} else {
-		r.restored, r.notice = restoreWorkspace(ctx, r.start, dir, env, r.release, bundle)
+		r.restored, r.notice = restoreWorkspace(ctx, r.start, r.workspace, env, r.release, bundle)
 	}
 	r.confirm = &shimwire.LauncherRestored{ID: r.sequence, Release: r.release, OK: r.restored}
 	if !r.restored {
 		r.confirm.Error = r.notice
 	}
-	return restoreResult{Restored: r.restored, Notice: r.notice}
+	return restoreResult{Restored: r.restored, Notice: r.notice}, nil
 }
 
 // owed is the report the daemon has not been given yet, and nil when none is: every connection

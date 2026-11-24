@@ -93,10 +93,13 @@ const (
 	// drain, which starts with the stop, gets the budget's first four fifths (8 s): a decision a
 	// route asked for runs on until the drain ends, so an operator's suspension whose process is
 	// already exiting is recorded rather than undone at the next boot. The last fifth leaves room
-	// for the work the drain's end cuts short to return before the budget runs out. Work still
-	// running at the budget's end, a call into a process that does not answer, is logged with each
-	// claim still deciding and not waited on: the next boot re-adopts each process a claim records
-	// and relaunches each launch left unrecorded. natsCloseTimeout bounds the close of the
+	// for the work the drain's end cuts short to return before the budget runs out. A commit whose
+	// caller's context the stop or the drain's end cancels waits at most store.CommitSettleBound
+	// more for its outcome, counted from that cancel (store.Transact), which fits the budget's last
+	// fifth (TestTheCommitSettleFitsTheStopsLastFifth). Work still running at the budget's end, a
+	// call into a process that does not answer, is logged with each claim still deciding and not
+	// waited on: the next boot re-adopts each process a claim records and relaunches each launch
+	// left unrecorded. natsCloseTimeout bounds the close of the
 	// workflow's NATS connection, stampTimeout the stamp, and storeCloseTimeout the store's close
 	// after it, so the daemon returns at most
 	// stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after its stop begins,
@@ -483,8 +486,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
+		plan.phaseRole = workflow.phaseRole
 		plan.cacheRepositories = workflow.cacheRepositories
-		plan.rootTask = workflow.rootTask
+		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.podRefused = workflow.podRefused
@@ -493,7 +497,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
 		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
 		// on before supervision restores a claim, so no claim write of this boot is left out.
-		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
+		st.PublishRoleHolders(workflow.wakeRoleHolders)
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
 		// it is built with the workflow, before supervision: the machines are handed its flag, its
@@ -565,6 +569,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.stop()
 		st.Close()
 		return err
+	}
+	// The Sandbox runtime's launches read the update round over a pod they would keep through the
+	// supervision, which exists only now; the runtime was built inside openSupervision before it
+	// (launchRounds). No machine exists yet, so no launch has asked.
+	if plan.launchRounds != nil {
+		plan.launchRounds.bind(s.roundPodEndsAtLaunch)
 	}
 	if plan.probe != nil {
 		report, err := plan.probe(ctx, s.runtime)
@@ -901,13 +911,18 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
-	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
+	// phaseHolds, rootHears, rootTask, designNews and treeClosable are the workflow's answers to
+	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
 	// queued and every tree closes.
 	phaseHolds   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
-	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
+	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
+	// phaseRole is the workflow's answer to which role works an issue's current phase, which the
+	// pod start gate puts first among the starts no request raised (supervise.Deps.PhaseRole); nil
+	// without a workflow, where no role is the phase worker.
+	phaseRole func(ctx context.Context, issue string) (claim.Role, error)
 	// cacheRepositories is the repositories the runtime keeps a repository cache of: those of the
 	// project's live issue records and of the launches since their last read
 	// (workflowRuntime.cacheRepositories). A daemon with no workflow keeps none.
@@ -920,6 +935,12 @@ type plan struct {
 	// factory built before the workflow opens and the boot that fills it once it has hold the
 	// one holder. Nil under tmux, and for a replaced runtime, where no launcher reports.
 	volumeReports *volumeTrimReports
+	// launchRounds is how the Kubernetes runtime's launches read the update round over a pod
+	// they would keep (launchRounds, prepareSandbox, sandbox.Options.RoundPodEnds): a pointer, so
+	// the runtime built inside openSupervision and the boot that fills it once the supervision is
+	// open hold the one holder. Nil under tmux, whose panes run in no pod, and for a replaced
+	// runtime, which is handed no such reading.
+	launchRounds *launchRounds
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim forgot its recorded session
@@ -928,9 +949,10 @@ type plan struct {
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
 	// podRefused tells the workflow that a claim's launch was refused because its issue pod cannot
-	// run it until that pod is replaced, and whether to queue a start of the claim; nil without a
-	// workflow, where nobody is told and nothing is queued.
-	podRefused func(c supervise.Claim, pod, detail string, queue bool)
+	// run it until that pod is replaced, and the workflow queues a start of the claim wherever its
+	// outbox holds none that brings the claim back; nil without a workflow, where nobody is told and
+	// nothing is queued.
+	podRefused func(c supervise.Claim, pod, detail string)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
@@ -1324,7 +1346,7 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 			return experiment.Arms{}, nil
 		}
 		var recorded map[string][]record.Assignment
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			recorded, err = records.AssignmentsFor(ctx, tx, keys)
 			return err
@@ -1528,6 +1550,10 @@ type supervision struct {
 	// stall backstop reads for a role the deployment gives a bound of its own (stallBackstopOf);
 	// nil in a supervision a test builds by hand reads no plan.
 	planRole planRoleReader
+	// afterRefreshAdmit is a test's seam between Admit and supervisor.post in
+	// refreshStalePlugins, run for each admitted claim with no lock held; nil runs nothing. A
+	// test sets it on the supervision it builds by hand, and no production path sets it.
+	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
 	// project is paused (start).
@@ -1538,6 +1564,12 @@ type supervision struct {
 	// passed (kubernetes), so the image rows of the capability report read present.
 	imageReport bootprobe.ImageReport
 	probed      bool
+	// cacheStatuses is the runtime's repository caches, each with its last health read, which the
+	// tick's capability report reads their room from (caches) and the state route reads once a
+	// request (source.caches): repositoryCachesOf(runtime), nil under any runtime but the Sandbox
+	// runtime, which alone keeps caches. A field, so that a test gives the report caches of its own
+	// without a cluster.
+	cacheStatuses func() []sandbox.CacheStatus
 	// reportMu guards reportedGaps and reports: the tick's reads, the API's readies and boot's run
 	// on different goroutines. reportedGaps are the open capabilities the last report logged
 	// (reportCapabilities). reports is each claim's latest capability report (LEGION-663), as its
@@ -1546,13 +1578,14 @@ type supervision struct {
 	reportMu     sync.Mutex
 	reportedGaps []string
 	reports      map[claim.Token]capabilities.Report
-	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, the whole of what the update-round
-	// sweep keeps between ticks (reconcilePodUpdates): when this daemon last opened a pod round,
-	// and the rounds it has opened whose claims have not recorded one yet, by issue. The two pace
-	// the sweep's openings under `pod_update_rounds_per_minute` and `pod_update_max_open_rounds`;
-	// nothing of either is in the store, because neither decides a round, and a daemon that has
-	// just booted opens its first round at its first sweep. The sweep is one goroutine, and the
-	// mutex is what makes that a fact of this code rather than of its caller.
+	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, what the update-round sweep keeps
+	// between ticks to pace its openings (reconcilePodUpdates): when this daemon last opened a pod
+	// round, and the rounds it has opened whose claims have not recorded one yet, by issue. The two
+	// pace the sweep's openings under `pod_update_rounds_per_minute` and
+	// `pod_update_max_open_rounds`; nothing of either is in the store, because neither decides a
+	// round, and a daemon that has just booted opens its first round at its first sweep. The sweep
+	// is one goroutine, and the mutex is what makes that a fact of this code rather than of its
+	// caller.
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
 	podUpdateOpened   map[string]string
@@ -1565,6 +1598,50 @@ type supervision struct {
 	// neither waits on what the other is doing.
 	podUpdateRoundsMu sync.Mutex
 	podUpdateRounds   api.PodUpdateRounds
+	// podUpdateWorkspaceMu guards podUpdateWorkspace, what the update-round sweep keeps between
+	// ticks of a round's read of its issue's workspace: the one read that a round made before its
+	// pod's replacement (readRoundWorkspace), by issue, naming the round it was made for and
+	// holding the answer or the read's error. A replacement the read stood in front of can be
+	// refused under the pod's launch turn or can fail, and the next sweep that reaches the same
+	// round's replacement reuses the answer rather than read again, so the round reads the
+	// workspace once and its line and message name that read. The entry goes where the sweep ends
+	// the round (endPodUpdates) and where the sweep finds the issue in another round or in none
+	// (forgetWorkspaceReads). Nothing of it is in the store, because it decides nothing: the
+	// replacement is made whatever the read found. A restart forgets it, and the round's next
+	// replacement reads the workspace again. A mutex of its own, because it has nothing to do with
+	// the pace podUpdateMu guards; the sweep is its one goroutine all the same.
+	podUpdateWorkspaceMu sync.Mutex
+	podUpdateWorkspace   map[string]workspaceRead
+	// podUpdateEndedMu guards podUpdateEnded, what the update-round sweep keeps between ticks of
+	// the rounds it has ended: by issue, the round whose end the sweep last posted to the round's
+	// members (endPodUpdates). The post is asynchronous (supervisor.post), and a member whose
+	// machine is in a relaunch takes it only once that relaunch is done, so its claim records the
+	// round until then. While a claim of the issue records that round, the sweep reads the claim
+	// as the end leaves it and decides nothing of that round again (reconcileIssuePodUpdate), and
+	// the round holds no open-round slot (beginPodUpdateSweep). The entry goes at the first sweep
+	// where no claim of the issue records the round (endedRounds). Within one daemon a post to a
+	// machine's queue is never lost (inbox), so the end reaches every member. Nothing of it is in
+	// the store: a restart forgets it with the posts not taken yet, and the next boot makes the end
+	// once more for a claim the store still holds in the round (dispatch://INFRA-3276 R5). A mutex
+	// of its own, for the reason podUpdateWorkspaceMu has one.
+	podUpdateEndedMu sync.Mutex
+	podUpdateEnded   map[string]string
+	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
+	// decided of the update round open over it (roundPodEndsAtLaunch, launchRound): by issue, the
+	// round, whether a launch replaced its pod as the round's own replacement and what that launch
+	// read of the round's end, and each claim whose launch into the pod the hook kept the pod for.
+	// The hook writes it inside a launching machine's decision and under the pod's launch turn; the
+	// next launch into the pod reads the claims it kept the pod for (dispatch://INFRA-4109 R7), and
+	// the sweep that reads a replaced pod gone, or another pod in its place, ends the round as the
+	// replacement the round made (endRoundALaunchReplaced). The entry goes where the sweep ends the
+	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
+	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
+	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
+	// replaced as a pod gone, whose message names the same members. A mutex of its own, never held
+	// across a runtime call, because the hook runs on a launching machine's goroutine beside the
+	// sweep.
+	podUpdateLaunchMu       sync.Mutex
+	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
@@ -1786,7 +1863,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		roles: cfg.Roles, models: cfg.ListedModels(), planRole: planRole,
 		identity: p.identityAs, repository: p.launchRepository, owner: p.owner, stepWorkers: p.stepWorkers,
 		appOwners:   p.appOwners(cfg.Runtime.Name, roleApps.Deployed),
-		designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+		designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 		runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 		backendFor: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
@@ -1802,8 +1879,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Secrets:                 p.secretsEnroller,
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
+		PhaseRole:               p.phaseRole,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
+		DesignNews:              p.designNews,
 		TreeClosable:            p.treeClosable,
 		ClaimActivity:           st.ClaimActivity,
 		TaskConfirmed:           p.taskConfirmed,
@@ -1837,6 +1916,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			Burst:   cfg.WorkerWakeBurst,
 		},
 		RefreshGate:        refreshGate,
+		PodStarts:          podStarts(cfg, p.clock),
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall: func(ctx context.Context, c supervise.Claim) (bool, error) {
@@ -1852,7 +1932,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, roleDefinition: launches.roleDefinition, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses, backends: backends, planRole: planRole,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
-		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
+		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops, cacheStatuses: repositoryCachesOf(rt),
 	}
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
 	// after their deps: the one callback whose receiver is supervision itself, set here before
@@ -2248,6 +2328,17 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 	}
 }
 
+// podStarts is the gate the machines of this daemon start their roles' processes through
+// (supervise.Deps.PodStarts, dispatch://INFRA-5297): one per daemon, on the machines' own clock,
+// under the Kubernetes runtime alone, where every role of an issue runs in the issue's one pod
+// under one memory limit. tmux runs each role in a pane of the host's, with no pod for two loads
+// to meet in, so it gets none and no start waits.
+func podStarts(cfg config.Config, clock supervise.Clock) *supervise.PodStarts {
+	if cfg.Runtime.Name != "kubernetes" {
+		return nil
+	}
+	return supervise.NewPodStarts(clock)
+}
 // reconcileBootOrphans retries only the boot reconciliation, boundedly. A listing error does not
 // prove an unrecorded launch's pane is gone, so callers must not launch the claim again until this
 // returns true. Each attempt reads the claims as they are now: a later retry must know the claims
@@ -2573,11 +2664,11 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			startedAt:    startedAt,
 			now:          p.clock.Now,
 			secretsLogin: p.secretsLogin,
-			deployment:   s.deployment,
+			deployment:   s.deploymentWith,
 			reports:      s.capabilityReports,
 			wakes:        s.waitingWakes,
 			repositories: p.repositories,
-			caches:       repositoryCachesOf(s.runtime),
+			caches:       s.cacheStatuses,
 			gatedSteps:   cfg.Gates.Steps(),
 			experiments:  cfg.ExperimentsDeclared(),
 			settings:     api.SettingsOf(cfg),
@@ -2587,7 +2678,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			noPluginInstall: stateNoPluginInstall(cfg),
 			architectStalls: architectStalls,
 		},
-		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
 		CallerPod:          callerPodOf(s.runtime),
 		Ready:              ready.serving,
@@ -2612,6 +2702,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Decisions:          s.decided,
 		Log:                s.log,
 		Pool:               st.Pool(),
+		StateTransactions:  st.Pool(),
 		Handlers:           handlers,
 		PrepareRepository:  prepare,
 		RepositoryUnread:   unread,
@@ -2742,9 +2833,9 @@ type source struct {
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
 	secretsLogin *cipher.Client
-	// deployment is the deployment's capabilities as this boot knows them (supervision.deployment),
-	// whose report the state carries.
-	deployment func() capabilities.Deployment
+	// deployment is the deployment's capabilities as this boot knows them with the repository
+	// caches it is handed (supervision.deploymentWith), whose report the state carries.
+	deployment func([]sandbox.CacheStatus) capabilities.Deployment
 	// reports is each claim's latest capability report (supervision.capabilityReports), which the
 	// projection shows on the claim's view whatever process reported it.
 	reports func() map[claim.Token]capabilities.Report
@@ -2755,10 +2846,13 @@ type source struct {
 	// workflow, whose state serves no repository.
 	repositories *repositories
 	// caches is the Kubernetes runtime's repository caches with their last health reads
-	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
+	// (supervision.cacheStatuses, sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps
+	// none. State reads it once and hands that read to deployment and to the repositories' view
+	// alike, so the capability row and `repositories` describe one read.
 	caches func() []sandbox.CacheStatus
-	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
-	// root of the state answers its own state of; the empty list gates none.
+	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps). Every root
+	// of the state answers the steps its tree is gated on, which these steps and the root's gate
+	// rows make (record.TreeSteps); the empty list gates none.
 	gatedSteps []record.DesignStep
 	// experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// whose order every issue's `assignments` ride in; the empty list declares none. It is read
@@ -2821,7 +2915,7 @@ type source struct {
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
-// the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
+// the transaction's commit hooks (store.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. wake is nil where there is no workflow to wake, or where the writer wakes
 // its own lanes once it commits: the API-only daemon, the state route's reads, the stranded report
 // and the project's pause (projectPause.stopped).
@@ -2867,14 +2961,14 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 }
 
 // liveOnCommit asks for a read of the live records once the transaction that wrote one commits
-// (intake.OnCommit), and at once for a write outside a commit scope, whose read then finds the
+// (store.OnCommit), and at once for a write outside a commit scope, whose read then finds the
 // write or a later one does.
 func (s projectRecords) liveOnCommit(ctx context.Context) {
 	if s.live == nil {
 		return
 	}
-	if intake.CommitScoped(ctx) {
-		intake.OnCommit(ctx, s.live)
+	if store.CommitScoped(ctx) {
+		store.OnCommit(ctx, s.live)
 		return
 	}
 	s.live()
@@ -3065,8 +3159,11 @@ func (s projectRecords) ClearGeneration(ctx context.Context, tx pgx.Tx, issue st
 	return s.Store.ClearGeneration(ctx, tx, issue, now)
 }
 
-// ClearTreeGeneration is ClearGeneration for every issue of tree, each of which is of tree's
-// project: a record takes its root's project when the workflow writes it.
+// ClearTreeGeneration empties the generation-scoped facts of every issue of tree, as
+// ClearGeneration does for one issue, and folds the phases rows and clears the steps of the root
+// alone, the issue whose generation a re-admission raises (record.Postgres.ClearTreeGeneration).
+// Each issue of tree is of tree's project: a record takes its root's project when the workflow
+// writes it.
 func (s projectRecords) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
 	if !s.ownsKey(record.OutboxKindDesignGatesPublish, tree) {
 		return nil
@@ -3091,7 +3188,7 @@ func (s projectRecords) PutSlot(ctx context.Context, tx pgx.Tx, slot record.Slot
 }
 
 // wakeOnCommit wakes the row's lane once the transaction that wrote it commits. A write made
-// outside a commit scope (intake.WithCommitHooks) has no commit to wait for: its lane is woken at
+// outside a commit scope (store.Transact) has no commit to wait for: its lane is woken at
 // once, and the write is logged with its caller, since a lane woken before the row is visible
 // finds nothing and the row then waits for the sweep — every transaction that writes a row is
 // meant to be scoped, and one that is not is a bug to fix where the log names.
@@ -3099,8 +3196,8 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	if s.wake == nil {
 		return
 	}
-	if intake.CommitScoped(ctx) {
-		intake.OnCommit(ctx, func() { s.wake(row.Issue, row.Kind) })
+	if store.CommitScoped(ctx) {
+		store.OnCommit(ctx, func() { s.wake(row.Issue, row.Kind) })
 		return
 	}
 	// Caller 2 is the caller of Enqueue or ExpediteOutbox, past this helper and the method.
@@ -3110,17 +3207,18 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	s.wake(row.Issue, row.Kind)
 }
 
-// serializedTx runs write in one transaction under the lock every fact applies under
+// serializedTx runs write in one Transact under the lock every fact applies under
 // (intake.SerializeFacts), so no fact applies with a copy of a record read before write wrote it
 // or read it: the backfill's writes (fillRepositories, nameRepositories), the rename pass's
-// (renamePass.write) and the refresher's read of the live records (refreshLive). A lock not taken
+// (renamePass.write) and the refresher's read of the live records (refreshLive). write runs on
+// the transaction's context, where its commit hooks register (store.OnCommit). A lock not taken
 // is the error what names, wrapping the lock's own.
-func serializedTx(ctx context.Context, pool *store.Pool, what string, write func(pgx.Tx) error) error {
-	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+func serializedTx(ctx context.Context, pool *store.Pool, what string, write func(ctx context.Context, tx pgx.Tx) error) error {
+	return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("%s: %w", what, err)
 		}
-		return write(tx)
+		return write(ctx, tx)
 	})
 }
 
@@ -3233,7 +3331,11 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if s.secretsLogin != nil {
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}
-	state.Capabilities = api.CapabilityStatesOf(s.deployment().Report())
+	var caches []sandbox.CacheStatus
+	if s.caches != nil {
+		caches = s.caches()
+	}
+	state.Capabilities = api.CapabilityStatesOf(s.deployment(caches).Report())
 	if s.repositories != nil {
 		// The repositories the block lists are those of the live records this same transaction
 		// reads, so the list and the issues the body shows agree by construction rather than
@@ -3245,10 +3347,6 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		live, err := repositoriesOf(issues)
 		if err != nil {
 			return api.State{}, nil, err
-		}
-		var caches []sandbox.CacheStatus
-		if s.caches != nil {
-			caches = s.caches()
 		}
 		state.Repositories = s.repositories.view(live, caches)
 	}

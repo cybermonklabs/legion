@@ -67,6 +67,10 @@ type ListenerConfig struct {
 	AgentSecretsURL      string
 	AgentSecretsAudience string
 	PublicURL            string
+	// ConsumerNames is how the listener names the JetStream consumers it creates,
+	// EnvConsumerNames: "fixed" or "fresh". "" leaves the variable unset, and the listener then
+	// runs fixed. CheckConsumerNames holds the rule.
+	ConsumerNames string
 }
 
 // TailnetHostName is the address a client reaches the listener of the tailnet machine hostname by,
@@ -243,7 +247,8 @@ func CheckSenderLimit(prefix string, perMinute, burst *int) (int, int, error) {
 // 0, each of which the listener refuses when it boots; CheckSenderLimit holds a component's own
 // rule for the two inputs, which also refuses a 0 an operator gave. CheckBroker owns the broker
 // check's rule, under core's own input names, so a component that renders those three under an
-// input of its own calls it with its own prefix first.
+// input of its own calls it with its own prefix first. CheckConsumerNames owns the consumer-name
+// rule, under core's own name, consumerNames, which a component checks under its own path first.
 func (c ListenerConfig) Check() error {
 	if bus.HoldsSeed(c.MachineID) {
 		return InputErrorf("machineId", "%w", SeedRefusal("machineId"))
@@ -289,7 +294,7 @@ func (c ListenerConfig) Check() error {
 	if err := CheckBroker("", c.AgentSecretsURL, c.AgentSecretsAudience, c.PublicURL); err != nil {
 		return err
 	}
-	return nil
+	return CheckConsumerNames("consumerNames", c.ConsumerNames)
 }
 
 // Env returns the listener's non-secret environment, KEY=value, in a fixed order, for the config
@@ -309,9 +314,10 @@ func (c ListenerConfig) Check() error {
 // bus.SenderMessagesPerMinuteEnvVar then bus.SenderMessageBurstEnvVar, each only when its field
 // is above 0 too. aws/rendering's ListenerEnv sets no NATSReplicas here and writes its own
 // ENVOY_NATS_REPLICAS after all of Env's variables, the sender limit's included. The broker check
-// comes last, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
-// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, so
-// a listener without one renders what it always rendered, byte for byte.
+// follows, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
+// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, and
+// EnvConsumerNames comes last, only on a config that sets it too, so a listener without either
+// renders what it always rendered, byte for byte.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -373,6 +379,9 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 		if value != "" {
 			env = append(env, brokerVars[i].variable+"="+value)
 		}
+	}
+	if c.ConsumerNames != "" {
+		env = append(env, EnvConsumerNames+"="+c.ConsumerNames)
 	}
 	return env, nil
 }

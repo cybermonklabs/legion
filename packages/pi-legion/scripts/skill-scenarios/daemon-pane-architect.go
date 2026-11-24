@@ -1,8 +1,10 @@
 package main
 
 import (
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -10,14 +12,20 @@ import (
 // addressing (architectAddressing). This file is the one part of the program that calls
 // daemon.ArchitectAddressing, so daemon-pane.ts builds it in, as cmd/daemon-pane/architect.go
 // beside daemon-pane.go, only inside a checkout whose daemon declares that function; the program
-// still builds inside an older one, where it composes no architect's prompt.
+// still builds inside an older one, where it composes an architect's addressing with its own
+// restatements of that checkout's daemon.
 func init() {
 	architectAddressing = rigArchitectAddressing
 }
 
 // rigArchitectAddressing is what the architect of c is told after its addressing under the rig's
-// deployment, which defines no role, lists no model and leaves `gates.design` unset
-// (config.Gates.Steps), composed by the daemon's own function, as workerSpawnSpec composes it.
+// deployment, which defines the roles of rigRoles, lists no model, leaves `gates.design` unset
+// (config.Gates.Steps) and sets no `production_check` (rigProductionCheck), composed by the
+// daemon's own function, as workerSpawnSpec composes it.
 func rigArchitectAddressing(c supervise.Claim) string {
-	return daemon.ArchitectAddressing(c, nil, nil, config.Gates{}.Steps())
+	roles := make([]config.Role, len(rigRoles))
+	for i, role := range rigRoles {
+		roles[i] = config.Role{Name: claim.Role(role.name), Type: plan.Type(role.typ), Model: role.model}
+	}
+	return daemon.ArchitectAddressing(c, roles, nil, config.Gates{}.Steps(), rigProductionCheck)
 }

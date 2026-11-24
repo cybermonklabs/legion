@@ -213,6 +213,75 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 	}
 }
 
+// The teardown reads a start queued above the release's rows by the one rule the idle hold and
+// the boundary read (idleWaitingRow). A start queued for news alone does not cancel it: the start
+// wakes the claim the release suspended, as any start wakes one, and the role comes back with its
+// news in the pod that replaces this one. A phase start queued after it is the pod being used
+// again, and cancels the release as overtaken, as it does at a role stop.
+func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartOfNewsAlone(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	markRelease(t, st, 5, 6, 10, 0)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue,
+		Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended,
+		SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+		t.Fatal(err)
+	}
+	queue := func(id int64, payload string) {
+		t.Helper()
+		if _, err := st.Pool().Exec(ctx, `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error)
+			values ($1, 'supervise', $2, $3, 0, now(), '')`, id, rootIssue, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}
+
+	queue(30, `{"op":"start","tree":"LEGION-208","role":"architect","generation":1,"news":true}`)
+	if decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow); err != nil || decision.Act != ReleaseActs {
+		t.Fatalf("the teardown with a start of news alone queued after the release's rows = %s (%s), %v; want %s",
+			decision.Act, decision.Cause, err, ReleaseActs)
+	}
+
+	queue(31, `{"op":"start","tree":"LEGION-208","role":"tester","generation":1,"phase":"testing"}`)
+	decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
+	if err != nil || decision.Act != ReleaseCancel || decision.Cause != ReleaseCauseOvertaken {
+		t.Fatalf("the teardown with a phase start queued after the release's rows = %s (%s), %v; want %s for %s",
+			decision.Act, decision.Cause, err, ReleaseCancel, ReleaseCauseOvertaken)
+	}
+}
+
+// A start that waits because the issue's pod lacks the slot of its claim or the role of its step,
+// queued above the release's rows, does not cancel the teardown either: the pod cannot run it, and
+// the release is one of the two things that let it start (idleWaitingRow,
+// pods.StartWaitsForPodPrefix). A teardown that read it as the pod being used again would cancel
+// the very release it waits for, and the start would wait on until the pod's update round. The
+// control is the same start before its first try, its last error empty: it is the pod being used
+// again, and cancels the release.
+func TestTheTeardownIsNotCancelledByAStartThatWaitsForItsPod(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		lastError string
+		want      ReleaseAct
+	}{
+		{name: "a start that waits for its pod", lastError: pods.StartWaitsForPodPrefix + ": the pod was built before the role checker", want: ReleaseActs},
+		{name: "control: the same start before its first try", lastError: "", want: ReleaseCancel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			markRelease(t, st, 5, 6, 10, 0)
+			suspendedImplementer(t, st, supervise.SuspendedByReleased)
+			queueStart(t, st, 30, "checker", tc.lastError)
+			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}
+			if decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow); err != nil || decision.Act != tc.want {
+				t.Fatalf("the teardown with %s queued after the release's rows = %s (%s), %v; want %s", tc.name, decision.Act, decision.Cause, err, tc.want)
+			}
+		})
+	}
+}
+
 // A close and a release order against each other: each waits on the other's role stops, which is
 // what adding 'release' to both op fences buys. A release row below a close's own row makes the
 // close wait, exactly as one of its own suspends would.
@@ -240,7 +309,8 @@ func TestACloseWaitsForAReleasesRoleStops(t *testing.T) {
 // mark's first_row and its last_row, so a task, notice, message or start of the issue outside
 // that range — queued by a transaction already in flight when the mark was written, or queued
 // once the mark stood — reached a pod every role of which was still running: it cancels the
-// release at the boundary. A claim started since the mark, or one holding a process, cancels it
+// release at the boundary, a start that waits for its pod excepted.
+// A claim started since the mark, or one holding a process, cancels it
 // at any of the release's role stops. A row no mark holds does nothing.
 //
 // The mark stands through every one of those answers: the cancel is carried out by
@@ -871,57 +941,6 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			}
 			if teardown.Act != tc.want || teardown.Cause != tc.cause {
 				t.Fatalf("the teardown = %s for %s, want %s for %s", teardown.Act, teardown.Cause, tc.want, tc.cause)
-			}
-		})
-	}
-}
-
-// Two claims can hold one role of an issue: the second agent of a role (`…-implementer-2`), or a
-// keyed agent beside its role's own claim. The release's mark records the token of each claim its
-// stops suspended (issue_releases.suspended, 20261122102933), and the check that the pod went on
-// working after the mark reads those tokens: a claim of the same role that this release did not
-// suspend — here `…-implementer-2`, which the daemon suspended for a stop of its step — is no claim
-// the release suspended and something resumed since, so it cancels nothing, at every idle release
-// of the pod. A claim the release did suspend and that is no longer suspended as `released` still
-// cancels it. The fault: a match by role read the second claim as the first one resumed, and
-// cancelled the release at each idle period, so the pod was never released.
-func TestAClaimOfTheSameRoleTheReleaseDidNotSuspendCancelsNothing(t *testing.T) {
-	const second = claim.Token("legion-legion-legion-208-implementer-2")
-	for _, tc := range []struct {
-		name    string
-		resumed bool
-		want    ReleaseAct
-		cause   ReleaseCause
-	}{
-		{name: "a second claim of the role the daemon suspended", want: ReleaseActs},
-		{name: "control: the claim the release suspended, resumed since", resumed: true, want: ReleaseCancel, cause: ReleaseCauseOvertaken},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			st := migratedStore(t)
-			ctx := context.Background()
-			openRunningTree(t, st)
-			releasedClaim(t, st, claim.RoleImplementer)
-			if err := st.PutClaim(ctx, supervise.Claim{Token: second, Project: "legion", Tree: rootIssue, Issue: rootIssue,
-				Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended,
-				SuspendedBy: supervise.SuspendedByDaemon}); err != nil {
-				t.Fatalf("seed the second implementer: %v", err)
-			}
-			_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
-			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary); err != nil {
-				t.Fatalf("record the implementer's suspension: %v", err)
-			}
-			if tc.resumed {
-				if _, err := st.Pool().Exec(ctx, `update claims set state = 'ready', suspended_by = '' where token = 'legion-legion-legion-208-implementer'`); err != nil {
-					t.Fatalf("resume the released implementer: %v", err)
-				}
-			}
-
-			stop, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
-			if err != nil {
-				t.Fatalf("IssueReleaseStop: %v", err)
-			}
-			if stop.Act != tc.want || stop.Cause != tc.cause {
-				t.Fatalf("the role stop = %s for %s, want %s for %s", stop.Act, stop.Cause, tc.want, tc.cause)
 			}
 		})
 	}

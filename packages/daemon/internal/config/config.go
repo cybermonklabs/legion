@@ -72,9 +72,14 @@ const (
 // Config is the daemon's settled configuration: the file, the environment, and the defaults
 // resolved into the values the daemon runs on.
 type Config struct {
-	Project string
-	Port    int
-	Bind    string
+	// Revision is the commit this binary was built from (cmd/legion's revision, which the worker
+	// image and the release link in), "" for a build nothing stamped. It is not read from the file:
+	// `legion start` sets it, and the daemon names it after its NATS connection's name
+	// (natsauth.ConnectionName).
+	Revision string
+	Project  string
+	Port     int
+	Bind     string
 	// AdvertiseHost is `advertise_host`: the host every pod's shim dials the worker stream at in
 	// Bind's place, so Bind can be the unspecified address a daemon running as a pod listens on; ""
 	// (the default) has pods dial Bind. Only runtime: kubernetes accepts it, and readAdvertiseHost
@@ -175,11 +180,11 @@ type Config struct {
 	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
-	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
-	// round before it once no turn runs and no claim's activity report holds it (internal/daemon's
-	// roundEnd.holding), and no answer, turn or background work holds the round past it. It is a
-	// decimal number of minutes, as `worker_silence_minutes` is, so a live proof can drive the
-	// bound inside one run.
+	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal number of minutes, as `worker_silence_minutes` is, so a live proof
+	// can drive the bound inside one run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
@@ -346,6 +351,12 @@ const (
 	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
+
+	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
+	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
+	// alone (packages/contracts/src/legion-api.ts), so a pane's `legion` tool refuses every state
+	// read of a daemon whose cap is 0.
+	DefaultReviewRoundCap = 3
 )
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
@@ -1030,7 +1041,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
-		ReviewRoundCap:       3,
+		ReviewRoundCap:       DefaultReviewRoundCap,
 		Warnings:             file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {

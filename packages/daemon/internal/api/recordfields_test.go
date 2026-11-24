@@ -122,6 +122,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
+		UnrecordedRefusal: &supervise.UnrecordedRefusal{Since: at.Add(-2 * time.Hour), Attempts: 4,
+			Error: "apply fact supervise/pod-refused:legion-legion-legion-500-implementer:1: the database did not answer"},
 		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1, AgentResumeGeneration: 3, SessionAgent: "key:a",
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,

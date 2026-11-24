@@ -75,13 +75,14 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 }
 
 // A stopped task and a parent held for its children stand in held, and each path that
-// brings an issue back to work picks the role it gives work to by the role of the issue's phase,
-// which held has none of (phase.RoleFor, OpenRoleOf). So none of these paths gives either one
-// work: the ready of a claim (readyWorkerTask), the boot's resume by rule (booted, through
-// suspendedPhaseOwners), the silence repair (workerSilent, through phaseWorkerRecord), and the CI
-// settlement's wake of a released pod (wakeOnSettlement). The fifth path, a re-admission's
-// promotion, is admission's (admit's TestAStoppedTaskAndAHeldParentGetNoWorkFromAPromotion). Each
-// path's twins, issues with no plan rows in the same phases, are resumed as today.
+// brings an issue back to work picks the role it gives work to by the role that works the issue
+// at its phase, which held has none of (record.Issue.RoleAt, OpenRoleOf). So none of these paths
+// gives either one work: the ready of a claim (readyWorkerTask), the boot's resume by rule
+// (booted, through suspendedPhaseOwners), the silence repair (workerSilent, through
+// phaseWorkerRecord), and the CI settlement's wake of a released pod (wakeOnSettlement). The fifth
+// path, a re-admission's promotion, is admission's (admit's
+// TestAStoppedTaskAndAHeldParentGetNoWorkFromAPromotion). Each path's twins, issues with no plan
+// rows in the same phases, are resumed as today.
 func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 	t.Run("the ready of a claim", func(t *testing.T) {
 		for _, h := range heldWorks {

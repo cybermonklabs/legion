@@ -14,9 +14,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// RoleConfigRoles are Legion's roles `role_config_files` may name, in the order the workflow
-// reaches them: every issue role, then the controller, which only `controller: daemon` launches.
-// The key may also name each role of `roles` (Config.roleConfigRoles).
+// RoleConfigRoles are Legion's roles `role_config_files` may name, in claim.Roles' order (the
+// default steps' order): every issue role, then the controller, which only `controller: daemon`
+// launches. The key may also name each role of `roles` (Config.roleConfigRoles).
 var RoleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
 
 // isRoleConfigName is whether `role_config_files` and `worker_stall_backstop_hours` take role when

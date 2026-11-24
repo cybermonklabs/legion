@@ -52,7 +52,7 @@ func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {
 		return records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: position}, record.TaskRunning)
 	}
 	want := map[string]claim.Role{"LEGION-208": "checker", "LEGION-209": claim.RoleImplementer, "LEGION-210": ""}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range []record.Issue{issue("LEGION-208", phase.Step), issue("LEGION-209", phase.Implementing), issue("LEGION-210", phase.Implementing)} {
 			if err := records.PutIssue(ctx, tx, seeded); err != nil {
 				return err
@@ -69,7 +69,7 @@ func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {
 	for key, role := range want {
 		view := idleViewOf(t, st, key)
 		var recorded *record.Issue
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := TransactWith(ctx, st.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			recorded, err = records.Issue(ctx, tx, key)
 			return err
@@ -93,7 +93,7 @@ func TestTheIdleViewCarriesEachRolesPhasesRow(t *testing.T) {
 	ctx := context.Background()
 	records := record.NewStore()
 	const keyed, stepless = claim.Token("legion-legion-legion-208-implementer"), claim.Token("legion-legion-legion-208-implementer-2")
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing,
 			Generation: 1, Status: "testing", Rank: "A", LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
 			return err
@@ -130,7 +130,7 @@ func TestAnIdleViewOfARoleAtTwoStepsCarriesItsRowNow(t *testing.T) {
 	ctx := context.Background()
 	records := record.NewStore()
 	const keyA, keyB = claim.Token("legion-legion-legion-208-implementer"), claim.Token("legion-legion-legion-208-implementer-2")
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing,
 			Generation: 1, Status: "implementing", Rank: "A", LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
 			return err

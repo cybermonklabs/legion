@@ -12,6 +12,7 @@ import type {
   RecordResponse,
   StateResponse,
 } from "../web/src/api/types";
+import { fakeBrokerAnswer } from "./fake-broker-token";
 import { harnessPorts } from "./harness-ports";
 
 // The secrets broker's reads Dispatch relays on every Inbox and Settings load: `GET /v1/pending`
@@ -34,8 +35,11 @@ import { harnessPorts } from "./harness-ports";
 // seeded: a
 // secret request's row carries the `approve_url` of its page on the broker that the Inbox links
 // to (an absolute URL, which e2e/broker-approval.e2e.ts points at a record on the real broker,
-// e2e/run-broker.sh), a machine login's row none. It verifies no caller: the token the server
-// presents, e2e/fake-broker-account-token's, is never read. Every other broker route answers 404.
+// e2e/run-broker.sh), a machine login's row none. It also answers `POST /v1/oauth/introspect`,
+// the RFC 7662 introspection Dispatch asks about every token presented under the DPoP scheme:
+// a token minted by e2e/fake-broker-token.ts is live with the answer it carries, and every other
+// token is not. It verifies no caller: the token the server presents,
+// e2e/fake-broker-account-token's, is never read. Every other broker route answers 404.
 
 /** A credential request as the broker lists it, beside the approver it waits on: the row is the
  *  SPA's own type, so a change to the contract fails the typecheck here too. Its `state` is the
@@ -189,11 +193,12 @@ async function dismiss(recordID: string, request: Request): Promise<Response> {
   if (row === undefined) {
     return brokerError(404, "NOT_FOUND", "no such credential request");
   }
+  // The fake seeds no group rows, so the broker's group-member arm has nothing to admit here.
   if (row.approver !== "anyone" && row.approver !== approver) {
     return brokerError(
       403,
       "NOT_APPROVER",
-      "only the record's approver, or anyone signed in for a request whose approver is anyone, may dismiss it"
+      "only the record's approver, a member of the group that is its approver, or anyone signed in for a request whose approver is anyone, may dismiss it"
     );
   }
   if (rowState(row) === "pending") {
@@ -288,6 +293,12 @@ const server = Bun.serve({
         dpop_signing_alg_values_supported: ["ES256"],
         subject_token_types_supported: ["urn:ietf:params:oauth:token-type:access_token"],
       });
+    }
+    // The answer Dispatch reads a DPoP-presented token back through (internal/ciphertoken's
+    // introspect): a form carrying `token`, answered with what that token says of itself.
+    if (request.method === "POST" && url.pathname === "/v1/oauth/introspect") {
+      const form = new URLSearchParams(await request.text());
+      return Response.json(fakeBrokerAnswer(form.get("token") ?? ""));
     }
     // One person's sign-ins, as internal/cipher/api/handlers_ui_personsignin.go lists them: the
     // person the caller names and nobody else, since that is what keeps one person off another's.

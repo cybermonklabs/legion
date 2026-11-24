@@ -7,7 +7,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 
 ## The task block
 
-You choose which of Legion's steps each issue of your tree runs.
+You choose which steps each issue of your tree runs.
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -23,81 +23,56 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 
 - Steps that share a key, `<role>:<key>`, are one agent in one session, and a step with no key has an agent of its own.
   Your role prompt gives the rules of keys and of a role at two steps.
+  The agent of the step whose role your `Production check` line names keeps its session past the close, for that check; where no step of the task has that role, the check starts a fresh agent of it.
   Write in the task's text whether each step needs a fresh agent or an earlier one, and why.
   Retro rates the plan's steps, and the agent that worked each, against that choice.
 
 ## The roles and their order
 
+Name the steps in `steps` in the order they run.
+A step names one of Legion's roles in the table below, or a role this deployment defines: your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.
+A `planner` step may stand at any place, and `implementer` stands before each `tester`, `reviewer` and `acceptance:owner` step, since each of them reads the pull request the implementer opens: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
+A role this deployment defines runs where its step stands in your plan, at the phase `step`, and reports pass or fail.
+It reads no pull request, so it may stand at any place too.
+A role of the type implementation is the one exception: it stands before the `implementer` step, since Legion's retro is done by the implementer in this release.
+The table lists Legion's steps in the order of the default steps:
+
 | Step | Type | Phase | What leaving it out means |
 | --- | --- | --- | --- |
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
-| `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
-| `tester` | testing | `testing` | Only the implementer records results against the checks, and nobody runs them again. |
-| `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
-| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and nothing waits for you to read the evidence. |
+| `implementer` | implementation | `implementing` | Required: it also works the retro, and a failed step that names no earlier one returns to the first step of the type implementation before it, the implementer or a role of this deployment of that type where one stands before the implementer. |
+| `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: your subagent then runs and records them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
+| `reviewer` | review | `reviewing` | No reviewer step, so no approval of the reviewer's: on a base whose rules require an approving review, the merger waits and tells you. |
+| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
-Without `acceptance:owner`, two steps still hold the checks:
-a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
+A step of a role of this deployment runs the checks only where its prompt file asks it to.
+
+Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
+A reviewer step approves only once a pass stands for every `before_merge` check at the head.
+And retro's first step sends back a check with no pass standing there, except a `ci_check` of one of four kinds.
+Its run has not concluded or cannot be read, its derived result is a fail, no run answers its name (`absent`), or its `run` is a whole test suite.
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
+A step of a role of this deployment holds the checks only as its prompt file asks.
 
 ## A role of your plan
 
-A plan can define a role of its own in a `plan_role` block, which a step names by its name:
-
-```markdown
-:::plan_role{#prober type="testing" model="<a listed model>"}
-The role's prompt, which can hold headings, lists and code.
-:::
-
-:::plan_task{#a steps="implementer prober reviewer"}
-What the task must deliver.
-:::
-```
-
-- The block's id is the role's name, and its text is the role's prompt.
-  The role's agent runs on Oh My Pi and starts with that prompt.
-
-- `type` is the type of the role's step, as in the table above; a role with no `type` is taken too.
-  A role of the type implementation acts as the implement App, and a role of any other type, or of none, as the review App.
-  No role but `implementer` of the type implementation stands after the first `implementer` step, since the implementer also works the retro.
-
-- `model` is the model the role's agent starts on, one your addressing lists among the models of this deployment.
-  A role with no `model` starts on the default model, and where the deployment lists no model, a role of your plan names none.
-
-- A role's prompt has no bound of its own, but a launch into an issue pod carries the whole system prompt.
-  It goes in one message of at most 1 MiB.
-  Your role prompt says what Legion does with a larger one, and how you change the role then.
-
-### A role under a running task
-
-- A later version that changes the type, the model or the prompt of a role block that a step of the running task names is refused (`task <id> is running: stop it with stop_task before you change it.`).
-  Stop the task with `stop_task` first, then give the version.
-  A change of a role block that no step names changes no task.
-
-- A later version that takes away a role block that a step still names is refused whether the task runs or not (`… which neither the deployment nor the plan defines.`), and stopping the task does not help.
-  Keep the block, or change the task's steps too, and then the rule above for a running task applies.
-
-- Once an operator adds a role of the deployment with your role's name, your issue keeps its plan's role, but Legion refuses every later version that keeps a role of that name (`… which the deployment or Legion defines already; …`).
-  A version that gives the role a new name changes each task whose steps name it, so Legion refuses it while such a task runs:
-  stop that task with `stop_task` first, then give a version whose role has a new name.
+A plan can define a role of its own in a `plan_role` block, with its type, its model and its prompt, which a step names by its name:
+read `skill://legion-architect/references/plan-roles.md` before you define one.
 
 ## What Legion refuses
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
-A role block is refused for a name that is not of the form `[a-z][a-z0-9-]*` with at most 32 characters.
-It is refused for a name Legion or the deployment defines already (`… which the deployment or Legion defines already; a role of a plan takes a name of its own.`), and for a `type` that is set and is not of that form (`… Dispatch's step record takes no other.`).
-A role block whose `model` the deployment does not list is refused at the first step of each task that names it (`step <n> of task <t> names the role <role>, whose model <m> the deployment does not list; it lists <m1>, <m2>.`, or `it lists none.`).
-Such a block that no step names is refused as a cause of the whole plan (`the plan defines the role <role> with the model <m>, which the deployment does not list; it lists <m1>, <m2>.`).
-A step that names a role neither the deployment nor the plan defines is refused (`step <n> of task <t> names the role <role>, which neither the deployment nor the plan defines.`).
-The steps of one key, `<role>:<key>`, are one agent.
-So a key whose steps name roles of two models is refused (`… one agent runs on one model.`), and so is one whose steps name roles of two harnesses (`… one agent runs on one harness.`).
+Fix each reason and give a new version.
+A step that names a role neither the deployment nor the plan defines is refused (`step <n> of task <t> names the role <role>, which neither the deployment nor the plan defines.`), and no release takes it.
+A role block's own refusals are in `skill://legion-architect/references/plan-roles.md`.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
+Among them, a role of the type implementation after the implementer's step: `task <id> names <role> at step <i>, a step of the type implementation after the step implementer at step <j>, and Legion's retro is done by the implementer in this release.`
 
 Your role prompt gives the reasons a version gets for where its task stands.
 
 ## When to give it
 
-- **A root:** before `register_gate`, because the gate's opening starts the root's first step.
+- **A root:** before `register_gate`, because the root's first step can start as soon as the gate opens.
 
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
@@ -107,6 +82,11 @@ Your role prompt gives the reasons a version gets for where its task stands.
 
 A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
+
+## A root with no code of its own
+
+When every change lands through children, the root's implementer opens its pull request on an empty commit.
+Plan no code for the root, and create no child only to give it a commit.
 
 ## Reading how plans went
 

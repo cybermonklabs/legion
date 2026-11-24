@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -40,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 // podAudience is the fixed audience every Rig's pod verifier is constructed for, and the value
@@ -109,6 +111,10 @@ type Rig struct {
 	// URL is the broker's own httptest.Server base URL: every proof's htu and every request
 	// object's aud must check against this one value.
 	URL string
+	// EdgeURL is the base URL of the broker's edge, the second httptest.Server WithEdge mounts
+	// api.RegisterEdge on: every request object and proof made there names it in place of URL.
+	// It is "" for a Rig with no edge.
+	EdgeURL string
 	// Operator is the approver, named by email as Dispatch names a signed-in person, also the
 	// owner of the fixture secrets below and the operator of the sessions a test enrolls.
 	Operator string
@@ -154,10 +160,49 @@ type Rig struct {
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease      time.Duration
-	maxConns   int
-	minters    map[string]requests.Minter
-	personPods []personPod
+	lease          time.Duration
+	maxConns       int
+	minters        map[string]requests.Minter
+	accessLifetime time.Duration
+	projectAccess  projectaccess.Access
+	personPods     []personPod
+	profiles       string
+	edge           bool
+	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
+	// (api.Edge.DeviceLimit); nil is api.DefaultEdgeDeviceLimit.
+	edgeDeviceLimit *ratelimit.Limit
+	// edgeDeviceLogin wraps the edge's device login (api.Edge.DeviceLogin); nil is the login as
+	// it is.
+	edgeDeviceLogin func(api.DeviceLoginFunc) api.DeviceLoginFunc
+}
+
+// EdgeMachineLoginURL is the page a device authorization made at a Rig's edge sends its person
+// to (BROKER_EDGE_MACHINE_LOGIN_URL), and EdgeWorkspaceDomain the one domain a Rig's edge counts
+// as the Workspace's beside SignInDomain (BROKER_SIGNIN_WORKSPACE_DOMAINS).
+const (
+	EdgeMachineLoginURL = "https://dispatch.edge.example/credentials/machine"
+	EdgeWorkspaceDomain = "second.example"
+)
+
+// WithEdge gives the broker its edge, as BROKER_EDGE_LISTEN_ADDR does: api.RegisterEdge on an
+// httptest.Server of its own at Rig.EdgeURL, over the same Deps the Rig's own address serves,
+// sending a person to EdgeMachineLoginURL and refusing a login on SignInDomain or
+// EdgeWorkspaceDomain. The Rig's machine-login service, request machine and launcher credentials'
+// chain each take EdgeURL as their EdgeAudience, as cmd/cipherd wires them.
+func WithEdge() Option {
+	return func(c *rigConfig) { c.edge = true }
+}
+
+// WithEdgeDeviceLimit is WithEdge with limit as the edge's bucket every caller of a device
+// authorization shares, for a test of that bucket that cannot wait for its refill.
+func WithEdgeDeviceLimit(limit ratelimit.Limit) Option {
+	return func(c *rigConfig) { c.edge, c.edgeDeviceLimit = true, &limit }
+}
+
+// WithEdgeDeviceLogin is WithEdge with wrap around the edge's device login (api.Edge.DeviceLogin),
+// for a test of what the edge does with a login its pre-check refused and its login opened.
+func WithEdgeDeviceLogin(wrap func(api.DeviceLoginFunc) api.DeviceLoginFunc) Option {
+	return func(c *rigConfig) { c.edge, c.edgeDeviceLogin = true, wrap }
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -177,6 +222,34 @@ func WithPoolMaxConns(n int) Option {
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
+}
+
+// WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
+// exchanged one's alike, as BROKER_ACCESS_TOKEN_SECONDS sets it; fifteen minutes by default.
+func WithAccessLifetime(d time.Duration) Option {
+	return func(c *rigConfig) { c.accessLifetime = d }
+}
+
+// WithProjectAccess gives the broker access, a client of Dispatch's project access, as
+// BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch in cmd/cipherd/main.go: every token
+// exchange is held to what access answers about the projects its token names, and the enrollment
+// and the request machine ask it, the machine login reading it through that enrollment. By
+// default the broker checks no project, and so refuses every trade that names one, as on a broker
+// with that setting unset. The rig's secrets carry no project tag, so its policy is the same
+// either way.
+func WithProjectAccess(access projectaccess.Access) Option {
+	return func(c *rigConfig) { c.projectAccess = access }
+}
+
+// WithProfiles serves file as the deployment's profiles file, the JSON BROKER_PROFILES_FILE
+// names (policytest.ProfilesFile builds one), so a test asks for a profile by its name as a session
+// of a deployment that lists it does. Every github-app secret the policy serves is a profile's
+// (policy.ReasonGitHubAppNoProfile), so a test that releases one names its profile here. With no
+// such option, or with "", the rig has no profiles file, as a deployment that leaves the setting
+// unset has none. The rig wires no proxy rules (requests.Machine.Airlock), so a proxy block the
+// file holds keeps no value back here.
+func WithProfiles(file string) Option {
+	return func(c *rigConfig) { c.profiles = file }
 }
 
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
@@ -206,7 +279,7 @@ func WithPersonPod(account, service, person string) Option {
 // (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
-	config := rigConfig{lease: time.Hour}
+	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
 	for _, option := range options {
 		option(&config)
 	}
@@ -223,12 +296,22 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	local := secrets.NewLocal(fixtures...)
 	// The policy's metrics as main wires them: the store-read counter before the first load,
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
+	// Its profiles are WithProfiles's file, or none.
 	registry := metrics.New()
-	cur := policytest.MeteredCurrent(t, local, registry)
+	cur := policytest.MeteredProfiledCurrent(t, local, registry, config.profiles)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	// The edge's server, made before anything is built on its URL, as srv is for the Rig's own.
+	var edgeMux *http.ServeMux
+	var edgeURL string
+	if config.edge {
+		edgeMux = http.NewServeMux()
+		edgeSrv := httptest.NewServer(edgeMux)
+		t.Cleanup(edgeSrv.Close)
+		edgeURL = edgeSrv.URL
+	}
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
@@ -263,8 +346,10 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+		Projects: config.projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
+	enr.Chain.EdgeAudience = edgeURL
 	// A session name is held here as the real broker holds one with no account paired
 	// (oauthstore.Store.SetSessionPairs never called, BROKER_SESSION_ACCOUNT_PAIRS unset), so it
 	// belongs to one principal: the binder is a store on the same pool the OAuth provider's own
@@ -274,18 +359,18 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
-		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		PodOperators: podOperators,
+		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
+		PodOperators: podOperators, Projects: config.projectAccess,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := NewOAuthProvider(t, st, issuer)
+	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
-		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
+		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 	}
 
-	api.Register(mux, api.Deps{
+	deps := api.Deps{
 		PublicURL: srv.URL,
 		APIAccounts: map[string]api.Account{
 			APIAccount:      Caller(t, APICaller),
@@ -299,7 +384,12 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine),
-	})
+	}
+	api.Register(mux, deps)
+	if config.edge {
+		api.RegisterEdge(edgeMux, deps, api.Edge{URL: edgeURL, VerificationURL: EdgeMachineLoginURL, WorkspaceDomains: []string{SignInDomain, EdgeWorkspaceDomain},
+			DeviceLimit: config.edgeDeviceLimit, DeviceLogin: config.edgeDeviceLogin})
+	}
 
 	operatorFile := filepath.Join(t.TempDir(), "operator")
 	if err := os.WriteFile(operatorFile, []byte(operator), 0o600); err != nil {
@@ -307,7 +397,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 
 	rig := &Rig{
-		URL: srv.URL, Operator: operator, OperatorFile: operatorFile,
+		URL: srv.URL, EdgeURL: edgeURL, Operator: operator, OperatorFile: operatorFile,
 		Store:     st,
 		Secrets:   local,
 		Registry:  registry,
@@ -344,6 +434,13 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
+	return newOAuthProvider(t, st, issuer, 15*time.Minute, nil)
+}
+
+// newOAuthProvider is NewOAuthProvider whose access tokens live accessLifetime and whose trades
+// are held to what access answers, nil for no project check.
+func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, accessLifetime time.Duration, access projectaccess.Access) *oauth.Provider {
+	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
 	secret, err := oauthStore.Secret(context.Background())
@@ -370,12 +467,13 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
 	provider, err := oauth.New(oauth.Config{
-		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute,
+		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
 			Policy:     policy,
 			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
 			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
+			Projects:   access,
 		},
 	}, oauthStore)
 	if err != nil {
@@ -565,6 +663,13 @@ func (r *Rig) Decide(t *testing.T, recordID string, approve bool) {
 func (r *Rig) DecideMachineLogin(t *testing.T, code string, approve bool) (credentialID string) {
 	t.Helper()
 	return decideMachineLogin(t, r.UI, r.Operator, code, approve, "")
+}
+
+// DecideMachineLoginAs decides the pending machine login whose confirmation code is code, naming
+// approver as the approver, as a person other than the Rig's Operator does on Dispatch's page.
+func (r *Rig) DecideMachineLoginAs(t *testing.T, approver, code string, approve bool) (credentialID string) {
+	t.Helper()
+	return decideMachineLogin(t, r.UI, approver, code, approve, "")
 }
 
 // MintPodToken mints a projected service-account token bound to podUID — the shape

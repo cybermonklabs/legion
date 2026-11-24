@@ -23,6 +23,7 @@ import {
 import type * as EnvoyConfigModule from "../envoy-config";
 import {
   askgateSetting,
+  commandTimeoutMs,
   type EnvoyConfig,
   type EnvoyHarness,
   envoyConfigPath,
@@ -1245,77 +1246,173 @@ describe("a ! command in envoy.json", () => {
     return readdirSync(scratch);
   }
 
-  /** Whether the process with this pid is gone within a second: a killed orphan is a zombie until
-   * the process it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
-  function gone(pid: number): boolean {
-    for (const deadline = Date.now() + 1_000; Date.now() < deadline; Bun.sleepSync(20)) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return true;
-      }
+  /** The bound of the two rows below that wait for a killed process to end, passed to each. */
+  const KILL_ROW_MS = 20_000;
+
+  /** Whether the process with this pid still runs: `kill(pid, 0)` answers, and it is no zombie. A
+   * killed orphan is a zombie until the process it was reparented to reaps it, which a loaded host
+   * can put off past any fixed wait, and a zombie runs nothing, so it has ended. Where `/proc`
+   * cannot be read, `kill(pid, 0)` alone answers. */
+  function running(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return false;
     }
-    return false;
+    let stat: string;
+    try {
+      stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+    } catch {
+      return true;
+    }
+    return stat.charAt(stat.lastIndexOf(")") + 2) !== "Z";
   }
 
-  test("that exits 0 is its value at once, and a process it left running is killed", () => {
-    const home = tempDir();
-    const env = commandEnvironment(home);
-    const pidFile = path.join(home, "child.pid");
-    const lingeringSecret = fixtureSecret("linger");
-    const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: {
-        ...dispatchOn,
-        token: `!sleep 30 & echo $! > ${pidFile}; echo ${lingeringSecret}`,
-      },
-    });
-    const cwd = tempDir();
-    let dispatch: DispatchWithToken | undefined;
-    let elapsed = 0;
-    const left = inScratchTmp(() => {
-      const started = Date.now();
-      dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
-      elapsed = Date.now() - started;
-    });
-    expect(dispatch).toEqual({
-      enabled: true,
-      url: "https://dispatch.example",
-      token: lingeringSecret,
-    });
-    expect(elapsed).toBeLessThan(2_000);
-    const child = Number(readFileSync(pidFile, "utf-8").trim());
-    expect(child).toBeGreaterThan(0);
-    expect(gone(child)).toBe(true);
-    expect(left).toEqual([]);
-  }, 20_000);
+  /** Whether the process with this pid has ended by `deadline` (a `performance.now()` reading): the
+   * kernel delivers a SIGKILL when it schedules the process, so the wait is on the fact, bounded
+   * only by the row's own bound less 2 s. */
+  function gone(pid: number, deadline: number): boolean {
+    for (; running(pid); Bun.sleepSync(20)) {
+      if (performance.now() > deadline) return false;
+    }
+    return true;
+  }
 
-  test("still running after 10 s is an error naming the field and the file, and every process it started is killed", () => {
+  test(
+    "that exits 0 is its value at once, and a process it left running is killed",
+    () => {
+      const deadline = performance.now() + KILL_ROW_MS - 2_000;
+      const home = tempDir();
+      const env = commandEnvironment(home);
+      const pidFile = path.join(home, "child.pid");
+      const lingeringSecret = fixtureSecret("linger");
+      const file = writeFile(path.join(home, "envoy.json"), {
+        dispatch: {
+          ...dispatchOn,
+          token: `!sleep 30 & echo $! > ${pidFile}; echo ${lingeringSecret}`,
+        },
+      });
+      const cwd = tempDir();
+      let dispatch: DispatchWithToken | undefined;
+      const left = inScratchTmp(() => {
+        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      });
+      // The value is what says the read did not wait for the process the command left running: a
+      // read that waited would have run into the command's 10 s timeout and answered its error
+      // (the row below), and no bound on the read's own time is needed for that.
+      expect(dispatch).toEqual({
+        enabled: true,
+        url: "https://dispatch.example",
+        token: lingeringSecret,
+      });
+      const child = Number(readFileSync(pidFile, "utf-8").trim());
+      expect(child).toBeGreaterThan(0);
+      expect(gone(child, deadline)).toBe(true);
+      expect(left).toEqual([]);
+    },
+    KILL_ROW_MS
+  );
+
+  test(
+    "still running after 10 s is an error naming the field and the file, and every process it started is killed",
+    () => {
+      const deadline = performance.now() + KILL_ROW_MS - 2_000;
+      const home = tempDir();
+      const env = commandEnvironment(home);
+      const pidFile = path.join(home, "child.pid");
+      const file = writeFile(path.join(home, "envoy.json"), {
+        dispatch: {
+          ...dispatchOn,
+          token: `!echo canary; sleep 40 & echo $! > ${pidFile}; sleep 30 # ${home}`,
+        },
+      });
+      const cwd = tempDir();
+      let dispatch: DispatchWithToken | undefined;
+      const left = inScratchTmp(() => {
+        dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+      });
+      // The error is what says the read ended at the command's 10 s timeout: a read that waited
+      // for the command's own 30 s would answer its value no sooner than the row's bound.
+      expect(dispatch).toEqual({
+        enabled: false,
+        notice: null,
+        error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
+      });
+      expect(gone(Number(readFileSync(pidFile, "utf-8").trim()), deadline)).toBe(true);
+      expect(left).toEqual([]);
+    },
+    KILL_ROW_MS
+  );
+
+  // A test that holds a command on its own gate while it waits on other processes sets the bound
+  // to its own timeout (claude-envoy's answers-hook rows); any other value keeps the 10 s.
+  test("runs for as long as ENVOY_COMMAND_TIMEOUT_MS says, whole ms from 1 to 2^31 - 1, when it is set", () => {
+    const bounds: [string | undefined, number][] = [
+      [undefined, 10_000],
+      ["300", 300],
+      ["1", 1],
+      ["2147483647", 2_147_483_647],
+      // Bun 1.4.4's spawnSync wraps a timeout of 2^31 ms or more.
+      ["2147483648", 10_000],
+      ["4294967296", 10_000],
+      ["4294967297", 10_000],
+      ["99999999999999999999", 10_000],
+      // In Bun, `timeout: 0` is no limit at all.
+      ["0", 10_000],
+      ["", 10_000],
+      [" ", 10_000],
+      ["-1", 10_000],
+      ["1.5", 10_000],
+      ["0300", 10_000],
+      ["1e3", 10_000],
+      [" 300", 10_000],
+      ["300 ", 10_000],
+      ["0x12c", 10_000],
+      ["soon", 10_000],
+    ];
+    expect(
+      bounds.map(([bound]) => [bound, commandTimeoutMs({ ENVOY_COMMAND_TIMEOUT_MS: bound })])
+    ).toEqual(bounds);
+
     const home = tempDir();
-    const env = commandEnvironment(home);
-    const pidFile = path.join(home, "child.pid");
-    const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: {
-        ...dispatchOn,
-        token: `!echo canary; sleep 40 & echo $! > ${pidFile}; sleep 30 # ${home}`,
-      },
-    });
-    const cwd = tempDir();
-    let dispatch: DispatchWithToken | undefined;
-    let elapsed = 0;
-    const left = inScratchTmp(() => {
-      const started = Date.now();
-      dispatch = dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
-      elapsed = Date.now() - started;
-    });
-    expect(elapsed).toBeLessThan(15_000);
-    expect(dispatch).toEqual({
+    const read = (bound: string, command: string) => {
+      // A file of its own for each read, since a command's outcome is kept by command and file.
+      const file = writeFile(path.join(tempDir(), "envoy.json"), {
+        dispatch: { ...dispatchOn, token: `!${command}` },
+      });
+      const env = { ...commandEnvironment(home), ENVOY_COMMAND_TIMEOUT_MS: bound };
+      return {
+        file,
+        settings: dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() })),
+      };
+    };
+    const short = read("300", `sleep 5 # ${home}`);
+    expect(short.settings).toEqual({
       enabled: false,
       notice: null,
-      error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
+      error: `${short.file}: dispatch.token's command did not finish within 0.3 s, and does not run again in this process`,
     });
-    expect(gone(Number(readFileSync(pidFile, "utf-8").trim()))).toBe(true);
-    expect(left).toEqual([]);
-  }, 20_000);
+    // A value refused keeps the 10 s itself, not merely no other bound: a 30 s command ends, named
+    // as having run out of 10 s, and not before 10 s.
+    for (const bound of ["0", ""]) {
+      const started = Date.now();
+      const refused = read(bound, `sleep 30 # ${bound === "" ? "empty" : bound} ${home}`);
+      const elapsed = Date.now() - started;
+      expect(refused.settings).toEqual({
+        enabled: false,
+        notice: null,
+        error: `${refused.file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
+      });
+      expect(elapsed).toBeGreaterThanOrEqual(10_000);
+    }
+    // The longest bound Bun keeps, and the values it would wrap, all let a 0.5 s command finish.
+    for (const bound of ["2147483647", "2147483648", "4294967296", "4294967297"]) {
+      expect(read(bound, `sleep 0.5; printf ${USER_TOKEN}`).settings).toMatchObject({
+        enabled: true,
+        token: USER_TOKEN,
+      });
+    }
+  }, 45_000);
 
   test("whose field a variable overrides, or whose section is off, is not run", () => {
     const home = tempDir();

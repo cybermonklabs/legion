@@ -7,7 +7,7 @@ tags:
   - test-selection
   - phone
 date: 2026-10-28
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/dispatch/e2e
 ---
 

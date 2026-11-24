@@ -54,9 +54,11 @@ const (
 // queueMergeState is what the workflow asks for when a fact owes a read of GitHub's merge state for
 // an issue's open pull request (workflow's askMergeState and basePush, the engine's
 // Config.ReadMergeState): a review round the fact leaves waiting on GitHub's answer for the head,
-// and, by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue in
-// implementing through merging and a push to the base of an issue in testing through merging,
-// each of which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon's
+// and, by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue where a
+// merge forward stands (classify.MergeForwardStands: its task at the implementer's place, or a
+// place after it on the task's line, a step of a role the deployment defines among them) and a
+// push to the base of an issue whose task stands at a place after the implementer's, each of which
+// can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon's
 // start asks for it too, for each issue whose start read GitHub answered `unknown`
 // (readIssuesAtStart). It queues a ladder of reads for issue that starts with a climb
 // (queueMergeStateFollow, with no head to follow). It only records the issue and wakes the reader,

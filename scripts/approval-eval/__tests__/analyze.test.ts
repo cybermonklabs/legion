@@ -19,8 +19,6 @@ import {
   readCase,
   readRound,
   renderReport,
-  type SendBackCase,
-  sendBackFiguresOf,
 } from "../analyze";
 import type { CaseKind, CaseRow, CaseVerdict } from "../build-corpus";
 import { type Corpus, CorpusError } from "../corpus-io";
@@ -28,6 +26,7 @@ import { TARGETS } from "../draw";
 import type { FinalTestTree, SliceName } from "../draw-io";
 import type { RecipeName } from "../recipes";
 import type { CaseNeighbours, Endpoint, JudgementRow } from "../round-io";
+import { type SendBackCase, sendBackFiguresOf } from "../send-back";
 import { MINIMUM_DECIDED, mcnemarExact } from "../stats";
 
 /**
@@ -1416,11 +1415,11 @@ describe("the claim's measure, over the final test's trees", () => {
   test("the report prints the measure over a draw with trees, and nothing of it over one without", () => {
     const { cases, rows, trees } = claimFixture();
     const withTrees = renderReport(analysisOf({ cases, rows, finalTestTrees: trees })).join("\n");
-    expect(withTrees).toContain("## The claim's measure, over the final test's trees");
+    expect(withTrees).toContain("## Item 8's measure for each arm, over the final test's trees");
     expect(withTrees).toContain("1.000 (fitted)");
     const without = analysisOf({ cases, rows });
     expect(without.arms[0]?.claim).toBeNull();
-    expect(renderReport(without).join("\n")).not.toContain("The claim's measure");
+    expect(renderReport(without).join("\n")).not.toContain("Item 8's measure for each arm");
   });
 
   test("the report says an arm short of judgements is not read against 0.05, and why", () => {

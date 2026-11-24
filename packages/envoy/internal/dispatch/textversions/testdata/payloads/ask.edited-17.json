@@ -1,0 +1,119 @@
+{
+  "id": 443918,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 5,
+  "type": "ask.edited",
+  "actor": {
+    "kind": "session",
+    "id": "01a1d08c-571a-757b-ab80-49bb8cef3f9e",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum",
+      "cwd": "lorem ipsum dolor sit",
+      "tmux": "lorem ipsu",
+      "pane": "lorem",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-12T17:48:45.44565Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": null,
+    "asked_of": null,
+    "asked_of_at": null,
+    "asked_of_by": null,
+    "author": {
+      "id": "01a1d08c-571a-757b-ab80-49bb8cef3f9e",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit",
+        "host": "lor",
+        "machine": "lorem ipsum",
+        "pane": "lorem",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+        "tmux": "lorem ipsu"
+      },
+      "owner": "alice@example.com"
+    },
+    "block_artifact": {
+      "id": "78f629f8-c483-4121-b811-583e8e1ad818",
+      "primary": true,
+      "slug": "lore"
+    },
+    "block_id": "1d6d1d0f-b56e-4df2-ab08-aa66230b68a0",
+    "created_at": "2026-11-12T16:28:22.683581Z",
+    "edited_at": "2026-11-12T17:48:45.44565Z",
+    "edited_by": {
+      "id": "01a1d08c-571a-757b-ab80-49bb8cef3f9e",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit",
+        "host": "lor",
+        "machine": "lorem ipsum",
+        "pane": "lorem",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+        "tmux": "lorem ipsu"
+      },
+      "owner": "alice@example.com"
+    },
+    "id": "9888f5bb-2d47-4ab7-bd18-7847629c7b36",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 440924,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor si",
+        "id": "b2",
+        "label": "lorem ipsu"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+        "id": "b3",
+        "label": "lorem ipsum dolo"
+      },
+      {
+        "label": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+        "id": "b5",
+        "label": "lorem ipsum dolo"
+      }
+    ],
+    "previous": {
+      "multiple": false,
+      "options": [
+        {
+          "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor si",
+          "label": "lorem ipsu"
+        },
+        {
+          "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+          "label": "lorem ipsum dolo"
+        },
+        {
+          "label": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+        }
+      ],
+      "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do",
+      "urgency": "med"
+    },
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit",
+    "referenced_by_count": 5,
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ],
+    "revision": 4,
+    "state": "open",
+    "urgency": "med"
+  }
+}

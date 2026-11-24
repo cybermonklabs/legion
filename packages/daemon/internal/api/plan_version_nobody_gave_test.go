@@ -11,9 +11,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -40,9 +40,8 @@ func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
 		t.Fatalf("the owner's version 1 = %d %s, want 200", given.Code, given.Body)
 	}
 	// The first step of LEGION-208 starts, as the admission pass starts it once its gate opens.
-	ctx, committed := intake.WithCommitHooks(context.Background())
-	ctx = engine.OpenFact(ctx)
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		ctx = engine.OpenFact(ctx)
 		issue, err := record.NewStore().Issue(ctx, tx, root)
 		if err != nil {
 			return err
@@ -54,14 +53,13 @@ func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("start the first step of %s: %v", root, err)
 	}
-	committed()
 
 	if got := recordedChild(t, h, root); got == nil || got.Phase != phase.Implementing {
 		t.Fatalf("%s once its first step started = %#v, want implementing, the first step of version 1", root, got)
 	}
 	var versions []int
 	var steps []string
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := record.NewStore().Plan(context.Background(), tx, root, 1)
 		if err != nil || stored == nil {
 			return err

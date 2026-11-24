@@ -19,7 +19,7 @@ import (
 // The three guards the cache trimmer asks before it deletes anything: what the pod's processes
 // are using, how old an entry is, and whether an entry is the kind of file its rule names. They
 // are written and tested before the sweep that calls them, because a sweep without them deletes
-// a role's work: the pod gives six roles one volume, the roles write into the same four cache
+// a role's work: the pod gives all its roles one volume, the roles write into the same four cache
 // roots, and nothing on the volume says which role owns what.
 
 // usedPaths is what every process of the pod is using under the roots the sweep asks about,

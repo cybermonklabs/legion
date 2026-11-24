@@ -167,7 +167,7 @@ func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
 			}
 			owner := strings.ToLower(repo.Owner())
 			if owner == "" {
-				owner = "sjawhar"
+				owner = "example-org"
 			}
 			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
 				"acme": ghconfig.Render("ghs_"+app+"_"+*lease.Load()+"_read", app, staticCredentialExpiry),
@@ -231,6 +231,39 @@ func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
 	}
 	if got := holds(slot); got != implement(second) {
 		t.Errorf("the refresh after a claim of implementer-2 was stored left %q in %s, want the implement App's re-minted %q", got, slot, implement(second))
+	}
+}
+
+// A slot in which no stored claim runs holds the App of its own name only where that name is a
+// role the runtime writes a slot for with no claim: one of its issue roles, such as `implementer`,
+// or the controller. The slot of an agent of the plan whose name is no role, such as
+// `implementer-2`, names no App, so its role is refused, and the error names the slot. Once a
+// claim of that agent is stored, the slot holds the App of the claim's role, as runtime.SlotRole
+// gives it: the implement App's for a claim of the implementer.
+func TestASlotWithNoClaimHoldsTheAppOfItsNameOnlyWhereItsNameIsARole(t *testing.T) {
+	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}))
+	sandbox := SandboxName(secondImplementer)
+	held := map[slotKey]slotHolder{}
+	if role, err := g.r.slotAppRole(g.ctx, held, sandbox, "implementer-2", ""); err == nil || !strings.Contains(err.Error(), "implementer-2") {
+		t.Errorf("the slot implementer-2, in which no stored claim runs, holds the App of %q (err %v), want it refused with an error that names the slot", role, err)
+	}
+	for _, own := range []claim.Role{claim.RoleImplementer, claim.RoleController} {
+		if role, err := g.r.slotAppRole(g.ctx, held, sandbox, claim.Agent(own), ""); err != nil || role != own {
+			t.Errorf("the slot %s, in which no stored claim runs, holds the App of %q (err %v), want its own name's", own, role, err)
+		}
+	}
+
+	held[slotKey{sandbox: sandbox, slot: "implementer-2"}] = slotHolder{token: secondImplementer, role: claim.RoleImplementer, generation: 1}
+	want, err := runtime.SlotRole(g.ctx, g.r.actsAs, secondImplementer, claim.RoleImplementer)
+	if err != nil {
+		t.Fatalf("runtime.SlotRole of %s: %v", secondImplementer, err)
+	}
+	role, err := g.r.slotAppRole(g.ctx, held, sandbox, "implementer-2", "")
+	if err != nil || role != want {
+		t.Fatalf("the slot implementer-2, in which a claim of the implementer runs, holds the App of %q (err %v), want %q", role, err, want)
+	}
+	if app, err := appauth.AppRoleFor(role, g.r.deploymentApps); err != nil || app != appauth.Implement {
+		t.Errorf("the role %q of the slot implementer-2 acts as the App %q (err %v), want the implement App", role, app, err)
 	}
 }
 

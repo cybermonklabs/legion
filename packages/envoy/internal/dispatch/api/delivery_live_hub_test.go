@@ -87,6 +87,10 @@ type fakeHubClock struct {
 	// beforeArm, when set, runs at each arm, before the timer is placed, until it answers true: a
 	// test's Advance landing between the worker's read of the clock and its arm.
 	beforeArm func() bool
+	// firing counts the timer callbacks that have won their timer's one run and not yet returned,
+	// and returned is signalled as each returns (waitCallbacks).
+	firing   int
+	returned *sync.Cond
 }
 
 type fakeHubTimer struct {
@@ -153,14 +157,51 @@ func (c *fakeHubClock) onArm(f func() bool) {
 	c.beforeArm = f
 }
 
-func (t *fakeHubTimer) fire() {
-	if t.done.CompareAndSwap(false, true) {
-		t.f()
+// returnedLocked is the condition waitCallbacks waits on, made on first use, with c.mu held.
+func (c *fakeHubClock) returnedLocked() *sync.Cond {
+	if c.returned == nil {
+		c.returned = sync.NewCond(&c.mu)
 	}
+	return c.returned
+}
+
+// waitCallbacks returns once no timer callback that has begun is still running. A callback of an
+// earlier arm that has won its timer's one run (fire) can be descheduled before it sends its wake,
+// and a timer's Stop cannot take that run back; a wake it sends after a test read the worker's
+// wakes as spent would wake the worker in place of the timer the test is about.
+func (c *fakeHubClock) waitCallbacks() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.firing > 0 {
+		c.returnedLocked().Wait()
+	}
+}
+
+// fire runs the timer's callback once, whether the real timer or an Advance comes first. Its win
+// of that one run and the count of callbacks under way change together under the clock's lock, as
+// Stop's win does, so waitCallbacks sees every callback that has won and not yet returned.
+func (t *fakeHubTimer) fire() {
+	c := t.clock
+	c.mu.Lock()
+	won := t.done.CompareAndSwap(false, true)
+	if won {
+		c.firing++
+	}
+	c.mu.Unlock()
+	if !won {
+		return
+	}
+	t.f()
+	c.mu.Lock()
+	c.firing--
+	c.returnedLocked().Broadcast()
+	c.mu.Unlock()
 }
 
 func (t *fakeHubTimer) Stop() bool {
 	t.real.Stop()
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
 	return t.done.CompareAndSwap(false, true)
 }
 
@@ -739,6 +780,7 @@ func latestChange(t *testing.T, database *store.Store) int64 {
 }
 
 func TestAProductionJobFlipsTheWaitingPullRequestsItShips(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	now := rig.clock.Now()
@@ -782,6 +824,7 @@ func TestAProductionJobFlipsTheWaitingPullRequestsItShips(t *testing.T) {
 }
 
 func TestAPRChecksRunMarksOnlyPipelineViews(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
@@ -814,6 +857,7 @@ func TestAPRChecksRunMarksOnlyPipelineViews(t *testing.T) {
 }
 
 func TestASessionGroupEditReachesEveryView(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	pr := hubPR(1, rig.clock.Now().Add(-3*time.Hour))
@@ -844,6 +888,7 @@ func TestASessionGroupEditReachesEveryView(t *testing.T) {
 }
 
 func TestAResetChangeLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	now := rig.clock.Now()
@@ -906,6 +951,7 @@ func TestAResetChangeLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 }
 
 func TestResumeWithRevsGetsOnlyWhatChanged(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedHubSettings(t, database)
 	clock := newNoonHubClock()
@@ -947,6 +993,7 @@ func TestResumeWithRevsGetsOnlyWhatChanged(t *testing.T) {
 // reaches no connection, so every catch-up is this test's own, and one of them runs inside the
 // first recompute's read, which is the order CI took.
 func TestResumeFromBeforeTheKeptDayGetsASnapshot(t *testing.T) {
+	t.Parallel()
 	var drove sync.Once
 	rig := newHubRig(t, func(hub *deliveryHub) {
 		hub.dial = func(context.Context) (*pgx.Conn, error) { return nil, context.DeadlineExceeded }
@@ -999,6 +1046,7 @@ func TestResumeFromBeforeTheKeptDayGetsASnapshot(t *testing.T) {
 }
 
 func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
+	t.Parallel()
 	var blind atomic.Bool
 	// The listener's own connections, so the test ends the one it listens on by its backend's pid
 	// (terminateListener).
@@ -1149,6 +1197,7 @@ func seedHubComponents(t *testing.T, database *store.Store) {
 }
 
 func TestAnIssueTitleChangeReachesPagesThatNameTheIssue(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	named := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
@@ -1178,6 +1227,7 @@ func TestAnIssueTitleChangeReachesPagesThatNameTheIssue(t *testing.T) {
 }
 
 func TestAParentsComponentChangeReachesPagesHoldingItsChildren(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	parent := createHubIssue(t, rig.handler, map[string]any{"title": "Platform work"})
@@ -1201,6 +1251,7 @@ func TestAParentsComponentChangeReachesPagesHoldingItsChildren(t *testing.T) {
 // issue it shows is retitled, and the retitle's event reaches the hub while that recompute still
 // holds no issue of the view's. The view is recomputed once more and its page gets the new title.
 func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
+	t.Parallel()
 	reading := make(chan struct{})
 	release := make(chan struct{})
 	releaseOnce := sync.OnceFunc(func() { close(release) })
@@ -1261,6 +1312,7 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 // reaches the hub while a view's first recompute holds its read, and that read's answer shows no
 // such session, so the view is not recomputed again.
 func TestASessionWriteDuringAViewsReadThatItsAnswerDoesNotShowRecomputesNothing(t *testing.T) {
+	t.Parallel()
 	reading := make(chan struct{})
 	release := make(chan struct{})
 	releaseOnce := sync.OnceFunc(func() { close(release) })
@@ -1345,6 +1397,7 @@ func unownedP0Fields(t *testing.T, body json.RawMessage, kind string) map[string
 }
 
 func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-3*time.Hour)))
@@ -1400,6 +1453,7 @@ func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 }
 
 func TestAnArchitectureSyncReachesEveryView(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createHubIssue(t, rig.handler, map[string]any{"title": "Anything"})
@@ -1441,6 +1495,7 @@ func appendHubEvent(t *testing.T, rig *hubRig, event model.Event) model.Event {
 // reset under its cursor, and the hub answers the closed feed by recomputing every view, which
 // reads what the new log's events changed.
 func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
@@ -1513,6 +1568,7 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 // TestEventsNoViewReadsRecomputeNothing: 500 events of a type no view reads, written without the
 // broker as another task's would be, reach the hub on the relay's feed and mark no view.
 func TestEventsNoViewReadsRecomputeNothing(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createHubIssue(t, rig.handler, map[string]any{"title": "Anything"})
@@ -1553,6 +1609,7 @@ func TestEventsNoViewReadsRecomputeNothing(t *testing.T) {
 // no view names it, and lowering it again does too, which only the reloaded P0s can tell the hub:
 // the lowering's payload says P1, so without the reload the issue was never a P0 to it.
 func TestAClosedFeedReloadsTheOpenP0sAndRecomputesEveryView(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	releaseOnce := sync.OnceFunc(func() { close(release) })
 	rig := newHubRig(t, func(hub *deliveryHub) {
@@ -1637,6 +1694,7 @@ func TestAClosedFeedReloadsTheOpenP0sAndRecomputesEveryView(t *testing.T) {
 // leave a to a feed that will never carry it), and on both once a commits. Each event makes its
 // own issue a P0 in the hub's view, which is what shows it was acted on.
 func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	first := createHubIssue(t, rig.handler, map[string]any{"title": "First"})
@@ -1688,6 +1746,7 @@ func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 // answers a page its snapshot and carries a delivery change to it while the transaction is open,
 // and the issue event committed meanwhile reaches the page once the horizon is proven.
 func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	rig := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
 	seedHubSettings(t, rig.database)
@@ -1837,6 +1896,7 @@ func waitReturned(t *testing.T, what string, running *sync.WaitGroup) {
 // it is the horizon's. After the drop the test waits for every goroutine of the hub and of the
 // relay to return: a listener's Run returns only once it has closed its connection.
 func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	// The hub and its relay read through a pool of their own, so its acquires are theirs alone.
 	deps.Store = storetest.SecondProcess(t, database)
@@ -1931,6 +1991,7 @@ const handOverRounds = 20
 // slot (g.feeds) leaves the intake's next select a choice between that feed and the generation's
 // end, which Go makes at random, so the round is repeated (handOverRounds).
 func TestAGenerationEndingDuringTheFeedHandOverLeavesTheRelayNoSubscriber(t *testing.T) {
+	t.Parallel()
 	type handOver struct {
 		hold, ready      sync.Once
 		held, readied    chan struct{}
@@ -1999,6 +2060,7 @@ func TestAGenerationEndingDuringTheFeedHandOverLeavesTheRelayNoSubscriber(t *tes
 }
 
 func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
@@ -2066,6 +2128,7 @@ func (c *fakeLiveConn) freshness(t *testing.T, within time.Duration, what string
 // The clock stands still at noon, so the pull request's leaving, two seconds on, is the view's
 // first expiry, never the midnight one, and the test moves the clock past it rather than waiting.
 func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t *testing.T) {
+	t.Parallel()
 	clock := newStillHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
@@ -2110,8 +2173,12 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
 }
 
+// The clock reads noon UTC (newNoonHubClock) and runs on from there, so the row's run itself
+// crossing a real UTC midnight, which would move the days before the row's own Advance, decides
+// nothing.
 func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing.T) {
-	clock := &fakeHubClock{}
+	t.Parallel()
+	clock := newNoonHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
@@ -2145,14 +2212,57 @@ func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing
 // TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer moves the clock past midnight
 // inside the worker's arm of its timer, after the worker has read the clock and before the timer is
 // placed, where a test's Advance can land when the race detector slows the worker. It moves it at
-// the first arm once the view holds its answer with no wake left pending (the subscribe's mark
-// leaves one the worker's first pass never takes), so only the timer can wake the worker: the
-// expiry the clock already passed is due, so the timer fires and the expiry's delta follows.
+// the first arm once the relay's feed has been applied and the view holds its answer with no wake
+// left pending, so only the timer can wake the worker: the expiry the clock already passed is due,
+// so the timer fires and the expiry's delta follows. The clock reads noon UTC (newNoonHubClock)
+// until then, so the run itself crossing a real UTC midnight decides nothing.
+//
+// The feed is waited for because a generation takes it on a goroutine of its own (seedEvents), so
+// it can reach the intake at any moment until then, and its apply marks every view dirty
+// (applyFeed). Landing after the clock moved, that mark makes the view due as a change rather than
+// as the expiry: a change recompute then sends the moved days and no expiry recompute runs. That
+// recompute reads at the moved clock, so the page is still answered right, but the row then proves
+// nothing about the timer.
+//
+// So the hook is installed only once the feed's apply has made its note, which it makes after its
+// mark: no arm can then ask the hook while the feed is still to come, and no arm can be missed by
+// a hook that saw the mark's wake spent before the note was made. The row then wakes the worker
+// itself, as any mark would, so that the hook is asked. It installs the hook and sends that wake
+// in one hold of the hub's lock, which the hook takes (catchUpNow, then its read of the view)
+// before it can answer: a hook asked in between, by the arm that follows the feed's change
+// recompute, waits for the lock and then finds the row's wake pending, so it answers false, and
+// the row's wake is spent before the clock moves rather than standing in for the timer after it.
+// A wake can also still be on its way from an earlier arm's timer: its callback can have won its
+// timer's one run and be descheduled before it sends, and the worker's Stop of that timer cannot
+// take the run back. Sent after the clock moved, it too would wake the worker in the timer's place.
+// So the hook waits for every such callback to return (waitCallbacks) before it reads the worker's
+// wakes. No timer can begin a run after that: the worker stopped its last timer before this arm,
+// and this arm's timer is placed only once the hook has answered.
+//
+// Each arm at which the hook answers false is followed by another: the view is dirty or
+// computing, so a recompute is due, or a wake is pending. Nothing else the intake can still owe
+// here, a catch-up of the change log after a notification or a connection, marks the view, since
+// the row writes nothing after the generation starts.
 func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testing.T) {
-	clock := &fakeHubClock{}
+	t.Parallel()
+	clock := newNoonHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(nil)))
+	conn.snapshot(t, 5*time.Second, "p")
+
+	// The feed stands behind the server's event horizon, so the wait for it is the horizon's.
+	rig.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
+	// No hub code holds the fake clock's lock while it takes the hub's, and the hook runs outside
+	// the clock's lock (fakeHubClock.At), so the clock's onArm under the hub's lock cannot deadlock.
+	rig.hub.mu.Lock()
 	clock.onArm(func() bool {
+		// catchUpNow returns once the intake has finished whatever it had already taken off its
+		// channels, such as a catch-up under way, so a mark that work made is on the view by the
+		// time the view is read.
+		rig.hub.catchUpNow()
+		clock.waitCallbacks()
 		rig.hub.mu.Lock()
 		g := rig.hub.generation
 		ready := g != nil && len(g.views) == 1 && len(g.wakeWork) == 0
@@ -2168,14 +2278,17 @@ func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testi
 		}
 		return ready
 	})
-	conn := newFakeLiveConn()
-	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(nil)))
-	conn.snapshot(t, 5*time.Second, "p")
-
-	delta := conn.delta(t, 3*time.Second, "p")
-	rig.waitFor(t, 0, time.Second, "the expiry's recompute", func(note deliveryHubNote) bool {
+	g := rig.hub.generation
+	signal(g.wakeWork)
+	rig.hub.mu.Unlock()
+	// The expiry's recompute is what the row waits for, with the test binary's deadline as its only
+	// bound. It sends its delta, when it has one, before it makes its note (expire, finishRecompute),
+	// so the bound of the read below decides only how soon the row reports an expiry that sent
+	// nothing.
+	rig.waitFor(t, 0, testwait.Bounded(t, 24*time.Hour, time.Second), "the expiry's recompute", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
 	})
+	delta := conn.delta(t, 3*time.Second, "p")
 	var days []string
 	if err := json.Unmarshal(delta.Set["days"], &days); err != nil {
 		t.Fatalf("decode the delta's days %s: %v", delta.Set["days"], err)
@@ -2192,6 +2305,7 @@ func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testi
 }
 
 func TestAPresetRecomputeWhereOnlyTheWindowMovedSendsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	// A pull request of another repository, merged before the window: no view shows it, but a change
@@ -2213,6 +2327,7 @@ func TestAPresetRecomputeWhereOnlyTheWindowMovedSendsNothing(t *testing.T) {
 }
 
 func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
+	t.Parallel()
 	clock := &fakeHubClock{}
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
@@ -2255,6 +2370,7 @@ func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
 }
 
 func TestAnUnfetchablePullRequestSendsAFreshnessFrame(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-3*time.Hour)))
@@ -2286,6 +2402,7 @@ func TestAnUnfetchablePullRequestSendsAFreshnessFrame(t *testing.T) {
 // silently, from the read whose body the first subscription is answered, so that one is told
 // nothing more.
 func TestASubscriptionAfterAVerdictChangeIsSentThatVerdict(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	// A custom range and a pinned pipeline day have no expiry, so nothing but the answers and the
@@ -2328,6 +2445,7 @@ func TestASubscriptionAfterAVerdictChangeIsSentThatVerdict(t *testing.T) {
 }
 
 func TestASubscriberGetsTheGETBodyAsItsSnapshot(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	now := rig.clock.Now()
@@ -2367,6 +2485,7 @@ func TestASubscriberGetsTheGETBodyAsItsSnapshot(t *testing.T) {
 }
 
 func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	now := rig.clock.Now()
@@ -2409,6 +2528,7 @@ func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 }
 
 func TestAReconcilePassThatFindsNothingNewSendsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, rig.clock.Now()); err != nil {
@@ -2442,6 +2562,7 @@ func TestAReconcilePassThatFindsNothingNewSendsNothing(t *testing.T) {
 // the next recompute, here one for a change no view shows, and the hub would send both runs again.
 // The hub reads on a sequential scan, the plan that answers rows as they lie.
 func TestARecomputeAfterTiedRowsAreWrittenAgainSendsNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	deps.Store = &store.Store{Pool: storetest.Planned(t, database.Pool, storetest.SequentialScan)}
 	rig := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
@@ -2500,6 +2621,7 @@ func TestARecomputeAfterTiedRowsAreWrittenAgainSendsNothing(t *testing.T) {
 }
 
 func TestIdenticalViewsShareOneRecompute(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-30*time.Hour)))
@@ -2543,6 +2665,7 @@ func TestIdenticalViewsShareOneRecompute(t *testing.T) {
 // is one instant to the hub however long the writes take: nothing is due until the clock moves
 // viewQuiet past the last mark, and then one recompute sends all 50 in one delta.
 func TestABurstCoalescesIntoOneRecompute(t *testing.T) {
+	t.Parallel()
 	clock := newStillHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
@@ -2574,6 +2697,7 @@ func TestABurstCoalescesIntoOneRecompute(t *testing.T) {
 }
 
 func TestOneRecomputeAtATime(t *testing.T) {
+	t.Parallel()
 	var inFlight, most atomic.Int32
 	rig := newHubRig(t, func(hub *deliveryHub) {
 		observe := hub.observe
@@ -2619,6 +2743,7 @@ func TestOneRecomputeAtATime(t *testing.T) {
 }
 
 func TestAChangeOutsideAWindowRecomputesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
@@ -2637,6 +2762,7 @@ func TestAChangeOutsideAWindowRecomputesNothing(t *testing.T) {
 }
 
 func TestNotConfiguredIsAnErrorFrameThenASnapshotOnceConfigured(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	conn := newFakeLiveConn()
 	view := presetView(deliveryLiveTimeline, 7, "")
@@ -2677,6 +2803,7 @@ func legionBodyProject(t *testing.T, body json.RawMessage) string {
 // daemon the sampler announces (legion.StateChannel) and through a write of one of the board's
 // issues, the two things that move it.
 func TestALegionBoardsSnapshotAndDeltasLandOnItsGET(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
@@ -2713,6 +2840,7 @@ func TestALegionBoardsSnapshotAndDeltasLandOnItsGET(t *testing.T) {
 // TestALegionBoardOfAProjectWithNoDaemonIsRefusedOnce: a view of a project that names no daemon is
 // told LEGION_NOT_CONFIGURED once and stays open, as a delivery view with no settings is.
 func TestALegionBoardOfAProjectWithNoDaemonIsRefusedOnce(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	conn := newFakeLiveConn()
@@ -2726,6 +2854,7 @@ func TestALegionBoardOfAProjectWithNoDaemonIsRefusedOnce(t *testing.T) {
 // loadProject's PROJECT_NOT_FOUND with its words, once, rather than LEGION_NOT_CONFIGURED: what is
 // missing is the project, not its daemon.
 func TestALegionBoardOfAProjectThatDoesNotExistIsRefusedAsTheRouteRefusesIt(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	routed := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/projects/NOPE/legion/board", nil, "alice")
 	answer := decodeBody[refusalAnswer](t, routed)
@@ -2745,6 +2874,7 @@ func TestALegionBoardOfAProjectThatDoesNotExistIsRefusedAsTheRouteRefusesIt(t *t
 // project is refused as GET /api/v1/projects/{key}/legion/board refuses it, INVALID_PROJECT and its
 // words alike, so the two doors to one board name one refusal.
 func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
+	t.Parallel()
 	window := DeliveryLiveWindow{Preset: new(7)}
 	project := "INFRA"
 	for _, refused := range []struct {

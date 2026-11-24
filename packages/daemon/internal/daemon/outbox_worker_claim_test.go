@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -25,8 +26,10 @@ import (
 // is published where that claim records the round, also where that claim is not the one the
 // record gives the role: a fresh tester an earlier version of the plan started still holds its
 // claim in the pod. An ask the release before wrote names no claim, and reaches the claim the
-// record gives the role.
+// record gives the role. The asks run while key a's agent is ready, before the step's stop: a
+// claim the daemon suspended is published no ask (supervise's UpdateAskSuspended).
 func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -35,7 +38,7 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	putOutboxIssue(t, pool, records, issue)
 	keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 	own := mustClaimToken(t, issue.Key, claim.RoleTester)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, row := range []record.PhaseRow{
 			{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1},
 			{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2},
@@ -83,14 +86,6 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	if err := machine.Handle(ctx, supervise.RequestReady{Claim: keyed, Generation: launch, Session: "ses-a"}); err != nil {
 		t.Fatalf("ready key a's agent: %v", err)
 	}
-	stop := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: claim.RoleTester, Generation: 1}, time.Now())
-	stop.ID = 58
-	if err := runner.execute(ctx, stop); err != nil {
-		t.Fatalf("the tester's step stop: %v", err)
-	}
-	if got := machine.Claim().State; got != supervise.StateSuspended {
-		t.Fatalf("key a's claim after the tester's step stop = %s, want suspended", got)
-	}
 
 	// A claim is asked once per round (the outbox marks it asked), so the ask the release before
 	// wrote, which names no claim, runs first: it reaches the claim the record gives the role.
@@ -117,6 +112,16 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	if published := publisher.publishes(); len(published) != 2 || published[1].topic != notify.RoleTopicPrefix+string(own) || published[1].message != "Push yours too." {
 		t.Fatalf("the update ask of the earlier version's tester was published as %+v, want it on %s", published, notify.RoleTopicPrefix+string(own))
 	}
+
+	// The step's stop suspends key a's agent, the claim the record gives the tester's step.
+	stop := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: claim.RoleTester, Generation: 1}, time.Now())
+	stop.ID = 58
+	if err := runner.execute(ctx, stop); err != nil {
+		t.Fatalf("the tester's step stop: %v", err)
+	}
+	if got := machine.Claim().State; got != supervise.StateSuspended {
+		t.Fatalf("key a's claim after the tester's step stop = %s, want suspended", got)
+	}
 }
 
 // Key a's agent works the implementer's step and is in a turn when the start of the tester's entry
@@ -126,6 +131,7 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 // session. A start of no entry (a wake) of the tester for the same claim starts it with the role it
 // holds and changes no role.
 func TestAReRolesStartWaitsForTheTurnsEnd(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -133,7 +139,7 @@ func TestAReRolesStartWaitsForTheTurnsEnd(t *testing.T) {
 		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
 	putOutboxIssue(t, pool, records, issue)
 	keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, row := range []record.PhaseRow{
 			{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1},
 			{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2},
@@ -228,6 +234,7 @@ func TestAReRolesStartWaitsForTheTurnsEnd(t *testing.T) {
 // Read by the role's own token, the stop would reach the tester's own claim and leave key a's
 // agent running in the old tree.
 func TestASuspendOfALeftTreeStopsTheClaimItReaches(t *testing.T) {
+	t.Parallel()
 	const oldTree = "LEGION-207"
 	for _, tc := range []struct {
 		name string
@@ -247,7 +254,7 @@ func TestASuspendOfALeftTreeStopsTheClaimItReaches(t *testing.T) {
 				Project: "LEGION", Tree: oldTree, Title: "Root", Phase: phase.Done, Generation: 1, Status: "done"})
 			putOutboxIssue(t, pool, records, issue)
 			keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
 			}); err != nil {
 				t.Fatalf("name key a's claim on the tester's step: %v", err)

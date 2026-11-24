@@ -1,9 +1,10 @@
 // dialChannelNats: the channel server's NATS connection, opened with the session's credential and,
 // where that is the broker token, kept renewed for the connection's life and stopped on request.
 import { afterEach, expect, jest, spyOn, test } from "bun:test"
-import { writeFile } from "node:fs/promises"
+import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
+import { NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection"
 import {
   type BrokerNatsCredential,
   brokerNatsCredential,
@@ -19,6 +20,7 @@ import {
   nkeys,
 } from "nats"
 import { dialChannelNats } from "../src/channel-connection"
+import { channelConnectionName } from "../src/installed-build"
 
 /** Each row's home, removed after it, failed or not. */
 const makeDirectory = temporaryDirectories("channel-nats")
@@ -301,6 +303,68 @@ test("a channel server's start waits through a broker that refuses connections, 
   }
 }, 90_000)
 
+test("a first dial whose broker token the hub refuses twice drops it, presents the next one traded, and says so", async () => {
+  // The dials share the keeper's count of the token's refusals (`connectNats`' `hooks.credential`),
+  // so the dial drops a token the hub refused twice, as the keeper does on an open connection. The
+  // waits between the dials are recorded, not slept: each waits only for a live token.
+  const minted: string[] = []
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      const token = fixtureSecret("channel")
+      minted.push(token)
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      })
+    },
+  })
+  servers.push(server)
+  const home = makeDirectory()
+  const tokenFile = join(home, "token")
+  await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
+  const credential = brokerNatsCredential(
+    {
+      HOME: home,
+      AGENT_SECRETS_URL: `http://127.0.0.1:${server.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+    },
+    "ses_channel_refused_twice",
+  )
+  const fake = fakeDial()
+  let refusals = 0
+  const dial = async (options: ConnectionOptions): Promise<NatsConnection> => {
+    if (refusals < 2) {
+      refusals += 1
+      throw new NatsError("'Authorization Violation'", ErrorCode.AuthorizationViolation)
+    }
+    return fake.dial(options)
+  }
+  const warnings: string[] = []
+  const opened = await dialChannelNats(
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "broker", broker: credential },
+    },
+    "claude-envoy-channel-ses_channel_refused_twice",
+    (text) => warnings.push(text),
+    dial,
+    undefined,
+    undefined,
+    { delay: () => credential.ready(), random: () => 0 },
+  )
+  opened.stop()
+  // The start's token, and the one traded at the drop, which the third dial presented.
+  expect(minted).toHaveLength(2)
+  expect(fake.presented).toEqual(minted.slice(1))
+  expect(warnings.filter((text) => text.includes(NATS_DIAL_TOKEN_DROPPED))).toHaveLength(1)
+}, 15_000)
+
 test("dialChannelNats runs no keeper and no follow for a connection with no broker token", async () => {
   // The clock is the row's: moved an hour on, every timer the start left behind has fired.
   jest.useFakeTimers()
@@ -550,4 +614,59 @@ test("dialChannelNats dials again until it stops: a stop during a wait ends the 
   setTimeout(after.resolve, 400)
   await after.promise
   expect(dials).toBe(1)
+})
+
+// legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census of
+// connections lists: the build-commit stamp the worker image writes beside the bundle, else the
+// release Claude Code or Codex installed, else none.
+test("the connection name the server sees ends with the channel's build", async () => {
+  const commit = "0123456789abcdef0123456789abcdef01234567"
+  const image = join(makeDirectory(), "dist")
+  await mkdir(image, { recursive: true })
+  await writeFile(join(image, "build-commit"), `${commit}\n`)
+  const rows = [
+    {
+      name: channelConnectionName(
+        "claude-envoy-channel-ses_build",
+        join(image, "envoy-channel.js"),
+        "@sjawhar/claude-envoy",
+      ),
+      want: `claude-envoy-channel-ses_build legion@${commit}`,
+    },
+    {
+      name: channelConnectionName(
+        "codex-envoy-channel-ses_build",
+        "/home/me/.codex/plugins/cache/legion-plugins/codex-envoy/6.0.0/dist/envoy-channel.js",
+        "@sjawhar/codex-envoy",
+      ),
+      want: "codex-envoy-channel-ses_build @sjawhar/codex-envoy@6.0.0",
+    },
+    {
+      name: channelConnectionName(
+        "claude-envoy-channel-ses_build",
+        "/work/legion/packages/claude-envoy/dist/envoy-channel.js",
+        "@sjawhar/claude-envoy",
+      ),
+      want: "claude-envoy-channel-ses_build",
+    },
+  ]
+  for (const row of rows) {
+    const seen: string[] = []
+    await dialChannelNats(
+      {
+        natsUrls: ["nats://nats.test:4222"],
+        natsServersSetting: "ENVOY_NATS_URL",
+        natsCredential: { kind: "none" },
+      },
+      row.name,
+      () => {},
+      async (options: ConnectionOptions): Promise<NatsConnection> => {
+        seen.push(options.name ?? "")
+        throw NatsError.errorForCode(ErrorCode.ConnectionRefused)
+      },
+      undefined,
+      DIAL_ONCE,
+    ).catch(() => undefined)
+    expect(seen).toEqual([row.want])
+  }
 })

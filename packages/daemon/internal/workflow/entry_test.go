@@ -34,11 +34,12 @@ var seededRaisedAt = time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 
 // Every start that hands a claim work it was not on raises its phase entry, writes the work of that
 // entry and the moment it was raised on the role's phases row, and carries the number on the
-// start's payload, all in the transition's own transaction: one above the row's own entry and above
-// the highest entry of each row that names the same claim. The issue's run cannot
-// do this work: one run holds every phase entry, so the testing phase the tester is given after a
-// failed round and an implementing pass has to be told from the testing phase before it by
-// something the run does not carry (api/handoff.go).
+// start's payload, all in the transition's own transaction: one above the row's own entry, above
+// the highest entry of each row of the role and of each row that names the same claim, and above
+// the entry that claim was last given (enter). The issue's run cannot do this work: one run holds
+// every phase entry, so the testing phase the tester is given after a failed round and an
+// implementing pass has to be told from the testing phase before it by something the run does not
+// carry (api/handoff.go).
 //
 // Entering one phase twice is the case that proves the number is raised rather than set: the
 // implementer is started in implementing, completes, and is started there again, which leaves its
@@ -80,7 +81,7 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 		HandoffRecord: "implement-1", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Testing)
 	if got := entryOfStart(t, pool, claim.RoleTester, engine.now()); got != 1 {
-		t.Fatalf("the tester's first start is of entry %d, want 1: an entry counts the entries handed on the rows of the step's claim, the tester's own here", got)
+		t.Fatalf("the tester's first start is of entry %d, want 1: an entry rises above every row of its role, every row of the step's claim and the entry that claim was given, each at 0 here", got)
 	}
 	// The implementer's own entry is its row's still: a completion keeps it, and only its next
 	// start raises it.

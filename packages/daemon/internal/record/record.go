@@ -379,9 +379,9 @@ const HoldEscalated HoldReason = "escalated"
 // (TaskPlace.Started) waits for that step again, as a task never stopped does.
 const HoldTaskStopped HoldReason = "task-stopped"
 
-// HoldForChildren is a hold that stands in place of the retro of an issue whose plan has no
-// acceptance step, while issues beneath it are still open (From is phase.Retro, which holds no
-// slot): the retro starts once the last of them has left.
+// HoldForChildren is a hold that stands in place of the retro of an issue whose task's last step
+// is not the owner's acceptance, while issues beneath it are still open (From is phase.Retro,
+// which holds no slot): the retro starts once the last of them has left.
 const HoldForChildren HoldReason = "children"
 
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root
@@ -488,9 +488,10 @@ func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.Answere
 
 // WorkingPhase is the phase the issue's worker works: the phase its hold left while it is held —
 // the one whose worker's claim failed — and the phase it stands in otherwise. It is the one rule:
-// workflow.RoleFor(i.WorkingPhase()) is the role whose failure holds the issue, the role the
-// stranded report names, and the role the operator's retry of a phase worker acts for (api's
-// retryClaim), which read it here rather than each keeping a copy to drift from.
+// the role that works the issue at it (RoleAt: workflow.RoleFor of it, or at step the role of the
+// running step) is the role whose failure holds the issue, the role the stranded report names,
+// and the role the operator's retry of a phase worker acts for (api's retryClaim), which read it
+// here rather than each keeping a copy to drift from.
 func (i Issue) WorkingPhase() phase.Phase {
 	if i.Hold != nil {
 		return i.Hold.From
@@ -506,6 +507,17 @@ func (i Issue) RoleAt(p phase.Phase) claim.Role {
 		return i.StepRole
 	}
 	return phase.RoleFor(p)
+}
+
+// StepIsOf says whether the step the issue stands at is role's to report on, where the phase alone
+// cannot say: at phase.Step, every role the deployment defines runs as the one phase, so only the
+// role of the running step (StepRole) works it, and a report or a task of another such role is of
+// a step the task has left or not reached. Every other phase is one role's, which the caller reads
+// from the phase, so it answers true there. It is the one statement of that rule: the engine's
+// judgement of a completion (workflow's handoff), the completion route's fallback to a held task
+// (api's heldTaskNotCurrent) and the judges of queued work (HoldsQueued) all read it.
+func (i Issue) StepIsOf(role claim.Role) bool {
+	return i.Phase != phase.Step || role == i.StepRole
 }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
@@ -580,7 +592,9 @@ func (m EventMark) ID() int64 {
 	return 0
 }
 
-// PhaseRow is the durable part of a role's work on an issue; live claim facts are joined for state.
+// PhaseRow is the durable part of a role's work on one place of an issue's task — a step, the
+// retro or the merge (StepTask, StepPlace) — or on the issue where it has no plan rows; live claim
+// facts are joined for state.
 type PhaseRow struct {
 	Issue string
 	Role  claim.Role
@@ -591,11 +605,12 @@ type PhaseRow struct {
 	// record and which the implementer's plugin holds to be its pushed @- on
 	// legion/<issue>@origin; and the commit retro and merging stand on.
 	HandoffCommit string
-	// Pass counts the moves the issue has made back into an earlier phase, each of which opens one
-	// more run of the implementing, testing and reviewing stretch. It tells one pass through a
-	// phase from the last, which is what the handoff completion key is built on (internal/api's
-	// handoffPosition), and so it is never reset while the record of the work stands: a completion
-	// at a commit an earlier pass already reported has to be a fact of its own.
+	// Pass counts the moves the issue has made back to an earlier step of its task (by the task's
+	// order, workflow's Walk.MovesBack), each of which runs the task's steps again from the step it
+	// went back to. It tells one pass through a phase from the last, which is what the handoff
+	// completion key is built on (internal/api's handoffPosition), and so it is never reset while
+	// the record of the work stands: a completion at a commit an earlier pass already reported has
+	// to be a fact of its own.
 	Pass int
 	// HandoffRecord and HandoffVersion are the Dispatch handoff record the role's completion of its
 	// current phase named, for a phase with a handoff (phase.Handoff), and that record's version
@@ -604,10 +619,11 @@ type PhaseRow struct {
 	HandoffRecord  string
 	HandoffVersion int
 	// Rounds is how many review rounds the issue has had while this role held it, counted on the
-	// implementer's row alone (workflow's recordRound): a review that requested changes ends one,
-	// and nothing else opens one — a tester's fail and a worker's backward move each raise Pass
-	// and leave this count where it stands. What review_round_cap bounds is Rounds less
-	// ConflictRounds.
+	// implementer's row alone (workflow's recordRound). A review that requested changes ends one,
+	// and so does the fail of a step of the type review whose agent is not the owner. Nothing else
+	// opens one — a tester's fail, the fail of a step of another type and a worker's backward move
+	// each raise Pass. They leave this count where it stands. What review_round_cap bounds is
+	// Rounds less ConflictRounds.
 	Rounds int
 	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
 	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
@@ -616,7 +632,7 @@ type PhaseRow struct {
 	// (workflow's recordRound).
 	ConflictRounds int
 	// BackwardMoves is how many times the issue moved back by each kind of move, keyed
-	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "<from>-<to>" as phase.MovePairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is counted on the
 	// implementer's row alone, beside Pass and in the same place (workflow's recordPass), and the
 	// two count the same moves to different ends: Pass rises on every move back, because a phase
@@ -626,7 +642,7 @@ type PhaseRow struct {
 	// opened the round, and no pair at all, since nobody sent the work back, so no hook fires
 	// for it.
 	// The map starts empty when the migration lands and is never filled in from the past, so an
-	// issue already in flight reads counts that add up to less than its Rounds.
+	// issue already in flight reads counts that add up to less than its Pass.
 	BackwardMoves map[string]int
 	// CapTold is the review_round_cap value this row last posted the cap's message and its
 	// pr-blocked notice for, 0 for a row that has posted none. It is what makes that telling go
@@ -654,9 +670,15 @@ type PhaseRow struct {
 	// review of the entry that stood: the head named in the Legion footer of a review that
 	// approved or requested changes, submitted as the review App from the session the claims
 	// record holds for the claim the daemon starts the reviewer under (workflow's review,
-	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
-	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
-	// that commit; neither does another review-App session's review or a review that decides
+	// byReviewer and reviewersClaim), in the first round as in every later one. The reviewer's rows
+	// hold it, and the rows of a deployment role's review step (workflow's recordStepReview). It is
+	// its agent's, not its step's: a review that moves it writes it onto every row of that agent's
+	// role on the task (workflow's shareReviewedHead), so each row of one agent holds the commit of
+	// its newest deciding review there, and a step's first run takes it from the agent's own earlier
+	// row, or none where the agent ran none, as does a run of a step whose row another agent's runs
+	// wrote, which a later version of the plan can give the step (workflow's stepRunRow,
+	// ReviewedBefore). A person's review does not move it, since the reviewer did not read that
+	// commit; neither does another review-App session's review or a review that decides
 	// nothing, and while the reviewer's claim records no session no review-App review decides the
 	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
 	// no entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
@@ -681,21 +703,23 @@ type PhaseRow struct {
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
-	// tree brings back, and a root architect's start of work it was not on raise it, to the higher
-	// of the row's own entry plus one and one above the highest entry of each row of the issue that
-	// names the step's claim, and write the three fields below beside it, in their own transaction
-	// (workflow's start, StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the
-	// finer of the two numbers a completion is held to: the issue's generation is the same for
-	// every entry of one run, where the entry is new at each one, which is what tells one testing
-	// phase from the testing phase after a move back (api/handoff.go). A start that hands
-	// the role no work it was not already on leaves it where it stands — the send of this entry's
-	// own work to a claim behind it, the held phase's retry, and every start of no entry
-	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
-	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
-	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
-	// in place that the upgrade found with no work handed out, which the completion route reads
-	// as nothing to compare. The reviewer's row has a second reader: each task the reviewer is
-	// given in reviewing ends naming this number (reviewround.EntryLabel), its review's
+	// tree brings back, and a root architect's start of work it was not on raise it, and write the
+	// three fields below beside it, in their own transaction (workflow's start, StartPromotedWorker,
+	// StartArchitect and ResumeAwaitedRoot). A phase worker's raise puts it one above the highest of
+	// the row's own entry, the entry of every row of the issue that names the step's claim or is of
+	// the role, and the entry that claim was last given (RoleClaim.GivenEntry), so the row where the
+	// task stands holds the role's highest entry; an architect's raise puts it at the row's own entry
+	// plus one (workflow's enter). It is the finer of the two numbers a completion is held to: the
+	// issue's generation is the same for every entry of one run, where the entry is new at each one,
+	// which is what tells one testing phase from the testing phase after a move back
+	// (api/handoff.go). A start that hands the role no work it was not already on leaves it where it
+	// stands — the send of this entry's own work to a claim behind it, the held phase's retry, and
+	// every start of no entry (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit
+	// it is never reset: ClearGeneration leaves the entry and clears the task below. Zero on a row
+	// no entry has been raised on: a role the issue's phases have not reached, and every row of a
+	// daemon upgraded in place that the upgrade found with no work handed out, which the completion
+	// route reads as nothing to compare. The reviewer's row has a second reader: each task the
+	// reviewer is given in reviewing ends naming this number (reviewround.EntryLabel), its review's
 	// footer names it back, and only a review that names the number the row holds moves
 	// ReviewedHead. Because the number is never reset and each entry raises it, a review of an
 	// earlier entry can never name the entry that stands.
@@ -736,13 +760,14 @@ type PhaseRow struct {
 	//
 	// One rule of the daemon reads it and no other: the completion route's entry fence, which
 	// takes a completion of an earlier entry when the commit it names is the head the record
-	// holds, and refuses it however the heads read when the entry standing now was raised by a
-	// move back (api/handoff.go). Such an entry asks for the phase's work to be done again, which
-	// is what the earlier entry's verdict must not stand in for, and the heads cannot say so: the
-	// move back that sends work back at a head that did not move leaves the two heads equal. The
-	// counts beside it cannot say so either — Pass rises on every move back and a phase is never
-	// re-entered without one, so a fence on the count would refuse the case the route exists to
-	// take.
+	// holds, unless that entry is of another of the role's steps or its retro, or of a run of this
+	// step the task left for one of them (OtherStepsEntry), and refuses it however the heads read
+	// when the entry standing now was raised by a move back (api/handoff.go). Such an entry asks for
+	// the phase's work to be done again, which is what the earlier entry's verdict must not stand in
+	// for, and the heads cannot say so: the move back that sends work back at a head that did not
+	// move leaves the two heads equal. The counts beside it cannot say so either — Pass rises on
+	// every move back and a phase is never re-entered without one, so a fence on the count would
+	// refuse the case the route exists to take.
 	EntryMovedBack bool
 	// StepTask and StepPlace are the step this row runs, for an issue with plan rows: the plan's
 	// task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro on the
@@ -759,9 +784,11 @@ type PhaseRow struct {
 	StepPlace int
 }
 
-// Completed says whether the role completed its current phase: its completion reported a commit
-// or named a handoff record, both of which clearing the handoff at the next phase's start
-// (workflow's clearHandoff) and a new generation (ClearGeneration) empty.
+// Completed says whether the role completed the phase of this row's run: its completion reported a
+// commit or named a handoff record, both of which clearing the handoff when the role starts its next
+// phase on this row (workflow's clearHandoff) and a new generation (ClearGeneration) empty. A later
+// step of the role starts on a row of its own, so this row keeps its step's report, which the tasks
+// of the later steps name (workflow's reportsBefore).
 func (p PhaseRow) Completed() bool {
 	return p.HandoffCommit != "" || p.HandoffRecord != ""
 }
@@ -1033,14 +1060,13 @@ type PullRequest struct {
 	// withJudgement), and so does a move of the head (classify's advance): it names its own head,
 	// and a read of another head confirms nothing of it.
 	ConflictRead *ConflictRead
-	// MergeForward is the daemon's ask that the agent of the task's implementation step (the
-	// implementer of the default steps) merge the base forward onto a head whose conflict was
-	// confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands. The issue keeps its
-	// phase, and the ask is a message on that agent's claim topic rather than a phase start: it
-	// names the head and the base branch of the conflict, the phase the issue stood in and stays
-	// in, why the act was needed, when it was asked, and, once a new head arrives, that head
-	// (MergeForward.Landed). It also keeps every merge forward that landed before it in the same
-	// stretch of work (MergeForward.Earlier).
+	// MergeForward is the daemon's ask that a role merge the base forward onto a head whose
+	// conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands. The
+	// issue keeps its phase, and the ask is a message on the topic of the claim that works the
+	// role's step rather than a phase start: it names the head and the base branch of the conflict,
+	// the role asked, the phase the issue stood in and stays in, why the act was needed, when it was
+	// asked, and, once a new head arrives, that head (MergeForward.Landed). It also keeps every
+	// merge forward that landed before it in the same stretch of work (MergeForward.Earlier).
 	//
 	// Who writes it: Engine.mergeForward, in the transaction that queues the merge_forward rows,
 	// and pullRequestSynchronized, which sets Landed on the first head that moves off
@@ -1108,6 +1134,7 @@ type ConflictRead struct {
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
+	Role        claim.Role           `json:"role,omitempty"`
 	Phase       phase.Phase          `json:"phase"`
 	Own         bool                 `json:"own,omitempty"`
 	Why         ConflictWhy          `json:"why"`
@@ -1115,6 +1142,17 @@ type MergeForward struct {
 	Landed      string               `json:"landed,omitempty"`
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+}
+
+// Asked is the role the ask names: Role, or the implementer for an ask that names none, which a
+// daemon before cybermonklabs/legion#4979 wrote, since it asked the implementer in every phase. So an
+// implementer that daemon asked in merging still merges after the upgrade, and the merger is asked
+// only by a new act (workflow's mergeForward).
+func (m MergeForward) Asked() claim.Role {
+	if m.Role == "" {
+		return claim.RoleImplementer
+	}
+	return m.Role
 }
 
 // LandedMergeForward is a merge forward that landed before the ask the record holds
@@ -1134,8 +1172,10 @@ type LandedMergeForward struct {
 type ConflictWhy string
 
 const (
-	// ConflictMergeNext: the issue stands in accepting, retro or merging, or is held from one of
-	// them (PastReview).
+	// ConflictMergeNext: the issue stands in merging, or is held from it. A conflict where the
+	// merge comes next before merging - retro, or accepting where no step of the task follows the
+	// acceptance (classify.MergeComesNext) - waits for merging, where the merger merges the base
+	// forward (cybermonklabs/legion#4979).
 	ConflictMergeNext ConflictWhy = "merge-next"
 	// ConflictRulesUnread: the daemon could not read the base branch's rules.
 	ConflictRulesUnread ConflictWhy = "base-rules-unread"
@@ -1145,23 +1185,25 @@ const (
 	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
 )
 
-// MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
-// already is, every phase after it up to the merge, which the issue keeps while the implementer
-// merges (dispatch://INFRA-4374 R1), and step, where a role the deployment or the issue's plan defines runs, after the
-// implementer or before it (a step before it has no pull request, so nothing is asked there). An
-// issue that stands in none of them - before its implementation, or out of the workflow - has no
-// pull request work to merge forward. They are also the phases a head move is read for a conflict
-// in (classify.MergeStateReadOwed), since that read is what can lead to the ask. Both read it
-// through StandsIn, so a hold from one of them counts as standing there.
-var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Accepting, phase.Retro, phase.Merging}
+// MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
+// in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
+// the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
+// the task at the implementer's place, or a place after it on the task's line). The ask's row goes to it
+// (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
+func MergeForwardAsker(at phase.Phase) claim.Role {
+	if at == phase.Merging {
+		return claim.RoleMerger
+	}
+	return claim.RoleImplementer
+}
 
 // BaseRules is what the daemon read of the rules a pull request's base branch holds for its
 // required status checks, on a read that found the head conflicting with that base
 // (intake.PullRequestMergeability.Rules). It is what R0 decides a confirmed conflict on
 // (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge): a base that requires a check which has
 // not passed on the head, or that requires a pull request to be current with it, is a base the
-// head cannot merge into until the implementer merges it forward, and GitHub runs no check at
-// all on a head that conflicts with its base.
+// head cannot merge into until the base is merged forward, and GitHub runs no check at all on a
+// head that conflicts with its base.
 //
 // Required is every required status-check context, each once and sorted: the contexts of each
 // `required_status_checks` rule the base's rulesets apply, then a classic protection rule's
@@ -1457,7 +1499,9 @@ const (
 // DesignStep names one document of the root issue, and a deployment's design gate is the list of
 // steps it holds the tree's work on. DesignStepDecisions names the issue's decisions document,
 // DesignStepCriteria its Verification document, and DesignStepSpec its primary document. The
-// record keeps one DesignGate for each step a deployment gates, keyed by the issue and the step.
+// record keeps one DesignGate for each step a root registers, keyed by the issue and the step:
+// each step the deployment gates, and criteria where its architect registers the Verification
+// document beside a deployment that gates spec alone of the two (TreeSteps).
 //
 // The type lives in this package rather than beside the `gates.design` list that declares it,
 // because internal/classify answers the questions the steps raise and may import no package of
@@ -1555,16 +1599,19 @@ type DesignGate struct {
 	ToldChangesVersion *int
 	ToldChangesReason  string
 	ToldChangesMark    EventMark
-	// EverOpened records that a human approved the gate's document version at some point in this
-	// generation of the issue, whether or not the gate stands open now. Nothing else remembers it:
-	// classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion as both
-	// stand, and a changes request clears ApprovedVersion, so a gate that opened and was sent back
-	// reads exactly like one that never opened. Under the children-first rule a root stays at
-	// admitted while its children run, which is the state the later rule must tell from a root
-	// still waiting for its first approval. It lives on the gate row rather than on the issue
-	// because ClearTreeGeneration deletes the gate when a root is re-admitted, and a re-admitted
-	// root's architect writes its spec again: the mark belongs to the generation whose approval it
-	// records.
+	// EverOpened records that the step has not held the tree's first release in this generation
+	// of the issue: a human approved the gate's document version at some point, whether or not
+	// the gate stands open now, or the step joined the tree after that release — a Verification
+	// document its architect registered as criteria once the spec had opened the tree
+	// (workflow's gateRegistered), which that release never waited on. Nothing else remembers
+	// it: classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion
+	// as both stand, and a changes request clears ApprovedVersion, so a gate that opened and was
+	// sent back reads exactly like one that never opened. Under the children-first rule a root
+	// stays at admitted while its children run, which is the state the later rule must tell from
+	// a root still waiting for its first approval. It lives on the gate row rather than on the
+	// issue because ClearTreeGeneration deletes the gate when a root is re-admitted, and a
+	// re-admitted root's architect writes its spec again: the mark belongs to the generation
+	// whose release it records.
 	EverOpened bool
 }
 
@@ -1780,7 +1827,10 @@ type Carried[T any] struct {
 func Carry[T any](value T) Carried[T] { return Carried[T]{Value: value, Carried: true} }
 
 // DispatchReading is one reading of a Dispatch issue at Seq, the sequence Dispatch had run to when
-// it was read: the values it carries, and the claim it showed (ClaimSeq above zero).
+// it was read: the values it carries, and the claim it showed (ClaimSeq above zero). Applied says
+// the reading is an issue fact the daemon applies through its handlers — an issue event, or a view
+// intake let through — rather than a reading that decides nothing: a listing, the periodic turn's
+// re-read, or the release's read of the children it adopts.
 type DispatchReading struct {
 	Key, Project string
 	Seq          int64
@@ -1791,6 +1841,7 @@ type DispatchReading struct {
 	Rank         Carried[string]
 	ClaimedBy    string
 	ClaimSeq     int64
+	Applied      bool
 }
 
 // Store contains only transactional operations. The caller owns each transaction so intake can
@@ -1881,7 +1932,9 @@ type Store interface {
 	// and an older one changes nothing at all. A value the reading does not carry stays as the copy
 	// holds it, and on a new row takes its column's default at sequence 0, written by no reading.
 	// A parent of "" is Dispatch showing no parent, a value written like any other. The row's Seq
-	// becomes the highest sequence of any reading it took. The claim is fenced apart, on ClaimSeq,
+	// becomes the highest sequence of any reading it took. An applied reading (Applied) also raises
+	// the row's applied sequence to its own where that stands lower, whatever its values did, and
+	// any other reading leaves it (DispatchIssueApplied). The claim is fenced apart, on ClaimSeq,
 	// whatever the values did: a reading carrying a claim (ClaimSeq above zero) writes it only over
 	// an older claim, and one carrying none leaves the stored claim as it stands. A reading whose
 	// Seq is zero — a fact the daemon minted from its own record, which Dispatch never said — writes
@@ -1918,17 +1971,23 @@ type Store interface {
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
+	// DispatchIssueApplied is the highest sequence of an issue fact of key the daemon applied (a
+	// reading PutDispatchIssue took as Applied), 0 when it applied none or the copy holds no row of
+	// key: blockers.Mirror writes every issue fact the daemon applies first, in the fact's own
+	// transaction, whether or not the daemon records the issue, and no listing or turn's re-read
+	// moves it.
+	DispatchIssueApplied(ctx context.Context, tx pgx.Tx, key string) (int64, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
-	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
-	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
-	// PhaseRow.EntryVerbatim), by issue and role, read in one statement. Admission's sweep weighs
-	// every role it holds against that number (admit's owedEntryRoles), reads the mark to tell
-	// which roots past admitted its architect reach keeps (workflow.ArchitectAtWork), and reads the
-	// moment beside them to tell how long a role has been owed the work the number names (admit's
-	// architectStalls), and a read an issue would cost one round trip a slot on every fact of the
-	// project, which a project running hundreds of trees pays hundreds of times over. A row the
-	// record does not hold is absent from the answer, which reads as the zero entry: a role no
-	// transition has ever handed work on.
+	// PhaseEntries is the entry each role's phases row now of issues names (PhaseRowOf: a role that
+	// stands at two steps has a row for each), the moment that entry was raised and whether its task
+	// is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt, PhaseRow.EntryVerbatim), by
+	// issue and role, read in one statement. Admission's sweep weighs every role it holds against
+	// that number (admit's owedEntryRoles), reads the mark to tell which roots past admitted its
+	// architect reach keeps (workflow.ArchitectAtWork), and reads the moment beside them to tell how
+	// long a role has been owed the work the number names (admit's architectStalls), and a read an
+	// issue would cost one round trip a slot on every fact of the project, which a project running
+	// hundreds of trees pays hundreds of times over. A row the record does not hold is absent from
+	// the answer, which reads as the zero entry: a role no transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	// MovePhaseToStep writes the step task and place on role's row of no step on issue (StepTask
@@ -1961,6 +2020,11 @@ type Store interface {
 	OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error)
 	// SessionClaimsTree says whether the agent session holds a claim in the tree.
 	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
+	// ArchitectIssueOfSession is the issue of the architect claim that the agent session holds in
+	// the tree, and whether it holds one. It reads the claim in any state, as SessionClaimsTree
+	// does: a suspended architect's session is still the session of its claim, and a write in
+	// Dispatch names that session.
+	ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error)
 	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
 	// records. It is what tells a holder the daemon records in another tree from one it records
 	// nowhere, which SessionClaimsTree's one boolean cannot.
@@ -2108,9 +2172,10 @@ type Store interface {
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
-	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary, and the step each of its phases rows ran, a step of the last
-	// generation's plan. Each role keeps its claim and its last handoff, so a
+	// same branch and pull request), its design gate with what its holders took of it
+	// (DesignTold), and each role's handoff, review rounds, verdict and summary, and the step each
+	// of its phases rows ran, a step of the last generation's plan. Each role keeps its claim and
+	// its last handoff, so a
 	// commit an earlier generation reported is never new again. An issue whose gate rows it
 	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
 	// Dispatch holds for that issue is the one those rows recorded.
@@ -2218,6 +2283,46 @@ type Store interface {
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
+	// TreeTold is every told row of the issues of tree (DesignTold), by issue and then audience,
+	// as each audience took it, the credit of every confirmed delivery not yet final counted in
+	// (Postgres.TreeTold).
+	TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error)
+	// BaselineTold writes issue's audience row at the approved versions root's gate rows hold in
+	// this transaction, when issue holds no such row: the version work starts from
+	// (Postgres.BaselineTold).
+	BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) error
+	// RaiseTold raises issue's audience row past each of items, from its From (nil for none) to its
+	// To, as a final credit that reaches only a row that took its From, writing the row when there
+	// is none; a step items do not name keeps what the row holds (Postgres.RaiseTold).
+	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, items []NewsItem, at time.Time) error
+	// SettleOpening settles the gate's opening on issue's audience row as it reaches the audience
+	// now: owed, for the task that carries its news to lead with, or told by the opened role
+	// message; the row takes its next opening number either way (Postgres.SettleOpening).
+	SettleOpening(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error
+	// CloseOpenings settles the gate's close on every told row of tree's issues: none owes an
+	// opening, and each takes its next opening number (Postgres.CloseOpenings).
+	CloseOpenings(ctx context.Context, tx pgx.Tx, tree string) error
+	// FillTold writes each step of versions on issue's audience row where the row knows no
+	// version of that step, and leaves every step it knows as it stands (Postgres.FillTold).
+	FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
+	// DesignNewsPending says whether a reconcile of tree's news (DesignNewsReconcile) is queued and
+	// has not begun to run at now (Postgres.DesignNewsPending).
+	DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
+	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
+	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
+	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps
+	// its row (Postgres.PutDesignChanges).
+	PutDesignChanges(ctx context.Context, tx pgx.Tx, changes DesignChanges) error
+	// DesignHistoryUnreadOf is the recorded unread review history of each of questions that has
+	// one, by question, as the rows stand; a row counts only while no reconcile of the tree that
+	// asks it is pending, which its caller weighs (DesignHistoryUnread).
+	DesignHistoryUnreadOf(ctx context.Context, tx pgx.Tx, questions []DesignHistoryQuestion) (map[DesignHistoryQuestion]DesignHistoryUnread, error)
+	// PutDesignHistoryUnread records that the review history could not answer one question,
+	// replacing the reason and time an earlier reconcile recorded of it.
+	PutDesignHistoryUnread(ctx context.Context, tx pgx.Tx, unread DesignHistoryUnread) error
+	// ClearDesignHistoryUnread deletes what the record holds of question's unread review history,
+	// once the history has answered it.
+	ClearDesignHistoryUnread(ctx context.Context, tx pgx.Tx, question DesignHistoryQuestion) error
 	// RootAsk is the mirror row of ask on issue, nil when it has none.
 	RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error)
 	// PutRootAsk writes ask's mirror row, unless any of the stored row's fences (Seq, WaitingOnSeq,
@@ -2413,10 +2518,12 @@ type Store interface {
 	// row, that row while it runs — by next_at then id. A start behind a branch row no one is
 	// running is not listed. Issue "" is every issue of project.
 	HeldRows(ctx context.Context, tx pgx.Tx, project, issue string, now time.Time) ([]HeldRow, error)
-	// StartsWaitingForPod is, for each issue of project, the roles of the start rows that wait
-	// because the issue's pod lacks the slot of the start's claim or the role of its step (its last
-	// error begins with pods.StartWaitsForPodPrefix), distinct and in the order of their rows.
-	StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string) (map[string][]claim.Role, error)
+	// StartsWaitingForPod is, for each issue of project, the start rows that wait because the
+	// issue's pod lacks the slot of the start's claim or the role of its step (its last error
+	// begins with pods.StartWaitsForPodPrefix), each with its role and the claim it names,
+	// distinct and in the order of their rows.
+	StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string,
+	) (map[string][]pods.WaitingStart, error)
 	// FinishOutbox deletes row id while leaseToken holds it; a stale lease's finish is a no-op, so
 	// a worker whose lease expired never removes the row its replacement now holds.
 	FinishOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
@@ -2630,8 +2737,10 @@ type RoleClaim struct {
 	RetiredAtWriteMark int64
 	// GivenEntry is the phase entry of the last task this claim was queued
 	// (supervise.Claim.GivenEntry), and 0 for a claim that has been queued no task carrying one.
-	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
-	// row names — one owed that entry's work — from one already holding it.
+	// Its readers are the admission pass, which tells a claim behind the entry its role's phases
+	// row names — one owed that entry's work — from one already holding it, and a phase worker's
+	// raise of its step's entry, which puts the entry above it (workflow's enter): the steps of one
+	// key are one claim, and the rows a new generation folds can keep no entry as high as it.
 	GivenEntry int64
 	// LastReady is when the claim's agent last said it could be prompted (supervise.Claim.LastReady,
 	// last_ready), and the zero time for a claim whose agent never has. The ready of every launch
@@ -2670,14 +2779,28 @@ func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool
 // ArchitectOfTree says whether architect is an architect of issue's tree now: the architect of the
 // tree's root (issue.Tree), or of a member the record holds in that tree, a sub-architect. It is
 // the one rule of who owns an issue, and both readers of that hold to it: an architect's call on a
-// recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan at the
-// issue's first step (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
+// recorded issue (api's architectForIssue, register_plan, and rerun_child's childOfTree over the
+// tree it read, ArchitectOfTreeIn) and the giver of a stored plan at the issue's first step
+// (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
 // architect whose issue moved to another tree, or whose tree the issue left, is no owner of it any
 // longer, whatever tree its claim was registered in. A claim whose agent is not the architect is
 // none; a member whose key yields no claim token holds no claim, so it matches nothing. The tree
 // root's architect, the owner of most issues, is answered from issue alone; only another
 // architect costs the read of the tree.
 func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
+	return architectOfTree(architect, issue, func() ([]Issue, error) { return store.TreeIssues(ctx, tx, issue.Tree) })
+}
+
+// ArchitectOfTreeIn is ArchitectOfTree over members, the records of issue's tree that the caller
+// read already (Store.TreeIssues), so a request that judges more of the tree than its owner reads
+// the tree once (api's childOfTree).
+func ArchitectOfTreeIn(architect claim.Token, issue Issue, members []Issue) (bool, error) {
+	return architectOfTree(architect, issue, func() ([]Issue, error) { return members, nil })
+}
+
+// architectOfTree is the rule of ArchitectOfTree, with members the records of issue's tree, read
+// only where the architect is not the tree root's.
+func architectOfTree(architect claim.Token, issue Issue, members func() ([]Issue, error)) (bool, error) {
 	if _, agent, ok := architect.Cut(); !ok || agent != claim.Agent(claim.RoleArchitect) {
 		return false, nil
 	}
@@ -2692,11 +2815,11 @@ func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect clai
 	if architectOf(issue.Tree) {
 		return true, nil
 	}
-	members, err := store.TreeIssues(ctx, tx, issue.Tree)
+	tree, err := members()
 	if err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(members, func(member Issue) bool { return architectOf(member.Key) }), nil
+	return slices.ContainsFunc(tree, func(member Issue) bool { return architectOf(member.Key) }), nil
 }
 
 // OwnerRule is which architects own an issue for an architect's request on it, the rule the
@@ -2721,9 +2844,9 @@ const (
 // or recorded in another tree, a cycle) ends at the tree root, whose architect owns the issue: a
 // human's re-parent in Dispatch leaves an issue's tree as it was (admit's recordObservation),
 // except a root that never ran, which joins its parent's live tree (workflow/adopt.go), and the
-// notice router ends the same walk at the same place (internal/daemon's owningArchitect), so the
-// architect the reviewer's phase-finished notice reaches is the one that may accept the issue. An
-// architect this answers true for is an architect of the issue's tree (ArchitectOfTree), since the
+// notice router ends the same walk at the same place (OwningArchitect), so the architect the
+// reviewer's phase-finished notice reaches is the one that may accept the issue. An architect this
+// answers true for is an architect of the issue's tree (ArchitectOfTree), since the
 // walk stays in that tree. The route judges it on its own read and the fact again under the lock,
 // so the two never judge different rules.
 func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
@@ -2787,8 +2910,8 @@ func (i Issue) LingersAt(generation uint64) bool {
 }
 
 // Readmittable says whether a todo on this record starts a new generation of its tree: it is a
-// root, and its tree lingers after its sign-off or was closed. A child's done is only the
-// child's.
+// root whose tree lingers after its close (Lingers), or a root that is done. A child's done is
+// only the child's.
 //
 // It is the one definition of that question, because two readers decide opposite ways on it and
 // neither may fire where the other does: admission re-admits such a todo at a new generation
@@ -2821,14 +2944,15 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 
 // HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
 // task a start delivers — is the work of the place the issue stands at now: the issue stands in
-// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
+// queuedFor and, at the phase step, at a step of role (StepIsOf). Every role a deployment defines
 // runs as step, so a start or a task queued for the step of one role names a phase that still
 // reads the same while the task stands at the step of another; the role is what tells the two
 // apart. At step the role names the step. A role can stand at two steps of a task, one agent doing
-// both (plan.Supported), and work queued for either reads the same here: the entry the work is of
-// and the claim it is for tell the two apart, which the outbox's fence on a start (the role's row
-// now and its entry, StartLeft) and the claim's given entry compare beside this. Away
-// from step the phase alone is compared: one role works several phases (the implementer
+// both or one agent each, a second agent of the role taking a name of its own (plan.Supported), and
+// work queued for either reads the same here: the entry the work is of and the claim it is for tell
+// the two apart, which the outbox's fence on a start (the role's row now and its entry, StartLeft)
+// and the claim's given entry compare beside this. Away from step the phase alone is compared: one
+// role works several phases (the implementer
 // implementing and retro), and a phase names its one role. It is the one definition of that
 // question, which the four judges of queued work ask, each on its own read: the outbox before it
 // runs a start (daemon's supervise), the
@@ -2836,7 +2960,7 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
 // brings a claim back for a start (supervise.StartWork, through PhaseHolds).
 func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
-	return i.Phase == queuedFor && (queuedFor != phase.Step || i.StepRole == role)
+	return i.Phase == queuedFor && i.StepIsOf(role)
 }
 
 // PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still

@@ -13,6 +13,7 @@ import (
 // step: a start naming no claim would reach whichever claim the record gives the tester's step
 // when the row runs. The tester's own claim is held to the same rule.
 func TestAPauseOwesItsLaunchToTheClaimItStopped(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		agent claim.Role

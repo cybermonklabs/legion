@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -104,10 +104,13 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := caller.Recorded()
-	// A credential that names nobody asks nothing: see codeGoingAskerNamesNobody. Refused here,
-	// before the record, so no run is stored and no quota is spent on an answer no reader of it
-	// would ever be served.
-	if !goingActorNamesSomebody(actor) {
+	// A credential that names nobody asks nothing: see codeGoingAskerNamesNobody. The rule is
+	// graphstore.ProvesAuthor, which lives beside the store that records an author, and which
+	// every author-private read of the graph asks too, in Go and in SQL
+	// (graphstore.AuthorIsSQL): a credential this route calls nobody is the credential those
+	// reads call nobody. Refused here, before the record, so no run is stored and no quota is
+	// spent on an answer no reader of it would ever be served.
+	if !graphstore.ProvesAuthor(actor) {
 		writeError(w, codeGoingAskerNamesNobody, http.StatusForbidden,
 			"this credential names nobody, so the run it asked for would be nobody's to read: ask under a credential that names a session, a person or a workload")
 		return
@@ -200,7 +203,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	}
 	err := s.deps.Answerer.Run(answering, going.Request{
 		Words:  request.Words,
-		Search: s.goingSearch(request.Project),
+		Search: s.goingSearch(request.Project, request.Author),
 		Bodies: s.goingBodies,
 	}, emit)
 	switch {
@@ -218,13 +221,15 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
 // of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of.
-func (s *server) goingSearch(project string) func(context.Context, string) ([]going.Hit, error) {
+// search past what the caller asked of. It searches as the run's author, the credential that
+// asked the question and the only one the stream serves, so the answer is drawn from what that
+// credential may read and no more.
+func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
 		// reading each hit for display would be work no reader of this answer ever sees, which is
 		// what these parameters leaving trees unset says.
-		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0}
+		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: author}
 		found, err := s.runSearch(ctx, parameters)
 		if err != nil {
 			return nil, err
@@ -288,13 +293,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The whole credential, through model.Actor.SameCredential and never SameAs alone, which
-	// would make any two personal tokens one writer: a run is read by the credential that
-	// asked it. A run whose author names nobody is read by nobody, and that is a test of its
-	// own because SameCredential calls two credentials that name nobody the one credential:
-	// without it, such a row would be served to every holder of the deployment's shared token,
-	// which resolves as {} exactly as that author does.
-	if !goingActorNamesSomebody(request.Author) || !request.Author.SameCredential(actor) {
+	if !goingRunIsTheCallers(request.Author, actor) {
 		writeGoingRequestNotFound(w)
 		return
 	}
@@ -366,32 +365,17 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// goingActorNamesSomebody reports whether an actor names any caller at all: a session or person
-// id, the person a personal token belongs to, or the workload a service-account token proved. A
-// credential that names none of them - the deployment's shared token, which resolves as {} -
-// is nobody: comparing identities cannot tell two holders of that one token apart, so a run it
-// asked for would be a run every holder could claim and none is served.
-//
-// It is asked twice, of the asker and of the run's author. The POST refuses an asker that
-// names nobody (codeGoingAskerNamesNobody) before anything is recorded, so no row this route
-// writes has such an author. The stream asks it of the author it read all the same, because
-// model.Actor.SameCredential reports two credentials that name nobody as one: that comparison
-// alone would serve a row authored by {} to every holder of the shared token, and the stream
-// serves a run to the credential that asked it and to no other.
-func goingActorNamesSomebody(actor model.Actor) bool {
-	return actor.ID != "" || actor.Owner != nil || actor.Service != nil
-}
-
 // goingResumeFrom is the sequence a reader holds, from the Last-Event-ID header the stream's own
 // `id:` lines set: the stream answers the frames past it. Anything that is not a sequence this
 // stream could have written is no resumption point, and the whole stream is answered, which is
 // what a reader with nothing in hand is answered too.
 func goingResumeFrom(r *http.Request) int {
 	resume, err := strconv.Atoi(strings.TrimSpace(r.Header.Get("Last-Event-ID")))
-	// Past math.MaxInt32 is no sequence this stream could have written either: going_events
-	// holds its sequence as an integer, so a larger value cannot bind against that column and
-	// the read that carries the stream would fail rather than answer the frames past it.
-	if err != nil || resume < 0 || resume > math.MaxInt32 {
+	// A number past an integer column's range (fitsIntegerColumn) is no sequence this stream could
+	// have written either: going_events holds its sequence as an integer, so a larger value cannot
+	// bind against that column and the read that carries the stream would fail rather than answer
+	// the frames past it.
+	if err != nil || resume < 0 || !fitsIntegerColumn(resume) {
 		return 0
 	}
 	return resume
@@ -414,6 +398,22 @@ func writeGoingFrame(w http.ResponseWriter, frame goingEvent) error {
 // every run a caller may not read is answered with it.
 func writeGoingRequestNotFound(w http.ResponseWriter) {
 	writeError(w, codeGoingRequestNotFound, http.StatusNotFound, "no answer run of that id is yours to read")
+}
+
+// goingRunIsTheCallers reports whether caller may read the run whose recorded author is author:
+// the test of a run's owner the stream applies. It is the whole credential, through
+// model.Actor.SameCredential and never SameAs alone, which would make any two personal tokens one
+// writer: a run is read by the credential that asked it. A run whose author names nobody is
+// nobody's, and that is a test of its own - graphstore.NamesCredential, asked here of the author
+// the row holds - because SameCredential calls two credentials that name nobody the one
+// credential: without it, such a row would be served to every holder of the deployment's shared
+// token, which resolves as {} exactly as that author does. The POST refuses such an asker before
+// anything is recorded, so no row the POST writes carries one. It asks the row no question of
+// the author rule (graphstore.ProvesAuthor): a row recorded before model.Actor's Proven existed,
+// by a broker session that names no owner and no workload, names that session, which the rule
+// now counts as nobody, and the session that asked it still presents the same credential.
+func goingRunIsTheCallers(author, caller model.Actor) bool {
+	return graphstore.NamesCredential(author) && author.SameCredential(caller)
 }
 
 // getGoingCapability answers whether this deployment has a model configured, and nothing else:

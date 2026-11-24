@@ -50,6 +50,7 @@ func (r credentialWaitRuntime) SlotWaitsForCredential(_ string, slot claim.Agent
 // is resumed. A start that re-roles nothing — the implementer's own entry — is not held by the
 // launcher that makes no wait.
 func TestAReroleInAPodBuiltBeforeTheCredentialWaitWaitsForTheRound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		waits    bool
@@ -148,6 +149,7 @@ func TestAReroleInAPodBuiltBeforeTheCredentialWaitWaitsForTheRound(t *testing.T)
 // The controls are the same wait where a claim records a process in the pod, whose round replaces
 // it, and the same wait with the idle release on, which ends it: neither tells anything.
 func TestAReroleWaitForTheCredentialWithNoIdleReleaseIsToldOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		idleReleases bool
@@ -256,6 +258,7 @@ func TestAReroleWaitForTheCredentialWithNoIdleReleaseIsToldOnce(t *testing.T) {
 // while that pod stands, launches nothing and leaves the claim's generation as it was. Once
 // another pod stands, the next try resumes the claim.
 func TestAStartWhoseLaunchItsPodRefusedWaitsForThePod(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

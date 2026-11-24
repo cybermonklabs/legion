@@ -190,8 +190,8 @@ func pluginsLine(cfg config.Config) string {
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
 	// The roles Claude Code runs here: Legion's phase workers that worker_backends puts on it, in
-	// the order the workflow reaches them, then each role of the deployment it puts there, in the
-	// file's order; the loader refuses any other.
+	// claim.Roles' order (the default steps' order), then each role of the deployment it puts
+	// there, in the file's order; the loader refuses any other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
 		if cfg.BackendFor(role) == runtime.BackendClaude {
@@ -294,7 +294,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		ok += " nats-daemon-nkey-user=" + daemonNatsUser
 	}
 	fmt.Fprintln(stdout, ok)
-	for _, warning := range append(slices.Clone(cfg.Warnings), warnings...) {
+	for _, warning := range slices.Concat(cfg.Warnings, warnings) {
 		fmt.Fprintln(stdout, warning)
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
@@ -447,6 +447,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}
 	applyLinkedPlugins(&cfg)
+	cfg.Revision = revision
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
 		printRefusal(stderr, "legion start: resolve "+configPath, err)
@@ -500,13 +501,11 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 }
 
 // printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
-// newline to stderr. The daemon's own commands (start, probe-boot, config check) and the commands
-// podLogs names write their refusals through here or through the same rule, so each passes the
-// rule the daemon's log handler applies to every record: an error can wrap a *url.Error, which
-// keeps the URL's query and its user name (Go's client masks only a password), and pgx's
-// ParseConfigError of a postgres_dsn it cannot parse quotes the DSN with its user name and its
-// query (pgx masks only the password). The operator's own commands (state, stop, status) print
-// theirs on the operator's terminal without it.
+// newline to stderr. Every command's stderr passes the rule already (newRoot) but the three that
+// hand it to a child, `legion claude-bridge` among them, which writes its refusals through here:
+// an error can wrap a *url.Error, which keeps the URL's query and its user name (Go's client masks
+// only a password), and pgx's ParseConfigError of a postgres_dsn it cannot parse quotes the DSN
+// with its user name and its query (pgx masks only the password).
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }
@@ -1147,61 +1146,75 @@ func mergeWaitsSummary(waits []issueMergeWait) string {
 		len(waits), oldest.issue, number, head, reading)
 }
 
-// issueRound is one update round an issue has open, and the claims in it, by role: the round a
-// pod's drift opened over every role of the issue (`pod:<pod uid>`), which is the one round this
-// daemon opens. One role's own plugin round (`plugin:<daemon contract>`) is an earlier daemon's,
-// and a boot takes every claim out of one it finds (internal/daemon's endPluginRounds), so this
-// reads one only in the moments before that pass.
+// issueRound is one update round an issue has open, and the claims in it: the round a pod's
+// drift opened over every claim of the pod (`pod:<pod uid>`), which is the one round this daemon
+// opens. One role's own plugin round (`plugin:<daemon contract>`) is an earlier daemon's, and a
+// boot takes every claim out of one it finds (internal/daemon's endPluginRounds), so this reads
+// one only in the moments before that pass.
 type issueRound struct {
-	issue string
-	round string
-	roles []string
+	issue  string
+	round  string
+	claims []roundClaim
+}
+
+// roundClaim is one claim in an update round: the role it holds, its name in its issue
+// (api.ClaimNameInIssue), and the head its worker reported when it answered the round, "" before
+// it answers (api.ClaimView.UpdateHead).
+type roundClaim struct {
+	role legionclaim.Role
+	name string
+	head string
 }
 
 // openRounds is every update round the state's issues have open, by issue and then round, each
-// with its claims in role order: a round is the daemon holding a process back from replacement
-// until its worker has pushed its work and answered.
+// with its claims by role and then name, so the role's own claim comes before each other claim of
+// its role: a round is the daemon holding a process back from replacement until its worker has
+// pushed its work and answered. Each claim of an issue is read: its architect, its workers, and
+// its other claims (api.Issue.OtherClaims), where the second claim of a role stands, such as the
+// `implementer-2` a plan that runs the role twice starts beside the role's own agent in a slot of
+// the same pod, or the agent of another role's name that holds the role for a step.
 func openRounds(issues map[string]api.Issue) []issueRound {
 	rounds := map[string]*issueRound{}
-	var keys []string
-	add := func(issue, role string, view api.ClaimView) {
+	add := func(issue string, role legionclaim.Role, view api.ClaimView) {
 		if view.UpdateRound == "" {
 			return
 		}
 		key := issue + " " + view.UpdateRound
 		if _, open := rounds[key]; !open {
 			rounds[key] = &issueRound{issue: issue, round: view.UpdateRound}
-			keys = append(keys, key)
 		}
-		named := role
-		if view.UpdateHead != "" {
-			// The head is the worker's own word, which nothing verifies, so it is quoted: a
-			// newline in it would otherwise forge a row of this summary (claims.go's
-			// quotedOrNone).
-			named += " answered at " + strconv.Quote(view.UpdateHead)
-		}
-		rounds[key].roles = append(rounds[key].roles, named)
+		rounds[key].claims = append(rounds[key].claims, roundClaim{
+			role: role, name: api.ClaimNameInIssue(role, view.Token), head: view.UpdateHead,
+		})
 	}
 	for key, issue := range issues {
 		if issue.Architect != nil {
-			add(key, string(legionclaim.RoleArchitect), *issue.Architect)
+			add(key, legionclaim.RoleArchitect, *issue.Architect)
 		}
 		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
-			add(key, string(role), issue.Workers[role].Claim)
+			add(key, role, issue.Workers[role].Claim)
+		}
+		for _, other := range issue.OtherClaims {
+			add(key, other.Role, other.Claim)
 		}
 	}
-	slices.Sort(keys)
+	keys := slices.Sorted(maps.Keys(rounds))
 	open := make([]issueRound, len(keys))
 	for i, key := range keys {
 		open[i] = *rounds[key]
+		slices.SortFunc(open[i].claims, func(a, b roundClaim) int {
+			return cmp.Or(cmp.Compare(a.role, b.role), cmp.Compare(a.name, b.name))
+		})
 	}
 	return open
 }
 
 // roundsSummary is the one line an operator reads for the update rounds still open: how many, and
-// each by issue, round and the roles in it, with the head a role reported when it answered. While
-// a round is open the daemon holds those roles' next tasks and replaces nothing, so a round that
-// does not end is work that is not moving.
+// each by issue, round and the claims in it, with the head a claim's worker reported when it
+// answered. A claim is named as api.ClaimNameInIssue names it: its role, and its token beside it
+// for the claim of an agent not named for its role, so two claims of one role on one issue read
+// apart. While a round is open the daemon holds those claims' next tasks and replaces nothing, so
+// a round that does not end is work that is not moving.
 func roundsSummary(issues map[string]api.Issue) string {
 	rounds := openRounds(issues)
 	if len(rounds) == 0 {
@@ -1209,52 +1222,74 @@ func roundsSummary(issues map[string]api.Issue) string {
 	}
 	named := make([]string, len(rounds))
 	for i, round := range rounds {
-		named[i] = fmt.Sprintf("%s on %s: %s", round.issue, round.round, strings.Join(round.roles, ", "))
+		claims := make([]string, len(round.claims))
+		for j, c := range round.claims {
+			claims[j] = c.name
+			if c.head != "" {
+				// The head is the worker's own word, which nothing verifies, so it is quoted: a
+				// newline in it would otherwise forge a row of this summary (claims.go's
+				// quotedOrNone).
+				claims[j] += " answered at " + strconv.Quote(c.head)
+			}
+		}
+		named[i] = fmt.Sprintf("%s on %s: %s", round.issue, round.round, strings.Join(claims, ", "))
 	}
 	return fmt.Sprintf("open update rounds: %d — %s", len(rounds), strings.Join(named, "; "))
 }
 
-// claimCall is one claim's open tool call: the issue and role whose claim it is, and the record
-// of the call (api.StepView).
+// claimCall is one claim's open tool call: the issue and role whose claim it is, the claim's name
+// (api.ClaimName), and the record of the call (api.StepView).
 type claimCall struct {
 	issue string
-	role  string
+	role  legionclaim.Role
+	name  string
 	step  api.StepView
 }
 
 // openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
-// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
-// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
-// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
-// reads the same record to decide a turn has stopped moving, and this is where an operator reads
-// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
-// read with `legion claims list` instead.
+// start of and no end of, by issue, then role, then the claim's name, so the role's own claim
+// comes before each other claim of its role. A call open is what claims.go's openCallWord prints a
+// word for and nothing else is, so that is the test here too: openCallsSummary names each of these
+// rows with that word. That is the shape a stalled turn leaves behind: the daemon reads the same
+// record to decide a turn has stopped moving, and this is where an operator reads it. Each claim
+// of an issue is read: its architect, its workers, and its other claims (api.Issue.OtherClaims),
+// where the second claim of a role stands, such as the `implementer-2` a plan that runs the role
+// twice starts beside the role's own agent, or the agent of another role's name that holds the
+// role for a step. A controller's claim is in none of these — internal/projection puts it on no
+// issue — and is read with `legion claims list` instead.
 func openCalls(issues map[string]api.Issue) []claimCall {
 	var calls []claimCall
-	open := func(issue, role string, view api.ClaimView) {
+	open := func(issue string, role legionclaim.Role, view api.ClaimView) {
 		if openCallWord(view.Step) == "" {
 			return
 		}
-		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})
+		name := api.ClaimName(issue, role, view.Token)
+		calls = append(calls, claimCall{issue: issue, role: role, name: name, step: *view.Step})
 	}
 	for key, issue := range issues {
 		if issue.Architect != nil {
-			open(key, string(legionclaim.RoleArchitect), *issue.Architect)
+			open(key, legionclaim.RoleArchitect, *issue.Architect)
 		}
 		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
-			open(key, string(role), issue.Workers[role].Claim)
+			open(key, role, issue.Workers[role].Claim)
+		}
+		for _, other := range issue.OtherClaims {
+			open(key, other.Role, other.Claim)
 		}
 	}
 	slices.SortFunc(calls, func(a, b claimCall) int {
-		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role))
+		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role),
+			cmp.Compare(a.name, b.name))
 	})
 	return calls
 }
 
 // openCallsSummary is the one line an operator reads for the agents in a tool call right now: how
-// many, and each by issue and role with the call its stream named and when that call started
+// many, and each by its claim's name with the call its stream named and when that call started
 // (claims.go's openCallWord, Go-quoted because the tool and the call id are the agent's own
-// word). A call that has been open for hours is this issue's whole shape — the daemon's backstop
+// word). The name is api.ClaimName's: the issue and the role, and the claim's token beside them
+// for the claim of an agent not named for its role, so two claims of one role on one issue read
+// apart. A call that has been open for hours is this issue's whole shape — the daemon's backstop
 // ends such a turn, and until it does this line says which agent is in one.
 //
 // The call's arguments are in no column of it: the daemon keeps their length and a fingerprint
@@ -1266,7 +1301,7 @@ func openCallsSummary(issues map[string]api.Issue) string {
 	}
 	named := make([]string, len(calls))
 	for i, call := range calls {
-		named[i] = fmt.Sprintf("%s %s %s", call.issue, call.role, strconv.Quote(openCallWord(&call.step)))
+		named[i] = call.name + " " + strconv.Quote(openCallWord(&call.step))
 	}
 	return fmt.Sprintf("agents in a tool call: %d — %s", len(calls), strings.Join(named, "; "))
 }
@@ -1295,7 +1330,7 @@ var strandedPhrases = map[api.StrandedMove]string{
 
 // strandedSummary is the one line an operator reads for the claims nothing will wake: how many,
 // and each by its name (api.StrandedClaim.Name: its issue and role, and its token beside them for
-// the claim of an agent named for another role) under the move that brings it back
+// the claim of an agent not named for its role) under the move that brings it back
 // (api.StrandedClaim.Move, which the boot's log line groups by too). A suspended phase worker's
 // move is the troubleshooting page's "A tree does not move after a restart" for its suspendedBy,
 // which `legion claims list --json` shows;
@@ -1317,8 +1352,9 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 
 // entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
 // named for, the entry the phases row of the role of its current phase stands on and the entry
-// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
-// architect, the arms the state names for it.
+// that role was given (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running
+// step, the role the state's two numbers are of), and, for a root's architect, the arms the state
+// names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role

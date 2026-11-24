@@ -23,19 +23,20 @@ import (
 // front of a role (record.HookPrompt), the ask an update round puts to a role of the pod
 // (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
 // (record.MergeQueueRemoval), and each message of a merge forward, the ask to the agent of the
-// task's implementation step and the word to the worker of the phase the issue stays in
-// (record.MergeForwardMessage). Two reads of GitHub reach no session themselves, but their answers
-// are what write a message, so each holds the pod as its message does: the read that comes before
-// a merge-queue removal's message (record.MergeQueueRead), and the second read of a head a first
-// read found conflicting, whose confirmation writes a merge forward's messages
-// (record.ConflictConfirm). The issue's board
-// writes — its Dispatch status, its messages on the Dispatch issue — reach no session and hold no
-// pod. The same set is what the release's boundary is read over (IssueRelease), so the rule that
-// holds a pod and the rule that cancels its release never disagree about which row speaks to a
-// role. Every kind of the role-message lane belongs here: one left out lets the daemon release the
-// issue's pod out from under the row that was just written for one of its roles, and that role
-// never reads it. An update ask holds the pod only while its row is pending, which is one attempt
-// where the publish goes through or finds no holder.
+// task's implementation step or, in merging, the merger, and the word to the worker of the phase
+// the issue stays in (record.MergeForwardMessage). A start that waits for its pod is excepted
+// (startWaitsForPodRow, below). Two reads of GitHub reach no session themselves, but their
+// answers are what write a message, so each holds the pod as its message does: the read that
+// comes before a merge-queue removal's message (record.MergeQueueRead), and the second read of a
+// head a first read found conflicting, whose confirmation writes a merge forward's messages
+// (record.ConflictConfirm). The issue's board writes — its Dispatch status, its messages on the
+// Dispatch issue — reach no session and hold no pod. The same set is what the release's boundary
+// is read over (IssueRelease), so the rule that holds a pod and the rule that cancels its release
+// never disagree about which row speaks to a role. Every kind of the role-message lane belongs
+// here: one left out lets the daemon release the issue's pod out from under the row that was just
+// written for one of its roles, and that role never reads it. An update ask holds the pod only
+// while its row is pending, which is one attempt where the publish goes through or finds no
+// holder.
 var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
 	"conflict_confirm", "merge_forward"}
 
@@ -44,11 +45,29 @@ var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_as
 // issue's plan named that name (the outbox's roleWaitsForItsPod writes its last error with
 // pods.StartWaitsForPodPrefix, the parameter %s names). Such a start is no delivery the pod waits
 // for: the pod cannot run it, and only its update round or its release lets it start.
-// So both reads of idleWaitingKinds leave it out, `and not` it after `kind = any(…)`: the view's
-// Waiting (readIdleView), which main's rule and the idle rule read, and the release's boundary
-// (IssueReleaseStop), so the rule that holds a pod and the rule that cancels its release still
-// never disagree.
+// The view's StartsWaitingForPod lists such starts, each by its role and its claim (readIdleView).
 const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' and starts_with(coalesce(last_error, ''), %s))`
+
+// idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2 and
+// pods.StartWaitsForPodPrefix as the parameter prefix names, of a row that waits for a role of the
+// pod, and so holds the pod and cancels its release at the boundary (readIdleView,
+// IssueReleaseStop) and, where it is a start, at the teardown (IssueRelease): a row of one of
+// those kinds, but two kinds of start. One is a start queued for news of the approved design alone
+// (record.SuperviseRequest.News, which its payload writes as `"news": true`). Such a start
+// reaches only a claim already given its phase's entry, and the claim an idle release suspended
+// is one: the start resumes it as any start does, so a release under the start loses nothing, and
+// the role comes back with its news. And such a start can wait a long time. A merger's waits for
+// its tree's design gate for the whole time the gate stays closed (the daemon's
+// mergerWaitsForTheDesignGate), and any one waits behind a task its claim has not finished
+// (supervise's queue). A pod held for it would stand idle for all that time. The other is a start
+// that waits because the pod lacks the slot of its claim or the role of its step
+// (startWaitsForPodRow): the pod cannot run it, and the release is one of the two things that let
+// it start, so it neither holds the pod nor cancels the release. All three reads take this one
+// rule, so the rule that holds a pod and the rules that cancel its release never disagree.
+func idleWaitingRow(prefix string) string {
+	return `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true') and not ` +
+		fmt.Sprintf(startWaitsForPodRow, prefix)
+}
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the save of the workspace's unpushed work,
@@ -97,30 +116,38 @@ const (
 // release to do with it.
 func (s *Store) IdlePods(ctx context.Context, project string) ([]string, error) {
 	what := "list the pods of " + project
-	rows, err := s.pool.Query(ctx, `select distinct issue from claims
-		where project = $1 and state not in ('failed', 'retired', 'suspended') and issue <> '' order by issue`, project)
+	var issues []string
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select distinct issue from claims
+			where project = $1 and state not in ('failed', 'retired', 'suspended') and issue <> '' order by issue`, project)
+		if err != nil {
+			return err
+		}
+		issues, err = issueKeys(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
-	return issueKeys(rows, what)
+	return issues, nil
 }
 
-// issueKeys reads a one-column answer of issue keys into a slice, under the sentence its caller
-// names whatever goes wrong by: the candidate lists of the two release rules are two statements
-// and one loop (IdlePods, UnownedPods). An answer of no rows is a nil slice, which is what a
-// caller reads as no candidate, and the rows are closed whichever way the read ends.
-func issueKeys(rows pgx.Rows, what string) ([]string, error) {
+// issueKeys reads a one-column answer of issue keys into a slice: the candidate lists of the two
+// release rules are two statements and one loop (IdlePods, UnownedPods), and each caller names
+// whatever goes wrong once. An answer of no rows is a nil slice, which is what a caller reads as
+// no candidate, and the rows are closed whichever way the read ends.
+func issueKeys(rows pgx.Rows) ([]string, error) {
 	defer rows.Close()
 	var issues []string
 	for rows.Next() {
 		var issue string
 		if err := rows.Scan(&issue); err != nil {
-			return nil, fmt.Errorf("%s: %w", what, err)
+			return nil, err
 		}
 		issues = append(issues, issue)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", what, err)
+		return nil, err
 	}
 	return issues, nil
 }
@@ -165,18 +192,26 @@ func issueKeys(rows pgx.Rows, what string) ([]string, error) {
 // its own answer.
 func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, outOfWorkflow []string) ([]string, error) {
 	what := "list the pods of " + project + " no claim owns"
-	rows, err := s.pool.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
-		where i.project = $1
-		and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
-		and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
-		and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
-		and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
-			and c.state not in ('failed', 'retired', 'suspended'))
-		order by i.key`, project, outOfWorkflow, claimProject)
+	var issues []string
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
+			where i.project = $1
+			and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
+			and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
+			and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
+			and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
+				and c.state not in ('failed', 'retired', 'suspended'))
+			order by i.key`, project, outOfWorkflow, claimProject)
+		if err != nil {
+			return err
+		}
+		issues, err = issueKeys(rows)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
-	return issueKeys(rows, what)
+	return issues, nil
 }
 
 // ReleaseIdleIssue is the release's one transaction: it reads issue's idle view and hands it to
@@ -208,7 +243,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		return false, errors.New("an idle release needs its project and its issue")
 	}
 	var marked bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
@@ -398,7 +433,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		return ReleaseCancelled{}, errors.New("cancelling a release needs the moment a pause's stops would carry (ReleaseCancelPause.At), from the caller's clock")
 	}
 	var cancelled ReleaseCancelled
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
@@ -481,8 +516,8 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // backstop's due time are stamped with (At, the caller's clock), the backstop the stop of the
 // issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
 // where the deployment releases no pod), and the claim that works an issue's open phase, read in
-// the cancel's transaction (OpenWorker, the workflow's workflow.OpenWorker: at step, the claim the
-// record gives the running step, which can be a keyed agent's beside the role's own claim), which
+// the cancel's transaction (OpenWorker, the workflow's workflow.OpenWorker: at step, the claim
+// record.WorkerClaim gives the running step), which
 // the store does not restate (nil arms no backstop). At is required of every cancel, since whether
 // the project is paused is read inside the cancel's own transaction; a cancel made while the
 // project runs reads nothing else of it.
@@ -514,8 +549,9 @@ type ReleaseCancelled struct {
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
 // unpushed work; and, for the worker of the issue's open phase serving the issue's generation, its
 // backstop, which the record arms only where the stop owes no launch. That worker is a claim
-// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step a keyed agent's claim works the
-// step beside the role's own claim, which gets none. A wake taken since is left open: it is the
+// (ReleaseCancelPause.OpenWorker), read once for the cancel: at step, the claim record.WorkerClaim
+// gives the step. Two claims of one issue can hold one role, and the one that works no step gets
+// none. A wake taken since is left open: it is the
 // launch the role is owed, and its start row runs at the resume. The caller holds the issue's lock
 // and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
@@ -611,9 +647,9 @@ type releasedRole struct {
 
 // stillReleasedClaims are the claims among suspended, the tokens of the claims a release's own
 // stops suspended (issue_releases.suspended), that are still suspended as `released`, in token
-// order. Two claims can hold one role — a keyed agent on a step of another role, beside that
-// role's own claim from an earlier version of the plan — and only the ones the release suspended
-// are its to resume: another claim of the role an earlier release left released is not.
+// order. Two claims of one issue can hold one role (record.WorkerClaim), and only the ones the
+// release suspended are its to resume: another claim of the role an earlier release left released
+// is not.
 func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]releasedRole, error) {
 	if len(suspended) == 0 {
 		return nil, nil
@@ -639,22 +675,22 @@ func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, 
 	return claims, rows.Err()
 }
 
-// ClearIssueRelease forgets the mark of issue's release once the release finished, on the pool:
-// the teardown's own call, outside any transaction. A cancel forgets its mark itself, in the
-// transaction that queues its resumes (CancelIssueRelease). A mark already gone is success, so a
-// retried finish finishes.
+// ClearIssueRelease forgets the mark of issue's release once the release finished. A cancel
+// forgets its mark in the transaction that queues its resumes (CancelIssueRelease). A mark
+// already gone is success, so a retried finish finishes.
 func (s *Store) ClearIssueRelease(ctx context.Context, project, issue string) error {
-	if err := deleteIssueRelease(ctx, s.pool, project, issue); err != nil {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return deleteIssueRelease(ctx, tx, project, issue)
+	}); err != nil {
 		return fmt.Errorf("clear the release mark of %s: %w", issue, err)
 	}
 	return nil
 }
 
-// deleteIssueRelease forgets the mark of issue's release through db, which is the pool for the
-// teardown's own call and the caller's transaction for the cancel that queues the resumes of
-// the claims the release suspended (CancelIssueRelease). One mark, one delete, whichever runs it.
-func deleteIssueRelease(ctx context.Context, db execer, project, issue string) error {
-	_, err := db.Exec(ctx, `delete from issue_releases where project = $1 and issue = $2`, project, issue)
+// deleteIssueRelease forgets the mark of issue's release in the caller's transaction. One mark,
+// one delete, whichever runs it.
+func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) error {
+	_, err := tx.Exec(ctx, `delete from issue_releases where project = $1 and issue = $2`, project, issue)
 	return err
 }
 
@@ -757,23 +793,29 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
 	}
 
-	if err := tx.QueryRow(ctx, fmt.Sprintf(`select exists (
-		select 1 from outbox where issue = $1 and kind = any($2) and not %s)`, fmt.Sprintf(startWaitsForPodRow, "$3")),
+	if err := tx.QueryRow(ctx, `select exists (
+		select 1 from outbox where issue = $1 and `+idleWaitingRow("$3")+`)`,
 		issue, idleWaitingKinds, pods.StartWaitsForPodPrefix).Scan(&view.Waiting); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the queued rows of %s for its idle view: %w", issue, err)
 	}
-	waitingForPod, err := tx.Query(ctx, fmt.Sprintf(`select payload->>'role' from outbox
-		where issue = $1 and %s order by id`, fmt.Sprintf(startWaitsForPodRow, "$2")), issue, pods.StartWaitsForPodPrefix)
+	waitingForPod, err := tx.Query(ctx, fmt.Sprintf(`select payload->>'role',
+		coalesce(payload->>'claim', '') from outbox where issue = $1 and %s order by id`,
+		fmt.Sprintf(startWaitsForPodRow, "$2")), issue, pods.StartWaitsForPodPrefix)
 	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
 	}
-	roles, err := pgx.CollectRows(waitingForPod, pgx.RowTo[string])
+	scan := func(row pgx.CollectableRow) (pods.WaitingStart, error) {
+		var role, token string
+		err := row.Scan(&role, &token)
+		return pods.WaitingStart{Role: claim.Role(role), Claim: claim.Token(token)}, err
+	}
+	starts, err := pgx.CollectRows(waitingForPod, scan)
 	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
 	}
-	for _, role := range roles {
-		if !slices.Contains(view.StartsWaitingForPod, claim.Role(role)) {
-			view.StartsWaitingForPod = append(view.StartsWaitingForPod, claim.Role(role))
+	for _, start := range starts {
+		if !slices.Contains(view.StartsWaitingForPod, start) {
+			view.StartsWaitingForPod = append(view.StartsWaitingForPod, start)
 		}
 	}
 	if err := tx.QueryRow(ctx, `select coalesce((select reason from pod_holds

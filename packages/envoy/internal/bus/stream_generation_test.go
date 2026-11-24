@@ -284,7 +284,7 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 			if _, err := js.AddStream(&current); err != nil {
 				t.Fatalf("create the stream: %v", err)
 			}
-			client, err := tc.connect([]string{uri}, withStreamSubjectsRefresh(50*time.Millisecond))
+			client, err := tc.connect([]string{uri}, WithStreamSubjectsRefresh(50*time.Millisecond))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -354,7 +354,7 @@ func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testin
 			}
 			srv.Stop(t)
 
-			client, err := tc.connect([]string{uri}, WithConnectInBackground(), withStreamSubjectsRefresh(time.Hour))
+			client, err := tc.connect([]string{uri}, WithConnectInBackground(), WithStreamSubjectsRefresh(time.Hour))
 			if err != nil {
 				t.Fatalf("connect while the server is down: %v", err)
 			}

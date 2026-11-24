@@ -35,7 +35,7 @@ func suspendedImplementer(t *testing.T, st *Store, suspendedBy supervise.Suspend
 // A start that waits because the issue's pod lacks the slot of its claim or the role of its step
 // is no delivery the pod
 // waits for: the pod cannot run it, and only its round or its release lets it start, so main's
-// rule for a pod with no live claim must not wait on it (ruling 18 point 3). The view names such
+// rule for a pod with no live claim must not wait on it. The view names such
 // a start's role, and the reason of the pod's running hold streak.
 func TestTheIdleViewCountsAStartThatWaitsForItsPodAsNoDelivery(t *testing.T) {
 	st := migratedStore(t)
@@ -48,8 +48,10 @@ func TestTheIdleViewCountsAStartThatWaitsForItsPodAsNoDelivery(t *testing.T) {
 	if view.Waiting {
 		t.Errorf("the view reads a delivery waiting, want none: the one start waits for its pod")
 	}
-	if !slices.Equal(view.StartsWaitingForPod, []claim.Role{"checker"}) {
-		t.Errorf("the view's starts waiting for the pod = %v, want [checker]", view.StartsWaitingForPod)
+	want := []pods.WaitingStart{{Role: "checker"}}
+	if !slices.Equal(view.StartsWaitingForPod, want) {
+		t.Errorf("the view's starts waiting for the pod = %v, want %v", view.StartsWaitingForPod,
+			want)
 	}
 	if view.HeldFor != "" {
 		t.Errorf("the view's hold = %q, want none", view.HeldFor)

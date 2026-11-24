@@ -254,7 +254,7 @@ export interface AsyncJobDelivery {
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
- * build (18.18.6-sami.20261119-162325, `.omp-pin`) answers undefined only before its runner is
+ * build (18.18.6-sami.20261122-091943, `.omp-pin`) answers undefined only before its runner is
  * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
  * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that
@@ -343,13 +343,15 @@ export interface AgentEndMessage {
  * `message_start`, `message_end` and `turn_end` alike) or from `prompt_result.status`.
  */
 export interface AgentEndEvent {
-  /** Set when OMP has already scheduled a continuation, so the turn is not settling: a
-   * background job's follow-up sets it, with `awaitingAsyncWork`; a steered run's non-terminal
-   * end does not, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
+  /** Set when OMP goes on with the run after this end: a retry or a hook's continuation it has
+   * already scheduled, so the turn is not settling, or, with `awaitingAsyncWork`, a background
+   * job's result it waits for, after a turn that has settled. A steered run's non-terminal end
+   * does not set it, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
   /** Set with `willContinue` when the turn ends while a background job runs or its result waits to
-   * be delivered (`agent-session.ts:5936-5943` at the pinned tag): the pane is idle until the
-   * job's result starts the next run. */
+   * be delivered (`agent-session.ts:6012-6015` at the pinned tag), which OMP reaches only after
+   * each of its retries and continuations has declined the turn: the pane is idle until the job's
+   * result starts the next run. */
   readonly awaitingAsyncWork?: boolean;
   /** The run's messages; the last assistant entry says how the run ended. */
   readonly messages?: readonly AgentEndMessage[];

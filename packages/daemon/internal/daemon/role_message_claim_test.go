@@ -17,8 +17,8 @@ import (
 // putPhaseRow writes row to the phases record of pool.
 func putPhaseRow(t *testing.T, pool *store.Pool, records record.Store, row record.PhaseRow) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return records.PutPhase(context.Background(), tx, row)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutPhase(ctx, tx, row)
 	}); err != nil {
 		t.Fatalf("write the %s's phases row: %v", row.Role, err)
 	}
@@ -29,6 +29,7 @@ func putPhaseRow(t *testing.T, pool *store.Pool, records record.Store, row recor
 // role's step names another agent by the time the row runs. A prompt the release before wrote
 // names no claim, and reaches the claim of the worker on its role's step when it runs.
 func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, _, pool := hookRunner(t, publisher)

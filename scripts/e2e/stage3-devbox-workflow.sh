@@ -499,10 +499,15 @@ assert_claim_endpoints() {
     fail "ABORT: $role pane on $issue (OMP pid $omp) has $mismatch"
   fi
 }
-# pane_watcher checks every pane the daemon launches — including those it starts on its own —
-# as soon as its OMP process exists, which is before the plugin registers and before any turn.
-# A mismatch is recorded, the private tmux server is killed so no agent can act, and the next
-# bounded wait aborts naming the pane.
+# pane_watcher polls every 0.2 s and checks every pane the daemon launches — including those it
+# starts on its own — once its OMP process runs and its environment is laid out, usually before the
+# plugin registers, though no barrier holds the pane back for it. The kernel names the program an
+# exec starts before it lays out that program's environment (environ_laid_out, lib/process-tree.sh),
+# so an OMP found inside that window is read again at the next poll, never counted: a read there
+# would find no environment. One that never lays its environment out stays out of
+# pane-endpoints-checked.txt, and every_launch_checked fails naming it. A mismatch is recorded, the
+# private tmux server is killed, which ends every agent of the run, and the next bounded wait aborts
+# naming the pane.
 pane_watcher() {
   local claims inc issue role pane omp mismatch
   trap - EXIT ERR
@@ -513,6 +518,7 @@ pane_watcher() {
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
         pane=$(incarnation_pid "$inc") || continue
         omp=$(omp_descendant "$pane") || continue
+        environ_laid_out "$omp" || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" \
             >"$evidence/pane-endpoint-violation.txt"
@@ -750,7 +756,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Stage 3 proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 # This is the production Envoy ingress bridge, subscribe-only from its perspective. GitHub events
 # are observed, never manufactured, and only the smoke repository is forwarded to this run's NATS.
 SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \
@@ -901,8 +907,8 @@ primary_issue() {
   pass
 
   # Three real GitHub changes-requested reviews, each posted by the reviewer pane, which then
-  # records its handoff and completes, exercise the round counter, the return to implementing,
-  # and the third `pr-blocked` publication. Every recovery repeats the real workers.
+  # records its handoff and completes its phase, exercise the round counter, the return to
+  # implementing, and the third `pr-blocked` publication. Every recovery repeats the real workers.
   for round in 1 2 3; do
     begin "review-round-$round-changes-requested"
     # A review that names no correction leaves the implementer nothing it may change under a spec
@@ -915,12 +921,15 @@ primary_issue() {
       # implementer as accepted (already resolved, the implementer having closed it first).
       review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
+    # The reviewer's record as the review is asked for, which the move into reviewing emptied
+    # (workflow's clearHandoff); the wait below takes only a record other than it.
+    before_review=$(role_handoff_record "$root_issue" reviewer)
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
-    # The request for changes ends the round whether or not the reviewer has completed
-    # (workflow's roundRejected), so the proof waits for the reviewer's handoff record, within a
-    # turn's budget, before it checks it.
+    # The review ends the round whether or not the reviewer has completed (workflow's
+    # roundRejected), and its completion names its handoff record, so the proof waits for that
+    # record, within a turn's budget, before it checks it.
     wait_for_phase "$root_issue" implementing 1200
-    until_true "$phase_seconds" "the reviewer's round $round handoff record on $root_issue" role_handoff_recorded "$root_issue" reviewer
+    until_true "$phase_seconds" "the reviewer's round $round handoff record on $root_issue" role_handoff_recorded "$root_issue" reviewer "$before_review"
     assert_handoff_record "$root_issue" reviewer reviewing "$round"
     assert_review_of_head "$root_issue" "$round" CHANGES_REQUESTED
     until_true 180 "round $round to write in_progress on the Dispatch board" dispatch_status_is "$root_issue" in_progress
@@ -986,6 +995,7 @@ primary_issue() {
   until_true 180 "the architect to observe the SIGNOFF_OUTSIDE_ACCEPTING refusal" session_contains "$root_issue" architect "$root_issue is in phase reviewing, not accepting; this sign-off changed nothing"
   issue_phase "$root_issue" reviewing >/dev/null || fail "$root_issue left reviewing on a sign_off sent before the reviewer's decision"
   note "a sign_off in reviewing was refused SIGNOFF_OUTSIDE_ACCEPTING and moved nothing (negative control)"
+  before_review=$(role_handoff_record "$root_issue" reviewer)
   approve_as_reviewer "$root_issue"
   # The approval moves the issue to accepting, where no worker starts and the board keeps
   # needs_review: the tree's architect, told by the reviewer's phase-finished notice, accepts with
@@ -1004,7 +1014,7 @@ primary_issue() {
     fail "a status write is pending for $root_issue at accepting, which writes none: $(jq -c --arg issue "$root_issue" '[.pendingStatusWrites[]? | select(.issue == $issue)]' "$evidence/accepting.json")"
   dispatch_status_is "$root_issue" needs_review >/dev/null ||
     fail "the board shows $root_issue $(dispatch_get "issues/$root_issue" | jq -r .status) at accepting, want needs_review, which the move to accepting leaves alone"
-  until_true "$phase_seconds" "the reviewer's round 3 handoff record on $root_issue" role_handoff_recorded "$root_issue" reviewer
+  until_true "$phase_seconds" "the reviewer's round 3 handoff record on $root_issue" role_handoff_recorded "$root_issue" reviewer "$before_review"
   assert_handoff_record "$root_issue" reviewer reviewing 3
   assert_review_of_head "$root_issue" 3 APPROVED
   note "the reviewer's approval moved $root_issue to accepting: no worker started (the implementer's claim holds ${pending_phase:+a $pending_phase task, }no retro task), the board still needs_review with no status write pending, and the architect holds the reviewer's phase-finished notice"
@@ -1085,7 +1095,7 @@ primary_issue() {
 
   begin smoke-main-clean
   # The merged pull request carried no handoff (A2): no commit of it changes only .legion/, and no
-  # file it merged is under .legion/, since every phase's handoff is a record on the Dispatch issue.
+  # file it merged is under .legion/, since every handoff is a record on the Dispatch issue.
   handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of $repo#$pr_number"
   [ -z "$handoff_pushes" ] || fail "$repo#$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
   merged_files=$(pull_request_product_files) || fail "could not read the files of $repo#$pr_number"

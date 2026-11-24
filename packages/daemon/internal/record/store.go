@@ -778,17 +778,11 @@ func (s *Postgres) PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo stri
 	return pr, nil
 }
 
-// RowQuerier reads one row: a pool (*pgxpool.Pool), a connection or a transaction.
-type RowQuerier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // PullRequestRecorded says whether a pull request of repo is recorded by number, as
-// PullRequestByNumber looks it up. It is one read of q: through a pool it takes no transaction and
-// no lock, so a caller with no fact lock can ask before it does any other work.
-func PullRequestRecorded(ctx context.Context, q RowQuerier, repo string, number int) (bool, error) {
+// PullRequestByNumber looks it up.
+func PullRequestRecorded(ctx context.Context, tx pgx.Tx, repo string, number int) (bool, error) {
 	var recorded bool
-	if err := q.QueryRow(ctx, `select exists(select 1 from pull_requests where lower(repo) = lower($1) and number = $2)`, repo, number).Scan(&recorded); err != nil {
+	if err := tx.QueryRow(ctx, `select exists(select 1 from pull_requests where lower(repo) = lower($1) and number = $2)`, repo, number).Scan(&recorded); err != nil {
 		return false, fmt.Errorf("read whether %s#%d is recorded: %w", repo, number, err)
 	}
 	return recorded, nil
@@ -961,6 +955,18 @@ func (s *Postgres) SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, sessi
 		return false, fmt.Errorf("read the claims of session %s in %s: %w", session, tree, err)
 	}
 	return claims, nil
+}
+
+func (s *Postgres) ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error) {
+	var issue string
+	err := tx.QueryRow(ctx, "select issue from claims where tree = $1 and session = $2 and role = $3 and session <> ''", tree, session, string(claim.RoleArchitect)).Scan(&issue)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read the architect claim of session %s in %s: %w", session, tree, err)
+	}
+	return issue, true, nil
 }
 
 func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error) {
@@ -1466,8 +1472,8 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 }
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
-// the counters of one still open, its design gate and its recorded handoffs. now is when the
-// publication a cleared gate queues is due.
+// the counters of one still open, its design gate, what its holders took of the approved design
+// and its recorded handoffs. now is when the publication a cleared gate queues is due.
 func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
 	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, issue, fmt.Sprintf("clear the generation of %s", issue), now)
 }
@@ -1490,7 +1496,7 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 // their issue column, and issues selects the same issues in the issues table. raised is the one
 // issue whose generation the clear raises, whose phases rows alone leave their steps, in
 // statements of their own that bind it. The design gates go with them, in a statement of their
-// own (clearGates).
+// own (clearGates), and the rows of what each issue's holders took of those gates go beside them.
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, raised, describe string, now time.Time) error {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
@@ -1507,9 +1513,9 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// nothing of the old generation's counting survives it. conflict_read, a first conflicting
 		// read still waiting for its second (PullRequest.ConflictRead), stays for the same reason:
 		// it is GitHub's answer, and the second read that confirms or releases it is still owed.
-		// merge_forward goes (PullRequest.MergeForward): it is the old run's ask that the agent of
-		// its task's implementation step merge the base forward, and the new generation decides
-		// afresh, on its own confirmed conflict, whether to ask again.
+		// merge_forward goes (PullRequest.MergeForward): it is the old run's ask that a role
+		// merge the base forward, and the new generation decides afresh, on its own confirmed
+		// conflict, whether to ask again.
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
@@ -1531,6 +1537,22 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
 			"entry_task = '', entry_verbatim = false where " + where,
+		// What each holder took of the approved design goes with the gate it was taken from: the
+		// next generation registers its gate again, and its work starts from what that gate
+		// approves, which its first working phase takes as its baseline (workflow's Engine.enter),
+		// and the root's architect row from its tree's first opening. A row kept across the clear
+		// would hold the new generation's work to versions of a design its architect has written
+		// again, and owe it news of changes it never stood on. A delivery's copy of what a prompt
+		// carried (the claim store's pending_task_deliveries.carried_news) is left as it stands:
+		// each item and opening of it is marked with the run it was rendered in, the generation of
+		// its issue and of its tree's root (DeliveryNewsItem.Generation and TreeGeneration), and
+		// the write beside this clear raises one of the two for every issue it covers (its callers:
+		// workflow's ReenterChild and moveIntoTree raise the issue's own, admit's readmit the
+		// root's). So that copy counts as a credit nowhere after the clear, neither in the read of
+		// what an audience took nor in the fold of its turn's result (the SQL function
+		// design_news_current), and a prompt of it whose turn starts after the clear confirms
+		// nothing for the next run: the news stays owed to that run, which its own start tells.
+		"delete from design_news_told where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
@@ -1544,9 +1566,10 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 	// re-admitted tree keeps its generation, its plan and its task's place, so its rows keep their
 	// steps, a row for each step a role ran, each naming the claim of the step's agent its entry
 	// wrote, which every reader of the role's worker reads (WorkerClaim) and every start of that step
-	// names (workflow's stepReach). A row of no step would be read as the role's own token while the
-	// member's step is a keyed agent's, so a retry of a held member's phase would queue the step's
-	// work for its agent and every reader would send it to another.
+	// names (workflow's stepReach). A row of no step would be read as the role's own token while
+	// another claim of the role works the member's step, so a retry of a held
+	// member's phase would queue the step's work for its agent and every reader would send it to
+	// another.
 	//
 	// A role of that issue that stood at two steps has a row for each, and the statement after the
 	// fold gives every row of the role the same step, ('', 0), so the rows of one role fold first
@@ -1572,7 +1595,9 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 // delete names the issues it emptied rather than the clear naming every issue it covers, so an
 // issue that held no gate row — the ordinary child of a re-entry, and every member of a
 // re-admitted tree whose architect registered nothing — costs no Dispatch write. A row comes back
-// for each step, so an issue gated on several steps is published once.
+// for each step, so an issue gated on several steps is published once. The empty set carries no
+// entry, so nothing in it says whether a row holds a tree (DesignGateDocument.Holds), and the
+// clear needs none of the deployment's steps to build it.
 //
 // The publication is queued through this store, which knows nothing of the lanes beside it, so no
 // lane is woken for it: the row waits on its issue's board lane for the next sweep, among the
@@ -1588,7 +1613,7 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 	}
 	slices.Sort(emptied)
 	for _, issue := range slices.Compact(emptied) {
-		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil)}, now); err != nil {
+		if err := s.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: GateDocuments(nil, nil)}, now); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}
@@ -2461,11 +2486,9 @@ var liveClaimStates = []string{
 }
 
 // RoleHolder is one live claim of an issue, the role it holds and the session that holds it:
-// Claim is the claim's token, and WorksStep whether the claim is the worker on its role's step
-// (WorkerClaim), the claim the record gives the step. Two claims of one issue can hold one role —
-// a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the agent of
-// a key on a step of another role, beside that role's own claim of an earlier version of the
-// plan — and each is a holder of its own.
+// Claim is the claim's token, and WorksStep whether the claim works its role's step that started
+// last (WorkerClaim, which reads the role's row now), the claim the record gives that step. Two
+// claims of one issue can hold one role, and each is a holder of its own.
 type RoleHolder struct {
 	Role      claim.Role
 	Session   string
@@ -2663,7 +2686,7 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // names a phase and carries that phase's task, which workflow.StartOrOwe alone writes and
 // refuses to write without either. $1 is the issue. It is the shape of the row an issue holds
 // one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
-// since a start of a phase past its review carries none (PhaseKeepsSlot).
+// since a start of accepting, retro or merging carries none (PhaseKeepsSlot).
 //
 // The issue's other supervise starts name no phase or carry no task — a root's architect's
 // (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
@@ -2689,7 +2712,7 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // at its own generation and at one entry, which is the pair the held phase's retry writes
 // (workflow's restart sends the entry its row already names, marked ResendEntry) while the
 // first start is still queued. While every start of a phase worker was marked for the slot, the
-// mark could stand for the row's shape; a start of a phase past its review carries none, so the
+// mark could stand for the row's shape; a start of accepting, retro or merging carries none, so the
 // shape is read from the row itself, and a retro's or a merger's retry is written over the
 // queued row as an implementer's is.
 //
@@ -2881,7 +2904,7 @@ const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox ol
 
 // outboxLaneFree is the rule that a lifecycle row ($5 is the lifecycle lane's kinds) runs only while
 // no other lifecycle row of its issue is under a live lease. Each lifecycle row reads the issue and
-// its claims and then acts on what it read — a start launches the role the issue's phase names, a
+// its claims and then acts on what it read — a start launches the role of the issue's phase, or of its running step at step, a
 // suspend stops the roles a start launched, a workspace removal takes the workspace they used — and
 // they were written to run one after another, each in the state its predecessor leaves (OutboxLane).
 // A lifecycle lane runs its rows that way on its own, but a lane is one daemon's: with the rule in
@@ -3159,27 +3182,31 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 	return held, nil
 }
 
-// StartsWaitingForPod is, for each issue of project, the roles of the start rows that wait because
-// the issue's pod lacks the slot of the start's claim or the role of its step: a supervise start
-// whose last error begins with pods.StartWaitsForPodPrefix (the outbox's roleWaitsForItsPod writes
-// it; the idle view's startWaitsForPodRow reads the same rows). Each role once, in the order of
-// its rows.
-func (s *Postgres) StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string) (map[string][]claim.Role, error) {
-	rows, err := tx.Query(ctx, `select issue, payload->>'role' from outbox
-		where split_part(issue, '-', 1) = $1 and kind = 'supervise' and payload->>'op' = 'start'
-		and starts_with(coalesce(last_error, ''), $2) order by id`, project, pods.StartWaitsForPodPrefix)
+// StartsWaitingForPod is, for each issue of project, the start rows that wait because the issue's
+// pod lacks the slot of the start's claim or the role of its step: a supervise start whose last
+// error begins with pods.StartWaitsForPodPrefix (the outbox's roleWaitsForItsPod writes it; the
+// idle view's startWaitsForPodRow reads the same rows). Each is its role and the claim the row
+// names, "" for a row that names none (pods.WaitingStart); each pair once, in the order of its
+// rows.
+func (s *Postgres) StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string,
+) (map[string][]pods.WaitingStart, error) {
+	rows, err := tx.Query(ctx, `select issue, payload->>'role', coalesce(payload->>'claim', '')
+		from outbox where split_part(issue, '-', 1) = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' and starts_with(coalesce(last_error, ''), $2) order by id`,
+		project, pods.StartWaitsForPodPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)
 	}
 	defer rows.Close()
-	waiting := map[string][]claim.Role{}
+	waiting := map[string][]pods.WaitingStart{}
 	for rows.Next() {
-		var issue, role string
-		if err := rows.Scan(&issue, &role); err != nil {
+		var issue, role, token string
+		if err := rows.Scan(&issue, &role, &token); err != nil {
 			return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)
 		}
-		if !slices.Contains(waiting[issue], claim.Role(role)) {
-			waiting[issue] = append(waiting[issue], claim.Role(role))
+		start := pods.WaitingStart{Role: claim.Role(role), Claim: claim.Token(token)}
+		if !slices.Contains(waiting[issue], start) {
+			waiting[issue] = append(waiting[issue], start)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -3502,9 +3529,7 @@ type IssueClaim struct {
 
 // IssueClaims is every stored claim of issue in project, the claims' project token as
 // claims.project holds it, in any state, with its stored role and the agent of its session,
-// ordered by token. Two claims of an issue can hold one role — a second agent of the role in a
-// task, `…-implementer-2` beside `…-implementer`, or a keyed agent on a step of another role,
-// beside that role's own claim from an earlier version of the plan — so a walk over every
+// ordered by token. Two claims of one issue can hold one role (WorkerClaim), so a walk over every
 // claim of an issue reads them here rather than one claim for each role.
 func (s *Postgres) IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error) {
 	rows, err := tx.Query(ctx, `select token, role, session_agent from claims where project = $1 and issue = $2 order by token`, project, issue)
@@ -3538,9 +3563,8 @@ func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, is
 
 // roleRunIdentity is a candidate role run as an outbox supervise row names it: its issue, and the
 // payload's role and generation exactly as Postgres renders them (`payload->>'role'`,
-// `payload->>'generation'`), so a row is matched before it is decoded. Two claims can hold one
-// role of an issue at one generation — the agent of a key on a step of another role, beside that
-// role's own claim of an earlier version of the plan — so one identity can stand for several keys.
+// `payload->>'generation'`), so a row is matched before it is decoded. Two claims of one issue can
+// hold one role (WorkerClaim) at one generation, so one identity can stand for several keys.
 type roleRunIdentity struct {
 	issue      string
 	role       string
@@ -3619,9 +3643,8 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		}
 		// A row that names a claim (SuperviseRequest.Claim) is that claim's alone, read as a run
 		// of that claim where keys ask for it at the row's issue, role and generation: every
-		// phase worker's start names the claim it was queued for, and two claims can hold one
-		// role — two agents of a role in one task, or a keyed agent on a step of another role
-		// beside the role's own claim — so a start of one is no queued run of the other, whichever
+		// phase worker's start names the claim it was queued for, and two claims of one issue can
+		// hold one role (WorkerClaim), so a start of one is no queued run of the other, whichever
 		// of them keys ask for that role by. A row that names none, one the release before wrote,
 		// is the run of the claim it reaches, the worker on its role's step.
 		wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
@@ -3716,7 +3739,10 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // written apart and read together, as claimSelect reads them). The task's id is read with it,
 // since the id is what says a delivery is the daemon's own delivery of a relaunch's record, which
 // a reader of a role run reads as no work (supervise.Delivery.Relaunch; workflow's owed and
-// readyWorkerTask).
+// readyWorkerTask). So is whether the task is one of news alone (supervise.Delivery.NewsOnly),
+// read from the delivery's own column (pending_task_deliveries.news_only), which is no task of its
+// phase to any reader of a role run (supervise.Delivery.StillWorked, supervise.HoldsWork) and no
+// task of an entry, so it holds no sweep's start back (workflow.ArchitectStartPending).
 //
 // The task is read as the entry it is of, the two moments of its handshake — queued when the
 // delivery was written, confirmed when a turn of the claim's worker took it — and whether a let-go
@@ -3734,7 +3760,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at,
-		coalesce(d.interrupted, false)
+		coalesce(d.interrupted, false), coalesce(d.news_only, false)
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
@@ -3765,7 +3791,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
 			&held.GivenEntry, &ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
 			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
-			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted); err != nil {
+			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted, &task.NewsOnly); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if ready != nil {

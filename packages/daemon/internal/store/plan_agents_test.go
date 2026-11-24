@@ -18,7 +18,7 @@ import (
 // the plan in force, each named by the one rule of a stored step (plan.StoredAgentName): the plan in
 // force is the issue's generation's, so a step of an earlier generation names no agent; a step of
 // the key owner names none, whatever it holds; every other step holds its name, which
-// 20261117213545 wrote on each step a release before the column wrote; and each agent carries the
+// 20261123203837 wrote on each step a release before the column wrote; and each agent carries the
 // role of its first step. An issue of another project's record, and one with no plan rows, have
 // none.
 func TestThePlanAgentsAreTheAgentsOfThePlanInForce(t *testing.T) {

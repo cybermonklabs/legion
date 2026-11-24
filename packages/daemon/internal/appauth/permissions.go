@@ -75,7 +75,8 @@ import (
 // 403 with `X-Accepted-Github-Permissions: security_events=read` while the accounts' grants of
 // 2026-11-08 stood, because this file named the permission in neither set and GitHub mints a
 // token carrying what the request names. A deployment in token mode asks its command for no
-// permissions at all (tokencommand.go), so this set decides nothing there (dispatch://INFRA-1639).
+// permissions at all (tokencommand.go): its profiles file decides them, and the profiles
+// docs/deployment.md gives name this set (deployment_doc_test.go holds them to it).
 var writePermissions = map[AppRole]map[string]string{
 	Implement: {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
 	Review:    {"actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"},
@@ -88,9 +89,9 @@ var writePermissions = map[AppRole]map[string]string{
 // internal/daemon). A mint asks for what the installation is granted of this set, at read
 // (exchangeGranted), and GitHub mints a token with the permissions the request names, so an
 // installation granted less gets a lease that holds less. This package alone declares the set.
-// The secrets broker's read-only release, which a daemon on token_command gets in its place
-// (tokencommand.go), holds the broker's own set, contents, metadata, pull requests, Actions,
-// checks and statuses, which differs from this one.
+// A daemon on token_command gets the release of the role's read profile in its place
+// (tokencommand.go), which the deployment's profiles file decides; the read profile
+// docs/deployment.md gives names this set (deployment_doc_test.go holds it to it).
 //
 // The set is the most a read lease holds, and the only thing that holds it: the lease reaches
 // every repository its installation holds, as every token this package mints does, so what

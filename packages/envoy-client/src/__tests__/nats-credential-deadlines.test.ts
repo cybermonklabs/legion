@@ -24,88 +24,156 @@ import { natsBrokerStandIns } from "./broker-stand-ins";
 
 const { podEnvironment, servers, stubBroker } = natsBrokerStandIns("nats-credential-deadlines");
 
+/** The bound of the row whose authenticator trades on its own, passed to it: the package's
+ *  `--timeout 30000`, written so its waits can give up inside it. */
+const SELF_TRADE_ROW_MS = 30_000;
+
 // A fake clock left behind stops the timers of every file the same worker runs after this one.
 afterEach(() => {
   jest.useRealTimers();
 });
 
+/** The bound, in real time, of each wait of the `ready` rows below on real I/O or the code's
+ *  reaction to it: a hang guard, the fake-clock fixture's own 30 s, never a measure of the code.
+ *  The rows read the deadline itself on the fake clock. A row's bound is its two waits and 5 s. */
+const READY_WAIT_MS = 30_000;
+const READY_ROW_MS = 2 * READY_WAIT_MS + 5_000;
+
 describe("ready", () => {
-  test("a broker that never answers the trade fails it, named, at the deadline", async () => {
-    // A broker that takes the request and never answers: with no deadline a start waited on it in
-    // silence (64 s and counting, at 579d9b45f6), where a hub that never answers fails at nats.js's
-    // own dial timeout, naming it.
+  /** Starts `ready` and returns what it has come to so far: undefined until it settles, then
+   *  "ready" or the message it failed with. */
+  function readying(
+    credential: BrokerNatsCredential,
+    options?: Parameters<BrokerNatsCredential["ready"]>[0]
+  ): () => string | undefined {
+    let outcome: string | undefined;
+    void credential.ready(options).then(
+      () => {
+        outcome = "ready";
+      },
+      (error: unknown) => {
+        outcome = error instanceof Error ? error.message : String(error);
+      }
+    );
+    return () => outcome;
+  }
+
+  /** Moves the fake clock, which has not moved since `ready` started, to 1 ms short of
+   *  `deadlineMs`, where `ready` must not have settled, and then to it, where it must fail: so
+   *  the failure is the deadline's, and comes when its timer fires, read on the code's own clock
+   *  however loaded the machine. Real time bounds only the wait for the failure, to name a hang:
+   *  a deadline that never fires. */
+  async function atDeadline(
+    outcome: () => string | undefined,
+    deadlineMs: number
+  ): Promise<string | undefined> {
+    jest.advanceTimersByTime(deadlineMs - 1);
+    await turn();
+    expect(outcome()).toBeUndefined();
+    jest.advanceTimersByTime(1);
+    await turnsUntil(
+      () => outcome() !== undefined,
+      `ready's failure at its ${deadlineMs} ms deadline`,
+      { boundMs: READY_WAIT_MS }
+    );
+    return outcome();
+  }
+
+  /** A broker that takes the trade's request and never answers it; `asked` once it has. */
+  function silentBroker(): { readonly url: string; asked(): boolean } {
+    let asked = false;
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
-      fetch: () => new Promise<Response>(() => undefined),
+      fetch: () => {
+        asked = true;
+        return new Promise<Response>(() => undefined);
+      },
     });
     servers.push(server);
-    const credential = brokerNatsCredential(
-      podEnvironment(`http://127.0.0.1:${server.port}`),
-      "ses_hung",
-      "NATS_AUTH",
-      300
-    );
-    const started = Date.now();
-    const outcome = await credential.ready().then(
-      () => "ready",
-      (error: unknown) => (error instanceof Error ? error.message : String(error))
-    );
-    expect(outcome).toBe(
-      "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.3 s"
-    );
-    expect(Date.now() - started).toBeLessThan(5_000);
-  }, 15_000);
+    return { url: `http://127.0.0.1:${server.port}`, asked: () => asked };
+  }
 
-  test("a startup's bound shorter than the trade deadline ends its wait first, naming the broker's silence", async () => {
-    // A start whose pass deadline is shorter than the default bounds its wait by that deadline
-    // less what the rest of its pass needs (`ReadyOptions.boundMs`), so its pass is not abandoned
-    // with no cause named.
-    const server = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch: () => new Promise<Response>(() => undefined),
-    });
-    servers.push(server);
-    const credential = brokerNatsCredential(
-      podEnvironment(`http://127.0.0.1:${server.port}`),
-      "ses_short_pass",
-      "NATS_AUTH",
-      10_000
-    );
-    const started = Date.now();
-    const outcome = await credential.ready({ waitForReady: true, boundMs: 400 }).then(
-      () => "ready",
-      (error: unknown) => (error instanceof Error ? error.message : String(error))
-    );
-    expect(outcome).toBe(
-      "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.4 s"
-    );
-    expect(Date.now() - started).toBeLessThan(3_000);
-  }, 20_000);
+  test(
+    "a broker that never answers the trade fails it, named, at the deadline",
+    async () => {
+      // A broker that takes the request and never answers: with no deadline a start waited on it
+      // in silence (64 s and counting, at 579d9b45f6), where a hub that never answers fails at
+      // nats.js's own dial timeout, naming it.
+      const broker = silentBroker();
+      const credential = brokerNatsCredential(
+        podEnvironment(broker.url),
+        "ses_hung",
+        "NATS_AUTH",
+        300
+      );
+      jest.useFakeTimers();
+      const outcome = readying(credential);
+      await turnsUntil(broker.asked, "the broker taking the trade", { boundMs: READY_WAIT_MS });
+      expect(await atDeadline(outcome, 300)).toBe(
+        "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.3 s"
+      );
+    },
+    READY_ROW_MS
+  );
 
-  test("a pod session the broker holds no registration for fails it at the deadline, naming the session", async () => {
-    // The token client waits out a missing registration for as long as its caller waits (#4153),
-    // so a start that handed it no deadline waited until the registration landed, and then said
-    // the broker had not answered, which it had.
-    const broker = stubBroker(600);
-    broker.state.unregistered = true;
-    const credential = brokerNatsCredential(
-      podEnvironment(broker.url),
-      "ses_pending",
-      "NATS_AUTH",
-      300
-    );
-    const started = Date.now();
-    const outcome = await credential.ready().then(
-      () => "ready",
-      (error: unknown) => (error instanceof Error ? error.message : String(error))
-    );
-    expect(outcome).toBe(
-      "NATS_AUTH is broker, and the session's token waits on its registration: the secrets broker has no registration for this pod's session ses_pending yet, and the trade is being retried in the background until it lands (pod_session_not_registered: No registration says this pod may write under the session name 'ses_pending'. A pod writes under a session name its deployment registered for it.)"
-    );
-    expect(Date.now() - started).toBeLessThan(5_000);
-  }, 15_000);
+  test(
+    "a startup's bound shorter than the trade deadline ends its wait first, naming the broker's silence",
+    async () => {
+      // A start whose pass deadline is shorter than the default bounds its wait by that deadline
+      // less what the rest of its pass needs (`ReadyOptions.boundMs`), so its pass is not
+      // abandoned with no cause named.
+      const broker = silentBroker();
+      const credential = brokerNatsCredential(
+        podEnvironment(broker.url),
+        "ses_short_pass",
+        "NATS_AUTH",
+        10_000
+      );
+      jest.useFakeTimers();
+      const outcome = readying(credential, { waitForReady: true, boundMs: 400 });
+      await turnsUntil(broker.asked, "the broker taking the trade", { boundMs: READY_WAIT_MS });
+      expect(await atDeadline(outcome, 400)).toBe(
+        "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.4 s"
+      );
+    },
+    READY_ROW_MS
+  );
+
+  test(
+    "a pod session the broker holds no registration for fails it at the deadline, naming the session",
+    async () => {
+      // The token client waits out a missing registration for as long as its caller waits
+      // (#4153), so a start that handed it no deadline waited until the registration landed, and
+      // then said the broker had not answered, which it had.
+      const broker = stubBroker(600);
+      broker.state.unregistered = true;
+      const credential = brokerNatsCredential(
+        podEnvironment(broker.url),
+        "ses_pending",
+        "NATS_AUTH",
+        300
+      );
+      jest.useFakeTimers();
+      let refused = false;
+      const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
+        if (String(line).includes("session ses_pending yet")) refused = true;
+      });
+      try {
+        const outcome = readying(credential);
+        // The broker's refusal is in before the deadline, so the failure names it.
+        await turnsUntil(() => refused, "the broker refusing the trade", {
+          boundMs: READY_WAIT_MS,
+        });
+        expect(await atDeadline(outcome, 300)).toBe(
+          "NATS_AUTH is broker, and the session's token waits on its registration: the secrets broker has no registration for this pod's session ses_pending yet, and the trade is being retried in the background until it lands (pod_session_not_registered: No registration says this pod may write under the session name 'ses_pending'. A pod writes under a session name its deployment registered for it.)"
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+    READY_ROW_MS
+  );
 });
 
 describe("renew", () => {
@@ -138,9 +206,10 @@ describe("renew", () => {
   test("CONNECTs with no live token while the registration is missing keep the broker's back-off", async () => {
     // The token client's retry loop trades for a pod session with no registration on its own
     // schedule, 2 s doubling to 30 s, each wait at least half its length, and no caller cuts a
-    // wait short. nats.js asks the authenticator at every attempt, every 2 s for a connection the
-    // server refuses, so an authenticator that traded at each one would trade at that pace. Inside
-    // the schedule's first slot, a CONNECT every 50 ms makes no trade of its own.
+    // wait short. nats.js asks the authenticator at every attempt, for a connection the server
+    // refuses at once after a refusal when a token waits to be presented, else as often as every
+    // 2 s (`brokerRedialDelays`), so an authenticator that traded at each one would trade at that
+    // pace. Inside the schedule's first slot, a CONNECT every 50 ms makes no trade of its own.
     //
     // On the fake clock the slot lasts as long as the row: no trade of the loop's own follows the
     // first, so every trade past it is one a CONNECT made. A round trip to the broker after each
@@ -171,24 +240,42 @@ describe("renew", () => {
     }
   }, 15_000);
 
-  test("a CONNECT with no live token presents nothing, trades, and presents the token next", async () => {
-    // No ready(), renew() or keeper: the authenticator's own trade is what the next reconnect
-    // presents, so a connection whose token lapsed comes back on its own.
-    const broker = stubBroker(600);
-    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_self");
-    expect(credential.authenticator("nonce-1")).toBeUndefined();
-    const traded = () => broker.state.minted.length > 0;
-    const deadline = Date.now() + 5_000;
-    while (!traded() && Date.now() < deadline) await Bun.sleep(20);
-    // The trade has landed once the authenticator presents its token.
-    let auth: { auth_token?: string } | undefined;
-    while (auth === undefined && Date.now() < deadline) {
-      auth = credential.authenticator("nonce-2") as { auth_token?: string } | undefined;
-      if (auth === undefined) await Bun.sleep(20);
-    }
-    expect(auth?.auth_token).toBe(broker.state.minted[0]?.value ?? "no token minted");
-    expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_self"]);
-  });
+  test(
+    "a CONNECT with no live token presents nothing, trades, and presents the token next",
+    async () => {
+      // No ready(), renew() or keeper: the authenticator's own trade is what the next reconnect
+      // presents, so a connection whose token lapsed comes back on its own. The trade is a real HTTP
+      // trade at the stub broker, so its waits are on the facts, bounded only by the row's own bound
+      // less 5 s, so that one that gives up names what it waited for.
+      const deadline = performance.now() + SELF_TRADE_ROW_MS - 5_000;
+      const until = async (holds: () => boolean, what: string) => {
+        while (!holds()) {
+          if (performance.now() > deadline) {
+            throw new Error(
+              `timed out waiting for ${what}, ${SELF_TRADE_ROW_MS / 1000 - 5} s into the row`
+            );
+          }
+          await Bun.sleep(20);
+        }
+      };
+      const broker = stubBroker(600);
+      const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_self");
+      expect(credential.authenticator("nonce-1")).toBeUndefined();
+      await until(
+        () => broker.state.minted.length > 0,
+        "the stub broker to mint the authenticator's trade"
+      );
+      // The trade has landed once the authenticator presents its token.
+      let auth: { auth_token?: string } | undefined;
+      await until(() => {
+        auth = credential.authenticator("nonce-2") as { auth_token?: string } | undefined;
+        return auth !== undefined;
+      }, "the authenticator to present the traded token");
+      expect(auth?.auth_token).toBe(broker.state.minted[0]?.value ?? "no token minted");
+      expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_self"]);
+    },
+    SELF_TRADE_ROW_MS
+  );
 });
 
 describe("followNatsCredential", () => {

@@ -37,7 +37,7 @@ func whyAndLineFieldsState() State {
 	}
 	issues["LEGION-60"] = Issue{Key: "LEGION-60", Phase: phase.Implementing, Status: "in_progress",
 		Why: &WhyView{State: WhyClaimStopped,
-			Reason: "Its phase is implementing and the implementer's claim is stranded at failed, so nothing will wake it."}}
+			Reason: "Its phase is implementing and its implementer is stranded at failed, so nothing will wake it."}}
 	state.Issues = issues
 	return state
 }

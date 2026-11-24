@@ -234,7 +234,8 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 //
 // A head that moves off the one a merge forward was asked of is that merge landing, in whatever
 // phase the issue stands (mergeForwardLanded, dispatch://INFRA-4374 R1): the record keeps the new
-// head as the merge's, and the phase's worker and, past the review, the reviewer are told. It is
+// head as the merge's, and the phase's worker and, where a reviewer step of the task already ran,
+// the reviewer of the step that started last are told. It is
 // recorded before the phase's own handling below, which goes on as it would for any move.
 func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact intake.PullRequestSynchronized) (intake.Result, error) {
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
@@ -387,8 +388,9 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
-// issue to accepting, since a merged pull request leaves the round nothing to wait on
-// (reviewRound). Without this, an approval that came before the merge would hold the issue in
+// issue to its task's next step (accepting, in the default steps), since a merged pull request
+// leaves the round nothing to wait on (reviewRound). Without this, an approval that came before
+// the merge would hold the issue in
 // reviewing: no read of the merged pull request ever comes (askMergeStateFor), and once the
 // reviewer has completed no other fact settles the round. An approval of a head other than the
 // one the merge names ends no round: once its reviewer has completed, the round is stuck on other
@@ -425,10 +427,12 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 
 // waitingForTree is what the architect that owns a merged issue is told when the merge of its pull
 // request finds issues beneath it still in the workflow (for a root, the rest of its tree): the
-// close is waiting, and for whom.
+// close is waiting, and for whom. It also says how a child leaves without its own merge, which is
+// the architect's status write (record.EndChildRule), and that such a write counts once the daemon
+// has taken it (record.StatusNotTakenYet).
 func waitingForTree(issue string, number int, waiting []string) string {
-	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow; %s closes once the last of them leaves. Park one with park_child "+parkRule+", and say in a comment which of those it is",
-		number, issue, strings.Join(waiting, ", "), issue)
+	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow. %s closes once the last of them leaves the workflow.",
+		number, issue, strings.Join(waiting, ", "), issue) + " " + record.StatusNotTakenYet + " " + record.EndChildRule
 }
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close
@@ -451,9 +455,10 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 // close clears: a failed merger's claim, an escalation, a stopped task's or the upgrade's data
 // move's), on its merged pull request pr, and reports
 // the issues it waited for instead, empty when it closed. In a running tree the close is the
-// table's row to done (transition), which leaves: a child's close retires five of its claims and
-// opens its production check in the live session of the role the project's `production_check`
-// names, and retires all six and opens no check where that setting is off; a root's close lingers
+// table's row to done (transition), which leaves: a child's close retires every claim of it but
+// the claim of the worker on the step of the role the project's `production_check` names
+// (record.WorkerClaim) and opens its production check in that claim's live session, and retires
+// every claim and opens no check where that setting is off; a root's close lingers
 // its tree and opens its check behind the linger's rows (leave). A merge is the one fact GitHub
 // never sends again, so one that lands while the tree lingers, where no transition runs, still
 // closes the issue: it writes what leave would that a lingering tree allows — the phase done, the
@@ -694,7 +699,7 @@ func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, num
 // nothing else tells anybody it is missing - the implementer's completion was applied with GitHub
 // unread, or the pull request it read was closed without merging since. The notice names the
 // issue, the repository, the branch and the handoff commit, and the topic of the implementer to
-// tell: the claim that works the implementer's step (workerClaim), which a key's agent can be,
+// tell: the claim record.WorkerClaim gives the implementer's step (workerClaim),
 // not a topic spelled from the role. It says what to do. It tells nothing
 // when the issue has left implementing, its implementer's handoff is another commit, or an open or
 // merged pull request is recorded: the read asked GitHub before the record changed, or the merge
@@ -718,7 +723,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pull-request-missing", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("%s's implementer completed at %s, and GitHub shows no open pull request on %s %s, so %s stays in implementing. "+
-			"Tell its implementer (envoy_publish to `%s%s`) to open the pull request from %s; the daemon records it and moves %s to testing once it is open. "+
+			"Tell its implementer (envoy_publish to `%s%s`) to open the pull request from %s; the daemon records it and moves %s to the next step of its task once it is open. "+
 			"When the work should not go on, decide %s's phase as for a pull request closed without merging.",
 			issue.Key, fact.HandoffCommit, fact.Repo, fact.Branch, issue.Key, notify.RoleTopicPrefix, worker, fact.Branch, issue.Key, issue.Key)})
 }

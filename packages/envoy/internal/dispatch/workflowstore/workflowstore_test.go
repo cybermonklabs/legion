@@ -661,6 +661,21 @@ func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 	if !slices.Equal(order, wantOrder) {
 		t.Errorf("the read answers the records in the order %v, want generation then start: %v", order, wantOrder)
 	}
+
+	// The read of many issues (IssuesSteps, which the metrics' fallback timeline reads) answers
+	// each issue's runs in the same order, and an issue Legion never ran with none.
+	runs, err := IssuesSteps(context.Background(), pool, []string{"LEG-1", "LEG-2", "LEG-3"})
+	if err != nil {
+		t.Fatalf("read the steps of three issues: %v", err)
+	}
+	batched := make([]string, 0, len(runs["LEG-1"]))
+	for _, step := range runs["LEG-1"] {
+		batched = append(batched, step.ID)
+	}
+	if !slices.Equal(batched, wantOrder) || len(runs["LEG-2"]) != 1 || runs["LEG-2"][0].ID != elsewhere.ID || len(runs["LEG-3"]) != 0 {
+		t.Errorf("the read of three issues answers LEG-1 %v, LEG-2 %+v and LEG-3 %+v; want %v, the one run %s, and none",
+			batched, runs["LEG-2"], runs["LEG-3"], wantOrder, elsewhere.ID)
+	}
 }
 
 // Within one generation a run whose start never arrived comes before every run whose start did,

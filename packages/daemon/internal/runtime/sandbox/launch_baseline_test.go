@@ -26,8 +26,9 @@ var baselineRoleFiles = map[claim.Role][]string{
 	claim.RoleController:  {"/etc/legion-operator/creds/fallback.yml", "/etc/legion-operator/creds/controller.yml"},
 }
 
-// baselineRoles are the roles the baseline covers: the six of the workflow, in the order the
-// workflow reaches them, then the project controller, which is none of them.
+// baselineRoles are the roles the baseline covers: the six of the workflow, in the order of the
+// default steps (claim.Roles; each task names its own), then the project controller, which is
+// none of them.
 func baselineRoles() []claim.Role {
 	return slices.Concat(claim.Roles, []claim.Role{claim.RoleController})
 }
@@ -96,7 +97,7 @@ func systemPromptOf(t *testing.T, role claim.Role, start shimwire.LauncherStart)
 }
 
 // The launch bytes a deployment with no experiment of its own and no `memory` block produces
-// today, for every role Legion launches: the golden pins three values per role — the role's
+// today, for every role Legion launches where the deployment defines no role of its own: the golden pins three values per role — the role's
 // PI_CONFIG_FILES, the operator's own overlays first and then the role's own; the path of the one
 // --append-system-prompt word its Oh My Pi is started with; and the text of the system prompt
 // file at that path, which its start command carries. Each is kept non-empty for all seven roles

@@ -15,7 +15,9 @@ import (
 // re-admission queued a start naming that claim, `…-tester`, with the role tester. That row is the
 // run of `…-tester` and not the run of key a's `…-implementer`, which works the tester's step: a
 // read of the owner's run that counted it would take it for the owner's own start and skip one the
-// owner needs. A row that names no claim is still the run of the role's token.
+// owner needs. A row that names no claim is the run of the claim it reaches when it runs
+// (WorkerClaim): the claim the role's phases row names while that row runs a step of the plan, and
+// the role's own token otherwise, as for the reviewer here, which has no phases row.
 func TestARoleRunCountsNoQueuedRowThatNamesAnotherClaim(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

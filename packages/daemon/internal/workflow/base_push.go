@@ -66,10 +66,11 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		}
 		// A base that moved is what takes a head from clean to behind, which holds an approved
 		// issue in reviewing, or to conflicting, which needs a merge forward once the issue's
-		// review is over (dispatch://INFRA-4374 R0) and leaves a record in testing or reviewing
-		// reading a state GitHub no longer answers (R4). So every pull request this push moved is
-		// read for where the push owes a read (askMergeStateFor): an issue in testing through
-		// merging, by the gate (classify.MergeStateReadOwed), or a round that waits on the merge
+		// review is over (dispatch://INFRA-4374 R0) and leaves a record in testing, reviewing or
+		// step reading a state GitHub no longer answers (R4). So every pull request this push
+		// moved is read for where the push owes a read (askMergeStateFor): an issue in a phase a
+		// merge forward is asked in but implementing, by the gate (classify.MergeStateReadOwed),
+		// or a round that waits on the merge
 		// state. The read is asked for here rather than from Apply's askMergeState because the line
 		// above has just overwritten what tells a redelivery from a first delivery: a second walk
 		// after the handler would find every pull request on the base recorded at this push's

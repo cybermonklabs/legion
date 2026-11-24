@@ -39,7 +39,8 @@ import (
 // The board's columns. Queue holds the daemon's waiting line and, after it, the issues a blocker
 // link holds; Design the issues whose phase is still `admitted` that are on a card at all — the
 // slot holders, and the ones no card stands above, which are on no other issue's count
-// (legionBoardCompute); Retro `retro` alone; Merging `merging` and `awaiting_merge`; and Held the
+// (legionBoardCompute); Step the issues at a step of a role the deployment defines, whatever its
+// type; Retro `retro` alone; Merging `merging` and `awaiting_merge`; and Held the
 // phase metric 2 puts on the "no role" bar beside `awaiting_person` (the plan's D11).
 const (
 	legionColumnQueue        = "queue"
@@ -48,6 +49,7 @@ const (
 	legionColumnImplementing = "implementing"
 	legionColumnTesting      = "testing"
 	legionColumnReviewing    = "reviewing"
+	legionColumnStep         = "step"
 	legionColumnAccepting    = "accepting"
 	legionColumnRetro        = "retro"
 	legionColumnMerging      = "merging"
@@ -65,6 +67,7 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legionColumnImplementing, "Implementing"},
 	{legionColumnTesting, "Testing"},
 	{legionColumnReviewing, "Reviewing"},
+	{legionColumnStep, "Deployment step"},
 	{legionColumnAccepting, "Accepting"},
 	{legionColumnRetro, "Retro"},
 	{legionColumnMerging, "Merging"},
@@ -76,14 +79,18 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 // name (`done`, and any phase a later daemon adds) puts the issue on no card: the board shows the
 // work in flight, and a phase Dispatch has never heard of is not something it can place. Which
 // phases share a column is the board's own choice, made here: `retro` has a column of its own, as
-// it has a word of its own in the spec's tables ("Phase words in tables"), and Merging holds the
-// two phases those tables name merging, `merging` and `awaiting_merge`.
+// it has a word of its own in the spec's tables ("Phase words in tables"), Merging holds the
+// two phases those tables name merging, `merging` and `awaiting_merge`, and `step` has a column of
+// its own, since a step of a role the deployment defines is of any type its settings name, which
+// neither Testing nor Reviewing would say. Its column stands after Reviewing, where a task of the
+// default steps would put a step of its own, though a plan can name one at any place.
 var legionPhaseColumns = map[string]string{
 	legion.PhaseAdmitted:       legionColumnDesign,
 	legion.PhasePlanning:       legionColumnPlanning,
 	legion.PhaseImplementing:   legionColumnImplementing,
 	legion.PhaseTesting:        legionColumnTesting,
 	legion.PhaseReviewing:      legionColumnReviewing,
+	legion.PhaseStep:           legionColumnStep,
 	legion.PhaseAccepting:      legionColumnAccepting,
 	legion.PhaseRetro:          legionColumnRetro,
 	legion.PhaseMerging:        legionColumnMerging,
@@ -130,10 +137,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the eleven columns, in the order legionBoardColumnOrder draws
+// the view draws them. ID is one of the twelve columns, in the order legionBoardColumnOrder draws
 // them; the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_person,held"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,step,accepting,retro,merging,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }

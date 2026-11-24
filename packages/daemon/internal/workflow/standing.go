@@ -141,11 +141,12 @@ func stepsLine(words []string) string {
 // report of each under its own place, and each step before a running one completed in the run
 // that led to it: a step that runs again after a return writes its new record on its row before
 // the step after it starts. A step whose role writes no handoff has no line: the owner's
-// acceptance, whose row holds no record, and a step of a role the deployment defines, which runs
-// as step, a phase phase.RoleFor names no role for. Step ends with no handoff record
-// (phase.Handoff), the completion route refuses a completion of it that names one (api's
-// HANDOFF_RECORD_MISMATCH), and the engine writes onto a row only the record the completion names
-// (handoff), so no row of such a step holds a record for this to name.
+// acceptance, whose row holds no record, and a step of a role the deployment defines, whose
+// verdict only the task of the step after it names, which runs as step, a phase phase.RoleFor
+// names no role for. Step ends with no handoff record (phase.Handoff), the completion route
+// refuses a completion of it that names one (api's HANDOFF_RECORD_MISMATCH), and the engine
+// writes onto a row only the record the completion names (handoff), so no row of such a step
+// holds a record for this to name.
 func reportsBefore(rows []record.PhaseRow, w Walk, words []string, place int) string {
 	var text strings.Builder
 	for j := 1; j < place; j++ {

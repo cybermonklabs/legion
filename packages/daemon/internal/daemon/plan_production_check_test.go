@@ -30,6 +30,7 @@ import (
 // a spawn that resumes none. Each issue is done before its check ends, and each check ends with the
 // tester's report. The control is `production_check: off`, under which the same walk opens no check.
 func TestAProductionCheckFollowsAPlan(t *testing.T) {
+	t.Parallel()
 	t.Run("a plan with a tester and a plan with none", func(t *testing.T) {
 		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2,
 			config.Project{ProductionCheck: claim.RoleTester})

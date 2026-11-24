@@ -25,6 +25,7 @@ import (
 // architect's own included, is told the root's architect, as before. Every other part of the
 // sentence is the one a claim was always told.
 func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st, err := store.Open(ctx, pool.Config().ConnString())
@@ -110,12 +111,13 @@ func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
 
 // The plan `implementer:a tester:a reviewer` runs key a's agent, `…-implementer`, on the
 // implementer's step and on the tester's, so the addressing the reviewer is told names the
-// tester's step on `…-implementer`, each step on its agent's topic, and says what a role's own
-// topic reaches. The token is the one claim.AgentToken spells from the step's agent's name
+// tester's step on `…-implementer` and each step on its agent's topic. The token is the one
+// claim.AgentToken spells from the step's agent's name
 // (record.PlanStep.AgentName). An issue with no plan rows is told the rule it was always told,
 // with the case it holds in (each role its own agent until the issue runs a plan) and the read
 // that names the agent of each step of a plan it runs later.
 func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
+	t.Parallel()
 	steps := []record.PlanStep{
 		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a", Agent: "implementer"},
 		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 2, Role: "tester", Type: "testing", AgentKey: "a", Agent: "implementer"},
@@ -132,7 +134,6 @@ func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
 		"step 1 of task a (implementer) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-implementer`",
 		"step 2 of task a (tester) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-implementer`",
 		"step 3 of task a (reviewer) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-reviewer`",
-		"your topic with the trailing `-<role>` replaced reaches the agent named for that role, which need not be the one that works the step of that role you mean: write to that step's agent on its topic above.",
 	} {
 		if !strings.Contains(told, want) {
 			t.Errorf("the reviewer is told %q; want it naming %q", told, want)

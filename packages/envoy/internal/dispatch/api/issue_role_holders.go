@@ -18,10 +18,10 @@ import (
 
 // An issue's role holders are the sessions that hold its Legion roles, each with the claim it holds
 // its role by (issue_role_holders, migrations 20261116163813_issue_role_holders and
-// 20261122130956_issue_role_holders_by_session). Two claims of one issue can hold one role — the
-// agent of a key on a step of another role, beside that role's own claim of an earlier version of
-// the plan — so a role can have more than one session, and each session holds one role. The
-// Legion daemon is the one party that gives a session a role. It publishes the live set of each
+// 20261123203843_issue_role_holders_by_session). Two claims of one issue can hold one role (the
+// Legion daemon's record.WorkerClaim), so a role can have more than one session, and each session
+// holds one role.
+// The Legion daemon is the one party that gives a session a role. It publishes the live set of each
 // issue here: when a claim readies, when a claim ends and at each boot. The results route of a
 // later release reads the set in the write transaction of a result (heldRole), so that the stored
 // role of a result is the role that its session holds.
@@ -67,7 +67,7 @@ import (
 // but the controller's (legionclaim.IsRole), so the shape spells the grammar and lists no roles.
 // The claim is the Legion claim token of the issue the session runs (legionclaim.CutClaimToken),
 // and works_step is true for the claim the daemon's record gives the role's step: two claims of
-// one issue can hold one role, and the way back of 20261122130956 keeps that claim's session where
+// one issue can hold one role, and the way back of 20261123203843 keeps that claim's session where
 // it folds a role back to one session. A daemon before that release names neither, which reads as
 // no claim and no step.
 type issueRoleHolder struct {
@@ -88,8 +88,8 @@ type issueRoleHolderRecord struct {
 }
 
 // issueRoleHolders is the stored set both routes answer: the issue and its holders, Legion's six in
-// the order of legionclaim.Roles, which is the order the workflow reaches them, then every other
-// role by name. An issue where no session holds a role answers [].
+// the order of legionclaim.Roles, the order of the default steps, then every other role by name.
+// An issue where no session holds a role answers [].
 type issueRoleHolders struct {
 	Issue   string                  `json:"issue"`
 	Holders []issueRoleHolderRecord `json:"holders"`
@@ -129,10 +129,10 @@ func heldRole(ctx context.Context, q queryer, issueKey, session string) (string,
 }
 
 // issueRoleHoldersStatement reads an issue and its stored set, $1 the issue's key and $2 Legion's
-// roles in workflow order, which is the order the set is answered in, every other role after them
-// by name, and the sessions of one role by session. The left join answers one row with no holder
-// for an issue where no session holds a role, and no row for a key that no issue carries, so one
-// statement says both.
+// roles in the order of the default steps, which is the order the set is answered in, every other
+// role after them by name, and the sessions of one role by session. The left join answers one row
+// with no holder for an issue where no session holds a role, and no row for a key that no issue
+// carries, so one statement says both.
 const issueRoleHoldersStatement = `
 	select i.key, h.role, h.session, h.claim, h.works_step, h.recorded_at
 	from issues i

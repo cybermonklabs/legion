@@ -20,7 +20,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -104,7 +106,8 @@ type DispatchIssue struct {
 	// Observed is a fact made from Dispatch's view of an issue the workflow did not record when the
 	// fact was prepared (ObservedIssue), not from one event, so no actor is known to have written
 	// its state. It reaches only an issue still unrecorded when it applies, and only while no later
-	// event of the issue has applied (the mirror's sequence, record.DispatchIssueSeq): ApplyFact,
+	// issue fact of the issue has applied (the copy's applied sequence,
+	// record.Store.DispatchIssueApplied): ApplyFact,
 	// under the fact lock, applies Delivered in its place once the issue is recorded
 	// (release_children, or another delivery, recording it meanwhile), or nothing when Delivered is
 	// nil, so a state the view shows never reaches a record without the actor of the event that
@@ -701,9 +704,9 @@ func (r PullRequestReview) LegionSession() string {
 
 // LegionHead is the head the review says it read: the head field of the last Legion footer in the
 // review's body (lastLegionFooter). It is "" when the body carries no footer, the footer's JSON
-// cannot be parsed, it names no head, or the head it names is not a full commit SHA
-// (fullCommitSHA) - a short SHA or a branch name names no commit, since only the whole of it says
-// which code was read.
+// cannot be parsed, it names no head, or the head it names is not spelled as a head is
+// (reviewround.IsHead) - a short SHA or a branch name names no commit, since only the whole of it
+// says which code was read.
 //
 // The workflow holds a review the review App submitted to this rather than to CommitID because
 // GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
@@ -713,7 +716,7 @@ func (r PullRequestReview) LegionSession() string {
 // heads apart.
 func (r PullRequestReview) LegionHead() string {
 	head := r.lastLegionFooter().Head
-	if !fullCommitSHA(head) {
+	if !reviewround.IsHead(head) {
 		return ""
 	}
 	return head
@@ -742,21 +745,6 @@ func (r PullRequestReview) LegionEntry() int64 {
 		return 0
 	}
 	return int64(entry)
-}
-
-// fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
-// characters. Nothing shorter is compared with a head, since a prefix names a commit only by
-// chance and GitHub spells every head it reports this way.
-func fullCommitSHA(s string) bool {
-	if len(s) != 40 {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // Order is where the review falls among the pull request's reviews (record.ReviewOrder): when it
@@ -811,7 +799,8 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
 // an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round in accepting, and any other state leaves the
+// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
+// (accepting, in the default steps); any other state leaves the
 // approval standing where it is and tells the architect and the reviewer so (workflow's
 // reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
 // one GitHub would merge now, which Mergeable cannot.
@@ -1020,7 +1009,7 @@ type HandoffComplete struct {
 	// Entry is the entry of the role's phase the completing claim serves (the claim's
 	// ServingEntry, or the held task's on the route's fallback): the one value the route's entry
 	// fence reads. The workflow judges it again on the role's phases row under the fact's lock,
-	// with the same rule (EntryFence), and holds a review step's commit to it (R11): only a
+	// with the same rule (EntryFence), and holds a review step's commit to it: only a
 	// completion of the entry that stands, on a row that holds that entry's task, moves the step's
 	// reviewed commit. 0 where the claim serves no entry, which is judged by neither and moves no
 	// commit.
@@ -1048,8 +1037,9 @@ type BackwardMove struct {
 	// ReturnTo is the step of the issue's running task the move names as the one it returns to:
 	// its place in the task, 1 for its first. A move that names one goes to that place, judged as
 	// a failed step's returnTo is (workflow's returnStep), and its To must be the phase that step
-	// runs as. 0 names none, and the move goes to the one earlier place of its task that runs as
-	// To.
+	// runs as. 0 names none, and the move goes to the nearest earlier place of its task that runs
+	// as To (workflow's backwardPlace); where To is step and two earlier places run as step, it is
+	// refused, since it does not say which.
 	ReturnTo int
 	// PhaseEntry is, for a phase worker's move, the entry of the requester's phases row its claim
 	// serves (supervise.Claim.ServingEntry, the entry of the task its turn is on), which the route
@@ -1388,11 +1378,9 @@ func (f CloseRoot) Message() string {
 type ClaimFailed struct {
 	Issue string
 	Role  claim.Role
-	// Claim is the token of the claim that failed. Two claims of one issue can hold one role — a
-	// second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the agent of
-	// a key on a step of another role, beside that role's own claim of an earlier version of the
-	// plan — so the role does not name the claim: only the failure of the claim that works
-	// the role's step holds the issue, and only the failure of a look's claim ends that look
+	// Claim is the token of the claim that failed. Two claims of one issue can hold one role
+	// (record.WorkerClaim), so the role does not name the claim: only the failure of the claim that
+	// works the role's step holds the issue, and only the failure of a look's claim ends that look
 	// (workflow's claimFailed). It is "" on a fact from a daemon before the claim was carried,
 	// which keeps the role's rule.
 	Claim        claim.Token
@@ -1453,18 +1441,35 @@ func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 // pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): the claim is
 // suspended, charged nothing, and runs nothing while that pod stands (supervise's podRefused). It
 // is told on the issue and to the controller at the first refusal and hourly while the pod
-// stands. Queue asks for a start of the claim, which a refused launch no outbox start stood behind
-// needs, so that whatever replaces the pod resumes the claim.
+// stands, and the workflow queues a start of the claim wherever its outbox holds none that brings
+// the claim back, so that whatever replaces the pod resumes it (workflow's podRefusedLaunch).
 type PodRefusedLaunch struct {
 	Issue  string
 	Role   claim.Role
 	Claim  claim.Token
 	Pod    string
 	Detail string
-	Queue  bool
 }
 
 func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }
+
+// RefusedStartEnded is a start row of a claim that the outbox finished while the claim's last launch
+// stands refused by its issue's pod (supervise's Machine.RefusedPod), and that was not queued for
+// that same refusal (record.SuperviseRequest.RefusedPod): the refusal's own fact (PodRefusedLaunch)
+// may have read the row as the start that brings the claim back, so the workflow reads the claim's
+// queued starts again, now the row is gone, and queues its start wherever none stands (workflow's
+// refusedStartEnded). It tells nobody: the refusal did.
+type RefusedStartEnded struct {
+	Issue string
+	Role  claim.Role
+	Claim claim.Token
+	// Pod is the uid of the issue pod that refused the claim's last launch when the row ended
+	// (supervise.Machine.RefusedPod), which the start this fact queues is marked with
+	// (record.SuperviseRequest.RefusedPod).
+	Pod string
+}
+
+func (f RefusedStartEnded) namedIssue() (string, bool) { return f.Issue, true }
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
@@ -1491,6 +1496,30 @@ type MemoryGuardKill struct {
 }
 
 func (f MemoryGuardKill) namedIssue() (string, bool) { return f.Issue, true }
+
+// ControllerMemoryGuardKill is one process the memory guard of a gVisor controller pod ended with
+// SIGKILL because the pod was near its memory limit, or one that a microVM controller pod's own
+// kernel stopped because the pod ran out of memory (the report's Cause,
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the controller's session), as that pod's launcher reported it on the controller's
+// connection (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's
+// frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per report under
+// the id MemoryGuardKill's are applied under, `memory-guard-kill:<guard>:<sequence>`, which names
+// the kill once, so a report the launcher sent twice is applied once. For the kernel's kill,
+// <guard> is the id of the launcher's guest watch (memoryguard.Guest).
+//
+// Token and PodUID are the launcher session's own (the claim the connection authenticated for and
+// its pod), never anything the report says. The controller's pod is of no issue, so the fact names
+// none. The workflow tells the project's controller, in a controller notice of its own for each
+// kill, which of its programs was ended and why, in the note the report's Cause chooses
+// (workflow's controllerMemoryGuardKill).
+type ControllerMemoryGuardKill struct {
+	Token  claim.Token
+	PodUID string
+	Report shimwire.LauncherMemoryKill
+}
+
+func (ControllerMemoryGuardKill) namedIssue() (string, bool) { return "", false }
 
 // VolumeNearFull is one sweep of an issue pod's volume as its launcher reported it: the cache
 // trimmer in that pod's launcher process swept the cache roots and the volume was still above
@@ -1542,9 +1571,9 @@ type ClaimReady struct {
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
-// delivery started (supervise's confirm). The workflow changes nothing on it; admission takes it
-// as every other fact, so a root whose wait was held because its architect had not yet taken its
-// task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
+// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission
+// takes it as every other fact, so a root whose wait was held because its architect had not yet
+// taken its task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
 type TaskConfirmed struct {
 	Issue      string
 	Role       claim.Role
@@ -1770,43 +1799,6 @@ type Result struct {
 	Unspent   bool
 }
 
-type commitHooksKey struct{}
-
-// WithCommitHooks scopes OnCommit to one transaction: the returned function runs, in order, every
-// hook registered on the returned context, and the transaction's owner calls it once the
-// transaction has committed, never when it rolls back. ApplyFact is that owner for every fact.
-// The hook list is not goroutine-safe: a transaction's handlers run one after another on one
-// goroutine, and OnCommit must only be called on that goroutine.
-func WithCommitHooks(ctx context.Context) (context.Context, func()) {
-	hooks := &[]func(){}
-	return context.WithValue(ctx, commitHooksKey{}, hooks), func() {
-		for _, hook := range *hooks {
-			hook()
-		}
-	}
-}
-
-// OnCommit runs fn once the transaction ctx scopes has committed. Handler state kept in memory,
-// and the journal line saying what a fact did, must never claim more than what committed: a later
-// handler's failure rolls the transaction back, and a fact retried after a failed commit would say
-// it twice. OnCommit panics on a context no WithCommitHooks scopes, since a handler run outside
-// ApplyFact has no commit to wait for.
-func OnCommit(ctx context.Context, fn func()) {
-	hooks, ok := ctx.Value(commitHooksKey{}).(*[]func())
-	if !ok {
-		panic("intake.OnCommit outside a transaction's commit scope (intake.WithCommitHooks)")
-	}
-	*hooks = append(*hooks, fn)
-}
-
-// CommitScoped reports whether ctx is within a transaction's commit scope (WithCommitHooks): a
-// caller that wants a hook to run once the write it just made has committed can tell a transaction
-// that will commit from a write made outside any scope, which has no commit to wait for.
-func CommitScoped(ctx context.Context) bool {
-	_, ok := ctx.Value(commitHooksKey{}).(*[]func())
-	return ok
-}
-
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
 // Reasons is set on a refused plan alone (PlanRefused): one reason for each cause, each naming
 // its task where it has one, which the route writes beside the code; every other refusal is its
@@ -2003,11 +1995,19 @@ func stoppedSentence(issue, task, reason string) string {
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
-// a parent whose plan has no acceptance step, waits before its retro for the issues beneath it,
+// a parent whose last step is not the owner's acceptance, waits before its retro for the issues beneath it,
 // beneath (record.HoldForChildren): the last of them to leave starts the retro.
 func RetryOfHeldParent(issue string, beneath []string) *Refusal {
-	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: fmt.Sprintf(
-		"%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves. This retry changed nothing.", issue, strings.Join(beneath, ", "))}
+	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, beneath) + " This retry changed nothing."}
+}
+
+// HeldParentWaitsForChildren says why issue, a parent held before its retro for the issues beneath
+// it (record.HoldForChildren), still waits: beneath, the issues beneath it still open, the last of
+// which to leave starts the retro. It says what is true of the issue for whoever reads it, a
+// person beside a set-back todo included, and carries none of the architect's rules for ending a
+// child, which the architect's own retro-held notice gives.
+func HeldParentWaitsForChildren(issue string, beneath []string) string {
+	return fmt.Sprintf("%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves.", issue, strings.Join(beneath, ", "))
 }
 
 // RetryOfHeldParentUntilTreeRuns is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold
@@ -2114,7 +2114,7 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 //
 // An entry behind the row's whose run is another agent's is a turn of that agent
 // (AnotherAgentsStep): two agents of one role keep a row each, as `implementer:a tester:b
-// implementer:b` does once a failed review returns the task to key a's step 1 while key b's turn
+// implementer:b` does once a move back returns the task to key a's step 1 while key b's turn
 // of step 3 is still open. served, the claim the role's row on the served entry names, is then not
 // holder, the claim of the row the task stands at, whose entry's task goes to holder alone, so
 // StaleEntry's words, which tell the worker that task comes to it, would have it wait for nothing.
@@ -2147,10 +2147,8 @@ func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token,
 
 // StepsWorkerFence is the 409 HANDOFF_NOT_THE_STEPS_WORKER refusal of a completion by token, a
 // claim of role on issue, of a step whose run's row names another claim, holder, on a step of the
-// plan (stepTask), and nil where token works the step. Two claims of one issue can hold one role —
-// a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the agent of
-// a key on a step of another role, beside that role's own claim of an earlier version of the
-// plan — and the row names the one that works its step (record.WorkerClaim), so a completion
+// plan (stepTask), and nil where token works the step. Two claims of one issue can hold one role,
+// and the row names the one that works its step (record.WorkerClaim), so a completion
 // from the other is no report of the step. A row of no step (stepTask "") or one that names no
 // claim names no worker, and a completion that names no claim, from a route before the claim was
 // carried, is judged by its role. A completion of an entry token's own claim served (served,
@@ -2245,17 +2243,17 @@ const StaleEntryInstruction = "End this turn without completing. The task of the
 // (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
 //
 // Unless the entry the completion serves is of another of the role's steps or its retro, or of an
-// earlier run of this step that the task left for one of them (otherStep). A role can
-// stand at two steps of a task, one agent doing both, and a forward move enters the later one: the
-// reviewer's approval in `implementer:a reviewer implementer:a` hands the implementer step 3 at the
-// head step 1 left, while the agent's turn of step 1 can still be open. The two steps ask for
-// different work, so the same head is not the same work between them, and the first entry of the
-// role's other step asks for work no verdict of an earlier step answers, as a move back's entry
-// does. A row holds only the entry it stands on, and a step's start raises its entry above every
-// row of its role (workflow's enter), so the caller says it from the rows: the served entry is at
-// or below the entry another step's row of the role holds (EntryFence's otherSteps). That also
-// refuses an earlier entry of this same step that the role left for another step and came back
-// from, a turn that outlived a step the task stood at since.
+// earlier run of this step that the task left for one of them (otherStep). A role can stand at two
+// steps of a task, one agent doing both or one agent each, and a forward move enters the later
+// one: the reviewer's approval in `implementer:a reviewer implementer:a` hands the implementer
+// step 3 at the head step 1 left, while the agent's turn of step 1 can still be open. The two steps
+// ask for different work, so the same head is not the same work between them, and the first entry
+// of the role's other step asks for work no verdict of an earlier step answers, as a move back's
+// entry does. A row holds only the entry it stands on, and a step's start raises its entry above
+// every row of its role (workflow's enter), so the caller says it from the rows: the served entry
+// is at or below the entry another step's row of the role holds (EntryFence's otherSteps). That
+// also refuses an earlier entry of this same step that the role left for another step and came
+// back from, a turn that outlived a step the task stood at since.
 //
 // Otherwise the clause is the commit the completion gave, or that it gave none, against the head
 // the record holds for the issue, or that it holds no pull request at all; and, where movedBack,
@@ -2307,9 +2305,8 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 // Where staleCompletion sends the same completion again — a run's completion is the right work,
 // arrived early — this one does not, and that is the whole difference between the two: an entry
 // is new only because the phase was entered again, so the task it hands the role is work of its
-// own. A head that starts conflicting with its base takes the issue back to implementing, and
-// the testing entry the implementer's merge forward then raises is for a new head, so a verdict
-// reported for the head before it would stand as that new head's. The worker does the new
+// own. A move back raises a new entry of the step it returns to, whose work is done again, so a
+// verdict reported for the earlier entry would stand as the new entry's. The worker does the new
 // task's work and writes a handoff of its own for it, which StaleEntryInstruction says.
 //
 // clause says what refused this completion (BehindEntryClause).
@@ -2358,23 +2355,6 @@ func PlanRatingUnexpected(what string) *Refusal {
 		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
 }
 
-// Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'
-// positions in and reads what it has already applied from. In the daemon it is always the store's
-// guarded pool (store.Pool), and that is the point of the hand-over: a handler that asks the pool
-// for a second connection while the fact's own transaction holds one — under the global fact lock
-// every other fact queues behind — is refused at that call (store.ErrNestedAcquire) instead of
-// waiting for a connection only it can give back (INFRA-3169).
-//
-// It is named as the three methods the intake uses rather than as that one type because the
-// packages that measure the handlers against a real Postgres — the workflow engine's and
-// admission's tests — open pools of their own and apply facts straight on them, and the guard has
-// nothing to say about a pool a test owns. Nothing in the daemon opens a pool but the store.
-type Pool interface {
-	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the
 // API, or supervision. It records the event before running handlers, skips duplicates before any
 // handler runs, remembers the first refusal while completing every handler, and rolls all writes
@@ -2382,7 +2362,8 @@ type Pool interface {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer).
+// last message it applied (openConsumer). The fact commits through store.Transact, so a fact whose
+// commit's reply is lost is reported by what the store says of it.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -2406,104 +2387,91 @@ type Pool interface {
 // Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
 // the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
 // Reconcile.
-func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return Result{}, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-	if err := SerializeFacts(ctx, tx); err != nil {
-		return Result{}, fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
-	}
-
-	fresh, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
-	if err != nil {
-		return Result{}, err
-	}
-	// A duplicate records its position too: it is acknowledged as applied, so its consumer is past
-	// it either way.
-	if err := recordStreamPosition(ctx, tx); err != nil {
-		return Result{}, err
-	}
-	if !fresh {
-		if err := tx.Commit(ctx); err != nil {
-			return Result{}, err
-		}
-		committed = true
-		return Result{Duplicate: true}, nil
-	}
-
-	fact, apply, err := settleObserved(ctx, tx, fact)
-	if err != nil {
-		return Result{}, err
-	}
-	if !apply {
-		handlers = nil
-	}
-	ctx, committedHooks := WithCommitHooks(ctx)
-	ctx, settle := OpenSettlers(ctx, handlers...)
 	var result Result
-	for _, handler := range handlers {
-		candidate, err := handler.Apply(ctx, tx, fact)
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
+		}
+		fresh, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
 		if err != nil {
-			return Result{}, err
+			return err
 		}
-		if result.Refusal == nil && candidate.Refusal != nil {
-			result.Refusal = candidate.Refusal
+		// A duplicate records its position too: it is acknowledged as applied, so its consumer is
+		// past it either way.
+		if err := recordStreamPosition(ctx, tx); err != nil {
+			return err
 		}
-		result.Unspent = result.Unspent || candidate.Unspent
-	}
-	if err := settle(ctx, tx); err != nil {
+		if !fresh {
+			result = Result{Duplicate: true}
+			return nil
+		}
+
+		fact, apply, err := settleObserved(ctx, tx, fact)
+		if err != nil {
+			return err
+		}
+		if !apply {
+			handlers = nil
+		}
+		ctx, settle := OpenSettlers(ctx, handlers...)
+		for _, handler := range handlers {
+			candidate, err := handler.Apply(ctx, tx, fact)
+			if err != nil {
+				return err
+			}
+			if result.Refusal == nil && candidate.Refusal != nil {
+				result.Refusal = candidate.Refusal
+			}
+			result.Unspent = result.Unspent || candidate.Unspent
+		}
+		if err := settle(ctx, tx); err != nil {
+			return err
+		}
+		// A refused report of a production check leaves its event unmarked, so a report sent
+		// again — the same look and verdict, which is the same fact id its route mints (api's
+		// checkReport) — applies instead of being answered as one already received. Beside it, a
+		// handler leaves a fact unmarked only where the refusal's cause can clear without changing
+		// the fact's id (Result.Unspent). An unmarked refusal of any other fact would make a
+		// refused handoff apply on its next delivery, which those refusals exist to stop.
+		_, report := fact.(CheckReport)
+		if (report && result.Refusal != nil) || result.Unspent {
+			return record.NewStore().ForgetProcessed(ctx, tx, source, eventID)
+		}
+		return nil
+	}); err != nil {
 		return Result{}, err
 	}
-	// A refused report of a production check leaves its event unmarked, so a report sent again —
-	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —
-	// applies instead of being answered as one already received. Beside it, a handler leaves a
-	// fact unmarked only where the refusal's cause can clear without changing the fact's id
-	// (Result.Unspent). An unmarked refusal of any other fact would make a refused handoff apply
-	// on its next delivery, which those refusals exist to stop (dispatch://INFRA-714/spec R12).
-	_, report := fact.(CheckReport)
-	if (report && result.Refusal != nil) || result.Unspent {
-		if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
-			return Result{}, err
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Result{}, err
-	}
-	committed = true
-	committedHooks()
 	return result, nil
 }
 
-// Applied is which of eventIDs from source ApplyFact has already applied, read in one query and
-// outside the fact lock. A fact's processed_events row commits with the fact, and only a refused
-// production check report or a fact a handler left unspent removes its own (ApplyFact), so an id
-// read here as applied is one ApplyFact would only take the lock to skip. A caller that
-// replays many facts it has most likely applied before (the boot's terminal replay) applies only
-// the rest: the duplicates cost one read between them, not a transaction each queued on the lock
-// behind every live fact.
+// Applied is which of eventIDs from source ApplyFact has already applied, read in one read-only
+// transaction and outside the fact lock. A fact's processed_events row commits with the fact, and
+// only a refused production check report or a fact a handler left unspent removes its own
+// (ApplyFact), so an id read here as applied is one ApplyFact would only take the lock to skip. A
+// caller that replays many facts it has most likely applied before (the boot's terminal replay)
+// applies only the rest: the duplicates cost one read-only transaction between them, not a
+// transaction each queued on the lock behind every live fact.
 //
 // ApplyFact records each id as the store keeps it (storetext.Text), so the ids are looked up as
 // the store keeps them, and each one found is answered under the id the caller gave: a caller that
 // looks up its own id finds it, whatever the rule made of it.
-func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (map[string]bool, error) {
+func Applied(ctx context.Context, pool store.TxPool, source string, eventIDs []string) (map[string]bool, error) {
 	applied := make(map[string]bool, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return applied, nil
 	}
 	stored := storetext.Strings(eventIDs)
-	rows, err := pool.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, storetext.Text(source), stored)
-	if err != nil {
-		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	var ids []string
+	err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, storetext.Text(source), stored)
+		if err != nil {
+			return err
+		}
+		ids, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}
@@ -2526,10 +2494,13 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 // or nothing when it was prepared in place of none. Every other fact applies as it is, so no
 // handler sees Observed or Delivered.
 //
-// A view older than an event of the issue the daemon has already applied (the mirror, which every
-// applied issue event writes first, holds a later sequence) applies nothing while the issue is
-// unrecorded: Dispatch has said something since, which the view does not show — a person's
-// withdrawal after the release's write, say — and that later event, applied, recorded no issue.
+// A view older than an issue fact of the issue the daemon has already applied (the copy's applied
+// sequence, record.Store.DispatchIssueApplied, which blockers.Mirror raises for every applied issue
+// fact) applies nothing while the issue is unrecorded: Dispatch has said something since, which the
+// view does not show — a person's withdrawal after the release's write, say — and that later fact,
+// applied, recorded no issue. A reading that decides nothing does not count: the periodic turn's
+// re-read and a listing take Dispatch's last sequence of the issue, which a comment, a document
+// edit, an ask or a claim raises too, and none of those reaches the handlers as an issue fact.
 func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, error) {
 	issue, ok := fact.(DispatchIssue)
 	if !ok || !issue.Observed {
@@ -2542,11 +2513,11 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 	}
 	switch {
 	case recorded == nil:
-		mirrored, found, err := store.DispatchIssueSeq(ctx, tx, issue.Key)
+		applied, err := store.DispatchIssueApplied(ctx, tx, issue.Key)
 		if err != nil {
 			return nil, false, err
 		}
-		if found && mirrored > issue.Seq {
+		if applied > issue.Seq {
 			return nil, false, nil
 		}
 		issue.Observed, issue.Delivered = false, nil

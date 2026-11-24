@@ -1170,6 +1170,42 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 	}
 }
 
+// A claim whose refused launch's fact the store has not taken (api.OperatorClaim.UnrecordedRefusal)
+// prints the cause word `refusal-unrecorded` beside its state, where a claim with no failure record
+// prints `-`: the daemon tries such a fact again for as long as it fails, and nothing else on the
+// listing says that the claim waits on a fact the store does not take. A claim that failed prints
+// the cause it failed with instead, which is why it runs nothing; `--json` carries both.
+func TestClaimLineNamesARefusalTheStoreHasNotRecorded(t *testing.T) {
+	unrecorded := &api.UnrecordedRefusalView{Since: time.Date(2026, 11, 23, 17, 0, 0, 0, time.UTC), Attempts: 4, Error: "the database did not answer"}
+	for _, tc := range []struct {
+		name  string
+		claim api.OperatorClaim
+		want  string
+	}{
+		{
+			name: "suspended for its pod",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-208-tester", Role: "tester", Issue: "LEGION-208",
+				State: "suspended", SuspendedBy: "daemon", Generation: 2, PluginContract: api.DaemonAPIVersion, UnrecordedRefusal: unrecorded},
+			want: "legion-legion-legion-208-tester tester LEGION-208 suspended refusal-unrecorded 2 " + thisBinarysContract + " - - - -\n",
+		},
+		{
+			name: "failed",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-208-tester", Role: "tester", Issue: "LEGION-208",
+				State: "failed", Generation: 2, PluginContract: api.DaemonAPIVersion, UnrecordedRefusal: unrecorded,
+				Failure: &api.ClaimFailureView{Cause: supervise.CauseLaunchRefused, Detail: "launch failures ran out"}},
+			want: "legion-legion-legion-208-tester tester LEGION-208 failed launch_refused 2 " + thisBinarysContract + " - - - -\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			writeClaimLine(&out, tc.claim)
+			if out.String() != tc.want {
+				t.Fatalf("claim line = %q, want %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
 // dispatch://INFRA-1274: the claim line's call column names the tool call the claim's agent is
 // in — the tool, the call id its stream's frames pair by, and when the daemon received the start
 // — so an operator reading `legion claims list` sees what a worker that has shown as working for

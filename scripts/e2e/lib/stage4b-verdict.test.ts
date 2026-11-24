@@ -124,11 +124,12 @@ const watchPod = (
     },
   },
 });
-// claimFailed is a supervise: claim failed daemon-log line for ISSUE's ROLE, dated AT, with the
-// one reason limit_pending_exhausted reads (launch failures ran out), the run label fixed at x.
-const claimFailed = (issue: string, role: string, at: string) => ({
+// claimFailed is a supervise: claim failed daemon-log line for ISSUE's agent AGENT, dated AT, with
+// the one reason limit_pending_exhausted reads (launch failures ran out), the run label fixed at x:
+// its claim token is the daemon's (claim.AgentToken), so ISSUE is a Dispatch key.
+const claimFailed = (issue: string, agent: string, at: string) => ({
   msg: "supervise: claim failed",
-  claim: `legion-x-${issue.toLowerCase()}-${role}`,
+  claim: `legion-x-${issue.toLowerCase()}-${agent}`,
   why: "launch failures ran out",
   time: at,
 });
@@ -454,38 +455,38 @@ pass`
     [
       "a pod starved before an earlier check began, its claim long since failed",
       {
-        subject: "T1",
+        subject: "T-1",
         watch: [
           watchPod(
-            "legion-x-t1",
+            "legion-x-t-1",
             "uid-earlier",
-            "T1",
+            "T-1",
             "False",
             "Unschedulable",
             "2026-09-30T11:00:00Z"
           ),
         ],
-        daemonLog: [claimFailed("T1", "implementer", "2026-09-30T11:30:00Z")],
-        events: [limitEvent("legion-x-t1", "uid-earlier", "2026-09-30T11:30:05Z")],
+        daemonLog: [claimFailed("T-1", "implementer", "2026-09-30T11:30:00Z")],
+        events: [limitEvent("legion-x-t-1", "uid-earlier", "2026-09-30T11:30:05Z")],
       },
     ],
     [
       "an earlier incarnation of the issue's pod deleted before the claim failed",
       {
-        subject: "T1",
+        subject: "T-1",
         watch: [
           watchPod(
-            "legion-x-t1",
+            "legion-x-t-1",
             "uid-deleted-earlier",
-            "T1",
+            "T-1",
             "False",
             "Unschedulable",
             "2026-09-30T11:50:00Z",
             "2026-09-30T12:02:00Z"
           ),
         ],
-        daemonLog: [claimFailed("T1", "implementer", "2026-09-30T12:05:00Z")],
-        events: [limitEvent("legion-x-t1", "uid-deleted-earlier", "2026-09-30T11:50:05Z")],
+        daemonLog: [claimFailed("T-1", "implementer", "2026-09-30T12:05:00Z")],
+        events: [limitEvent("legion-x-t-1", "uid-deleted-earlier", "2026-09-30T11:50:05Z")],
       },
     ],
     ["no pod Pending and no claim failed on the pool's limits", { subject: "T1" }],
@@ -501,24 +502,24 @@ pass`
 
   test("says BLOCKED on capacity for a pod the scheduler placed only after its claim's launch failures ran out", () => {
     const exhausted = controllerRun("[]", "timeout", {
-      subject: "T1",
+      subject: "T-1",
       watch: [
         watchPod(
-          "legion-x-t1",
+          "legion-x-t-1",
           "uid-exhausted",
-          "T1",
+          "T-1",
           "False",
           "Unschedulable",
           "2026-09-30T11:55:00Z"
         ),
-        watchPod("legion-x-t1", "uid-exhausted", "T1", "True", undefined, "2026-10-02T10:10:00Z"),
+        watchPod("legion-x-t-1", "uid-exhausted", "T-1", "True", undefined, "2026-10-02T10:10:00Z"),
       ],
-      daemonLog: [claimFailed("T1", "implementer", "2026-09-30T12:00:30Z")],
-      events: [limitEvent("legion-x-t1", "uid-exhausted", "2026-09-30T12:00:05Z")],
+      daemonLog: [claimFailed("T-1", "implementer", "2026-09-30T12:00:30Z")],
+      events: [limitEvent("legion-x-t-1", "uid-exhausted", "2026-09-30T12:00:05Z")],
     });
     expect(exhausted.code).toBe(1);
     expect(exhausted.stdout).toContain(
-      `CHECK controller: BLOCKED: capacity: the legion pool is at its limits, so the scheduler cannot place pod uid uid-exhausted, issue T1, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:00:05Z: ${JSON.stringify(limitMessage)}`
+      `CHECK controller: BLOCKED: capacity: the legion pool is at its limits, so the scheduler cannot place pod uid uid-exhausted, issue T-1, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:00:05Z: ${JSON.stringify(limitMessage)}`
     );
     expect(exhausted.stdout).toContain("stage 4b e2e: BLOCKED (check controller)");
     expect(exhausted.stdout).not.toContain("CHECK controller: FAIL");
@@ -530,30 +531,66 @@ pass`
     // moving forward; only its first observation, fixed at the event's creation, says whether it
     // was already true by the time the claim failed.
     const redone = controllerRun("[]", "timeout", {
-      subject: "T1",
+      subject: "T-1",
       watch: [
         watchPod(
-          "legion-x-t1",
+          "legion-x-t-1",
           "uid-redone",
-          "T1",
+          "T-1",
           "False",
           "Unschedulable",
           "2026-09-30T11:55:00Z"
         ),
-        watchPod("legion-x-t1", "uid-redone", "T1", "True", undefined, "2026-10-02T10:10:00Z"),
+        watchPod("legion-x-t-1", "uid-redone", "T-1", "True", undefined, "2026-10-02T10:10:00Z"),
       ],
-      daemonLog: [claimFailed("T1", "implementer", "2026-09-30T12:00:30Z")],
+      daemonLog: [claimFailed("T-1", "implementer", "2026-09-30T12:00:30Z")],
       events: [
-        limitEvent("legion-x-t1", "uid-redone", "2026-09-30T12:10:00Z", "2026-09-30T12:00:05Z"),
+        limitEvent("legion-x-t-1", "uid-redone", "2026-09-30T12:10:00Z", "2026-09-30T12:00:05Z"),
       ],
     });
     expect(redone.code).toBe(1);
     expect(redone.stdout).toContain(
-      `CHECK controller: BLOCKED: capacity: the legion pool is at its limits, so the scheduler cannot place pod uid uid-redone, issue T1, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:10:00Z: ${JSON.stringify(limitMessage)}`
+      `CHECK controller: BLOCKED: capacity: the legion pool is at its limits, so the scheduler cannot place pod uid uid-redone, issue T-1, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:10:00Z: ${JSON.stringify(limitMessage)}`
     );
     expect(redone.stdout).toContain("stage 4b e2e: BLOCKED (check controller)");
     expect(redone.stdout).not.toContain("CHECK controller: FAIL");
   });
+
+  // A claim token ends in its agent's name, which is a role, a role the deployment defines (which
+  // may hold a "-"), or a numbered name such as implementer-2 for a second agent of one role; the
+  // daemon's claim.Token.Cut splits it after the issue key, so the issue is ACME-12 either way.
+  for (const agent of ["implementer-2", "code-checker"]) {
+    test(`says BLOCKED on capacity for a claim of the agent ${agent} whose launch failures ran out`, () => {
+      const numbered = controllerRun("[]", "timeout", {
+        subject: "ACME-12",
+        watch: [
+          watchPod(
+            "legion-x-acme-12",
+            "uid-agent",
+            "ACME-12",
+            "False",
+            "Unschedulable",
+            "2026-09-30T11:55:00Z"
+          ),
+          watchPod(
+            "legion-x-acme-12",
+            "uid-agent",
+            "ACME-12",
+            "True",
+            undefined,
+            "2026-10-02T10:10:00Z"
+          ),
+        ],
+        daemonLog: [claimFailed("ACME-12", agent, "2026-09-30T12:00:30Z")],
+        events: [limitEvent("legion-x-acme-12", "uid-agent", "2026-09-30T12:00:05Z")],
+      });
+      expect(numbered.code).toBe(1);
+      expect(numbered.stdout).toContain(
+        `CHECK controller: BLOCKED: capacity: the legion pool is at its limits, so the scheduler cannot place pod uid uid-agent, issue ACME-12, unschedulable before its claims launch failures ran out: Karpenter at 2026-09-30T12:00:05Z: ${JSON.stringify(limitMessage)}`
+      );
+      expect(numbered.stdout).toContain("stage 4b e2e: BLOCKED (check controller)");
+    });
+  }
 });
 
 // interests_outside is tested directly, by value: it is a pure jq filter over a fixture of

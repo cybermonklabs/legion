@@ -94,7 +94,10 @@ func TestAnAcceptedIssueLaunchersResolverHandsItTheDeploymentsTrimmerSettings(t 
 
 // One acknowledgement carries what the pod's memory guard and its cache trimmer each run by, side
 // by side (launcherHelloAck): a deployment that configures both hands an issue pod's launcher
-// both, neither in place of the other, and the controller's launcher neither.
+// both, neither in place of the other, and the controller's launcher neither, which this
+// deployment's controller block leaves unset and whose pod runs no trimmer: that launcher is told
+// KernelKills alone, as every launcher is, since its pod runs in a microVM where the project's
+// sandbox is one.
 func TestAnAcceptedLaunchersAcknowledgementCarriesTheGuardsAndTheTrimmersSettingsTogether(t *testing.T) {
 	guard := shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
 	trim := shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}
@@ -113,8 +116,9 @@ func TestAnAcceptedLaunchersAcknowledgementCarriesTheGuardsAndTheTrimmersSetting
 	if handler == nil {
 		t.Fatalf("the controller's launcher was refused: %s", reason)
 	}
-	if ack != (shimwire.LauncherHelloAck{}) {
-		t.Fatalf("the controller's launcher was answered memory guard %+v and trimmer %+v, want neither", ack.MemoryGuard, ack.VolumeTrim)
+	if want := (shimwire.LauncherHelloAck{KernelKills: true}); ack != want {
+		t.Fatalf("the controller's launcher was answered memory guard %+v, trimmer %+v and kernelKills %t, want neither and kernelKills",
+			ack.MemoryGuard, ack.VolumeTrim, ack.KernelKills)
 	}
 }
 

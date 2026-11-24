@@ -100,7 +100,7 @@ func (s rollBackStore) entry(key, role string) {
 // pullRequest is key's pull request, #number, in state.
 func (s rollBackStore) pullRequest(key string, number int, state record.PullRequestState) {
 	s.t.Helper()
-	if err := pgx.BeginFunc(s.t.Context(), s.store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(s.t.Context(), s.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(s.t.Context(), tx, record.PullRequest{Issue: key, Repo: "sjawhar/legion", Number: number,
 			Branch: "legion/" + key, HeadSHA: "head-" + key, State: state, MergeState: record.MergeStateClean, Failing: []string{}})
 	}); err != nil {
@@ -392,7 +392,8 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 		s.row(key, "step", 4, "ended")
 		s.row(key, "step", 5, "open")
 	}
-	// LEGION-281 ran its retro and its merge once before, and a conflict sent it back.
+	// LEGION-281 ran its retro and its merge once before, and a move back brought it to
+	// accepting again.
 	s.row("LEGION-281", "retro", 0, "ended")
 	s.row("LEGION-281", "merge", 0, "ended")
 	s.wayBack()

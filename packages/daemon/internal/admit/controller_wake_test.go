@@ -287,9 +287,9 @@ func TestEachClaimsProviderErrorsNoticeStandsWhileAnothersWaits(t *testing.T) {
 	})
 }
 
-// Two claims can hold one role of an issue: a keyed agent on a step of another role, here the
-// agent `implementer` on the tester's step, beside the tester's own claim from an earlier version
-// of the plan. Each is a claim of its own whose turns can keep failing, so the notice names its
+// Two claims of one issue can hold one role (record.WorkerClaim): here the agent `implementer` on
+// the tester's step, beside the tester's own claim from an earlier version of the plan. Each is a
+// claim of its own whose turns can keep failing, so the notice names its
 // claim and the claim is the key: each of the two gets its notice, and the same claim failing
 // again finds its own notice waiting.
 func TestTwoClaimsOfOneRoleEachGetTheirProviderErrorsNotice(t *testing.T) {

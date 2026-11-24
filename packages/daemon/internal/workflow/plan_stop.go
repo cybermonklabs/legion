@@ -233,8 +233,12 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // issue stood in ended when the task stopped (stopTask), so none is ended here. A task that ran
 // raises its pass, so that a completion of this run takes a key of its own (the completion key
 // names the task and its pass), and no pair, round or hook is counted, since no step failed; a
-// new task keeps its counts of zero. The act is task_restarted, which the log line names: no row
-// of the table moves a held issue.
+// new task keeps its counts of zero. After the start, the restart does what a move does after its
+// start: it queues the reconcile of the tree's news (queueMovedNews), and it acts on the pull
+// request's merge forward as a move from the phase the hold is from into step 1's phase does
+// (mergeForwardOnEntry), so a restart into implementing drops an ask made before the hold, which
+// would otherwise hold back every later ask of its head (mergeForward asks once for each head).
+// The act is task_restarted, which the log line names: no row of the table moves a held issue.
 //
 // Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
 // for its stop is never done or left, since each write of done or left clears the issue's hold in
@@ -278,16 +282,22 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	// The role of the task's first step (Walk.RoleAt), so a first step of a role the deployment
 	// defines starts that role again.
 	role := w.RoleAt(record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-	if err := e.clearHandoff(ctx, tx, issue, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue, w, role); err != nil {
 		return err
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
-	return e.start(ctx, tx, issue, w, role, func(at Standing) string {
+	if err := e.start(ctx, tx, issue, w, role, func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
-	}, true)
+	}, true); err != nil {
+		return err
+	}
+	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
+		return err
+	}
+	return e.mergeForwardOnEntry(ctx, tx, issue, w)
 }
 
 // waitForFirstStep ends the stop of w's task of issue, a task stopped before its first step went

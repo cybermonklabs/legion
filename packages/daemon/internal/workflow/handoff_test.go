@@ -183,7 +183,7 @@ func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
 	}
 }
 
-// A role's completion of a phase is taken whether it names a commit or not: the planner, the
+// A role's completion of a file-backed phase is taken whether it names a commit or not: the planner, the
 // tester and the reviewer send one only when their record names a head, so a taken completion
 // can hold a record and no commit. Such a role has reported its phase. Once the issue has left
 // that phase, a further completion of the role - here the reviewer's, naming a newer record after

@@ -12,7 +12,8 @@ func (s *server) documentOwnerForHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	owner, ok := s.documentOwnerForHandler(w, r)
@@ -24,7 +25,7 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	asks, _, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, owner, state)
+	asks, _, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, who, owner, state)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -72,7 +73,8 @@ func (s *server) createArtifactComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listArtifactEvents(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	owner, ok := s.documentOwnerForHandler(w, r)
@@ -84,7 +86,7 @@ func (s *server) listArtifactEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	events, err := s.readEvents(r.Context(), owner, options)
+	events, err := s.readEvents(r.Context(), who, owner, options)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

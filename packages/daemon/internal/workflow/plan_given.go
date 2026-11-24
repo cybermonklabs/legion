@@ -145,15 +145,24 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 // (record.KeySessionsOf), read in tx with the rows a version is named from: the claim of such a
 // name and the session it holds wait for the key whatever the rows still name (record.NameAgents).
 func (e *Engine) keySessions(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.KeySessions, error) {
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return nil, fmt.Errorf("the claims of %s: %w", issue.Key, err)
-	}
-	claims, err := e.store.IssueClaims(ctx, tx, project, issue.Key)
+	_, claims, err := e.issueClaims(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
 	return record.KeySessionsOf(claims), nil
+}
+
+// issueClaims is the claims' token of issue's project (claim.ProjectToken) and every stored claim
+// of issue under it, in any state (record.Store's IssueClaims): the one read of an issue's claims
+// the workflow makes, which the names a key holds (keySessions) and the claims a request reaches
+// (claimTargets) read.
+func (e *Engine) issueClaims(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, []record.IssueClaim, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", nil, fmt.Errorf("the claims of %s: %w", issue.Key, err)
+	}
+	claims, err := e.store.IssueClaims(ctx, tx, project, issue.Key)
+	return project, claims, err
 }
 
 // refusalUnless is refusal where err is nil, and nil where a read failed, which answers the error

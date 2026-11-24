@@ -1,9 +1,15 @@
 package legion
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestASessionTitleNamesARoleAndItsIssue is the title parsing every rule reads a Legion session
-// through (packages/pi-legion/src/session-title.ts).
+// through (packages/pi-legion/src/session-title.ts). The role is one of Legion's six or a role the
+// deployment defines, a name of the role grammar but the controller's (legionclaim.IsRole): the
+// owner's acceptance step and a role with a "-" in it among them. A name outside the grammar is no
+// role, and so is no Legion session's title.
 func TestASessionTitleNamesARoleAndItsIssue(t *testing.T) {
 	for _, one := range []struct {
 		title string
@@ -13,7 +19,13 @@ func TestASessionTitleNamesARoleAndItsIssue(t *testing.T) {
 		{"Legion implementer · INFRA-1077", SessionTitle{Role: "implementer", Issue: "INFRA-1077"}, true},
 		{"Legion architect · INFRA-979", SessionTitle{Role: "architect", Issue: "INFRA-979"}, true},
 		{"Legion controller · INFRA", SessionTitle{Role: "controller", Project: "INFRA", Controller: true}, true},
-		{"Legion gardener · INFRA-1", SessionTitle{}, false},
+		{"Legion checker · INFRA-1", SessionTitle{Role: "checker", Issue: "INFRA-1"}, true},
+		{"Legion acceptance · INFRA-1", SessionTitle{Role: "acceptance", Issue: "INFRA-1"}, true},
+		{"Legion code-check · INFRA-1", SessionTitle{Role: "code-check", Issue: "INFRA-1"}, true},
+		{"Legion " + strings.Repeat("r", 32) + " · INFRA-1", SessionTitle{Role: strings.Repeat("r", 32), Issue: "INFRA-1"}, true},
+		{"Legion " + strings.Repeat("r", 33) + " · INFRA-1", SessionTitle{}, false},
+		{"Legion Gardener · INFRA-1", SessionTitle{}, false},
+		{"Legion 1checker · INFRA-1", SessionTitle{}, false},
 		{"Legion architect", SessionTitle{}, false},
 		{"A person's session", SessionTitle{}, false},
 		{"", SessionTitle{}, false},
@@ -31,8 +43,9 @@ func TestASessionTitleNamesARoleAndItsIssue(t *testing.T) {
 }
 
 // TestRoleSessionWorksIsTheTitleHalfOfPhaseWork: the one rule both reads of the phase-work fact
-// ask (PhaseWorkKeys for the metrics, PhaseWorkOf for the board) — a phase worker or a root
-// architect of that very issue, never a controller, and never a role working another issue.
+// ask (PhaseWorkKeys for the metrics, PhaseWorkOf for the board) — a phase worker, a role the
+// deployment defines or a root architect of that very issue, never a controller, and never a role
+// working another issue.
 func TestRoleSessionWorksIsTheTitleHalfOfPhaseWork(t *testing.T) {
 	for _, one := range []struct {
 		title, issue string
@@ -40,6 +53,7 @@ func TestRoleSessionWorksIsTheTitleHalfOfPhaseWork(t *testing.T) {
 	}{
 		{"Legion implementer · INFRA-1077", "INFRA-1077", true},
 		{"Legion architect · INFRA-1077", "INFRA-1077", true},
+		{"Legion checker · INFRA-1077", "INFRA-1077", true},
 		{"Legion implementer · INFRA-1077", "INFRA-980", false},
 		{"Legion controller · INFRA", "INFRA", false},
 		{"A person's session", "INFRA-1077", false},

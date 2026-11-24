@@ -60,10 +60,11 @@ as the review App. In Dispatch, the issue's header links the pull request.
 
 ## 6. The acceptance
 
-When the reviewer approves, the architect reads the evidence (the tester's handoff, each check of
-the issue with its latest result, the approval of the head) and accepts the change with a comment on the
-issue, which moves it to `retro`; a change that falls short goes back to the implementer or the
-tester instead. Retro runs next.
+On the default steps, when the reviewer approves, the architect reads the evidence (the tester's
+handoff, each check of the issue with its latest result, the approval of the head) and accepts the
+change: it posts a comment on the issue, then signs off with the `legion` tool's `sign_off`, which
+moves the issue to `retro`, since the acceptance is the last of the default steps. A change that
+falls short goes back to an earlier step of its task instead. Retro runs next.
 
 ## 7. The merge
 
@@ -77,9 +78,9 @@ them. It closes the issue: the daemon reads the merged pull request and moves th
 
 ## 8. The production check
 
-After the close the tester gets the production check in its live session — the role your
-project's `production_check` names, which is the tester unless the setting is `off`, where no
-check opens. It asks your deploy
+After the close the tester gets the production check in its live session, or in a fresh one where
+the task had no tester step — the role your project's `production_check` names, which is the
+tester unless the setting is `off`, where no check opens. It asks your deploy
 role to carry the merge and waits for no reply; when production does not carry the merge yet, or
 carries it with a requirement only the deploy can show still unobserved, it reports `pending` with
 `wake_at`, the time it wants to look again, its pod goes, and the daemon brings it back at that
@@ -87,8 +88,7 @@ time, until the check's last look, where such a requirement still unobserved is 
 or not production carries the merge. Nothing else wakes a check. The look that finds the merge in
 production drives the change and records the result of
 the issue's `after_merge` check, naming the merge commit and what woke the look, with that
-result's line on the pull request. A closed issue takes such a result, a comment and a message,
-and no other write.
+result's line on the pull request. A closed issue takes such a result, a comment and a message.
 
 ## The operator's view
 

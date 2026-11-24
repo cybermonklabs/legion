@@ -225,7 +225,7 @@ func TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake(t *testing.T) {
 		{"an issue with a wildcard", http.MethodGet, "/v1/legion/agents?issue=INFRA-448.%3E", "", http.StatusBadRequest, "issue"},
 		{"a path naming another session", http.MethodPut, "/v1/legion/agents/sessions/ses-other", good, http.StatusBadRequest, `is not the path's`},
 		{"a path id the registry refuses", http.MethodPut, "/v1/legion/agents/sessions/ses.bad", good, http.StatusBadRequest, "session_id"},
-		{"a role outside the six", http.MethodPut, "/v1/legion/agents/sessions/ses-bad", badRole, http.StatusBadRequest, "role"},
+		{"the controller's role, which no issue holds", http.MethodPut, "/v1/legion/agents/sessions/ses-bad", badRole, http.StatusBadRequest, "role"},
 		{"a token built from another project", http.MethodPut, "/v1/legion/agents/sessions/ses-good", wrongProject, http.StatusBadRequest, "role_token"},
 		{"a body that is not JSON", http.MethodPut, "/v1/legion/agents/sessions/ses-good", "{", http.StatusBadRequest, "invalid json"},
 		{"a batch with a bad member", http.MethodPut, "/v1/legion/agents", `{"entries":[` + good + `,` + badRole + `]}`, http.StatusBadRequest, "entries[1]"},

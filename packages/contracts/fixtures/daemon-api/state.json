@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 222,
-    "caller": 222
+    "daemon": 245,
+    "caller": 245
   },
   "admission": {
     "cap": 6,
@@ -392,7 +392,7 @@
       ],
       "why": {
         "state": "claim_stopped",
-        "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
+        "reason": "Its phase is held and its implementer is stranded at failed, so nothing will wake it."
       },
       "architectStalls": [
         "claim-unreachable"
@@ -461,7 +461,7 @@
       },
       "why": {
         "state": "claim_stopped",
-        "reason": "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it."
+        "reason": "Its phase is implementing and its implementer is stranded at suspended, so nothing will wake it."
       },
       "phaseEntry": 2,
       "givenEntry": 1,
@@ -504,7 +504,7 @@
       },
       "why": {
         "state": "claim_stopped",
-        "reason": "Its phase is awaiting_person and the tester's claim is stranded at retired, so nothing will wake it."
+        "reason": "Its phase is awaiting_person and its tester is stranded at retired, so nothing will wake it."
       },
       "waitingOn": {
         "kind": "ask",
@@ -650,7 +650,10 @@
       "phase": "step",
       "stepRole": "checker",
       "startWaitsForPod": [
-        "checker"
+        {
+          "role": "checker",
+          "token": "legion-legion-legion-240-checker"
+        }
       ],
       "status": "in_progress",
       "tree": "LEGION-240",
@@ -881,6 +884,13 @@
       "source": "boot"
     },
     {
+      "name": "repository-cache-room",
+      "status": "open",
+      "detail": "1 of 1 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim cache-legion-legion-cache-acme-widgets-d782c874) with 0.1 GiB available, its clone 6.2 GiB; its repack failed for lack of space at 2026-10-16T02:15:33Z. Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume",
+      "configLine": "capabilities.decided.repository-cache-room: \"\u003creason\u003e\"",
+      "source": "caches"
+    },
+    {
       "name": "network",
       "status": "withheld",
       "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
@@ -1056,6 +1066,13 @@
             "floor_percent": 15,
             "wait_seconds": 8,
             "interval_milliseconds": 250
+          },
+          "controller_pod": {
+            "enabled": true,
+            "act_percent": 85,
+            "floor_percent": 10,
+            "wait_seconds": 1,
+            "interval_milliseconds": 100
           }
         },
         "volume_trim": {

@@ -6,8 +6,10 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   composeRolePrompt,
+  composeStepPrompt,
   DAEMON_MODULE,
   daemonPaneOverlay,
+  goInDaemonModule,
   RIG_GH_TOKEN,
   workerPane,
 } from "./daemon-pane";
@@ -278,11 +280,8 @@ test.skipIf(skip)(
   600_000
 );
 
-// daemon-pane-architect.go calls daemon.ArchitectAddressing, which a checkout of the daemon module
-// older than that function does not declare, and a build with a call it cannot resolve fails in
-// every mode. So the rig builds that file in only where the checkout's daemon declares the function
-// in a file of the package itself, not where it is named in a comment or declared by a test; in an
-// older checkout the program builds as before and refuses an architect's prompt alone.
+// daemon-pane-architect.go calls daemon.ArchitectAddressing only where the daemon module declares
+// it in a production file; a comment or a test declaration must not select the extra overlay.
 test("builds the architect's part in only where the checkout's daemon declares ArchitectAddressing", () => {
   const older = path.join(rig, "older", "packages", "daemon");
   mkdirSync(path.join(older, "internal", "daemon"), { recursive: true });
@@ -306,3 +305,42 @@ test("builds the architect's part in only where the checkout's daemon declares A
     ),
   });
 });
+
+// A step's prompt is the daemon's composition of the shared parts and its own prompt file,
+// addressed to the role that works the step.
+test.skipIf(skip)(
+  "composes the prompt of a step of a role of the deployment: the headless part, the role's own prompt and the part every worker ends with, then its addressing",
+  () => {
+    const promptFile = path.join(rig, "checker.md");
+    writeFileSync(promptFile, "You check doc comments.\n");
+    const parts = `${promptPart("roles/mechanics/headless.md")}\nYou check doc comments.\n${promptPart("go/worker-common.md")}`;
+
+    const checker = composeStepPrompt(DAEMON_MODULE, promptFile);
+    expect(checker.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
+    expect(checker).toMatch(/^Legion addressing: your role topic is `[^`]*-checker`;[^\n]*\.$/m);
+
+    const critic = composeStepPrompt(DAEMON_MODULE, promptFile, "critic");
+    expect(critic.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
+    expect(critic).toMatch(/^Legion addressing: your role topic is `[^`]*-critic`;[^\n]*\.$/m);
+  },
+  600_000
+);
+
+// The Go test holds each rig restatement to the daemon's composition. Require its own PASS line
+// so a successful invocation that ran no test does not count as a check.
+test.skipIf(skip)(
+  "holds the rig's restatements of the daemon to the daemon's own functions in this checkout",
+  () => {
+    const output = goInDaemonModule(
+      DAEMON_MODULE,
+      {
+        "main.go": path.join(import.meta.dir, "daemon-pane.go"),
+        "main_test.go": path.join(import.meta.dir, "daemon-pane_test.go"),
+      },
+      "test",
+      ["-run", "^TestTheRigsRestatementsAreTheDaemons$", "-count=1", "-v"]
+    );
+    expect(output).toMatch(/^--- PASS: TestTheRigsRestatementsAreTheDaemons \(/m);
+  },
+  600_000
+);

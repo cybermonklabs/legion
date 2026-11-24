@@ -218,14 +218,14 @@ func TestTheProbesRoleOverlayRefusalIsTheBootsRefusal(t *testing.T) {
 	}
 }
 
-// New refuses role overlays no Legion role or PI_CONFIG_FILES could carry.
+// New refuses role overlays no role of the pod, Legion's or the deployment's, or PI_CONFIG_FILES could carry.
 func TestNewRefusesRoleOverlaysNoRoleCouldCarry(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		files map[claim.Role][]string
 		want  string
 	}{
-		{"an unknown role", map[claim.Role][]string{"coder": {"/etc/a.yml"}}, `sandbox runtime: Oh My Pi overlays for "coder", which is not a Legion role`},
+		{"an unknown role", map[claim.Role][]string{"coder": {"/etc/a.yml"}}, `sandbox runtime: Oh My Pi overlays for "coder", which is no role of an issue pod or the controller`},
 		{"a relative file", map[claim.Role][]string{claim.RoleMerger: {"a.yml"}}, `sandbox runtime: merger's Oh My Pi overlay "a.yml" is not an absolute path PI_CONFIG_FILES can name`},
 		{"the separator", map[claim.Role][]string{claim.RoleMerger: {"/etc/a:b.yml"}}, `sandbox runtime: merger's Oh My Pi overlay "/etc/a:b.yml" is not an absolute path PI_CONFIG_FILES can name`},
 	} {
@@ -272,7 +272,7 @@ func TestAddingARoleOverlaysMountDriftsAnIssuePodMadeWithoutIt(t *testing.T) {
 		t.Fatalf("%s at %+v, want the tester alive at its recorded locator until its round ends: %s", obs.Kind, obs.Locator, obs.Detail)
 	}
 	want := (movedAddress{"role_config_files.tester " + file, "(unset)", "volume operator-roles from ConfigMap legion-operator-roles items []"}).String()
-	drifted := driftOf(t, g.ctx, r2, testerLoc)
+	drifted := driftOf(t, g, r2, testerLoc)
 	if !slices.Contains(drifted, want) {
 		t.Errorf("PodDrift = %q, want %q among it", drifted, want)
 	}
@@ -301,7 +301,7 @@ func TestAddingARoleOverlaysMountDriftsAnIssuePodMadeWithoutIt(t *testing.T) {
 	if held := heldInPod(r2, pod, claim.Roles); len(held) > 0 {
 		t.Fatalf("the replaced pod holds %+v, which a pod created now is not handed", held)
 	}
-	if drifted := driftOf(t, g.ctx, r2, newTester); len(drifted) > 0 {
+	if drifted := driftOf(t, g, r2, newTester); len(drifted) > 0 {
 		t.Fatalf("the replaced pod has drifted: %q", drifted)
 	}
 	if !slices.ContainsFunc(containerNamed(t, pod.Spec, workerContainer).VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == roles.Name }) {

@@ -123,6 +123,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the store never writes it, so the state route would serve a constant for it while the operator route reads the live machine"},
 	{Field: "DeathCharged", Column: ColumnWithheld,
 		Reason: "the supervisor's own accounting of one dead process: the record that keeps a second report of that process from being charged a second death"},
+	{Field: "UnrecordedRefusal", Column: ColumnOperator, Keys: []string{"unrecordedRefusal"},
+		Reason: "the store never writes it, so the state route would serve a constant for it while the operator route reads the live machine"},
 	{Field: "PluginContract", Column: ColumnAgents, Keys: []string{"pluginContract"},
 		Reason: "the contract the claim's registration declared, which says what shape its seat parses this body with"},
 	{Field: "PluginRelaunchFor", Column: ColumnWithheld, Reason: BookkeepingReason},

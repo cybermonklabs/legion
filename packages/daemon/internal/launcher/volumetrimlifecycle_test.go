@@ -24,17 +24,18 @@ import (
 // The pod's cache trimmer as the launcher runs it: which connection decides whether it runs,
 // what it runs by and where its reports go, and when Run may return (launcher.go's
 // serveVolumeTrim). What the trimmer does with the settings once it has them is
-// volumetrim_test.go's; every case here drives the real launcher of an issue pod — six roles,
-// six connections, six answers — against the package's own fake daemon rig, and reads only what
-// the wiring decides.
+// volumetrim_test.go's; every case here drives the real launcher of an issue pod whose deployment
+// defines no role of its own — six roles, six connections, six answers — against the package's own
+// fake daemon rig, and reads only what the wiring decides.
 //
 // The file builds only under Linux, as volumetrim_test.go does, because the machine the trimmer
 // reads here is that file's fixture: its volume tree, its /proc, its clock and its ticker, put
 // into the trimmer the launcher built rather than into one the case built itself.
 
-// podRoles is an issue pod's six roles in the order its --role list carries them. The first is
-// the architect, whose connection the pod's one trimmer is bound to: that role exists for the
-// life of the pod, and the architect is who the daemon tells about a volume filling up.
+// podRoles is the six roles of an issue pod whose deployment defines no role of its own, in the
+// order its --role list carries them. The first is the architect, whose connection the pod's one
+// trimmer is bound to: that role exists for the life of the pod, and the architect is who the
+// daemon tells about a volume filling up.
 var podRoles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
 
 // otherTrimSettings is the answer every role but the first is given. Its high mark is above any
@@ -266,7 +267,7 @@ func (g *roleConn) refuseVolumeReport(bound time.Duration) {
 }
 
 // The pod's trimmer runs by the first role's answer alone: it starts when that connection's
-// answer carries settings and not before, however many other roles have answered, and the five
+// answer carries settings and not before, however many other roles have answered, and the
 // other answers — which arrive both before and after it — change nothing about the sweep it
 // makes or the clock it waits on. One connection decides the settings and carries the reports,
 // so a report can never meet a daemon that did not send the settings that produced it.
@@ -563,7 +564,7 @@ func TestTheContainersStopCutsTheSizeWalkDropsTheHeldReportAndRunReturnsInsideTh
 }
 
 // No trimmer runs where none is owed: not when the bound connection's answer carries no
-// settings, whatever the other five carry, and not in the single-role form the controller's pod
+// settings, whatever the others carry, and not in the single-role form the controller's pod
 // uses, whose volume belongs to its sandbox rather than to an issue and whose report no
 // architect would read.
 func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {

@@ -6,28 +6,26 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// roleHoldersRead is GET /api/v1/issues/{key}/role-holders as Dispatch answers it: the session
-// that holds each Legion role of the issue, as the daemon last published it.
+// roleHoldersRead is GET /api/v1/issues/{key}/role-holders as Dispatch answers it: each holder of
+// a Legion role of the issue (dispatch.RoleHolder), as the daemon last published it.
 type roleHoldersRead struct {
-	Issue   string `json:"issue"`
-	Holders []struct {
-		Role    string `json:"role"`
-		Session string `json:"session"`
-	} `json:"holders"`
+	Issue   string                `json:"issue"`
+	Holders []dispatch.RoleHolder `json:"holders"`
 }
 
 // A second agent of one role is a holder of its role on Dispatch while it works its step. The owner
 // gives `implementer reviewer implementer`; once `…-implementer-2` is ready on step 3 and takes its
 // task, Dispatch's role holders of the issue name its session for the role implementer.
 //
-// Fault (A3 at fc1981aff4e): the daemon publishes one holder for each live claim, by the claim's
-// role (record.Postgres.LiveRoleHolders), so with `…-implementer` idle after step 1 the set names
-// the role implementer twice. Dispatch refuses it 400 INVALID_ROLE_HOLDER ("implementer is named
-// twice. Name each role once."), the outbox drops the row with an ERROR line, and Dispatch keeps
-// the set it took before step 3, which has no session of the second agent.
+// Before, the daemon published one holder for each live claim, by the claim's role alone
+// (record.Postgres.LiveRoleHolders), so with `…-implementer` idle after step 1 the set named the
+// role implementer twice. Dispatch refused it 400 INVALID_ROLE_HOLDER ("implementer is named
+// twice. Name each role once."), the outbox dropped the row with an ERROR line, and Dispatch kept
+// the set it took before step 3, which had no session of the second agent.
 //
 // Control: `implementer:a reviewer implementer:a`, whose step 3 is the one agent of the role, walked
 // the same way; Dispatch names its session for the role implementer, so the read and the match can

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -22,7 +23,7 @@ func twoClaimIdleRig(t *testing.T) (*idleRig, *supervise.Machine) {
 	t.Helper()
 	ctx := context.Background()
 	rig := newIdleRig(t)
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, row := range []record.PhaseRow{
 			{Issue: rig.issue.Key, Role: claim.RoleImplementer, Claim: rig.token, StepTask: "t", StepPlace: 1, Entry: 1},
 			{Issue: rig.issue.Key, Role: claim.RoleTester, Claim: rig.token, StepTask: "t", StepPlace: 2, Entry: 1},
@@ -110,6 +111,7 @@ func releaseTwoClaims(t *testing.T, rig *idleRig) {
 // claim of the worker on the tester's step for both stops, so the fresh tester was never stopped
 // and the teardown waited on it.
 func TestTheReleaseRowsNameEachLiveClaimAndSuspendIt(t *testing.T) {
+	t.Parallel()
 	rig, fresh := twoClaimIdleRig(t)
 	releaseTwoClaims(t, rig)
 	if got, want := claimsOfRows(t, rig, string(record.OutboxKindIssueBundle), ""), []claim.Token{rig.token}; !slices.Equal(got, want) {
@@ -137,6 +139,7 @@ func TestTheReleaseRowsNameEachLiveClaimAndSuspendIt(t *testing.T) {
 // tester's step twice and left the fresh tester released in a pod that stands, where a later wake
 // could take it.
 func TestACancelledReleaseResumesEachClaimByItsToken(t *testing.T) {
+	t.Parallel()
 	rig, fresh := twoClaimIdleRig(t)
 	ctx := context.Background()
 	releaseTwoClaims(t, rig)

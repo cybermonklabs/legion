@@ -147,6 +147,7 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 // With no event written, the sweep makes no statement at all - no pass on a timer, no lease
 // attempt - over a window fifteen times its gap between passes, though a suggestion is pending.
 func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
+	t.Parallel()
 	sweep := startIdleSweep(t, "OIDLE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
@@ -165,6 +166,7 @@ func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 // whose safe horizon has passed that event: the sweep reads the log only up to it, so the wait is
 // the horizon's.
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
+	t.Parallel()
 	sweep := startIdleSweep(t, "OWAKE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 	time.Sleep(10 * time.Millisecond) // the event must postdate the suggestion row
@@ -187,6 +189,7 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // is settle old, by which time the update is written too, so the rules see both and the acted_on
 // rules run before the overridden one: the comment is not judged alone as an override.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
+	t.Parallel()
 	const settle = 1500 * time.Millisecond
 	sweep := startIdleSweep(t, "OTOGETHER", settle)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
@@ -218,6 +221,7 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 // than settle, however long the writes and the safe horizon between take. It takes no transaction
 // id until the pass locks the cursor, so it holds back neither those writes nor that horizon.
 func TestAYoungSuggestionIsNotJudgedByAnOlderEventOfItsIssues(t *testing.T) {
+	t.Parallel()
 	const settle = 2 * time.Second
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -279,6 +283,7 @@ func TestAYoungSuggestionIsNotJudgedByAnOlderEventOfItsIssues(t *testing.T) {
 // judges it against that event all the same, with no further event written, because a suggestion
 // no pass has swept is judged against all its events rather than only the page's.
 func TestASuggestionCommittedAfterALaterStartedEventIsStillJudged(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
@@ -329,6 +334,7 @@ func TestASuggestionCommittedAfterALaterStartedEventIsStillJudged(t *testing.T) 
 // the suggestion is on the third page of two events each, and one page alone reports itself full
 // and leaves the suggestion pending.
 func TestASweepReadsEveryPageOfABacklog(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
@@ -510,6 +516,7 @@ func measureTouchedPass(t *testing.T, project string, pending bool) touchedPassC
 // thousand rows, resolved), and reads no table sequentially. The pass of the previous release read
 // every pending row on every pass.
 func TestOldPendingSuggestionsOnOtherIssuesCostAPassNothing(t *testing.T) {
+	t.Parallel()
 	without := measureTouchedPass(t, "OCOST", false)
 	with := measureTouchedPass(t, "OCOST", true)
 	t.Logf("none pending: %+v; 1,000 pending: %+v", without, with)
@@ -564,6 +571,7 @@ func suggestionOutcomeAt(t *testing.T, srv *server, sourceIssueKey, suggestedID 
 // reading `id > cursor` uncapped moves the cursor past A's event on the first pass, and the
 // suggestion is then never judged.
 func TestTheSuggestionSweepTrailsTheSafeHorizon(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
@@ -641,6 +649,7 @@ func TestTheSuggestionSweepTrailsTheSafeHorizon(t *testing.T) {
 // (startSuggestionCursor), which is 0, and every later pass would then page through the whole
 // event log before reaching anything it has to judge.
 func TestTheFirstPassOfAJustStartedProcessStartsAtTheNewestEvent(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	// srv's is the one events.Horizon of a process that has just started: on the store's horizon
 	// pool, with nothing proven and no observation taken, as the server's is on its boot pass.

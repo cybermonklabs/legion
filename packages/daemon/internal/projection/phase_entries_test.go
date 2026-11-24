@@ -278,7 +278,7 @@ func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 			t.Fatalf("%s is in no issue of the projected state; this test proves nothing", key)
 		}
 		if view.PhaseEntry != want.PhaseEntry || view.GivenEntry != want.GivenEntry {
-			t.Errorf("%s at %s is projected with entry %d given %d, want entry %d given %d: the numbers are the role's that works that phase (phase.RoleFor)",
+			t.Errorf("%s at %s is projected with entry %d given %d, want entry %d given %d: the numbers are the role's that works that phase (record.Issue.RoleAt)",
 				key, view.Phase, view.PhaseEntry, view.GivenEntry, want.PhaseEntry, want.GivenEntry)
 		}
 		if !sameInstant(view.EntryQueuedAt, want.EntryQueuedAt) || !sameInstant(view.EntryConfirmedAt, want.EntryConfirmedAt) {

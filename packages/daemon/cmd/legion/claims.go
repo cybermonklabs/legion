@@ -199,9 +199,10 @@ func issuesOrNone(name string, issues []string) string {
 	return fmt.Sprintf("%s: %d — %s", name, len(issues), strings.Join(named, ", "))
 }
 
-// writeClaimLine is the one line a claim prints as: token, role, issue, state, why it failed
-// (claimCauseWord), generation, the plugin contract its registration declared (0 when none is
-// recorded), the update round the claim is in with the head its worker reported when it
+// writeClaimLine is the one line a claim prints as: token, role, issue, state, why it failed or
+// that a refused launch's fact is not recorded (claimCauseWord), generation, the plugin contract
+// its registration declared (0 when none is recorded), the update round the claim is in with the
+// head its worker reported when it
 // answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), the
 // tool call its agent is in (openCallWord), and last the sentence its latest launch try was
 // refused with because the shared public leak check could not be installed in its pod, quoted so
@@ -255,15 +256,27 @@ func claimStateWord(c api.OperatorClaim) string {
 // failed it chose (supervise.FailureCause), which the line carries beside the state rather than
 // the sentence written with it, because one word is what fits a column and what an operator
 // sorts a listing by; the sentence, the moment and the counts are read with --json
-// (api.ClaimFailureView). It is empty for a claim the daemon holds no failure record for — one
-// that never failed, one that has been given another run since, which clears the record, and one
-// holding a cause with no sentence (api.FailureViewOf) — which the line prints as `-`.
+// (api.ClaimFailureView). A claim with no failure record that carries a refused launch's fact the
+// store has not taken (api.OperatorClaim.UnrecordedRefusal) prints `refusal-unrecorded`: the
+// daemon tries that fact again, at least once an hour, for as long as it fails, and until one try
+// is taken the issue and the controller are told nothing and the claim's start is not queued; when
+// the first try failed, how many have failed and the last error are read with --json. It is empty
+// for every other claim the daemon holds no failure record for — one that never failed, one that
+// has been given another run since, which clears the record, and one holding a cause with no
+// sentence (api.FailureViewOf) — which the line prints as `-`.
 func claimCauseWord(c api.OperatorClaim) string {
-	if c.Failure == nil {
-		return ""
+	if c.Failure != nil {
+		return string(c.Failure.Cause)
 	}
-	return string(c.Failure.Cause)
+	if c.UnrecordedRefusal != nil {
+		return refusalUnrecordedWord
+	}
+	return ""
 }
+
+// refusalUnrecordedWord is the cause word of a claim whose refused launch's fact the store has not
+// taken (claimCauseWord).
+const refusalUnrecordedWord = "refusal-unrecorded"
 
 // orNone is a field a claim need not have, as the line prints it.
 func orNone(value string) string {
@@ -290,8 +303,9 @@ func quotedOrNone(value string) string {
 // or the role's own where no step names one, created where none is stored.
 // --prompt-file is an optional operator override; omitted, the daemon gives the role the prompt
 // every launch of it gets: Legion's composed shared and Go-specific parts for one of Legion's
-// roles, and for a role of the deployment or of the issue's plan its own prompt between the
-// headless mechanics and Legion's worker part. --task is its first delivery, sent once the agent is ready.
+// roles, and for a role of the deployment (its prompt_file) or of the issue's plan its own prompt
+// between the headless mechanics and Legion's worker part (worker-common.md). --task is its first
+// delivery, sent once the agent is ready.
 func claimsSpawn(c *claimsCall) action {
 	tree := c.flags.String("tree", "", "issue key of the tree's root (required)")
 	issue := c.flags.String("issue", "", "issue key the claim is on (required)")

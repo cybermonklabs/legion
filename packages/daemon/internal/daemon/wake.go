@@ -109,7 +109,8 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 // now. The row is the durable half and the fact the acting half: a backstop that came due while
 // the daemon was down is read by the first pass after it starts, and the row's conditional fire
 // (store.PodRecords.FirePodBackstop) is what makes two passes that read the same row wake its
-// pod once.
+// pod once. The start row the fact's wake queues wakes its lane once the fact commits, through the
+// project's records (projectRecords.wakeOnCommit), so the pass wakes no lane of its own.
 func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	due, err := w.idleStore.DuePodBackstops(ctx, w.projectID, now)
 	if err != nil {
@@ -124,9 +125,7 @@ func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 		id := fmt.Sprintf("pod-backstop:%d", backstop.ID)
 		if _, err := intake.ApplyFact(ctx, w.pool, "wake", id, fact, w.handlers...); err != nil {
 			w.log.Warn("wake: could not fire a released pod's backstop", "issue", backstop.Issue, "role", backstop.Role, "error", err)
-			continue
 		}
-		w.wakeOutbox(backstop.Issue, record.OutboxKindSupervise)
 	}
 }
 
@@ -320,8 +319,21 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	if !wakeable {
 		return false, time.Time{}, nil
 	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, token, held.Role, pods.WakeDelivery, r.now().UTC(), mark)
-	if err != nil {
+	// The take's line is a hook of its commit. The resume below is not: it is order-sensitive and
+	// runs after the commit, so a take whose outcome is unknown fails the row, and the row's retry
+	// meets the open resume the take recorded and resumes the claim (the refused branch below).
+	var taken bool
+	if err := store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if taken, err = r.trees.TakePodWake(ctx, r.project, issue.Key, token, held.Role, pods.WakeDelivery, r.now().UTC(), mark); err != nil || !taken {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
+				"issue", issue.Key, "role", held.Role, "detail", detail)
+		})
+		return nil
+	}); err != nil {
 		return false, time.Time{}, err
 	}
 	// A wake the role's open resume refused is a pod already on its way back — unless no resume
@@ -342,9 +354,6 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
 		r.logRefusedByOpenResume(ctx, issue.Key, held.Role, token, detail)
-	} else {
-		r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
 	}
 	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
 		return false, time.Time{}, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
@@ -426,8 +435,8 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
 // worker of the pod's open phase, the claim the record gives the step of the open phase's role
 // (workflow.OpenWorker, read in a transaction of its own), where that claim stands released
-// serving the issue's run. That claim can be a keyed agent's, whose token names another role,
-// beside the role's own claim of an earlier version of the plan, which works no step and gets none.
+// serving the issue's run. Two claims of one issue can hold one role (record.WorkerClaim), and a
+// claim of the role that works no step gets none.
 // An architect gets none — nothing of its own is due, and a sub-architect woken for nothing would
 // hold a pod open for the backstop period — and neither does an issue whose phase no role works.
 //
@@ -441,7 +450,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		return nil
 	}
 	var worker claim.Token
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		worker, err = workflow.OpenWorker(ctx, r.records, tx, r.project, issue)
 		return err

@@ -42,9 +42,10 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // (writePermissions, Tokens.Token) — and no directory holds a narrower one. A role's token is
 // its App's installation lease on one account: the account chose what that installation reaches
 // when it installed the App, the daemon asks GitHub to narrow it no further, and there is
-// therefore nothing narrower for a bundle to hold. So a role pushes to, opens a pull request in
-// and reviews a pull request of every repository its App reaches, whichever owner's it is, and
-// which repository its own issue names decides the bundle's default directory and nothing else
+// therefore nothing narrower for a bundle to hold. So a role's bundle reaches every repository its
+// App reaches, whichever owner's it is, at the role's own permissions. An issue pod shows a role
+// only the directories every role of the pod holds (sandbox's ghDirsShared). Which repository the
+// role's own issue names decides the bundle's default directory and nothing else
 // (INFRA-2543 R2). A reading lease in another owner's directory, which this bundle held until
 // that ruling, refused a role the work its App is installed for.
 //
@@ -174,11 +175,12 @@ func (c *Credential) ForApp(ctx context.Context, app AppRole, issue string, role
 //
 // It is worth having because a bundle is a function of what it is held under (bundleKey) and no
 // more: the App role the claim role runs as on its issue (AppRoleFor), the role itself for a role
-// that is none of Legion's, and the repository it is built for. The six roles of an issue
-// pod are therefore two bundles, where each build opens with a live read of every page of its
-// App's installations under a fresh JWT (GitHubCredential) — the walk of a twenty-pod project
-// made 120 of those reads a minute where 40 answer every bundle it needs, and a pod's launch
-// made six serial round trips to GitHub before its first role could start.
+// that is none of Legion's, and the repository it is built for. Legion's six roles of an issue pod
+// are therefore two bundles, and each role of the deployment or of the issue's plan one of its
+// own, where each build opens with a live read of every page of its App's installations under a
+// fresh JWT (GitHubCredential) — the walk of a twenty-pod project made 120 of those reads a minute
+// where 40 answer every bundle it needs, and a pod's launch made six serial round trips to GitHub
+// before its first role could start.
 //
 // It is a memo of one walk and no cache: every walk reads GitHub for what its bundles hold, as
 // INFRA-2543 R2 asks, and what stops is one walk asking the same question four times. A build

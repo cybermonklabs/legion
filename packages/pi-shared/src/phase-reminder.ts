@@ -4,6 +4,7 @@ import type { LegionIssue } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   EnvoyApiError,
+  type KeyTakenResult,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
@@ -47,11 +48,12 @@ import type { StallLimits } from "./stall-limits";
  * again: a listener that names it answers a repeat with the copy it still holds, or keeps a new
  * copy once that copy has been forwarded or its hour has ended. A listener of an earlier release
  * names none, and answers a repeat inside its stream's 72-hour duplicate window as the first copy,
- * which it may already have dropped.
+ * which it may already have dropped. A key another sender's message already holds is answered as
+ * taken ({@link KeyTakenResult}): nothing was delivered, and the next attempt mints a new key.
  */
 export type EnvoyPublish = (
   input: PublishInput
-) => Promise<Pick<PublishResult, "kept" | "keptUntil">>;
+) => Promise<Pick<PublishResult, "kept" | "keptUntil"> | KeyTakenResult>;
 
 export interface PhaseReminderLog {
   readonly debug: (message: string, context?: Record<string, unknown>) => void;
@@ -257,14 +259,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * names, the role that works it is the issue's `stepRole`, a role of the deployment or of the
    * issue's plan — when another claim of this role works the role's step, and when the daemon has
    * failed this claim, which is the daemon's own word that this process is finished. Two claims of
-   * one issue can hold one role — the agent of a key on a step of another role, beside that role's
-   * own claim of an earlier version of the plan — and only the worker on the step, the claim the
-   * record names by its token under `workers` (contract 222), works the phase: the other claim is
-   * not reminded, so it never reaches the architect as that role's worker. A record that names no
-   * token, from a daemon below 222, keeps the role's rule. A claim the daemon failed runs no
-   * further turn in this process — its retry relaunches this session in a new process, or starts a
-   * new session once the daemon's `forgetSession` (its supervise package) has dropped this one —
-   * and a reminder written now reaches nobody who can act on it. That is what stops Claude Code's
+   * one issue can hold one role (the daemon's `record.WorkerClaim`), and only the worker on the
+   * step, the claim the record names by its token under `workers` (contract 222), works the phase:
+   * the other claim is not reminded, so it never reaches the architect as that role's worker. A
+   * record that names no token, from a daemon below 222, keeps the role's rule. A claim the daemon
+   * failed runs no further turn in this process — its retry relaunches this session in a new
+   * process, or starts a new session once the daemon's `forgetSession` (its supervise package) has
+   * dropped this one — and a reminder written now reaches nobody who can act on it. That is what
+   * stops Claude Code's
    * reminder, which has no refused-turn settle of its own for a turn the provider never answered.
    * Everything else fails open and is logged at debug: an unreachable daemon is exactly when a
    * stalled worker must still be nudged.
@@ -371,6 +373,21 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       // while it was in flight, and a later run may have begun. That run has a key of its own, or
       // none yet: this acceptance is not its notice.
       if (reportKey !== key) return;
+      // Another sender's message already holds the key, so the listener stored nothing and told
+      // no architect: the key is cleared, so the next attempt mints a new one.
+      if ("keyTaken" in answer) {
+        reportKey = undefined;
+        writeEntry();
+        deps.log.warn(
+          "legion: another sender's message holds the architect notice's key; telling it again later",
+          {
+            issue: claim.issue,
+            reminders,
+            event_id: answer.keyTaken.eventId,
+          }
+        );
+        return;
+      }
       // A kept answer (202, `PublishResult.kept`) means that no live session holds the architect
       // role: the listener kept the notice on the role's kept lane for the next session that holds
       // the role live, and its wake report can bring a released architect back. That has told no

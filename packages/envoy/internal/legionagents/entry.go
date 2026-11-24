@@ -31,8 +31,8 @@ import (
 // of Legion's six, a role the deployment defines or a role the issue's plan defines), the role of
 // the step its agent runs as
 // of the entry's latest write. Its role token is the claim token of that agent, which ends in the
-// agent's name, the role of its first step. Readers ignore fields they do not know, so a later
-// writer may add some.
+// agent's name: the role of its first step, or a numbered name such as `implementer-2` for a second
+// agent of one role. Readers ignore fields they do not know, so a later writer may add some.
 type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
@@ -233,8 +233,8 @@ func succession(entries []Entry) []Agent {
 }
 
 // issueOrder lists an issue's agents by role, the role of each entry's latest write, the six in
-// workflow order and then every other role by name, then by role token, then newest first, each
-// role token's replacements derived among its own sessions.
+// the order of the default steps and then every other role by name, then by role token, then
+// newest first, each role token's replacements derived among its own sessions.
 func issueOrder(entries []Entry) []Agent {
 	byToken := map[string][]Entry{}
 	for _, entry := range entries {

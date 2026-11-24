@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 )
 
 // The skill-scenario rig's `prompt` mode (packages/pi-legion/scripts/skill-scenarios/daemon-pane.go)
@@ -25,17 +26,24 @@ import (
 // architect of the rig's tree root, and for the architect of a child issue under that root, its
 // text is byte for byte the prompt this daemon composes (SpawnSpec, then runtime.ComposePrompt) for
 // the same claim under the rig's deployment: the project `rig`, the repository skills-rig/project
-// on its default branch trunk, the one owner skills-rig its App reaches, no role of the deployment,
-// no listed model, no `gates.design`, no instructions file, no experiment, and every role on Oh My
-// Pi. So both architects are told the deployment's roles and models after their addressing, and
-// the root's architect its design gate steps after those.
+// on its default branch trunk, the one owner skills-rig its App reaches, the roles checker (testing)
+// and critic (review) of the rig's deployment, no listed model, no `gates.design`, no
+// `production_check` (so the tester), no instructions file, no experiment, and every role on Oh My
+// Pi. So both architects are told the deployment's roles and models after their addressing, the
+// root's architect its design gate steps after those, and both the production check last. Built
+// with daemon-pane-architect.go, the rig composes that part with the daemon's own
+// ArchitectAddressing; its own restatements of an older daemon (deploymentRolesLine,
+// productionCheckLine) tell no models sentence, so a rig that took them here would differ from the
+// daemon's prompt at that sentence.
 func TestTheRigsArchitectPromptIsTheDaemons(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	s := specs{
 		stateDir: t.TempDir(), project: "rig", prompts: composer, designSteps: config.Gates{}.Steps(),
+		roles: rigDeploymentRoles, productionCheck: claim.RoleTester,
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("skills-rig/project"), "trunk", nil
 		},
@@ -73,17 +81,29 @@ func TestTheRigsArchitectPromptIsTheDaemons(t *testing.T) {
 	}
 }
 
+// rigDeploymentRoles is the rig's deployment (daemon-pane.go's rigRoles) as the settings define it:
+// checker, of the type testing, and critic, of the type review, neither with a model.
+var rigDeploymentRoles = []config.Role{{Name: "checker", Type: stepplan.TypeTesting}, {Name: "critic", Type: stepplan.TypeReview}}
+
 // Built without daemon-pane-architect.go, as daemon-pane.ts builds the rig inside a checkout of
-// this module that declares no ArchitectAddressing, the rig composes no architect's prompt: it
-// fails, naming the function the module lacks, rather than print a prompt without the sentences
-// that function adds; and it still prints another role's prompt.
-func TestTheRigRefusesAnArchitectsPromptWithoutTheDaemonsComposition(t *testing.T) {
+// the daemon module that declares no ArchitectAddressing (main's, or an older branch's), the rig
+// still composes an architect's prompt, with its own restatements of such a daemon's sentences
+// (deploymentRolesLine, productionCheckLine): after the addressing, the roles of the rig's
+// deployment, the root's design gate steps, then the production check, each the sentence this
+// daemon's own function gives, and no models sentence, which such a daemon tells none of. It still
+// prints another role's prompt.
+func TestTheRigComposesAnArchitectsPromptByItsRestatementsWithoutTheDaemonsComposition(t *testing.T) {
+	t.Parallel()
 	got, stderr, err := runRig(t, false, "prompt", "architect", "root")
-	if err == nil {
-		t.Fatalf("the rig printed an architect's prompt with no ArchitectAddressing to compose it:\n%s", around(got, len(got)))
+	if err != nil {
+		t.Fatalf("the rig's prompt of the root's architect with no ArchitectAddressing to compose it: %v: %s", err, stderr)
 	}
-	if want := "daemon.ArchitectAddressing"; !strings.Contains(stderr, want) || got != "" {
-		t.Errorf("the rig failed with %v, stdout %q and stderr %q; want no prompt and stderr naming %s", err, got, stderr, want)
+	tail := " " + DeploymentRolesFragment(rigDeploymentRoles) + " " + DesignGateFragment(config.Gates{}.Steps()) + " " + ProductionCheckFragment(claim.RoleTester)
+	if !strings.HasSuffix(got, tail) {
+		t.Errorf("the rig's prompt of the root's architect ends %q, want it to end with %q", around(got, len(got)-len(tail)), tail)
+	}
+	if models := ModelsFragment(nil); strings.Contains(got, models) {
+		t.Errorf("the rig's prompt of the root's architect holds %q, which only ArchitectAddressing tells", models)
 	}
 	reviewer, stderr, err := runRig(t, false, "prompt", "reviewer", "child")
 	if err != nil {

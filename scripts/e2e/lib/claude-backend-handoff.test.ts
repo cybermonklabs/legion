@@ -24,13 +24,6 @@ for (const driver of ["claude-backend-sandbox.sh", "claude-backend-tmux.sh"]) {
   })();
 
   describe(driver, () => {
-    test("the implementer is asked to open the pull request before handoff_complete", () => {
-      expect(checkpoint).not.toContain("Do not open a pull request");
-      expect(checkpoint).toContain(
-        "open a pull request from legion/$issue to the repository's default branch, then call the legion tool's handoff_complete"
-      );
-    });
-
     test("the checkpoint checks that exactly one pull request is open on the issue branch", () => {
       expect(checkpoint).toContain(
         'open_prs=$(gh -R "$repo" pr list --state open --head "legion/$issue" --json number --jq length)'

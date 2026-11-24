@@ -61,7 +61,7 @@ type PlanReason struct {
 // registerPlanRoute is register_plan as a refusal names it, the operation the caller retries.
 const registerPlanRoute = "register_plan"
 
-// OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 211): the
+// OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 219): the
 // routes register_plan and stop_task with register_plan's answer (answers.go's
 // AnswerPlanRegister) and the `reasons` of its refusal (PlanRefusal), a failed step's returnTo on
 // handoff_complete, the hold reasons task-stopped and children of an issue's holdReason, and the
@@ -71,8 +71,8 @@ const registerPlanRoute = "register_plan"
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is the last number of SupportedContracts.
-const OwnerPlanContract = 211
+// only with this change's own number.
+const OwnerPlanContract = 219
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
 // (PlanRefusal), and every other refusal as its code and its sentence (writeFailure). Both are

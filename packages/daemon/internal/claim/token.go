@@ -30,8 +30,8 @@ var (
 	notAlphanumeric = regexp.MustCompile(`[^a-z0-9]`)
 )
 
-// Roles are Legion's six roles, in the order the workflow reaches them. A claim can also be on a
-// role the deployment defines (IsRole).
+// Roles are Legion's six roles, in the order of the default steps (each task names its own). A
+// claim can also be on a role the deployment defines (IsRole).
 var Roles = []Role{RoleArchitect, RolePlanner, RoleImplementer, RoleTester, RoleReviewer, RoleMerger}
 
 // ProjectToken is the project as every token, and the private tmux server, spell it: the

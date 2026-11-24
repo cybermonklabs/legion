@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # The live proof of the completion route's entry fence on a completion behind its phase entry: a
 # completion of an entry the issue has moved past is taken when the commit it names is the head the
-# daemon's record holds, because the phase was entered again at that same head and the work the new
-# entry's task asks for is the work that turn did, and it is refused when it names a head the record
-# has left or no commit at all, or when the move that entered the phase again moved the issue back,
-# where the entry exists to have the work done again and no verdict on either head answers for it.
+# daemon's record holds and the entry is of the step the task stands at, because the phase was
+# entered again at that same head and the work the new entry's task asks for is the work that turn
+# did, and it is refused when it names a head the record has left or no commit at all, when the move
+# that entered the phase again moved the issue back, where the entry exists to have the work done
+# again and no verdict on either head answers for it, or when the entry is of another step of the
+# role (a case this proof's one tester step does not reach; api's handoff_step_row_test.go holds it).
 # Every completion is of the tester's first entry. The tester asks for the work back with its own
 # backward move to implementing and ends its turn, since the daemon sends no role a task that adopts
 # the issue's working copy while another role of the issue is in a turn; the implementer pushes a

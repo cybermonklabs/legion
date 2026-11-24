@@ -45,6 +45,9 @@ func TestAnIssueHandedOffIsReadFromItsImplementersRowNow(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()
 	issue := issueFixture("LEGION-297")
+	if issue.Phase != phase.Implementing {
+		t.Fatalf("the fixture stands in %s, want implementing, where the read looks", issue.Phase)
+	}
 	at := func(minute int) time.Time { return time.Date(2026, 11, 22, 7, minute, 0, 0, time.UTC) }
 	read := func(tx pgx.Tx) []HandedOff {
 		t.Helper()
@@ -68,7 +71,4 @@ func TestAnIssueHandedOffIsReadFromItsImplementersRowNow(t *testing.T) {
 			t.Fatalf("the issues handed off after step 3's report = %+v, want %s once, at step 3's commit", got, issue.Key)
 		}
 	})
-	if issue.Phase != phase.Implementing {
-		t.Fatalf("the fixture stands in %s, want implementing, where the read looks", issue.Phase)
-	}
 }

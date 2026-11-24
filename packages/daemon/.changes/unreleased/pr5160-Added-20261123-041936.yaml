@@ -25,11 +25,14 @@ body: |-
   with a `task-stopped` notice whose reason names the model.
 
   A merge forward asks the agent of the task's step of the type implementation, whatever its role
-  is called. While the task stands at that step itself, a step of a role of the plan that runs as
-  `step` included, the merge forward is told as it is in implementing: that agent is asked alone,
-  its ask says its own assignment and its completion stand, the architect gets no `checks-red`
-  notice, the move on out of that step asks again with the hold and the notice, and a move back
-  into it drops the ask. The merge that agent pushes sends it no message that it landed.
+  is called, and in merging asks the merger itself. While the task stands at an implementation
+  step itself, a step of a role of the plan that runs as `step` included, that agent is asked
+  alone: its own assignment and completion stand and the architect gets no `checks-red` notice.
+  The move on out of that step asks again with the hold and notice, and a move back into it drops
+  the ask. The merge that agent pushes sends it no message that it landed. A role's second or
+  later agent, such as `prober-2`, stays defined wherever the role is defined; the step, claim-slot
+  and pod-volume readers use the same rule for its name. Taking a role's model off the deployment
+  still stops the task, even where that role's name remains defined by the plan.
 
   One migration adds the table of the roles a plan defines, another marks each ask to merge
   forward that an earlier release recorded in implementing as made at that step, and a third adds

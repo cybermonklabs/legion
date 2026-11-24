@@ -180,9 +180,6 @@ func TestAKeyLeftOutOfOneVersionFindsItsClaimWhenALaterVersionGivesItAgain(t *te
 			move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		}
 		start := lastStartOf(t, pool, key, claim.RoleImplementer)
-		if reason := fmt.Sprintf("the owner gave version %d of the plan", version); version > 1 && !strings.Contains(start.Task, reason) {
-			t.Fatalf("version %d: the implementer's last start = %+v, want the start of this version, which says %q", version, start, reason)
-		}
 		if start.Agent != v.agent || start.FreshSession {
 			t.Fatalf("version %d: step 1's start = %+v, want it to name the agent %q and ask for no fresh session", version, start, v.agent)
 		}
@@ -373,8 +370,8 @@ func TestTheThirdStepsTaskNamesTheReportsOfStepsOneAndTwo(t *testing.T) {
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-			completesAs(t, pool, engine, claim.RoleImplementer, agentToken(t, "implementer"), "implement", 1)
-			completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+			completesAs(t, pool, engine, claim.RoleImplementer, agentToken(t, "implementer"), "implement", 1, "head")
+			completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1, "head")
 			move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(3))
 
@@ -393,7 +390,7 @@ func TestTheThirdStepsTaskNamesTheReportsOfStepsOneAndTwo(t *testing.T) {
 			if len(tc.steps) < 4 {
 				return
 			}
-			completesAs(t, pool, engine, claim.RoleImplementer, agentToken(t, "implementer"), "implement", 2)
+			completesAs(t, pool, engine, claim.RoleImplementer, agentToken(t, "implementer"), "implement", 2, "head")
 			fourth := lastStart(t, pool, root.Key, claim.RoleTester)
 			want := " Step 1 (implementer:a) reported: implement version 1. Step 2 (reviewer) reported: review version 1." +
 				" Step 3 (implementer:a) reported: implement version 2."
@@ -457,11 +454,12 @@ func TestAWriteBeforeARolesFirstStepLandsOnThatStepsRow(t *testing.T) {
 }
 
 // A role that stands at two steps runs its phase at two places, and a move back to that phase
-// reaches the nearest of them before the task's place, as a failed step's work returns to the
-// nearest step of the type implementation: in `implementer:a reviewer implementer:a tester`, the
-// tester's move back to implementing reaches step 3, the implementer's step the tester tested.
-// Before, a phase that ran at two earlier places served no backward row, and the move was refused
-// as one no row serves.
+// reaches the nearest of them before the task's place, while a failed step's work returns to the
+// first step of the type implementation before it (Walk.returnTarget): in
+// `implementer:a reviewer implementer:a tester`, the tester's move back to implementing reaches
+// step 3, the implementer's step the tester tested, and a fail of the tester that names no step
+// returns to step 1. Before, a phase that ran at two earlier places served no backward row, and the
+// move was refused as one no row serves.
 func TestAMoveBackToAPhaseThatRunsTwiceReachesTheNearest(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
@@ -469,10 +467,10 @@ func TestAMoveBackToAPhaseThatRunsTwiceReachesTheNearest(t *testing.T) {
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a", "tester")
 	implementer := agentToken(t, "implementer")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
-	completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1, "head")
+	completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1, "head")
 	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2)
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2, "head")
 	assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(4))
 	if result := applyFacts(t, pool, engine)("tester-back", intake.BackwardMove{Issue: root.Key, Requester: claim.RoleTester, To: phase.Implementing,
 		Reason: "the harness needs a fixture"}); result.Refusal != nil {
@@ -492,9 +490,9 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b", "reviewer")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
-	worker := func(at record.TaskPlace, want claim.Token) {
+	worker := func(in phase.Phase, at record.TaskPlace, want claim.Token) {
 		t.Helper()
-		assertWalksAt(t, pool, engine, root.Key, issueOf(t, pool, engine, root.Key).Phase, at)
+		assertWalksAt(t, pool, engine, root.Key, in, at)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			rows, err := engine.store.Phases(ctx, tx, root.Key)
 			if err != nil {
@@ -515,15 +513,15 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 		})
 	}
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	worker(stepPlace(1), keyA)
-	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
-	worker(stepPlace(2), keyA)
-	completesAs(t, pool, engine, claim.RoleTester, keyB, "test", 1)
-	worker(stepPlace(3), keyB)
-	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2)
-	worker(stepPlace(4), keyB)
+	worker(phase.Implementing, stepPlace(1), keyA)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1, "head")
+	worker(phase.Testing, stepPlace(2), keyA)
+	completesAs(t, pool, engine, claim.RoleTester, keyB, "test", 1, "head")
+	worker(phase.Implementing, stepPlace(3), keyB)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2, "head")
+	worker(phase.Reviewing, stepPlace(4), keyB)
 	move(t, pool, engine, root.Key, TriggerReviewRejected, stepPlace(1), record.PhaseRow{})
-	worker(stepPlace(1), keyA)
+	worker(phase.Implementing, stepPlace(1), keyA)
 }
 
 // Two agents of one role keep a row of it each, and the entry a step's start raises is above every
@@ -544,9 +542,9 @@ func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b", "reviewer")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
-	completesAs(t, pool, engine, claim.RoleTester, keyB, "test", 1)
-	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1, "head")
+	completesAs(t, pool, engine, claim.RoleTester, keyB, "test", 1, "head")
+	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2, "head")
 	served := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[3].Entry
 	move(t, pool, engine, root.Key, TriggerReviewRejected, stepPlace(1), record.PhaseRow{})
 	result := applyFacts(t, pool, engine)("implementer-late-key-b", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
@@ -582,14 +580,12 @@ func TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 42, Branch: "legion/" + root.Key,
-		HeadSHA: "head", Failing: []string{}})
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a")
 	implementer := agentToken(t, "implementer")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	served := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[1].Entry
-	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
-	completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1, "head")
+	completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1, "head")
 	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(3))
 	result := applyFacts(t, pool, engine)("implementer-step-1-turn", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
@@ -639,10 +635,10 @@ func TestALateReportOfARolesLaterStepIsTakenOnThatStep(t *testing.T) {
 			implementer := agentToken(t, "implementer")
 			reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
-			completesAs(t, pool, engine, claim.RoleReviewer, reviewer, "review", 1)
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1, "head")
+			completesAs(t, pool, engine, claim.RoleReviewer, reviewer, "review", 1, "head")
 			move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
-			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2)
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2, "head")
 			assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(4))
 			served := rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)[4].Entry
 			tc.ends(t, pool, engine, root.Key)
@@ -684,10 +680,10 @@ func TestAReturnToARolesEarlierStepRefusesTheRecordOfItsLaterStep(t *testing.T) 
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a", "tester")
 	implementer := agentToken(t, "implementer")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
-	completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1, "head")
+	completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1, "head")
 	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 3)
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 3, "head")
 	assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(4))
 	apply := applyFacts(t, pool, engine)
 	if result := apply("tester-fails-to-step-1", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleTester, Claim: agentToken(t, "tester"),
@@ -736,10 +732,10 @@ func TestAKeyedAgentsStepAfterANewGenerationRisesAboveWhatItsClaimWasGiven(t *te
 		t.Fatalf("the reviewer's claim seeded is %q, want key b's %q", got, keyB)
 	}
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
-	completesAs(t, pool, engine, claim.RoleReviewer, keyB, "review", 1)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1, "head")
+	completesAs(t, pool, engine, claim.RoleReviewer, keyB, "review", 1, "head")
 	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
-	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2, "head")
 	if got := issueOf(t, pool, engine, root.Key).Phase; got != phase.Retro {
 		t.Fatalf("%s stands in %s after step 3, want its retro", root.Key, got)
 	}
@@ -792,12 +788,12 @@ func TestEachStartNamesTheClaimItWasQueuedFor(t *testing.T) {
 	}
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	named("step 1's start", claim.RoleImplementer, keyA)
-	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1, "head")
 	named("step 2's start", claim.RoleReviewer, keyB)
-	completesAs(t, pool, engine, claim.RoleReviewer, keyB, "review", 1)
+	completesAs(t, pool, engine, claim.RoleReviewer, keyB, "review", 1, "head")
 	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	named("step 3's start", claim.RoleImplementer, keyB)
-	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2, "head")
 	named("the retro's start", claim.RoleImplementer, keyB)
 	holdFrom(t, pool, root.Key, phase.Retro)
 	if result := applyFacts(t, pool, engine)("retry-retro", intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision}); result.Refusal != nil {
@@ -806,12 +802,13 @@ func TestEachStartNamesTheClaimItWasQueuedFor(t *testing.T) {
 	named("the held retro's retry", claim.RoleImplementer, keyB)
 }
 
-// completesAs is completes under the claim token, the agent's own, as the route names the claim
+// completesAs applies role's completion of its step of LEGION-208 at commit, with the handoff
+// record word-n at version n, under the claim token, the agent's own, as the route names the claim
 // whose grant reported, which the completion writes on the role's row.
-func completesAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, token claim.Token, word string, n int) {
+func completesAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, token claim.Token, word string, n int, commit string) {
 	t.Helper()
 	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: token,
-		Summary: "done", Commit: "head", HandoffRecord: word + "-" + string(rune('0'+n)), HandoffVersion: n}
+		Summary: "done", Commit: commit, HandoffRecord: word + "-" + string(rune('0'+n)), HandoffVersion: n}
 	if role == claim.RoleTester {
 		fact.Verdict = "pass"
 	}

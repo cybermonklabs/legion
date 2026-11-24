@@ -362,12 +362,18 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // placeToken is the claim token of the agent of the work issue stands in at, read on the walk of
-// issue's run (stepToken), and role's own token where the walk holds no place for at.
+// issue's run (walkToken).
 func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, role claim.Role) (claim.Token, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
+	return e.walkToken(issue, w, at, role)
+}
+
+// walkToken is the claim token of the agent of the work issue stands in at, read on w, issue's
+// walk (stepToken), and role's own token where w holds no place for at.
+func (e *Engine) walkToken(issue record.Issue, w Walk, at phase.Phase, role claim.Role) (claim.Token, error) {
 	place, ok := w.placeIn(at)
 	if !ok {
 		return stepClaim(issue, issue.Key, role)

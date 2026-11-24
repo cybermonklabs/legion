@@ -28,8 +28,8 @@ import (
 // the install (Installed) and refuses to start an agent where it is not the pin's. It is under the
 // issue's scratch, `/legion/scratch` (internal/runtime/sandbox's scratchRoot): the roles of a pod
 // share that scratch — TMPDIR, the cache home and the data home sit directly under it and every
-// role is told the same one — so one install serves all six roles, and it dies with the pod, as a
-// copy of a check that publishes often should. The directory is this package's constant rather
+// role is told the same one — so one install serves all the pod's roles, and it dies with the pod,
+// as a copy of a check that publishes often should. The directory is this package's constant rather
 // than the runtime's because the install writes it and the runtime names it
 // (sandbox.mainEnvironment sets PUBLIC_LEAK_CHECK to InstalledCheck): one string, so the path a
 // role is told and the path the install writes cannot drift.

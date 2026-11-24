@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  An operator claim carries `unrecordedRefusal` while a refused launch's fact (the refusal's
+  report, or its re-check at the end of a start row) has not been taken by the daemon's store:
+  when the first failed try failed, how many tries have failed, and the last try's error. Only
+  the operator routes carry it, and `legion claims list` prints it as `refusal-unrecorded`.
+time: 2026-11-23T20:48:30Z
+custom:
+    Issue: pr5156

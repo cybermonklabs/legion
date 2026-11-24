@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,13 +38,13 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 // Sandbox that owns the issue's kept volume (ownsKeptVolume) is kept, Suspended, with its uid and
 // the claim of its volume, for the issue's next pod, which mounts that claim (issuePod.disk). The
 // Secrets the Sandbox owns are deleted: the provisioning Secret and the Secret of each slot its pod
-// held (podSlots), each of which holds a token that no pod reads any more. The next launch writes
-// each of them again before its pod starts (provision, writeLauncherSecrets). Once every delete
-// has succeeded, the release records on the Sandbox that it deleted them
-// (secretsReleasedAnnotation), in a patch of its own. A release that stops before that patch
-// leaves no record, and the next release deletes the Secrets again, each one already gone counted
-// as deleted, and then records it. Every other Sandbox holds nothing the next pod can use, and is
-// deleted as SuspendIssue deletes it.
+// held (podSlots) and of each role of the issue, each of which holds a token that no pod reads any
+// more. The next launch writes each of them again before its pod starts (provision,
+// writeLauncherSecrets). Once every delete has succeeded, the release records on the Sandbox that
+// it deleted them (secretsReleasedAnnotation), in a patch of its own. A release that stops before
+// that patch leaves no record, and the next release deletes the Secrets again, each one already
+// gone counted as deleted, and then records it. Every other Sandbox holds nothing the next pod can
+// use, and is deleted as SuspendIssue deletes it.
 //
 // The pod may show that an init container failed on the kept volume for a cause local to it
 // (volumeFault, localInitFailure). The release then writes the reset mark (volumeResetAnnotation)
@@ -139,12 +140,14 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 
 // deleteIssueSecrets deletes the Secrets that the issue Sandbox s owns, the provisioning Secret
 // (secretName) and the Secret of each slot of its pod (roleSecretName over podSlots: each role the
-// runtime had when the pod was built, a role of the deployment among them, and each agent of the
-// issue's plan whose name no role has, as the stored template binds them), each one already gone
-// counted as deleted, and then forgets what is held of the slot Secrets
-// (launcherCredentials.forgetSandbox). Its caller holds the pod's launch turn, so no launch writes
-// one of them, or another template, in between. It is the delete a writeSecret already sends, so it
-// needs no new permission.
+// runtime had when the pod was built, a role of the deployment among them, a role the deployment
+// no longer defines too, whose Secret still holds its launcher token and the gh files of its App,
+// and each agent of the issue's plan whose name no role has, as the stored template binds them)
+// and of each of the runtime's issue roles now, Legion's six and each role of the deployment
+// (Runtime.issueRoles), each one already gone counted as deleted, and then forgets what is held of
+// the slot Secrets (launcherCredentials.forgetSandbox). Its caller holds the pod's launch turn, so
+// no launch writes one of them, or another template, in between. It is the delete a writeSecret
+// already sends, so it needs no new permission.
 func (r *Runtime) deleteIssueSecrets(ctx context.Context, s *sandbox) error {
 	secrets := r.kube.CoreV1().Secrets(r.namespace)
 	remove := func(secret string) error {
@@ -156,7 +159,13 @@ func (r *Runtime) deleteIssueSecrets(ctx context.Context, s *sandbox) error {
 	if err := remove(secretName(s.Name)); err != nil {
 		return err
 	}
-	for _, slot := range r.podSlots(s, issuePod{}) {
+	slots := slices.Clone(r.podSlots(s, issuePod{}))
+	for _, role := range r.issueRoles {
+		if !slices.Contains(slots, role) {
+			slots = append(slots, role)
+		}
+	}
+	for _, slot := range slots {
 		if err := remove(roleSecretName(s.Name, slot)); err != nil {
 			return err
 		}

@@ -449,7 +449,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		return false, err
 	}
 	if newest > 0 {
-		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
+		e.warnOnCommit(ctx, "wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
 	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, released.Token, kind, at, pause)
@@ -460,7 +460,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if stopping != 0 {
 		stop = StoppedByPause
 	}
-	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "claim", released.Token,
+	e.logOnCommit(ctx, "wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "claim", released.Token,
 		"kind", kind, "detail", detail, "pause", pause, "stopped_by_pause", stopping)
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, released.Token, kind, pause, WakeTask(kind, detail, stop)))
 }
@@ -468,8 +468,8 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 // OpenWorker is the claim of the worker of issue's open phase, and "" where there is none: the
 // claim the record gives the step of the open phase's role (OpenRoleOf, which at step is the role
 // of the running step, read with the issue), through record.ReadWorkerClaim over the issue's
-// phases rows, read in tx. That claim can be a keyed agent's, whose token names another role,
-// beside the role's own claim of an earlier version of the plan, so a role does not name it. It
+// phases rows, read in tx. Two claims of one issue can hold one role (record.WorkerClaim), so a
+// role does not name it. It
 // answers which claim a pause's stop and a release arm a backstop for — an architect gets none,
 // because nothing of its own is due and a sub-architect woken for nothing would hold a pod open for
 // the backstop period — and project is the project's token, as record.WorkerClaim takes it.

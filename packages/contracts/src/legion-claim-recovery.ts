@@ -27,10 +27,9 @@ export const legionStepRole = z.string().refine(isStepRole, {
  * refusal of the controller's own claim, belongs to the operator's door, and this one never
  * gives it.
  *
- * `claim` (contract 222) names the claim by its token, as a notice of provider errors names it:
- * two claims of one issue can hold one role — the agent of a key on a step of another role,
- * beside that role's own claim of an earlier version of the plan — and `issue` and `role` alone
- * reach the one that works the role's step that started last. The daemon refuses a token that is
+ * `claim` (contract 222) names the claim by its token, as a notice of provider errors names it: two
+ * claims of one issue can hold one role (`record.WorkerClaim`), and `issue` and `role` alone reach
+ * the one that works the role's step that started last. The daemon refuses a token that is
  * no claim of `issue` (`INVALID_CLAIM`) and a claim that holds another role (`CLAIM_NOT_OF_ROLE`).
  * Leave it out for the step's worker: a daemon below 222 refuses the member as unknown.
  *

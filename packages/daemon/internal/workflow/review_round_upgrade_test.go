@@ -45,7 +45,7 @@ func storeBeforeTheReviewedHead(t *testing.T) (*store.Store, *pgxpool.Pool) {
 		if migration.Version == phaseReviewedHeadMigration {
 			continue
 		}
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -107,7 +107,7 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 
 	reviewer := reviewerRow(t, pool)
 	want := namingTheReviewRound(reviewerTask, claim.RoleReviewer, phase.Reviewing,
-		record.PhaseRow{Role: claim.RoleReviewer, Entry: 2, EntryTask: reviewerTask})
+		record.PhaseRow{Role: claim.RoleReviewer, Entry: 2, EntryTask: reviewerTask}, nil)
 	if reviewer.EntryTask != want || want != reviewerTask+reviewedPartOf("none")+reviewEntryPartOf(2) {
 		t.Errorf("the reviewer's stored task after the upgrade = %q, want %q: the task the release before stored, "+
 			"then the two sentences namingTheReviewRound writes for its row", reviewer.EntryTask, want)
@@ -123,7 +123,7 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 	issue := issueRecord(t, pool, "LEGION-208")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer)), reviewer)
+		return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, reviewClaim, reviewer)
 	})
 	if delivered := deliveredTask(t, pool, "the owed entry after the upgrade"); delivered != want {
 		t.Fatalf("the owed entry after the upgrade is delivered as %q, want %q word for word: it ends with the daemon's two sentences", delivered, want)
