@@ -17,6 +17,7 @@ import (
 	"golang.org/x/oauth2/google"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // GoogleIAMCredentialsURL is the IAM Service Account Credentials API, which mints an access token
@@ -240,13 +241,20 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: the broker's own Google credentials gave no token", ErrMintUpstream)
 	}
-	// Only the email is escaped, and the verb is appended after: url.PathEscape would be free to
-	// escape the colon of ":generateAccessToken", and Google reads a path whose verb arrived as
+	// The resource's path is joined onto the base URL's path, its query kept and its fragment,
+	// which no request sends, dropped (urljoin.Join): the path appended to that URL's text would
+	// sit inside a query or a fragment, and IAM would be asked another path. Only the email is
+	// escaped, and the verb is appended after: url.PathEscape would be free to escape the colon
+	// of ":generateAccessToken", and Google reads a path whose verb arrived as
 	// %3AgenerateAccessToken as a resource name of its own and answers 404, never a token. The
 	// escaping is what keeps a stored value from reaching a different resource; the pattern above
-	// already admits no slash, so the two agree.
-	endpoint := cmp.Or(m.BaseURL, GoogleIAMCredentialsURL) +
-		"/v1/projects/-/serviceAccounts/" + url.PathEscape(secret.ServiceAccount) + ":generateAccessToken"
+	// already admits no slash, so the two agree. A base URL that does not parse is refused in
+	// fixed words, since url.Parse's error quotes the URL whole, user information and query
+	// included.
+	endpoint, err := urljoin.Join(cmp.Or(m.BaseURL, GoogleIAMCredentialsURL), "v1/projects/-/serviceAccounts/"+url.PathEscape(secret.ServiceAccount)+":generateAccessToken")
+	if err != nil {
+		return Minted{}, fmt.Errorf("%w: create Google service account token request: the IAM Credentials URL does not parse", ErrMintUpstream)
+	}
 	// A secret that names no scopes mints at cloud-platform, as every token of this type did
 	// before the scopes tag existed: an empty scope list is not a token with no scope, it is a
 	// request Google refuses. Marshalling a struct of a string slice and a string cannot fail,
@@ -256,9 +264,9 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 		scopes = []string{GoogleCloudPlatformScope}
 	}
 	body, _ := json.Marshal(GenerateAccessTokenRequest{Scope: scopes, Lifetime: GoogleAccessTokenLifetime})
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
-		return Minted{}, fmt.Errorf("%w: create Google service account token request: %w", ErrMintUpstream, err)
+		return Minted{}, fmt.Errorf("%w: create Google service account token request: the URL it joined does not parse", ErrMintUpstream)
 	}
 	own.SetAuthHeader(request)
 	request.Header.Set("Content-Type", "application/json")
