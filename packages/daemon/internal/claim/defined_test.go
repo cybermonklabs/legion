@@ -27,6 +27,8 @@ func TestANumberedNameIsDefinedWhereTheRoleItNumbersIs(t *testing.T) {
 		{name: "implementer-x"},
 		{name: ""},
 		{name: "critic-2", sources: []RoleSource{deployment, RoleList{"critic"}}, role: "critic", defined: true},
+		{name: "implementer-2", sources: []RoleSource{RoleList{"implementer-2"}}, role: "implementer-2", defined: true},
+		{name: "checker-2", sources: []RoleSource{deployment, RoleList{"checker-2"}}, role: "checker-2", defined: true},
 	} {
 		role, defined := DefinedRole(tc.name, tc.sources...)
 		if role != tc.role || defined != tc.defined {

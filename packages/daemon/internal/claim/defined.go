@@ -27,12 +27,18 @@ func (l RoleList) DefinedRoles() []Role { return l }
 // agent and lost slot, and the sandbox runtime's reading of a volume named for an agent's slot, each
 // read it.
 func DefinedRole(name string, sources ...RoleSource) (Role, bool) {
-	defined := slices.Clone(Roles)
-	for _, source := range sources {
-		defined = append(defined, source.DefinedRoles()...)
-	}
-	if slices.Contains(defined, Role(name)) {
+	if slices.Contains(Roles, Role(name)) {
 		return Role(name), true
 	}
-	return NumberedAgentRole(name, defined)
+	numbered, found := NumberedAgentRole(name, Roles)
+	for _, source := range sources {
+		roles := source.DefinedRoles()
+		if slices.Contains(roles, Role(name)) {
+			return Role(name), true
+		}
+		if !found {
+			numbered, found = NumberedAgentRole(name, roles)
+		}
+	}
+	return numbered, found
 }
