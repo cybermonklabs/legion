@@ -1,0 +1,196 @@
+[
+  {
+    "row": "aws with account and region",
+    "settings": {
+      "store": "aws-secrets-manager",
+      "secrets_prefix": "example/agent-secrets/",
+      "kms_key_arn": "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+      "aws_account_id": "111122223333",
+      "aws_region": "us-east-1",
+      "secret_type_tag": true
+    },
+    "clean": true,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager account 111122223333 in us-east-1"
+  },
+  {
+    "row": "aws with account and region",
+    "settings": {
+      "store": "aws-secrets-manager",
+      "secrets_prefix": "example/agent-secrets/",
+      "kms_key_arn": "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+      "aws_account_id": "111122223333",
+      "aws_region": "us-east-1",
+      "secret_type_tag": true
+    },
+    "clean": false,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager account (not printed: the broker's address is not clean) in (not printed: the broker's address is not clean)"
+  },
+  {
+    "row": "aws with account alone",
+    "settings": {
+      "store": "aws-secrets-manager",
+      "secrets_prefix": "example/agent-secrets/",
+      "aws_account_id": "111122223333",
+      "secret_type_tag": true
+    },
+    "clean": true,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager account 111122223333"
+  },
+  {
+    "row": "aws with account alone",
+    "settings": {
+      "store": "aws-secrets-manager",
+      "secrets_prefix": "example/agent-secrets/",
+      "aws_account_id": "111122223333",
+      "secret_type_tag": true
+    },
+    "clean": false,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager account (not printed: the broker's address is not clean)"
+  },
+  {
+    "row": "aws with region alone",
+    "settings": {
+      "store": "aws-secrets-manager",
+      "secrets_prefix": "example/agent-secrets/",
+      "aws_region": "us-east-1",
+      "secret_type_tag": true
+    },
+    "clean": true,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager in us-east-1"
+  },
+  {
+    "row": "aws with region alone",
+    "settings": {
+      "store": "aws-secrets-manager",
+      "secrets_prefix": "example/agent-secrets/",
+      "aws_region": "us-east-1",
+      "secret_type_tag": true
+    },
+    "clean": false,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager in (not printed: the broker's address is not clean)"
+  },
+  {
+    "row": "aws with neither",
+    "settings": {
+      "store": "aws-secrets-manager",
+      "secrets_prefix": "example/agent-secrets/",
+      "secret_type_tag": true
+    },
+    "clean": true,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager"
+  },
+  {
+    "row": "aws with neither",
+    "settings": {
+      "store": "aws-secrets-manager",
+      "secrets_prefix": "example/agent-secrets/",
+      "secret_type_tag": true
+    },
+    "clean": false,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager"
+  },
+  {
+    "row": "no store, from a broker before the field",
+    "settings": {
+      "secrets_prefix": "example/agent-secrets/",
+      "kms_key_arn": "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+      "aws_account_id": "111122223333",
+      "aws_region": "us-east-1"
+    },
+    "clean": true,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager account 111122223333 in us-east-1"
+  },
+  {
+    "row": "no store, from a broker before the field",
+    "settings": {
+      "secrets_prefix": "example/agent-secrets/",
+      "kms_key_arn": "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+      "aws_account_id": "111122223333",
+      "aws_region": "us-east-1"
+    },
+    "clean": false,
+    "string": "the broker AGENT_SECRETS_URL names (AWS Secrets Manager)",
+    "store_name": "AWS Secrets Manager account (not printed: the broker's address is not clean) in (not printed: the broker's address is not clean)"
+  },
+  {
+    "row": "gcp with a project",
+    "settings": {
+      "store": "gcp-secret-manager",
+      "secrets_prefix": "projects/000000000000/secrets/agent-secrets-",
+      "kms_key_name": "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets",
+      "gcp_project": "000000000000",
+      "secret_type_tag": true
+    },
+    "clean": true,
+    "string": "the broker AGENT_SECRETS_URL names (GCP Secret Manager)",
+    "store_name": "GCP Secret Manager project 000000000000"
+  },
+  {
+    "row": "gcp with a project",
+    "settings": {
+      "store": "gcp-secret-manager",
+      "secrets_prefix": "projects/000000000000/secrets/agent-secrets-",
+      "kms_key_name": "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets",
+      "gcp_project": "000000000000",
+      "secret_type_tag": true
+    },
+    "clean": false,
+    "string": "the broker AGENT_SECRETS_URL names (GCP Secret Manager)",
+    "store_name": "GCP Secret Manager project (not printed: the broker's address is not clean)"
+  },
+  {
+    "row": "gcp with no project",
+    "settings": {
+      "store": "gcp-secret-manager",
+      "secrets_prefix": "projects/000000000000/secrets/agent-secrets-",
+      "kms_key_name": "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets",
+      "secret_type_tag": true
+    },
+    "clean": true,
+    "string": "the broker AGENT_SECRETS_URL names (GCP Secret Manager)",
+    "store_name": "GCP Secret Manager"
+  },
+  {
+    "row": "gcp with no project",
+    "settings": {
+      "store": "gcp-secret-manager",
+      "secrets_prefix": "projects/000000000000/secrets/agent-secrets-",
+      "kms_key_name": "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets",
+      "secret_type_tag": true
+    },
+    "clean": false,
+    "string": "the broker AGENT_SECRETS_URL names (GCP Secret Manager)",
+    "store_name": "GCP Secret Manager"
+  },
+  {
+    "row": "a store this release does not know",
+    "settings": {
+      "store": "example-store",
+      "secrets_prefix": "example/agent-secrets/",
+      "secret_type_tag": true
+    },
+    "clean": true,
+    "string": "the broker AGENT_SECRETS_URL names (example-store)",
+    "store_name": "example-store"
+  },
+  {
+    "row": "a store this release does not know",
+    "settings": {
+      "store": "example-store",
+      "secrets_prefix": "example/agent-secrets/",
+      "secret_type_tag": true
+    },
+    "clean": false,
+    "string": "the broker AGENT_SECRETS_URL names ((not printed: the broker's address is not clean))",
+    "store_name": "(not printed: the broker's address is not clean)"
+  }
+]

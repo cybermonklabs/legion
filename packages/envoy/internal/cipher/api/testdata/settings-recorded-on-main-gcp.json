@@ -1,0 +1,8 @@
+{
+  "approver_fields": true,
+  "gcp_project": "000000000000",
+  "kms_key_name": "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets",
+  "secret_type_tag": true,
+  "secrets_prefix": "projects/000000000000/secrets/agent-secrets-",
+  "store": "gcp-secret-manager"
+}
