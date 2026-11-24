@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // launcherService is the authorization_details "service" this daemon's token logins always
@@ -70,11 +71,11 @@ var (
 // daemon's bearer or its Proof.
 var defaultHTTP = redirects.Refused(http.DefaultClient)
 
-// Client speaks the broker's token-login and enrollment routes. URL is the broker's base URL with
-// no path (also the request object's audience); HTTP is the client every call goes through, nil
-// for defaultHTTP; TokenFile is the path of the daemon's projected ServiceAccount token, read at
-// every login so the kubelet's rotation is always picked up; Log is where each login's outcome is
-// reported, nil for slog's default.
+// Client speaks the broker's token-login and enrollment routes. URL is the broker's base URL (also
+// the request object's audience), each route joined onto its path (do); HTTP is the client every
+// call goes through, nil for defaultHTTP; TokenFile is the path of the daemon's projected
+// ServiceAccount token, read at every login so the kubelet's rotation is always picked up; Log is
+// where each login's outcome is reported, nil for slog's default.
 //
 // state is the login as one snapshot (loginState), so a reader never sees the credential from one
 // moment and the failure from another. Its credential is the one the latest login won, cleared
@@ -645,8 +646,9 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 	if err != nil {
 		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
 	}
-	status, answered, cut, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
+	status, answered, cut, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) error {
 		req.Header.Set("Authorization", "Bearer "+token)
+		return nil
 	})
 	if err != nil {
 		return time.Time{}, err
@@ -727,25 +729,27 @@ func (e *SupersededError) Error() string {
 // Permanent is true: this process's generation never rises, so no later write of it is taken.
 func (*SupersededError) Permanent() bool { return true }
 
-// doProof signs a launcher proof over this call with the held credential's key and sends it as
-// the Proof header — never Authorization, which only RegisterPodSession's route reads. It takes
-// no lock: a renewal proves the same key again, so the broker keeps the credential's id and key
-// and a proof in flight during one stays valid. With no live credential it wakes the login loop
-// and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
-// wakes the login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already
-// replaced clears nothing. It reads the answer as do does, and answers whether do's bound cut it.
+// doProof signs a launcher proof over this call, naming the URL the request asks (proofURL), with
+// the held credential's key and sends it as the Proof header — never Authorization, which only
+// RegisterPodSession's route reads. It takes no lock: a renewal proves the same key again, so the
+// broker keeps the credential's id and key and a proof in flight during one stays valid. With no
+// live credential it wakes the login loop and answers NO_MACHINE_CREDENTIAL. A 401
+// (LAUNCHER_INVALID) clears the credential that failed, wakes the login loop, and answers
+// NO_MACHINE_CREDENTIAL; a 401 on a credential a login already replaced clears nothing. It reads
+// the answer as do does, and answers whether do's bound cut it.
 func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, oauth2call.Answer, bool, error) {
 	cred := c.snapshot().cred
 	if !cred.live(time.Now()) {
 		c.wake()
 		return 0, oauth2call.Answer{}, false, c.noCredentialError()
 	}
-	proof, err := signLauncherProof(cred.key, cred.id, method, c.URL+path, time.Now())
-	if err != nil {
-		return 0, oauth2call.Answer{}, false, err
-	}
-	status, answered, cut, err := c.do(ctx, method, path, body, limit, func(req *http.Request) {
+	status, answered, cut, err := c.do(ctx, method, path, body, limit, func(req *http.Request) error {
+		proof, err := signLauncherProof(cred.key, cred.id, method, proofURL(req.URL), time.Now())
+		if err != nil {
+			return err
+		}
 		req.Header.Set("Proof", proof)
+		return nil
 	})
 	if err != nil {
 		return 0, oauth2call.Answer{}, false, err
@@ -758,6 +762,16 @@ func (c *Client) doProof(ctx context.Context, method, path string, body any, lim
 		return 0, oauth2call.Answer{}, false, c.noCredentialError()
 	}
 	return status, answered, cut, nil
+}
+
+// proofURL is the URL a launcher proof names (its htu) for a request to u: u without its user
+// information and its query. The broker holds a proof to its own public URL with the path it was
+// asked (proof.Verifier, from its proofSubject), which names neither, as a DPoP proof's htu leaves
+// out the query; so a base URL's query reaches the broker with the request and never in the proof.
+func proofURL(u *url.URL) string {
+	named := *u
+	named.User, named.RawQuery, named.ForceQuery = nil, "", false
+	return named.String()
 }
 
 // backoff is a wait after failed consecutive logins: initial after the first, doubled for each one
@@ -896,6 +910,11 @@ const answerBytes = 1 << 16
 // do sends one broker call and reads its answer through oauth2call.ReadAnswer: its first limit
 // bytes, and whether the bound cut it, which a caller that must tell a whole answer from one cut
 // short reads (Carried), and so does refusal, which quotes a body that is not the contract's shape.
+// The call goes to path joined onto URL's path (urljoin.Join), URL's query kept, where path
+// appended to URL's text would sit inside its query or its fragment and the broker would be asked
+// another path; a URL that does not parse or names no host is refused in fixed words, since
+// url.Parse's error quotes it whole. mutate, where not nil, sets what the call carries beyond its
+// body (a bearer, a proof) on the request before it is sent, and its error ends the call unsent.
 // The answer comes back whole, which its caller decodes as its contract's shape or not
 // (Answer.Decode): the decode's error names the member that did not decode and quotes no value,
 // since the broker's answer, or a stand-in's, can echo the call's token into a field the decoder
@@ -903,7 +922,7 @@ const answerBytes = 1 << 16
 // and prints as the rule reads it, with every credential the call carried redacted, since the
 // broker's words, or a stand-in's, can echo the call's token, and every caller prints a refusal
 // (refusal).
-func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, oauth2call.Answer, bool, error) {
+func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request) error) (int, oauth2call.Answer, bool, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -912,7 +931,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 		}
 		payload = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, payload)
+	call, err := urljoin.Join(c.URL, path)
+	if err != nil {
+		return 0, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: the broker URL is not an absolute URL with a host (it is not printed)", method, path)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, call.String(), payload)
 	if err != nil {
 		return 0, oauth2call.Answer{}, false, oauth2call.Unanswered(err, nil, "")
 	}
@@ -920,7 +943,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if mutate != nil {
-		mutate(req)
+		if err := mutate(req); err != nil {
+			return 0, oauth2call.Answer{}, false, err
+		}
 	}
 	client := c.HTTP
 	if client == nil {
