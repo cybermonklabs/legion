@@ -10,6 +10,7 @@
       "github.com/sjawhar/envoy/internal/redact.Error",
       "github.com/sjawhar/envoy/internal/redact.AnswerText",
       "github.com/sjawhar/envoy/internal/redact.Tokens",
+      "github.com/sjawhar/envoy/internal/redact.TLSWords",
       "github.com/sjawhar/envoy/oauth2call.Field",
       "github.com/sjawhar/envoy/oauth2call.Tokens",
       "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
