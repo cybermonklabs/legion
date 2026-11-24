@@ -1917,10 +1917,9 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 // reads it. The engine leaves alone a parent held for any other reason, in retro or in merging,
 // whose pull request has merged, or whose phase's role stands on an entry a role's move back raised
 // out of retro or merging (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in
-// awaiting_children already, so it sends nothing again. The stop also leaves alone a member of a
-// re-admitted tree whose root still owes its members their return (record.Issue.MembersOwed): no
-// worker of this generation took its phase, and the return, later in this pass or at the root's
-// promotion, holds its start under the same rule (startMidPhaseMembers).
+// awaiting_children already, so it sends nothing again. The stop leaves a member alone when its
+// tree's return runs later in this pass: the return decides whether to hold a new start or stop a
+// worker already started (startMidPhaseMembers).
 //
 // It runs before the releases (promoteHolds), so the slot a stopped parent held is freed on this
 // very pass by the one rule for a phase that keeps none (releaseSlots, record.NeedsSlot), and the
@@ -1945,20 +1944,13 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 	}
 	slices.SortFunc(parents, func(left, right record.Issue) int { return cmp.Compare(left.Key, right.Key) })
 	running := record.RunningRoots(issues, facts)
-	owed := make(map[string][]record.OwedStart, len(facts.OwedRows))
-	for _, start := range facts.OwedRows {
-		owed[start.Issue] = append(owed[start.Issue], start)
-	}
-	// A member of a re-admitted tree whose root still owes its members their return is no started
-	// parent yet: no worker of this generation took its phase, and the return decides its start,
-	// holding it where an open child stands under it (startMidPhaseMembers, workflow's
-	// StartPromotedWorker). So the pass's stop, which retires a worker's task and tells its role
-	// that its phase ended, leaves such a member alone. The mark is on the root alone
-	// (record.Issue.MembersOwed).
+	owed := owedStartsByIssue(facts.OwedRows)
+	// Let the return decide how to hold these members, but only if the pass will reach it. A
+	// root's catch-up hold does not keep a member's own queued start from being delivered.
 	returning := make(map[string]bool)
-	for _, issue := range issues {
-		if issue.MembersOwed {
-			returning[issue.Key] = true
+	for _, root := range issues {
+		if returnsMembersThisPass(root, facts, held) {
+			returning[root.Key] = true
 		}
 	}
 	wrote := false
@@ -2004,6 +1996,14 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		}
 	}
 	return wrote, nil
+}
+
+func owedStartsByIssue(rows []record.OwedStart) map[string][]record.OwedStart {
+	owed := make(map[string][]record.OwedStart)
+	for _, start := range rows {
+		owed[start.Issue] = append(owed[start.Issue], start)
+	}
+	return owed
 }
 
 // retroHeldRead is what one pass's facts show of a parent held before its retro: the movement of
@@ -2461,6 +2461,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				opened = opened || facts.Gates[issue.Tree].Open()
 			case record.LineQueuedRoot:
+				// LineQueuedRoot is the QueuedRoot judgement. Read the carried slot before
+				// clearing the hand-over mark: the worker's start still needs this fact.
+				carriedSlot := candidate.Holds && issue.HandedOverFrom != ""
 				issue.Status = "in_progress"
 				// A root whose tree is opened runs as a tree of its own, which no ancestry hold
 				// holds (workflow's Ancestry), so the chain it queued under goes now: a root
@@ -2533,7 +2536,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.engine.StartArchitect(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("start the architect of %s: %w", issue.Key, err)
 				}
-				if err := a.returnOwedMembers(ctx, tx, issue, issues, now); err != nil {
+				if err := a.returnOwedMembers(ctx, tx, issue, issues, facts.OwedRows, carriedSlot, now); err != nil {
 					return admitted, released, err
 				}
 				opened = opened || facts.Gates[issue.Tree].Open()
@@ -3058,8 +3061,10 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // the pass that finds a re-admitted tree running before any promotion
 // (returnMembersOfRunningTrees). Only a root that carries the mark is written, so a fresh root's
 // promotion costs no statement.
-func (a *Admission) returnOwedMembers(ctx context.Context, tx pgx.Tx, root record.Issue, issues []record.Issue, now time.Time) error {
-	if err := a.startMidPhaseMembers(ctx, tx, root, issues, now); err != nil {
+func (a *Admission) returnOwedMembers(ctx context.Context, tx pgx.Tx, root record.Issue, issues []record.Issue,
+	owedRows []record.OwedStart, carriedSlot bool, now time.Time,
+) error {
+	if err := a.startMidPhaseMembers(ctx, tx, root, issues, owedRows, carriedSlot, now); err != nil {
 		return err
 	}
 	if err := a.reenterStrandedChildren(ctx, tx, root, issues); err != nil {
@@ -3069,6 +3074,12 @@ func (a *Admission) returnOwedMembers(ctx context.Context, tx pgx.Tx, root recor
 		return nil
 	}
 	return a.store.ClearMembersOwed(ctx, tx, root.Key)
+}
+
+// returnsMembersThisPass is the eligibility check shared by the member return and the stop that
+// leaves it to decide whether to hold those members.
+func returnsMembersThisPass(root record.Issue, facts record.LineFacts, held func(string) bool) bool {
+	return record.MembersReturnOwed(root, facts.Lifecycles[root.Key], facts.Gates[root.Key]) && !held(root.Key)
 }
 
 // returnMembersOfRunningTrees brings back the members of each re-admitted tree that runs with no
@@ -3099,7 +3110,7 @@ func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, 
 	}
 	wrote := false
 	for _, root := range issues {
-		if !record.MembersReturnOwed(root, facts.Lifecycles[root.Key], facts.Gates[root.Key]) || heldKeys(root.Key) {
+		if !returnsMembersThisPass(root, facts, heldKeys) {
 			continue
 		}
 		wrote = true
@@ -3112,7 +3123,7 @@ func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, 
 				"issue", root.Key, "generation", root.Generation)
 			continue
 		}
-		if err := a.returnOwedMembers(ctx, tx, root, issues, a.now()); err != nil {
+		if err := a.returnOwedMembers(ctx, tx, root, issues, facts.OwedRows, false, a.now()); err != nil {
 			return wrote, err
 		}
 		a.logOnCommit(ctx, "admission brings back the members of a re-admitted tree that runs before its promotion",
@@ -3160,11 +3171,10 @@ func promotedByEarlierRelease(root record.Issue, holds bool) bool {
 // architect is told of the hold again as a root's (workflow.HeldNotice), whether or not it carried
 // a gate. Promotion already queued the root's branch; each other member queues its own before
 // starting.
-// No member's phase is rewritten on the way back: the phase its record carries is the phase it
-// stands in, since the merge is what ends merging and no phase of this workflow is a wait for
-// one. A child of a re-admitted tree, and a root a hand-over created, come back in merging where
-// they stood in it, and the merge their new tree's merger makes is what ends that phase: the old
-// tree's linger stopped the merge its own merger had not made (beginLinger).
+// Unless open children hold the start, each member stays in the phase it carried. A child of a
+// re-admitted tree and a root a hand-over created come back in merging where they stood in it.
+// Their new tree's merger ends the phase: the old tree's linger stopped the merge its own merger
+// had not made (beginLinger).
 //
 // It brings back a member's other roles beside the phase's own, because the admission cap counts
 // the issues the daemon has started now: the one start that waits for a slot is the phase
@@ -3192,20 +3202,20 @@ func promotedByEarlierRelease(root record.Issue, holds bool) bool {
 // The roles are enumerated as every other sweep of them does, over claim.Roles (the engine's
 // everyClaim).
 //
-// What an issue waits on is not read here but for one wait: every member this starts is
-// mid-phase, work already under way, and a member standing at admitted is passed over, since
-// nothing of it has run in this generation and its first phase is the waiting line's to start.
-// The one wait is R9's (dispatch://INFRA-3320): a member under the tree's root with an open
-// Dispatch child under it does not get its phase worker back, and moves to awaiting_children
-// holding that start (workflow's StartPromotedWorker), whether this runs at the root's promotion
-// or at the pass that finds the tree running first. The root's own carried phase starts, as k12
-// rules, and the first pass after the promotion stops it as any started parent with an open child
-// (childrenWaits).
+// A member at admitted is passed over: its first phase is the waiting line's to start. R9
+// (dispatch://INFRA-3320) holds a mid-phase worker's start at the root's promotion or at the
+// pass that finds the tree running first. If StartFor finds a queued start or live claim, the
+// return stops the member instead (workflow's StopPromotedWorker). A held member brings no
+// other roles back and starts no step. The promotion alone exempts k12's "a root handed over
+// from another tree carrying its slot in `implementing` (`record.QueuedRoot`)": the next pass
+// stops that root as any started parent with an open child (childrenWaits).
 //
 // root is the tree's root as returnOwedMembers has it, and issues the pass's own records, which
 // carry that root as the pass read it. The caller passes both and appends nothing: the root is
 // read from the parameter and its copy among the records is passed over.
-func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root record.Issue, issues []record.Issue, now time.Time) error {
+func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root record.Issue, issues []record.Issue,
+	owedRows []record.OwedStart, carriedSlot bool, now time.Time,
+) error {
 	project, err := claim.ProjectToken(a.project)
 	if err != nil {
 		return err
@@ -3328,6 +3338,8 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 		runs = read
 	}
+	owed := owedStartsByIssue(owedRows)
+membersLoop:
 	for _, standing := range members {
 		member := standing.issue
 		if member.Key != root.Key {
@@ -3335,31 +3347,28 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				return err
 			}
 		}
-		// The phase's own worker is started first, because R9 can hold that start: a member with
-		// an open Dispatch child under it moves to awaiting_children holding it, and no worker is
-		// launched (workflow's StartPromotedWorker). Such a member then brings no other role back
-		// and starts no step, as one the walk found waiting already does, so it is read again to
-		// learn where the start left it.
-		held := false
+		// Judge the phase's own worker first. A member moved to awaiting_children brings back
+		// no other role and starts no step, whether its start was new or already written.
 		for _, owned := range standing.roles {
-			if owned.role != standing.owner || !workflow.StartFor(runs[owned.token], root, member.Generation, member.Phase) {
+			if owned.role != standing.owner {
 				continue
 			}
-			if err := a.engine.StartPromotedWorker(ctx, tx, member, owned.role); err != nil {
-				return err
+			var held bool
+			var err error
+			if workflow.StartFor(runs[owned.token], root, member.Generation, member.Phase) {
+				held, err = a.engine.StartPromotedWorker(ctx, tx, member, owned.role, carriedSlot && member.Key == root.Key)
+			} else {
+				held, err = a.engine.StopPromotedWorker(ctx, tx, member, owed[member.Key])
 			}
-			stood, err := a.store.Issue(ctx, tx, member.Key)
 			if err != nil {
 				return err
 			}
-			if stood != nil && stood.Phase == phase.AwaitingChildren {
-				member, held = *stood, true
+			if held {
+				continue membersLoop
 			}
+			break
 		}
 		for _, other := range standing.roles {
-			if held {
-				break
-			}
 			// No claim row, so the role has never run: there is no session to bring back and no
 			// task this start could carry, and the one it would make could only ever be woken by
 			// a message.

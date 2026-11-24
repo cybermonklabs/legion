@@ -744,30 +744,28 @@ func entryWork(issue record.Issue, row record.PhaseRow, at Standing) string {
 // The entry it raises is of no move back: the promotion hands the role the phase it already
 // stands in, and moves the issue nowhere.
 //
-// R9 holds this start as it holds every other start of planning through accepting: a member under
-// the tree's root with an open Dispatch child under it moves to awaiting_children holding the
-// start, with the resume task as its held task, and no worker is launched and no entry raised
-// (holdPromotedStart). The tree's own root is not held, as k12 rules for a root handed over
-// carrying its phase. The caller reads the member again to tell the two apart, since a held
-// member brings no other role back and starts no step (admit's startMidPhaseMembers).
-func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
+// R9 holds this start as it holds other starts of planning through accepting. It returns held
+// when the issue moved to awaiting_children without launching a worker or raising an entry.
+// The carried-slot exemption is for a root handed over in implementing (holdPromotedStart).
+// carriedSlot is the fact of that root coming to the promotion with a slot and the hand-over
+// mark record.QueuedRoot reads, before the promotion cleared the mark.
+func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, carriedSlot bool) (held bool, err error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
-		return err
+		return false, err
 	}
 	task, err := e.resumeTaskOn(ctx, tx, issue, w)
 	if err != nil {
-		return err
+		return false, err
 	}
-	held, err := e.holdPromotedStart(ctx, tx, issue, w, role, task)
-	if err != nil || held {
-		return err
+	if held, err := e.holdPromotedStart(ctx, tx, issue, w, role, task, carriedSlot); err != nil || held {
+		return held, err
 	}
 	entry, sent, err := e.enter(ctx, tx, issue, &w, role, task, "", false, false)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{resumeTask: true, stored: true})
+	return false, e.started(ctx, tx, issue, role, sent, entry, startMarks{resumeTask: true, stored: true})
 }
 
 // startMarks are the marks a start's request carries beside its entry, which tell the outbox and

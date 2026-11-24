@@ -169,12 +169,12 @@
 #                                 only the password out of the URL it gives psql, and every user
 #                                 of this machine can read psql's arguments. It must be the
 #                                 Postgres on this machine: services_up reads the URL with
-#                                 require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh) before
+#                                 require_loopback_env (scripts/e2e/lib/loopback-dsn.sh) before
 #                                 anything connects to it or the batch writes the URL anywhere,
 #                                 and refuses every host libpq reads from it but 127.0.0.1,
 #                                 localhost and ::1. Then it refuses a URL with a value that the
 #                                 connection string each run's Dispatch gets cannot carry
-#                                 (run_database_url), a password with a character that does not
+#                                 (run_database_url_env), a password with a character that does not
 #                                 print among them. Its login must be allowed to CREATE
 #                                 DATABASE, since each run makes a database of
 #                                 its own on it (own_dispatch), and each new database must offer
@@ -257,7 +257,7 @@ set -euo pipefail
 # credentials (packages/dispatch/e2e/run-server.sh strips the same three families), and e2e/api.ts,
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too, for the loopback guard services_up reads a given
-# Postgres URL with (require_loopback_dsn, scripts/e2e/lib/loopback-dsn.sh): the guard reads the
+# Postgres URL with (require_loopback_env, scripts/e2e/lib/loopback-dsn.sh): the guard reads the
 # URL alone, psql reads PGHOSTADDR, and PGSERVICE with PGSERVICEFILE name a service entry that can
 # set hostaddr, so psql would connect to an address the guard never read. The sweep runs in every
 # process of this script, so `rig.sh run`, which runs own_dispatch, has them cleared too.
@@ -900,7 +900,7 @@ safe_url() {
 }
 
 # pg_sql URL SQL runs SQL on URL with psql and prints each row's values, one row a line, tabs
-# between them. psql is libpq, so the host it connects to is the host require_loopback_dsn read
+# between them. psql is libpq, so the host it connects to is the host require_loopback_env read
 # from the same URL (services_up). pg_url_run (pg-url.sh, sourced above) gives psql the URL
 # without its password, and the password in PGPASSWORD for that one command, so no process list
 # shows it. psql never asks for a password (-w): a server that asks for one the URL does not hold
@@ -1035,10 +1035,9 @@ services_down() {
 # Postgres, and a Dispatch server on it, which stop_run stops. It records the Postgres, the
 # database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port. The
 # batch's Postgres is the server $services_postgres names, and the batch's own container when that
-# file is absent. On a given server, the run's Dispatch gets the connection string
-# run_database_url (scripts/e2e/lib/loopback-dsn.sh) rebuilds from the given URL with libpq, with
-# the run's database as its dbname: pgx, which Dispatch opens it with, reads that keyword/value
-# form.
+# file is absent. On a given server, services_up checks the URL with run_database_url_env.
+# Here own_dispatch calls run_database_url on the URL from the file to set dbname to the run's
+# database. Dispatch's pgx driver reads the resulting keyword/value connection string.
 own_dispatch() {
   local seed=$1 database=run_${R##*/} pg_port postgres url
   database=${database//-/_}

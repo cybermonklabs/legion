@@ -46,7 +46,8 @@ func promotesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine, at ti
 	clockReads(engine, at)
 	member := issueRecord(t, pool, "LEGION-208")
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
+		_, err := engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer, false)
+		return err
 	})
 }
 

@@ -123,7 +123,7 @@ func entryEngine(t *testing.T) *workflow.Engine {
 func startPromoted(ctx context.Context, db store.TxPool, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
 	ctx = engine.OpenFact(ctx)
 	return store.Transact(ctx, db, func(ctx context.Context, tx pgx.Tx) error {
-		if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
+		if _, err := engine.StartPromotedWorker(ctx, tx, issue, role, false); err != nil {
 			return err
 		}
 		return engine.SettleFact(ctx, tx)

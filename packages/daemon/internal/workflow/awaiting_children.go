@@ -426,33 +426,28 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	return true, e.awaitChildren(ctx, tx, issue, w, hold)
 }
 
-// holdPromotedStart is R9's guard on the start a re-admitted tree's first run gives a member back
-// in the middle of its phase (StartPromotedWorker): at the root's promotion, or at the admission
-// pass that finds the tree running when its design gate opened first. Where an open Dispatch child
-// stands under issue (childrenHoldingStart), the member moves to awaiting_children holding the
-// start of the phase it stands in, with task, the resume task that start would have given role,
-// as the held task (awaitChildren), and it answers true: no worker is launched and no entry is
-// raised. It tells no role that its phase ended, since no worker of this generation took the
-// phase. The exemptions are the ones the pass's own stop reads (StopForChildren), a pull request
-// that has merged and an entry a move out of retro or merging raised (acceptedEntry), whose start
-// R9 does not hold, and one more: the tree's own root. Its promotion starts the phase it carries,
-// as a root handed over from another tree carrying its slot does, which Verification v13's k12
-// names among the starts R9 does not hold. Every member under it is held.
-func (e *Engine) holdPromotedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, task string) (bool, error) {
-	// k12: "These starts are not held: ... a root handed over from another tree carrying its slot in `implementing` (`record.QueuedRoot`)".
-	if claim.IsTreeRoot(issue.Key, issue.Tree) {
-		return false, nil
-	}
-	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+// StopPromotedWorker applies the admission pass's stop when the return finds a mid-phase worker
+// already started or queued. There is no new start to hold, but the open children still hold
+// this phase. StopForChildren checks the pull request and entry and finishes the owed rows.
+func (e *Engine) StopPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, owed []record.OwedStart) (bool, error) {
+	open, err := e.childrenHoldingStart(ctx, tx, issue, issue.Phase, nil)
 	if err != nil {
 		return false, err
 	}
-	open, err := e.childrenHoldingStart(ctx, tx, issue, issue.Phase, pr)
-	if err != nil || len(open) == 0 {
-		return false, err
+	return e.StopForChildren(ctx, tx, issue, open, owed)
+}
+
+// holdPromotedStart is R9's guard on a phase worker's start at promotion or the first pass that
+// finds its re-admitted tree running. It returns true when the issue moves to awaiting_children
+// holding the resume task, without a launch, a new entry or a phase-ended message. Besides the
+// merged pull request and accepted-entry exemptions, k12 exempts "a root handed over from
+// another tree carrying its slot in `implementing` (`record.QueuedRoot`)".
+func (e *Engine) holdPromotedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, task string, carriedSlot bool) (bool, error) {
+	if carriedSlot && issue.Phase == phase.Implementing {
+		return false, nil
 	}
-	entry, err := e.phaseRow(ctx, tx, issue.Key, role)
-	if err != nil || acceptedEntry(entry) {
+	open, _, err := e.childrenHoldingSamePhaseStart(ctx, tx, issue, role)
+	if err != nil || len(open) == 0 {
 		return false, err
 	}
 	e.logOnCommit(ctx, "workflow: a re-admitted tree's first run holds a member's phase for its open Dispatch children", "issue", issue.Key,
@@ -477,9 +472,8 @@ func undeliveredStart(issue record.Issue, owed []record.OwedStart) bool {
 
 // acceptedEntry says whether row's entry was raised by a move out of retro or merging, the phases
 // past the daemon's acceptance of the issue (record.PhaseRow.EntryFrom): a role's move back out of
-// one of them, whose start R9 does not hold. It is the one statement of that exemption, read by the
-// admission pass (StopForChildren) and by the release of a hold, which restarts the held phase on
-// that same entry (retryPhase).
+// one of them, whose start R9 does not hold. StopForChildren reads this exemption directly.
+// retryPhase and holdPromotedStart read it through childrenHoldingSamePhaseStart.
 func acceptedEntry(row record.PhaseRow) bool {
 	return record.AcceptedPhase(row.EntryFrom)
 }

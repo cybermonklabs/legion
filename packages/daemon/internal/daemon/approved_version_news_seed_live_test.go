@@ -279,7 +279,7 @@ func startRoles(ctx context.Context, tx pgx.Tx, records record.Store, engine *wo
 				return err
 			}
 		case role == phase.RoleFor(issue.Phase):
-			if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
+			if _, err := engine.StartPromotedWorker(ctx, tx, issue, role, false); err != nil {
 				return fmt.Errorf("start the %s of %s: %w", role, issue.Key, err)
 			}
 		default:
@@ -424,7 +424,7 @@ func (r *versionNewsLive) toldByStartPath(ctx context.Context, tx pgx.Tx, engine
 		planning := member
 		planning.Phase = phase.Planning
 		fact := engine.OpenFact(ctx)
-		if err := engine.StartPromotedWorker(fact, probe, planning, claim.RolePlanner); err != nil {
+		if _, err := engine.StartPromotedWorker(fact, probe, planning, claim.RolePlanner, false); err != nil {
 			return versionNewsTold{}, fmt.Errorf("raise the planner's entry on %s: %w", member.Key, err)
 		}
 		if err := engine.SettleFact(fact, probe); err != nil {

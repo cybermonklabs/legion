@@ -1,36 +1,22 @@
 package admit
 
 import (
-	"context"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // rmOpenChild is a Dispatch child of the implementing member that Legion does not run: it stands
 // in backlog, so Dispatch shows it open under that member (dispatch://INFRA-3320 R9).
 const rmOpenChild = "LEGION-310"
-
-// stopsOf counts the rows that would stop or wake a worker of issue in the middle of its phase:
-// a `retire_task` of its claim's task and a phase-ended message to its role, which the admission
-// pass's own stop of a started parent queues (workflow's StopForChildren).
-func stopsOf(t *testing.T, pool *pgxpool.Pool, issue string) int {
-	t.Helper()
-	var n int
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := tx.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and
-			((kind = 'supervise' and payload->>'op' = 'retire_task') or kind = 'phase_ended')`, issue).Scan(&n); err != nil {
-			t.Fatalf("count the stops of %s: %v", issue, err)
-		}
-	})
-	return n
-}
 
 // dispatch://INFRA-3320 R9 over dispatch://INFRA-5471's return: a re-admitted tree's first run
 // brings its mid-phase members back (admit's startMidPhaseMembers, workflow's StartPromotedWorker),
@@ -86,36 +72,91 @@ func TestAReadmittedMemberWithAnOpenChildComesBackWaitingOnIt(t *testing.T) {
 				if len(member.ChildrenWait.Children) != 1 || member.ChildrenWait.Children[0] != rmOpenChild {
 					t.Fatalf("the wait of %s names the children %v, want %s alone", rmImplementing, member.ChildrenWait.Children, rmOpenChild)
 				}
-				// No launch of the phase's worker is queued: no start row of the implementer, of work
-				// or of news alone, stands in the outbox for the member (startsOf reads every one).
-				for _, start := range startsOf(t, pool, rmImplementing) {
-					if start.role == claim.RoleImplementer {
-						t.Fatalf("the waiting %s has a start of its implementer queued (%+v), want none: no worker is launched while its child is open",
-							rmImplementing, start)
-					}
-				}
+				noWorkerLaunch(t, pool, rmImplementing, claim.RoleImplementer)
 				if got := memberStarts(t, pool, rmImplementing); len(got) != 0 {
 					t.Fatalf("the starts of the waiting %s = %+v, want none: no role of it comes back while its child is open", rmImplementing, got)
 				}
-				if got := stopsOf(t, pool, rmImplementing); got != 0 {
-					t.Fatalf("the waiting %s has %d rows that stop or wake its worker, want none: no worker of this generation took the phase",
-						rmImplementing, got)
-				}
 			})
 		}
+	}
+
+	for _, row := range []struct {
+		name          string
+		fileWhileHeld bool
+	}{
+		{name: "a new child stops an owed start while catch-up holds the root", fileWhileHeld: true},
+		{name: "a new child stops an owed start on the root's return"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			const newChild = "LEGION-311"
+			pool := migratedPool(t)
+			admission, _ := readmittedAdmission(t, 1)
+			readmittedTree(t, pool, admission, false)
+			admission.HoldForCatchUp(rmRoot)
+			// A mid-phase member that was already waiting stays there through re-admission.
+			member := issue(t, pool, rmImplementing)
+			member.Phase = phase.AwaitingChildren
+			member.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: pwTask(rmImplementing, phase.Implementing),
+				Reason: "an open child held implementing", Since: fixedNow, Children: []string{rmOpenChild}}
+			member.ChildrenWaitedAt = &fixedNow
+			putIssue(t, pool, member)
+			seedMirrorChild(t, pool, rmOpenChild, "backlog", rmImplementing)
+			registerApprovedSpec(t, pool, admission, "root-gate")
+
+			moveChild(t, pool, admission, "child-done", rmOpenChild, rmImplementing, "done", 2)
+
+			want := []memberStart{{role: claim.RoleImplementer, withTask: true, needsSlot: true}}
+			if member, starts := issue(t, pool, rmImplementing), memberStarts(t, pool, rmImplementing); member.Phase != phase.Implementing || !reflect.DeepEqual(starts, want) || holdsSlot(t, pool, rmImplementing) {
+				t.Fatalf("the member after its child closes = phase %s, starts %+v, slots %+v; want implementing with its start waiting for a slot",
+					member.Phase, starts, slots(t, pool))
+			}
+			if !issue(t, pool, rmRoot).MembersOwed {
+				t.Fatal("catch-up must still hold the root's member return")
+			}
+			if row.fileWhileHeld {
+				moveChild(t, pool, admission, "new-child", newChild, rmImplementing, "backlog", 1)
+				if member := issue(t, pool, rmImplementing); member.Phase != phase.AwaitingChildren {
+					t.Fatalf("the member with a new child while its root is held = phase %s, want awaiting_children", member.Phase)
+				}
+				if !issue(t, pool, rmRoot).MembersOwed {
+					t.Fatal("stopping the member must not bring back the root's members")
+				}
+			} else {
+				// The release pass sees the open child and the owed start for the first time together.
+				seedMirrorChild(t, pool, newChild, "backlog", rmImplementing)
+			}
+
+			admission.ReleaseCatchUp(rmRoot)
+			spPass(t, pool, admission)
+
+			member = issue(t, pool, rmImplementing)
+			if member.Phase != phase.AwaitingChildren || member.ChildrenWait == nil ||
+				member.ChildrenWait.Start != phase.Implementing || !slices.Equal(member.ChildrenWait.Children, []string{newChild}) ||
+				!strings.Contains(member.ChildrenWait.Reason, "its start of implementing was written and had not reached the implementer") {
+				t.Fatalf("the member after releasing catch-up = phase %s, wait %+v; want awaiting_children on %s with its implementer's start held undelivered",
+					member.Phase, member.ChildrenWait, newChild)
+			}
+			noWorkerLaunch(t, pool, rmImplementing, claim.RoleImplementer)
+			if starts := memberStarts(t, pool, rmImplementing); len(starts) != 0 {
+				t.Fatalf("the member after releasing catch-up has starts %+v, want no role brought back while it waits", starts)
+			}
+			if issue(t, pool, rmRoot).MembersOwed {
+				t.Fatal("the root's return should have cleared its mark")
+			}
+		})
 	}
 }
 
 // The tree of the carried-root case: a root another tree handed to Legion carrying its slot in
 // implementing (record.QueuedRoot), and a member under it in the middle of implementing.
 const (
-	crRoot      = "LEGION-400"
+	crRoot      = spParent // pwDeliver finishes starts of spParent.
 	crMember    = "LEGION-401"
 	crOpenChild = "LEGION-402"
 )
 
 // noWorkerLaunch fails if a start of key's phase role, of work or of news alone, stands in the
-// outbox (startsOf reads every one), or a row that stops or wakes such a worker (stopsOf).
+// outbox (startsOf reads every one), or a row that retires the task or tells the role it ended.
 func noWorkerLaunch(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) {
 	t.Helper()
 	for _, start := range startsOf(t, pool, key) {
@@ -123,34 +164,19 @@ func noWorkerLaunch(t *testing.T, pool *pgxpool.Pool, key string, role claim.Rol
 			t.Fatalf("the waiting %s has a start of its %s queued (%+v), want none: no worker is launched while its child is open", key, role, start)
 		}
 	}
-	if got := stopsOf(t, pool, key); got != 0 {
-		t.Fatalf("the waiting %s has %d rows that stop or wake its worker, want none: no worker of this generation took the phase", key, got)
+	if retired := spRetired(t, pool, key); len(retired) != 0 {
+		t.Fatalf("the waiting %s has task retirements %+v, want none: no worker of this generation took the phase", key, retired)
+	}
+	if ended := pwPayloads[record.PhaseEnded](t, pool, key); len(ended) != 0 {
+		t.Fatalf("the waiting %s has phase-ended messages %+v, want none: no worker of this generation took the phase", key, ended)
 	}
 }
 
-// deliverStart finishes the newest start row of role on issue, as the outbox lane does once it
-// has launched that worker and handed it the task, so the worker stands in the middle of its
-// phase.
-func deliverStart(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) {
-	t.Helper()
-	inTx(t, pool, func(tx pgx.Tx) {
-		ctx := context.Background()
-		var id int64
-		if err := tx.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-			and payload->>'role' = $2 order by id desc limit 1`, issue, string(role)).Scan(&id); err != nil {
-			t.Fatalf("read the %s's start of %s: %v", role, issue, err)
-		}
-		if err := record.NewStore().FinishOutbox(ctx, tx, id, ""); err != nil {
-			t.Fatalf("finish the %s's start %d of %s: %v", role, id, issue, err)
-		}
-	})
-}
-
-// dispatch://INFRA-3320 R9 at the promotion of a root that carries its phase, all three sides in
-// one tree (Verification v13's k12, INFRA-3320 item 45):
+// dispatch://INFRA-3320 R9 at the promotion of a root handed over carrying its slot in
+// implementing, all three sides in one tree (Verification v13's k12, INFRA-3320 item 45):
 //
-//  1. the root's carried phase starts at its promotion, with its worker's launch queued, open
-//     child or not: k12 names that start among the ones R9 does not hold;
+//  1. the root's carried implementing starts at its promotion, with its worker's launch queued,
+//     open child or not: k12 exempts that start alone among carried worker phases;
 //  2. a member under it in the middle of its phase, with an open Dispatch child under it, goes
 //     to awaiting_children at that same promotion holding the start of its phase, with no launch
 //     of its worker queued (admit's startMidPhaseMembers, workflow's StartPromotedWorker);
@@ -194,7 +220,7 @@ func TestAPromotedCarriedRootStartsItsPhaseWhileAMemberUnderItWaitsOnItsChild(t 
 
 				spPass(t, pool, admission)
 
-				// 1. The root's carried phase starts at the promotion, whatever its children.
+				// 1. The root's carried implementing starts despite the open child.
 				root := issue(t, pool, crRoot)
 				if root.Phase != phase.Implementing || root.ChildrenWait != nil || root.HandedOverFrom != "" || !treeOpen(t, pool, crRoot) {
 					t.Fatalf("the promoted root = phase %s, held start %+v, handed over from %q, tree open %t; want implementing in a tree of its own, nothing held",
@@ -223,7 +249,8 @@ func TestAPromotedCarriedRootStartsItsPhaseWhileAMemberUnderItWaitsOnItsChild(t 
 
 				// 3. The outbox delivers the root's start, and the first pass after that stops the
 				// root that has an open child, its worker told that the phase ended.
-				deliverStart(t, pool, crRoot, claim.RoleImplementer)
+				token := putWorkerClaim(t, pool, crRoot, crRoot, claim.RoleImplementer, root.Generation, supervise.StateWorking, "")
+				pwDeliver(t, pool, token, pnWorkerStart(t, pool, crRoot, claim.RoleImplementer))
 				spPass(t, pool, admission)
 
 				root = issue(t, pool, crRoot)
