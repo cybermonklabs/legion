@@ -31,7 +31,7 @@ import (
 
 // legionIssueSubscription is a subscribe frame's view of one issue's Legion state.
 func legionIssueSubscription(key string) DeliveryLiveView {
-	return DeliveryLiveView{Kind: issueLegionKind, Issue: &key}
+	return DeliveryLiveView{Kind: issueLegionKind, Issue: issueMember(key)}
 }
 
 // legionIssueSub is the sub every page of these tests holds its issue's view under.
@@ -41,21 +41,30 @@ const legionIssueSub = "i"
 func listenerConnected(note deliveryHubNote) bool { return note.what == "connected" }
 
 // legionIssuePage is one page's view of an issue at one hub: the hub it subscribed at (named A or
-// B in failures), the socket it reads and the body it holds.
+// B in failures), the socket it reads, the key the hub holds its view under, which the hub's notes
+// name (deliveryHubNote.view), and the body it holds.
 type legionIssuePage struct {
 	hub  string
 	rig  *hubRig
 	conn *fakeLiveConn
 	key  string
+	view string
 	held json.RawMessage
 }
 
 // openLegionIssuePage subscribes a page to key's view at rig, and requires its snapshot to be
-// GET /api/v1/issues/{key}/legion's body (L-1, L-15) and to name key alone (L-14).
+// GET /api/v1/issues/{key}/legion's body (L-1, L-15) and to name key alone (L-14). The view's key
+// is the parse's of the frame the page subscribes with, so unread matches the notes of exactly
+// the view the hub holds for it.
 func openLegionIssuePage(t *testing.T, hub string, rig *hubRig, key string) *legionIssuePage {
 	t.Helper()
-	page := &legionIssuePage{hub: hub, rig: rig, conn: newFakeLiveConn(), key: key}
-	rig.hub.Subscribe(page.conn, subscribeFrame(legionIssueSub, legionIssueSubscription(key)))
+	view := legionIssueSubscription(key)
+	spec, refusal := parseDeliveryLiveView(view)
+	if refusal != nil {
+		t.Fatalf("the legion_issue view of %s: refusal = %+v, want none", key, refusal)
+	}
+	page := &legionIssuePage{hub: hub, rig: rig, conn: newFakeLiveConn(), key: key, view: spec.key}
+	rig.hub.Subscribe(page.conn, subscribeFrame(legionIssueSub, view))
 	snapshot := page.conn.snapshot(t, 5*time.Second, legionIssueSub)
 	requireLegionNames(t, key, decodeLegionIssue(t, snapshot.Body))
 	requireSameBody(t, "hub "+hub+"'s snapshot of "+key, snapshot.Body,
@@ -130,18 +139,19 @@ func (p *legionIssuePage) mark(t *testing.T) int {
 	return p.rig.mark()
 }
 
-// unread requires that the page's hub began no recompute of the page's view since start, the
-// page's mark before row's store. A store that moves nothing the view shows sends the page
-// nothing even where the hub marks the view for it, since the recompute finds no change; so the
-// page's silence alone cannot tell a hub that filtered the store's signal from one that did not,
-// and the hub's own notes can.
+// unread requires that the page is sent nothing for a second after row's store, and that its hub
+// began no recompute of the page's view since start, the page's mark before that store, by the
+// second's end. A store that moves nothing the view shows sends the page nothing even where the
+// hub marks the view for it, since the recompute finds no change; so the page's silence alone
+// cannot tell a hub that filtered the store's signal from one that did not, and the hub's own
+// notes, counted once the second has passed, can.
 func (p *legionIssuePage) unread(t *testing.T, start int, row string) {
 	t.Helper()
-	view := issueLegionKind + "|" + p.key + "|"
+	p.conn.none(t, time.Second, row+", at "+p.what())
 	if n := p.rig.count(start, func(note deliveryHubNote) bool {
-		return note.what == "recompute begin" && note.view == view
+		return note.what == "recompute begin" && note.view == p.view
 	}); n != 0 {
-		t.Fatalf("%s: hub %s began %d recomputes of %s's view (%s) since its mark, want 0", row, p.hub, n, p.key, view)
+		t.Fatalf("%s: hub %s began %d recomputes of %s's view (%s) since its mark, want 0", row, p.hub, n, p.key, p.view)
 	}
 }
 
@@ -310,9 +320,9 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 		page.runsRise(t, deadline, body, "L-9, a rating write that makes a retro's record")
 	}
 
-	// L-10: a stored change of another project, and its notify. Each hub settles first, and
-	// neither may read LIVE-1's view again for it (unread), which its page's silence alone does
-	// not show.
+	// L-10: a stored change of another project, and its notify. Each hub settles first; then each
+	// page is sent nothing for a second, by whose end its hub may not have read LIVE-1's view again
+	// for it (unread), which the page's silence alone does not show.
 	marks := map[*legionIssuePage]int{}
 	for _, page := range pages {
 		marks[page] = page.mark(t)
@@ -320,9 +330,6 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	observe("OTHER", "OTHER-1", legion.FieldPhase, `"testing"`, tick())
 	seedLegionRead(t, rig.database, "OTHER", tick(), "")
 	announce(t, rig, "OTHER")
-	for _, page := range pages {
-		page.conn.none(t, time.Second, "L-10, a notify of another project, at "+page.what())
-	}
 	for _, page := range pages {
 		page.unread(t, marks[page], "L-10, a notify of another project")
 	}
@@ -332,9 +339,6 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 		marks[page] = page.mark(t)
 	}
 	putStepOK(t, rig.handler, "LIVE-2", uuid.NewString(), implementerStart(daemonSessionOf("LIVE")))
-	for _, page := range pages {
-		page.conn.none(t, time.Second, "L-11, a run of another issue, at "+page.what())
-	}
 	for _, page := range pages {
 		page.unread(t, marks[page], "L-11, a run of another issue")
 	}

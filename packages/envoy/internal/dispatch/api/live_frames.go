@@ -58,9 +58,13 @@ type DeliveryLiveView struct {
 	At      *string             `json:"at,omitempty"`
 	Project *string             `json:"project,omitempty"`
 	// Issue is the one issue a legion_issue view names, the key GET /api/v1/issues/{key}/legion
-	// reads (dispatch://INFRA-4869). Every other kind ignores it, as it did before any kind read
-	// it (parseDeliveryLiveView).
-	Issue *string `json:"issue,omitempty"`
+	// reads (dispatch://INFRA-4869), held as the frame's raw JSON. The socket's decode is a plain
+	// json.Unmarshal (decodeSocketClientFrame), which type-checks every member its struct declares,
+	// so a typed field would refuse a frame whose issue is a number or an object on any kind, a
+	// frame every kind before this one subscribed. Raw, the decode accepts an `issue` member of any
+	// JSON type on every kind; only legion_issue's parse reads it, as a string, and refuses what is
+	// not one (parseLegionIssueLiveView), and every other kind ignores it whatever its type.
+	Issue json.RawMessage `json:"issue,omitempty"`
 }
 
 // DeliveryLiveRevs is what a page holds, as revisions (deliveryLiveRevision) in the frame's own
@@ -284,9 +288,11 @@ func (r viewReads) refusal(err error) (code, message string, refused bool) {
 // fields, and what the hub does differently for it — what it reads, and the two functions that
 // read a subscription and an answer. A kind's behaviour is declared here and nowhere else, so the
 // hub's shared code branches on no kind's name and a new kind is one entry rather than a line in
-// each of its files. What a view names beside its kind is its parse's to read and refuse: an
-// existing kind's parse ignores an `issue` member, as it always did, and only legion_issue's
-// reads one.
+// each of its files. What a view names beside its kind is its parse's to read and refuse, but for
+// a project: the shared gate (parseDeliveryLiveView) refuses one on every kind that reads no
+// project's daemon (the timeline, measures and pipeline) before that kind's parse runs. An
+// existing kind's parse ignores an `issue` member of any type, as it always did, and only
+// legion_issue's reads one.
 type deliveryLiveClasses struct {
 	// body is the response struct the matching GET route writes.
 	body reflect.Type

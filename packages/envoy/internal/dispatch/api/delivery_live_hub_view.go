@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/url"
 	"slices"
 	"strconv"
@@ -16,11 +17,12 @@ import (
 // (viewReadsLegion) is given a project; a legion_issue view, the one such kind that names no
 // project, refuses one itself (parseLegionIssueLiveView).
 //
-// An issue is refused by nothing here. The legion_issue kind alone reads it; the timeline,
-// measures, pipeline and legion kinds ignore an `issue` member, as they did before any kind read
-// one, so a frame a deployed page sends with one is answered exactly as it was and never becomes
-// INVALID_FRAME: the socket decodes a frame with a plain json.Unmarshal (decodeSocketClientFrame),
-// which has always let such a member through.
+// An issue is refused by nothing here. The socket's decode (decodeSocketClientFrame, a plain
+// json.Unmarshal, which type-checks every member its struct declares) accepts an `issue` member
+// of any JSON type, since DeliveryLiveView holds it raw, and only legion_issue's parse reads it
+// (parseLegionIssueLiveView). The timeline, measures, pipeline and legion kinds ignore it whatever
+// its type, as they did before any kind read one, so a frame a deployed page sends with one is
+// answered exactly as it was and never becomes INVALID_FRAME.
 func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError) {
 	classes, known := deliveryLiveKinds[view.Kind]
 	if !known {
@@ -114,10 +116,12 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 
 // parseLegionIssueLiveView reads a legion_issue view: it names the issue whose Legion state it
 // shows and nothing else, since that state has no window and the key is all
-// GET /api/v1/issues/{key}/legion reads. It is the one kind that reads an `issue` member (every
-// other kind ignores one, parseDeliveryLiveView), and it refuses a project itself: the shared gate
-// lets a project through to every kind that reads a project's daemon, this one included, and this
-// view's project is its key's, never one the frame names.
+// GET /api/v1/issues/{key}/legion reads. It is the one kind that reads an `issue` member, which
+// the decode holds raw whatever its JSON type (DeliveryLiveView.Issue): it reads it as a string,
+// and refuses one that is absent, null, empty or of another type INVALID_FRAME in this kind's own
+// words, where every other kind ignores the member (parseDeliveryLiveView). It refuses a project
+// itself too: the shared gate lets a project through to every kind that reads a project's daemon,
+// this one included, and this view's project is its key's, never one the frame names.
 //
 // The view's project is the key's prefix before its first "-" (legionProjectOf, the rule
 // legionDaemonSessionOf reads a key's project by): no route moves an issue to another project, so
@@ -129,10 +133,12 @@ func parseLegionIssueLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *Li
 	if view.Project != nil || view.Window != nil || view.At != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a legion_issue view names an issue, not a project, a window, an at or a query")
 	}
-	if view.Issue == nil || *view.Issue == "" {
-		return invalidLiveView("INVALID_FRAME", "a legion_issue view names its issue")
+	// A null member decodes as no string, and so as the empty key, which is refused with the rest.
+	var issue string
+	if len(view.Issue) == 0 || json.Unmarshal(view.Issue, &issue) != nil || issue == "" {
+		return invalidLiveView("INVALID_FRAME", "a legion_issue view names its issue, a non-empty string")
 	}
-	spec.issue = *view.Issue
+	spec.issue = issue
 	spec.project = legionProjectOf(spec.issue)
 	spec.key = legionIssueView + "|" + spec.issue + "|"
 	return nil

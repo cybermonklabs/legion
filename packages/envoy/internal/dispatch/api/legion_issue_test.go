@@ -660,27 +660,58 @@ func TestAnIssuesLegionReadCountsTheRunsRevision(t *testing.T) {
 	}
 }
 
+// issueMember is a view's `issue` member naming key, as a page's frame spells it: a JSON string.
+func issueMember(key string) json.RawMessage {
+	encoded, _ := json.Marshal(key) // a Go string always encodes
+	return encoded
+}
+
+// issueMemberRow is an `issue` member a frame could carry, and what a failure names it by.
+type issueMemberRow struct {
+	what   string
+	member json.RawMessage
+}
+
+// notStringIssues is an `issue` member of each JSON type but a string.
+var notStringIssues = []issueMemberRow{
+	{"a number", json.RawMessage(`7`)},
+	{"an object", json.RawMessage(`{"key":"INFRA-7"}`)},
+	{"an array", json.RawMessage(`["INFRA-7"]`)},
+	{"a bool", json.RawMessage(`true`)},
+	{"null", json.RawMessage(`null`)},
+}
+
 // TestALegionIssueViewNamesItsIssueAndNothingElse: the live kind of one issue's state names its
 // issue and nothing else (the plan's decision 7). Each shape it refuses is refused INVALID_FRAME
 // before anything is subscribed, and a view of INFRA-7 is held under its issue, the project its
-// key names and a key of its own. Every kind before it ignores an `issue` member, as it did before
-// any kind read one: a frame a deployed page sends with one is read as the same view without it,
-// never refused.
+// key names and a key of its own. The socket's decode accepts an `issue` member of any JSON type
+// (DeliveryLiveView holds it raw), and only legion_issue's parse reads it: a legion_issue view
+// whose issue is no string is refused as one with no issue is, and every kind before it ignores
+// the member whatever its type, as it did before any kind read one, so a frame a deployed page
+// sends with one is read as the same view without it, never refused.
 func TestALegionIssueViewNamesItsIssueAndNothingElse(t *testing.T) {
 	t.Parallel()
 	window := DeliveryLiveWindow{Preset: new(7)}
-	issue, empty, project, query, at := "INFRA-7", "", "INFRA", "", "2026-11-23T00:00:00Z"
-	for _, refused := range []struct {
+	issue, project, query, at := "INFRA-7", "INFRA", "", "2026-11-23T00:00:00Z"
+	named := issueMember(issue)
+	type refusedView struct {
 		what string
 		view DeliveryLiveView
-	}{
+	}
+	refusedViews := []refusedView{
 		{"a legion_issue view with no issue", DeliveryLiveView{Kind: issueLegionKind}},
-		{"a legion_issue view with an empty issue", DeliveryLiveView{Kind: issueLegionKind, Issue: &empty}},
-		{"a legion_issue view with a project", DeliveryLiveView{Kind: issueLegionKind, Issue: &issue, Project: &project}},
-		{"a legion_issue view with a window", DeliveryLiveView{Kind: issueLegionKind, Issue: &issue, Window: &window}},
-		{"a legion_issue view with an at", DeliveryLiveView{Kind: issueLegionKind, Issue: &issue, At: &at}},
-		{"a legion_issue view with a query", DeliveryLiveView{Kind: issueLegionKind, Issue: &issue, Query: &query}},
-	} {
+		{"a legion_issue view with an empty issue", DeliveryLiveView{Kind: issueLegionKind, Issue: issueMember("")}},
+		{"a legion_issue view with a project", DeliveryLiveView{Kind: issueLegionKind, Issue: named, Project: &project}},
+		{"a legion_issue view with a window", DeliveryLiveView{Kind: issueLegionKind, Issue: named, Window: &window}},
+		{"a legion_issue view with an at", DeliveryLiveView{Kind: issueLegionKind, Issue: named, At: &at}},
+		{"a legion_issue view with a query", DeliveryLiveView{Kind: issueLegionKind, Issue: named, Query: &query}},
+	}
+	for _, member := range notStringIssues {
+		refusedViews = append(refusedViews, refusedView{
+			"a legion_issue view whose issue is " + member.what, DeliveryLiveView{Kind: issueLegionKind, Issue: member.member},
+		})
+	}
+	for _, refused := range refusedViews {
 		t.Run(refused.what, func(t *testing.T) {
 			if _, refusal := parseDeliveryLiveView(refused.view); refusal == nil || refusal.Code != "INVALID_FRAME" {
 				t.Errorf("%s: refusal = %+v, want INVALID_FRAME", refused.what, refusal)
@@ -699,7 +730,7 @@ func TestALegionIssueViewNamesItsIssueAndNothingElse(t *testing.T) {
 		}
 	})
 	t.Run("a legion_issue view of INFRA-7 is its issue, its key's project and a key of its own", func(t *testing.T) {
-		spec, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: issueLegionKind, Issue: &issue})
+		spec, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: issueLegionKind, Issue: named})
 		if refusal != nil {
 			t.Fatalf("a legion_issue view of INFRA-7: %+v", refusal)
 		}
@@ -707,8 +738,9 @@ func TestALegionIssueViewNamesItsIssueAndNothingElse(t *testing.T) {
 			t.Fatalf("the spec = %+v, want kind legion_issue, issue INFRA-7, project INFRA and key legion_issue|INFRA-7|", spec)
 		}
 	})
-	t.Run("a timeline, measures, pipeline or legion view with an issue is that view without one", func(t *testing.T) {
+	t.Run("a timeline, measures, pipeline or legion view with an issue of any type is that view without one", func(t *testing.T) {
 		facets := "search=widgets&status=open"
+		members := append([]issueMemberRow{{"a string", named}}, notStringIssues...)
 		for _, view := range []DeliveryLiveView{
 			{Kind: deliveryLiveTimeline, Window: &window, Query: &facets},
 			{Kind: deliveryLiveMeasures, Window: &window, Query: &facets},
@@ -719,15 +751,17 @@ func TestALegionIssueViewNamesItsIssueAndNothingElse(t *testing.T) {
 			if refusal != nil {
 				t.Fatalf("a %s view with no issue: refusal = %+v, want none", view.Kind, refusal)
 			}
-			named := view
-			named.Issue = &issue
-			got, refusal := parseDeliveryLiveView(named)
-			if refusal != nil {
-				t.Errorf("a %s view with an issue: refusal = %+v, want it read as the same view without one", view.Kind, refusal)
-				continue
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Errorf("a %s view with an issue is %+v, want %+v, the same view without one", view.Kind, got, want)
+			for _, member := range members {
+				carrying := view
+				carrying.Issue = member.member
+				got, refusal := parseDeliveryLiveView(carrying)
+				if refusal != nil {
+					t.Errorf("a %s view whose issue is %s: refusal = %+v, want it read as the same view without one", view.Kind, member.what, refusal)
+					continue
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("a %s view whose issue is %s is %+v, want %+v, the same view without one", view.Kind, member.what, got, want)
+				}
 			}
 		}
 	})
