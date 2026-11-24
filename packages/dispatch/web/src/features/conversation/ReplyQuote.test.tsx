@@ -71,3 +71,38 @@ test("a passage belongs to the item its node names, which can be another reply i
   expect(passageItem({ ...passage, node: `comment/${nested.id}#b1` }, [root, nested])).toBe(nested);
   expect(passageItem({ ...passage, node: "message/elsewhere#b1" }, [root, nested])).toBeUndefined();
 });
+
+test("a quote of a deleted parent says so in place of the parent's text", async () => {
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient()}>
+        <ReplyQuote
+          author={planner}
+          deleted={{ at: "2026-09-09T03:00:00Z", by: { id: "Planner", kind: "user" } }}
+          excerpt="Alpha."
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() => expect(view.container.textContent).toContain("Deleted by Planner"));
+    expect(view.container.textContent).not.toContain("Alpha.");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a quote of an edited parent says so after its author, and a parent nobody edited does not", async () => {
+  await expectQuote(
+    { author: planner, edited: "2026-09-09T02:00:00Z", excerpt: "Alpha." },
+    "Replying to Planner · edited — Alpha."
+  );
+  await expectQuote(
+    { author: planner, block: passage, edited: "2026-09-09T02:00:00Z", excerpt: "" },
+    "Replying to Planner's passage · edited — Beta."
+  );
+  await expectQuote(
+    { author: planner, edited: null, excerpt: "Alpha." },
+    "Replying to Planner — Alpha."
+  );
+});

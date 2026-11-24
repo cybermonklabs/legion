@@ -47,7 +47,8 @@ func pacedDeps(rate int) func(*Deps) {
 	return func(d *Deps) {
 		d.WakePace = WakePace{Rate: rate, Burst: 1}
 		if rate > 0 {
-			d.WakePace.Reserve = wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart }).Reserve
+			limiter := wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart })
+			d.WakePace.Reserve, d.WakePace.Interval = limiter.Reserve, limiter.Interval()
 		}
 	}
 }
@@ -253,6 +254,10 @@ func TestASpawnWhoseCarriedTurnPassedLongAgoIsPacedAgain(t *testing.T) {
 	h.wantStarts(secondToken, 0)
 	if held := second.View().WakeWaiting; held == nil || !held.At.Equal(now.Add(wakeInterval+wakePart)) {
 		t.Fatalf("the spawn whose turn passed two intervals ago holds wake %+v, want one reserved afresh, due one interval and a part on", held)
+	}
+	if late := h.logs.lines("reached the wake gate an interval or more after the turn its caller reserved"); len(late) != 1 ||
+		!strings.Contains(late[0], "claim="+string(secondToken)) {
+		t.Fatalf("the lines that say a late turn was reserved afresh are %v, want one, the second claim's", late)
 	}
 	if held := third.View().WakeWaiting; held == nil || !held.At.Equal(now.Add(3*wakeInterval)) {
 		t.Fatalf("the spawn whose turn is to come holds wake %+v, want its own turn, three intervals on", held)

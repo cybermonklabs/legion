@@ -150,7 +150,7 @@ const schemas: Record<string, z.ZodType> = {
   // pushed everything it wants kept and its process may be replaced.
   "ready-for-update.json": LegionReadyForUpdateRequest,
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
-  // refused turns the claim now ends with and whether this report failed it.
+  // refused turns the claim now ends with (`LegionTurnOutcomeResponse` says what `failed` holds).
   "turn-outcome.json": LegionTurnOutcomeResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).

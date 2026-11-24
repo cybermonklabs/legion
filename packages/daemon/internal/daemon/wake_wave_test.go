@@ -1982,7 +1982,7 @@ func pacedLaneTree(t *testing.T, log *slog.Logger) (*laneTree, *wakepace.Limiter
 	tree := startLaneTree(t, log)
 	limiter := pacedWakes()
 	tree.runner.supervisor.deps.Clock = tree.clock
-	tree.runner.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	tree.runner.supervisor.deps.WakePace = wakePaceOf(limiter)
 	for range waveSize {
 		limiter.Reserve(tree.clock.Now())
 	}

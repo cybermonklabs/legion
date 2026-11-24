@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -63,11 +64,14 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
+// TestMain runs the package's tests through the Dispatch harness's Main, which waits for their
+// databases to drop and drops their templates, inside the broker harness's Run, which then drops
+// the database brokerstoretest.URL made the contract rows' broker schemas in.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(brokerstoretest.Run(func() int { return storetest.Main(m) }))
 }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
@@ -217,6 +221,13 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// relatedBound is the related-item check's meaning allowance and its wait for the
+	// cross-project leg, with the check's own allowance past them (server.withRelatedBound);
+	// zero keeps production's. A case whose verdict is what the check's meaning stage found
+	// passes meaningVerdictBound, so whether the machine met production's three seconds is not
+	// what it measures. The bound counts from each check's start, the seed writes' checks among
+	// them.
+	relatedBound time.Duration
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.
 	// False is the deployment with no outbox, which every test that runs none is.
@@ -405,6 +416,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		served.agentWatchInterval = options.agentWatchInterval
 	}
 	served.duplicateBound = options.duplicateBound
+	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
