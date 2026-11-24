@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectories } from "./temporary-directories";
+import { moduleRoot, temporaryDirectories } from "./temporary-directories";
 import {
   placeArming,
   recordTimers,
@@ -12,7 +12,8 @@ import {
 } from "./timer-record";
 import { timeLeft } from "./wait";
 
-const makeDirectory = temporaryDirectories("test-fixtures-timer-record");
+// The rows have Bun run programs they write, and Bun loads no module from a path holding a `?`.
+const makeDirectory = temporaryDirectories("test-fixtures-timer-record", { root: moduleRoot() });
 const PRELOAD = join(import.meta.dir, "timer-record-preload.ts");
 const WAIT = JSON.stringify(join(import.meta.dir, "wait.ts"));
 

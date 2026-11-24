@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -264,11 +265,19 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
 				_, _ = w.Write([]byte(`{"access_token":"` + secret + `","expires_in":3600,"token_type":"Bearer"}`))
 			}))
 			t.Cleanup(tokens.Close)
-			dir := filepath.Join(t.TempDir(), "keys dir")
+			// A blank and a `'` in the directory make how the printed command quotes the path a
+			// question on every machine, not only where TMPDIR holds one.
+			dir := filepath.Join(t.TempDir(), "the key's dir")
 			writeServiceAccountFile(t, filepath.Join(dir, "credentials.json"), "gac@example.iam.gserviceaccount.com", tokens.URL)
 			t.Chdir(dir)
 			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json")
-			quoted := "'" + filepath.Join(dir, "credentials.json") + "'"
+			path := filepath.Join(dir, "credentials.json")
+			quoted := shellWord(path)
+			// A shell reads the expected word back as the path, so the expectation is one shell word
+			// for it whatever shellWord does.
+			if got, err := shellReads(quoted); err != nil || got != path {
+				t.Fatalf("a shell reads %s as %q (%v), want %q", quoted, got, err, path)
+			}
 			return "GOOGLE_APPLICATION_CREDENTIALS=" + quoted + " ", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + quoted + " "
 		}, []string{secret, "$GOOGLE_APPLICATION_CREDENTIALS"}},
 		{"control: the metadata server, no variable set", func(t *testing.T) (string, string) {
@@ -318,6 +327,30 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
 				wantNamedNotPrinted(t, "stderr", stderr, scenario.want(agent, gcloud), mode.absent...)
 			})
 		}
+	}
+}
+
+// shellReads is what a POSIX shell reads word as, as it reads the assignment that starts a printed
+// command: one word, or an error when the shell reads none or several. The shell is named by its
+// path: the rows here set PATH to their stand-ins.
+func shellReads(word string) (string, error) {
+	out, err := exec.Command("/bin/sh", "-c", `set -- `+word+`; [ "$#" -eq 1 ] || { echo "$# words" >&2; exit 1; }; printf %s "$1"`).Output()
+	return string(out), err
+}
+
+// TestShellReadsAPathInPlainSingleQuotesWrongAndShellWordsWordWhole: the read-back above can
+// fail. The word that test once built by hand, a path in plain single quotes, is not read back as
+// a path holding a `'`; two words that join to the path are not read back as one; shellWord's
+// word is.
+func TestShellReadsAPathInPlainSingleQuotesWrongAndShellWordsWordWhole(t *testing.T) {
+	path := "/keys/the key's dir/credentials.json"
+	for _, word := range []string{"'" + path + "'", `'/keys/the ' "key's dir/credentials.json"`} {
+		if got, err := shellReads(word); err == nil && got == path {
+			t.Fatalf("a shell read %s back as the path: the read-back proves nothing", word)
+		}
+	}
+	if got, err := shellReads(shellWord(path)); err != nil || got != path {
+		t.Fatalf("a shell reads %s as %q (%v), want %q", shellWord(path), got, err, path)
 	}
 }
 

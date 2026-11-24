@@ -39,6 +39,7 @@ import { fileURLToPath } from "node:url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
+import { shellQuote } from "../local-instance-support";
 import { dropDatabase, sqlAt } from "../psql";
 import { masked, rowLimit, runBounded } from "./bounded-subprocess";
 
@@ -325,12 +326,14 @@ async function driveWithStandIn(
   const bin = fakeBunDirectories();
   const marker = join(bin, "bun-ran");
   const record = join(bin, "psql-calls");
-  writeFileSync(join(bin, "bun"), `#!/usr/bin/env bash\n: >'${marker}'\nexit 1\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "bun"), `#!/usr/bin/env bash\n: >${shellQuote(marker)}\nexit 1\n`, {
+    mode: 0o755,
+  });
   writeFileSync(
     join(bin, "psql"),
     [
       "#!/usr/bin/env bash",
-      `{ printf 'call\\0'; printf '%s\\0' "$@"; printf 'PGPASSWORD=%s\\0' "\${PGPASSWORD-unset}"; } >>'${record}'`,
+      `{ printf 'call\\0'; printf '%s\\0' "$@"; printf 'PGPASSWORD=%s\\0' "\${PGPASSWORD-unset}"; } >>${shellQuote(record)}`,
       "exit 1",
       "",
     ].join("\n"),

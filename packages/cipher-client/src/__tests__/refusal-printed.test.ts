@@ -1,10 +1,14 @@
 import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { holdSecret } from "@legion/contracts/held-secrets";
+import { moduleRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { BrokerRefusedError } from "../token-errors";
+
+/** The directory of the script a row has Bun run, removed after the row: Bun loads no module from
+ *  a path that holds a `?`. */
+const moduleDirectory = temporaryDirectories("refusal-printed", { root: moduleRoot() });
 
 // The policy's own refusal prints as the broker wrote it, and a broker can echo the subject token
 // in it. A host prints the error itself, not only its reason line: pi-envoy's console.warn of the
@@ -37,8 +41,7 @@ test("a refusal echoing the subject token prints none of it through console.warn
 
 test("a refusal echoing the subject token, thrown and uncaught, prints none of it", async () => {
   const subject = `eyJ${randomBytes(48).toString("base64url")}`;
-  const dir = await mkdtemp(join(tmpdir(), "refusal-printed-"));
-  const script = join(dir, "throw.ts");
+  const script = join(moduleDirectory("throw"), "throw.ts");
   // The token reaches the process by its environment, as a secret does, never in its source: Bun
   // prints the source lines around an uncaught throw.
   await writeFile(

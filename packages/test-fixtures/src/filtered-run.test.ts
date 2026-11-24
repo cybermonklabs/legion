@@ -1,7 +1,12 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectories } from "./temporary-directories";
+import { HANG_GUARD_MS } from "./hang-guard";
+import { moduleRoot, temporaryDirectories } from "./temporary-directories";
+
+// Each row runs `bun test` on a file it writes, and waits for it to end. Its bound is a hang guard,
+// not a verdict, for every row of this file.
+setDefaultTimeout(HANG_GUARD_MS);
 
 // The regression lock for the whole class this package's fixtures guard against: under
 // `bun test -t <pattern>` that selects no row of a file, Bun 1.4.4 evaluates that file's body and
@@ -13,7 +18,13 @@ import { temporaryDirectories } from "./temporary-directories";
 // own row and no row of its `describe`, and once with no filter at all, each under a TMPDIR of its
 // own, and read that TMPDIR afterwards.
 
-const makeDirectory = temporaryDirectories("test-fixtures-filtered-run");
+// Bun runs the fixture file from its directory, and loads no module from a path holding a `?`, so
+// that file sits under `moduleRoot()`. The child's TMPDIR, which is no module, stays under this
+// run's own, so the fixtures still run under whatever TMPDIR names.
+const makeModuleDirectory = temporaryDirectories("test-fixtures-filtered-run", {
+  root: moduleRoot(),
+});
+const makeDirectory = temporaryDirectories("test-fixtures-filtered-run-tmp");
 
 /** The marker the fixture file prints as its module body runs, so a run that made nothing is told
  *  apart from a run that never loaded the file. */
@@ -62,10 +73,11 @@ function runFixture(filter: string | null): {
   readonly exitCode: number | null;
   readonly left: string[];
 } {
-  const work = makeDirectory(filter === null ? "unfiltered" : "filtered");
+  const label = filter === null ? "unfiltered" : "filtered";
+  const work = makeModuleDirectory(label);
   const file = join(work, "lock.test.ts");
   writeFileSync(file, fixtureSource());
-  const tmp = join(work, "tmp");
+  const tmp = join(makeDirectory(label), "tmp");
   mkdirSync(tmp);
   const argv = [
     process.execPath,

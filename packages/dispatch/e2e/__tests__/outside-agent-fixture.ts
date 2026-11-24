@@ -1,13 +1,20 @@
 /** What `outside-agent-acceptance.test.ts` and `outside-agent-public.test.ts` share: where the
  *  legs are, the rows each prints, and the helpers that copy a leg, make a PATH of text tools and
- *  read a TSV. It starts no process; each test file runs its legs itself, through `runBounded`, so
- *  `e2e/row-limits.ts` reads every row that waits for one. Each helper that makes a directory takes
- *  the test file's own `scratch`, whose directories that file's hooks remove. */
+ *  read a TSV. It starts no leg and no stand-in; each test file runs its legs itself, through
+ *  `runBounded`, so `e2e/row-limits.ts` reads every row that waits for one. The one process it runs
+ *  is `blankFreeScratch`'s probe of whether a script runs under a base. Each helper that makes a
+ *  directory takes a maker of the test file's own, whose directories that file's hooks remove. */
 
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
+import {
+  baseWithout,
+  cleanAncestor,
+  moduleRoot,
+  temporaryDirectories,
+} from "@legion/test-fixtures/temporary-directories";
 
 export const acceptance = fileURLToPath(new URL("../acceptance/", import.meta.url));
 export const publicLeg = join(acceptance, "outside-agent-public.sh");
@@ -41,6 +48,43 @@ export const publicRows = [
 
 /** A directory maker of a test file's own: `temporaryDirectories(...)`'s answer. */
 export type Scratch = (label: string) => string;
+
+declare const holdsNoBlank: unique symbol;
+declare const holdsNoQuestionMark: unique symbol;
+/** A `Scratch` whose directories' paths hold no blank, for every path a leg reads from text it
+ *  splits on blanks by design: each OUTSIDE_*_COMMAND, and each line of a pins file. */
+export type BlankFreeScratch = Scratch & { readonly [holdsNoBlank]: true };
+/** A `Scratch` whose directories' paths hold no `?`, for a copy of a leg that has Bun load the
+ *  probe beside it: Bun loads no module from a path that holds one. */
+export type ModuleScratch = Scratch & { readonly [holdsNoQuestionMark]: true };
+
+/** Why a script in `directory` does not run, or undefined: a `noexec` filesystem takes a
+ *  directory and runs nothing in it. The script is gone again when this returns. */
+function runsScripts(directory: string): string | undefined {
+  const probe = script(join(directory, "runs"), "#!/bin/sh\nexit 0\n");
+  try {
+    const ran = Bun.spawnSync([probe]);
+    return ran.success ? undefined : `a script there exits ${ran.exitCode}`;
+  } finally {
+    rmSync(probe, { force: true });
+  }
+}
+
+/** The maker of a test file's directories whose paths hold no blank, and whose scripts run:
+ *  under `root` where its path holds none, else its closest ancestor that holds none, else /tmp.
+ *  Call it where `temporaryDirectories` is called, at the test file's module scope. */
+export function blankFreeScratch(prefix: string, root: string): BlankFreeScratch {
+  return temporaryDirectories(prefix, {
+    root: baseWithout(/\s/g, [root, ...cleanAncestor(root, /\s/g), "/tmp"], runsScripts),
+  }) as BlankFreeScratch;
+}
+
+/** The maker of a test file's directories whose paths hold no `?`, under `root` where its path
+ *  holds none, else its closest ancestor that holds none, else /tmp. Call it where
+ *  `temporaryDirectories` is called, at the test file's module scope. */
+export function moduleScratch(prefix: string, root: string): ModuleScratch {
+  return temporaryDirectories(prefix, { root: moduleRoot(root) }) as ModuleScratch;
+}
 
 export interface LegRun {
   readonly code: number;

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { scriptFunctions } from "./script-functions";
+import { scriptFunctions, shellQuote } from "./script-functions";
 
 // A proof script writes the run's legion.yaml in write_legion_config through an unquoted heredoc,
 // so that the script's variables expand in it; a command substitution in one of its comments then
@@ -45,7 +45,7 @@ for (const { script, command, comment } of cases) {
     const calls = join(dir, script, "calls");
     writeFileSync(
       join(bin, command),
-      `#!/bin/sh\necho "$*" >>'${calls}'\nprintf 'ran\\nstray: line\\n'\n`,
+      `#!/bin/sh\necho "$*" >>${shellQuote(calls)}\nprintf 'ran\\nstray: line\\n'\n`,
       { mode: 0o755 }
     );
     const ran = Bun.spawnSync(

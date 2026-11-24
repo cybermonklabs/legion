@@ -121,6 +121,22 @@ itself, whose tests import its sources by relative path.
   on the 0555 directories and 0444 files a Go module cache writes, and because a file in such a
   tree can be a hard link to one outside it.
 
+- A path some tool cannot take a character of, however it is quoted, comes from a base whose path
+  holds none. Bun loads no module from a path that holds a `?`: a test that writes a module and has
+  Bun load it (a file `bun` runs, a `--preload`, an import) puts that module in a directory under
+  `moduleRoot()`, which is `tmpdir()` where its path holds no `?`, else its closest ancestor that
+  holds none, else `/tmp`: a `temporaryDirectories` maker rooted there, or an `mkdtemp` there that
+  the test removes itself. Only the module moves; what is no module stays on its base. Under them,
+  `scratchWithout(refuses, bases, prefix)` makes a directory under the first of `bases` whose path
+  holds no character `refuses` matches (making that base when it is missing, unless it is
+  `tmpdir()`), and `baseWithout(refuses, bases)` names that base, as the `root` a
+  `temporaryDirectories` maker takes.
+  `cleanAncestor(directory, refuses)` names the closest directory above one that holds none.
+  `scratchWithout` also takes a socket path the directory must keep within the 107 bytes Linux takes,
+  and an `accept` check. With no base that qualifies, either fails naming what each base answered;
+  neither skips. Every other temporary path keeps the base its suite gives it, `tmpdir()` or
+  `memoryRoot`, so its quoting is still tested wherever `TMPDIR` reaches it.
+
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
   no value is captured as unset and the restore deletes it again; setting it to the empty string

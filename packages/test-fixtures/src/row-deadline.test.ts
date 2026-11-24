@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { temporaryDirectories } from "./temporary-directories";
+import { moduleRoot, temporaryDirectories } from "./temporary-directories";
 
 // Where a wait ends against the guard of the row it runs in. Each row below runs test files of its
 // own in a `bun test` of its own, under a guard of 8000 ms: the row-deadline preload sets each
@@ -13,7 +13,8 @@ import { temporaryDirectories } from "./temporary-directories";
 // still reads the same. Each verdict is what the child printed, and in which order its own message
 // and Bun's came: none reads a clock.
 
-const makeDirectory = temporaryDirectories("test-fixtures-row-deadline");
+// The rows have Bun run test files they write, and Bun loads no module from a path holding a `?`.
+const makeDirectory = temporaryDirectories("test-fixtures-row-deadline", { root: moduleRoot() });
 
 const PRELOAD = join(import.meta.dir, "row-deadline.ts");
 const WAIT = JSON.stringify(join(import.meta.dir, "wait.ts"));

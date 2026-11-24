@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readdir, rm, stat, symlink } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { STAND_IN_USER_CODE, stubDeviceLoginBroker } from "@legion/cipher-client/test/device-logins"
+import { moduleRoot } from "@legion/test-fixtures/temporary-directories"
 
 // The packed Codex plugin's `dispatch` command run in a person's terminal for the one thing it is
 // shipped for: `dispatch login --device`, which waits for a person's approval longer than the
@@ -36,7 +36,9 @@ let installed = ""
 let npmLink = ""
 
 beforeAll(async () => {
-  scratch = await mkdtemp(join(tmpdir(), "codex-envoy-terminal-"))
+  // The package is built, packed and unpacked here, and its dist/dispatch.js is what Bun runs:
+  // Bun loads no module from a path that holds a `?`.
+  scratch = await mkdtemp(join(moduleRoot(), "codex-envoy-terminal-"))
   const out = join(scratch, "codex-envoy")
   const build = await run(
     [process.execPath, join(packageRoot, "scripts", "build.ts"), "--codex-out", out],

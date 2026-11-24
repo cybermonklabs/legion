@@ -13,10 +13,13 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { shellQuote } from "../local-instance-support";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
+  blankFreeScratch,
   copyLeg,
   type LegRun,
+  moduleScratch,
   publicLeg,
   rowsOf,
   script,
@@ -29,9 +32,13 @@ import { closedPort } from "./outside-path-reach-fixtures";
 // shared disk one removal of a row's ~30 entries was measured at up to 17.5 s (median 2 ms, 30
 // trials, load ~1500), against at most 16 ms on /dev/shm. A row here holds at most 5 runs of about
 // 40 entries each, so 8 MiB leaves room for 8 runs sharing the host.
-const scratch = temporaryDirectories("outside-agent-public", {
-  root: memoryRoot({ need: 8 * 2 ** 20 }),
-});
+const scratchRoot = memoryRoot({ need: 8 * 2 ** 20 });
+const scratch = temporaryDirectories("outside-agent-public", { root: scratchRoot });
+// The leg splits OUTSIDE_APPROVE_COMMAND and OUTSIDE_T5_COMMAND on blanks, by design, so the
+// scripts they name sit where the path holds none.
+const blankFree = blankFreeScratch("outside-agent-public-blank-free", scratchRoot);
+// The leg has Bun load the probe beside it, so its copy sits where the path holds no `?`.
+const modules = moduleScratch("outside-agent-public-modules", scratchRoot);
 
 interface PublicScenario {
   /** The answers of the trades the T5 window makes, in turn, the last one repeating: true for an
@@ -116,7 +123,7 @@ switch (command) {
 
 /** One run of a copy of the public leg against the stand-ins, as `scenario` says. */
 async function publicStandInRun(scenario: PublicScenario): Promise<LegRun> {
-  const leg = copyLeg(scratch, publicLeg);
+  const leg = copyLeg(modules, publicLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   await Bun.write(join(legDir, "outside-agent-probe.ts"), standInProbe);
   await Bun.write(join(legDir, "scenario.json"), JSON.stringify(scenario));
@@ -146,21 +153,23 @@ chmod 755 "$plugin/bin/dispatch"
   script(
     join(bin, "tmux"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 [ "$1" = -S ] && shift 2
 command=$1
 shift
 case $command in
   new-session)
     while [ "$#" -gt 0 ]; do
-      case $1 in -c) printf '%s\\n' "$2" >'${state}/tmux-dir'; shift 2 ;; *) shift ;; esac
+      case $1 in -c) printf '%s\\n' "$2" >"$state/tmux-dir"; shift 2 ;; *) shift ;; esac
     done
     ;;
-  capture-pane) cat '${state}/tmux-dir' 2>/dev/null ;;
+  capture-pane) cat "$state/tmux-dir" 2>/dev/null ;;
 esac
 exit 0
 `
   );
-  const approve = script(join(scratch("inputs"), "approve"), '#!/bin/sh\necho "APPROVED $1"\n');
+  const commands = blankFree("commands");
+  const approve = script(join(commands, "approve"), '#!/bin/sh\necho "APPROVED $1"\n');
   const browserRows = scenario.browserRows ?? [];
   const rowsFile = join(state, "browser-rows.tsv");
   await Bun.write(
@@ -170,8 +179,8 @@ exit 0
       .join("")
   );
   const browser = script(
-    join(bin, "t5-browser"),
-    `#!/bin/sh\ncat '${rowsFile}' >"$OUTSIDE_T5_TSV"\n`
+    join(commands, "t5-browser"),
+    `#!/bin/sh\ncat ${shellQuote(rowsFile)} >"$OUTSIDE_T5_TSV"\n`
   );
   const origin = `http://127.0.0.1:${await closedPort()}`;
   const { code, stdout, stderr } = await runBounded({

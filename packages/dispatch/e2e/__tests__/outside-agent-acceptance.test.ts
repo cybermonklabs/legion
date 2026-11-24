@@ -31,12 +31,15 @@ import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
+import { shellQuote } from "../local-instance-support";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   acceptance,
+  blankFreeScratch,
   codexRows,
   copyLeg,
   type LegRun,
+  moduleScratch,
   publicLeg,
   publicRows,
   rowsOf,
@@ -100,9 +103,15 @@ const withoutTools = skipWithout("bash", "curl");
 // trials, load ~1500), against at most 16 ms on /dev/shm. The suite holds at most 233 entries at
 // once (measured with the legs' own scratch under the same root), under 1 MiB at one 4 KiB page a
 // file, so 8 MiB leaves room for 8 runs sharing the host.
-const scratch = temporaryDirectories("outside-agent-acceptance", {
-  root: memoryRoot({ need: 8 * 2 ** 20 }),
-});
+const scratchRoot = memoryRoot({ need: 8 * 2 ** 20 });
+const scratch = temporaryDirectories("outside-agent-acceptance", { root: scratchRoot });
+// The legs split some text on blanks, by design: each OUTSIDE_*_COMMAND, and each line of the pins
+// file. So every script such a command names, and every file a pins line names, sits where the
+// path holds no blank.
+const blankFree = blankFreeScratch("outside-agent-acceptance-blank-free", scratchRoot);
+// The tailnet leg's peer has Bun load the probe beside the leg, so a copy of the leg sits where the
+// path holds no `?`.
+const modules = moduleScratch("outside-agent-acceptance-modules", scratchRoot);
 
 /** A copy of `leg` that defaults to PASS: every `UNKNOWN` reads `PASS` and every `exit 2` reads
  *  `exit 0`, in the leg and in what it sources. */
@@ -170,7 +179,7 @@ async function publicInputs(): Promise<Record<string, string>> {
   const targets = join(inputs, "targets.txt");
   writeFileSync(targets, `hub 127.0.0.1 ${await closedPort()}\n`);
   const approve = script(
-    join(inputs, "approve"),
+    join(blankFree("commands"), "approve"),
     '#!/bin/sh\necho "UNKNOWN: $1 no browser"\nexit 2\n'
   );
   return {
@@ -197,12 +206,13 @@ async function tailnetInputs(): Promise<Record<string, string>> {
   const origin = `http://127.0.0.1:${await closedPort()}`;
   const inputs = scratch("inputs");
   const pins = join(inputs, "pins.txt");
+  const absent = blankFree("pins");
   writeFileSync(
     pins,
     [
-      `broker ${join(inputs, "absent-broker.yaml")} example:brokerImage`,
-      `dispatch ${join(inputs, "absent-dispatch.yaml")} example:dispatchImage`,
-      `edge-listener ${join(inputs, "absent-listener.yaml")} example:listenerImage`,
+      `broker ${join(absent, "absent-broker.yaml")} example:brokerImage`,
+      `dispatch ${join(absent, "absent-dispatch.yaml")} example:dispatchImage`,
+      `edge-listener ${join(absent, "absent-listener.yaml")} example:listenerImage`,
       "",
     ].join("\n")
   );
@@ -427,11 +437,11 @@ background="$background $never"
 began=$(clock)
 await_child "$never" 2
 echo "never exit=\${child_exit:-none} seconds=$(since "$began") listed=$(listed "$never")"
-( '${sleep}' 0.2; clock >'${sevenEnded}'; exit 7 ) &
+( '${sleep}' 0.2; clock >${shellQuote(sevenEnded)}; exit 7 ) &
 seven=$!
 background="$background $seven"
 await_child "$seven" 30
-echo "seven exit=\${child_exit:-none} late=$(since "$(cat '${sevenEnded}' 2>/dev/null)") listed=$(listed "$seven")"
+echo "seven exit=\${child_exit:-none} late=$(since "$(cat ${shellQuote(sevenEnded)} 2>/dev/null)") listed=$(listed "$seven")"
 began=$(clock)
 stop_child "$never"
 echo "stopped seconds=$(since "$began") left=$(pgrep -f "^${sleep} ${base}1\\$" | wc -l | tr -d ' ')"
@@ -498,7 +508,8 @@ async function runStandIn(prepared: PreparedStandIn): Promise<StandInRun> {
 async function runStandIns(...standIns: StandIns[]): Promise<StandInRun[]> {
   const prepared: PreparedStandIn[] = [];
   try {
-    for (const each of standIns) prepared.push(await prepareStandIn(scratch, each));
+    for (const each of standIns)
+      prepared.push(await prepareStandIn(scratch, blankFree, modules, each));
   } catch (error) {
     for (const done of prepared) done.dispatch.stop();
     throw error;
@@ -678,7 +689,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
         const { result, squatted } = await withSquat(async () => {
           let prepared: PreparedStandIn;
           try {
-            prepared = await prepareStandIn(scratch, passingControls);
+            prepared = await prepareStandIn(scratch, blankFree, modules, passingControls);
           } catch (error) {
             return { thrown: String(error) };
           }
@@ -1501,7 +1512,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       async () => {
         const [run] = await runStandIns(browserRun({}));
         if (run === undefined) throw new Error("one run, want one");
-        const prepared = await prepareStandIn(scratch, browserRun({}));
+        const prepared = await prepareStandIn(scratch, blankFree, modules, browserRun({}));
         const control = await runStandIn({
           ...prepared,
           env: { ...prepared.env, OUTSIDE_GATE: "all" },
@@ -1795,7 +1806,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       async () => {
         const prepared = await Promise.all(
           (["default", "judged-only"] as const).map((fullGrants) =>
-            prepareStandIn(scratch, browserRun({ fullGrants }))
+            prepareStandIn(scratch, blankFree, modules, browserRun({ fullGrants }))
           )
         );
         try {

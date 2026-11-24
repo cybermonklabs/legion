@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { udp } from "bun";
+import { shellQuote } from "../local-instance-support";
 import type { Answers, Seen } from "./outside-path-reach-origin";
 
 export const script = fileURLToPath(
@@ -653,9 +654,11 @@ export function reachFixtures() {
    *  curl. */
   function pathWithCurl(answers: string): string {
     const path = pathOf("bash", "sleep");
-    writeFileSync(join(path, "curl"), `#!${bash}\n${answers}\nexec ${curlStandIn} "$@"\n`, {
-      mode: 0o755,
-    });
+    writeFileSync(
+      join(path, "curl"),
+      `#!${bash}\n${answers}\nexec ${shellQuote(curlStandIn)} "$@"\n`,
+      { mode: 0o755 }
+    );
     return path;
   }
 

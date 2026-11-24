@@ -1,12 +1,16 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-
-import { handOverMessage } from "../local-instance-support";
+import { handOverMessage, shellQuote } from "../local-instance-support";
 import { DatabaseUrlRefused, splitDatabaseUrl } from "../pg-url";
 import { resetSession, sql, sqlAt } from "../psql";
+
+// The rows run psql, the dev scripts and their stand-ins, and wait for them to end. Their bound is
+// a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 /** A stand-in psql first on PATH, which writes each argument it was given on a line of its own
  *  and the PGPASSWORD it was given (`unset` for none), and exits. The rows read what psql was
@@ -232,15 +236,15 @@ test.skipIf(process.platform !== "linux")(
       join(work, "broker"),
       [
         "#!/bin/sh",
-        `tr '\\0' ' ' </proc/$$/cmdline >'${work}/cmdline'`,
-        `printf '%s' "$BROKER_DATABASE_URL" >'${work}/database-url'`,
+        `tr '\\0' ' ' </proc/$$/cmdline >${shellQuote(join(work, "cmdline"))}`,
+        `printf '%s' "$BROKER_DATABASE_URL" >${shellQuote(join(work, "database-url"))}`,
         "",
       ].join("\n"),
       { mode: 0o755 }
     );
     writeFileSync(
       join(work, "bin", "env"),
-      `#!/bin/sh\nprintf '%s\\n' "$*" >>'${work}/env-args'\nexec ${Bun.which("env")} "$@"\n`,
+      `#!/bin/sh\nprintf '%s\\n' "$*" >>${shellQuote(join(work, "env-args"))}\nexec ${Bun.which("env")} "$@"\n`,
       { mode: 0o755 }
     );
     const url = "postgres://tester:not-a-secret%40broker@127.0.0.1:5999/dispatch_broker";
@@ -269,6 +273,22 @@ test.skipIf(process.platform !== "linux")(
     }).toEqual({ envArgs: false, cmdline: false, databaseUrl: url });
   }
 );
+
+/** The program each recording stand-in below hands its call on to, resolved before the stand-in's
+ *  own directory goes first on PATH. For python3 it is the interpreter itself, as it names itself
+ *  (`sys.executable`): the python3 on PATH can be a version manager's shim, which looks python3 up
+ *  on PATH again and would find the stand-in, so the stand-in would call itself until the shim
+ *  gives up. */
+function realProgram(tool: "python3" | "env"): string {
+  const found = Bun.which(tool);
+  if (found === null) throw new Error(`no ${tool} on PATH`);
+  if (tool !== "python3") return found;
+  const named = Bun.spawnSync([found, "-c", "import sys; print(sys.executable)"]);
+  const executable = named.stdout.toString().trim();
+  if (!named.success || executable === "")
+    throw new Error(`${found} named no interpreter: ${named.stderr.toString()}`);
+  return executable;
+}
 
 /** Each sign-in run-server.sh starts its server for: the settings a run gives it, and the sign-in
  *  secrets the server gets from them, each a canary of its own (e2e/run-server.sh's
@@ -307,10 +327,10 @@ for (const signIn of serverSignIns) {
       // A python3 and an env first on PATH that record their arguments before they run, as
       // held-port.py and env would carry a setting named to them, and a stand-in server that
       // writes its own arguments and the settings it was given.
-      for (const tool of ["python3", "env"]) {
+      for (const tool of ["python3", "env"] as const) {
         writeFileSync(
           join(work, "bin", tool),
-          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>'${work}/argv'\nexec ${Bun.which(tool)} "$@"\n`,
+          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>${shellQuote(join(work, "argv"))}\nexec ${shellQuote(realProgram(tool))} "$@"\n`,
           { mode: 0o755 }
         );
       }
@@ -318,10 +338,10 @@ for (const signIn of serverSignIns) {
         join(work, "server"),
         [
           "#!/bin/sh",
-          `tr '\\0' ' ' </proc/$$/cmdline >'${work}/server-cmdline'`,
+          `tr '\\0' ' ' </proc/$$/cmdline >${shellQuote(join(work, "server-cmdline"))}`,
           `printf '%s\\n' "$DATABASE_URL" "\${#DISPATCH_APP_PEM_B64}" ${secretNames
             .map((name) => `"$${name}"`)
-            .join(" ")} >'${work}/server-env'`,
+            .join(" ")} >${shellQuote(join(work, "server-env"))}`,
           "",
         ].join("\n"),
         { mode: 0o755 }

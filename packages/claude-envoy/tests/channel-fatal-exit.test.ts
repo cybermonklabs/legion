@@ -9,6 +9,8 @@ import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
+import { moduleRoot } from "@legion/test-fixtures/temporary-directories"
 import type { Subprocess } from "bun"
 import { resolveModSocketPath } from "../hooks/mod-protocol"
 import { fakeHost } from "./fake-nats-server"
@@ -66,9 +68,11 @@ function homeRoot(): string {
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
 const cleanups: (() => Promise<void> | void)[] = []
+// The cleanups' bound is a hang guard, not a verdict: they end when the server's exit is read and
+// its home is gone, which a loaded machine slows past Bun's 5 s hook default.
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
-})
+}, HANG_GUARD_MS)
 
 /** A NATS server that refuses every client: the INFO asking for a credential, then nats-server's
  * own refusal of the CONNECT, which is what a hub's auth service answers a token it does not admit. */
@@ -185,15 +189,14 @@ async function natsDialTimeoutMs(): Promise<number> {
  * runs, and a stop asked for at any moment after the dial began comes while that dial waits. A
  * held timer the server clears is counted. Every other timer runs as it would. On exit it writes
  * `held` (a held timer was still waiting and none was cleared: the dial never ended), `cleared` (a
- * held timer was cleared: the dial ended), or `none held`.
+ * held timer was cleared: the dial ended), or `none held`. The preload is a module, and Bun loads
+ * none from a path that holds a `?`, so its directory is under `moduleRoot()`, not the home.
  */
-async function dialHoldPreload(
-  home: string,
-): Promise<{ readonly preload: string; readonly record: string }> {
-  const directory = join(home, "dial-hold")
+async function dialHoldPreload(): Promise<{ readonly preload: string; readonly record: string }> {
+  const directory = await mkdtemp(join(moduleRoot(), "claude-envoy-dial-hold-"))
+  cleanups.push(() => rm(directory, { recursive: true, force: true }))
   const preload = join(directory, "preload.js")
   const record = join(directory, "record")
-  await mkdir(directory)
   await writeFile(
     preload,
     [
@@ -231,6 +234,8 @@ async function dialHoldPreload(
 }
 
 interface Started {
+  /** The envoy.json the server reads, by the path it is handed (`CLAUDE_CONFIG_DIR`). */
+  readonly configFile: string
   /** Where the server's dial-hold record goes, when the row asked for the hold (`holdDial`). */
   readonly dialHoldRecord: string | undefined
   readonly server: Subprocess<"pipe", "ignore", "pipe">
@@ -249,9 +254,10 @@ async function startServer(
   const home = await mkdtemp(join(homeRoot(), HOME_PREFIX))
   cleanups.push(() => rm(home, { recursive: true, force: true }))
   const configDirectory = join(home, "claude-config")
+  const configFile = join(configDirectory, "envoy.json")
   await mkdir(configDirectory)
   await writeFile(
-    join(configDirectory, "envoy.json"),
+    configFile,
     JSON.stringify({
       envoy: {
         enabled: true,
@@ -262,7 +268,7 @@ async function startServer(
     }),
   )
   const sessionID = `ses_fatal_${crypto.randomUUID().replaceAll("-", "")}`
-  const dialHold = options.holdDial === true ? await dialHoldPreload(home) : undefined
+  const dialHold = options.holdDial === true ? await dialHoldPreload() : undefined
   // This process's own Bun, by its path: a `bun` looked up on PATH can be a version manager's
   // shim, which under this session's HOME finds no configuration and exits before the server runs.
   const server = Bun.spawn(
@@ -317,7 +323,13 @@ async function startServer(
   if (socket.path === undefined)
     throw new Error(`the session names no mod socket: ${socket.refusal}`)
   const socketPath = socket.path
-  return { server, socketPath, dialHoldRecord: dialHold?.record, stderr: () => stderr }
+  return {
+    configFile,
+    server,
+    socketPath,
+    dialHoldRecord: dialHold?.record,
+    stderr: () => stderr,
+  }
 }
 
 /** The server's exit code once it exits, or undefined when it is still running after `ms`. */
@@ -359,10 +371,11 @@ test("a start the hub refuses closes the mod socket and exits non-zero, naming t
   const started = await startServer([hub])
   // Its stdin stays open: the parent is alive, and the server still ends with its session.
   const code = await started.server.exited
-  // The failure says which setting named the hub, which credential it refused, and why; it names
-  // no part of the hub's address, which the setting holds.
-  expect(started.stderr()).toMatch(
-    /could not connect to NATS at the server envoy\.natsUrls in \S+envoy\.json names presenting no credential: Authorization Violation/,
+  // The failure says which setting named the hub, in which file, which credential it refused, and
+  // why; it names no part of the hub's address, which the setting holds. The file is matched as
+  // its whole path, whatever characters TMPDIR gives it.
+  expect(started.stderr()).toContain(
+    `could not connect to NATS at the server envoy.natsUrls in ${started.configFile} names presenting no credential: Authorization Violation`,
   )
   expect(started.stderr()).not.toContain(hub)
   expect(code).not.toBe(0)

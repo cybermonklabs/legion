@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ignoresSignal, skipWithoutIgnoreMasks } from "@legion/test-fixtures/held-process";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { moduleRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, watch, whether } from "./bounded-subprocess";
 
@@ -37,7 +37,9 @@ const withoutMasks = skipWithoutIgnoreMasks(
   "packages/dispatch/e2e/__tests__/harness-up-interrupt.test.ts"
 );
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-const stubs = temporaryDirectory("harness-up-interrupt-");
+// The stand-in harness and the preload are modules Bun loads, and Bun loads none from a path that
+// holds a `?`.
+const stubs = temporaryDirectory("harness-up-interrupt-", { root: moduleRoot() });
 const start = join(stubs, "harness-start.ts");
 const preload = join(stubs, "preload.ts");
 

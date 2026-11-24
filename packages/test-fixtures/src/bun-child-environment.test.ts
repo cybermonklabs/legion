@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import { readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bunCacheOff } from "./bun-child-environment";
-import { temporaryDirectories } from "./temporary-directories";
+import { moduleRoot, temporaryDirectories } from "./temporary-directories";
 
-const makeDirectory = temporaryDirectories("test-fixtures-bun-child");
+// The rows have a Bun child run a module they write, and Bun loads none from a path that holds a
+// `?`.
+const makeDirectory = temporaryDirectories("test-fixtures-bun-child", { root: moduleRoot() });
 
 /**
  * A module large enough for Bun to keep its transpiled output (Bun keeps only files larger than

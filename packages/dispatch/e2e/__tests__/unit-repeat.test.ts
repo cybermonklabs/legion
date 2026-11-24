@@ -24,7 +24,7 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { moduleRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import {
   annotations,
@@ -41,7 +41,9 @@ import {
 } from "../tools/unit-repeat";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
-const scratch = temporaryDirectories("unit-repeat");
+// The rows copy the tool and write test files, a preload and a progress preload into these
+// directories and have Bun load them, and Bun loads no module from a path that holds a `?`.
+const scratch = temporaryDirectories("unit-repeat", { root: moduleRoot() });
 
 const tool = fileURLToPath(new URL("../tools/unit-repeat.ts", import.meta.url));
 

@@ -8,6 +8,7 @@ import { signedIn, writeSignIn } from "@legion/cipher-client/test/sign-ins"
 import { RETRY_FIRST_WAIT_MS, TRADE_ATTEMPT_MS } from "@legion/cipher-client/token-client"
 import { COMMAND_TIMEOUT_MS } from "@legion/envoy-client/envoy-config"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { moduleRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
 import type { Census, TimedWait } from "./hook-timed-waits"
 import { reachedModules, type WaitSite, waitSites } from "./hook-wait-sites"
@@ -18,6 +19,8 @@ import { unresolvedNames } from "./unresolved-names"
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 /** The Dispatch token the hook is handed, in its environment or in envoy.json. */
 const DISPATCH_TOKEN = fixtureSecret("dsp")
+/** The directory of a row's `--preload`: a module, and Bun loads none from a path holding a `?`. */
+const preloadDir = temporaryDirectories("claude-envoy-hook-preload", { root: moduleRoot() })
 
 // A row waits for its hooks to exit and decides on what they printed and wrote. A hook that never
 // exits fails its row by name before the hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). Fixed limits of 20 s and 30 s decided rows before: each hook first wrote
@@ -226,7 +229,7 @@ test("names an unreachable Dispatch whose password holds an '@' by no part of th
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-at-"))
   const tail = `Tail${crypto.randomUUID().slice(0, 8)}`
   try {
-    const names = await unresolvedNames(scratch)
+    const names = await unresolvedNames(preloadDir())
     const result = await runHook(
       hookInput,
       {
@@ -1486,7 +1489,8 @@ test("a hook whose jj and Dispatch answer at once writes its summary with no sta
 // census blind to them with every row still passing, so this row starts one of each kind under
 // the census and requires it to hold them.
 test("the census sees each child a script starts through node:child_process", async () => {
-  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-census-routing-"))
+  // The script is a module Bun runs, and Bun loads none from a path that holds a `?`.
+  const scratch = await mkdtemp(join(moduleRoot(), "claude-envoy-census-routing-"))
   const script = join(scratch, "starts.ts")
   await writeFile(
     script,
@@ -1619,9 +1623,10 @@ function neverAnswers() {
 
 /** A preload that makes the hook's fetches of Google's security token service and IAM Credentials,
  *  whose addresses a pool identity takes from no variable, wait unanswered until their signal ends
- *  them, as a service that hangs does; every other fetch is the real one. */
-async function silentGooglePreload(directory: string): Promise<string> {
-  const preload = join(directory, "silent-google.preload.ts")
+ *  them, as a service that hangs does; every other fetch is the real one. The preload is a module,
+ *  and Bun loads none from a path that holds a `?`, so it is written under `preloadDir()`. */
+async function silentGooglePreload(): Promise<string> {
+  const preload = join(preloadDir(), "silent-google.preload.ts")
   await writeFile(
     preload,
     [
@@ -1796,7 +1801,7 @@ const BROKER_ROUTES: readonly {
       AGENT_SECRETS_POOL_ACCOUNT: "machine@example.iam.gserviceaccount.com",
     }),
     cpuMs: POOL_CPU_CEILING_MS,
-    preloads: async (scratch) => [await silentGooglePreload(scratch)],
+    preloads: async () => [await silentGooglePreload()],
     clockReads: 5 + 4,
     expected: [
       DISPATCH_READ,

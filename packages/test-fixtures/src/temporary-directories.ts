@@ -10,12 +10,14 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmdirSync,
   rmSync,
   type Stats,
   statfsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { HANG_GUARD_MS } from "./hang-guard";
 
 /** What {@link temporaryDirectories} takes. */
 export type TemporaryDirectoriesOptions = {
@@ -76,7 +78,7 @@ export function memoryRoot(options: MemoryRootOptions = {}): string {
   const mount = text
     .split("\n")
     .map((line) => line.split(" "))
-    .filter((fields) => fields[4] === at)
+    .filter((fields) => mountPoint(fields[4] ?? "") === at)
     .at(-1);
   if (mount === undefined) return tmpdir();
   const flags = (mount[5] ?? "").split(",");
@@ -89,6 +91,137 @@ export function memoryRoot(options: MemoryRootOptions = {}): string {
   } catch {
     return tmpdir();
   }
+}
+
+/** A mount point as the path it names: mountinfo writes a space, a tab, a newline and a
+ *  backslash in it as `\` and three octal digits, so a line still splits on spaces. */
+function mountPoint(field: string): string {
+  return field.replace(/\\([0-7]{3})/g, (_, octal: string) =>
+    String.fromCharCode(Number.parseInt(octal, 8))
+  );
+}
+
+/** The longest unix socket path Linux takes: its sun_path holds 108 bytes with the terminating
+ *  zero (the Go tests' testtmp.MaxSocketPath). */
+const MAX_SOCKET_PATH = 107;
+
+/** What {@link scratchWithout} takes. */
+export type ScratchWithoutOptions = {
+  /** The longest path, relative to the directory, that the test binds a unix socket at. */
+  readonly socket?: string | undefined;
+  /** Why a directory made under a base will not do (a hardlink that cannot reach it), or
+   *  undefined. A directory it refuses or throws on is removed with whatever it left there. */
+  readonly accept?: ((directory: string) => string | undefined) | undefined;
+};
+
+/** `refuses` as a pattern that finds every character it matches anywhere in a path: global and
+ *  not sticky, whatever flags the caller gave it, since a sticky one matches only at its start. */
+function everyMatch(refuses: RegExp): RegExp {
+  return refuses.global && !refuses.sticky
+    ? refuses
+    : new RegExp(refuses.source, `${refuses.flags.replace(/[gy]/g, "")}g`);
+}
+
+/**
+ * A fresh directory, made now with `prefix`, whose path holds no character `refuses` matches, for
+ * a path some tool cannot take a character of, however it is quoted: Bun loads no module from a
+ * path that holds a `?`, for one. The directory is made under the first of `bases` that holds
+ * none, takes a directory (each but tmpdir() is made when it is missing), when `socket` names the
+ * longest path relative to the directory that the test binds a unix socket at, leaves that path
+ * within the 107 bytes Linux takes, and passes `accept`. With none, it throws naming what each
+ * base answered; it never skips. Only the bases are judged: the prefix is the caller's, and a
+ * refused character in it is kept. The caller removes the directory.
+ */
+export function scratchWithout(
+  refuses: RegExp,
+  bases: readonly string[],
+  prefix: string,
+  options: ScratchWithoutOptions = {}
+): string {
+  const every = everyMatch(refuses);
+  const answers: string[] = [];
+  for (const base of new Set(bases)) {
+    const held = [...new Set(base.match(every))];
+    if (held.length > 0) {
+      answers.push(`${base} holds ${held.map((char) => JSON.stringify(char)).join(" and ")}`);
+      continue;
+    }
+    let directory: string;
+    try {
+      if (base !== tmpdir()) mkdirSync(base, { recursive: true, mode: 0o700 });
+      directory = mkdtempSync(join(base, prefix));
+    } catch (error) {
+      answers.push(`${base} made no directory (${messageOf(error)})`);
+      continue;
+    }
+    if (options.socket !== undefined) {
+      const bytes = Buffer.byteLength(join(directory, options.socket));
+      if (bytes > MAX_SOCKET_PATH) {
+        rmSync(directory, { recursive: true, force: true });
+        answers.push(`${base} gives ${options.socket} a path of ${bytes} bytes`);
+        continue;
+      }
+    }
+    let refusal: string | undefined;
+    try {
+      refusal = options.accept?.(directory);
+    } catch (error) {
+      refusal = `its check threw: ${messageOf(error)}`;
+    }
+    if (refusal !== undefined) {
+      rmSync(directory, { recursive: true, force: true });
+      answers.push(`${base} made a directory that will not do (${refusal})`);
+      continue;
+    }
+    return directory;
+  }
+  const fits =
+    options.socket === undefined
+      ? ""
+      : ` and leaves ${options.socket} within the ${MAX_SOCKET_PATH} bytes a unix socket path holds`;
+  throw new Error(
+    `no base gives a directory whose path holds no character of ${refuses.source}${fits}: ${answers.join("; ")}`
+  );
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The base {@link scratchWithout} would make its directory under, found by making one there and
+ *  removing it at once: the `root` a {@link temporaryDirectories} maker takes. */
+export function baseWithout(
+  refuses: RegExp,
+  bases: readonly string[],
+  accept?: (directory: string) => string | undefined
+): string {
+  const probe = scratchWithout(refuses, bases, "probe-", { accept });
+  rmdirSync(probe);
+  return dirname(probe);
+}
+
+/** The closest directory above `directory`, below the root, whose path holds no character
+ *  `refuses` matches, as a list of none or one: none when `directory` holds none itself, or when
+ *  only the root would. A base of the same tree, and most often the same filesystem, to try
+ *  before one elsewhere. */
+export function cleanAncestor(directory: string, refuses: RegExp): string[] {
+  const every = everyMatch(refuses);
+  if ((directory.match(every) ?? []).length === 0) return [];
+  for (let parent = dirname(directory); parent !== dirname(parent); parent = dirname(parent)) {
+    if ((parent.match(every) ?? []).length === 0) return [parent];
+  }
+  return [];
+}
+
+/**
+ * The root of the directories a test has Bun load a module from (an import, a `--preload`, a file
+ * `bun` runs): Bun loads no module from a path that holds a `?`, in any form. It is `root`,
+ * `tmpdir()` unless given, where its path holds none, else its closest ancestor that holds none,
+ * else /tmp ({@link baseWithout}). A {@link temporaryDirectories} maker takes it as `root`; every
+ * other temporary path of the test stays where it was, so its quoting is still tested there.
+ */
+export function moduleRoot(root: string = tmpdir()): string {
+  return baseWithout(/\?/g, [root, ...cleanAncestor(root, /\?/g), "/tmp"]);
 }
 
 /**
@@ -130,7 +263,7 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  *
  * The `afterEach` attempts every directory even when one of them cannot be removed, since the
  * directories are independent and one refusal must not leave the rest on disk, and reports the
- * refusals together at the end.
+ * refusals together at the end. It runs under {@link HANG_GUARD_MS}, not Bun's 5 s hook default.
  */
 export function temporaryDirectories(
   prefix: string,
@@ -140,7 +273,7 @@ export function temporaryDirectories(
   const made: string[] = [];
   afterEach(() => {
     removeEvery(made.splice(0));
-  });
+  }, HANG_GUARD_MS);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -171,7 +304,8 @@ export function temporaryDirectories(
  *
  * The name is the prefix, a dash and eight random hexadecimal characters, two more than
  * `mkdtemp` adds. The directory is made exclusively, so `mode` applies to it and a path that
- * somehow exists already fails the file rather than handing two suites one directory.
+ * somehow exists already fails the file rather than handing two suites one directory. The
+ * `afterAll` runs under {@link HANG_GUARD_MS}, not Bun's 5 s hook default.
  */
 export function temporaryDirectory(
   prefix: string,
@@ -188,7 +322,7 @@ export function temporaryDirectory(
   });
   afterAll(() => {
     removeTree(directory);
-  });
+  }, HANG_GUARD_MS);
   return directory;
 }
 

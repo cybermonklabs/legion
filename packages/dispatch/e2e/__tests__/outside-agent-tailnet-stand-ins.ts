@@ -12,9 +12,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { shellQuote } from "../local-instance-support";
 import {
+  type BlankFreeScratch,
   copyLeg,
   type LegRun,
+  type ModuleScratch,
   publicRows,
   rowsOf,
   type Scratch,
@@ -291,7 +294,7 @@ function standInPath(
   script(
     join(bin, "gh"),
     `#!/usr/bin/env bash
-state='${state}'
+state=${shellQuote(state)}
 case $1 in
   repo)
     [ ! -f "$state/visibility" ] || cat "$state/visibility"
@@ -320,7 +323,7 @@ case $1 in
       if [ -f "$state/no-window" ]; then echo pending >"$state/window"; else echo in_progress >"$state/window"; fi
     fi
     (
-      OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_PUBLIC_RESULTS="$state/run" bash '${publicCommand}'
+      OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_PUBLIC_RESULTS="$state/run" bash ${shellQuote(publicCommand)}
       echo "$?" >"$state/run-exit"
     ) >/dev/null 2>&1 </dev/null &
     echo "https://github.com/${workflowRepository}/actions/runs/4242"
@@ -359,7 +362,7 @@ esac
   script(
     join(bin, "agent-secrets"),
     `#!/usr/bin/env bash
-state='${state}'
+state=${shellQuote(state)}
 printf '%s\\n' "$*" >>"$state/agent-secrets-calls"
 operator=''
 [ -z "\${AGENT_SECRETS_OPERATOR_FILE:-}" ] || operator=$(cat "$AGENT_SECRETS_OPERATOR_FILE")
@@ -571,10 +574,13 @@ export const linkToken = "owner-made-token";
  *  then, unless state/no-window says it skips its step `The delisting window`, waits up to 30 s for
  *  the owner's removal (state/removed), writes outside-edge-t5.tsv with T5-cookie's and
  *  T5-passkey's `at=` the given seconds after it, and ends the step. It exits with the worst exit
- *  it recorded. Returns the run's script and the leg's environment beside it. */
+ *  it recorded. Returns the run's script and the leg's environment beside it. Each script sets
+ *  `state` once, quoted for its shell, and sits in `words`, a directory whose path holds no blank:
+ *  the leg splits each OUTSIDE_OWNER_*_COMMAND and OUTSIDE_PUBLIC_COMMAND that names one on
+ *  blanks, by design. */
 function browserStandIn(
   state: string,
-  inputs: string,
+  words: string,
   standIns: StandIns,
   browser: BrowserStandIns
 ): { readonly run: string; readonly env: Record<string, string> } {
@@ -586,41 +592,44 @@ function browserStandIn(
     browser.unlistedListed === true ? `${unlistedPerson}\n` : ""
   );
   const add = script(
-    join(inputs, "owner-add.sh"),
+    join(words, "owner-add.sh"),
     `#!/usr/bin/env bash
-while IFS= read -r each; do [ "$each" != "$1" ] || exit 0; done <'${state}/listed'
-printf '%s\\n' "$1" >>'${state}/listed'
+state=${shellQuote(state)}
+while IFS= read -r each; do [ "$each" != "$1" ] || exit 0; done <"$state/listed"
+printf '%s\\n' "$1" >>"$state/listed"
 `
   );
   const list = script(
-    join(inputs, "owner-list.sh"),
-    `#!/usr/bin/env bash\ncat '${state}/listed'\n`
+    join(words, "owner-list.sh"),
+    `#!/usr/bin/env bash\nstate=${shellQuote(state)}\ncat "$state/listed"\n`
   );
   const remove = script(
-    join(inputs, "owner-remove.sh"),
+    join(words, "owner-remove.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 ${
   browser.removeNothing === true
     ? ""
     : `kept=''
-while IFS= read -r each; do [ "$each" = "$1" ] || kept="$kept$each"$'\\n'; done <'${state}/listed'
-printf '%s' "$kept" >'${state}/listed'`
+while IFS= read -r each; do [ "$each" = "$1" ] || kept="$kept$each"$'\\n'; done <"$state/listed"
+printf '%s' "$kept" >"$state/listed"`
 }
-: >'${state}/removed'
+: >"$state/removed"
 `
   );
   const invite = script(
-    join(inputs, "owner-invite.sh"),
+    join(words, "owner-invite.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 ${browser.invite === "browser-session" ? "echo '403 BROWSER_SESSION_REQUIRED'\nexit 1" : ""}
 while IFS= read -r each; do
   if [ "$each" = "$1" ]; then
     link="https://dispatch.edge.example/enroll#${linkToken}-$RANDOM$RANDOM"
-    printf '%s\\n' "$link" >>'${state}/links'
+    printf '%s\\n' "$link" >>"$state/links"
     printf '%s\\n' "$link"
     exit 0
   fi
-done <'${state}/listed'
+done <"$state/listed"
 echo '409 PERSON_NOT_LISTED'
 exit 1
 `
@@ -634,8 +643,9 @@ exit 1
     )
     .join("\n");
   const run = script(
-    join(inputs, "browser-run.sh"),
+    join(words, "browser-run.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 out=$OUTSIDE_PUBLIC_RESULTS
 worst=0
 # check NAME CODE LINE: the check's output, and its exit unless CODE is none.
@@ -655,27 +665,27 @@ ${
 check outside-edge-grants ${code("outside-edge-grants")} 'the grants probe wrote its rows'
 printf 'row\\twant\\tgot\\tverdict\\nsign-in\\tthe sign-in\\tsigned in at https://dispatch.edge.example as the invited person\\tPASS\\nprojects\\tthe projects\\t[EXAMPLE]\\tPASS\\n' >"$out/outside-edge.tsv"
 ${limits}
-{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat '${state}/sweep-verdict'; } >"$out/restricted-sweep.log"
+{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat "$state/sweep-verdict"; } >"$out/restricted-sweep.log"
 echo ${standIns.sweep?.exit ?? 0} >"$out/restricted-sweep.exit"
 case ${standIns.sweep?.exit ?? 0} in 0) ;; 1) worst=1 ;; *) [ "$worst" = 1 ] || worst=2 ;; esac
-if [ -f '${state}/no-window' ]; then
-  echo completed >'${state}/window'
+if [ -f "$state/no-window" ]; then
+  echo completed >"$state/window"
   exit "$worst"
 fi
 waited=0
-while [ ! -f '${state}/removed' ] && [ "$waited" -lt 300 ]; do
+while [ ! -f "$state/removed" ] && [ "$waited" -lt 300 ]; do
   sleep 0.1
   waited=$((waited + 1))
 done
 now=$(date -u +%s)
-if [ -f '${state}/removed' ]; then
+if [ -f "$state/removed" ]; then
   printf 'T5-cookie\\tthe cookie\\t401 at=%s\\tPASS\\nT5-passkey\\tthe passkey\\trefused at=%s: 403\\tPASS\\n' "$((now + ${browser.cookieAfter ?? 1}))" "$((now + ${browser.passkeyAfter ?? 2}))" >"$out/outside-edge-t5.tsv"
   check outside-edge-t5 ${code("outside-edge-t5")} 'the window ended'
 else
   printf 'T5-cookie\\tthe cookie\\tstill 200 at the deadline\\tUNKNOWN\\nT5-passkey\\tthe passkey\\tnot tried\\tUNKNOWN\\n' >"$out/outside-edge-t5.tsv"
   check outside-edge-t5 2 'the window ended with no 401'
 fi
-echo completed >'${state}/window'
+echo completed >"$state/window"
 exit "$worst"
 `
   );
@@ -700,8 +710,14 @@ exit "$worst"
   };
 }
 
+/** One run's stand-ins, ready. `blankFree` makes the directory of every path the leg reads from
+ *  text it splits on blanks, by design: the scripts OUTSIDE_IMAGE_REVISION_COMMAND,
+ *  OUTSIDE_PUBLIC_COMMAND and OUTSIDE_OWNER_REMOVE_COMMAND name, and the local files a pins line
+ *  names. `modules` makes the leg's copy, beside which the scripted peer has Bun load the probe. */
 export async function prepareStandIn(
   scratch: Scratch,
+  blankFree: BlankFreeScratch,
+  modules: ModuleScratch,
   standIns: StandIns
 ): Promise<PreparedStandIn> {
   // The ports the broker and the listener are named at: refused, from a range the kernel hands no
@@ -781,7 +797,8 @@ export async function prepareStandIn(
   );
   const repo = checkout(scratch);
   const inputs = scratch("inputs");
-  const leg = copyLeg(scratch, tailnetLeg, standIns.legChange);
+  const words = blankFree("words");
+  const leg = copyLeg(modules, tailnetLeg, standIns.legChange);
   if (standIns.proxyRefusesToken === true) writeFileSync(join(state, "proxy-refuses-token"), "");
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   if (standIns.window !== undefined) {
@@ -796,6 +813,7 @@ export async function prepareStandIn(
   script(
     join(legDir, "restricted-sweep.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 [ -n "\${SWEEP_FULL_TOKEN:-}" ] || { echo 'UNKNOWN: SWEEP_FULL_TOKEN is required'; exit 2; }
 case $SWEEP_MODE in
   fills)
@@ -803,23 +821,23 @@ case $SWEEP_MODE in
     # With no cookie the fills' proxy reads are the token's, which a build whose proxy reads a
     # browser's person alone refuses: those fills hold no can_fail line.
     if [ -n "\${SWEEP_FULL_COOKIE:-}" ]; then
-      : >'${state}/fills-read-the-cookie'
-      cat '${state}/fills' >"$SWEEP_FILLS_FILE"
-    elif [ ! -f '${state}/proxy-refuses-token' ]; then
-      : >'${state}/fills-read-the-token'
-      cat '${state}/fills' >"$SWEEP_FILLS_FILE"
+      : >"$state/fills-read-the-cookie"
+      cat "$state/fills" >"$SWEEP_FILLS_FILE"
+    elif [ ! -f "$state/proxy-refuses-token" ]; then
+      : >"$state/fills-read-the-token"
+      cat "$state/fills" >"$SWEEP_FILLS_FILE"
     else
-      : >'${state}/fills-without-cookie'
+      : >"$state/fills-without-cookie"
       while IFS= read -r line; do
         case $line in can_fail$'\\t'*) ;; *) printf '%s\\n' "$line" ;; esac
-      done <'${state}/fills' >"$SWEEP_FILLS_FILE"
+      done <"$state/fills" >"$SWEEP_FILLS_FILE"
     fi
     ;;
   writer)
-    cat '${state}/writer-line'
+    cat "$state/writer-line"
     sleep 600 &
     child=$!
-    trap 'kill "$child"; : >"${state}/writer-stopped"; exit 0' TERM
+    trap 'kill "$child"; : >"$state/writer-stopped"; exit 0' TERM
     wait "$child"
     ;;
 esac
@@ -829,17 +847,15 @@ esac
   // edge-listener line names a file the repository lacks: that gate reads no edge listener's pin.
   mkdirSync(join(state, "deploy"), { recursive: true });
   const pinsLocal = standIns.pins === "local";
+  const deploy = join(pinsLocal ? words : state, "deploy");
+  mkdirSync(deploy, { recursive: true });
   const pins: string[] = [];
   for (const name of ["broker", "dispatch", "edge-listener"]) {
+    const file = join(deploy, `${name}.yaml`);
     if (standIns.browser === undefined || name !== "edge-listener") {
-      writeFileSync(
-        join(state, "deploy", `${name}.yaml`),
-        `example:image: registry.example/${name}@sha256:0\n`
-      );
+      writeFileSync(file, `example:image: registry.example/${name}@sha256:0\n`);
     }
-    pins.push(
-      `${name} ${pinsLocal ? join(state, "deploy", `${name}.yaml`) : `${name}.yaml`} example:image`
-    );
+    pins.push(`${name} ${pinsLocal ? file : `${name}.yaml`} example:image`);
   }
   // A second `dispatch` line, naming another file, where the pins file is to hold one twice.
   if (standIns.pins === "duplicate") pins.push("dispatch dispatch-second.yaml example:image");
@@ -848,35 +864,37 @@ esac
   const visibility = standIns.workflow?.visibility ?? "PRIVATE";
   if (visibility !== "") writeFileSync(join(state, "visibility"), `${visibility}\n`);
   writeFileSync(join(state, "view-exit"), `${standIns.workflow?.viewExit ?? 0}\n`);
+  // Lines of public.sh below, which sets `state` first.
   const approve =
-    standIns.approve === false ? "" : `: >'${state}/approved-'"$OUTSIDE_TAILNET_USER_CODE"`;
+    standIns.approve === false ? "" : `: >"$state/approved-$OUTSIDE_TAILNET_USER_CODE"`;
   const moves =
     standIns.pins === "moves"
-      ? `echo 'example:image: registry.example/dispatch@sha256:1' >'${state}/deploy/dispatch.yaml'`
+      ? `echo 'example:image: registry.example/dispatch@sha256:1' >"$state/deploy/dispatch.yaml"`
       : "";
   const lastAnswered =
     standIns.window === undefined
       ? ""
       : `printf 'T5-agent\\tthe agent part\\tno trade refused; last_answered_at=%s refused_at=none\\tUNKNOWN\\n' "$(( $(date -u +%s) + ${standIns.window.lastAnsweredAfter} ))" >>"$out/outside-agent-public.tsv"`;
   const publicLegCommand = script(
-    join(inputs, "public.sh"),
+    join(words, "public.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 ${approve}
 ${moves}
 out=$OUTSIDE_PUBLIC_RESULTS
-cp '${state}/public.tsv' "$out/outside-agent-public.tsv"
+cp "$state/public.tsv" "$out/outside-agent-public.tsv"
 ${lastAnswered}
 ${(standIns.revokeVerdicts ?? ["PASS"]).map((verdict) => `printf 'revoke-cred-%s\\trevoked\\tstatus 200\\t%s\\n' "$(printf '%s' "$OUTSIDE_TAILNET_USER_CODE" | tr 'A-Z' 'a-z')" '${verdict}' >>"$out/outside-edge-revocations.tsv"`).join("\n")}
-: >'${state}/revoked'
-{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat '${state}/sweep-verdict'; } >"$out/restricted-sweep.log"
+: >"$state/revoked"
+{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat "$state/sweep-verdict"; } >"$out/restricted-sweep.log"
 echo ${standIns.sweep?.exit ?? 0} >"$out/restricted-sweep.exit"
 ${
   standIns.window === undefined
     ? ""
     : `# The window stays open until the owner's removal, which ends a real run's, for at most 30 s.
 closes=$((SECONDS + 30))
-while [ ! -f '${state}/removed' ] && [ "$SECONDS" -lt "$closes" ]; do sleep 0.05; done
-[ -f '${state}/removed' ] || echo 'the stand-in public leg: no removal within 30 s of its window' >&2`
+while [ ! -f "$state/removed" ] && [ "$SECONDS" -lt "$closes" ]; do sleep 0.05; done
+[ -f "$state/removed" ] || echo 'the stand-in public leg: no removal within 30 s of its window' >&2`
 }
 exit ${standIns.publicExit ?? 0}
 `
@@ -884,8 +902,8 @@ exit ${standIns.publicExit ?? 0}
   const browserRun =
     standIns.browser === undefined
       ? undefined
-      : browserStandIn(state, inputs, standIns, standIns.browser);
-  const revision = script(join(inputs, "revision.sh"), `#!/bin/sh\necho ${repo.built}\n`);
+      : browserStandIn(state, words, standIns, standIns.browser);
+  const revision = script(join(words, "revision.sh"), `#!/bin/sh\necho ${repo.built}\n`);
   writeFileSync(join(inputs, "cookie"), "session=full\n");
   writeFileSync(join(inputs, "token"), `${fullToken}\n`);
   const dispatch = standInDispatch(state, standIns.controls, repo, standIns.serving ?? "pinned");
@@ -894,7 +912,7 @@ exit ${standIns.publicExit ?? 0}
       throw new Error("a step after the stand-in Dispatch started failed, as the row asks");
     }
     const remove = script(
-      join(inputs, "remove.sh"),
+      join(words, "remove.sh"),
       `#!/bin/sh\nexec curl -q -sS -X POST '${dispatch.origin}/_remove' -o /dev/null\n`
     );
     const env: Record<string, string> = {

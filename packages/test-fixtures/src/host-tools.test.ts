@@ -1,10 +1,17 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "./hang-guard";
 import { type HostGateNeeds, hostTool, requireHostTools, skipWithout } from "./host-tools";
-import { temporaryDirectories } from "./temporary-directories";
+import { moduleRoot, temporaryDirectories } from "./temporary-directories";
 
-const makeDirectory = temporaryDirectories("test-fixtures-host-tools");
+// One row runs Bun on a file it writes, and waits for it to end. Its bound is a hang guard, not a
+// verdict, for every row of this file.
+setDefaultTimeout(HANG_GUARD_MS);
+
+// The one row that makes a directory has Bun run a file from it, and Bun loads no module from a
+// path holding a `?`.
+const makeDirectory = temporaryDirectories("test-fixtures-host-tools", { root: moduleRoot() });
 
 /** Names no host carries a program under. */
 const ABSENT = "legion-test-fixtures-no-such-program";

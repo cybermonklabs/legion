@@ -1,9 +1,10 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statfsSync,
@@ -13,9 +14,26 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { memoryRoot, temporaryDirectories, temporaryDirectory } from "./temporary-directories";
+import { HANG_GUARD_MS } from "./hang-guard";
+import {
+  baseWithout,
+  cleanAncestor,
+  memoryRoot,
+  moduleRoot,
+  scratchWithout,
+  temporaryDirectories,
+  temporaryDirectory,
+} from "./temporary-directories";
+
+// Two rows run `bun test` on a file they write, and wait for it to end. Their bound is a hang
+// guard, not a verdict, for every row and hook of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const makeDirectory = temporaryDirectories("test-fixtures-per-test");
+
+/** The maker of every directory a row has Bun load a module from: Bun loads none from a path that
+ *  holds a `?`. */
+const makeModuleDirectory = temporaryDirectories("test-fixtures-module", { root: moduleRoot() });
 
 /** The path the first test made, which the test after it finds removed. */
 let fromTheFirstTest = "";
@@ -48,7 +66,7 @@ test("makes a fresh directory on every call", () => {
 // Linux's `tmpdir()` is no symlink, so a row that read this process's own would hold with `real`
 // ignored.
 test("real resolves a TMPDIR that is a symlink", () => {
-  const root = makeDirectory("symlinked-tmpdir");
+  const root = makeModuleDirectory("symlinked-tmpdir");
   const target = join(root, "target");
   mkdirSync(target);
   const link = join(root, "link");
@@ -144,9 +162,14 @@ function mountinfo(...mounts: string[]): string {
 }
 
 /** A line of `/proc/self/mountinfo` that mounts a filesystem of `type` at `at` with `options`;
- *  `id` orders two mounts at one path. */
+ *  `id` orders two mounts at one path. The mount point is written as the kernel writes it: a
+ *  space, a tab, a newline and a backslash each as `\` and three octal digits. */
 function mountAt(at: string, options: string, type = "tmpfs", id = 32): string {
-  return `${id} 28 0:26 / ${at} ${options} shared:3 - ${type} ${type} rw`;
+  const point = at.replace(
+    /[ \t\n\\]/g,
+    (c) => `\\${c.charCodeAt(0).toString(8).padStart(3, "0")}`
+  );
+  return `${id} 28 0:26 / ${point} ${options} shared:3 - ${type} ${type} rw`;
 }
 
 // Each row stands a directory of its own in for /dev/shm (`at`), so the room and the permissions it
@@ -163,6 +186,11 @@ test("names /dev/shm where it is a writable tmpfs that allows exec", () => {
     }),
     withRoom: memoryRoot({ need: 1, mountinfo: mountinfo(mountAt(at, "rw")), at }),
   }).toEqual({ alone: at, overNoexec: at, withRoom: at });
+});
+
+test("names /dev/shm where its mount point holds a character the kernel escapes", () => {
+  const at = makeDirectory("a mount with a space and a \\ backslash");
+  expect(memoryRoot({ mountinfo: mountinfo(mountAt(at, "rw,nosuid,nodev")), at })).toBe(at);
 });
 
 test("names tmpdir() where /dev/shm is noexec, read-only, not a tmpfs or not mounted", () => {
@@ -365,7 +393,7 @@ describe("the removal", () => {
  * "stopped at the first and left the others".
  */
 describe("a removal that cannot finish", () => {
-  const makeDirectory = temporaryDirectories("test-fixtures-batch");
+  const makeDirectory = temporaryDirectories("test-fixtures-batch", { root: moduleRoot() });
 
   /**
    * Whether this process removes a directory from one with no write permission for it. Root does,
@@ -428,5 +456,153 @@ test("makes three and seals the root", () => {
       expect(output).toContain(name);
     }
     expect(run.exitCode).not.toBe(0);
+  });
+});
+
+describe("a directory under a base whose path holds no refused character", () => {
+  // Each row plants its bases under a root whose path holds none of the characters a row plants.
+  const makeRoot = temporaryDirectories("test-fixtures-without", {
+    root: baseWithout(/[^A-Za-z0-9/._-]/g, [tmpdir(), "/tmp"]),
+  });
+
+  test("passes over a base holding a refused character for the next, whatever the pattern's flags", () => {
+    const top = makeRoot("held");
+    const plain = join(top, "plain");
+    for (const name of ["tmp with space", "tmp-q?x", "tmp-sq'x"]) {
+      const held = join(top, name);
+      mkdirSync(held);
+      // A sticky pattern matches only where it starts, so read as given it would find nothing.
+      for (const refuses of [/[ '?]/g, /[ '?]/y, /[ '?]/gy, /[ '?]/]) {
+        expect(dirname(scratchWithout(refuses, [held, plain], "row-"))).toBe(plain);
+      }
+      expect(readdirSync(held)).toEqual([]);
+    }
+  });
+
+  test("keeps a refused character the caller's own prefix holds", () => {
+    const plain = join(makeRoot("prefix"), "plain");
+    const made = scratchWithout(/\?/g, [plain], "row-?-");
+    expect(dirname(made)).toBe(plain);
+    expect(basename(made)).toStartWith("row-?-");
+  });
+
+  test("hands the accept check the directory it made, and returns the one it accepted", () => {
+    const top = makeRoot("accept-argument");
+    const first = join(top, "first");
+    const second = join(top, "second");
+    const seen: { directory: string; existed: boolean }[] = [];
+    const made = scratchWithout(/\?/g, [first, second], "row-", {
+      accept: (directory) => {
+        seen.push({ directory, existed: statSync(directory).isDirectory() });
+        return directory.startsWith(`${first}/`) ? "not here" : undefined;
+      },
+    });
+    expect(seen.map(({ directory }) => dirname(directory))).toEqual([first, second]);
+    expect(seen.every(({ existed }) => existed)).toBe(true);
+    expect([made]).toEqual(seen.slice(1).map(({ directory }) => directory));
+    expect(readdirSync(first)).toEqual([]);
+  });
+
+  test("removes what a refused or throwing accept check left, and names why each base would not do", () => {
+    const top = makeRoot("accept");
+    const refused = join(top, "refused");
+    const throwing = join(top, "throwing");
+    const plain = join(top, "plain");
+    const accept = (directory: string) => {
+      writeFileSync(join(directory, "left-behind"), "");
+      if (directory.startsWith(`${throwing}/`)) throw new Error("the cache is gone");
+      return directory.startsWith(`${refused}/`) ? "no link lands here" : undefined;
+    };
+    expect(dirname(scratchWithout(/\?/g, [refused, throwing, plain], "row-", { accept }))).toBe(
+      plain
+    );
+    expect({ refused: readdirSync(refused), throwing: readdirSync(throwing) }).toEqual({
+      refused: [],
+      throwing: [],
+    });
+    expect(() => scratchWithout(/\?/g, [refused, throwing], "row-", { accept })).toThrow(
+      `${refused} made a directory that will not do (no link lands here); ${throwing} made a directory that will not do (its check threw: the cache is gone)`
+    );
+  });
+
+  test("passes over a base that makes no directory, and fails naming each when none will", () => {
+    const top = makeRoot("unmade");
+    const file = join(top, "a-file");
+    writeFileSync(file, "");
+    const plain = join(top, "plain");
+    expect(dirname(scratchWithout(/\?/g, [join(file, "under"), plain], "row-"))).toBe(plain);
+    expect(() => scratchWithout(/\?/g, [join(file, "under"), join(file, "other")], "row-")).toThrow(
+      new RegExp(
+        `${join(file, "under")} made no directory .*; ${join(file, "other")} made no directory`
+      )
+    );
+  });
+
+  test("takes a socket path of 107 bytes and passes over one of 108, counted in bytes", () => {
+    // /tmp is the short base: a socket path of either length fits under it whatever TMPDIR is.
+    const prefix = `tf-sock-${process.pid}-`;
+    // mkdtemp adds six characters to the prefix.
+    const room = 107 - Buffer.byteLength(join("/tmp", `${prefix}XXXXXX`)) - 1;
+    const made = scratchWithout(/\?/g, ["/tmp"], prefix, { socket: "s".repeat(room) });
+    try {
+      expect(Buffer.byteLength(join(made, "s".repeat(room)))).toBe(107);
+    } finally {
+      rmSync(made, { recursive: true });
+    }
+    // One byte over; and, counted in characters, a path that would fit, one byte over in UTF-8.
+    const multibyte = `é${"s".repeat(room - 1)}`;
+    expect(multibyte.length).toBe(room);
+    for (const socket of ["s".repeat(room + 1), multibyte]) {
+      expect(() => scratchWithout(/\?/g, ["/tmp"], prefix, { socket })).toThrow(
+        `/tmp gives ${socket} a path of 108 bytes`
+      );
+    }
+    expect(readdirSync("/tmp").filter((name) => name.startsWith(prefix))).toEqual([]);
+    expect(() => scratchWithout(/\?/g, ["/a/tmp-q?x", "/b/c?d"], "row-")).toThrow(
+      '/a/tmp-q?x holds "?"; /b/c?d holds "?"'
+    );
+  });
+
+  test("makes a base that is missing", () => {
+    const missing = join(makeRoot("missing"), "missing", "deeper");
+    expect(dirname(scratchWithout(/\?/g, [missing], "row-"))).toBe(missing);
+  });
+
+  test("baseWithout names the base it would use, through its accept check, and leaves nothing in it", () => {
+    const top = makeRoot("base");
+    const held = join(top, "tmp-q?x");
+    const refused = join(top, "refused");
+    const plain = join(top, "plain");
+    mkdirSync(held);
+    const accept = (directory: string) =>
+      directory.startsWith(`${refused}/`) ? "not here" : undefined;
+    const base = baseWithout(/\?/g, [held, refused, plain], accept);
+    expect(base).toBe(plain);
+    expect({
+      base: readdirSync(base),
+      held: readdirSync(held),
+      refused: readdirSync(refused),
+    }).toEqual({ base: [], held: [], refused: [] });
+  });
+
+  test("names the closest ancestor that holds no refused character", () => {
+    expect(cleanAncestor("/mnt/scratch/run/tmp-q?x", /\?/g)).toEqual(["/mnt/scratch/run"]);
+    expect(cleanAncestor("/mnt/a b/tmp-q?x/deeper", /[ '?]/g)).toEqual(["/mnt"]);
+    expect(cleanAncestor("/mnt/a b/tmp-q?x/deeper", /[ '?]/y)).toEqual(["/mnt"]);
+    expect(cleanAncestor("/mnt/scratch/run/plain", /\?/g)).toEqual([]);
+    expect(cleanAncestor("/tmp-q?x", /\?/g)).toEqual([]);
+  });
+
+  test("moduleRoot names the root where its path holds no `?`, else its closest ancestor that holds none", () => {
+    const top = makeRoot("module-root");
+    const plain = join(top, "plain");
+    mkdirSync(plain);
+    const held = join(top, "tmp-q?x", "t");
+    mkdirSync(held, { recursive: true });
+    expect({ plain: moduleRoot(plain), held: moduleRoot(held) }).toEqual({ plain, held: top });
+    expect({ plain: readdirSync(plain), top: readdirSync(top).sort() }).toEqual({
+      plain: [],
+      top: ["plain", "tmp-q?x"],
+    });
   });
 });

@@ -36,6 +36,7 @@ import {
   codexRows,
   copyLeg,
   type LegRun,
+  moduleScratch,
   rowsOf,
   script,
   textToolPath,
@@ -45,9 +46,14 @@ import { closedPort } from "./outside-path-reach-fixtures";
 
 // On tmpfs, as the other two files of these legs keep theirs: a row here holds at most 4 runs of
 // about 40 entries each.
-const scratch = temporaryDirectories("outside-agent-codex", {
-  root: memoryRoot({ need: 8 * 2 ** 20 }),
-});
+const scratchRoot = memoryRoot({ need: 8 * 2 ** 20 });
+const scratch = temporaryDirectories("outside-agent-codex", { root: scratchRoot });
+// Bun loads no module from a path that holds a `?`. Each copy of the leg (beside which the stand-in
+// probe, model and provenance helper sit), the state (which holds the stand-in codex, a Bun script),
+// the tool path (which holds the stand-in npm, a Bun script), the stand-in checkout (whose build.ts
+// the leg runs) and the leg's own TMPDIR (where it keeps the Codex home whose dispatch.js it runs)
+// come from here.
+const modules = moduleScratch("outside-agent-codex-modules", scratchRoot);
 
 const person = "outside-e2e@example.com";
 /** The release the stand-in runs install, and what its stand-in provenance names. */
@@ -512,7 +518,7 @@ function git(dir: string, ...args: string[]): string {
 /** A checkout with the device login's commit, the release's commit that holds it, and another
  *  commit that does not; and a plugin build that makes a directory, for a development run. */
 function standInCheckout(): { dir: string; login: string; built: string; apart: string } {
-  const dir = scratch("checkout");
+  const dir = modules("checkout");
   const build = join(dir, "packages", "claude-envoy", "scripts");
   mkdirSync(build, { recursive: true });
   writeFileSync(
@@ -535,9 +541,10 @@ writeFileSync(out + "/.codex-plugin/plugin.json", "{}");
 
 /** One run of a copy of the Codex leg against the stand-ins, as `scenario` says. */
 async function codexStandInRun(scenario: CodexScenario): Promise<CodexRun> {
-  const leg = copyLeg(scratch, codexLeg);
+  const leg = copyLeg(modules, codexLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
-  const state = scratch("state");
+  // The state holds the stand-in codex, a Bun script, beside the files the stand-ins meet through.
+  const state = modules("state");
   const repo = standInCheckout();
   writeFileSync(join(state, "scenario.json"), JSON.stringify(scenario));
   // The release's tree, which its tarball holds and Codex installs: a package.json, the bundles
@@ -580,7 +587,8 @@ else {
 }
 `
   );
-  const bin = textToolPath(scratch, ["bun", "git", "tar", "gzip"]);
+  // The stand-in npm is a Bun script; the tools it sits with go where Bun can load it.
+  const bin = textToolPath(modules, ["bun", "git", "tar", "gzip"]);
   script(join(bin, "tmux"), standInTmux());
   const codex = script(join(state, "codex"), standInCodex(state));
   // npm: installs the stand-in codex for \`npm install --prefix <dir> @openai/codex@<v>\`, recording
@@ -629,11 +637,13 @@ writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringi
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
     bound: "codexRun",
-    cwd: scratch("cwd"),
+    // The leg runs `bun -e` (its read of npm's lockfile), whose module Bun names after the working
+    // directory, so the leg starts where the path holds no `?`.
+    cwd: modules("cwd"),
     env: {
       PATH: bin,
       HOME: scratch("home"),
-      ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
+      TMPDIR: modules("leg-tmp"),
       OUTSIDE_ALLOW_HTTP: "1",
       OUTSIDE_DISPATCH_URL: `http://127.0.0.1:${await closedPort()}`,
       OUTSIDE_BROKER_URL: `http://127.0.0.1:${await closedPort()}`,
@@ -682,7 +692,7 @@ function execOf(
 /** A copy of the Codex leg that defaults to PASS: every `UNKNOWN` reads `PASS` and every `exit 2`
  *  reads `exit 0`, in the leg and in what it sources. */
 function passingCopy(): string {
-  return copyLeg(scratch, codexLeg, (text) =>
+  return copyLeg(modules, codexLeg, (text) =>
     text.replaceAll("UNKNOWN", "PASS").replaceAll("exit 2", "exit 0")
   );
 }
@@ -1220,7 +1230,7 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
         });
         return { code: ran.code, stdout: ran.stdout, stderr: ran.stderr };
       };
-      const plain = await run(copyLeg(scratch, codexLeg));
+      const plain = await run(copyLeg(modules, codexLeg));
       expect(unknownProblems(plain)).toEqual([]);
       for (const name of ["OUTSIDE_DISPATCH_URL", "OUTSIDE_DEVICE_LOGIN_HOME"]) {
         expect(plain.stdout).toContain(name);

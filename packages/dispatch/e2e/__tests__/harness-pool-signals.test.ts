@@ -4,7 +4,7 @@ import { constants } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { skipWithoutIgnoreMasks } from "@legion/test-fixtures/held-process";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { moduleRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, runBounded, watch, whether } from "./bounded-subprocess";
 
@@ -28,7 +28,9 @@ const withoutMasks = skipWithoutIgnoreMasks(
   "packages/dispatch/e2e/__tests__/harness-pool-signals.test.ts"
 );
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-const stubs = temporaryDirectory("harness-pool-signals-");
+// The stand-in harness, the preload and the script are modules Bun loads, and Bun loads none from
+// a path that holds a `?`.
+const stubs = temporaryDirectory("harness-pool-signals-", { root: moduleRoot() });
 
 const start = join(stubs, "harness-start.ts");
 const preload = join(stubs, "preload.ts");

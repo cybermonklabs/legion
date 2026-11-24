@@ -8,7 +8,7 @@
 // the session; and two processes that trade at once spend one refresh token once, since the
 // broker revokes a login whose rotated refresh token is presented again past its grace.
 
-import { expect, spyOn, test } from "bun:test";
+import { expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   chmodSync,
   mkdirSync,
@@ -23,12 +23,24 @@ import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+import { moduleRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { dispatchSettings } from "../dispatch-config";
 import { readEnvoyConfig } from "../envoy-config";
 import { deviceLoginStandIns } from "./broker-stand-ins";
 
 const { broker, laptopEnvironment, loginFile, tempDir } = deviceLoginStandIns("device-login");
+/** The directory of each child script a row has Bun run: Bun loads no module from a path that
+ *  holds a `?`. */
+const moduleDir = temporaryDirectories("device-login-child", { root: moduleRoot() });
+
+// Each row's verdict is what the command printed and kept, and no assertion measures time, so a row
+// states no bound of its own. The file's bound is a hang guard, not a verdict: the rows ran 15 ms
+// to 2 s, 6.7 s in a load stall on a dev box (past Bun's 5 s default), and the four two-process
+// rows below over 30 s pinned to one CPU that 200 busy loops share (past the 30 s they had). The
+// guard is far above that and still names a row that never ends. It holds for this file alone.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const PERSON = "ada@example.com";
 
@@ -380,7 +392,7 @@ async function tradeTwiceAtOnce(
   file: string,
   lock: "file" | "none" | "refresh-only"
 ) {
-  const child = path.join(tempDir(), "trade.ts");
+  const child = path.join(moduleDir(), "trade.ts");
   writeFileSync(
     child,
     `import { DeviceLoginIdentity, refreshDeviceLogin, withDeviceLoginLock } from ${JSON.stringify(DEVICE_LOGIN_MODULE)};
@@ -468,7 +480,9 @@ function presented(refreshes: readonly { form: URLSearchParams }[]): Map<string,
 
 test("two processes trading at once spend the device login's refresh token once", async () => {
   // The broker holds each refresh's answer for up to 2 s, until another arrives, so two refreshes
-  // made at once overlap there: under the lock the second process never refreshes at all.
+  // made at once overlap there: under the lock the second process never refreshes at all. The hold
+  // cannot wait on that second refresh instead of a clock: under the lock it never comes. Its
+  // control below holds the answer until two refreshes arrive, so no clock decides whether it fails.
   const stub = broker({ refreshOverlapMs: 2_000 });
   const written = await loginFile(stub.url);
   const outcomes = await tradeTwiceAtOnce(stub.url, written.path, "file");
@@ -480,7 +494,7 @@ test("two processes trading at once spend the device login's refresh token once"
     stub.loginTokens[0],
     stub.loginTokens[0],
   ]);
-}, 30_000);
+});
 
 test("control: with no lock, the two processes spend one refresh token twice", async () => {
   // The broker answers no refresh until it has been sent two, with no time limit, so no clock
@@ -489,13 +503,15 @@ test("control: with no lock, the two processes spend one refresh token twice", a
   const written = await loginFile(stub.url);
   await tradeTwiceAtOnce(stub.url, written.path, "none");
   expect(presented(stub.refreshes).get(written.refreshToken)).toBe(2);
-}, 30_000);
+});
 
 test("a process refreshes the login only once another's trade of it is answered", async () => {
   // Access tokens of 30 s, under the one-minute margin, so each process refreshes before its
   // trade, and the broker holds each trade's answer for up to 2 s, until a refresh arrives: a
   // refresh while a trade is out revokes that trade's token. Under the login's lock the second
-  // process refreshes only after the first one's trade is answered.
+  // process refreshes only after the first one's trade is answered. The hold cannot wait on that
+  // refresh instead of a clock: under the lock it never comes while the trade is out. Its control
+  // below holds the trade until two refreshes arrive, so no clock decides whether it can fail.
   const stub = broker({ accessSeconds: 30, tradeHoldMs: 2_000 });
   const written = await loginFile(stub.url);
   const outcomes = await tradeTwiceAtOnce(stub.url, written.path, "file");
@@ -503,7 +519,7 @@ test("a process refreshes the login only once another's trade of it is answered"
   expect(stub.revokedTrades).toHaveLength(0);
   expect(stub.refreshes).toHaveLength(2);
   expect([...presented(stub.refreshes).values()]).toEqual([1, 1]);
-}, 30_000);
+});
 
 test("control: with a lock around the refresh alone, the second refresh revokes the first trade's token", async () => {
   // The broker answers no trade until it has been sent two refreshes, with no time limit, so no
@@ -514,4 +530,4 @@ test("control: with a lock around the refresh alone, the second refresh revokes 
   expect(stub.revokedTrades).toHaveLength(1);
   // The broker refuses a revoked access token `400 invalid_request`.
   expect(outcomes.filter((outcome) => outcome.error?.includes("invalid_request"))).toHaveLength(1);
-}, 30_000);
+});

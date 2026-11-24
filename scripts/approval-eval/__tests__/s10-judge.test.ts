@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
 import { ruleVerdictOf } from "../s10-analysis";
 import {
@@ -27,6 +28,11 @@ import {
   STARTED_REASON,
   UNJUDGED,
 } from "../s10-judged-io";
+
+// The rows below the Python suite's spawn Bun on the checks and the admission, and wait for them
+// to end. Their bound is a hang guard, not a verdict, for every row and hook of this file that
+// states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 /**
  * The claim's judging stage. Its driver, `s10_judge.py`, and the modules beside it are tested by
@@ -192,6 +198,15 @@ async function registration(): Promise<Registration> {
   return { reads: [{ reference: REFERENCE, run }], ended: null };
 }
 
+/** How long the Python suite below may run before the row calls it hung and kills it. A hang guard,
+ *  not a verdict: the row's verdict is the suite's exit, and the guard only names a suite that never
+ *  ends. The suite took 9 to 27 s idle, 67 to 75 s at a load of 950 and over 180 s at a load of 700
+ *  on a dev box, so a guard far above that, and under CI's 30-minute job, still names it. */
+const SUITE_HANG_MS = 15 * 60_000;
+/** The bound of the row that runs that suite and fills `scratch`: its hang guard and a minute for
+ *  the rest of the row. */
+const FILL_MS = SUITE_HANG_MS + 60_000;
+
 beforeAll(async () => {
   scratch = await mkdtemp(join(tmpdir(), "s10-judge-"));
   root = join(scratch, "bundle");
@@ -209,231 +224,270 @@ beforeAll(async () => {
   env[CLAIM_RUN_VARIABLE] = START;
 });
 
+// The removal's bound is a hang guard, not a verdict: it is the bound of the row that fills the
+// directory (`FILL_MS`), since removing what that row wrote can take as long on a loaded disk as
+// writing it did. On a dev box at a load of 950, Bun's 5 s hook default ran out mid-removal.
 afterAll(async () => {
   await rm(scratch, { recursive: true, force: true });
-});
+}, FILL_MS);
 
 describe("s10_judge.py and the modules beside it", () => {
-  test("pass their own tests under python3 -m unittest, over inputs the TypeScript parsers read", async () => {
-    await writeInputs(inputsFiles());
-    const admission = await admissionOf(args(), { registration: await registration(), root, env });
-    await writeFile(join(inputs, "admission.json"), JSON.stringify(admission), "utf8");
-    const keep = join(scratch, "judged-by-python");
-    const run = Bun.spawnSync(
-      [
-        "python3",
-        "-m",
-        "unittest",
-        "discover",
-        "-s",
-        join(DIRECTORY, "__tests__"),
-        "-p",
-        "s10_judge_test.py",
-      ],
-      {
-        cwd: DIRECTORY,
-        env: {
-          ...process.env,
-          PYTHONDONTWRITEBYTECODE: "1",
-          S10_INPUTS_FIXTURE: inputs,
-          S10_JUDGED_KEEP: keep,
-          S10_BUN: process.execPath,
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      }
-    );
-    const report = run.stderr.toString();
-    if (run.exitCode !== 0) console.error(report);
-    expect(run.exitCode).toBe(0);
-    expect(report).toMatch(/^Ran [1-9]\d* tests/m);
-    expect(report).not.toMatch(/skipped/);
-
-    // The constants both sides hold equal.
-    expect(JSON.parse(await readFile(join(keep, "constants.json"), "utf8"))).toEqual({
-      deviationKinds: [...DEVIATION_KINDS],
-      ruleVersions: [...RULE_VERSIONS],
-      countingRule: COUNTING_RULE,
-      stageVersion: JUDGED_VERSION,
-      startedFile: STARTED_FILE,
-      startedReason: STARTED_REASON,
-      inputsVersion: INPUTS_VERSION,
-    });
-    // Every inputs stage the suite wrote reads back through the inputs stage's own parsers, so no
-    // row there judges a shape the inputs stage does not write.
-    let requestsRead = 0;
-    for (const name of (await readdir(join(keep, "inputs"))).sort()) {
-      const directory = join(keep, "inputs", name);
-      const lines = inventoryLinesOf(
-        await readFile(join(directory, "inventory.jsonl"), "utf8"),
-        join(directory, "inventory.jsonl")
+  test(
+    "pass their own tests under python3 -m unittest, over inputs the TypeScript parsers read",
+    async () => {
+      await writeInputs(inputsFiles());
+      const admission = await admissionOf(args(), {
+        registration: await registration(),
+        root,
+        env,
+      });
+      await writeFile(join(inputs, "admission.json"), JSON.stringify(admission), "utf8");
+      const keep = join(scratch, "judged-by-python");
+      const started = Date.now();
+      const suite = Bun.spawn(
+        [
+          "python3",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          join(DIRECTORY, "__tests__"),
+          "-p",
+          "s10_judge_test.py",
+        ],
+        {
+          cwd: DIRECTORY,
+          env: {
+            ...process.env,
+            PYTHONDONTWRITEBYTECODE: "1",
+            S10_INPUTS_FIXTURE: inputs,
+            S10_JUDGED_KEEP: keep,
+            S10_BUN: process.execPath,
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: SUITE_HANG_MS,
+          killSignal: "SIGKILL",
+        }
       );
-      expect(lines.length).toBeGreaterThan(0);
-      const requests = await readdir(join(directory, "requests")).catch(() => []);
-      for (const file of requests) {
-        const path = join(directory, "requests", file);
-        requestInputsOf(await readFile(path, "utf8"), path);
-        requestsRead += 1;
-      }
-      const pages = await readdir(join(directory, "pages")).catch(() => []);
-      for (const file of pages) {
-        const path = join(directory, "pages", file);
-        pageRecordOf(await readFile(path, "utf8"), path);
-      }
-    }
-    expect(requestsRead).toBeGreaterThan(0);
-    // Every stage the suite judged whole reads back, and between them every kind of outcome it writes.
-    const stages = new Map<string, JudgedStage>();
-    for (const name of (await readdir(join(keep, "stages"))).sort()) {
-      stages.set(name, await judgedStageOf(join(keep, "stages", name)));
-    }
-    const outcomes = new Set<string>();
-    const deviations = new Set<string>();
-    const recomputed = new Set<string>();
-    for (const [name, stage] of stages) {
-      expect(stage.record.state).toBe("written");
-      expect(stage.record.counts?.requests).toBe(stage.outcomes.size);
-      for (const outcome of stage.outcomes.values()) {
-        outcomes.add(outcome.outcome);
-        if (outcome.deviation !== null) deviations.add(outcome.deviation.kind);
-        if (outcome.outcome === "hold") expect(outcome.judgement?.judges).toBe(0);
-        if (outcome.outcome === "verdict") {
-          expect(outcome.judgement?.documents.length).toBeGreaterThan(0);
-          expect(outcome.judgement?.judge_models?.length).toBe(5);
-          expect(outcome.judges.filter((one) => one.transcript !== null).length).toBe(5);
-          expect(outcome.sandbox?.listing?.lines).toBeGreaterThan(0);
-        }
-        // The analysis reads the five answers the driver kept and recomputes point 2's verdict
-        // from them: under every version of the rule that gave a verdict, the verdict recorded.
-        const given = RULE_VERSIONS.filter(
-          (version) => outcome.byRule[version].outcome === "verdict"
+      const exit = suite.exited.then((code) => ({
+        code,
+        seconds: Math.round((Date.now() - started) / 1000),
+      }));
+      const reads = Promise.all([
+        new Response(suite.stderr).text(),
+        new Response(suite.stdout).text(),
+      ]);
+      // A process the suite left behind can hold its pipes open after it ends; the row reads them
+      // for 10 s past the suite's exit, not for as long as that process lives.
+      const read = await Promise.race([
+        reads,
+        exit.then(() => Bun.sleep(10_000)).then(() => undefined),
+      ]);
+      const { code: exitCode, seconds } = await exit;
+      if (suite.signalCode !== null) {
+        throw new Error(
+          `python3 -m unittest of s10_judge_test.py did not end: its hang guard killed it (${suite.signalCode}) after ${seconds} s of ${SUITE_HANG_MS / 1000} s`
         );
-        if (given.length === 0) continue;
-        const kept = await recordedAnswersOf(join(keep, "stages", name), stage, outcome);
-        const rule = "answers" in kept ? ruleVerdictOf(kept.answers) : kept;
-        for (const version of given) {
-          expect(rule).toMatchObject({ verdict: outcome.byRule[version].verdict });
-        }
-        if ("verdict" in rule) recomputed.add(rule.verdict);
       }
-    }
-    // Every verdict the driver's suite judges a request to, recomputed: a shrink fails here.
-    expect([...recomputed].sort()).toEqual(["approve", "request_changes"]);
-    expect([...outcomes].sort()).toEqual(["deviation", "hold", "verdict"]);
-    expect([...deviations].sort()).toEqual([...DEVIATION_KINDS].sort());
-    const kept = (test: string): JudgedStage => {
-      const found = [...stages].filter(([name]) => name.startsWith(`${test}-`));
-      expect(found.length).toBeGreaterThan(0);
-      return found[0]?.[1] as JudgedStage;
-    };
-    // The stage the suite judged from the inputs written here holds their two requests.
-    const own = kept("test_inputs_the_typescript_parsers_read_are_judged");
-    expect([...own.outcomes.keys()].sort()).toEqual([ASK, DEVIATION].sort());
-    expect(own.lines?.map((line) => line.outcome)).toEqual(["verdict", "deviation"]);
+      if (read === undefined) {
+        throw new Error(
+          `python3 -m unittest of s10_judge_test.py exited ${exitCode} after ${seconds} s, and a process it left still held its output 10 s later`
+        );
+      }
+      const [report] = read;
+      if (exitCode !== 0) console.error(report);
+      expect(exitCode).toBe(0);
+      expect(report).toMatch(/^Ran [1-9]\d* tests/m);
+      expect(report).not.toMatch(/skipped/);
 
-    const stage = kept("test_a_request_is_judged_once_by_the_five_calls_s10_records");
-    const [judged] = [...stage.outcomes.values()];
-    expect(judged?.verdict).toBe("approve");
-    // Under version 3's rule its five `yield` answers are deviations; versions 4 and 5 allow them.
-    expect(judged?.byRule.v3.deviation).toBe("tool-call");
-    expect(judged?.byRule.v3.toolCallDeviations.map((one) => one.tools)).toEqual(
-      Array(5).fill(["yield"])
-    );
-    expect([4, 5, 6].map((version) => judged?.byRule[`v${version}` as "v4"].verdict)).toEqual([
-      "approve",
-      "approve",
-      "approve",
-    ]);
-    expect(stage.lines?.[0]?.byRule.v3).toEqual({
-      outcome: "deviation",
-      verdict: null,
-      deviation: "tool-call",
-    });
-    expect(stage.record.counts?.byRule.v3.deviationsByKind).toEqual({ "tool-call": 1 });
-    const text = JSON.stringify(judged);
-    type Rules = Record<
-      string,
-      { verdict?: unknown; deviation?: unknown; toolCallDeviations?: unknown }
-    >;
-    const changed = (change: (outcome: { byRule: Rules }) => void): string => {
-      const outcome = JSON.parse(text) as { byRule: Rules };
-      change(outcome);
-      return JSON.stringify(outcome);
-    };
-    expect(judgedOutcomeOf(text, "outcome.json").byRule.v6.verdict).toBe("approve");
-    for (const refused of [
-      changed((outcome) => {
-        outcome.byRule.v6.verdict = "request_changes";
-      }),
-      changed((outcome) => {
-        delete outcome.byRule.v4;
-      }),
-      changed((outcome) => {
-        outcome.byRule.v7 = outcome.byRule.v6;
-      }),
-      changed((outcome) => {
-        delete outcome.byRule.v3.toolCallDeviations;
-      }),
-      changed((outcome) => {
-        outcome.byRule.v3.toolCallDeviations = [];
-      }),
-      changed((outcome) => {
-        outcome.byRule.v4.toolCallDeviations = outcome.byRule.v3.toolCallDeviations;
-      }),
-      changed((outcome) => {
-        outcome.byRule.v3.deviation = UNJUDGED;
-      }),
-    ]) {
-      expect(() => judgedOutcomeOf(refused, "outcome.json")).toThrow();
-    }
-    const typed = JSON.parse(text) as Record<string, unknown>;
-    for (const refused of [
-      { ...typed, judgement: { ...(typed.judgement as object), documents: "spec.md" } },
-      { ...typed, judges: [{ label: 1 }] },
-      {
-        ...typed,
-        sandbox: { ...(typed.sandbox as object), metadata: [{ url: "x", status: "200" }] },
-      },
-    ]) {
-      expect(() => judgedOutcomeOf(JSON.stringify(refused), "outcome.json")).toThrow();
-    }
+      // The constants both sides hold equal.
+      expect(JSON.parse(await readFile(join(keep, "constants.json"), "utf8"))).toEqual({
+        deviationKinds: [...DEVIATION_KINDS],
+        ruleVersions: [...RULE_VERSIONS],
+        countingRule: COUNTING_RULE,
+        stageVersion: JUDGED_VERSION,
+        startedFile: STARTED_FILE,
+        startedReason: STARTED_REASON,
+        inputsVersion: INPUTS_VERSION,
+      });
+      // Every inputs stage the suite wrote reads back through the inputs stage's own parsers, so no
+      // row there judges a shape the inputs stage does not write.
+      let requestsRead = 0;
+      for (const name of (await readdir(join(keep, "inputs"))).sort()) {
+        const directory = join(keep, "inputs", name);
+        const lines = inventoryLinesOf(
+          await readFile(join(directory, "inventory.jsonl"), "utf8"),
+          join(directory, "inventory.jsonl")
+        );
+        expect(lines.length).toBeGreaterThan(0);
+        const requests = await readdir(join(directory, "requests")).catch(() => []);
+        for (const file of requests) {
+          const path = join(directory, "requests", file);
+          requestInputsOf(await readFile(path, "utf8"), path);
+          requestsRead += 1;
+        }
+        const pages = await readdir(join(directory, "pages")).catch(() => []);
+        for (const file of pages) {
+          const path = join(directory, "pages", file);
+          pageRecordOf(await readFile(path, "utf8"), path);
+        }
+      }
+      expect(requestsRead).toBeGreaterThan(0);
+      // Every stage the suite judged whole reads back, and between them every kind of outcome it writes.
+      const stages = new Map<string, JudgedStage>();
+      for (const name of (await readdir(join(keep, "stages"))).sort()) {
+        stages.set(name, await judgedStageOf(join(keep, "stages", name)));
+      }
+      const outcomes = new Set<string>();
+      const deviations = new Set<string>();
+      const recomputed = new Set<string>();
+      for (const [name, stage] of stages) {
+        expect(stage.record.state).toBe("written");
+        expect(stage.record.counts?.requests).toBe(stage.outcomes.size);
+        for (const outcome of stage.outcomes.values()) {
+          outcomes.add(outcome.outcome);
+          if (outcome.deviation !== null) deviations.add(outcome.deviation.kind);
+          if (outcome.outcome === "hold") expect(outcome.judgement?.judges).toBe(0);
+          if (outcome.outcome === "verdict") {
+            expect(outcome.judgement?.documents.length).toBeGreaterThan(0);
+            expect(outcome.judgement?.judge_models?.length).toBe(5);
+            expect(outcome.judges.filter((one) => one.transcript !== null).length).toBe(5);
+            expect(outcome.sandbox?.listing?.lines).toBeGreaterThan(0);
+          }
+          // The analysis reads the five answers the driver kept and recomputes point 2's verdict
+          // from them: under every version of the rule that gave a verdict, the verdict recorded.
+          const given = RULE_VERSIONS.filter(
+            (version) => outcome.byRule[version].outcome === "verdict"
+          );
+          if (given.length === 0) continue;
+          const kept = await recordedAnswersOf(join(keep, "stages", name), stage, outcome);
+          const rule = "answers" in kept ? ruleVerdictOf(kept.answers) : kept;
+          for (const version of given) {
+            expect(rule).toMatchObject({ verdict: outcome.byRule[version].verdict });
+          }
+          if ("verdict" in rule) recomputed.add(rule.verdict);
+        }
+      }
+      // Every verdict the driver's suite judges a request to, recomputed: a shrink fails here.
+      expect([...recomputed].sort()).toEqual(["approve", "request_changes"]);
+      expect([...outcomes].sort()).toEqual(["deviation", "hold", "verdict"]);
+      expect([...deviations].sort()).toEqual([...DEVIATION_KINDS].sort());
+      const kept = (test: string): JudgedStage => {
+        const found = [...stages].filter(([name]) => name.startsWith(`${test}-`));
+        expect(found.length).toBeGreaterThan(0);
+        return found[0]?.[1] as JudgedStage;
+      };
+      // The stage the suite judged from the inputs written here holds their two requests.
+      const own = kept("test_inputs_the_typescript_parsers_read_are_judged");
+      expect([...own.outcomes.keys()].sort()).toEqual([ASK, DEVIATION].sort());
+      expect(own.lines?.map((line) => line.outcome)).toEqual(["verdict", "deviation"]);
 
-    // Each request of an inventory reported once: its outcome; `started` where a run kept its
-    // `started.json` and stopped; `unjudged` where no run reached it.
-    const line = (askId: string): InventoryLine => ({
-      askId,
-      issueKey: "ACME-1",
-      group: "report",
-      cases: 1,
-      judged: null,
-      state: "deviation",
-      reason: "a test's line",
-      requestSha256: null,
-      counts: null,
-      dropScanThrough: null,
-    });
-    const STARTED = "00000000-0000-4000-8000-0000000000c1";
-    const stopped: JudgedStage = {
-      ...stage,
-      record: {
-        ...stage.record,
-        files: { ...stage.record.files, [`requests/${STARTED}/${STARTED_FILE}`]: "0".repeat(64) },
-      },
-    };
-    const reported = reportedOutcomesOf(
-      [line(judged?.askId as string), line(STARTED), line(DEVIATION)],
-      stopped
-    );
-    expect(reported.map((one) => one.deviation?.kind ?? one.verdict)).toEqual([
-      "approve",
-      "started",
-      UNJUDGED,
-    ]);
-    expect(Object.values(reported[2]?.byRule ?? {}).map((one) => one.deviation)).toEqual(
-      Array(4).fill(UNJUDGED)
-    );
-    expect(() => reportedOutcomesOf([line(DEVIATION)], stage)).toThrow();
-  }, 180_000);
+      const stage = kept("test_a_request_is_judged_once_by_the_five_calls_s10_records");
+      const [judged] = [...stage.outcomes.values()];
+      expect(judged?.verdict).toBe("approve");
+      // Under version 3's rule its five `yield` answers are deviations; versions 4 and 5 allow them.
+      expect(judged?.byRule.v3.deviation).toBe("tool-call");
+      expect(judged?.byRule.v3.toolCallDeviations.map((one) => one.tools)).toEqual(
+        Array(5).fill(["yield"])
+      );
+      expect([4, 5, 6].map((version) => judged?.byRule[`v${version}` as "v4"].verdict)).toEqual([
+        "approve",
+        "approve",
+        "approve",
+      ]);
+      expect(stage.lines?.[0]?.byRule.v3).toEqual({
+        outcome: "deviation",
+        verdict: null,
+        deviation: "tool-call",
+      });
+      expect(stage.record.counts?.byRule.v3.deviationsByKind).toEqual({ "tool-call": 1 });
+      const text = JSON.stringify(judged);
+      type Rules = Record<
+        string,
+        { verdict?: unknown; deviation?: unknown; toolCallDeviations?: unknown }
+      >;
+      const changed = (change: (outcome: { byRule: Rules }) => void): string => {
+        const outcome = JSON.parse(text) as { byRule: Rules };
+        change(outcome);
+        return JSON.stringify(outcome);
+      };
+      expect(judgedOutcomeOf(text, "outcome.json").byRule.v6.verdict).toBe("approve");
+      for (const refused of [
+        changed((outcome) => {
+          outcome.byRule.v6.verdict = "request_changes";
+        }),
+        changed((outcome) => {
+          delete outcome.byRule.v4;
+        }),
+        changed((outcome) => {
+          outcome.byRule.v7 = outcome.byRule.v6;
+        }),
+        changed((outcome) => {
+          delete outcome.byRule.v3.toolCallDeviations;
+        }),
+        changed((outcome) => {
+          outcome.byRule.v3.toolCallDeviations = [];
+        }),
+        changed((outcome) => {
+          outcome.byRule.v4.toolCallDeviations = outcome.byRule.v3.toolCallDeviations;
+        }),
+        changed((outcome) => {
+          outcome.byRule.v3.deviation = UNJUDGED;
+        }),
+      ]) {
+        expect(() => judgedOutcomeOf(refused, "outcome.json")).toThrow();
+      }
+      const typed = JSON.parse(text) as Record<string, unknown>;
+      for (const refused of [
+        { ...typed, judgement: { ...(typed.judgement as object), documents: "spec.md" } },
+        { ...typed, judges: [{ label: 1 }] },
+        {
+          ...typed,
+          sandbox: { ...(typed.sandbox as object), metadata: [{ url: "x", status: "200" }] },
+        },
+      ]) {
+        expect(() => judgedOutcomeOf(JSON.stringify(refused), "outcome.json")).toThrow();
+      }
+
+      // Each request of an inventory reported once: its outcome; `started` where a run kept its
+      // `started.json` and stopped; `unjudged` where no run reached it.
+      const line = (askId: string): InventoryLine => ({
+        askId,
+        issueKey: "ACME-1",
+        group: "report",
+        cases: 1,
+        judged: null,
+        state: "deviation",
+        reason: "a test's line",
+        requestSha256: null,
+        counts: null,
+        dropScanThrough: null,
+      });
+      const STARTED = "00000000-0000-4000-8000-0000000000c1";
+      const stopped: JudgedStage = {
+        ...stage,
+        record: {
+          ...stage.record,
+          files: { ...stage.record.files, [`requests/${STARTED}/${STARTED_FILE}`]: "0".repeat(64) },
+        },
+      };
+      const reported = reportedOutcomesOf(
+        [line(judged?.askId as string), line(STARTED), line(DEVIATION)],
+        stopped
+      );
+      expect(reported.map((one) => one.deviation?.kind ?? one.verdict)).toEqual([
+        "approve",
+        "started",
+        UNJUDGED,
+      ]);
+      expect(Object.values(reported[2]?.byRule ?? {}).map((one) => one.deviation)).toEqual(
+        Array(4).fill(UNJUDGED)
+      );
+      expect(() => reportedOutcomesOf([line(DEVIATION)], stage)).toThrow();
+    },
+    FILL_MS
+  );
 });
 
 describe("s10-judged-check.ts", () => {

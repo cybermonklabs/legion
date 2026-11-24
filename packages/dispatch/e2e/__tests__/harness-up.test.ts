@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { skipWithoutIgnoreMasks } from "@legion/test-fixtures/held-process";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { moduleRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
@@ -32,7 +32,9 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 // and requires the SIGHUP it was started ignoring to stay ignored.
 const withoutMasks = skipWithoutIgnoreMasks("packages/dispatch/e2e/__tests__/harness-up.test.ts");
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-const stubs = temporaryDirectory("harness-up-");
+// The stand-in pool and the preloads are modules Bun loads, and Bun loads none from a path that
+// holds a `?`.
+const stubs = temporaryDirectory("harness-up-", { root: moduleRoot() });
 
 const pool = join(stubs, "harness-pool.ts");
 const preload = join(stubs, "preload.ts");

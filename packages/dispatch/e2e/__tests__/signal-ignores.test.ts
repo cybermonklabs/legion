@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { skipWithoutIgnoreMasks } from "@legion/test-fixtures/held-process";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { moduleRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { ignoreMask } from "../signal-ignores";
 import { rowLimit, runBounded } from "./bounded-subprocess";
@@ -19,7 +19,9 @@ const withoutMasks = skipWithoutIgnoreMasks(
   "packages/dispatch/e2e/__tests__/signal-ignores.test.ts"
 );
 const module = fileURLToPath(new URL("../signal-ignores.ts", import.meta.url));
-const stubs = temporaryDirectory("signal-ignores-");
+// The script and the preload are modules Bun loads, and Bun loads none from a path that holds a
+// `?`.
+const stubs = temporaryDirectory("signal-ignores-", { root: moduleRoot() });
 const script = join(stubs, "read.ts");
 /** A preload that has the module read a status file that does not exist, as on a machine with no
  *  /proc, so whether a signal was ignored is unknown to it. */

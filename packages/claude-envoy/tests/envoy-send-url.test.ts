@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import { randomBytes } from "node:crypto"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
+import { moduleRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { collected, exitBeforeTheGuard, ROW_GUARD_MS, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
@@ -22,6 +22,8 @@ afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true)
 })
 const tempDir = temporaryDirectories("envoy-send-url")
+// The child's `--preload` is a module, and Bun loads none from a path that holds a `?`.
+const preloadDir = temporaryDirectories("envoy-send-url-preload", { root: moduleRoot() })
 const command = path.join(import.meta.dir, "..", "bin", "envoy-send.ts")
 
 // Each row waits for the send to end, and for nothing else; a send that never ends fails the row
@@ -101,7 +103,7 @@ describe("envoy-send's failure line names no part of the listener URL's user inf
   // asks no DNS server and does not wait on its answer.
   test("a password with an `@` in it", async () => {
     const secret = `s${randomBytes(8).toString("hex")}`
-    const names = await unresolvedNames(tempDir())
+    const names = await unresolvedNames(preloadDir())
     const { exitCode, stderr } = await send(`http://user:p@ss${secret}.invalid`, names.preload)
     // The send's error named the secret, so the checks below can fail. The send tries a request
     // that reached nothing again, so the stand-in may be asked more than once, and only this host.
