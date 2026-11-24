@@ -85,7 +85,7 @@ func capturePhase(t *testing.T, pool *store.Pool) (phase.Phase, *record.PullRequ
 	t.Helper()
 	var issue *record.Issue
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if issue, err = record.NewStore().Issue(context.Background(), tx, "CAPTURE-1"); err != nil {
 			return err
@@ -117,8 +117,7 @@ var captureHeadUpdated = time.Date(2026, 10, 8, 22, 15, 0, 0, time.UTC)
 func seedCapture(t *testing.T, pool *store.Pool, from phase.Phase, status string, phases ...record.PhaseRow) {
 	t.Helper()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: "CAPTURE-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "CAPTURE-1", Project: "CAPTURE", Title: "root",
 			Phase: from, Generation: 1, Status: status, Rank: "U"}); err != nil {
 			return err
@@ -175,6 +174,7 @@ func noticeReasons(t *testing.T, pool *store.Pool, kind string) []string {
 // the issue reaches merging has to ask for the merge forward then, with no change in the GitHub
 // answer to key off.
 func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		state        string
@@ -248,6 +248,7 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 // what the column records is the read, so a head read a minute ago reads differently from one
 // nothing has read for a day (applyMergeability).
 func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		state     string

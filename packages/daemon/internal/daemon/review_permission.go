@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // reviewPermissionTTL is how long an account GitHub gave no write access stands so for its
@@ -101,7 +102,7 @@ func (w *workflowRuntime) reviewerCanWrite(ctx context.Context, review intake.Pu
 // unread, so no check of it is ever read.
 func (w *workflowRuntime) reviewedRepository(ctx context.Context, review intake.PullRequestReview) (repository ghrepo.Repository, recorded bool, err error) {
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		pr, err = ghrepo.Under(w.repositories.renames, review.Repo, func(name string) (*record.PullRequest, error) {
 			return w.records.PullRequestByNumber(ctx, tx, name, review.Number)

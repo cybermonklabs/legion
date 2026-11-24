@@ -156,6 +156,12 @@ var itemRowWriters = map[string]map[string]string{
 			"it (errDecidedWordingsMoved). Settlement's own call holds the document's owner lock " +
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
 	},
+	"internal/dispatch/refs/comment_nodes.go": {
+		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
+			"reads the rows (LockCommentOwners): the backfill's comment batch (graphcensus's " +
+			"writeCommentBatch) and the block-index tick's read of the events after its cursor " +
+			"(docs' readEventsAfterCursor)",
+	},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
 		"markItemBlocksOwed":   "the item's owner lock, which the window arm takes (LockItemOwner)",
@@ -289,6 +295,7 @@ const versionTableException = "none, and none to take: the table is a migration 
 // map and is found there, which is how docs/decided_wording.go's restore is found in
 // restoreWordings.
 func TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -377,6 +384,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"queueAskResolution": itemRowCallersTransaction,
 		"WriteRestoredAsks":  itemRowCallersTransaction,
 	},
+	"internal/dispatch/refs/comment_nodes.go": {"Queue": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": itemRowCallersTransaction,
 		"markItemBlocksOwed":   itemRowCallersTransaction,
@@ -431,6 +439,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 // It reads names alone and needs no database, as the census does: what the rows prove about locks
 // is TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites's half.
 func TestTheLockTablePlacesEveryWriterTheCensusNames(t *testing.T) {
+	t.Parallel()
 	placed := map[string]string{}
 	var unknown, twice []string
 	place := func(file, function, where string) {

@@ -185,6 +185,7 @@ func threadRowWrites(t *testing.T, database *store.Store, login, threadID string
 // Inbox list while leaving every other thread where it was. A dismissed thread is read as well, so
 // it counts as unread nowhere, and the Dismissed view lists it; restore puts it back.
 func TestDismissTakesTheNamedThreadsOutOfTheInbox(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 
@@ -258,6 +259,7 @@ func TestDismissTakesTheNamedThreadsOutOfTheInbox(t *testing.T) {
 // whose newest reply is at or before dismiss_through: a thread written in since stays in the Inbox.
 // restore with the same filters puts back the ones dismissed at or before the mark.
 func TestDismissTakesWhatTheFiltersMatchThroughTheMark(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	// One thread written in after the mark the request carries.
@@ -344,6 +346,7 @@ func TestDismissTakesWhatTheFiltersMatchThroughTheMark(t *testing.T) {
 // user_threads_record's one assignment (migration 20261105093501) for a Reply thread, and the
 // trigger of 20261105093507 for an Agent thread, whose own cases are the test below this one.
 func TestDismissEndsWhenSomebodyElseWritesAgain(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	comments := "/api/v1/issues/" + seed.firstIssue + "/comments"
@@ -399,6 +402,7 @@ func TestDismissEndsWhenSomebodyElseWritesAgain(t *testing.T) {
 // A dismissal held to last_reply_id dismisses this thread over an answer nobody has read, which
 // is why the row reads both columns off user_threads rather than taking the route's word for it.
 func TestDismissLeavesAnAskThreadWhoseAnswerChanged(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A changed answer", "A spec")
 	// Alice asks, which is what gives her a row in the ask's own thread (migration 0096's
@@ -471,6 +475,7 @@ func TestDismissLeavesAnAskThreadWhoseAnswerChanged(t *testing.T) {
 // the page never showed. What it costs the Inbox is one more press: the row comes back drawn as
 // read, and a press from that page dismisses it.
 func TestDismissRefusesAnAgentRootWhoseNewestReplyThePageNeverDrew(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	row := inboxDismissAgentPrefix + seed.agent
@@ -530,6 +535,7 @@ func TestDismissRefusesAnAgentRootWhoseNewestReplyThePageNeverDrew(t *testing.T)
 // TestDismissIgnoresAMemberANewerPageAdds); an id that is not a uuid; and the map on a restore,
 // which checks nothing, or beside the filters, where the server draws the rows itself.
 func TestDismissRefusesWhatItCannotChange(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Refusals", "A spec")
 	thread := "7c9e6679-7425-40de-944b-e07fc1f90ae7"
@@ -634,6 +640,7 @@ func TestDismissRefusesWhatItCannotChange(t *testing.T) {
 // packages/envoy/cmd/dispatch/README.md, "Two builds at once"). Both kinds of row here carry
 // such a member, and the dismissal lands on what this build read of each entry.
 func TestDismissIgnoresAMemberANewerPageAdds(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	rows := []string{inboxDismissReplyPrefix + seed.first, inboxDismissAgentPrefix + seed.agent}
@@ -671,6 +678,7 @@ func TestDismissIgnoresAMemberANewerPageAdds(t *testing.T) {
 // it answered, and its own paging alone: limit and offset are refused there, as a cursor is refused
 // under every other state.
 func TestDismissedPagesFromItsCursor(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Dismissed order", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
@@ -729,6 +737,7 @@ func TestDismissedPagesFromItsCursor(t *testing.T) {
 // the two dismisses run on servers whose plans are forced apart (markAllOnPlan), so they reach the
 // caller's rows in two orders, and both queue behind a row the test holds.
 func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Two dismisses", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
@@ -821,6 +830,7 @@ func dismissRowIDs(threads []string) []string {
 // A dismissal of a read thread leaves the Inbox's count where it was: state=unread answers the
 // unread rows alone, dismissed or not, so the badge never moves on a dismiss of something read.
 func TestDismissLeavesTheUnreadCountAsItWas(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	// Alice reads one thread, which leaves it in her Inbox and out of the count.
@@ -850,6 +860,7 @@ func TestDismissLeavesTheUnreadCountAsItWas(t *testing.T) {
 // A row the caller has nothing of - another person's thread, or an id no thread carries - changes
 // nothing and answers 0, as a read mark on a thread they never wrote in writes nothing.
 func TestDismissLeavesAThreadThatIsNotTheCallersAlone(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	// Bob signs in, so he is a person with an Inbox of his own.
@@ -869,6 +880,7 @@ func TestDismissLeavesAThreadThatIsNotTheCallersAlone(t *testing.T) {
 // One event per project the dismissal moved rows in, naming no thread, and one per session whose
 // agent thread it changed, exactly as the mark-all appends them.
 func TestDismissAppendsOneEventPerProjectAndSession(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	agentStates := countEvents(t, database, "user_agent_state.updated")
@@ -901,6 +913,7 @@ func TestDismissAppendsOneEventPerProjectAndSession(t *testing.T) {
 // either. Both replies here are newer than the mark they are written against, which is the case
 // a time comparison would have cleared.
 func TestTheCallersOwnReplyLeavesBothHalvesDismissed(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	if dismissed := dismissRows(t, handler, database, "alice",

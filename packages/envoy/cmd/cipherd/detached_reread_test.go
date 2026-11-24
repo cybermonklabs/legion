@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // thePeersTold is the reread's notice to the other pods, as TestStopWaitsForARereadRunAfterItsAnswer
@@ -52,11 +53,7 @@ func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("a reread with no proof = %d; want 202", resp.StatusCode)
 	}
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the reread run after the 202 never reached the store")
-	}
+	testwait.Receive(t, "the reread run after the 202 to reach the store", entered)
 
 	shutdownReturned, stopped := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -76,7 +73,7 @@ func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
 			Log:          orderingLog(),
 		})
 	}()
-	<-shutdownReturned
+	testwait.Receive(t, "the stop's shutdown of the API port to return", shutdownReturned)
 	// One-sided: a stop that does not wait for the held reread has nothing left to do once its
 	// shutdown returns, and returns at once; a stop that waits cannot return here however long
 	// this is, since the store answers only once it is released below.
@@ -86,11 +83,7 @@ func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 	}
 	close(release)
-	select {
-	case <-stopped:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the stop ran %s and had not returned 10s after the store answered", &ran)
-	}
+	testwait.Receive(t, "the stop to return once the store answered the held reread", stopped)
 	want := []string{theShutdownReturned, thePeersTold, theServingEnded, theStoreClosed}
 	if !ran.is(want...) {
 		t.Fatalf("the stop ran %s; want %s: the reread run after its answer finishes, and tells the other pods, before the serving context ends and the store closes", &ran, strings.Join(want, " -> "))

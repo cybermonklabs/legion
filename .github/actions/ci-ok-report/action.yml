@@ -7,8 +7,9 @@ description: >-
   (.github/scripts/ci-ok-report.sh says how), so the queue takes the pull request out at the first
   failure instead of waiting for the rest of the run. It posts nothing on any other run, nor for a
   group behind the front, which the queue cannot take out before the groups in front of it end:
-  there the verdict is ci.yaml's own `ci-ok` job, which needs every job of the run and carries the
-  verdict as its own check run. Call it with `if: always()`, so a failed, timed-out or cancelled
+  there the verdict is ci.yaml's own `ci-ok` job, which needs every job of the run, carries the
+  verdict as its own check run and holds a failing one until the group is the front
+  (.github/scripts/ci-ok-hold.sh). Call it with `if: always()`, so a failed, timed-out or cancelled
   job reaches it. The job needs `actions: read` (the run's jobs, which the posted check's summary
   names), `contents: read` (the tip of the queue's branch) and `checks: write` (the post).
 

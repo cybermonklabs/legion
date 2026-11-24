@@ -35,9 +35,13 @@ from pathlib import Path
 # The names a constraint may use that no vet chooses, beyond the platform names and the
 # patterns below: the toolchain sets each (gc, gccgo, the sanitizer modes the -race, -msan and
 # -asan builds turn on, cgo, unix, boringcrypto, which Go reads as goexperiment.boringcrypto), or
-# nothing ever does (ignore, for a file no build compiles, such as a generator `go run` starts).
+# nothing ever does (ignore, for a file no build compiles, such as a generator `go run` starts),
+# or only a build against a patched dependency does (odatrace: its files call hooks that only
+# the copy of nats-server packages/envoy/scripts/forced-order.sh patches declares, so no vet
+# against the module's own nats-server compiles them; that script's go test is where they are
+# compiled).
 # Passing one as a tag would make a constraint on it true where the toolchain makes it false.
-NOT_TAGS = frozenset({"unix", "cgo", "gc", "gccgo", "race", "msan", "asan", "ignore", "boringcrypto"})
+NOT_TAGS = frozenset({"unix", "cgo", "gc", "gccgo", "race", "msan", "asan", "ignore", "boringcrypto", "odatrace"})
 NOT_TAG_PATTERN = re.compile(r"go1\.\d+|goexperiment\..+")
 # The GOOS and GOARCH values go/build knows beyond `go tool dist list`'s ports (its syslist):
 # names a constraint can use that are platforms, so never tags.

@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -128,7 +129,9 @@ func (p *liveIssueProof) seedImplementing(head string) {
 // it was seeding on an error.
 func (p *liveIssueProof) write(what string, body func(tx pgx.Tx) error) {
 	p.t.Helper()
-	if err := p.st.Tx(context.Background(), body); err != nil {
+	if err := store.Transact(context.Background(), p.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return body(tx)
+	}); err != nil {
 		p.t.Fatalf("seed %s: %v", what, err)
 	}
 }

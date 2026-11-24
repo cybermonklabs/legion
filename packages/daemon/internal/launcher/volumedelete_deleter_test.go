@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -351,48 +353,133 @@ func listedNames(t *testing.T, dir string) []string {
 	return names
 }
 
+// fillingLead is how many names removeWhileFilling's writer may keep ahead of the removal: it makes
+// a name only for a name the removal has reached, past its first fillingLead. So no pass of the
+// removal reads more than about fillingLead names, two passes reach at most about twice that, and
+// what stands for t.TempDir's cleanup to remove is bounded by a count, not by how long the writer
+// ran. It is far more than a pass needs to meet new names, since the removal's work per name is
+// four calls and the writer's one.
+const fillingLead = 4096
+
 // removeWhileFilling removes held's entry while a writer creates names in filling, a directory
-// under it, as fast as it can, and answers the removal. A removal that has not answered within
-// the bound fails the case.
+// under it, as fast as it can and at most fillingLead ahead of the removal, and answers the
+// removal. The question is whether the removal ends while something keeps writing, and its passes
+// are finite, so no verdict rides on a clock and the removal's share of a loaded machine's CPUs (a
+// fixed 30 s once failed a correct removal under 32 pinned hogs):
+//
+//   - the writer runs until the removal answers, paced by the removal's own progress, which the
+//     case reads through betweenUnlinkAndOpen, called once for each name of the writer's the
+//     removal reaches;
+//   - a removal that has reached three times fillingLead of the writer's names has made more than
+//     two passes' worth, and one with no bound on its passes fails there, on its own line, by
+//     count;
+//   - a removal that never answers fails at the hang guard, beforeDeadline, on its own line.
+//
+// The writer is stopped, and the hook put back, in a cleanup registered after the caller's
+// t.TempDir, so it runs before that directory's removal and on every way out of the case, a
+// failure before the removal starts among them. With no -v, go test prints a case's lines only once
+// its cleanups end, and at most about fillingLead names are left to remove then, so the line comes
+// before the binary's alarm. The removal works on a descriptor of its own, a duplicate of held's
+// that it closes when it answers, so a removal still running after the case has closed held
+// reaches no descriptor the number is reused for.
 func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 	t.Helper()
-	// The writer creates names until it is told to stop, as fast as it can: a removal that read
-	// the directory again for as long as it found new names would never answer while it runs.
-	// Each name is an empty directory, which is one mkdir to the writer and an unlink, an open, a
-	// read and a second unlink to the removal, so the writer keeps ahead of it: 80 runs of 80
+	tokens := make(chan struct{}, fillingLead)
+	for range fillingLead {
+		tokens <- struct{}{}
+	}
+	var reached atomic.Int64
+	overrun := make(chan struct{})
+	var overrunOnce sync.Once
+	previous := betweenUnlinkAndOpen
+	betweenUnlinkAndOpen = func(name string) {
+		if !isFillingName(name) {
+			return
+		}
+		select {
+		case tokens <- struct{}{}:
+		default:
+		}
+		if reached.Add(1) > 3*fillingLead {
+			overrunOnce.Do(func() { close(overrun) })
+		}
+	}
+	// The writer creates names until it is told to stop, as fast as its tokens let it: a removal
+	// that read the directory again for as long as it found new names would never answer while it
+	// runs. Each name is an empty directory, which is one mkdir to the writer and an unlink, an
+	// open, a read and a second unlink to the removal, so the writer keeps its lead: 80 runs of 80
 	// answered errStillFilling, on 2026-11-14, kernel 4.19.0-gvisor, under go1.27.3.
 	stop, stopped := make(chan struct{}), make(chan struct{})
+	var stopOnce sync.Once
+	stopWriter := func() {
+		stopOnce.Do(func() { close(stop) })
+		<-stopped
+	}
+	t.Cleanup(func() {
+		stopWriter()
+		betweenUnlinkAndOpen = previous
+	})
 	go func() {
 		defer close(stopped)
 		for n := 0; ; n++ {
 			select {
 			case <-stop:
 				return
-			default:
+			case <-tokens:
 			}
 			_ = os.Mkdir(filepath.Join(filling, fmt.Sprintf("d%07d", n)), 0o755)
 		}
 	}()
-	testwait.Eventually(t, "the writer to have created names in the directory", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the writer to have created names in the directory", func() bool {
 		names, err := os.ReadDir(filling)
 		return err == nil && len(names) >= 100
 	})
 
+	fd, err := unix.Dup(int(held.Fd()))
+	if err != nil {
+		t.Fatalf("a descriptor of the removal's own on the entry's directory: %v", err)
+	}
+	own := os.NewFile(uintptr(fd), held.Name())
 	answered := make(chan error, 1)
-	go func() { answered <- removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes)) }()
-	bound := testwait.Bounded(t, 30*time.Second, 5*time.Second)
+	go func() {
+		removal := removeEntryAt(own, "entry", make([]byte, volumeRemovalNamesBytes))
+		_ = own.Close()
+		answered <- removal
+	}()
+	// drained is what the removal did once the writer had stopped: it has at most about
+	// fillingLead names left to remove, so it answers soon, unless it never answers at all.
+	drained := func() string {
+		select {
+		case removal := <-answered:
+			return fmt.Sprintf("answered %v once the writer stopped", removal)
+		case <-time.After(cleanupBeforeDeadline(t)):
+			return "had not answered when the case gave up on it, at cleanupBeforeDeadline"
+		}
+	}
+	guard := beforeDeadline(t)
 	select {
 	case removal := <-answered:
-		close(stop)
-		<-stopped
+		stopWriter()
 		return removal
-	case <-time.After(bound):
-		close(stop)
-		<-stopped
-		<-answered // the writer has stopped, so the removal now runs out of names
-		t.Fatalf("the removal had not answered %v after it began, with a writer still creating names in the directory it was emptying", bound)
-		return nil
+	case <-overrun:
+		stopWriter()
+		t.Fatalf("the removal had reached %d of the writer's names while the writer kept at most %d ahead of it, more than the %d two passes reach: a removal with no bound on its passes, which a writer still creating names holds for as long as it writes; it %s",
+			reached.Load(), fillingLead, 2*fillingLead, drained())
+	case <-time.After(guard):
+		stopWriter()
+		t.Fatalf("the removal had not answered %v after it began, to 30 s before the test binary's deadline, and had reached %d of the writer's names: a removal that never answers; it %s",
+			guard.Round(time.Second), reached.Load(), drained())
 	}
+	return nil
+}
+
+// isFillingName is whether name is one removeWhileFilling's writer makes: d and seven digits.
+func isFillingName(name string) bool {
+	if len(name) != 8 || name[0] != 'd' {
+		return false
+	}
+	_, err := strconv.Atoi(name[1:])
+	return err == nil
 }
 
 // A removal that fails deep in a tree answers an error that names the entry, the name that
@@ -528,8 +615,9 @@ const (
 )
 
 // ownHoldEntries is how many entries the one root of those sweeps holds: a few thousand, so the
-// deletions run past a second of the real clock and the set is read again while they run, after
-// the refresh the case forces before the first of them.
+// set is read again in the middle of the deletions (refreshMidway), with the deleter holding the
+// directories it opened for the requests before it, after the refresh the case forces before the
+// first of them.
 const ownHoldEntries = 2000
 
 // The sweep's own deleter is no hold on the roots it deletes from. The deleter child holds every
@@ -559,6 +647,12 @@ const ownHoldEntries = 2000
 // under go1.27.3. That process stands at / so that the descriptor is the only path it names on
 // the root: a process standing in a root is no hold on it (usedPaths.Holds,
 // TestAProcessStandingInARootIsNoHoldOnIt).
+//
+// Build and remove the child's fixture on a memory filesystem in its own mount namespace
+// (TestASweepsOwnDeleterIsNoHoldHelper). The separate-holder control leaves all 2000 entries to
+// cleanup, so putting them on the machine's disk would make fixture I/O, not the sweep, consume
+// the child's deadline. refreshMidway forces the used-path refresh independently of the
+// filesystem's speed.
 func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -571,11 +665,15 @@ func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, 3*time.Minute, 10*time.Second))
-			defer cancel()
-			child := exec.CommandContext(ctx, self, "-test.run=^TestASweepsOwnDeleterIsNoHoldHelper$", "-test.v")
+			// No bound of the case's own on the child's end (reentry): its -test.timeout ends it,
+			// and so its sweep, its cleanups and its alarm all reach the case's output.
+			child := exec.Command(self, append(reentry(t, "TestASweepsOwnDeleterIsNoHoldHelper"), "-test.v")...)
 			child.Dir = "/"
-			child.Env = append(os.Environ(), volumeTrimOwnHoldEnv+"="+sweep)
+			// The child's temporary directory, under both names a test reads one by (t.TempDir
+			// reads GOTMPDIR first): an empty mount point here, which the child covers with a
+			// memory filesystem of its own before anything is made in it.
+			memory := t.TempDir()
+			child.Env = append(os.Environ(), volumeTrimOwnHoldEnv+"="+sweep, "TMPDIR="+memory, "GOTMPDIR="+memory)
 			child.SysProcAttr = attr
 			output, err := child.CombinedOutput()
 			if err != nil {
@@ -609,6 +707,16 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 	if err := mountProc("/proc"); err != nil {
 		t.Fatal(err)
 	}
+	// The temporary directory the case gave this child, which every directory of the fixture is
+	// made in: a memory filesystem of this namespace's own, which ends with it. t.TempDir reads
+	// GOTMPDIR before TMPDIR, and the case names the directory as both.
+	memory := os.Getenv("GOTMPDIR")
+	if memory == "" || os.Getenv("TMPDIR") != memory {
+		t.Fatalf("GOTMPDIR is %q and TMPDIR %q, want the one directory the case gave this sweep for its fixture", memory, os.Getenv("TMPDIR"))
+	}
+	if err := mountTmpfs(memory, "size=64m"); err != nil {
+		t.Fatal(err)
+	}
 	start := inProcessRemovals
 	if sweep != ownHoldInProcess {
 		useContainedDeleter(t)
@@ -637,7 +745,11 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 			holdOpen(t, root.Path)
 		}
 		ahead = volumeUsedPathsMaxAge + time.Millisecond
-		return start(cover, dirs)
+		remover, err := start(cover, dirs)
+		if err != nil {
+			return nil, err
+		}
+		return &refreshMidway{entryRemover: remover, at: ownHoldEntries / 2, advance: func() { ahead += volumeUsedPathsMaxAge }}, nil
 	}
 	began := time.Now()
 	out := tr.sweep(context.Background(), *trimSettings(), usageAt(90))
@@ -660,6 +772,25 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 		}
 	}
 	f.assertProtected()
+}
+
+// refreshMidway is a sweep's remover that moves the case's clock on by volumeUsedPathsMaxAge once,
+// as it makes its at-th removal, so the sweep reads the used-path set again before the removal
+// after it: in the middle of the deletions, whatever the speed of the filesystem they are made
+// on. The deleter then holds what it opened for the requests before it, besides what the listing
+// passed it, and the set read before the first deletion saw only the latter.
+type refreshMidway struct {
+	entryRemover
+	removals, at int
+	advance      func()
+}
+
+func (r *refreshMidway) removeAll(dir *sweepDir, name string) error {
+	r.removals++
+	if r.removals == r.at {
+		r.advance()
+	}
+	return r.entryRemover.removeAll(dir, name)
 }
 
 // holdOpen starts a process of its own that holds a descriptor open on dir, which is a hold on dir
@@ -685,7 +816,7 @@ func holdOpen(t *testing.T, dir string) {
 	})
 	// ExtraFiles[0] is the child's descriptor 3.
 	fd := filepath.Join("/proc", strconv.Itoa(holder.Process.Pid), "fd", "3")
-	testwait.Eventually(t, fd+" to name "+dir, func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, fd+" to name "+dir, func() bool {
 		target, err := os.Readlink(fd)
 		return err == nil && target == dir
 	})
@@ -708,7 +839,7 @@ func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
 	// The end of the requests, which the deleter answers by exiting: it then waits, a zombie,
 	// for whoever reaps it.
 	_ = remover.requests.Close()
-	testwait.Eventually(t, fmt.Sprintf("the deleter %d to exit", pid), func() bool { return zombie(pid) })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, fmt.Sprintf("the deleter %d to exit", pid), func() bool { return zombie(pid) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	signals := make(chan os.Signal)
@@ -834,8 +965,11 @@ func TestARequestNamingADescriptorBelowTheFirstPassedIsRefused(t *testing.T) {
 // remover's close returns: the launcher's Run waits on the trimmer's goroutine at the
 // container's stop, and a close that waited on a child for ever would hold it there, in the
 // process that is PID 1 of the roles container. The child here is a `sleep` that never reads
-// its standard input, started through the guard as the deleter is. The negative control is the
-// close with no grace kill, which waited on the child until the case's own bound.
+// its standard input, started through the guard as the deleter is. The close must return no
+// sooner than volumeRemoverGrace and no later than that grace and 30 s, with the child killed.
+// A close that kills only after some longer budget fails on that bound; one that never kills
+// fails on it and on the signal too, once the sleep's own 300 s are up, or at the hang guard the
+// wait for the close runs under, if that ends sooner.
 func TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace(t *testing.T) {
 	cmd := exec.Command("sleep", "300")
 	requests, err := cmd.StdinPipe()
@@ -854,11 +988,15 @@ func TestADeleterThatIgnoresTheEndOfItsRequestsIsKilledAtTheGrace(t *testing.T) 
 	go func() { remover.close(); close(closed) }()
 	select {
 	case <-closed:
-	case <-time.After(volumeRemoverGrace + testwait.Bounded(t, 30*time.Second, 5*time.Second)):
+	case <-time.After(beforeDeadline(t)):
 		t.Fatalf("the remover's close had not returned %v after it began, with a child that ignores the end of its requests", time.Since(began))
 	}
-	if took := time.Since(began); took < volumeRemoverGrace {
+	took := time.Since(began)
+	if took < volumeRemoverGrace {
 		t.Errorf("the close returned after %v, before the %v grace: the child ended some other way", took, volumeRemoverGrace)
+	}
+	if took > volumeRemoverGrace+30*time.Second {
+		t.Errorf("the close returned after %v, past the %v grace and 30 s: it did not kill the child at the grace", took, volumeRemoverGrace)
 	}
 	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
 	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {

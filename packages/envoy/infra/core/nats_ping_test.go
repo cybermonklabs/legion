@@ -15,7 +15,8 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 	"ping_max: 2\n"
 
 // TestACalloutRendersThePingLines: with a callout, ping_interval and ping_max end the text, after
-// the authorization block and no_auth_user; without one, the text is byte for byte what it was
+// the authorization block and no_auth_user, and beside privateProjects only the server tag's lines
+// follow them (nats_server_tags_test.go); without a callout, the text is byte for byte what it was
 // before callouts existed (authorization-before.golden), so a hub with no auth service keeps
 // nats-server's defaults.
 func TestACalloutRendersThePingLines(t *testing.T) {
@@ -29,7 +30,7 @@ func TestACalloutRendersThePingLines(t *testing.T) {
 
 	private, err := privateOnly().Render(nil)
 	require.NoError(t, err)
-	require.True(t, strings.HasSuffix(private, "  }\n}\n"+calloutPingLines), "%q", private)
+	require.True(t, strings.HasSuffix(private, "  }\n}\n"+calloutPingLines+privateProjectsTagLines), "%q", private)
 
 	without, err := hubShaped().Render(hubHeader)
 	require.NoError(t, err)

@@ -176,6 +176,24 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := r.PathValue("key")
+	parentKey := ""
+	if parent != nil {
+		parentKey = *parent
+	}
+	// A credential that names one project is refused a target or a parent outside it where its
+	// project is read, since this route's own address names neither (project_scope.go). It is read
+	// first here, with no lock held and before a close settles the issue's documents or the
+	// transaction begins, so a write the credential may not make settles nothing; the
+	// pre-handler check already held the issue to the credential's project, which is therefore
+	// the issue's own. The lock step refuses it again before any lock, and writeBlockedBy or
+	// validateIssueParent under them.
+	callerProject, scoped := s.callerProject(r)
+	if scoped && (parentKey != "" || len(blockers) > 0) {
+		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, callerProject, callerProject, blockers, parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
 	// asks to is known now.
 	closes := input.Status != nil && status == "done"
@@ -203,10 +221,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// check and the status it guards run under the deployment dependency lock that every create
 	// with a parent and every reparent takes, so no child is filed between the two.
 	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
-	// A credential that names one project is refused a target outside it where a target's
-	// project is read, since this route's own address names no target (project_scope.go): the
-	// lock step refuses it before any lock, and writeBlockedBy again under them.
-	callerProject, _ := s.callerProject(r)
+	// The lock step below reads each target's project again and refuses a scoped caller one
+	// outside it before any lock is taken (lockIssueDependencyWrite).
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
@@ -214,7 +230,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
+			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers, parentKey); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -266,7 +282,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if parentProvided && parent != nil {
-		if err := validateIssueParent(r.Context(), tx, key, before.Project, *parent); err != nil {
+		if err := validateIssueParent(r.Context(), tx, key, callerProject, *parent); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -427,7 +443,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// and its parent (writeAdviceBefore), and the open asks the close withdraws or the reopen
 	// restores, whose rows the patch writes afterwards (adviceAsks). Nothing else the patch writes
 	// changes what it reads.
-	afterRow := adviceIssueRow{parent: before.Parent, labels: before.Labels}
+	afterRow := adviceIssueRow{project: before.Project, parent: before.Parent, labels: before.Labels}
 	afterStatus := before.Status
 	if input.Status != nil {
 		afterStatus = status

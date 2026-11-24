@@ -7,7 +7,8 @@ package main
 // (ENVOY_EDGE_PROJECTS) serves it; every other listener answers the path 404 (relaySocketRoute),
 // so no shared listener's NATS grant has to cover it.
 //
-// The wire is the subprotocol envoy-relay.v1, text frames of JSON:
+// The wire is the subprotocol envoy-relay.v1, text frames of JSON (a frame the server sends past
+// relaySocketWriteFragment comes as one message in fragments of that size, write):
 //
 //   - the client's {"op":"sub","sid":<int>,"subject":<s>} subscribes, on the sockets' own NATS
 //     connection, exactly the socket's own relay subject (bus.DeliverSubject), and is answered
@@ -64,6 +65,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -147,6 +149,14 @@ const (
 	relaySocketMaxReplies = 1 << 10
 	// relaySocketWriteWait bounds one write to the client, a frame or a control frame.
 	relaySocketWriteWait = 10 * time.Second
+	// relaySocketWriteFragment is the size of the fragments a data frame goes out in: the
+	// upgrader's write buffer, and the most write hands gorilla/websocket at once, so gorilla sends
+	// each frame as fragments of this size and takes its connection's write lock for one fragment
+	// at a time. A close or a ping (WriteControl) waits for that lock, so it waits for one fragment,
+	// not the whole frame. gorilla writes a piece past twice its buffer as one fragment under the
+	// lock: a close behind a frame of 1 MiB (about 1.4 MB of JSON) would wait past
+	// relaySocketCloseGrace for a client that reads slower than 1.4 MB a second, and be lost.
+	relaySocketWriteFragment = 4 << 10
 	// relaySocketFlushWait bounds the flush that makes the server hold a sub, an unsub or a pub.
 	relaySocketFlushWait = 5 * time.Second
 	// relaySocketCheckWait bounds one ask of the broker.
@@ -219,6 +229,14 @@ type relaySockets struct {
 	// relaySocketCheckEvery is how often an open socket pings its client and asks the broker
 	// about its token: relaySocketCheckDefault, which only a test lowers.
 	relaySocketCheckEvery time.Duration
+	// closeGrace is how long a socket the server closed waits for its close frame to be written
+	// and its client's answer before it drops the connection: relaySocketCloseGrace, which only a
+	// test raises, so a row can read the order of a close and a data frame on the wire with no
+	// deadline deciding it.
+	closeGrace time.Duration
+	// writeWait bounds one data frame's write and one ping's: relaySocketWriteWait, which only a
+	// test raises, so a row that holds its client's reads decides nothing by this deadline.
+	writeWait time.Duration
 	// maxSockets is how many sockets the replica holds open (relaySocketMaxPerListener),
 	// pendingMsgs and pendingBytes what one socket holds for its client
 	// (relaySocketPendingMsgs, relaySocketPendingBytes), budget what all of them hold together
@@ -252,6 +270,7 @@ func newRelaySockets(client *bus.Client, brokers *brokerTokens, logger *logging.
 		upgrader: websocket.Upgrader{
 			Subprotocols:     []string{relaySubprotocol},
 			HandshakeTimeout: relaySocketWriteWait,
+			WriteBufferSize:  relaySocketWriteFragment,
 			// CheckOrigin is gorilla's own: an upgrade that carries no Origin, as a client
 			// outside a browser sends none, or an Origin of the request's own host is taken, and
 			// any other Origin refused 403. The socket is admitted by a DPoP-bound token and its
@@ -259,6 +278,8 @@ func newRelaySockets(client *bus.Client, brokers *brokerTokens, logger *logging.
 			// today; it keeps the socket safe should a cookie ever admit it.
 		},
 		relaySocketCheckEvery: relaySocketCheckInterval(),
+		closeGrace:            relaySocketCloseGrace,
+		writeWait:             relaySocketWriteWait,
 		maxSockets:            relaySocketMaxPerListener,
 		pendingMsgs:           relaySocketPendingMsgs,
 		pendingBytes:          relaySocketPendingBytes,
@@ -447,6 +468,10 @@ type relaySocket struct {
 	// strayLogged is set once this socket has logged a message on its relay subject that was no
 	// relay frame.
 	strayLogged atomic.Bool
+	// unknownNaks counts the GitHub frames this socket has answered nak for want of a fresh
+	// repository answer since a fresh answer last decided one (withhold, endUnknownNaks), so a run
+	// of them is logged when it starts and when it ends, not at every delivery the relay makes again.
+	unknownNaks atomic.Int64
 
 	endOnce sync.Once
 	done    chan struct{}
@@ -682,7 +707,9 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 	// Whoever published it, a frame reaches the client only for a project of the token the
 	// socket was opened with, which edgeFrameVerdict holds to the broker's live answer.
 	subject := msg.Header.Get(relayHeaderSubject)
-	if verdict := edgeFrameVerdict(socket.repositories, socket.session, socket.admitted.Projects, subject, msg.Data); verdict.action != framePass {
+	verdict := edgeFrameVerdict(socket.repositories, socket.session, socket.admitted.Projects, subject, msg.Data)
+	socket.endUnknownNaks(verdict)
+	if verdict.action != framePass {
 		socket.withhold(msg, subject, verdict)
 		return
 	}
@@ -696,7 +723,9 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 // itself (onReply); neither is counted, since it is not yet withheld for good, and a done would clear
 // a gap mark on a frame that never reached the client. Every other is answered done, so the relay
 // acknowledges its message undelivered, and counted under reason. A frame no relay sent has a receipt
-// no relay awaits, and that answer reaches nobody.
+// no relay awaits, and that answer reaches nobody. A frame withheld for want of an answer is logged
+// only when it starts a run of them (unknownNaks): the relay delivers it again at each nak, 1 s
+// rising to 30 s apart, for as long as this replica has no fresh answer.
 func (socket *relaySocket) withhold(msg *nats.Msg, subject string, verdict frameVerdict) {
 	answer := relayReplyDone
 	switch {
@@ -707,11 +736,30 @@ func (socket *relaySocket) withhold(msg *nats.Msg, subject string, verdict frame
 			socket.repositories.withheld.Inc([2]string{"reason", verdict.reason})
 		}
 	}
-	socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session",
-		slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
+	switch {
+	case verdict.action != frameAnswerUnknown:
+		socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session",
+			slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
+	case socket.unknownNaks.Add(1) == 1:
+		socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session for want of a fresh repository answer; it answers each such frame nak, unlogged, until a fresh answer decides a GitHub frame of its session, which is logged",
+			slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
+	}
 	if err := socket.sockets.client.Connection().Publish(msg.Reply, []byte(answer)); err != nil {
 		socket.sockets.logger.Warn("listener: the relay socket could not answer a frame it withheld; the relay sends it again",
 			slog.String("session_id", socket.session), slog.String("error", err.Error()))
+	}
+}
+
+// endUnknownNaks ends the socket's run of frames answered nak for want of a fresh repository answer
+// (unknownNaks) once a fresh answer decides a GitHub frame of its session (frameVerdict.answered),
+// and logs the end with the count of naks it answered.
+func (socket *relaySocket) endUnknownNaks(verdict frameVerdict) {
+	if !verdict.answered {
+		return
+	}
+	if naked := socket.unknownNaks.Swap(0); naked > 0 {
+		socket.sockets.logger.Info("listener: the relay socket decides its session's GitHub frames by a fresh repository answer again",
+			slog.String("session_id", socket.session), slog.Int64("given_back", naked))
 	}
 }
 
@@ -782,24 +830,56 @@ func (socket *relaySocket) forwarded(subject string) bool {
 // errRelaySocketEnded is a write to a socket that has ended.
 var errRelaySocketEnded = errors.New("the relay socket has ended")
 
-// write writes one data frame to the client. A write that ends because the socket ended under it
-// (end wrote its close frame first, or dropped the connection) is errRelaySocketEnded too.
+// write writes one data frame to the client (writeFragments). A write that ends because the
+// socket ended under it (end wrote its close frame first, or dropped the connection) is
+// errRelaySocketEnded too.
 func (socket *relaySocket) write(frame any) error {
 	socket.writeMu.Lock()
 	defer socket.writeMu.Unlock()
 	if socket.ended.Load() {
 		return errRelaySocketEnded
 	}
-	if err := socket.conn.SetWriteDeadline(time.Now().Add(relaySocketWriteWait)); err != nil {
+	if err := socket.conn.SetWriteDeadline(time.Now().Add(socket.sockets.writeWait)); err != nil {
 		return err
 	}
-	if err := socket.conn.WriteJSON(frame); err != nil {
+	if err := writeFragments(socket.conn, frame); err != nil {
 		if socket.ended.Load() {
 			return errRelaySocketEnded
 		}
 		return err
 	}
 	return nil
+}
+
+// writeFragments writes frame to conn as one text message, as gorilla/websocket's WriteJSON does,
+// but hands gorilla the frame's JSON in pieces of relaySocketWriteFragment (fragments), so gorilla
+// sends it in fragments of that size and a close or a ping goes between two of them.
+func writeFragments(conn *websocket.Conn, frame any) error {
+	w, err := conn.NextWriter(websocket.TextMessage)
+	if err != nil {
+		return err
+	}
+	err = json.NewEncoder(fragments{w}).Encode(frame)
+	if closeErr := w.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+// fragments hands w what it is given in pieces of at most relaySocketWriteFragment bytes, which
+// gorilla/websocket's message writer copies into its buffer of that size and sends as fragments.
+type fragments struct{ w io.Writer }
+
+func (f fragments) Write(p []byte) (int, error) {
+	written := 0
+	for written < len(p) {
+		n, err := f.w.Write(p[written:min(len(p), written+relaySocketWriteFragment)])
+		written += n
+		if err != nil {
+			return written, err
+		}
+	}
+	return written, nil
 }
 
 // refuse answers a frame the socket did not take, under sid when it named one.
@@ -845,10 +925,13 @@ func (socket *relaySocket) end(code int, reason string) {
 			slog.String("session_id", socket.session), slog.Int("code", code), slog.String("reason", reason))
 		// No data writer's lock is taken, since a data frame blocked on a client that reads
 		// nothing holds it for up to relaySocketWriteWait. gorilla/websocket writes the close frame
-		// once a frame being written has ended, waiting for that until the deadline at most, and
-		// refuses every frame after the close (ErrCloseSent). A close frame it could not write by
-		// then goes to a client that reads nothing, which is dropped at once.
-		deadline := time.Now().Add(relaySocketCloseGrace)
+		// once the fragment being written has ended (a data frame goes out in fragments of
+		// relaySocketWriteFragment, write), waiting for that until the deadline at most, and
+		// refuses every frame after the close (ErrCloseSent): the close goes in the middle of a
+		// frame, behind one fragment rather than the whole frame. A close frame it could not
+		// write by the deadline (the client read too little of the fragment, or of the close
+		// itself, in the grace) is not sent, and the connection is dropped at once.
+		deadline := time.Now().Add(socket.sockets.closeGrace)
 		if err := socket.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), deadline); err != nil {
 			_ = socket.conn.Close()
 			return
@@ -897,17 +980,17 @@ func (socket *relaySocket) watch() {
 }
 
 // ping writes a ping to the client on a goroutine of its own, one at a time: gorilla/websocket
-// writes it once a data frame being written has ended, which on a client that reads nothing is
-// up to relaySocketWriteWait later. A ping that cannot be written within relaySocketWriteWait takes
-// the client for gone and ends the socket, which drops the connection, unless the socket ended
-// meanwhile.
+// writes it once the fragment being written has ended (write), which on a client that reads
+// nothing is up to relaySocketWriteWait later. A ping that cannot be written within
+// relaySocketWriteWait takes the client for gone and ends the socket, which drops the connection,
+// unless the socket ended meanwhile.
 func (socket *relaySocket) ping() {
 	if !socket.pinging.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
 		defer socket.pinging.Store(false)
-		if err := socket.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(relaySocketWriteWait)); err != nil && !socket.ended.Load() {
+		if err := socket.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(socket.sockets.writeWait)); err != nil && !socket.ended.Load() {
 			socket.end(0, "")
 		}
 	}()

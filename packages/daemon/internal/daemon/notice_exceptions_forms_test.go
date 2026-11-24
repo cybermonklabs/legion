@@ -20,6 +20,7 @@ import (
 // project first, arrives over core NATS on that name's exceptions subject, and the subscription
 // hears it there and queues the notice again, as it does a report on the old form.
 func TestARoleLaneExceptionInTheNewFormQueuesTheNoticeAgain(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-1", Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
@@ -61,6 +62,7 @@ func TestARoleLaneExceptionInTheNewFormQueuesTheNoticeAgain(t *testing.T) {
 // Negative control, run when this was written: drop the project check from exceptionNotice; the
 // rows under OTHER and under _ queue the notice.
 func TestANewFormReportOnAnotherProjectsLaneChangesNothing(t *testing.T) {
+	t.Parallel()
 	notice := record.Notice{Kind: "pr-blocked", Role: "architect", Reason: "review_round_cap"}
 	for _, topic := range []string{
 		"notifications.role.OTHER.legion-legion-legion-1-architect",

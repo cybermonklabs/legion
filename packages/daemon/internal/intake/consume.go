@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
@@ -226,7 +227,7 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 // handle every other call shares.
 type Consumers struct {
 	spec     ConsumerSpec
-	pool     Pool
+	pool     store.TxPool
 	js       jetstream.JetStream
 	stream   jetstream.Stream
 	dispatch jetstream.Consumer
@@ -263,7 +264,7 @@ type Consumers struct {
 // The version is decided on one the connection reports: a connection reconnecting or draining when
 // the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
 // bound the stream lookup after this has), and is never read as a server of no version.
-func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec ConsumerSpec) (*Consumers, error) {
+func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
 	}
@@ -358,7 +359,7 @@ func (c *Consumers) repositories() []ghrepo.Repository {
 // may have been handled by the consumer before it went missing, or may have been missed. The
 // daemon applied none of them, and nothing replays them. A consumer with no position starts at the
 // next message.
-func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	existing, err := stream.Consumer(ctx, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return createConsumer(ctx, js, stream, pool, logger, config)
@@ -375,7 +376,7 @@ func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.
 // pool keeps one and at the next message otherwise (openConsumer). The stream's info it reads for
 // a stored position comes through a handle of its own on js, as DispatchTarget's does, and never
 // through stream, which other goroutines share.
-func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	start, stored, err := storedStreamTime(ctx, pool, config.Durable)
 	if err != nil {
 		return nil, err
@@ -433,19 +434,81 @@ func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
 // raced on the shared handle (the race detector's find in the daemon's retained-event test), and a
 // fresh handle shares nothing with the one Run consumes. Nothing here may wait for Run instead:
 // the boot's reconcile reads the position before Run starts, and pollHoldRelease beside it.
+//
+// Idle is the stream's store's answer, not the consumer's counts alone. nats-server answers a
+// publish once it has stored the message, and only then queues the message for the stream's
+// consumers, where a goroutine of the stream's own adds it to each matching consumer's pending
+// count (v2.15.1: stream.go processJetStreamMsgWithBatch sends the PubAck, then pushes to sigq;
+// signalConsumersLoop calls consumer.processStreamSignal, which raises npc). Until that goroutine
+// runs, CONSUMER.INFO counts the message neither pending nor awaiting an ack, so a reading taken
+// just after the publish answered read idle while the message waited on the stream, and Reconcile
+// decided at once a key that message would still change. So when the counts say nothing waits,
+// the reading asks the store for the first message after the consumer's delivered sequence on its
+// filter subjects (firstStoredAfter), within consumerOldestBound, and a message there is waiting
+// whatever the counts say.
+//
+// That read can fail: its bound passes on a loaded server, or the daemon's user lacks the
+// stored-message get (STREAM.MSG.GET, which NATS refuses by not answering, so it too ends at the
+// bound). DispatchPosition, the reading pollHoldRelease takes on its ticker, then keeps the
+// counts' idle, which is what every reading was before this get, and says so at Warn: a daemon
+// without the grant must still release its holds, and the poller reads again at its next tick.
+// ReconcilePosition, the reading a reconcile decides on at once, reads such a failure as not idle
+// instead (unconfirmed), so the keys a listing shows behind their log stay held until the poller
+// releases them.
 func (c *Consumers) DispatchPosition(ctx context.Context) (DispatchConsumerPosition, error) {
-	consumer, err := c.stream.Consumer(ctx, dispatchConsumerName(c.spec.Project))
+	position, unconfirmed, err := c.dispatchPosition(ctx)
 	if err != nil {
-		return DispatchConsumerPosition{}, fmt.Errorf("read Dispatch consumer info: %w", err)
+		return DispatchConsumerPosition{}, err
 	}
-	return positionOf(consumer.CachedInfo()), nil
+	if unconfirmed != nil {
+		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so its idle is its own count alone, which can miss a message the server stored and has not counted yet; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
+			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
+	}
+	return position, nil
 }
 
-func positionOf(info *jetstream.ConsumerInfo) DispatchConsumerPosition {
-	return DispatchConsumerPosition{
+// ReconcilePosition is DispatchPosition for a reconcile, which decides on the reading at once:
+// a counted idle the store could not confirm reads as not idle.
+func (c *Consumers) ReconcilePosition(ctx context.Context) (DispatchConsumerPosition, error) {
+	position, unconfirmed, err := c.dispatchPosition(ctx)
+	if err != nil {
+		return DispatchConsumerPosition{}, err
+	}
+	if unconfirmed != nil {
+		position.Idle = false
+		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so a reconcile reads the consumer as not idle and holds the keys its listing shows behind their log; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
+			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
+	}
+	return position, nil
+}
+
+// dispatchPosition is the reading DispatchPosition and ReconcilePosition share: the position, and
+// the store read's error when the counts said idle and the store could not confirm it
+// (unconfirmed, in which case position.Idle is the counts').
+func (c *Consumers) dispatchPosition(ctx context.Context) (position DispatchConsumerPosition, unconfirmed, err error) {
+	consumer, err := c.stream.Consumer(ctx, dispatchConsumerName(c.spec.Project))
+	if err != nil {
+		return DispatchConsumerPosition{}, nil, fmt.Errorf("read Dispatch consumer info: %w", err)
+	}
+	info := consumer.CachedInfo()
+	position = DispatchConsumerPosition{
 		AckFloorStream: int64(info.AckFloor.Stream),
 		Idle:           info.NumPending == 0 && info.NumAckPending == 0,
 	}
+	if !position.Idle {
+		return position, nil, nil
+	}
+	read, cancel := context.WithTimeout(ctx, consumerOldestBound)
+	defer cancel()
+	waiting, err := c.firstStoredAfter(read, info, info.Delivered.Stream)
+	if err != nil {
+		if ctx.Err() != nil {
+			return DispatchConsumerPosition{}, nil, fmt.Errorf("read the Dispatch consumer's next stored message: %w", err)
+		}
+		return position, err, nil
+	}
+	position.Idle = waiting == nil
+	return position, nil, nil
 }
 
 const (
@@ -573,34 +636,42 @@ func (c *Consumers) lagOf(ctx context.Context, progress *consumerProgress) Consu
 }
 
 // oldestWaiting is the stream time of the first message after info's ack floor on any of its
-// consumer's filter subjects, or zero when the stream holds none (the stream's MaxAge removed it
-// since the info was read). A message at the sequence right after the ack floor is the oldest any
-// filter can give, so the filters after it are not read.
+// consumer's filter subjects (firstStoredAfter), or zero when the stream holds none (the stream's
+// MaxAge removed it since the info was read).
 func (c *Consumers) oldestWaiting(ctx context.Context, info *jetstream.ConsumerInfo) (time.Time, error) {
+	oldest, err := c.firstStoredAfter(ctx, info, info.AckFloor.Stream)
+	if err != nil || oldest == nil {
+		return time.Time{}, err
+	}
+	return oldest.Time, nil
+}
+
+// firstStoredAfter is the first message the stream stores after sequence after on any of info's
+// consumer's filter subjects, one STREAM.MSG.GET per filter, or nil when it stores none. A message
+// at the sequence right after is the first any filter can give, so the filters after it are not
+// read.
+func (c *Consumers) firstStoredAfter(ctx context.Context, info *jetstream.ConsumerInfo, after uint64) (*jetstream.RawStreamMsg, error) {
 	filters := slices.Clone(info.Config.FilterSubjects)
 	if info.Config.FilterSubject != "" {
 		filters = append(filters, info.Config.FilterSubject)
 	}
-	var oldest *jetstream.RawStreamMsg
+	var first *jetstream.RawStreamMsg
 	for _, filter := range filters {
-		message, err := c.stream.GetMsg(ctx, info.AckFloor.Stream+1, jetstream.WithGetMsgSubject(filter))
+		message, err := c.stream.GetMsg(ctx, after+1, jetstream.WithGetMsgSubject(filter))
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
 			continue
 		}
 		if err != nil {
-			return time.Time{}, err
+			return nil, err
 		}
-		if oldest == nil || message.Sequence < oldest.Sequence {
-			oldest = message
+		if first == nil || message.Sequence < first.Sequence {
+			first = message
 		}
-		if oldest.Sequence == info.AckFloor.Stream+1 {
+		if first.Sequence == after+1 {
 			break
 		}
 	}
-	if oldest == nil {
-		return time.Time{}, nil
-	}
-	return oldest.Time, nil
+	return first, nil
 }
 
 // Run consumes the three durable consumers until ctx ends, and returns the error of the one that
@@ -844,7 +915,7 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // names counts the issue events this consumer read named in the old form, and the ones named in
 // neither form, which are poison (issueNames). dropped is what it remembers of the checks
 // settlements whose drop it logged (droppedSettlements).
-func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool Pool, handlers []Handler, names *issueNames, dropped *droppedSettlements) bool {
+func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool store.TxPool, handlers []Handler, names *issueNames, dropped *droppedSettlements) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
 		attributes := []any{"error", err}
@@ -970,7 +1041,7 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 // own AckWait bound, nested under work, so one dependency that is slow to answer is cut while the
 // handling as a whole runs to HandlerLimit. dropped is the consumer's memory of the checks
 // settlements whose drop it logged (droppedSettlements).
-func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
+func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool store.TxPool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under.
 	recorded, err := recordedPullRequest(work, spec, pool, decoded.Fact)
@@ -978,7 +1049,7 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 		return nakOutcome("read whether the pull request is recorded", "nak the pull request read", err)
 	}
 	if !recorded {
-		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction", message,
+		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a fact transaction", message,
 			"event_id", decoded.EventID)
 		// Each checks settlement of a pull request the daemon does not record is named once at
 		// INFO (NoRecordedPullRequestLine), whatever the reason the record is missing — a pull
@@ -1073,14 +1144,14 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // name the fact carries and then, when that finds nothing, under the other name of the pair that
 // names it (ghrepo.Under, ConsumerSpec.Renames), as the workflow reads the row: a pull request
 // already open when its repository was transferred is recorded under the name it moved from,
-// while the fact names the one it moved to. It is one read of the pool per name within the one
-// AckWait, in no transaction and under no lock, made before the review's GitHub reads
-// (resolveReviewBody, resolveReviewPermission): the workflow applies either fact only to a
-// recorded pull request, so one of any other pull request is acknowledged with no transaction
-// under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
-// a repository the daemon hears reviews and checks. A pull request recorded after this read, by
-// a later opened, gets its checks and reviews from their next event.
-func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
+// while the fact names the one it moved to. It is one read-only transaction per name within the
+// one AckWait, made before the review's GitHub reads (resolveReviewBody,
+// resolveReviewPermission): the workflow applies either fact only to a recorded pull request, so
+// one of any other pull request is acknowledged with no transaction under the fact lock
+// (ApplyFact) and no GitHub read, whatever the number of other pull requests a repository the
+// daemon hears reviews and checks. A pull request recorded after this read, by a later opened,
+// gets its checks and reviews from their next event.
+func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool store.TxPool, fact Fact) (bool, error) {
 	var repo string
 	var number int
 	switch fact := fact.(type) {
@@ -1094,7 +1165,9 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 	read, cancel := context.WithTimeout(ctx, spec.AckWait)
 	defer cancel()
 	return ghrepo.Under(spec.Renames, repo, func(name string) (bool, error) {
-		return record.PullRequestRecorded(read, pool, name, number)
+		return store.ReadOnly(read, pool, fmt.Sprintf("read whether %s#%d is recorded", name, number), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return record.PullRequestRecorded(ctx, tx, name, number)
+		})
 	})
 }
 

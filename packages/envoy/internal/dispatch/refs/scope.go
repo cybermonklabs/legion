@@ -58,38 +58,61 @@ const messageScopeJoin = `join artifacts s on s.issue_key = m.issue_key and s.is
 // is its inverse, and the two must agree on every shape above (TestScopeOfAndScopeSourcesAgree);
 // pendingScope answers the same scope before the source's row is written, and must agree with it
 // on every shape too (TestPendingScopeAgreesWithScopeOf).
-func ScopeOf(ctx context.Context, q Queryer, kind, id string) (string, error) {
+//
+// It answers for who. An ask, a comment or a message who may not see belongs to no document, as
+// one no row holds does, and so does one whose walk passes through a comment who may not see or
+// ends at a document who may not see: a document's id is answered only to who may see it. A
+// document's own id is answered as it is given, read or not, as an id no row holds is, and
+// QuestionMap answers it nothing where who may not see it.
+func ScopeOf(ctx context.Context, q Queryer, who model.Actor, kind, id string) (string, error) {
+	return scopeOf(ctx, q, &who, kind, id)
+}
+
+// scopeOf is ScopeOf for who, or for no person at all where who is nil: the index-time
+// resolver's read (Reader.Questions), which answers no reader.
+func scopeOf(ctx context.Context, q Queryer, who *model.Actor, kind, id string) (string, error) {
 	id, ok := canonicalUUID(id)
 	if !ok {
 		return "", nil
 	}
+	// Each statement is built before the call that sends it: the predicates append the acting
+	// credential to args as they render, and Go does not order the read of args.values among
+	// the arguments of one call against a call inside another of them.
+	var args queryArgs
+	key := args.param(id)
+	var query string
 	switch kind {
 	case "artifact":
 		return id, nil
 	case "ask":
-		return scopeRow(q.QueryRow(ctx, `
-			select `+askScope+`::text from asks k `+askScopeJoin+` where k.id = $1
-		`, id))
+		query = `
+			select ` + askScope + `::text from asks k ` + askScopeJoin + `
+			left join artifacts s on s.id = ` + askScope + `
+			where k.id = ` + key + args.andVisible(who, "ask", `k.id::text`) + args.andVisible(who, "artifact", `s.ref_key`)
 	case "comment":
-		return commentScope(ctx, q, id)
+		return commentScope(ctx, q, who, id)
 	case "message":
-		return scopeRow(q.QueryRow(ctx, `
-			select s.id::text from messages m `+messageScopeJoin+` where m.id = $1
-		`, id))
+		query = `
+			select s.id::text from messages m ` + messageScopeJoin + `
+			where m.id = ` + key + args.andVisible(who, "message", `m.id::text`) + args.andVisible(who, "artifact", `s.ref_key`)
+	default:
+		return "", nil
 	}
-	return "", nil
+	return scopeRow(q.QueryRow(ctx, query, args.values...))
 }
 
 // commentScope walks a comment's chain of parents up to the first comment that names a document
-// (commentOwnScope), or to the thread's root, whose issue's spec it then is.
-func commentScope(ctx context.Context, q Queryer, id string) (string, error) {
+// (commentOwnScope), or to the thread's root, whose issue's spec it then is. A comment who may
+// not see ends the walk as a comment no row holds does, and a document who may not see is
+// answered as none.
+func commentScope(ctx context.Context, q Queryer, who *model.Actor, id string) (string, error) {
 	seen := map[string]struct{}{}
 	for {
 		if _, loops := seen[id]; loops {
 			return "", nil
 		}
 		seen[id] = struct{}{}
-		own, parent, spec, err := commentScopeRow(ctx, q, id)
+		own, parent, spec, err := commentScopeRow(ctx, q, who, id)
 		if err != nil {
 			return "", err
 		}
@@ -102,18 +125,30 @@ func commentScope(ctx context.Context, q Queryer, id string) (string, error) {
 }
 
 // commentScopeRow is what one stored comment's row says about its scope (commentScopeSelect),
-// each of the three nil where the row holds none. A comment that does not exist reads as a row
-// naming none, which has no scope.
-func commentScopeRow(ctx context.Context, q Queryer, id string) (own, parent, spec *string, err error) {
-	err = q.QueryRow(ctx, commentScopeSelect+`
-		from comments c `+commentOwnScopeJoin+` `+commentSpecJoin+`
-		where c.id = $1
-	`, id).Scan(&own, &parent, &spec)
+// each of the three nil where the row holds none. A comment that does not exist, or that who may
+// not see, reads as a row naming none, which has no scope; a document of the row's that who may
+// not see reads as the empty document, which scopeStep answers as none.
+func commentScopeRow(ctx context.Context, q Queryer, who *model.Actor, id string) (own, parent, spec *string, err error) {
+	var ownVisible, specVisible bool
+	var args queryArgs
+	key := args.param(id)
+	query := commentScopeSelect + `, ` + args.visible(who, "artifact", `own.ref_key`) + `, ` + args.visible(who, "artifact", `cs.ref_key`) + `
+		from comments c ` + commentOwnScopeJoin + ` ` + commentSpecJoin + `
+		left join artifacts own on own.id = ` + commentOwnScope + `
+		where c.id = ` + key + args.andVisible(who, "comment", `c.id::text`)
+	err = q.QueryRow(ctx, query, args.values...).Scan(&own, &parent, &spec, &ownVisible, &specVisible)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil, nil, nil
 	}
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read the scope of comment %s: %w", id, err)
+	}
+	none := ""
+	if own != nil && !ownVisible {
+		own = &none
+	}
+	if spec != nil && !specVisible {
+		spec = &none
 	}
 	return own, parent, spec, nil
 }
@@ -226,7 +261,7 @@ func pendingScope(ctx context.Context, q Queryer, kind string, source PendingSou
 		if resolved {
 			return scope, nil
 		}
-		return commentScope(ctx, q, next)
+		return commentScope(ctx, q, nil, next)
 	case "message":
 		return scopeRow(q.QueryRow(ctx, pendingMessageScopeQuery, source.IssueKey))
 	}
@@ -405,7 +440,32 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 // written, or one whose ask the same transaction opens - settlement makes the ask of every new
 // question block of an edit in one transaction - resolves to the ask it will name once the write
 // phase has run.
-func QuestionMap(ctx context.Context, q Queryer, doc string) (map[string]text.Ref, error) {
+//
+// It answers for who. A document who may not see has no question, as one no row holds has none,
+// so not even its block ids are answered, and an ask who may not see is no question of it, nor is
+// a copied ask whose own document who may not see. The asks this transaction has queued are the
+// writer's own, read by the index for no person.
+func QuestionMap(ctx context.Context, q Queryer, who model.Actor, doc string) (map[string]text.Ref, error) {
+	return questionMap(ctx, q, &who, doc)
+}
+
+// questionMap is QuestionMap for who, or for no person at all where who is nil: the index-time
+// resolver's read (Reader.Questions), which answers no reader.
+func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (map[string]text.Ref, error) {
+	// Each statement is built before the call that sends it, as scopeOf's are.
+	if who != nil {
+		var args queryArgs
+		key := args.param(doc)
+		query := `select ` + args.visible(who, "artifact", `a.ref_key`) + ` from artifacts a where a.id = ` + key + `::uuid`
+		var visible bool
+		err := q.QueryRow(ctx, query, args.values...).Scan(&visible)
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && !visible {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read whether the reader may see document %s: %w", doc, err)
+		}
+	}
 	pending := pendingOf(ctx)
 	markdown, queued := "", false
 	if pending != nil {
@@ -441,7 +501,8 @@ func QuestionMap(ctx context.Context, q Queryer, doc string) (map[string]text.Re
 	// columns and answered as the same reference whether its row is stored or queued
 	// (scanQuestions); a block the transaction has queued a write of is read from that write
 	// alone, which is the row as it will stand.
-	questions, err := scanQuestions(q.Query(ctx, `
+	settled := queryArgs{values: []any{doc, ids, queuedBlocks, queuedAsks, queuedIssues}}
+	query := `
 		with queued (block_id, id, issue_key) as (
 			select * from unnest($3::text[], $4::uuid[], $5::text[])
 		)
@@ -449,11 +510,11 @@ func QuestionMap(ctx context.Context, q Queryer, doc string) (map[string]text.Re
 		from (
 			select k.block_id, k.id, k.issue_key from asks k
 			where k.block_artifact_id = $1 and k.block_id = any($2::text[])
-			  and k.block_id not in (select block_id from queued)
+			  and k.block_id not in (select block_id from queued)` + settled.andVisible(who, "ask", `k.id::text`) + `
 			union all
 			select q.block_id, q.id, q.issue_key from queued q where q.block_id = any($2::text[])
-		) b join artifacts a on a.id = $1
-	`, doc, ids, queuedBlocks, queuedAsks, queuedIssues))
+		) b join artifacts a on a.id = $1`
+	questions, err := scanQuestions(q.Query(ctx, query, settled.values...))
 	if err != nil {
 		return nil, fmt.Errorf("read the questions of document %s: %w", doc, err)
 	}
@@ -471,12 +532,14 @@ func QuestionMap(ctx context.Context, q Queryer, doc string) (map[string]text.Re
 	if len(sources) == 0 {
 		return questions, nil
 	}
-	copied, err := scanQuestions(q.Query(ctx, `
+	var copiedArgs queryArgs
+	query = `
 		select k.id::text, k.id::text, k.issue_key, a.project_key, coalesce(a.slug, '')
 		from asks k
 		left join artifacts a on a.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid, k.artifact_id)
-		where k.id = any($1::uuid[])
-	`, sources))
+		where k.id = any(` + copiedArgs.param(sources) + `::uuid[])` +
+		copiedArgs.andVisible(who, "ask", `k.id::text`) + copiedArgs.andVisible(who, "artifact", `a.ref_key`)
+	copied, err := scanQuestions(q.Query(ctx, query, copiedArgs.values...))
 	if err != nil {
 		return nil, fmt.Errorf("read the copied questions of document %s: %w", doc, err)
 	}

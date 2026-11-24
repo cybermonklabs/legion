@@ -173,7 +173,10 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   labels, so they never collide with a label someone else applies.
 - **`--tier agent`** lets the owner's own sessions use it without asking, and **`--tier human`**
   sends every use to a person for approval. Both flags are required.
-- **`--type`** is optional. Use `github-app` for a GitHub App key, `google-login` for an
+- **`--type`** is optional. Use `github-app` for a GitHub App key, `github-installations` for the
+  installation tokens a minter outside the broker stores again every few minutes, which a
+  deployment writes and no person types ([Concepts](/legion/broker/concepts/#requests-and-grants)),
+  `google-login` for an
   authorized-user Google login, `azure-login` for the Entra ids of the one secret the deployment
   names in `BROKER_AZURE_LOGIN_SECRET`, whose stored value is
   `{"tenant_id": "<tenant>", "client_id": "<client>"}` and which is `--tier human` alone,
@@ -201,8 +204,9 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   legion-envoy-v13.19.0 to the release before v16.0.0 read, and refuse; it stops no later broker
   from before the `type` tag. So once a secret carries a type, the first release that reads
   `type` is the broker's rollback floor: a rollback past it serves the secret's stored key.
-- **`--github-owners`** is required with `--type github-app`, and refused with any other type. It
-  lists the GitHub accounts the broker mints installation tokens for, separated by spaces, so the
+- **`--github-owners`** is required with `--type github-app` or `--type github-installations`, and
+  refused with any other type. It lists the GitHub accounts the broker hands installation tokens
+  over for, separated by spaces, so the
   shell quotes it: `--github-owners "acme-org ada"`. A comma is refused before anything is written.
 - **`--requesters`** is optional. It lists who may ask for this secret at all — people by their
   lowercase sign-in email, Google groups as `group:` and the group's lowercase email, which admits

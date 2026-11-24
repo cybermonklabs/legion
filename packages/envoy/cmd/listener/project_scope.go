@@ -984,24 +984,43 @@ func runEdgeRepositories(ctx context.Context, d *listenerDeps, machineID string,
 // replica admitted none of is skipped, since nothing here registered it. A session one of whose
 // admitted projects has no fresh answer keeps every topic: an answer that is not there says nothing
 // of a repository's leaving, and the relay withholds the session's GitHub frames meanwhile. A
-// record it cannot list, or a removal that fails, is logged and left to the next pass.
+// record it cannot list, or a removal that fails, is left to the next pass. Each run of such
+// failures is logged when it starts rather than at every pass: a failed list after a list that
+// answered (notePruneList), and a session's failed removal after a pass that weighed the session's
+// topics and removed them, found none leaving, or did not list the session
+// (edgeRepositories.unremoved).
 func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) {
 	logger := d.repositories.logger
 	items, err := d.registry.List()
-	if err != nil {
-		logger.Warn("edge listener could not list the interests a repository may have left", slog.String("error", err.Error()))
+	if !d.repositories.notePruneList(err) {
 		return
 	}
+	d.repositories.mu.Lock()
+	failing := d.repositories.unremoved
+	d.repositories.mu.Unlock()
+	unremoved, listed := map[string]bool{}, map[string]bool{}
+	// ended logs the end of sessionID's run of failed removals that no removal ended, and why.
+	ended := func(sessionID, why string) {
+		logger.Info("edge listener no longer removes the interests of a repository that left the session's projects, after its removals failed",
+			slog.String("session_id", sessionID), slog.String("why", why))
+	}
 	for _, item := range items {
+		if failing[item.SessionID] {
+			listed[item.SessionID] = true
+		}
 		if item.MachineID != machineID {
+			if failing[item.SessionID] {
+				ended(item.SessionID, "the session's interests are another listener's")
+			}
 			continue
 		}
 		projects, admitted := d.consumers.admissions.of(item.SessionID)
-		if !admitted {
-			continue
-		}
 		repositories, complete := d.repositories.standing(projects)
-		if !complete {
+		if !admitted || !complete {
+			// Nothing of the session's topics was weighed, so a run of failed removals goes on.
+			if failing[item.SessionID] {
+				unremoved[item.SessionID] = true
+			}
 			continue
 		}
 		var leaving []string
@@ -1014,14 +1033,23 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 			}
 		}
 		if len(leaving) == 0 {
+			// Nothing leaving: the answer names the repository again, or the session itself dropped
+			// the topic (an unsubscribe, or a registration after a refusal). The pass cannot tell
+			// which, so the why says what it found.
+			if failing[item.SessionID] {
+				ended(item.SessionID, "no interest of the session is outside its projects' repositories now")
+			}
 			continue
 		}
 		removeCtx, cancel := context.WithTimeout(ctx, sendRequestBudget)
 		removed, err := d.registry.Remove(removeCtx, item.SessionID, leaving, store.RoleReleaseAuthority{})
 		if err != nil {
 			cancel()
-			logger.Warn("edge listener could not remove the interests of a repository that left the session's projects",
-				slog.String("session_id", item.SessionID), slog.Any("topics", leaving), slog.String("error", err.Error()))
+			unremoved[item.SessionID] = true
+			if !failing[item.SessionID] {
+				logger.Warn("edge listener could not remove the interests of a repository that left the session's projects; every refresh tries again while the session holds them, and the end of the run is logged, a removal's line or one saying why no removal is needed",
+					slog.String("session_id", item.SessionID), slog.Any("topics", leaving), slog.String("error", err.Error()))
+			}
 			continue
 		}
 		recordFollowedTopics(removeCtx, d, item.SessionID, logger)
@@ -1030,4 +1058,36 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 		logger.Info("edge listener removed the interests of a repository that left the session's projects",
 			slog.String("session_id", item.SessionID), slog.Any("topics", removed))
 	}
+	for sessionID := range failing {
+		if !listed[sessionID] {
+			ended(sessionID, "the session's interest record is gone")
+		}
+	}
+	d.repositories.mu.Lock()
+	d.repositories.unremoved = unremoved
+	d.repositories.mu.Unlock()
+}
+
+// notePruneList reports whether a refresh pass's list of the interest records, which ended with
+// err, answered, and logs what it starts or ends: a WARN for a failed list after one that answered,
+// an INFO for a list that answers after failed ones, and nothing otherwise, so a copy of the
+// interest bucket that stays stale logs two lines, not one at every refresh.
+func (e *edgeRepositories) notePruneList(err error) bool {
+	e.mu.Lock()
+	failed := e.unlisted
+	if err != nil {
+		e.unlisted++
+	} else {
+		e.unlisted = 0
+	}
+	e.mu.Unlock()
+	switch {
+	case err != nil && failed == 0:
+		e.logger.Warn("edge listener could not list the interests a repository may have left; it lists them again at every refresh and logs again once a list answers",
+			slog.String("error", err.Error()))
+	case err == nil && failed > 0:
+		e.logger.Info("edge listener lists the interests again; a repository that left a session's projects leaves its interests from this pass on",
+			slog.Int("failed_passes", failed))
+	}
+	return err == nil
 }

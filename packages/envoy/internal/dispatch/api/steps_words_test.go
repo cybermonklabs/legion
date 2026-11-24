@@ -15,6 +15,7 @@ import (
 // read, so the document never names a word the store or the daemon does not hold. The answer's
 // result is "" too, for a run that still runs.
 func TestTheStepRouteNamesContractsWords(t *testing.T) {
+	t.Parallel()
 	kinds := strings.Join([]string{contracts.StepKindStep, contracts.StepKindRetro, contracts.StepKindMerge}, ",")
 	results := strings.Join([]string{contracts.StepResultPassed, contracts.StepResultFailed, contracts.StepResultStopped}, ",")
 	for _, field := range []struct {

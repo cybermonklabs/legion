@@ -6,8 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"golang.org/x/oauth2"
-
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -38,7 +37,9 @@ const (
 	codeUnauthorizedClient  = "unauthorized_client"
 	codeRedirectURIMismatch = "redirect_uri_mismatch"
 	codeInvalidGrant        = "invalid_grant"
-	// The issuer could not be asked at all: its discovery document could not be read.
+	// The issuer could not be asked or could not answer: its discovery document could not be read,
+	// or its token endpoint answered the code exchange a 5xx, a 408 or a 429 (oauthrefusal.Outage),
+	// with a body cut off, or not at all, each oidc.ErrIssuerUnavailable.
 	codeIssuerUnreachable = "issuer_unreachable"
 	// From the ID token's own verification (oidc.Reason's classes) and its nonce.
 	codeBadIssuer    = "bad_issuer"
@@ -52,17 +53,19 @@ const (
 
 // signInFailureCode is the code for err, and "" for a failure none of the codes names.
 func signInFailureCode(err error) string {
-	var retrieve *oauth2.RetrieveError
 	switch {
 	case errors.Is(err, oidc.ErrIssuerUnavailable):
 		return codeIssuerUnreachable
-	case errors.As(err, &retrieve):
+	case oauthrefusal.Refusal(err) != "":
 		// The token endpoint's own error code, kept only when it is one of the four named here:
 		// an issuer's word is not this page's vocabulary just because it arrived in the error
-		// field.
-		switch retrieve.ErrorCode {
+		// field. It is read only from a refusal, a 4xx that is no outage (oauthrefusal.Refusal).
+		// Every answer that is no outage is the endpoint answering, so the case above has not
+		// taken it: a refusal naming no error or one outside the four, and a 2xx or 3xx naming
+		// one, write nothing, and the status keeps its last named failure.
+		switch code := oauthrefusal.Refusal(err); code {
 		case codeInvalidClient, codeUnauthorizedClient, codeRedirectURIMismatch, codeInvalidGrant:
-			return retrieve.ErrorCode
+			return code
 		}
 	case errors.Is(err, oidc.ErrIssuer):
 		return codeBadIssuer

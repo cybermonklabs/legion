@@ -95,6 +95,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_SECRETS_KMS_KEY_ARN":    givesNone("a KMS key"),
 	"BROKER_SECRETS_KMS_KEY_NAME":   givesNone("a KMS key"),
 	"BROKER_AIRLOCK_CLUSTER_RANGES": givesNone("address ranges"),
+	"BROKER_PROXY_PRIVATE_UPSTREAM": givesNone("a host and a URL"),
 
 	"BROKER_SERVICES": givesARole(
 		"a BROKER_SERVICES entry names its login service",
@@ -132,6 +133,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_NATS_K8S_AUDIENCE":     givesNone("an audience"),
 	"BROKER_NATS_GOOGLE_AUDIENCE":  givesNone("an audience"),
 	"BROKER_NATS_URLS":             givesNone("the NATS hub's URLs"),
+	"BROKER_NATS_ACCOUNT":          givesNone("the hub account admitted clients are placed in"),
 
 	"BROKER_POD_REGISTRARS":            givesARole("a BROKER_POD_REGISTRARS entry names it as its registrar"),
 	"BROKER_POD_REGISTRATION_AUDIENCE": givesNone("an audience"),

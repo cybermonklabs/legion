@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestABrokerOutageLongerThanALease reproduces dispatch INFRA-487, the 2026-10-26 broker cutover:
@@ -40,10 +41,11 @@ import (
 // Four pods of one service, enrolled by its launcher and granted its agent-tier secret with no
 // approver, prove one thing each. The survivor is the outage itself: keyed by `agent-secrets
 // keygen` and enrolled into its key dir as the worker shim's pods are, it renews through
-// `agent-secrets renew --pod-token-file` from before the outage to the end. Once the second broker
+// `agent-secrets renew --pod-token-file` from before the outage to the end, once a third of its
+// lease has passed, which two of its leases before the outage show. Once the second broker
 // listens its first fetch through the CLI is served, its renewer, which never exited, renews its
-// lease to a whole one within a third of a lease, and the second broker logs that it gave back the
-// time no broker was serving. The revoked pod, ended by its launcher, and the lapsed pod, whose
+// lease to a whole one, and the second broker logs that it gave back the time no broker was
+// serving. The revoked pod, ended by its launcher, and the lapsed pod, whose
 // lease the first broker's sweeper ended while that broker served, prove the time given back
 // revives nothing that had ended: each is refused a fetch, PROOF_INVALID not live, and a renewal,
 // ENROLLMENT_NOT_LIVE. The mismatch pod, whose lease ran out in the outage as the survivor's did,
@@ -122,6 +124,8 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		}
 		return expires, now
 	}
+	// leaseRead is one reading of leaseOf, which a wait on a lease answers and prints.
+	type leaseRead struct{ expires, now time.Time }
 	podToken := func(uid, account string) string {
 		claims := issuer.Claims(account, podAudience)
 		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": uid}}
@@ -158,13 +162,19 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	fetch := func(when string) {
 		t.Helper()
 		started := time.Now()
-		commandCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		command := exec.CommandContext(commandCtx, cli, secretName, "--", "sh", "-c", `printf %s "$`+secretName+`"`)
+		command := exec.Command(cli, secretName, "--", "sh", "-c", `printf %s "$`+secretName+`"`)
 		command.Env = agentSecretsEnv(front.url, keyDir)
 		var stdout, stderr strings.Builder
 		command.Stdout, command.Stderr = &stdout, &stderr
-		err := command.Run()
+		if err := command.Start(); err != nil {
+			t.Fatalf("start the survivor's fetch %s: %v", when, err)
+		}
+		// A fetch the wait below gives up on is killed as the row ends; one that has exited
+		// is no process to kill, and the kill's error says only that.
+		defer func() { _ = command.Process.Kill() }()
+		ran := make(chan error, 1)
+		go func() { ran <- command.Wait() }()
+		err := testwait.Receive(t, "the survivor's fetch "+when+" to finish", ran)
 		took := time.Since(started)
 		if err != nil || stdout.String() != secretValue {
 			t.Fatalf("the survivor's fetch %s = %v, stdout %q, want %q; its stderr:\n%s\nits renewer's:\n%s",
@@ -197,6 +207,30 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		t.Fatalf("the mismatch pod's grant values = %v, want %s=%s", values, secretName, secretValue)
 	}
 
+	// The renewer's cadence, read from the leases the broker wrote: a renewal sets the lease to
+	// run out a whole lease after the broker's moment of renewal (internal/cipher/enroll), so two
+	// renewals one after the other are as far apart as the expiries they wrote. The renewer renews
+	// once a third of what it holds has passed (leasetime.RenewAfter), so that gap is a third of a
+	// lease and the request that carried it, and the row reads it as the third, nearer that than
+	// a quarter or a half of one.
+	t.Log("--- the survivor's renewer renews at a third of its lease")
+	renewedAfter := func(before time.Time) time.Time {
+		t.Helper()
+		return testwait.UntilPolling(t, 250*time.Millisecond, "the survivor's renewer to renew its lease", func() (time.Time, bool) {
+			renewerRunning("before the outage")
+			expires, _ := leaseOf(survivorID)
+			return expires, !expires.Equal(before)
+		})
+	}
+	seen, _ := leaseOf(survivorID)
+	cadenceFrom := renewedAfter(seen)
+	gap := renewedAfter(cadenceFrom).Sub(cadenceFrom)
+	if promised := lease / leasetime.RenewDivisor; gap <= lease*7/24 || gap >= lease*5/12 {
+		t.Fatalf("the survivor's renewer renewed its lease %s after the renewal before it; want a third of its %s lease, %s (leasetime.RenewAfter), nearer that than a quarter or a half of one:\n%s",
+			gap, lease, promised, renewer.Output.String())
+	}
+	t.Logf("the survivor's renewer renewed its lease %s after the renewal before it: a third of its %s lease", gap, lease)
+
 	// The margin: the broker is stopped while the survivor holds more than two thirds of its lease
 	// but renewed at least five seconds ago, between two of its renewals. The time given back
 	// restores the lease the survivor held at the first broker's last record that it served, at
@@ -205,25 +239,16 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	// inside that. And the lease given back runs at least four seconds short of a whole one from
 	// the restart, which is what tells the renewer's own renewal after the restart from it.
 	t.Log("--- the outage: the broker is stopped between two of the survivor's renewals")
-	for waited := time.Now(); ; {
+	atStop := testwait.UntilPolling(t, 250*time.Millisecond, "the survivor to hold more than two thirds of its lease, renewed at least five seconds ago", func() (time.Duration, bool) {
+		renewerRunning("before the outage")
 		expires, now := leaseOf(survivorID)
 		left := expires.Sub(now)
-		if left > lease*2/3+time.Second && left <= lease-5*time.Second {
-			t.Logf("the survivor holds %s of its lease at the stop", left.Round(time.Millisecond))
-			break
-		}
-		if time.Since(waited) > lease {
-			t.Fatalf("the survivor's renewer has not renewed its lease in a whole lease (it holds %s):\n%s", left, renewer.Output.String())
-		}
-		if left > lease-5*time.Second {
-			time.Sleep(left - (lease - 5*time.Second) + 50*time.Millisecond)
-		} else {
-			time.Sleep(250 * time.Millisecond)
-		}
-	}
+		return left, left > lease*2/3+time.Second && left <= lease-5*time.Second
+	})
+	t.Logf("the survivor holds %s of its lease at the stop", atStop.Round(time.Millisecond))
 	front.route("")
 	first.Terminate(t)
-	if err := first.AwaitExit(t, 30*time.Second); err != nil {
+	if err := first.AwaitExit(t); err != nil {
 		t.Fatalf("the first broker's exit = %v, want a clean one:\n%s", err, first.Log())
 	}
 	stopped := time.Now()
@@ -245,23 +270,19 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	fetch("after the restart")
 	t.Logf("(1) served %s after the second broker listened", time.Since(restartedAt).Round(time.Millisecond))
 
-	t.Log("--- (2) the survivor's renewer, which never exited, renews a whole lease within a third of one")
-	for {
+	t.Log("--- (2) the survivor's renewer, which never exited, renews a whole lease")
+	renewed := testwait.UntilPolling(t, 100*time.Millisecond, "the survivor's renewer to renew its lease against the second broker", func() (leaseRead, bool) {
 		expires, now := leaseOf(survivorID)
 		if !expires.Before(restartedDB.Add(lease - time.Second)) {
-			if left := expires.Sub(now); left < lease-2*time.Second || left > lease+time.Second {
-				t.Fatalf("the survivor's renewed lease runs %s past now, want about %s", left, lease)
-			}
-			t.Logf("(2) renewed %s after the second broker listened, to %s past now", time.Since(restartedAt).Round(time.Millisecond), expires.Sub(now).Round(time.Millisecond))
-			break
+			return leaseRead{expires, now}, true
 		}
 		renewerRunning("after the restart")
-		if time.Since(restartedAt) > lease/3 {
-			t.Fatalf("the survivor's lease runs to %s, %s past the restart, %s after it: its renewer renewed nothing within a third of a lease:\n%s",
-				expires, expires.Sub(restartedDB).Round(time.Millisecond), time.Since(restartedAt).Round(time.Millisecond), renewer.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
+		return leaseRead{expires, now}, false
+	})
+	if left := renewed.expires.Sub(renewed.now); left < lease-2*time.Second || left > lease+time.Second {
+		t.Fatalf("the survivor's renewed lease runs %s past now, want about %s", left, lease)
 	}
+	t.Logf("(2) renewed %s after the second broker listened, to %s past now", time.Since(restartedAt).Round(time.Millisecond), renewed.expires.Sub(renewed.now).Round(time.Millisecond))
 	renewerRunning("after it renewed")
 
 	for _, ended := range []struct {

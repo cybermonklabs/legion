@@ -241,6 +241,7 @@ func askWindowsHold(t *testing.T, database *store.Store, askID, phrase string) b
 // meaning: that is what says the check embedded the text this case mapped, so a form offering no
 // cross-project item is one the rule left out rather than one whose vector missed.
 func TestCrossProjectRelatedOffersAnAnsweredQuestionToQuestionWritesOnly(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -362,6 +363,7 @@ func TestCrossProjectRelatedOffersAnAnsweredQuestionToQuestionWritesOnly(t *test
 // Each of the six carries a vector of its own, which the case counts first: what leaves them out
 // is the statement's rule, not a missing row.
 func TestCrossProjectRelatedSkipsAsksThatDoNotQualify(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -485,6 +487,7 @@ func TestCrossProjectRelatedSkipsAsksThatDoNotQualify(t *testing.T) {
 // first and fails below two, since a short ask makes one window and would pass without
 // exercising the fold.
 func TestCrossProjectRelatedOffersAnAskMatchedThroughTwoPartsOnce(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -523,6 +526,7 @@ func TestCrossProjectRelatedOffersAnAskMatchedThroughTwoPartsOnce(t *testing.T) 
 // Two qualifying answered questions of one issue are both offered: the leg offers asks, and
 // nothing folds them to their owner the way the same-project items are folded.
 func TestCrossProjectRelatedOffersTwoQualifyingAsksOfOneIssue(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -558,6 +562,7 @@ func TestCrossProjectRelatedOffersTwoQualifyingAsksOfOneIssue(t *testing.T) {
 // At most two are offered, and they are the two nearest in meaning: four answered questions of
 // the other project qualify, at cosine 0.90, 0.80, 0.70 and 0.60.
 func TestCrossProjectRelatedOffersAtMostTwoAndTheNearest(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -598,6 +603,7 @@ func TestCrossProjectRelatedOffersAtMostTwoAndTheNearest(t *testing.T) {
 // The leg reads the embedding the stage already made: one check whose cross-project item is
 // offered costs exactly one call of the embedder.
 func TestCrossProjectRelatedMakesNoSecondEmbeddingCall(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -628,6 +634,7 @@ func TestCrossProjectRelatedMakesNoSecondEmbeddingCall(t *testing.T) {
 // its keyword search's result, says the meaning search did not answer in time, and offers no
 // answered question of another project.
 func TestCrossProjectRelatedWithoutAnEmbeddingOffersNothing(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -677,6 +684,7 @@ func TestCrossProjectRelatedWithoutAnEmbeddingOffersNothing(t *testing.T) {
 // deadline. The write took at least the grace, since no timer fires early, and when it answered
 // the check had already ended the leg's context, with the meaning deadline an hour off.
 func TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -746,6 +754,7 @@ func TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer(t *testing.
 // A cross-project query that fails leaves the same answer, and records no reason: the leg is
 // offered beside the check's own result and never decides it.
 func TestCrossProjectRelatedQueryFailingKeepsTheOneProjectAnswer(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -849,6 +858,7 @@ func (h *heldCrossProjectRead) next(t *testing.T) heldRead {
 // to that deadline exactly, and that deadline had passed when the check answered: the grace was
 // cut at it, not sooner.
 func TestCrossProjectRelatedAnswersWithLessThanTheGraceLeft(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()
@@ -905,6 +915,7 @@ func TestCrossProjectRelatedAnswersWithLessThanTheGraceLeft(t *testing.T) {
 // do not qualify, one unanswered and one answered with no text, both stand nearer the question
 // than the one that does, and the qualifying ask is still offered.
 func TestCrossProjectRelatedFiltersNonQualifyingAsksRatherThanPagingPastThem(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()

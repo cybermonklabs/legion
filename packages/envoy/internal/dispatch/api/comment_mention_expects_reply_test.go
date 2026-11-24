@@ -21,6 +21,7 @@ import (
 // since a listener built before #2903 reads expects_reply only as a string and answers 400 to
 // false; see commentExpectsReply for what removes that.
 func TestCommentMentionExpectsReplyFollowsTheComment(t *testing.T) {
+	t.Parallel()
 	const session = `{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"],"last_seen":200}`
 	var guard sync.Mutex
 	sends := map[string]string{}

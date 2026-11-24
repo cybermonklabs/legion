@@ -406,9 +406,9 @@ type mergingWriter struct {
 	merge func()
 }
 
-func (w *mergingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	changed, err := w.Writer.Record(ctx, observation)
-	if observation.Number == w.at {
+func (w *mergingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+	changed, err := w.Writer.RecordRuns(ctx, observations)
+	if len(observations) > 0 && observations[0].Number == w.at {
 		w.merge()
 	}
 	return changed, err

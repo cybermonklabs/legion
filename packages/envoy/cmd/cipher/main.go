@@ -645,13 +645,18 @@ func parseKeyPEM(data []byte, name string) (*ecdsa.PrivateKey, error) {
 // machine session's lease is renewed by the helper itself — cmdRenew refuses outright once it
 // sees an empty id from a successful build.
 func buildSigner(stderr io.Writer) (enrollmentID string, signer Signer, err error) {
+	return buildChainSigner(stderr, true)
+}
+
+// buildChainSigner is buildSigner with the chain's passOver (signerChain): false for renew alone.
+func buildChainSigner(stderr io.Writer, passOver bool) (enrollmentID string, signer Signer, err error) {
 	wait, err := enrollWait()
 	if err != nil {
 		return "", nil, &settingError{err}
 	}
 	dir := keyDir()
 	waited, gaveUp := awaitEnrollment(stderr, dir, wait)
-	enrollmentID, signer, err = selectSigner(dir)
+	enrollmentID, signer, err = selectSigner(dir, stderr, passOver)
 	if err != nil && gaveUp {
 		if shown := waited.Round(time.Millisecond); shown >= wait {
 			waited = shown
@@ -680,31 +685,16 @@ func sessionFailed(stderr io.Writer, prefix string, err error) int {
 	return 1
 }
 
-// signInSigner is the signer of the person this session acts for, or nil where nobody has
-// signed in on this machine (in which case the chain goes on to the helper). A box with
-// sign-ins but no way to say which one this session is refuses here, naming them: a command
-// must never read one colleague's secrets under another's name. A sign-in whose enrollment has
-// not been made yet is registered now, under a fresh trade of that person's identity, and the
-// record is rewritten with it, so a record that outlived its enrollment heals itself.
+// signInSigner is the signer of record, the sign-in of the person this session acts for, whose
+// box key is key (signInSource chose both). A sign-in whose enrollment has not been made yet is
+// registered now, under a fresh trade of that person's identity, and the record is rewritten
+// with it, so a record that outlived its enrollment heals itself.
 //
 // So does one whose enrollment the broker no longer holds: nothing renews a sign-in's lease, so
 // every enrollment it makes ends after BROKER_LEASE_SECONDS, and without this the box would
 // answer nothing but a dead id until somebody ran `agent-secrets login` again — which would
 // make a second box key and a second sign-in on that person's list (client.reenroller).
-func signInSigner() (*fileSigner, error) {
-	store := cipherclient.SignIns(homeGetenv)
-	records, err := store.List()
-	if err != nil || len(records) == 0 {
-		return nil, err
-	}
-	record, err := store.Choose(os.Getenv(cipherclient.PersonVar))
-	if err != nil {
-		return nil, err
-	}
-	key, err := record.Key()
-	if err != nil {
-		return nil, err
-	}
+func signInSigner(record cipherclient.SignInRecord, key *ecdsa.PrivateKey) (*fileSigner, error) {
 	// The box key is the sign-in's own, recorded at the broker with it, so it is the key a
 	// registration made again signs with too.
 	register := func(ctx context.Context, _ string) (*ecdsa.PrivateKey, string, error) {
@@ -729,11 +719,21 @@ func signInSigner() (*fileSigner, error) {
 // enrollment id buildSigner read (empty in helper mode). A missing broker URL is a settingError.
 // stderr is the command's, which buildSigner's wait for a launcher still enrolling speaks on.
 func sessionContext(stderr io.Writer) (base cipheraddr.Address, enrollmentID string, signer Signer, err error) {
+	return chainSessionContext(stderr, true)
+}
+
+// renewContext is sessionContext for renew, whose chain never passes over a person's sign-in
+// (signerChain): renew reports an enrollment the broker no longer holds rather than renew another.
+func renewContext(stderr io.Writer) (base cipheraddr.Address, enrollmentID string, signer Signer, err error) {
+	return chainSessionContext(stderr, false)
+}
+
+func chainSessionContext(stderr io.Writer, passOver bool) (base cipheraddr.Address, enrollmentID string, signer Signer, err error) {
 	base = brokerBaseURL()
 	if base.Empty() {
 		return cipheraddr.Address{}, "", nil, &settingError{fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)}
 	}
-	enrollmentID, signer, err = buildSigner(stderr)
+	enrollmentID, signer, err = buildChainSigner(stderr, passOver)
 	if err != nil {
 		return cipheraddr.Address{}, "", nil, err
 	}
@@ -761,6 +761,13 @@ const jsonFlag = "print the broker's response body verbatim: every field as the 
 func nextBackoff(cur time.Duration) time.Duration {
 	return min(2*cur, 10*time.Second)
 }
+
+// pollBackoff is the exec form's sleep before its next status read, after one that came back
+// undecided before the wait it asked had run out (its backoff). Nothing in this program replaces
+// it: exec_wait_test.go builds agent-secrets with one more file that does, recording each sleep
+// the loop asks for, so a row can tell a loop that sleeps after a held answer by that sleep
+// itself, whatever the machine's load.
+var pollBackoff = time.Sleep
 
 // ---------------------------------------------------------------------------
 // keygen
@@ -840,7 +847,7 @@ func cmdRenew(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets renew: no arguments are accepted")
 		return exitUsageError
 	}
-	base, enrollmentID, signer, err := sessionContext(stderr)
+	base, enrollmentID, signer, err := renewContext(stderr)
 	if err != nil {
 		return sessionFailed(stderr, "agent-secrets renew", err)
 	}
@@ -1286,7 +1293,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
-				time.Sleep(min(backoff, time.Until(deadline)))
+				pollBackoff(min(backoff, time.Until(deadline)))
 				backoff = nextBackoff(backoff)
 			}
 		}

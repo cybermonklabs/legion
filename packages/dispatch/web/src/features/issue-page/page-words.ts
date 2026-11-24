@@ -672,6 +672,10 @@ export const ANSWER_LINES = freeze({
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
+  /** What Left on a row of the Decisions list says, and so does the key that zooms out, since
+   *  the list has no level above its rows: the outline's own report for those keys speaks of
+   *  the whole issue, which the list is not (`decisions-filter/DecisionsFilterBody.tsx`). */
+  no_level_above: "This list has no level above this row.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -1183,6 +1187,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
   state: "state",
+  /** The steps of Legion a plan task runs, in their order. */
+  steps: "steps",
   surface: "surface",
   title: "title",
   urgency: "urgency",

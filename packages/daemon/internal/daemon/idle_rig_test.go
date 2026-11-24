@@ -179,7 +179,8 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
 		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
-	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
+	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
+		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
@@ -193,7 +194,6 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig.kube.onPodReady = rig.podReady
 	rig.kube.onPodGone = rig.pods.podGone
 	rig.kube.run(t)
-	t.Setenv(idleRigURLVariable, rig.agents.url)
 
 	for i, name := range issues {
 		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
@@ -291,21 +291,26 @@ func idleRigUser(t *testing.T, pool *store.Pool) string {
 	return pool.Config().ConnConfig.User
 }
 
-// idleRigSessionPassword puts the rig's database password where a launcher's own session client
-// finds it, libpq's PGPASSWORD, which is the only place left for one: that client builds its URL
-// from the endpoint alone (ompsessions.Endpoint.ClientURL), which carries no password, and the
+// idleRigSessionPassword checks that the rig's database password is where a launcher's own session
+// client finds it, libpq's PGPASSWORD, which is the only place left for one: that client builds its
+// URL from the endpoint alone (ompsessions.Endpoint.ClientURL), which carries no password, and the
 // generation's proxy is a byte copy that hands the client's startup packet to the server
 // unchanged, so a server that asks for one refuses the login (`failed SASL auth`, SQLSTATE
 // 28P01) however the proxy's upstream was dialed. A pod's Cloud SQL asks for none — the
 // connector mints the login as it dials and no password is ever written into a pod
 // (internal/sessionproxy) — so this is the rig's stand-in for that identity and no production
-// path reads it, as internal/launcher's sessionDatabaseAt is for that package's tests. A
-// trust-authenticated server, which this repository's own pod serves, names no password, and an
-// empty PGPASSWORD is no setting at all (pgx's parseEnvSettings keeps only what is non-empty),
-// so the rig runs the same against either.
+// path reads it, as internal/launcher's sessionDatabaseAt is for that package's tests. TestMain
+// puts it there once for the whole test binary, from LEGION_TEST_PG_DSN, the server and login
+// every rig's database is cloned on, so the rigs run beside each other, which a t.Setenv refuses;
+// this check fails a rig whose database is on another login. A trust-authenticated server, which
+// this repository's own pod serves, names no password, and an empty PGPASSWORD is no setting at
+// all (pgx's parseEnvSettings keeps only what is non-empty), so the rig runs the same against
+// either.
 func idleRigSessionPassword(t *testing.T, pool *store.Pool) {
 	t.Helper()
-	t.Setenv("PGPASSWORD", pool.Config().ConnConfig.Password)
+	if os.Getenv("PGPASSWORD") != pool.Config().ConnConfig.Password {
+		t.Fatal("PGPASSWORD does not hold the password of the rig's database: TestMain sets it from LEGION_TEST_PG_DSN, and the rig's database is on another login")
+	}
 }
 
 // idleRigHostPort is the rig's Postgres as a dialable address, which the session proxy's upstream
@@ -338,7 +343,7 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 			wanted[role] = token
 		}
 	}
-	r.pods.podReady(pod, uid, wanted, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
+	r.pods.podReady(pod, uid, wanted, func(role, dir string, _ *idleRigPodProcesses) { r.agents.setPrivate(key, role, dir) })
 }
 
 // seed records one issue, its tree's lifecycle and its implementer's suspended claim, as
@@ -358,7 +363,7 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 		r.t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Project: r.cfg.Project,
 			Tree: key, Title: "An idle pod", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
@@ -602,7 +607,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
 	opts.CacheRepositories = func() []ghrepo.Repository { return nil }
-	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
+	opts.Tools.Legion = idleRigLegionTool(r.t, tools, r.agents.url)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL
 	opts.EnvoyURL = r.cfg.EnvoyURL

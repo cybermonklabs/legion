@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -768,6 +769,10 @@ func (s *server) storeArtifact(
 	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
 	var documentReadBack *pmdoc.Node
 	var documentChanges model.ReferenceChanges
+	// indexedBlocks is what the block index stated in the node and tuple store, which waits for
+	// the event this upload queues below: that event is the cause every node and tuple of the
+	// pass carries, and no tuple may be updated once appended.
+	var indexedBlocks graphstore.Uncaused
 	if kind == "doc" {
 		if created {
 			// A first upload under a name the owner holds nothing under replaces nothing, so a
@@ -814,7 +819,7 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
+		documentChanges, indexedBlocks, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -867,6 +872,10 @@ func (s *server) storeArtifact(
 		payload = artifactCreatedEventPayload(artifact, documentChanges)
 	}
 	var published []*model.Event
+	// The cause the block index's facts carry: the event this upload queues, named as the id
+	// sequence left it right after its insert, or the sentinel where its owner records none of
+	// its own (an agent's workspace document).
+	blockCause := graphstore.NoEvent
 	if target.ownsEvents() {
 		stampKind := ""
 		if kind == "doc" {
@@ -877,7 +886,15 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		blockCause = graphstore.LatestEvent
 		published = append(published, event)
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// The approval this upload's own version superseded, read in its read phase as the edit route
 	// reads it: an upload to an existing document always writes a version, so a replacement of an
@@ -1168,13 +1185,17 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 }
 
 // artifactVersionText is the body the document arm of GET …/artifacts/…/versions/{number}
-// answers without `download=true`, on all three artifact patterns.
+// answers without `download=true`, on all three artifact patterns. Blocks is absent unless the
+// request asked for it with ?blocks=true: then it lists the version's typed blocks
+// (docs.VersionBlocks), and Markdown, with the version's sha256 and size, is the rendering their
+// byte ranges index.
 type artifactVersionText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
 	// sent `Dispatch-Trees: 1`.
 	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
 	model.Version
+	Blocks *[]model.ArtifactBlock `json:"blocks,omitempty"`
 }
 
 // maxIntegerColumn is the largest number a Postgres integer column holds. A number the caller
@@ -1232,8 +1253,10 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Exactly `true` asks for the download, as `blocks=true` asks for the blocks of the /text
-	// routes; any other value, `1` included, answers as without the parameter.
+	// routes; any other value, `1` included, answers as without the parameter. `blocks` reads the
+	// same way here.
 	download := r.URL.Query().Get("download") == "true"
+	withBlocks := r.URL.Query().Get("blocks") == "true"
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1265,6 +1288,24 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, markdown)
 			return
 		}
+		var blocks *[]model.ArtifactBlock
+		if withBlocks {
+			// The version's own blocks, never the live tree's, and none of what describeBlocks adds
+			// from the live document's rows: a comment count or an embedding state is the live
+			// document's, not this version's. A block's range indexes the rendering it was read
+			// from, so the answer carries that text, its digest and its size.
+			rendered, listed, err := docs.VersionBlocks(markdown)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if listed == nil {
+				listed = []model.ArtifactBlock{}
+			}
+			markdown, blocks = rendered, &listed
+			size := len(markdown)
+			version.Size = &size
+		}
 		hash := sha256.Sum256([]byte(markdown))
 		sha := hex.EncodeToString(hash[:])
 		version.SHA256 = &sha
@@ -1278,7 +1319,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		// more often than it is written, which is what makes the first read's store worth its
 		// one statement.
 		reader := s.readVersionDisplayTrees(r.Context(), wantsDisplayTrees(r))
-		answer := artifactVersionText{Markdown: markdown, Version: version}
+		answer := artifactVersionText{Markdown: markdown, Version: version, Blocks: blocks}
 		reader.text(&answer.MarkdownTree, markdown)
 		reader.resolve()
 		WriteJSON(w, http.StatusOK, answer)
@@ -1335,7 +1376,9 @@ func deref(value *string) string {
 // commitArtifactVersionEvent queues the artifact.version event of a version the transaction wrote
 // and the stamp of the document's new mention edges with it (refs.QueueStamp), after the append so
 // stamping never touches sequence allocation. The event is filled in once Commit has run the write
-// phase (queueStampedEvent).
+// phase (queueStampedEvent). Right after it, it queues what that version's block index stated in
+// the node and tuple store (written.Blocks), which waited for this event: the pass ran before the
+// event existed, and no tuple may be updated once it is appended.
 func (s *server) commitArtifactVersionEvent(
 	ledger *docs.Ledger,
 	eventOwner owner,
@@ -1344,11 +1387,21 @@ func (s *server) commitArtifactVersionEvent(
 	written docs.VersionResult,
 	diff *string,
 ) (*model.Event, error) {
-	return s.queueStampedEvent(ledger, eventOwner.event(
+	event, err := s.queueStampedEvent(ledger, eventOwner.event(
 		"artifact.version",
 		actor,
 		docs.ArtifactVersionEventPayload(artifactID, name, written.Version, diff, written.Changes),
 	), "artifact", artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return event, nil
 }
 
 // createVersionInput is the body of POST /api/v1/artifacts/{id}/versions and its issue and
