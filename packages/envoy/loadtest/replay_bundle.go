@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // A replay bundle is one project's Dispatch state at an instant `at` plus every write of its issues
@@ -34,7 +36,8 @@ import (
 // A bundle carries production text; it never goes in the repository. A file named after a document
 // id or an issue key, in the bundle or in raw/, is named after it as it is: replay-fetch keeps only
 // ids and keys in Dispatch's shape (a lowercase UUID, an issue key; eventInShape, listingInShape,
-// issueNumber), which hold no path separator, no ".." and no more than a few dozen bytes.
+// issueNumber), which hold no path separator, no "..", and no more than 36 bytes: a UUID's 36, and
+// an issue key's 21 at most, which its bounded number gives it (issueKeyDigits, shown.go).
 const (
 	bundleStateFile  = "state.json"
 	bundleWindowFile = "window.jsonl"
@@ -366,15 +369,31 @@ const (
 	evPrefixUserState = "user_state."
 )
 
-// decodePayload decodes one event's payload, naming the event and its type in the error: the type
-// only where it is one this package names (shownEventType), and none of the payload, since a
-// decoder's error can quote the value it could not read (time.Time's does). An event replay-fetch
+// decodeCached decodes data, Dispatch's words read back from a file, into v: replay-fetch's cache
+// of an answer (replayFetcher.cached), a file of a bundle (readBundle), or a part of either, such
+// as one event's payload. It is the one rule this file set refuses such bytes by, as
+// redact.Answer.Decode is the rule for an answer still being read: read names what the caller
+// read ("the page", "the listing"), and the error is that name, these fixed words, and the rule's
+// own reading of the decoder's failure (redact.DecodeError), which names the destination's type
+// and the member that did not decode and no value of data -- since encoding/json's errors, and
+// the errors of the types it decodes into (time.Time's among them), quote the value they could
+// not read, and whatever answers in Dispatch's place can write the read's own bearer there.
+func decodeCached(read string, data []byte, v any) error {
+	err := json.Unmarshal(data, v)
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s is not the shape replay-fetch reads: %w", read, redact.DecodeError(err, data, v))
+}
+
+// decodePayload decodes one event's payload (decodeCached), naming the event and its type in the
+// error: the type only where it is one this package names (shownEventType). An event replay-fetch
 // reads is Dispatch's words, or the words of whatever answers in its place, which can echo the
 // bearer.
 func decodePayload[T any](ev replayEvent) (T, error) {
 	var v T
-	if err := json.Unmarshal(ev.Payload, &v); err != nil {
-		return v, fmt.Errorf("event %d (%s): its payload is not the shape this reads for its type", ev.ID, shownEventType(ev.Type))
+	if err := decodeCached("its payload", ev.Payload, &v); err != nil {
+		return v, fmt.Errorf("event %d (%s): %w", ev.ID, shownEventType(ev.Type), err)
 	}
 	return v, nil
 }
@@ -395,16 +414,15 @@ type replayEvent struct {
 	Raw        []byte          `json:"-"`
 }
 
-// parseReplayEvent decodes one served event, keeping its compact bytes as Raw.
+// parseReplayEvent decodes one served event (decodeCached), keeping its compact bytes as Raw.
 func parseReplayEvent(b []byte) (replayEvent, error) {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, b); err != nil {
-		return replayEvent{}, err
-	}
 	var ev replayEvent
-	if err := json.Unmarshal(buf.Bytes(), &ev); err != nil {
+	if err := decodeCached("the event", b, &ev); err != nil {
 		return replayEvent{}, err
 	}
+	// b decoded, so it is JSON, and Compact fails only on JSON it cannot read.
+	var buf bytes.Buffer
+	_ = json.Compact(&buf, b)
 	ev.Raw = buf.Bytes()
 	return ev, nil
 }
@@ -434,7 +452,7 @@ func readBundle(dir string) (*replayBundle, error) {
 		return nil, err
 	}
 	b.MetaSHA256 = sha256Hex(metaBytes)
-	if err := json.Unmarshal(metaBytes, &b.Meta); err != nil {
+	if err := decodeCached("the file", metaBytes, &b.Meta); err != nil {
 		return nil, fmt.Errorf("%s: %w", bundleMetaFile, err)
 	}
 	for _, need := range []string{bundleStateFile, bundleRosterFile, bundleWindowFile} {
@@ -453,9 +471,9 @@ func readBundle(dir string) (*replayBundle, error) {
 		}
 		switch p {
 		case bundleStateFile:
-			err = json.Unmarshal(data, &b.State)
+			err = decodeCached("the file", data, &b.State)
 		case bundleRosterFile:
-			err = json.Unmarshal(data, &b.Roster)
+			err = decodeCached("the file", data, &b.Roster)
 		case bundleWindowFile:
 			b.Window, err = parseWindow(data)
 		}
