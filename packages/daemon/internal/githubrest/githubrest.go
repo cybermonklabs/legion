@@ -20,15 +20,25 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // RepositoryAPI is repository's REST base under endpoint, GitHub's API root; empty is
-// https://api.github.com.
+// https://api.github.com. The repository's path is joined onto endpoint's own path
+// (urljoin.Join), so an endpoint configured with a path and a query keeps both: the path
+// appended to the endpoint's text would sit inside its query's last value, and every call under
+// the base would ask the endpoint's own path with the repository written into that value.
+//
+// It is "" where endpoint cannot be read as an absolute URL with a host, the one way the join
+// can fail here: a call under such a base is refused by the join its own read makes (callURL),
+// in fixed words. The endpoint is never printed: url.Parse's error quotes the URL whole, user
+// information and query and all.
 func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
-	if endpoint == "" {
-		endpoint = "https://api.github.com"
+	base, err := urljoin.Join(cmp.Or(endpoint, "https://api.github.com"), "/repos/"+repository.String())
+	if err != nil {
+		return ""
 	}
-	return strings.TrimRight(endpoint, "/") + "/repos/" + repository.String()
+	return base.String()
 }
 
 // Client calls GitHub with an installation token. Its API is a repository's REST base
@@ -48,7 +58,11 @@ type Client struct {
 // Get reads path under the client's REST base into into, naming the read shown when it fails
 // (Client). An answer other than 2xx is an *Answer.
 func (c Client) Get(ctx context.Context, path, shown string, into any) error {
-	_, _, err := c.call(ctx, http.MethodGet, c.API+path, shown, nil, into)
+	target, err := c.callURL(path, shown)
+	if err != nil {
+		return err
+	}
+	_, _, err = c.call(ctx, http.MethodGet, target.String(), shown, nil, into)
 	return err
 }
 
@@ -62,12 +76,33 @@ func (c Client) Post(ctx context.Context, path, shown string, body, into any) er
 // send sends body, as JSON, to path under the client's API with method, and reads GitHub's answer
 // into into when into is not nil, naming the call shown when it fails (Client).
 func (c Client) send(ctx context.Context, method, path, shown string, body, into any) error {
+	target, err := c.callURL(path, shown)
+	if err != nil {
+		return err
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("encode %s %s: %w", method, cmp.Or(shown, path), err)
 	}
-	_, _, err = c.call(ctx, method, c.API+path, shown, encoded, into)
+	_, _, err = c.call(ctx, method, target.String(), shown, encoded, into)
 	return err
+}
+
+// callURL is the URL of a call to path under the client's REST base (API): path, with its own
+// query where it has one, joined onto the base as urljoin.Join joins them - the base's path with
+// path under it, the base's query ahead of path's own, its user information, host and port kept.
+// path appended to the base's text would sit inside the base's query where it has one, so the
+// call would ask the base's own path with the call's path written into that query value.
+//
+// A base that cannot be read as an absolute URL with a host is the one failure, and it names the
+// call alone, shown or else path: neither URL prints, since url.Parse's error quotes the URL
+// whole, user information and query and all.
+func (c Client) callURL(path, shown string) (*url.URL, error) {
+	joined, err := urljoin.Join(c.API, path)
+	if err != nil {
+		return nil, fmt.Errorf("read the GitHub REST base of %s: %w", cmp.Or(shown, path), err)
+	}
+	return joined, nil
 }
 
 // Budget is the GitHub rate-limit budget a call spends: the REST API's core budget, or GitHub's
@@ -132,18 +167,20 @@ var documentedResources = []string{
 // place of the URL GitHub's header named for it (call). The first page's read is named shown, as
 // its caller asked.
 func GetPages[T any](ctx context.Context, c Client, path, shown string) ([]T, error) {
-	base, err := url.Parse(c.API)
-	if err != nil {
-		return nil, fmt.Errorf("parse the REST base %q: %w", c.API, err)
-	}
 	separator := "?"
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
+	// The first page's URL carries the REST base's own query where it was configured with one
+	// (callURL), so the page size is asked after it rather than written into its last value.
+	first, err := c.callURL(path+separator+"per_page=100", shown)
+	if err != nil {
+		return nil, err
+	}
 	name := cmp.Or(shown, path)
 	var all []T
 	n := 1
-	for target := c.API + path + separator + "per_page=100"; target != ""; n++ {
+	for target := first.String(); target != ""; n++ {
 		var page []T
 		pageName := shown
 		if n > 1 {
@@ -156,8 +193,8 @@ func GetPages[T any](ctx context.Context, c Client, path, shown string) ([]T, er
 		all = append(all, page...)
 		if next != "" {
 			nextURL, err := url.Parse(next)
-			if err != nil || nextURL.Scheme != base.Scheme || !strings.EqualFold(nextURL.Host, base.Host) {
-				return nil, fmt.Errorf("GitHub named a next page that is not on %s://%s, the only origin sent the token", base.Scheme, base.Host)
+			if err != nil || nextURL.Scheme != first.Scheme || !strings.EqualFold(nextURL.Host, first.Host) {
+				return nil, fmt.Errorf("GitHub named a next page that is not on %s://%s, the only origin sent the token", first.Scheme, first.Host)
 			}
 		}
 		target = next
