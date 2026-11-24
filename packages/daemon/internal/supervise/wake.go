@@ -369,7 +369,7 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 func (m *Machine) takeEarlierTurn(turn time.Time) bool {
 	w := m.wake
 	now := m.deps.Clock.Now()
-	if w == nil || w.pause != 0 || w.park != nil || turn.IsZero() || !turn.Before(w.at) || now.Sub(turn) >= m.deps.WakePace.interval() {
+	if w == nil || w.pause != 0 || w.park != nil || turn.IsZero() || !turn.Before(w.at) || now.Sub(turn) >= m.deps.WakePace.Interval {
 		return false
 	}
 	m.log.Info("supervise: the relaunch a report of the recorded death parked takes the turn the boot reserved for it",
