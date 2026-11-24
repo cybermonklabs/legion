@@ -17,7 +17,9 @@ import (
 
 // membersStand is the Directory's members.list wherever under its address a read comes: it
 // answers one member over two pages and records the URL each read reached it with, which the
-// directory stand-in, matching the members route alone, cannot show.
+// directory stand-in, matching the members route alone, cannot show. The first answer alone
+// names a next page, so a read that sends no page token ends at the second request rather than
+// asking until the read's own bound.
 type membersStand struct {
 	server *httptest.Server
 	mu     sync.Mutex
@@ -30,9 +32,10 @@ func newMembersStand(t *testing.T) *membersStand {
 	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.asked = append(s.asked, *r.URL)
+		first := len(s.asked) == 1
 		s.mu.Unlock()
 		page := map[string]any{"members": []map[string]string{{"email": member, "type": "USER"}}}
-		if r.URL.Query().Get("pageToken") == "" {
+		if first {
 			page["nextPageToken"] = "page-2"
 		}
 		_ = json.NewEncoder(w).Encode(page)
