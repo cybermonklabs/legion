@@ -221,6 +221,43 @@ func TestRevokingASignInEndsTheTokensMintedUnderIt(t *testing.T) {
 	}
 }
 
+// TestASignInRevokeCountsTheReadTokensItEnds: a person's read trade on a box mints a token
+// narrowed to reading, bound to a key made for its holder and naming the launcher credential the
+// sign-in holds, so it ends with that credential, which the revoke's caller ends in the same
+// transaction (enroll.Service.RevokePersonSignIn). So the revoke of a sign-in whose credential has
+// one access token and two narrowed read tokens answers tokens_ended 3. A narrowed token of the
+// person's sign-in on another box, and one of this credential that has already expired, are not
+// counted: the revoke ends neither.
+func TestASignInRevokeCountsTheReadTokensItEnds(t *testing.T) {
+	st := storetest.Open(t)
+	for _, box := range []string{signInBoxOne, signInBoxTwo} {
+		if err := record(t, st, signInPerson, box, signInMachine); err != nil {
+			t.Fatalf("record(%s, %s): %v", signInPerson, box, err)
+		}
+	}
+	held, other := storeCredential(t, st, signInBoxOne), storeCredential(t, st, signInBoxTwo)
+	storeAccessToken(t, st, "token-on-the-box", signInPerson, signInBoxOne)
+	for _, c := range []struct{ signature, credential, expires string }{
+		{"narrowed-1", held, "15 minutes"},
+		{"narrowed-2", held, "15 minutes"},
+		{"narrowed-other-box", other, "15 minutes"},
+		{"narrowed-expired", held, "-1 second"},
+	} {
+		storeNarrowedToken(t, st, c.signature, signInPerson, c.credential, c.expires)
+	}
+	target := signInFor(t, st, signInPerson, signInBoxOne)
+	thumbprint, ended, err := revokeSignIn(t, st, target.ID, signInPerson)
+	if err != nil {
+		t.Fatalf("RevokePersonSignInTx: %v", err)
+	}
+	if thumbprint != signInBoxOne {
+		t.Fatalf("the revoke answered the box key %q, want %q", thumbprint, signInBoxOne)
+	}
+	if ended != 3 {
+		t.Fatalf("the revoke answered tokens_ended %d, want 3: the access token minted on that box and the two live read tokens that end with its credential", ended)
+	}
+}
+
 // TestRevokingASignInThatIsNotThePersonsIsAnUnknownId: a sign-in of anyone else, and an id
 // nothing has, answer alike, so nobody learns another person's sign-ins by trying ids.
 func TestRevokingASignInThatIsNotThePersonsIsAnUnknownId(t *testing.T) {
@@ -355,6 +392,41 @@ func tokenActive(t *testing.T, st *store.Store, signature string) bool {
 		t.Fatalf("read the access token %s: %v", signature, err)
 	}
 	return active
+}
+
+// storeCredential writes one live launcher_credentials row bound to the key thumbprint names, as
+// a sign-in's trade mints one on its box key, and answers its id.
+func storeCredential(t *testing.T, st *store.Store, thumbprint string) string {
+	t.Helper()
+	var id string
+	err := st.Pool.QueryRow(context.Background(), `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
+		values (gen_random_uuid(), $1, 'example-host', $2, '{}', now() + interval '30 days') returning id::text`, signInPerson, thumbprint).Scan(&id)
+	if err != nil {
+		t.Fatalf("store the launcher credential on %s: %v", thumbprint, err)
+	}
+	return id
+}
+
+// storeNarrowedToken writes one active oauth_narrowed_access_tokens row shaped as a person's read
+// trade writes one: bound to a holder's key (signInBoxThree) rather than the box key, naming the
+// launcher credential credential, and expiring expires (a Postgres interval) from now.
+func storeNarrowedToken(t *testing.T, st *store.Store, signature, person, credential, expires string) {
+	t.Helper()
+	request, err := json.Marshal(map[string]any{
+		"client_id": "dispatch-token-exchange",
+		"session": map[string]any{
+			"extra":          map[string]any{"person": person, "session": "example-session", "project_scope": "read-person"},
+			"jwk_thumbprint": signInBoxThree,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.Pool.Exec(context.Background(), `insert into oauth_narrowed_access_tokens (signature, request_id, credential_id, request, expires_at, jwk_thumbprint)
+		values ($1, $1, $2, $3, now() + $4::interval, $5)`, signature, credential, request, expires, signInBoxThree)
+	if err != nil {
+		t.Fatalf("store the narrowed token %s: %v", signature, err)
+	}
 }
 
 // TestMigrationTwentyFiveHoldsOneSignInPerPersonAndBoxKey: the unique index is what makes a
