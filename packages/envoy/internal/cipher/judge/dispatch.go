@@ -36,24 +36,31 @@ const maxDispatchAnswer = 1 << 20
 // one and Assignee one, and this type has no other method, no other verb and no body to send:
 // nothing here writes an ask, a comment, a label or a status, and nothing reads a person's own
 // data. Every route they read is authAny (internal/dispatch/api/routes_table.go), and the
-// projected ServiceAccount token Account reads authenticates as a service actor holding no
+// projected ServiceAccount token its account reads authenticates as a service actor holding no
 // scope, which reaches an issue, its documents and the asks on it, and nothing that belongs to a
-// person.
+// person. NewDispatch builds one.
 type Dispatch struct {
-	// BaseURL is the root Dispatch's /api/v1 paths hang off.
-	BaseURL string
-	// Account is the broker's own projected ServiceAccount token for Dispatch, read at call
+	// baseURL is the root Dispatch's /api/v1 paths hang off.
+	baseURL string
+	// account is the broker's own projected ServiceAccount token for Dispatch, read at call
 	// time rather than once at boot: the kubelet rewrites such a file in place, and a reader
 	// that caches for ciphertoken.AccountTokenCacheTTL picks a rotation up within 30 seconds,
 	// so a rotated token reaches the judge with no restart. It is the interface rather than
 	// the reader so a test can stand in for it; cmd/cipherd wires
 	// ciphertoken.NewAccountToken(BROKER_JUDGE_DISPATCH_TOKEN_FILE).
-	Account ciphertoken.Account
-	// HTTP is the client every call is made with; a nil client is http.DefaultClient. Either is
-	// used as a copy that follows no redirect (redirects.Refused): every call carries the broker's
-	// account token, and none of the routes it reads answers a redirect, so a 3xx is Dispatch's
-	// answer by its status, which Issue, Assignee and Ask refuse as any status they do not read.
-	HTTP *http.Client
+	account ciphertoken.Account
+	// http is the client every call is made with: the one NewDispatch is given, as a copy that
+	// follows no redirect.
+	http *http.Client
+}
+
+// NewDispatch is the broker's read of the Dispatch at baseURL, presenting the token account reads
+// on every call, made with client; a nil client is http.DefaultClient. It keeps a copy of either
+// that follows no redirect (redirects.Refused), made once here: every call carries the broker's
+// account token, and none of the routes it reads answers a redirect, so a 3xx is Dispatch's
+// answer by its status, which Issue, Assignee and Ask refuse as any status they do not read.
+func NewDispatch(baseURL string, account ciphertoken.Account, client *http.Client) Dispatch {
+	return Dispatch{baseURL: baseURL, account: account, http: redirects.Refused(cmp.Or(client, http.DefaultClient))}
 }
 
 // Issue is what the judge reads of one issue: enough to tell whether the reason's issue is open
@@ -73,15 +80,15 @@ type Issue struct {
 // whether the issue is open decides nothing. The spec document need not be: a 404, and an answer
 // that is no document, leave HasSpec false and are no error at all.
 //
-// Both calls carry the token Account reads, which is asked for before the first of them: a
+// Both calls carry the token its account reads, which is asked for before the first of them: a
 // deployment whose token cannot be read makes no call at all, and a token file that holds
 // nothing is that same refusal and never an empty bearer for Dispatch to turn down.
 func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
-	token, err := d.Account.Read()
+	token, err := d.account.Read()
 	if err != nil {
 		return Issue{}, err
 	}
-	base := issueURL(d.BaseURL, key)
+	base := issueURL(d.baseURL, key)
 	// Only these three fields of the issue read are decoded. The route answers the whole
 	// issue with its artifacts, children and open asks (api.issueDetail), and the judge reads
 	// none of that, nor the assignee, which Assignee decodes on its own so the shape of one
@@ -118,17 +125,17 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 // Assignee is the person the issue key names is assigned to, "" for an issue nobody is: the
 // broker lists a Legion pod's request for a shared secret in that person's Inbox, the pod's claim
 // naming the issue (requests.Machine.Assignees). It reads the issue alone, one GET under the
-// token Account reads, decodes its assignee and nothing else, and answers ErrNoIssue and every
+// token its account reads, decodes its assignee and nothing else, and answers ErrNoIssue and every
 // other failure as Issue does. A null assignee decodes as "".
 func (d Dispatch) Assignee(ctx context.Context, key string) (string, error) {
-	token, err := d.Account.Read()
+	token, err := d.account.Read()
 	if err != nil {
 		return "", err
 	}
 	var row struct {
 		Assignee string `json:"assignee"`
 	}
-	if err := d.readIssue(ctx, issueURL(d.BaseURL, key), token, key, &row); err != nil {
+	if err := d.readIssue(ctx, issueURL(d.baseURL, key), token, key, &row); err != nil {
 		return "", err
 	}
 	return row.Assignee, nil
@@ -175,14 +182,14 @@ type Ask struct {
 // Ask reads one ask. A 404 is ErrNoAsk — an id Dispatch holds no ask for, which the model is
 // shown as not found — and every other answer that is not 200 is an error, which hands the
 // request to its person.
-// It carries the token Account reads, asked for before the call, so a deployment whose token
+// It carries the token its account reads, asked for before the call, so a deployment whose token
 // cannot be read makes no call at all.
 func (d Dispatch) Ask(ctx context.Context, id string) (Ask, error) {
-	token, err := d.Account.Read()
+	token, err := d.account.Read()
 	if err != nil {
 		return Ask{}, err
 	}
-	endpoint := strings.TrimSuffix(d.BaseURL, "/") + "/api/v1/asks/" + url.PathEscape(id)
+	endpoint := strings.TrimSuffix(d.baseURL, "/") + "/api/v1/asks/" + url.PathEscape(id)
 	// Only these fields of the ask are decoded. The route answers the ask with its replies,
 	// its edits, its followers and where its anchor stands (api.askRead), and the judge reads
 	// none of that: an answer is the person's decision, and a thread under it is not.
@@ -237,7 +244,7 @@ func (d Dispatch) get(ctx context.Context, endpoint, token string, into any) (in
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/json")
-	answer, err := redirects.Refused(cmp.Or(d.HTTP, http.DefaultClient)).Do(request)
+	answer, err := d.http.Do(request)
 	if err != nil {
 		return 0, fmt.Errorf("dispatch did not answer: %w", redact.Class(err))
 	}

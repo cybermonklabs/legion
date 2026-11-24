@@ -17,11 +17,7 @@ import (
 // token.
 func newDispatchClient(t *testing.T, d *dispatchStandIn, token string) Dispatch {
 	t.Helper()
-	return Dispatch{
-		BaseURL: d.server.URL,
-		Account: ciphertoken.NewAccountToken(tokenFile(t, token)),
-		HTTP:    d.server.Client(),
-	}
+	return NewDispatch(d.server.URL, ciphertoken.NewAccountToken(tokenFile(t, token)), d.server.Client())
 }
 
 // TestIssueReadsTheIssueAndItsSpecWithTheProjectedToken: two GETs, each presenting the token as
@@ -65,11 +61,7 @@ func TestIssueReadsTheTokenAgainForEveryCall(t *testing.T) {
 	if err := os.WriteFile(path, []byte("first-token\n"), 0o600); err != nil {
 		t.Fatalf("write the token file: %v", err)
 	}
-	dispatch := Dispatch{
-		BaseURL: stand.server.URL,
-		Account: &ciphertoken.AccountToken{Path: path},
-		HTTP:    stand.server.Client(),
-	}
+	dispatch := NewDispatch(stand.server.URL, &ciphertoken.AccountToken{Path: path}, stand.server.Client())
 	if _, err := dispatch.Issue(t.Context(), testIssue); err != nil {
 		t.Fatalf("the first read: %v", err)
 	}
@@ -152,11 +144,7 @@ func TestIssueRefusesAnUnreadableToken(t *testing.T) {
 			}
 		})
 	}
-	missing := Dispatch{
-		BaseURL: stand.server.URL,
-		Account: ciphertoken.NewAccountToken(filepath.Join(t.TempDir(), "absent")),
-		HTTP:    stand.server.Client(),
-	}
+	missing := NewDispatch(stand.server.URL, ciphertoken.NewAccountToken(filepath.Join(t.TempDir(), "absent")), stand.server.Client())
 	if _, err := missing.Issue(t.Context(), testIssue); err == nil {
 		t.Error("Issue read an issue with no token file; want a refusal")
 	}

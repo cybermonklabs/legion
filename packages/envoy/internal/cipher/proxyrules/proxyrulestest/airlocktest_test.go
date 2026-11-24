@@ -378,7 +378,7 @@ func TestTheDispatchStandAnswersTheReadsItsReaderMakes(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte("the-stand-in-dispatch-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	reader := judge.Dispatch{BaseURL: service.URL(), Account: ciphertoken.NewAccountToken(tokenFile)}
+	reader := judge.NewDispatch(service.URL(), ciphertoken.NewAccountToken(tokenFile), nil)
 
 	issue, err := reader.Issue(t.Context(), "ACME-1353")
 	if err != nil {
