@@ -195,7 +195,7 @@ func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[s
 // awaitCopiesServable waits until every one of copies can be served.
 func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, what, func() bool {
+	waitFor(t, what, func() bool {
 		for _, cache := range copies {
 			if cache.Servable() != nil {
 				return false

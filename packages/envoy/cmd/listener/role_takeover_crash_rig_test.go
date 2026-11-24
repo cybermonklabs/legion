@@ -395,7 +395,7 @@ func (rig *crashRig) onlyRecord(role, previous string) crashRecord {
 // not ended yet.
 func (rig *crashRig) idle(cfg listenerDeliveryHandlerConfig, role string) {
 	rig.t.Helper()
-	waitFor(rig.t, 30*time.Second, "no handover of role "+role+" holding the listener's guard", func() bool {
+	waitFor(rig.t, "no handover of role "+role+" holding the listener's guard", func() bool {
 		release, free := cfg.roleKeepDrains.tryHold(role)
 		if free {
 			release()

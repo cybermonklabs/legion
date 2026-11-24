@@ -1523,7 +1523,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 
 	// The registry's cache still answers a session it holds; a cache miss must read NATS, which
 	// is now gone.
-	waitFor(t, time.Second, "the watcher to cache ses_known", func() bool {
+	waitFor(t, "the watcher to cache ses_known", func() bool {
 		return get("ses_known").Code == http.StatusOK
 	})
 	client.Close()
@@ -1618,7 +1618,7 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 			t.Fatalf("failed to upsert interest for %s: %v", sessionID, err)
 		}
 	}
-	waitFor(t, 5*time.Second, "the interest cache to hold every row", func() bool {
+	waitFor(t, "the interest cache to hold every row", func() bool {
 		listed, err := registry.List()
 		return err == nil && len(listed) == len(interests)
 	})
@@ -1708,7 +1708,7 @@ func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testin
 	registry, sessions := setupInterestLastSeenTest(t, []string{expired},
 		session.WithSessionTTL(sessionTTL), session.WithLastSeenRetention(time.Minute))
 	beat := heartbeat(t, sessions, expired)
-	waitFor(t, 5*time.Second, "the session to expire from the cache", func() bool {
+	waitFor(t, "the session to expire from the cache", func() bool {
 		_, err := sessions.Get(expired)
 		return err != nil
 	})
@@ -2631,18 +2631,22 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 	if err != nil {
 		t.Fatalf("bind the durable as the old task: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the old task's durable to become push-bound", func() bool {
+	waitFor(t, "the old task's durable to become push-bound", func() bool {
 		info, err := old.JS().ConsumerInfo(bus.Stream, consumer)
 		return err == nil && info.PushBound
 	})
 	return old, holder
 }
 
-// waitFor polls cond every 50 ms until it holds, and fails the test as waiting for desc once
-// timeout passes.
-func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
+// waitFor polls cond every 50 ms until it holds, and fails the test as waiting for desc if it
+// never does. Its only bound is the test binary's deadline less testwait's margin: every caller
+// waits for something that must happen, and none of them measures how long it takes, so a span of
+// this helper's own would only decide rows on a loaded runner, where the thing it waits for
+// arrives later than it would on an idle one. A row that really hangs still fails by name, before
+// go test's own timeout, and says what it waited for.
+func waitFor(t *testing.T, desc string, cond func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, 50*time.Millisecond, desc, cond)
+	testwait.UntilPolling(t, 50*time.Millisecond, desc, func() (bool, bool) { held := cond(); return held, held })
 }
 
 // bindOutcome is what a bindListenerDurable run in a goroutine returned, and when.
@@ -2902,7 +2906,7 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "the role holder to be read on the replacement connection", func() bool {
+	waitFor(t, "the role holder to be read on the replacement connection", func() bool {
 		holder, err := registry.RoleHolder(role)
 		return err == nil && holder == holderID
 	})

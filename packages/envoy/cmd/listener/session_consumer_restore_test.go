@@ -653,7 +653,7 @@ func awaitCacheHasNoRecord(t *testing.T, sessions *session.SessionRegistry, sess
 // hold nothing behind anything.
 func awaitCachedTopics(t *testing.T, registry *store.Registry, sessionID string, topics ...string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the interest cache to hold "+sessionID+"'s row with "+strings.Join(topics, ", "), func() bool {
+	waitFor(t, "the interest cache to hold "+sessionID+"'s row with "+strings.Join(topics, ", "), func() bool {
 		interest, ok := registry.Cached(sessionID)
 		if !ok {
 			return false

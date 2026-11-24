@@ -774,7 +774,7 @@ func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 		t.Fatalf("the stored copy = %#v, want message %s from dispatch under its send's key, its frame as payload", queued, message.ID)
 	}
 
-	waitFor(t, 20*time.Second, "the listener to give the copy up", func() bool {
+	waitFor(t, "the listener to give the copy up", func() bool {
 		return len(recordsFor(deliveryRecords(t, rig.deliveryLog.String(), "listener agent delivery given up"), released)) > 0
 	})
 	logs := rig.deliveryLog.String()

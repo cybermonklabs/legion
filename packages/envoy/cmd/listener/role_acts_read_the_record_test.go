@@ -397,7 +397,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			// The same counter the surplus case reads none on counts this handover's read, so
 			// that none is a handover that never started rather than a counter that counts
 			// nothing.
-			waitFor(t, 5*time.Second, "the handover's read of the kept lane to be counted", func() bool { return reads() > 0 })
+			waitFor(t, "the handover's read of the kept lane to be counted", func() bool { return reads() > 0 })
 		})
 	})
 

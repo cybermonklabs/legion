@@ -262,7 +262,7 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 		}
 		return total
 	}
-	waitFor(t, 10*time.Second, "the two tasks to handle the repeated key twice", func() bool { return handled() == 2 })
+	waitFor(t, "the two tasks to handle the repeated key twice", func() bool { return handled() == 2 })
 	repeats := 0
 	for collecting := true; collecting; {
 		select {

@@ -3,7 +3,6 @@ package main
 import (
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -65,7 +64,7 @@ func TestTheCountAndTheFilterJudgeAStoredTopicByOneRule(t *testing.T) {
 					if err := rig.known.RecordWithin(t.Context(), session.KnownSession{SessionID: sessionID, Topics: []string{row.topic}}); err != nil {
 						t.Fatalf("write %s's known-session record naming %s: %v", sessionID, row.topic, err)
 					}
-					waitFor(t, 10*time.Second, "the known-session store to hold "+sessionID+"'s record", func() bool {
+					waitFor(t, "the known-session store to hold "+sessionID+"'s record", func() bool {
 						record, ok := rig.known.Get(sessionID)
 						return ok && slices.Contains(record.Topics, row.topic)
 					})

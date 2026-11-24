@@ -68,7 +68,7 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 			forwarder.enqueue(roleForward{item: item, sessionID: sessionID})
 		}
 	}
-	waitFor(t, 10*time.Second, "every forward published and the live holder's waits counted", func() bool {
+	waitFor(t, "every forward published and the live holder's waits counted", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(published[silent]) == perHolder && len(published[live]) == perHolder && settled.Load() == perHolder
@@ -88,7 +88,7 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 	// The live holder's waits are let go: each is reported as it ends, and the gauge - the one
 	// number that says so - comes down to the silent holder's forwards, which the lane still holds.
 	close(settling)
-	waitFor(t, 10*time.Second, fmt.Sprintf("the live holder's %d forwards reported", perHolder), func() bool {
+	waitFor(t, fmt.Sprintf("the live holder's %d forwards reported", perHolder), func() bool {
 		return forwarder.outstanding() == perHolder
 	})
 
@@ -487,7 +487,7 @@ func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
 		t.Fatalf("the holder received %d forwards live, want the one; the test proves nothing about a forward the stream did not acknowledge", len(live))
 	}
 	assertDeliveryException(t, exceptions, item, "delivery_failed")
-	waitFor(t, 5*time.Second, "the listener to log the failed forward", func() bool {
+	waitFor(t, "the listener to log the failed forward", func() bool {
 		return countRecords(listener, "listener role forward failed", func(record map[string]any) bool {
 			return record["event_id"] == item.EventID && strings.Contains(fmt.Sprint(record["error"]), bus.ErrForwardNotStored.Error())
 		}) == 1

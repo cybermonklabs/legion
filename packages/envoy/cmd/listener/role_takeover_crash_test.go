@@ -282,7 +282,7 @@ func crashTwoListenersCopyAtOnce(t *testing.T) {
 		cancel()
 		sweeps.Wait()
 	})
-	waitFor(t, 30*time.Second, "both listeners' passes writing the record", func() bool { return written.Load() >= 2 })
+	waitFor(t, "both listeners' passes writing the record", func() bool { return written.Load() >= 2 })
 	if got := arrived.Load(); got != 2 {
 		t.Fatalf("the two listeners' passes reached the first copy %d times; want 2, together", got)
 	}
@@ -333,7 +333,7 @@ func crashReapedBeforeAnyPass(t *testing.T) {
 		if recorder := rig.send(rig.mux, http.MethodDelete, "/v1/sessions/"+holder, ""); recorder.Code != http.StatusOK {
 			rig.t.Fatalf("DELETE /v1/sessions/%s: status %d %s", holder, recorder.Code, recorder.Body.String())
 		}
-		waitFor(rig.t, 10*time.Second, holder+" read as not live", func() bool {
+		waitFor(rig.t, holder+" read as not live", func() bool {
 			_, state := rig.harness.sessions.Lookup(holder)
 			return state != session.Live
 		})
@@ -626,7 +626,7 @@ func crashReleaseWhileUnfinished(t *testing.T) {
 	if recorder := rig.claimThrough(rig.mux, b, role, instance); recorder.Code != http.StatusOK {
 		t.Fatalf("%s claims %s: status %d %s; want 200", b, role, recorder.Code, recorder.Body.String())
 	}
-	waitFor(t, 10*time.Second, "the claim's pass meeting the failed read", func() bool { return refused.Load() > 0 })
+	waitFor(t, "the claim's pass meeting the failed read", func() bool { return refused.Load() > 0 })
 	rig.release(b, role, instance)
 	late := rig.lateForward(a, role, "stored after the release")
 	failing.Store(false)
@@ -652,7 +652,7 @@ func crashForwardPastTheFence(t *testing.T) {
 	rig.onLane(role, blocker)
 	crashAwait(t, held, 10*time.Second, "the first forward to "+a+" starting")
 	target := rig.onLane(role, "waits in the previous holder's queue")
-	waitFor(t, 10*time.Second, "the second forward queued behind the first", func() bool {
+	waitFor(t, "the second forward queued behind the first", func() bool {
 		return rig.cfg().roleForwards.outstanding() == 2
 	})
 	rig.clock.advance(roleKeepWindow - roleWakeInterval + time.Minute)

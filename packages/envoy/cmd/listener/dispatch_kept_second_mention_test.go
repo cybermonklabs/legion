@@ -106,7 +106,7 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 	_, event, firstKey, secondKey := outboxFailedRoleComment(t, database, broker, key, role, first, second)
 	runOutbox(t, harness, database, broker)
 
-	waitFor(t, 30*time.Second, "Dispatch's outbox to publish the comment of an unheld role", func() bool {
+	waitFor(t, "Dispatch's outbox to publish the comment of an unheld role", func() bool {
 		return publishedEventAt(t, database, event.ID) != nil
 	})
 	kept := waitForKeptRoleMessage(t, harness.client, role, fmt.Sprintf("dispatch-%d", event.ID))

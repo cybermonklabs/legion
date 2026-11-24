@@ -3,7 +3,6 @@ package main
 import (
 	"slices"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/store"
@@ -47,7 +46,7 @@ func holdRoleCopyBehind(t *testing.T, registry *store.Registry, role string) (re
 // copy is one write behind the claim, which is the state the row is about.
 func requireCopyBehind(t *testing.T, registry *store.Registry, former, next string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the role claim view to name "+next, func() bool {
+	waitFor(t, "the role claim view to name "+next, func() bool {
 		held, err := registry.RolesHeldBy(next)
 		return err == nil && slices.Contains(held, lostLaneRole)
 	})

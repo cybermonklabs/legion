@@ -43,7 +43,7 @@ func resendUnderClose(t *testing.T, server *testnats.Server, closing *natsgo.Con
 		serve(recorder)
 		answered <- recorder
 	}()
-	waitFor(t, 3*time.Second, "the publish to go out on the frozen connection", func() bool {
+	waitFor(t, "the publish to go out on the frozen connection", func() bool {
 		return closing.Stats().OutMsgs > before
 	})
 	closing.Close()

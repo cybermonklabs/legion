@@ -192,7 +192,7 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 	client.none(500*time.Millisecond, "a message carrying the probe's header under a relay receipt")
 
 	_ = client.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-	waitFor(t, 5*time.Second, "the replica to drop the socket's subscription", func() bool {
+	waitFor(t, "the replica to drop the socket's subscription", func() bool {
 		return rig.client.Connection().NumSubscriptions() == held
 	})
 	if probeSessionConnection(t.Context(), prober, session, logger) {

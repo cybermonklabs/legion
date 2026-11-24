@@ -133,7 +133,7 @@ func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
 		t.Fatalf("cut the stream's duplicate window: %v", err)
 	}
 	var fresh heldAnswer
-	waitFor(t, 30*time.Second, "a repeat to be stored once the stream forgets the id", func() bool {
+	waitFor(t, "a repeat to be stored once the stream forgets the id", func() bool {
 		fresh = held(t, rig.publishFrom(t, sender, subject, key))
 		return fresh.status == http.StatusOK
 	})

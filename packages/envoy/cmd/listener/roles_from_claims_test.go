@@ -129,7 +129,7 @@ func TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics(t *testing
 			t.Fatalf("store %s's claim naming %s: %v", role, session, err)
 		}
 	}
-	waitFor(t, 5*time.Second, "the claims to reach the registry's view", func() bool {
+	waitFor(t, "the claims to reach the registry's view", func() bool {
 		a, errA := registry.RolesHeldBy(holder)
 		b, errB := registry.RolesHeldBy(bare)
 		return errA == nil && errB == nil && slices.Equal(a, []string{"reviewer"}) && slices.Equal(b, []string{"planner"})
@@ -183,7 +183,7 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 	if err := client.JS().DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the role claim view to stop answering", func() bool {
+	waitFor(t, "the role claim view to stop answering", func() bool {
 		_, err := registry.RolesHeldBy(sender)
 		return err != nil
 	})
@@ -235,7 +235,7 @@ func refuseRoleClaimView(t *testing.T, registry *store.Registry) func() {
 	return func() {
 		t.Helper()
 		refilling.Start()
-		waitFor(t, 30*time.Second, "the role claim view to answer again", func() bool {
+		waitFor(t, "the role claim view to answer again", func() bool {
 			return registry.RoleViewErr() == nil
 		})
 	}

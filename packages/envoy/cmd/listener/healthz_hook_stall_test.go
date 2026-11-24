@@ -49,7 +49,7 @@ func failReconnectHooks(t *testing.T, client *bus.Client) {
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect in place: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the failed run of the reconnect hooks to be recorded", func() bool {
+	waitFor(t, "the failed run of the reconnect hooks to be recorded", func() bool {
 		_, hookErr := client.HookStall()
 		return hookErr != nil
 	})
