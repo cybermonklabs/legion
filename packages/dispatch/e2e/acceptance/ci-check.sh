@@ -726,8 +726,8 @@ derived k3 "timed_out prints a fail" c-ci fail "$k3_sha" timed_out 301 "$ci_word
 runs_at k3 "a run concluded superseded, which R3 does not name" "$k3_sha" \
   "[$(check_run 9109 contracts superseded)]"
 results k3 "$k3"
-derived k3 "a conclusion R3 does not name prints a fail, naming it as GitHub wrote it" c-ci fail \
-  "$k3_sha" superseded 301 "$ci_words"
+derived k3 "a conclusion GitHub's documentation does not name prints a fail, naming it by its phrase" c-ci fail \
+  "$k3_sha" "(the conclusion is not one GitHub documents)" 301 "$ci_words"
 
 # unread SECTION WHAT WORDS: the last output says GitHub could not be read for c-ci at k3's head,
 # with WORDS from what GitHub answered, prints neither a pass nor a fail, and says it is not known
