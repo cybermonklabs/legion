@@ -28,7 +28,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
+
+// cadenceHandBacks is how many deliveries TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence
+// faults: 32, so the cadence's second WARN delivery, the 31st, is among them, and a delivery after it.
+const cadenceHandBacks = 32
 
 // Each case is a fault that hands one envelope back and makes each of its deliveries write a
 // line before the hand-back decides, from another part of the path: the read of the owed read's
@@ -39,8 +44,8 @@ import (
 // locked table's line to bound, without which it passed with the cadence taken out (N13 of the
 // review at 3a21edb2c9); the line N2 moved, written once after its owe, is
 // TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed's. The envelope is handed
-// back at least 32 times, so the cadence's second WARN delivery, the 31st, is among them, and a
-// delivery after it; then the fault ends and the envelope is acknowledged.
+// back cadenceHandBacks times, so the cadence's second WARN delivery, the 31st, is among them, and a
+// delivery after it; the fault ends inside the last handed-back delivery, and the next is acknowledged.
 //
 // The log is read at DEBUG and cut at each hand-back line, which a delivery writes last: the lines
 // before it are that delivery's. So the envelope is published only once the intake's take-over of
@@ -77,11 +82,9 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 		},
 		{
 			name: "github_has_no_such_pull_request_while_the_owed_table_is_locked", line: "read the revision of the read a pull request is owed",
-			// The lock ends while the envelope comes round every 20 ms, so it may end between the
-			// acknowledged delivery's two owes, the refusal's and the failure's, which then writes
-			// the failure's line: either line is that delivery's own, above DEBUG. Which owe is
-			// written is TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed's case.
-			cause: "status 404", final: []string{"the read is owed, and the reconcile reads it again", "the read it is owed is recorded"},
+			// The lock ends inside the last handed-back delivery, so the acknowledged delivery's
+			// first owe, the refusal's, is written, and its line is that owe's.
+			cause: "status 404", final: []string{"the read is owed, and the reconcile reads it again"},
 			start: func(t *testing.T, ctx context.Context, pool *store.Pool, fake *fakeGitHub, github *githubPulls) (*store.Pool, *githubapp.Client, func()) {
 				github.mu.Lock()
 				delete(github.pulls, number)
@@ -110,7 +113,11 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 			head, branch, body := "4216421642164216421642164216421642164216", "feature/x", "Dispatch: "+issue
 			github.set("acme/widgets", number, "open", head, branch, body, at)
-			intakePool, client, lift := fault.start(t, ctx, pool, fake, github)
+			faultPool, client, lift := fault.start(t, ctx, pool, fake, github)
+			// The fault ends at the end of the last owe of hand-back cadenceHandBacks, inside that
+			// delivery (oweWaitTracer's lift): every delivery makes the failure's owe last, so every
+			// owe of the first cadenceHandBacks deliveries meets the fault and none of the next one's.
+			intakePool := storetest.Traced(t, faultPool, &oweWaitTracer{lift: lift, liftOn: owedFailure, liftAt: cadenceHandBacks}, nil)
 
 			natsClient := intakeTestClient(t)
 			intake := newIntake(natsClient, intakePool, deliveryTestLeases(t, pool),
@@ -123,20 +130,21 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 			deliveries := func() []map[string]any { return logs()[started:] }
 			publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
 				prEnvelope("acme/widgets", number, "opened", head, branch, body, at))
-			const handedBack = 32
 			waitFor(t, 3*time.Minute, func() bool {
-				return len(handBackSegments(deliveries())) >= handedBack
+				return len(handBackSegments(deliveries())) >= cadenceHandBacks
 			}, func() string {
 				return fmt.Sprintf("the envelope was handed back %d times in 3 minutes, want %d: %+v",
-					len(handBackSegments(deliveries())), handedBack, deliveryConsumerInfo(t, natsClient))
+					len(handBackSegments(deliveries())), cadenceHandBacks, deliveryConsumerInfo(t, natsClient))
 			})
-			lift()
 			awaitAcknowledged(t, natsClient)
 
 			records := deliveries()
 			segments := handBackSegments(records)
 			final := records[segments[len(segments)-1].end:]
 			t.Logf("start_lines=%d hand-backs=%d lines=%d final_lines=%d", started, len(segments), len(records), len(final))
+			if len(segments) != cadenceHandBacks {
+				t.Errorf("the envelope was handed back %d times, want %d: the fault ends inside delivery %d", len(segments), cadenceHandBacks, cadenceHandBacks)
+			}
 			for i, segment := range segments {
 				due := segment.delivered%handBackLineEvery == 1
 				if want := i + 1; segment.delivered != want {

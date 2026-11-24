@@ -342,12 +342,14 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 // reconcile reads the pull request again when nothing was owed (review of
 // cybermonklabs/legion#4209 at def907052c, N2).
 //
-// The database takes writes again only between two deliveries (refusalLiftGap). A delivery tries
-// two owes, the refusal's (oweRefusedRead) and, once that is refused, the failure's (deliver's
-// oweEnvelopesRead); a lift between the two takes the failure's and acknowledges the envelope
-// with no refusal owed and no INFO line, which is right for that order and is not the case read
-// here. When the test lifted as soon as NATS had made the second delivery, a run under -race lifted
-// there.
+// The database refuses every owe of the first two deliveries and none after: the fault ends at the
+// end of the second delivery's last owe, inside that delivery (oweWaitTracer's lift). A delivery
+// tries two owes, the refusal's (oweRefusedRead) and, once that is refused, the failure's
+// (deliver's oweEnvelopesRead); a fault that ended between the two would take the failure's and
+// acknowledge the envelope with no refusal owed and no INFO line, which is right for that order
+// and is not the case read here. When the test ended the fault by time - as soon as NATS had made
+// the second delivery, and later a second after a hand-back's line - a run under -race, and a
+// lift held up past that second, ended it there.
 func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testing.T) {
 	for _, refusal := range []struct {
 		name   string
@@ -366,11 +368,12 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 			serveGitHubPulls(t, fake, "acme/widgets")
 			refusal.refuse(fake)
 			client := fake.newTestClient()
-			restore := refuseOwedReads(t, ctx, pool)
+			fault := refuseOwedReads(t, ctx, pool)
+			owes := &oweWaitTracer{lift: fault, liftOn: owedFailure, liftAt: faultedDeliveries}
 			natsClient := intakeTestClient(t)
-			intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+			intake := newIntake(natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
 				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-			intake.redeliverAfter = refusalLiftGap
+			intake.redeliverAfter = faultedRedelivery
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -378,16 +381,15 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 			publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
 				prEnvelope("acme/widgets", number, "opened", poisonHead, "feature/x", "", at))
 
-			// deliver writes the hand-back line once both owes of its delivery were refused, and
-			// hands the envelope back with a delay of redeliverAfter, so the lift lands after the
-			// second delivery's owes and refusalLiftGap before the third delivery's.
-			waitFor(t, 30*time.Second, func() bool { return len(handBackSegments(logs())) >= 2 }, func() string {
-				return fmt.Sprintf("the envelope was handed back %d time(s) in 30 s while its owed read could not be written, want 2: %+v",
-					len(handBackSegments(logs())), deliveryConsumerInfo(t, natsClient))
+			// The fault ends at the end of the second delivery's last owe, inside that delivery
+			// (oweWaitTracer's lift), so both owes of deliveries 1 and 2 are refused and none of
+			// delivery 3's: the third delivery owes GitHub's refusal, whenever it comes.
+			waitFor(t, 30*time.Second, func() bool { return len(handBackSegments(logs())) >= faultedDeliveries }, func() string {
+				return fmt.Sprintf("the envelope was handed back %d time(s) in 30 s while its owed read could not be written, want %d: %+v",
+					len(handBackSegments(logs())), faultedDeliveries, deliveryConsumerInfo(t, natsClient))
 			})
-			faulted := len(handBackSegments(logs()))
-			restore()
 			awaitAcknowledged(t, natsClient)
+			faulted := len(handBackSegments(logs()))
 			delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before
 			var reason string
 			if err := pool.QueryRow(ctx, `select reason from pull_request_reads_owed where repo = 'acme/widgets' and number = $1`, number).Scan(&reason); err != nil {
@@ -400,6 +402,9 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 				}
 			}
 			t.Logf("hand_backs_while_refused=%d deliveries=%d owed=%q info_lines=%d", faulted, delivered, reason, len(said))
+			if faulted != faultedDeliveries {
+				t.Errorf("the envelope was handed back %d times, want %d: the fault ends inside delivery %d", faulted, faultedDeliveries, faultedDeliveries)
+			}
 			if reason != string(owedRefusal) {
 				t.Errorf("#%d is owed %q, want %q", number, reason, owedRefusal)
 			}
@@ -413,12 +418,14 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 	}
 }
 
-// refusalLiftGap is the hand-back delay of an intake whose test ends a fault of
-// pull_request_reads_owed and then reads whether GitHub's refusal was owed: the time between a
-// hand-back's line and the next delivery, in which the test ends the fault, so that it never ends
-// between the two owes of one delivery. Ending it is one statement, so a second is room enough on
-// a loaded machine.
-const refusalLiftGap = time.Second
+// faultedRedelivery is the hand-back delay of an intake whose test faults pull_request_reads_owed
+// for its first deliveries: the fault ends inside the last faulted delivery (oweWaitTracer's
+// lift), so the delay decides no outcome and only keeps the test short.
+const faultedRedelivery = 100 * time.Millisecond
+
+// faultedDeliveries is how many deliveries TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed
+// faults: two, so the envelope is handed back twice, once at the cadence's WARN and once at DEBUG.
+const faultedDeliveries = 2
 
 // The owe of a read GitHub refused waits on a lock no longer than the statements beside it do
 // (owedTableBound), so a lock of pull_request_reads_owed holds a delivery, and one of the
@@ -433,9 +440,9 @@ const refusalLiftGap = time.Second
 // message's context and waited out a 60 s lock, where the other statements fail after 5 s
 // (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, its last note); an owe of the refused
 // read bounded at 25 s beside one bounded at 5 s passed the test's earlier form, which measured
-// only the minute (the deep audit of ac562e9837, finding 1). The lock ends after the first
-// hand-back's line and refusalLiftGap before the second delivery, so it does not end between that
-// delivery's two owes, where the owe beside would take the read as a failure.
+// only the minute (the deep audit of ac562e9837, finding 1). The lock ends at the end of the first
+// delivery's last owe, the failure's, inside that delivery (oweWaitTracer's lift), so it never
+// ends between two owes of one delivery, where the owe beside would take the read as a failure.
 func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *testing.T) {
 	fastPageRetries(t)
 	logs := captureLogs(t)
@@ -448,11 +455,11 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	serveGitHubPulls(t, fake, "acme/widgets")
 	shrinkOwedReadWriteTimeout(t)
 	release := lockOwedReads(t, ctx, pool)
-	owes := &oweWaitTracer{}
+	owes := &oweWaitTracer{lift: release, liftOn: owedFailure, liftAt: 1}
 	natsClient := intakeTestClient(t)
 	intake := newIntake(natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
 		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-	intake.redeliverAfter = refusalLiftGap
+	intake.redeliverAfter = faultedRedelivery
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
@@ -473,7 +480,6 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	})
 	took := time.Since(published)
 	refused, beside := owes.first(owedRefusal), owes.first(owedFailure)
-	release()
 	awaitAcknowledged(t, natsClient)
 	var reason string
 	if err := pool.QueryRow(ctx, `select reason from pull_request_reads_owed where repo = 'acme/widgets' and number = $1`, number).Scan(&reason); err != nil {
@@ -502,9 +508,24 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 // oweWaitTracer times each owe of a read on the pool it traces: the statement of
 // owePullRequestRead that writes pull_request_reads_owed, from the moment pgx sends it to its
 // answer, by the reason it owes.
+//
+// Where lift is set, it also ends a test's fault of pull_request_reads_owed, and decides the
+// fault per delivery rather than by time: it calls lift at the end of the liftAt-th owe of reason
+// liftOn. A delivery whose owes the fault refuses tries the refusal's owe and then the failure's,
+// or the failure's alone, and hands the envelope back only after its last owe has answered, so
+// with liftOn the failure every owe of the first liftAt deliveries meets the fault and no owe of
+// a later delivery does: the lift runs inside the delivery that makes that owe, before it hands
+// the envelope back, so no goroutine of the test, however late it runs, can end the fault between
+// two owes of one delivery (the review of cybermonklabs/legion#4209 at e5412e6626, N1: two owes
+// 500 ms apart and a lift 1.2 s late failed the test that lifted after a one-second gap).
 type oweWaitTracer struct {
+	lift   func()
+	liftOn owedReason
+	liftAt int
+
 	mu    sync.Mutex
 	waits []oweWait
+	ended int
 }
 
 type oweWait struct {
@@ -535,8 +556,16 @@ func (o *oweWaitTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tr
 		return
 	}
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	o.waits = append(o.waits, oweWait{reason: started.reason, took: time.Since(started.at)})
+	due := false
+	if o.lift != nil && started.reason == string(o.liftOn) {
+		o.ended++
+		due = o.ended == o.liftAt
+	}
+	o.mu.Unlock()
+	if due {
+		o.lift()
+	}
 }
 
 // first is how long the first owe of reason waited, 0 where none was made.
