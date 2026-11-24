@@ -172,6 +172,7 @@ jobs:
       go_cache_working_set_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_cache_working_set_test }}
       priorities_seed_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.priorities_seed_check_test }}
       daemon_contract_order_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.daemon_contract_order_test }}
+      worker_image_contract_order_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.worker_image_contract_order_test }}
       architecture_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.architecture_check_test }}
       check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
@@ -417,6 +418,7 @@ jobs:
       go_cache_working_set_test: ${{ needs.changes.outputs.go_cache_working_set_test }}
       priorities_seed_check_test: ${{ needs.changes.outputs.priorities_seed_check_test }}
       daemon_contract_order_test: ${{ needs.changes.outputs.daemon_contract_order_test }}
+      worker_image_contract_order_test: ${{ needs.changes.outputs.worker_image_contract_order_test }}
       architecture_check_test: ${{ needs.changes.outputs.architecture_check_test }}
       check_ci_filters_test: ${{ needs.changes.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
