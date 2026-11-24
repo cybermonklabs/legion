@@ -165,19 +165,19 @@ func sourceFiles(modDir string) ([]string, error) {
 	return files, err
 }
 
-// goList lists patterns in the module at modDir for target and tags, with -export -deps where
-// export is set, so each dependency's export data is built for that target.
-func goList(modDir, target, tags string, export bool, patterns ...string) ([]goListed, error) {
+// goList lists patterns in the module at modDir for build b, with -export -deps where export is
+// set, so each dependency's export data is built for that target.
+func goList(modDir string, b ciBuild, export bool, patterns ...string) ([]goListed, error) {
 	args := []string{"list", "-e", "-json"}
 	if export {
 		args = append(args, "-export", "-deps")
 	}
-	if tags != "" {
-		args = append(args, "-tags="+tags)
+	if b.Tags != "" {
+		args = append(args, "-tags="+b.Tags)
 	}
 	list := exec.Command("go", append(args, patterns...)...)
 	list.Dir = modDir
-	list.Env = append(os.Environ(), targetOf(target).env()...)
+	list.Env = append(os.Environ(), b.env()...)
 	var stderr bytes.Buffer
 	list.Stderr = &stderr
 	// -e reports a package that does not build in its Error and goes on; a broken file is then
@@ -213,7 +213,7 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 	checked := map[string]bool{} // a package's import path and the files one build compiles it from
 	built := map[string]bool{}   // every file some build compiles
 	for _, b := range builds.all() {
-		listed, err := goList(modDir, b.String(), b.Tags, false, "./...")
+		listed, err := goList(modDir, b, false, "./...")
 		if err != nil {
 			c.Unknown = append(c.Unknown, fmt.Sprintf("Go: go list in %s for %s, tags %q: %v", mod, b.ciTarget, b.Tags, err))
 			continue
@@ -243,7 +243,7 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 		if len(need) == 0 {
 			continue
 		}
-		deps, err := goList(modDir, b.String(), b.Tags, true, need...)
+		deps, err := goList(modDir, b, true, need...)
 		if err != nil {
 			c.Unknown = append(c.Unknown, fmt.Sprintf("Go: go list -export in %s for %s, tags %q: %v", mod, b.ciTarget, b.Tags, err))
 			continue

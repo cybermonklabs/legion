@@ -8,7 +8,6 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -432,7 +431,7 @@ func exportedGuardedCensus(t *testing.T, innerType, embed string) finding {
 			t.Fatal(err)
 		}
 	}
-	listed, err := goList(filepath.Join(dir, "m"), runtime.GOOS+"/"+runtime.GOARCH, "", true, "./pkg")
+	listed, err := goList(filepath.Join(dir, "m"), hostBuild(), true, "./pkg")
 	if err != nil {
 		t.Fatal(err)
 	}

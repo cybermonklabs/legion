@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -46,7 +45,7 @@ func TestTheFieldCensusListsItsFindingsInOneOrder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	listed, err := goList(filepath.Join(dir, "m"), runtime.GOOS+"/"+runtime.GOARCH, "", true, "./p")
+	listed, err := goList(filepath.Join(dir, "m"), hostBuild(), true, "./p")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ type ciTarget struct {
 }
 
 // String is the target as go writes a GOOS/GOARCH pair, "goos/goarch": the form the two listing
-// programs take (-targets), goList is given, and the boundary census's API lines name.
+// programs take (-targets) and the boundary census's API lines name.
 func (t ciTarget) String() string { return t.GOOS + "/" + t.GOARCH }
 
 // env is the environment of a build for the target: cgo off where it is not the host's own, since
@@ -27,11 +27,9 @@ func (t ciTarget) env() []string {
 	return env
 }
 
-// targetOf reads a target as String writes it. It is the one place a target's text is read by
-// position: goList takes its target as text, as go's own flags do.
-func targetOf(target string) ciTarget {
-	goos, goarch, _ := strings.Cut(target, "/")
-	return ciTarget{GOOS: goos, GOARCH: goarch}
+// hostBuild is the build of the host's own target with no tags, which the tests' listings read.
+func hostBuild() ciBuild {
+	return ciBuild{ciTarget: ciTarget{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}}
 }
 
 // ciTargets is each GOOS/GOARCH CI builds the modules for, each of which the Go and boundary
