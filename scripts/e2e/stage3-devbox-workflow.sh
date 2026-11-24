@@ -161,6 +161,24 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/operator-dispatch.sh"
 # Nothing the run starts inherits the operator's production bearer (lib/operator-dispatch.sh).
 operator_dispatch_hold_token
+# gh_to_files NAME ARG... runs gh ARG... with its stderr kept in $evidence/gh/NAME.err and its
+# answer in $evidence/gh/NAME.answer, and prints the answer once gh has succeeded. Whatever answers
+# gh's call in GitHub's place holds gh's token and writes both: gh's stderr (the answer's message,
+# `gh: <message> (HTTP 404)`, or the client's own error) and the answer. So this script prints
+# neither: a failure is said in this script's own words, naming the file, and returns gh's status,
+# and a caller prints an answer only as the closed value it holds it to (a pull request's number),
+# naming the file otherwise. The evidence directory survives every outcome.
+gh_to_files() {
+  local name=$1 status=0
+  shift
+  mkdir -p "$evidence/gh"
+  gh "$@" >"$evidence/gh/$name.answer" 2>"$evidence/gh/$name.err" || status=$?
+  if [ "$status" != 0 ]; then
+    printf 'gh exited %s on the call %s; its own words are in %s\n' "$status" "$name" "$evidence/gh/$name.err" >&2
+    return "$status"
+  fi
+  cat -- "$evidence/gh/$name.answer"
+}
 
 # collect_transcripts copies every OMP session the rig's profile wrote into the evidence directory
 # before the isolated profile is removed.
@@ -674,7 +692,8 @@ development=${from:+from $from}${until:+until $until}
 real_gh=$(mise which gh) || fail "mise has no gh"
 realbin=$(real_bin_path "$work/realbin" gh jj tmux)
 require_proof_human
-gh repo view "$repo" --json name >/dev/null || fail "the devbox's ordinary gh cannot read $repo"
+gh_to_files repo-readable repo view "$repo" --json name >/dev/null ||
+  fail "the devbox's ordinary gh cannot read $repo; gh's own words are in $evidence/gh/repo-readable.err"
 mkdir -p "$evidence/logs" "$state" "$work/xdg" "$work/tmux"
 chmod 0700 "$state" "$work/xdg" "$work/tmux"
 make_omp_home "$omp_home"
@@ -879,24 +898,28 @@ primary_issue() {
   send_agent "$root_issue" implementer "Stage 3 proof implementation operation: make the smallest one-file change described by this issue in your $repo workspace, commit it on legion/$root_issue, open its pull request, record the required implementation proof and handoff, then call the legion tool's handoff_complete. Do not merge."
   until_true 900 "implementer pull request on legion/$root_issue" sh -c \
     "gh -R '$repo' pr list --head 'legion/$root_issue' --state open --json number | jq -e 'length == 1' >/dev/null"
-  pr_number=$(gh -R "$repo" pr list --head "legion/$root_issue" --state open --json number --jq '.[0].number')
+  pr_number=$(gh_to_files "pr-of-$root_issue" -R "$repo" pr list --head "legion/$root_issue" --state open --json number --jq '.[0].number')
+  [[ $pr_number =~ ^[1-9][0-9]*$ ]] ||
+    fail "gh answered no pull request number for legion/$root_issue; its answer is in $evidence/gh/pr-of-$root_issue.answer"
   # The planner's handoff is a record on the Dispatch issue, so the pull request's commits are the
   # implementer's alone, authored and committed by the implement App's bot (role_app); no commit is
-  # a handoff, and none changes only .legion/.
-  authors=$(gh api "repos/$repo/pulls/$pr_number/commits" --jq '[.[] | .commit.author.name + "|" + .commit.committer.name] | unique | join(",")')
+  # a handoff, and none changes only .legion/. Their names are gh's answer, kept in its file.
+  authors=$(gh_to_files "authors-of-$pr_number" api "repos/$repo/pulls/$pr_number/commits" --jq '[.[] | .commit.author.name + "|" + .commit.committer.name] | unique | join(",")')
   want_authors="$(role_app implementer)|$(role_app implementer)"
   [ "$authors" = "$want_authors" ] ||
-    fail "$repo#$pr_number commits are authored|committed by $authors, want the implementer's App bot for both: $want_authors"
+    fail "$repo#$pr_number commits are not authored and committed by the implementer's App bot alone, $want_authors: their authors|committers are in $evidence/gh/authors-of-$pr_number.answer"
   wait_for_phase "$root_issue" testing
   assert_round_handoff "$root_issue" 0
   assert_handoff_record "$root_issue" implementer implementing 0
-  # The spec's one-file change: the file every review round's correction must land in.
+  # The spec's one-file change: the file every review round's correction must land in. Its path is
+  # gh's answer, so it is kept in a file of the evidence, which the lines below name.
   smoke_file=$(pull_request_product_files)
+  printf '%s\n' "$smoke_file" >"$evidence/pull-request-files.txt"
   if [ -z "$smoke_file" ] || [ "$(wc -l <<<"$smoke_file")" != 1 ]; then
-    fail "$repo#$pr_number changes product files '$(tr '\n' ' ' <<<"$smoke_file")', want the spec's one file"
+    fail "$repo#$pr_number does not change the spec's one product file alone; the files it changes are in $evidence/pull-request-files.txt"
   fi
   wait_for_worker "$root_issue" tester
-  note "implementer opened $repo#$pr_number on legion/$root_issue changing $smoke_file, its commits authored and committed by the implementer App bot alone, and its completion naming its Dispatch handoff record advanced the daemon to testing"
+  note "implementer opened $repo#$pr_number on legion/$root_issue changing one file ($evidence/pull-request-files.txt), its commits authored and committed by the implementer App bot alone, and its completion naming its Dispatch handoff record advanced the daemon to testing"
   pass
 
   begin primary-tester-pass
@@ -942,8 +965,11 @@ primary_issue() {
       # Legion's role Apps. The implementer answers it as any thread it answers and resolves it
       # with its own gh (the pull request author's resolveReviewThread); the reviewer adjudicates
       # the finding in round 2.
-      bot_thread=$(post_bot_thread 2>"$work/bot-thread.err") ||
-        fail "the proof human could not open a bot review thread on pull request #$pr_number: $(cat "$work/bot-thread.err")"
+      # Its stderr holds the reason, and its answer the thread's first comment's id: both are kept
+      # in files of the evidence, which the lines below name.
+      bot_thread=$(post_bot_thread 2>"$evidence/bot-thread.err") ||
+        fail "the proof human could not open a bot review thread on pull request #$pr_number; the reason is in $evidence/bot-thread.err"
+      printf '%s\n' "$bot_thread" >"$evidence/bot-thread.id"
       bot_note=" A bot also left one review thread on the pull request asking whether the file change is needed: answer it and resolve it as your role says for a thread you answer (it is needed: the spec asks for it), before you complete."
     fi
     send_agent "$root_issue" implementer "Stage 3 proof correction round $round: make the correction the review names (append the line \`$(round_line "$round")\` to the file this pull request changes), push it to the existing pull request #$pr_number, write the implementation handoff, then call the legion tool's handoff_complete: a push alone does not finish this round.$bot_note"
@@ -953,11 +979,11 @@ primary_issue() {
     until_true 120 "round $round's correction on pull request #$pr_number" round_correction_pushed "$round"
     if [ "$round" = 1 ]; then
       until_true 120 "the implementer's answer on the bot's review thread, and its own resolution of it" bot_thread_resolved "$bot_thread" implementer
-      note "the implementer answered the bot's review thread $bot_thread and resolved it with its own gh"
+      note "the implementer answered the bot's review thread (its first comment is $evidence/bot-thread.id) and resolved it with its own gh"
     fi
     if [ "$round" = 2 ]; then
       until_true 120 "the Legion reviewer's reply on the bot's review thread, the thread resolved" bot_thread_resolved "$bot_thread" reviewer
-      note "the bot's review thread $bot_thread carries the Legion reviewer's reply and is resolved: the reviewer adjudicated it and named it to the implementer"
+      note "the bot's review thread (its first comment is $evidence/bot-thread.id) carries the Legion reviewer's reply and is resolved: the reviewer adjudicated it and named it to the implementer"
     fi
     assert_round_handoff "$root_issue" "$round"
     assert_handoff_record "$root_issue" implementer implementing "$round"
@@ -1093,10 +1119,16 @@ primary_issue() {
   [ -z "$handoff_pushes" ] || fail "$repo#$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
   merged_files=$(pull_request_product_files) || fail "could not read the files of $repo#$pr_number"
   handoff_files=$(grep '^\.legion/' <<<"$merged_files" || true)
-  [ -z "$handoff_files" ] || fail "$repo#$pr_number merged handoff files: $(tr '\n' ' ' <<<"$handoff_files")"
+  if [ -n "$handoff_files" ]; then
+    printf '%s\n' "$handoff_files" >"$evidence/merged-handoff-files.txt"
+    fail "$repo#$pr_number merged $(wc -l <<<"$handoff_files") handoff files; they are in $evidence/merged-handoff-files.txt"
+  fi
   clean_smoke_main
   leftovers=$(smoke_main_leftovers)
-  [ -z "$leftovers" ] || fail "$repo main still carries proof leftovers: $(tr '\n' ' ' <<<"$leftovers")"
+  if [ -n "$leftovers" ]; then
+    printf '%s\n' "$leftovers" >"$evidence/smoke-main-leftovers.txt"
+    fail "$repo main still carries $(wc -l <<<"$leftovers") proof leftovers; they are in $evidence/smoke-main-leftovers.txt"
+  fi
   note "$repo#$pr_number merged no commit that changes only .legion/ and no file under .legion/; $repo main carries no .legion/ path and no docs/solutions/ learning"
   release_smoke_main
   pass
@@ -1191,8 +1223,10 @@ else
   # The proof human closes the first root, which frees its admission slot as the merge's close would.
   set_status "$root_issue" "done"
   await_tree_suspended "$root_issue" "the closed tree's architect to be suspended"
-  pr_number=${STAGE3_PR:-$(gh -R "$repo" pr list --state all --limit 1 --json number --jq '.[0].number')}
+  pr_number=${STAGE3_PR:-$(gh_to_files newest-pr -R "$repo" pr list --state all --limit 1 --json number --jq '.[0].number')}
   [ -n "$pr_number" ] || fail "no smoke pull request for the credential check; set STAGE3_PR"
+  [ -n "${STAGE3_PR:-}" ] || [[ $pr_number =~ ^[1-9][0-9]*$ ]] ||
+    fail "gh answered no pull request number for the newest smoke pull request (its answer is in $evidence/gh/newest-pr.answer); set STAGE3_PR"
   note "STAGE3_FROM=$from is a development run, never the proof: $root_issue closed by the proof human, credential check against $repo#$pr_number"
   pass
 fi
@@ -1377,7 +1411,8 @@ restart_scenarios() {
   if GH_CONFIG_DIR="$work/empty-gh" GH_TOKEN='' GITHUB_TOKEN='' GH_HOST='' "$real_gh" api graphql -f query='{viewer{login}}' >/dev/null 2>"$evidence/cred-negative.txt"; then
     fail "gh with an empty GH_CONFIG_DIR and no token still answered"
   fi
-  grep -q GH_TOKEN "$evidence/cred-negative.txt" || fail "gh with an empty GH_CONFIG_DIR failed without naming GH_TOKEN: $(cat "$evidence/cred-negative.txt")"
+  grep -q GH_TOKEN "$evidence/cred-negative.txt" ||
+    fail "gh with an empty GH_CONFIG_DIR failed without naming GH_TOKEN; its own words are in $evidence/cred-negative.txt"
   note "real implementer pane ran $state/bin/gh, the wrapper, over $realbin/gh (-> $real_gh) with GH_CONFIG_DIR=$cred_dir ($owner's directory of $cred_root; 0700, config.yml and hosts.yml 0600) and an empty GH_TOKEN, authenticated as $implement_app, and viewed pull request #$pr_number; the shared clone's helper is !legion git-credential with credential.useHttpPath"
   pass
 
@@ -1512,8 +1547,14 @@ begin cleanup-is-complete
 # reads only main's tree, so it never sees them. This run's own are closed here (run_pull_requests
 # names them), and the EXIT trap closes them for a run that fails or is interrupted.
 closed=$(close_run_pull_requests) || fail "closing this run's pull requests on $repo: $closed"
-open=$(run_pull_requests) || fail "list the open pull requests on $repo (gh's reason is on stderr)"
-[ -z "$open" ] || fail "this run's pull requests are still open on $repo: $(printf '%s' "$open" | tr '\n' ' ')"
+open=$(run_pull_requests) || fail "list the open pull requests on $repo (the reason is above)"
+if [ -n "$open" ]; then
+  # The numbers are gh's answer: printed only as numbers, else kept in the file alone.
+  printf '%s\n' "$open" >"$evidence/open-pull-requests.txt"
+  grep -qvxE '[1-9][0-9]*' <<<"$open" ||
+    fail "this run's pull requests are still open on $repo: $(tr '\n' ' ' <<<"$open")"
+  fail "this run's pull requests are still open on $repo; gh's answer names them in $evidence/open-pull-requests.txt"
+fi
 note "${closed:-no pull request of this run was open on $repo}"
 
 # The isolated OMP profile and the scratch work directory go last, once the transcripts are kept.
