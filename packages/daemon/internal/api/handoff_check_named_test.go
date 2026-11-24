@@ -114,22 +114,36 @@ func TestOneClaimsStepAndLookAreEachTheCallThatSaysSo(t *testing.T) {
 				c.worksLook(t, 2, checkOpenedAt)
 				look()
 				for _, event := range []supervise.Event{supervise.StreamTurnEnd{Claim: c.token}, supervise.StreamTurnStart{Claim: c.token}} {
-					if err := m.Handle(t.Context(), event); err != nil { t.Fatal(err) }
+					if err := m.Handle(t.Context(), event); err != nil {
+						t.Fatal(err)
+					}
 				}
 				step()
 				for _, fact := range facts.recorded() {
-					if report, ok := fact.(intake.CheckReport); ok && report.Verdict == "pass" { t.Fatalf("step became a report: %+v", report) }
+					if report, ok := fact.(intake.CheckReport); ok && report.Verdict == "pass" {
+						t.Fatalf("step became a report: %+v", report)
+					}
 				}
 			case "step queued during look":
 				c.worksLook(t, 2, checkOpenedAt)
-				if err := m.Handle(t.Context(), supervise.RequestDeliver{Claim: c.token, ID: "outbox:testing-2", Task: "test again", Generation: 1, Phase: phase.Testing, Entry: 2}); err != nil { t.Fatal(err) }
-				if p := m.Claim().Pending; p == nil || p.Phase != phase.Testing { t.Fatalf("pending = %+v, want testing", p) }
+				if err := m.Handle(t.Context(), supervise.RequestDeliver{Claim: c.token, ID: "outbox:testing-2", Task: "test again", Generation: 1, Phase: phase.Testing, Entry: 2}); err != nil {
+					t.Fatal(err)
+				}
+				if p := m.Claim().Pending; p == nil || p.Phase != phase.Testing {
+					t.Fatalf("pending = %+v, want testing", p)
+				}
 				look()
 			case "unconfirmed look":
-				if err := m.Handle(t.Context(), supervise.StreamTurnEnd{Claim: c.token}); err != nil { t.Fatal(err) }
+				if err := m.Handle(t.Context(), supervise.StreamTurnEnd{Claim: c.token}); err != nil {
+					t.Fatal(err)
+				}
 				id := "outbox:look:2"
-				if err := m.Handle(t.Context(), supervise.RequestDeliver{Claim: c.token, ID: id, Task: "check production", Generation: 1, CheckLook: supervise.CheckLook{Look: 2, OpenedAt: checkOpenedAt}}); err != nil { t.Fatal(err) }
-				if err := m.Handle(t.Context(), supervise.PromptAcked{Claim: c.token, Generation: m.Claim().Generation, DeliveryID: id}); err != nil { t.Fatal(err) }
+				if err := m.Handle(t.Context(), supervise.RequestDeliver{Claim: c.token, ID: id, Task: "check production", Generation: 1, CheckLook: supervise.CheckLook{Look: 2, OpenedAt: checkOpenedAt}}); err != nil {
+					t.Fatal(err)
+				}
+				if err := m.Handle(t.Context(), supervise.PromptAcked{Claim: c.token, Generation: m.Claim().Generation, DeliveryID: id}); err != nil {
+					t.Fatal(err)
+				}
 				refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass"}, checkOpenedAt), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
 				assertNoNamedFact(t, h, facts)
 			}
@@ -142,16 +156,24 @@ func TestAReportNamingNoOpenCheckOfThatTimeIsRefused(t *testing.T) {
 		t.Run(which, func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			at := phase.Done
-			if which == "step without a check" { at = phase.Testing }
+			if which == "step without a check" {
+				at = phase.Testing
+			}
 			seedIssueAt(t, h, "LEGION-208", at)
-			if which == "replaced" || which == "closed" { seedCheck(t, h, "LEGION-208", claim.RoleTester, which == "closed", false) }
+			if which == "replaced" || which == "closed" {
+				seedCheck(t, h, "LEGION-208", claim.RoleTester, which == "closed", false)
+			}
 			c := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 			opened := checkOpenedAt
-			if which == "replaced" { opened = opened.Add(-24*time.Hour) }
+			if which == "replaced" {
+				opened = opened.Add(-24 * time.Hour)
+			}
 			if which == "step without a check" {
 				seedEntry(t, h, "LEGION-208", claim.RoleTester, 1)
 				takeTask(t, h, c.token, "outbox:testing-1", "test it", 1, 1)
-			} else { c.worksLook(t, 2, opened) }
+			} else {
+				c.worksLook(t, 2, opened)
+			}
 			refused(t, completeCheck(h, HandoffCompleteRequest{GrantID: c.grant(t), Summary: "passes", Verdict: "pass"}, opened), http.StatusConflict, "CHECK_NOT_OPEN")
 			assertNoNamedFact(t, h, facts)
 		})
@@ -188,7 +210,9 @@ func testLateNamedCompletion(t *testing.T, started, hasRecord bool, want string)
 	if started {
 		if err := store.Transact(t.Context(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: c.issue, Role: claim.RoleTester, Claim: c.token, Entry: 1, EntryTask: "test this change"})
-		}); err != nil { t.Fatal(err) }
+		}); err != nil {
+			t.Fatal(err)
+		}
 		takeTask(t, h, c.token, "outbox:testing-1", "test this change", 1, 1)
 	}
 	c.worksLook(t, 2, checkOpenedAt)
@@ -197,26 +221,48 @@ func testLateNamedCompletion(t *testing.T, started, hasRecord bool, want string)
 	var issueBefore record.Issue
 	if err := store.Transact(t.Context(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		i, err := record.NewStore().Issue(ctx, tx, c.issue)
-		if i != nil { issueBefore = *i }
+		if i != nil {
+			issueBefore = *i
+		}
 		return err
-	}); err != nil { t.Fatal(err) }
+	}); err != nil {
+		t.Fatal(err)
+	}
 	req := HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}
-	if hasRecord { req.HandoffID, req.HandoffVersion = c.writeHandoff("test", 1), 1 }
+	if hasRecord {
+		req.HandoffID, req.HandoffVersion = c.writeHandoff("test", 1), 1
+	}
 	response := h.complete(req)
-	if want != "" { refused(t, response, http.StatusConflict, want) } else { completion(t, response) }
+	if want != "" {
+		refused(t, response, http.StatusConflict, want)
+	} else {
+		completion(t, response)
+	}
 	after := namedPhaseRow(t, h, c.issue)
 	if want != "" {
-		if !reflect.DeepEqual(before, after) { t.Fatalf("refusal changed tester row:\nbefore %+v\nafter %+v", before, after) }
+		if !reflect.DeepEqual(before, after) {
+			t.Fatalf("refusal changed tester row:\nbefore %+v\nafter %+v", before, after)
+		}
 	} else if !after.Completed() || after.HandoffRecord != req.HandoffID || after.HandoffVersion != 1 || after.HandoffCommit != headSHA {
 		t.Fatalf("late completion = %+v, want the fresh testing handoff", after)
 	}
-	if got := recordedCheck(t, h, c.issue); !reflect.DeepEqual(got, check) { t.Fatalf("check changed: %+v -> %+v", check, got) }
+	if got := recordedCheck(t, h, c.issue); !reflect.DeepEqual(got, check) {
+		t.Fatalf("check changed: %+v -> %+v", check, got)
+	}
 	if err := store.Transact(t.Context(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		i, err := record.NewStore().Issue(ctx, tx, c.issue)
-		if i == nil || i.Phase != phase.Reviewing || (want != "" && !reflect.DeepEqual(*i, issueBefore)) { t.Fatalf("issue changed: %+v -> %+v", issueBefore, i) }
+		if i == nil || i.Phase != phase.Reviewing || (want != "" && !reflect.DeepEqual(*i, issueBefore)) {
+			t.Fatalf("issue changed: %+v -> %+v", issueBefore, i)
+		}
 		return err
-	}); err != nil { t.Fatal(err) }
-	for _, fact := range facts.recorded() { if _, ok := fact.(intake.CheckReport); ok { t.Fatalf("phase call applied check report: %#v", fact) } }
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, fact := range facts.recorded() {
+		if _, ok := fact.(intake.CheckReport); ok {
+			t.Fatalf("phase call applied check report: %#v", fact)
+		}
+	}
 }
 
 func namedPhaseRow(t *testing.T, h *harness, issue string) record.PhaseRow {
@@ -224,8 +270,14 @@ func namedPhaseRow(t *testing.T, h *harness, issue string) record.PhaseRow {
 	var row record.PhaseRow
 	if err := store.Transact(t.Context(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := record.NewStore().Phases(ctx, tx, issue)
-		for _, r := range rows { if r.Role == claim.RoleTester { row = r } }
+		for _, r := range rows {
+			if r.Role == claim.RoleTester {
+				row = r
+			}
+		}
 		return err
-	}); err != nil { t.Fatal(err) }
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return row
 }

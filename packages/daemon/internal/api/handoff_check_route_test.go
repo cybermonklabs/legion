@@ -75,8 +75,7 @@ func (c liveClaim) worksLook(t *testing.T, look int, openedAt time.Time) {
 }
 
 // newCheckLookClaim is the live claim of role on key whose worker took look of key's production
-// check, the check seedCheck records: what the look's start leaves, and what the completion route
-// reads to tell a report on that look from a phase completion.
+// check, the check seedCheck records: the assignment an explicitly named report must match.
 func newCheckLookClaim(t *testing.T, h *harness, key string, role claim.Role, look int) liveClaim {
 	t.Helper()
 	c := newLiveClaim(t, h, key, role)
@@ -166,8 +165,8 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 	// The testing turn ends with the verdict a check report also names.
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	if !strings.Contains(message, "works no look") || !strings.Contains(message, "recorded nothing") {
-		t.Fatalf("the refusal is %q, want it to say this session works no look and recorded nothing", message)
+	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") {
+		t.Fatalf("the refusal is %q, want the missing check identity and nothing recorded", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }
@@ -212,8 +211,8 @@ func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t 
 
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	if !strings.Contains(message, "works no look") || !strings.Contains(message, "recorded nothing") {
-		t.Fatalf("the refusal is %q, want it to say this session works no look and recorded nothing", message)
+	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") {
+		t.Fatalf("the refusal is %q, want the missing check identity and nothing recorded", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }
@@ -243,7 +242,7 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoLookIsRefused(t *testing.T)
 			req.GrantID = implementer.grant(t)
 
 			message := refused(t, h.complete(req), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-			for _, want := range []string{"LEGION-208 is done", "works no look", "recorded nothing", "pass, pending or fail"} {
+			for _, want := range []string{"LEGION-208 is done", "checkOpenedAt", "recorded nothing", "pass, pending or fail"} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal is %q, want it to say %q", message, want)
 				}
@@ -285,7 +284,7 @@ func TestACompletionOfADoneIssueWithNoOpenProductionCheckIsRefused(t *testing.T)
 
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t),
 				Summary: "production carries it", Verdict: "pass"}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-			for _, want := range []string{"LEGION-208 is done", "works no look", "recorded nothing",
+			for _, want := range []string{"LEGION-208 is done", "checkOpenedAt", "recorded nothing",
 				"no open production check", "nothing here for any role to report"} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal is %q, want it to say %q", message, want)
@@ -339,7 +338,7 @@ func TestACheckReportCarriesTheLookTheClaimWasGivenNotTheChecksCurrentOne(t *tes
 	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, false)
 	implementer := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 1)
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &checkOpenedAt}))
 	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 1, Verdict: "pass", Summary: "looked"}
 	if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
 		t.Fatalf("check report = %+v, want %+v: the record is at look 2, and this worker's look is 1", got, want)
@@ -356,10 +355,11 @@ func TestACheckReportOfAReplacedChecksLookIsRefused(t *testing.T) {
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	implementer.worksLook(t, 2, checkOpenedAt.Add(-24*time.Hour))
 
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}),
+	opened := checkOpenedAt.Add(-24 * time.Hour)
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass", CheckOpenedAt: &opened}),
 		http.StatusConflict, "CHECK_NOT_OPEN")
-	if !strings.Contains(message, "replaced") {
-		t.Fatalf("the refusal is %q, want it to say a later merge replaced the check this look belongs to", message)
+	if !strings.Contains(message, opened.UTC().Format(time.RFC3339Nano)) {
+		t.Fatalf("the refusal is %q, want the named check's opening time", message)
 	}
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)

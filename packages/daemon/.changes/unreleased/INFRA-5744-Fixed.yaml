@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    A production check's look report names its check with checkOpenedAt; without that field,
+    a call completes a step. The daemon no longer reads the issue's phase or a pending task to
+    choose the call. A served look survives phase work until the next look, and a late step
+    completion needs its run's started task and a fresh handoff. Daemon API contract 283 pairs
+    the daemon with both plugins. The Kubernetes guide gives the kept-look reset for rollback.
+time: 2026-11-24T21:48:49Z
+custom:
+    Issue: INFRA-5744

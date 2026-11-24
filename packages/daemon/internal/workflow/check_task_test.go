@@ -13,14 +13,18 @@ func TestTheCheckTaskNamesItsCheckInTheFormAReportSendsBack(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Title: "a production check"}
 	task := checkTask(issue, record.ProductionCheck{Issue: issue.Key, OpenedAt: opened, Looks: 2}, "merge", "merge-43", false)
 	_, value, ok := strings.Cut(task, "check_opened_at ")
-	if !ok { t.Fatal("the task gives no check identity to report") }
+	if !ok {
+		t.Fatal("the task gives no check identity to report")
+	}
 	value = strings.Fields(value)[0]
 	value = strings.TrimRight(value, ".")
 	got, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil || !got.Equal(opened) {
 		t.Fatalf("reported check identity %q = %s (%v), want %s", value, got, err, opened)
 	}
-	if value != "2026-10-19T06:00:00.123456Z" { t.Fatalf("wire identity = %q, want RFC3339 with its microseconds", value) }
+	if value != "2026-10-19T06:00:00.123456Z" {
+		t.Fatalf("wire identity = %q, want RFC3339 with its microseconds", value)
+	}
 }
 
 // checkTaskWakes are the four wakes a look can have, each written as its own caller writes it:
