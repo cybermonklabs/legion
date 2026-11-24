@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -117,7 +118,7 @@ type edgeRepositories struct {
 // the listener's own bearer, and a Location is the answering party's words.
 func newEdgeRepositories(brokerURL string, account ciphertoken.Account, projects []string, withheld *metrics.Counter, logger *logging.Logger) *edgeRepositories {
 	return &edgeRepositories{
-		brokerURL: strings.TrimSuffix(brokerURL, "/"),
+		brokerURL: brokerURL,
 		account:   account,
 		projects:  projects,
 		client:    redirects.Refused(&http.Client{Timeout: edgeRepositoryReadTimeout}),
@@ -143,16 +144,28 @@ func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 // listener's own bearer back: it is read through redact.ReadAnswer, decided on as it came, and
 // named in the error only as the rule reads it, with the bearer the read carried redacted
 // (redact.Answer's Words and Said).
+//
+// The read's URL is edgeRepositoriesPath joined onto the broker URL's path, the URL's query kept
+// ahead of the read's own project=<KEY> and its fragment dropped (urljoin.Join): the route
+// appended to the URL's text would sit inside a query or a fragment the URL holds, and the broker
+// would be asked another path. A broker URL that does not parse or names no host is refused by its
+// class, "not a valid URL" (redact.ClassNotAURL), and so is a request net/http could not build from
+// the joined URL: url.Parse's error, which net/http's repeats, quotes the URL whole, its user
+// information and query included.
 func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, error) {
 	bearer, err := e.account.Read()
 	if err != nil {
 		return nil, fmt.Errorf("%w: read the listener's own account: %w", errRepositoriesUnknown, err)
 	}
+	endpoint, err := urljoin.Join(e.brokerURL, edgeRepositoriesPath+"?project="+url.QueryEscape(project))
+	if err != nil {
+		return nil, fmt.Errorf("%w: the broker URL: %w", errRepositoriesUnknown, redact.Masked(err, redact.ClassNotAURL))
+	}
 	ctx, cancel := context.WithTimeout(ctx, edgeRepositoryReadTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, e.brokerURL+edgeRepositoriesPath+"?project="+url.QueryEscape(project), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errRepositoriesUnknown, err)
+		return nil, fmt.Errorf("%w: build the request: %w", errRepositoriesUnknown, redact.Masked(err, redact.ClassNotAURL))
 	}
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	response, err := e.client.Do(request)
