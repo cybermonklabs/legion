@@ -712,9 +712,21 @@ test("no two of the broadcast composer, Pending changes and the update banner me
     for (const title of titles.slice(0, 3)) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
+    // The three selections have landed once the heading counts them. On a narrow or short screen
+    // the closed composer shows its first chosen agent and a "+N" for the rest (`AgentsPage.tsx`):
+    // the row opens it, so every chosen agent is drawn and each one's chip is read against the
+    // floats below, the "Show fewer" control with them. The composer keeps the group open at every
+    // size the row then reads, and a wide one shows all three with no control.
     await expect(
-      broadcast.getByRole("list", { name: "Selected agents" }).getByRole("listitem")
-    ).toHaveCount(3);
+      broadcast.getByRole("heading", { name: "Broadcast to 3 of 3 selected" })
+    ).toBeVisible();
+    const chosen = broadcast.getByRole("list", { name: "Selected agents" });
+    const more = chosen.getByRole("button", { name: "+2, show all 3 agents" });
+    // One read is safe: the project's fixed viewport decides the "+N", drawn with the heading.
+    if ((await more.count()) > 0) await more.click();
+    for (const title of titles.slice(0, 3)) {
+      await expect(chosen.getByRole("button", { name: new RegExp(`^${title}\\b`) })).toBeVisible();
+    }
     const endedRow = page
       .getByRole("region", { name: "Replied, no longer connected" })
       .getByRole("article")
