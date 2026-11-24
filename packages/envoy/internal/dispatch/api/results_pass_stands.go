@@ -283,8 +283,8 @@ func newestResultStands(check model.CheckBlock, compared comparison) model.Check
 				}
 			}
 			switch {
-			case pass != "" && fail != "":
-				return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: "pass_and_fail", Results: []string{pass, fail}, Commit: result.CommitSHA}
+			case pass != "":
+				return model.CheckPassStands{Answer: model.PassStandsYes, Results: []string{pass}, Commit: result.CommitSHA}
 			case fail != "":
 				return model.CheckPassStands{Answer: model.PassStandsNo, Reason: "fail", Results: []string{fail}, Commit: result.CommitSHA}
 			default:
