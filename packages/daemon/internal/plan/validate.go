@@ -201,12 +201,6 @@ func Validate(p Plan, d Deployment) []Refusal {
 			})
 		}
 	}
-	sets, _ := cycles(p.Tasks)
-	for _, cycle := range sets {
-		found.add(needsItself, cycle[0], func() string {
-			return fmt.Sprintf("task %s needs itself: %s.", cycle[0], chainOf(cycle))
-		})
-	}
 	return found.refusals()
 }
 
