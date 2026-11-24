@@ -151,8 +151,10 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 // settlePosts waits, where no Advance moves the clock, until every function whenStill posted has
 // returned: a grant the gate made before this move reaches its machine, and the decision it
-// starts ends, before the clock moves. A move inside another's callback waits for none, since
-// what that move would wait for waits for the outer move to end. Called with mu held.
+// starts ends, before the clock moves. A move begun while another runs, on any goroutine, waits
+// for none: what it would wait for waits for the running move to end. So a posted function must
+// not move the clock itself; the bound below turns one that does into a panic. Called with mu
+// held.
 func (c *fakeClock) settlePosts() {
 	if c.advancing > 0 || c.posted == 0 {
 		return
@@ -188,11 +190,15 @@ func (c *fakeClock) whenStill(f func()) {
 			c.stood.Wait()
 		}
 		c.mu.Unlock()
+		// Lowered however f ends, its goroutine's end (t.Fatal off the test goroutine) included,
+		// so the next move does not wait the bound for a function that will never return.
+		defer func() {
+			c.mu.Lock()
+			c.posted--
+			c.stood.Broadcast()
+			c.mu.Unlock()
+		}()
 		f()
-		c.mu.Lock()
-		c.posted--
-		c.stood.Broadcast()
-		c.mu.Unlock()
 	}()
 }
 

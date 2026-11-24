@@ -256,6 +256,9 @@ func aGrantAfterTheDaemonsStop(t *testing.T) {
 	h.wantGrantedStart(third, 1)
 	h.wantStartLine(third.token, podIssue, &podWait{claim: second.token, waited: podLoadSettle, endedBy: "failed launch"})
 	h.wantStarts(second.token, 0)
+	// The second's decision writes its cut-short line after it gives the pod on, so the third can
+	// start before the line is written.
+	h.postsReturned()
 	if lines := h.podRecords(podLaunchCutShortLine, second.token); len(lines) != 1 {
 		t.Fatalf("cut-short lines of the stopped role = %d, want 1", len(lines))
 	}

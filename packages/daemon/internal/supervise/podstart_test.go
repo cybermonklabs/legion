@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	goruntime "runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -152,6 +153,32 @@ func TestThePodHarnessRunsAGrantsDecisionBeforeTheClockMoves(t *testing.T) {
 		t.Fatalf("the second's pause stop was made %v and is still posted %v after the move, want it made by the move: the move began before the decision of a grant made while the clock stood still had run, and that decision posted its stop after the move",
 			stopped, pauseStopPosted(second))
 	}
+}
+
+// A function the pod harness posted that ends its goroutine, as a t.Fatal off the test goroutine
+// does, is counted as returned (fakeClock.whenStill), so the next move of the clock does not wait
+// for it and does not panic at its bound (settlePosts).
+func TestTheFakeClockCountsAPostThatEndedItsGoroutineAsReturned(t *testing.T) {
+	c := newFakeClock()
+	ended := make(chan struct{})
+	c.whenStill(func() {
+		defer close(ended)
+		goruntime.Goexit()
+	})
+	testwait.Receive(t, "the posted function to end its goroutine", ended)
+	testwait.Eventually(t, "the clock to count the post as returned", func() bool { return c.waitingPosts() == 0 })
+	c.Advance(time.Second)
+	if got := c.Now(); !got.Equal(epoch.Add(time.Second)) {
+		t.Fatalf("the clock reads %s after a move of a second, want %s", got, epoch.Add(time.Second))
+	}
+}
+
+// postsReturned waits until every grant decision the pod gate posted has returned
+// (fakeClock.whenStill): a test that reads what such a decision writes after it gives the pod on
+// reads it only then.
+func (h *harness) postsReturned() {
+	h.t.Helper()
+	testwait.Eventually(h.t, "every grant decision the pod gate posted to return", func() bool { return h.clock.waitingPosts() == 0 })
 }
 
 // podRole builds the machine of role's claim of podIssue in state: queued, which a spawn starts
