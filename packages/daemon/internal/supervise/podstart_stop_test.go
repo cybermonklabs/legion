@@ -440,6 +440,32 @@ func aResumeParkedOverARefusedStop(t *testing.T) {
 	h.wantClaimState(second, StateLaunching)
 }
 
+// pausedPodWithAWaitingStart is a pod whose first role has started and loads, and whose second
+// role's start waits at the gate for that load, in a project that has just paused (pause 7): the
+// first role's load ending grants the second's start during the pause.
+func pausedPodWithAWaitingStart(t *testing.T) (h *harness, first, second *podRole, flag *pauseFlag, stops *stopTransaction) {
+	t.Helper()
+	h = podHarness(t, "")
+	flag, stops = &pauseFlag{}, &stopTransaction{store: h.store}
+	h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
+	first = h.podRole(claim.RoleArchitect, StateSuspended)
+	second = h.podRole(claim.RoleImplementer, StateSuspended)
+	h.mustPostTo(first.m, RequestResume{Claim: first.token})
+	h.wantStarts(first.token, 1)
+	h.parks(second, RequestResume{Claim: second.token}, 0)
+	flag.set(7)
+	return h, first, second, flag, stops
+}
+
+// pauseStopPosted is whether r's machine holds the pause gate's stop of its claim, posted and not
+// yet run (TimerPause, pauseGate).
+func pauseStopPosted(r *podRole) bool {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	_, posted := r.m.timers[TimerPause]
+	return posted
+}
+
 // grantedDuringAPause is a pod whose second role's start waited at the gate from before a project
 // pause and was granted while the pause stands, its pause's own stop row not having reached the
 // claim yet, as a stop row behind other rows has not: the grant starts no process, the pod's start
@@ -447,27 +473,10 @@ func aResumeParkedOverARefusedStop(t *testing.T) {
 // pauseGate; decision 7 of dispatch://INFRA-3759), which the harness's clock fires when it moves.
 func grantedDuringAPause(t *testing.T) (h *harness, second *podRole, flag *pauseFlag, stops *stopTransaction) {
 	t.Helper()
-	h = podHarness(t, "")
-	flag, stops = &pauseFlag{}, &stopTransaction{store: h.store}
-	h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
-	first := h.podRole(claim.RoleArchitect, StateSuspended)
-	second = h.podRole(claim.RoleImplementer, StateSuspended)
-	h.mustPostTo(first.m, RequestResume{Claim: first.token})
-	h.wantStarts(first.token, 1)
-	h.parks(second, RequestResume{Claim: second.token}, 0)
-
-	// The project pauses while the second's start waits, and the first role's load then ends: the
-	// gate grants the second's start during the pause.
-	flag.set(7)
+	h, first, second, flag, stops := pausedPodWithAWaitingStart(t)
 	h.loadEnds(first)
-	stopPosted := func() bool {
-		second.m.mu.Lock()
-		defer second.m.mu.Unlock()
-		_, posted := second.m.timers[TimerPause]
-		return posted
-	}
 	testwait.Eventually(t, "the second's grant, during the pause, to start its process or to post its stop for the pause", func() bool {
-		return h.starts(second.token) > 0 || stopPosted()
+		return h.starts(second.token) > 0 || pauseStopPosted(second)
 	})
 	second.m.Wait()
 	if n := h.starts(second.token); n != 0 {

@@ -264,14 +264,13 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 
 // SessionAccessChannel is the Postgres channel each write of what the session content rule reads
 // (access.SessionContentClause) notifies inside its own statement, when the statement wrote a row,
-// so every Dispatch process hears it once the write commits and none hears a write that did not: a
-// session's tie to a person or a project it wrote in (queueSessionProject), the tie and the reached
-// projects a broker-issued token records (access.TieSession, access.RecordListedReach), a stored
-// listener answer (api: storeRouteRoster) and `envoy-dispatch backfill-session-projects`. It
-// carries no payload. Each process's document service moves its access epoch on it (docs:
-// accessEpoch), so a document socket asks its rule again before its next frame; a project's owner,
-// visibility or access list and a group announce on store.AccessChangedChannel instead, which
-// moves the epoch too.
+// so every Dispatch process hears it once the write commits and none hears a write that did not:
+// the tie and the reached projects a broker-issued token records (access.TieSession,
+// access.RecordListedReach), and the writes later slices add, of a session's tie to a person or a
+// project it wrote in and of a stored listener answer. It carries no payload. A later slice moves
+// each process's document access epoch on it, so a document socket asks its rule again before its
+// next frame; a project's owner, visibility or access list and a group announce on
+// store.AccessChangedChannel instead.
 const SessionAccessChannel = "dispatch_session_access_changed"
 
 // AnnounceSessionAccess is the notification on SessionAccessChannel as an SQL expression, for the

@@ -159,6 +159,14 @@ itself, whose tests import its sources by relative path.
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
   `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
 
+- A row whose verdict rests on a connection's backpressure bounds what the connection may hold
+  itself. On loopback the connection's buffers are the kernel's, and the TCP receive buffer grows to
+  `net.ipv4.tcp_rmem`'s maximum: 4 MiB in a gVisor pod, 6 MiB on a Kubernetes node's Linux 6.12 and
+  32 MiB by Linux 7.0's default, which CI's runner has. At 32 MiB a paused server let the
+  connection take a whole 24 MiB upload, so the client saw no progress and cut it off.
+  `socketDispatch` in `packages/envoy-client/src/__tests__/dispatch-keyed-writes.test.ts` reads a
+  body only 1 MiB past what its server took.
+
 - A suite that needs a program this host may not have skips with that program's name. Call
   `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
   `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs
@@ -169,6 +177,16 @@ itself, whose tests import its sources by relative path.
   both builds the two halves into a single list and prints one line, rather than calling
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
+
+- A test under `scripts/e2e/lib` gates on a host program with `hostGate` from the same module
+  instead, declaring its gated rows with the gate's own `test` and `describe`: outside CI each
+  gated row skips as with `skipWithout`, naming the program, and under `GITHUB_ACTIONS` each fails
+  by its own name, naming the program, since the job that runs those tests carries every program
+  they need, and a skip there would be a green job with the proof gone (`skipOutsideCI` in
+  `packages/daemon/internal/launcher/rolenamespace_test.go` is the same rule). Its `reason` takes a
+  sentence of the caller's own (a library such as libpq), and its `never` names programs whose
+  absence fails the rows on any host. A single row that never skips for a program calls
+  `requireHostTools` in its body instead: the rows that run python3 do one or the other.
 
 - A test that requires a command to have left in place a signal it was started ignoring, as
   `nohup` starts one ignoring SIGHUP and a shell's `&` job ignoring SIGINT, reads the command's
@@ -184,6 +202,15 @@ itself, whose tests import its sources by relative path.
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
+
+- Give a Bun process the test starts under a HOME of its own `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`,
+  unless the row tests that cache. Where neither that variable nor `XDG_CACHE_HOME` names another
+  place, Bun keeps its transpiler cache under HOME, so a child in an empty HOME writes a file and a
+  rename for each module it caches (Bun caches only files above a size floor) before its own code
+  runs: 282 for claude-envoy's channel server. Each is a directory-entry operation on the disk the
+  HOME is on, and on a shared disk under load they made such a start take tens of seconds. With
+  "0" the child transpiles as before and writes nothing (`NO_TRANSPILER_CACHE` in
+  `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
   rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
@@ -220,6 +247,42 @@ itself, whose tests import its sources by relative path.
   unrecorded, where a parse that throws out of `Bun.serve`'s `fetch` fails whichever test is
   running. A request with a JSON object body, an empty body or no body is recorded and answered as
   the case's own answer decides.
+
+## A Bun test waits for its fact, and its command sets its one guard
+
+- Wait for a fact through `@legion/test-fixtures/wait` (`until`, `settled`), and give the wait no
+  duration. Each wait ends at its row's deadline: the newest mark of the row-deadline preload plus
+  the command's `--timeout`, less a margin, so that the wait's own failure prints before Bun's
+  timeout ends the row (`packages/test-fixtures/src/wait.ts`). A probe that throws ends the wait at
+  once, so a probe that reads a report which makes its fact impossible throws. A wait under
+  `jest.useFakeTimers()` refuses to start, because those timers hold `performance.now()` and every
+  timer still until the test advances them. Outside `bun test`, a Bun driver takes its deadline
+  from `LEGION_PROOF_DEADLINE_MS`, epoch milliseconds its script sets, and with neither a wait
+  refuses to start.
+
+- A command whose rows wait through it loads the row-deadline preload,
+  `--preload @legion/test-fixtures/row-deadline`, as `packages/test-fixtures`' own `test` script
+  does. The preload marks the start of each row, the end of each row's body, the end of each row
+  and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in
+  a `beforeAll` or in a row's first `afterEach`. Without it a wait counts from its own start, and
+  its failure says so. A hook that no mark directly precedes counts from an earlier mark, so its
+  waits end earlier than its own clock would allow, never later
+  (`packages/test-fixtures/src/row-deadline.ts`). So a row's second `afterEach` counts from the mark
+  before its first, and the time the first took is gone from it.
+
+- A command sets one guard, its `--timeout`. A row or a hook sets no timeout of its own, neither a
+  third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads
+  the command's guard and not a row's. The exceptions are a row of `packages/dispatch/e2e/__tests__`
+  that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through
+  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one
+  measured download or one measured process run with no shared wait in it: such a hook or row
+  takes a guard of its own, at least twice its slowest reading on a machine that runs the suite
+  (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's
+  guards are written, gives that number with the readings and their runs. A file whose rows need a
+  much larger guard than the rest runs in a second `bun test` command of the same script, with its
+  own `--timeout` and the same preload. Tests written before this rule still set guards of their
+  own (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's
+  guard as it is carried to the shared wait.
 
 ## A test that looks for a process it started
 
@@ -476,9 +539,10 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
-`daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
-detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
+`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
+under the race detector, once per run, in the `daemon-go-race` job's step "Test the concurrent
+packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`), beside the
+`daemon-go` job; `daemon-go`'s plain step ("Test the Go daemon") leaves it out,
 and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
@@ -566,12 +630,6 @@ composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
-Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
-need the schema as it stood at some earlier version, so its own tests take
-`openMigratedTestStore(t, version)` (`store_test.go`): a clone of a template migrated through
-that version, built once per version from the nearest template below it, and dropped by the
-package's `TestMain`. A test moving such a database further forward applies only the migrations
-past its version (`migrateAbove`), not the whole history again.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
@@ -584,6 +642,14 @@ every package of it.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
 in place, and the tests run beside each other on databases of their own.
+
+Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
+need the schema as it stood at some earlier version. Its own tests take
+`openMigratedTestStore(t, version)` (`store_test.go`): a clone of a template migrated through that
+version. A run keeps one template for each version its tests ask for, each built from the nearest
+template below it, and the package's `TestMain` drops them all when the run ends. A test that
+moves its clone further forward applies only the migrations past its version (`migrateAbove`),
+not the whole history again.
 
 A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater

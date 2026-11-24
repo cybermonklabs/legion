@@ -16,9 +16,9 @@ import (
 )
 
 // TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished: session_projects places every
-// session in the projects it acted in only once `envoy-dispatch backfill-session-projects` has
-// written session_projects_filled's row. Before that - after migration
-// 20261116081157_session_projects_proven, and while `backfill-session-projects --reset` refills a
+// session in the projects it acted in only once the backfill a later slice adds has written
+// session_projects_filled's row. Before that - after migration
+// 20261116081157_session_projects_proven, and while that backfill's reset refills a
 // deployment that already holds a private project - a session that acted in a private project may
 // have no row placing it there, and the open arm, which refuses only a session a row places in a
 // project the viewer does not see, would show it. So while the marker is absent and a project is
@@ -117,8 +117,8 @@ func TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing.T) {
 	}
 }
 
-// TestARestrictedViewerReadsNoOtherSessionWhileTheFillIsUnfinished: `backfill-session-projects
-// --reset` empties session_projects and its marker and refills the pairs one by one, so in the
+// TestARestrictedViewerReadsNoOtherSessionWhileTheFillIsUnfinished: the reset of the backfill a
+// later slice adds empties session_projects and its marker and refills the pairs one by one, so in the
 // middle of a refill a session can hold its pair in a project the viewer sees and not yet its pair
 // in a private project the viewer does not see. The arm of a viewer that is not open trusted the
 // pairs as the open arm, before it waited for the marker, did not: so while a project is private

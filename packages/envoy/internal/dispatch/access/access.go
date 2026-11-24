@@ -138,10 +138,10 @@ func ProjectClause(projectExpr, viewerParam string) string {
 }
 
 // HiddenPrivateProjectClause passes a row of the project keyExpr names when that project is
-// private and the viewer does not see it: the projects whose ownership of a repository hides it
-// from the viewer (refs.RepositoryClause). It probes the projects primary key once per row: its
+// private and the viewer does not see it: the projects whose ownership of a repository is to hide it
+// from the viewer, in a read a later slice adds. It probes the projects primary key once per row: its
 // `exists` ends in `offset 0`, without which Postgres hashes every private project once per
-// statement in its place (refs.TestRepositoryClauseProbesEachRepositoryWithoutAHashedSubplan).
+// statement in its place.
 func HiddenPrivateProjectClause(keyExpr, viewerParam string) string {
 	return clause("HiddenPrivateProjectClause", `(not `+ProjectClause(keyExpr, viewerParam)+` and exists (
 		select from projects hiding where hiding.key = (`+keyExpr+`) and hiding.visibility = 'private'
@@ -192,9 +192,9 @@ func PersonClause(loginExpr, viewerParam string) string {
 // is public, the open viewer sees each one, no pair is of a private project, and a viewer that is
 // not open reads a session by its pairs alone, as before (R9).
 //
-// session_projects places every session in the projects it acted in only once
-// `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
-// 20261116081157_session_projects_proven empties both tables, and the command's --reset does again
+// session_projects places every session in the projects it acted in only once the backfill a later
+// slice adds has written session_projects_filled's row: migration
+// 20261116081157_session_projects_proven empties both tables, and the backfill's reset does again
 // in a deployment that may already hold a private project, then refills the pairs one by one.
 // Until the row is written a session of a private project may have no row placing it there, or
 // have its pair in a project the viewer sees back before its pair in one the viewer does not, so
@@ -257,7 +257,7 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     whatever else it did; another person's credential acting in it ties it to them, which the
 //     live view's re-ask before the replay and before each batch of frames reads.
 //   - An open viewer, while a project is private, is relayed a session that wrote in no project
-//     the viewer does not see, once `envoy-dispatch backfill-session-projects` has filled the pairs
+//     the viewer does not see, once the later slice's backfill has filled the pairs
 //     (session_projects_filled). Where the listener record lists the session's credential's
 //     projects, each must be one the viewer sees ([] included), and the session must have written
 //     in a project or list one. That list is the whole rule for such a session: a full member's

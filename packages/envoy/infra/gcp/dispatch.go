@@ -18,6 +18,8 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
@@ -320,6 +322,11 @@ type DispatchArgs struct {
 	OidcAudience string `pulumi:"oidcAudience,optional"`
 	OidcIssuer   string `pulumi:"oidcIssuer,optional"`
 
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK: the lowercase email of a full
+	// member, whom Dispatch makes, at boot, the owner of every project the migration left without
+	// one. Unset renders nothing.
+	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
+
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
 	// DISPATCH_APP_PEM_B64 read from the key AppPrivateKeySecretKey of the Kubernetes Secret
@@ -330,6 +337,13 @@ type DispatchArgs struct {
 	AppId                   string `pulumi:"appId,optional"`
 	AppPrivateKeySecretName string `pulumi:"appPrivateKeySecretName,optional"`
 	AppPrivateKeySecretKey  string `pulumi:"appPrivateKeySecretKey,optional"`
+	// VerdictAppId is the id of the GitHub App that writes `legion-verdict`, which Dispatch reads
+	// as DISPATCH_VERDICT_APP_ID: its CI reconcile pass leaves that App's check suites out of the
+	// CI record, as the listener does under ENVOY_VERDICT_APP_ID (aws:WebhookListener's
+	// verdictAppId), so give both the same id. It is optional, rendered only when given, and only
+	// with the App above, whose key alone runs that pass; refused blank, and refused when it is
+	// not a GitHub App id (contracts.IsGithubAppID).
+	VerdictAppId *string `pulumi:"verdictAppId,optional"`
 
 	DatabaseVersion    *string `pulumi:"databaseVersion,optional"`
 	DatabaseTier       *string `pulumi:"databaseTier,optional"`
@@ -602,6 +616,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
 		{"oidcIssuer", args.OidcIssuer},
+		{"projectOwnerFallback", args.ProjectOwnerFallback},
 		{"appClientId", args.AppClientId},
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
@@ -621,6 +636,9 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		if bus.HoldsSeed(domain) {
 			return fmt.Sprintf("signInWorkspaceDomains[%d]", i), true
 		}
+	}
+	if args.VerdictAppId != nil && bus.HoldsSeed(*args.VerdictAppId) {
+		return "verdictAppId", true
 	}
 	if args.DatabaseVersion != nil && bus.HoldsSeed(*args.DatabaseVersion) {
 		return "databaseVersion", true
@@ -757,7 +775,8 @@ type dispatchSettings struct {
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
-	appClientID, appID                          string
+	projectOwnerFallback                        string
+	appClientID, appID, verdictAppID            string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
 	replicas                                    int
@@ -1104,10 +1123,12 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
 		{"oidcIssuer", args.OidcIssuer != ""},
+		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey != ""},
+		{"verdictAppId", args.VerdictAppId != nil},
 	}, dispatchDatabaseInputs(args), []dispatchInput{
 		{"namespace", args.Namespace != nil},
 		{"existingNamespace", args.ExistingNamespace != nil},
@@ -1469,6 +1490,16 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 // (https://cloud.google.com/compute/docs/naming-resources).
 var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
 
+// refuseDispatchAccessValues refuses, when the stack plans, the access values Dispatch refuses at
+// boot, naming the input, so one typo never reaches a Deployment whose one replica would then not
+// start: an owner fallback that is not a lowercase email.
+func refuseDispatchAccessValues(args *DispatchArgs) error {
+	if fallback := args.ProjectOwnerFallback; fallback != "" && principal.CheckPersonLogin(fallback) != nil {
+		return core.InputErrorf("projectOwnerFallback", "projectOwnerFallback must be a lowercase email, the one a full member signed in with")
+	}
+	return nil
+}
+
 // refuseDispatchEntrance judges what the deployment's own entrance, a load balancer serving
 // publicOrigin, hands the component: loadBalancerSourceRanges, the CIDRs it reaches the app's pods
 // from, and networkEndpointGroupName, the endpoint group it takes as its backend. Each needs
@@ -1787,6 +1818,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if args.OidcIssuer != "" && !issuerURL(args.OidcIssuer) {
 		return dispatchSettings{}, core.InputErrorf("oidcIssuer", "oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", args.OidcIssuer)
 	}
+	if err := refuseDispatchAccessValues(args); err != nil {
+		return dispatchSettings{}, err
+	}
 	var appSet, appMissing []string
 	for _, in := range []struct{ input, value string }{
 		{"appClientId", args.AppClientId},
@@ -1813,6 +1847,19 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 		if !isSecretKey(args.AppPrivateKeySecretKey) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretKey", "appPrivateKeySecretKey %q must match %s", args.AppPrivateKeySecretKey, secretKeyRule)
+		}
+	}
+	// The verdict App's id is read by Dispatch's CI reconcile pass alone, which the App's key
+	// runs, so without the App it would do nothing and is refused rather than dropped; given, it
+	// is held to the rule the listener holds ENVOY_VERDICT_APP_ID to, so the two can match.
+	if args.VerdictAppId != nil {
+		switch {
+		case len(appSet) == 0:
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId is given without the GitHub App (appClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey), whose key alone runs the CI reconcile pass that reads it: set the App, or leave verdictAppId out")
+		case strings.TrimSpace(*args.VerdictAppId) == "":
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId is blank: give the verdict App's id, or leave it out")
+		case !contracts.IsGithubAppID(*args.VerdictAppId):
+			return dispatchSettings{}, core.InputErrorf("verdictAppId", "verdictAppId %q is not a GitHub App id: a whole number above 0, with no leading zero", *args.VerdictAppId)
 		}
 	}
 	azure, err := newDispatchAzure(args)
@@ -1863,10 +1910,14 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
+	s.projectOwnerFallback = args.ProjectOwnerFallback
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
 	s.appKeySecretKey = args.AppPrivateKeySecretKey
+	if args.VerdictAppId != nil {
+		s.verdictAppID = *args.VerdictAppId
+	}
 	s.azure = azure
 	s.answerer = answerer
 	if args.DatabaseVersion != nil {

@@ -14,7 +14,7 @@
 -- Its body is access.projectMadePrivateFunctionBody as that renders it:
 -- access.TestTheMadePrivateTriggerIsTheBodyGoRenders fails while the function a migrated database
 -- holds differs from that text. It takes each person's session-owner lock, exclusive, in login
--- order, as access.recordReachedProjects does, and the trigger is deferred to commit, so those
+-- order, as store.RecordReachedProjects does, and the trigger is deferred to commit, so those
 -- locks are the last the switch takes. It names every table by its schema and sets no search_path.
 -- A pair is written only where no row holds it, and nothing removes one.
 --

@@ -27,6 +27,7 @@ import (
 // serverDefaultsAnUnsetCap of what the reconnecting connection reports is false, the older
 // server's answer, on a server that caps such a stream.
 func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {

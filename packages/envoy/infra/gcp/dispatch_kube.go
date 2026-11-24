@@ -793,10 +793,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appEnv = append(appEnv, corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_OIDC_ISSUER"), Value: issuer},
 			valueEnv("DISPATCH_OIDC_AUDIENCE", s.oidcAudience))
 	}
+	if s.projectOwnerFallback != "" {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PROJECT_OWNER_FALLBACK", s.projectOwnerFallback))
+	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
 		// run time (GKE SecretSync), so the Deployment does not wait on it.
 		appEnv = append(appEnv, valueEnv("DISPATCH_APP_CLIENT_ID", s.appClientID), valueEnv("DISPATCH_APP_ID", s.appID), secretEnv("DISPATCH_APP_PEM_B64", s.appKeySecretName, s.appKeySecretKey))
+		// The verdict App's id follows the App it runs under, only when given, so a deployment
+		// that gives none renders what it rendered before the input.
+		if s.verdictAppID != "" {
+			appEnv = append(appEnv, valueEnv("DISPATCH_VERDICT_APP_ID", s.verdictAppID))
+		}
 	}
 	if s.azure.embedder {
 		// Meaning search embeds on Azure AI Foundry. The endpoint, and the deployment when given,

@@ -11,9 +11,9 @@ import (
 // whose member kind memberExpr answers, sees the project projectAlias names. The group arm
 // counts a member only through a people row of a full member, so a restricted member, or a login
 // nobody has signed in as, is never admitted by a group (v24 R2). It is the access package's
-// rule (access: the package comment), written here because the store's own writes of a person's
-// member kind read it too (PgPeopleStore's SignInSubject and ConfirmSubject, RecordReachedProjects),
-// and the access package imports this one. It starts with the access package's marker and its own
+// rule (access: the package comment), written here because the store's own RecordReachedProjects
+// reads it too, as a later slice's writes of a person's member kind (PgPeopleStore) do, and the
+// access package imports this one. It starts with the access package's marker and its own
 // name (access.Marker), as every fragment of that package does
 // (access.TestEverySQLFragmentStartsWithTheMarker).
 func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
@@ -55,9 +55,9 @@ const SessionOwnerLock = "dispatch-session-owner"
 // as a broker token's person does in access.VisibleProjectsSQL). Its callers name only people who
 // saw the project before the change: the access package's writes name the person taken off the
 // list, a group's full members, the members taken out of a group and the owner the project was
-// taken from; PgPeopleStore's writes of a member kind name the person whose kind they change, with
-// the projects that person saw under the kind the row held (projectsSeenAs). A switch of a project
-// to private records nothing for the people tied to a session (access:
+// taken from; a later slice's writes of a member kind (PgPeopleStore) are to name the person whose
+// kind they change, with the projects that person saw under the kind the row held. A switch of a
+// project to private records nothing for the people tied to a session (access:
 // projectMadePrivateFunctionBody). A session's transcript holds what it read while its person saw
 // the project, so the content rule reads each pair as a project the session acted in
 // (access.SessionContentClause); nothing removes one.
