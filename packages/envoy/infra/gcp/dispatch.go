@@ -107,7 +107,7 @@ const (
 // counted pools and its permanent listeners. The listener's and the front door's pods open none.
 // TestDispatchConnectionsPerPodIsTheServers fails when a counted pool's size changes and this
 // does not.
-const dispatchConnectionsPerPod = 116
+const dispatchConnectionsPerPod = 117
 
 // Autopilot's bounds for the app pod's total request, the general-purpose compute class's for a pod
 // with pod anti-affinity, which every Dispatch pod carries, or with the safe-to-evict annotation,
@@ -242,6 +242,19 @@ type DispatchArgs struct {
 	// person's, so a Workspace account there could hold a passkey, which Workspace offboarding does
 	// not end. Unset renders nothing.
 	SignInPasskey bool `pulumi:"signInPasskey,optional"`
+	// ParentStatusRule renders DISPATCH_PARENT_STATUS_RULE=on, which turns on Dispatch's
+	// parent-status rule: Dispatch refuses a write that leaves a parent's status out of line with
+	// its children's, and at boot it runs the one-time fix of the pairs that break the rule. Set it
+	// only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs
+	// the releases with the daemon's side of the rule, which send the parent-status options.
+	// Second, each project's instructions retry a failed root architect with a status write of
+	// todo alone, not backlog and then todo, and that project's daemon and controller have read
+	// them. The rule refuses that backlog while an issue under the root is in work. No process of
+	// the earlier setting may serve beside one with the new setting: at one replica the app's
+	// Recreate strategy stops the old pod before the new one starts, and at more replicas the app
+	// is scaled to zero first. Unset renders nothing, so a deployment that leaves it unset renders
+	// what it always rendered.
+	ParentStatusRule bool `pulumi:"parentStatusRule,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
 	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
@@ -764,6 +777,7 @@ type dispatchSettings struct {
 	signIn                                      struct{ clientID, domain string }
 	signInOutside, signInPasskey                bool
 	signInWorkspaceDomains                      []string
+	parentStatusRule                            bool
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
@@ -1103,6 +1117,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"signInOutside", args.SignInOutside},
 		{"signInPasskey", args.SignInPasskey},
 		{"signInWorkspaceDomains", len(args.SignInWorkspaceDomains) > 0},
+		{"parentStatusRule", args.ParentStatusRule},
 		{"publicOrigin", args.PublicOrigin != ""},
 		{"iapAudience", args.IapAudience != nil},
 		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
@@ -1874,6 +1889,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// (dispatchDomainName, workspaceDomainRule).
 	s.signIn.domain = strings.TrimSpace(args.SignInDomain)
 	s.signInOutside = args.SignInOutside
+	s.parentStatusRule = args.ParentStatusRule
 	s.outsideOrigin = outsideOrigin
 	s.signInPasskey = args.SignInPasskey
 	if len(args.SignInWorkspaceDomains) > 0 {

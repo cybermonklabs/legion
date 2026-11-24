@@ -707,25 +707,29 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     return url.href;
   };
   /** services_up given URL and the NATS nats, in a services directory of its own, with a psql
-   * first on PATH that appends to psql.log each time it runs. until_true runs its command once, so
-   * a URL that passed every check would reach psql at once. Answers services_up's status and
-   * standard error, whether psql ran, and what the services directory holds. */
+   * first on PATH that appends to psql.log each time it runs, and a go that answers
+   * connections_needed's count. until_true runs its command once, so a URL that passed every
+   * check would reach psql at once. Answers services_up's status and standard error, whether psql
+   * ran, and what the services directory holds. */
   function up(url: string, nats = "nats://127.0.0.1:4222") {
     const dir = freshDir("services-up");
     const bin = path.join(dir, "bin");
     const log = path.join(dir, "psql.log");
     const services = path.join(dir, "services");
     mkdirSync(bin);
+    mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
     mkdirSync(services);
     writeFileSync(path.join(bin, "psql"), `#!/bin/sh\necho ran >>${JSON.stringify(log)}\n`, {
       mode: 0o755,
     });
+    writeFileSync(path.join(bin, "go"), "#!/bin/sh\necho 29\n", { mode: 0o755 });
     const result = bash(
       `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
-        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_url_host")}\n${fn("services_up")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_url_host")}\n${fn("connections_needed")}\n` +
+        `${fn("services_up")}\n` +
         `until_true() { shift 2; "$@"; }\n` +
-        `S=$3\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
-      [pgUrl, loopbackDsn, services],
+        `root=$3\nS=$4\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
+      [pgUrl, loopbackDsn, path.join(dir, "root"), services],
       {
         PATH: `${bin}:${childEnv.PATH}`,
         SKILL_SCENARIOS_POSTGRES_URL: url,
@@ -828,14 +832,18 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     );
     writeFileSync(
       path.join(bin, "go"),
-      `#!/bin/sh\n[ "$1 $2" = "build -o" ] || exit 0\n` +
-        `printf '#!/bin/sh\\necho "fixturebuckets: nats: no servers available for connection" >&2\\nexit 1\\n' >"$3"\n` +
-        `chmod +x "$3"\n`,
+      `#!/bin/sh\ncase "$1 $2" in\n` +
+        `"run ./internal/dispatch/store/cmd/connections") echo 29 ;;\n` +
+        `"build -o")\n` +
+        `  printf '#!/bin/sh\\necho "fixturebuckets: nats: no servers available for connection" >&2\\nexit 1\\n' >"$3"\n` +
+        `  chmod +x "$3" ;;\n` +
+        `esac\n`,
       { mode: 0o755 }
     );
     const result = bash(
       `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
-        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_url_host")}\n${fn("services_up")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_url_host")}\n${fn("connections_needed")}\n` +
+        `${fn("services_up")}\n` +
         `until_true() { shift 2; "$@" >/dev/null; }\nnats_ready() { :; }\n` +
         `start_listener() { echo "the listener started" >&2; }\n` +
         `root=$3\nS=$4\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
