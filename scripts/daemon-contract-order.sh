@@ -72,6 +72,13 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n $rev ]] || usage
 
+# The paths below are the repository's, from the top of its working tree, while ls-tree and
+# diff-tree take a pathspec, and ls-tree prints names, relative to the directory git runs in. So
+# the script reads from the top wherever it is started: ci-job-daemon-go.yaml starts it in
+# packages/daemon, where those reads would find no entry and print `v1:` alone.
+top=$(git rev-parse --show-toplevel) || die "not in a git checkout"
+cd "$top"
+
 head=$(git rev-parse --verify --quiet "${rev}^{commit}") || die "${rev} names no commit of this clone"
 tip=$(git rev-parse --verify --quiet "${main}^{commit}") ||
   die "${main} names no commit of this clone: fetch main (git fetch --filter=blob:none origin refs/heads/main:refs/remotes/origin/main), or name main's ref with --main"
