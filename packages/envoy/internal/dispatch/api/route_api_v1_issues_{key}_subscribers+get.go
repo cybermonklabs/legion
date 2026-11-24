@@ -13,5 +13,6 @@ var _ = declareRoute(routeDecl{
 	Description: "Sessions subscribed to an issue's topics.",
 	Handler:     (*server).listIssueSubscribers,
 	OAuthScopes: routeScopeSet{model.ScopePerson},
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: []subscriber{}},
 })

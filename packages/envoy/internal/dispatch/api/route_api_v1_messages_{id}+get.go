@@ -14,5 +14,6 @@ var _ = declareRoute(routeDecl{
 	// it is looked for among that issue's messages alone; the owner-free forms look among
 	// every message, a direct conversation's included. The read answers NOT_FOUND.
 	ID:    &idRoute{Kind: "message", NotFound: "NOT_FOUND"},
+	Read:  readEntry{Writes: readWritesNothing},
 	Shape: routeShape{Status: http.StatusOK, Response: messageRead{}},
 })

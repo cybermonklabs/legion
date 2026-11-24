@@ -82,8 +82,15 @@ type gitTree struct {
 	rev  string
 }
 
+// read is one file of package api at this commit. A file the commit does not hold reads as
+// os.ErrNotExist, as a directory's missing file does, so a caller tells "this revision has no
+// such file" from "git could not be asked".
 func (t gitTree) read(name string) ([]byte, error) {
-	return t.repo.run("show", t.rev+":"+path.Join(apiDir, name))
+	content, err := t.repo.run("show", t.rev+":"+path.Join(apiDir, name))
+	if err != nil && strings.Contains(err.Error(), "does not exist in") || err != nil && strings.Contains(err.Error(), "exists on disk, but not in") {
+		return nil, fmt.Errorf("%s at %s: %w", name, t.rev, os.ErrNotExist)
+	}
+	return content, err
 }
 
 func (t gitTree) filesNaming(word string) ([]string, error) {

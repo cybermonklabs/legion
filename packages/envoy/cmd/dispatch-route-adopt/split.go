@@ -7,7 +7,10 @@ import (
 	"go/ast"
 	"go/format"
 	"go/parser"
+	"go/printer"
 	"go/token"
+	"net/http"
+	"os"
 	"path"
 	"slices"
 	"strconv"
@@ -16,14 +19,16 @@ import (
 
 // The old layout's files and the names its route facts stood under, in package api.
 const (
-	tableFile  = "routes_table.go"
-	shapesFile = "routes_shapes.go"
+	tableFile       = "routes_table.go"
+	shapesFile      = "routes_shapes.go"
+	readClassesFile = "read_classes.go"
 
 	writeClassesName    = "writeClasses"
 	idRoutesName        = "idRoutes"
 	routeScopesName     = "routeScopes"
 	readScopeRoutesName = "readScopeRoutes"
 	routeShapesName     = "routeShapes"
+	readClassesName     = "readClasses"
 
 	// hooksCondition is the one condition of routes() whose rows are the test hooks', mounted
 	// only where Deps.TestHooksEnabled is set. readRows refuses a row under any other condition,
@@ -51,8 +56,8 @@ type oldRoute struct {
 	handler                                            string // the method of *server that serves it
 	testHook                                           bool
 
-	writeClass, id, scopes, shape fact
-	readScope                     bool
+	writeClass, id, scopes, shape, read fact
+	readScope                           bool
 
 	// packages are the import names the route's expressions qualify an identifier with.
 	packages map[string]bool
@@ -118,16 +123,20 @@ func hasOldLayout(src tree) (bool, error) {
 	return found, nil
 }
 
-// readOldLayout parses the two files and joins every route's row to its side-map entries. It
-// answers the routes in the table's order and the import path of every package name the two
-// files import.
+// readOldLayout parses the old layout's files and joins every route's row to its side-map
+// entries. It answers the routes in the table's order and the import path of every package name
+// those files import. The table and the shapes are required; read_classes.go is #4557's and a
+// branch made before it has none.
 func readOldLayout(src tree) ([]*oldRoute, map[string]string, error) {
 	fset := token.NewFileSet()
 	parsed := map[string]*ast.File{}
 	sources := map[string][]byte{}
-	for _, name := range []string{tableFile, shapesFile} {
+	for _, name := range []string{tableFile, shapesFile, readClassesFile} {
 		content, err := src.read(name)
 		if err != nil {
+			if name == readClassesFile && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return nil, nil, err
 		}
 		file, err := parser.ParseFile(fset, name, content, parser.ParseComments|parser.SkipObjectResolution)
@@ -169,6 +178,20 @@ func readOldLayout(src tree) ([]*oldRoute, map[string]string, error) {
 		byKey[route.key] = route
 	}
 
+	// A key written as a package constant, such as read_classes.go's whoamiRow.
+	constants := stringConstants(parsed)
+	constantOf := func(name string) (string, bool) {
+		if text, known := constants[name]; known {
+			return text, known
+		}
+		// A constant another file of the package declares, such as the going catalogue's path.
+		text, err := packageStringConstant(src, name)
+		if err != nil {
+			return "", false
+		}
+		constants[name] = text
+		return text, true
+	}
 	maps := []struct {
 		file, name string
 		into       func(*oldRoute) *fact
@@ -177,13 +200,24 @@ func readOldLayout(src tree) ([]*oldRoute, map[string]string, error) {
 		{tableFile, idRoutesName, func(route *oldRoute) *fact { return &route.id }},
 		{tableFile, routeScopesName, func(route *oldRoute) *fact { return &route.scopes }},
 		{shapesFile, routeShapesName, func(route *oldRoute) *fact { return &route.shape }},
+		// #4557 moved the read from a list beside the table into a map of its own file. A branch
+		// made before it has the list and no map, and one made after has the map and no list, so
+		// each is read where it is and neither is required.
+		{readClassesFile, readClassesName, func(route *oldRoute) *fact { return &route.read }},
 	}
 	for _, side := range maps {
-		literal := packageLiteral(parsed[side.file], side.name)
+		file, read := parsed[side.file]
+		if !read && side.file == readClassesFile {
+			continue
+		}
+		literal := packageLiteral(file, side.name)
 		if literal == nil {
+			if side.file == readClassesFile {
+				return nil, nil, fmt.Errorf("%s holds no %s: this reader knows the read as a list in %s (before #4557) or as that map, and this branch has neither", readClassesFile, readClassesName, tableFile)
+			}
 			return nil, nil, fmt.Errorf("%s declares no %s", side.file, side.name)
 		}
-		entries, err := mapEntries(fset, parsed[side.file], literal, func(node ast.Node) string { return text(side.file, node) })
+		entries, err := mapEntries(fset, file, literal, func(node ast.Node) string { return text(side.file, node) }, constantOf)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", side.name, err)
 		}
@@ -197,9 +231,11 @@ func readOldLayout(src tree) ([]*oldRoute, map[string]string, error) {
 		}
 	}
 
+	// readScopeRoutes is the pre-#4557 spelling of the read: a list of the routes a read-only
+	// token may call, which is now the map above. A branch that holds neither states no read.
 	list := packageLiteral(parsed[tableFile], readScopeRoutesName)
 	if list == nil {
-		return nil, nil, fmt.Errorf("%s declares no %s", tableFile, readScopeRoutesName)
+		return routes, imports, nil
 	}
 	for _, element := range list.Elts {
 		key, err := stringValue(element)
@@ -403,7 +439,7 @@ type mapEntry struct {
 // group reaches is the reader's to tell - the maps nest one group in another, and most of
 // routeShapes' comments stand above one entry with the next entry right below - so reading it
 // onto every entry up to the next blank line would set it on routes it says nothing of.
-func mapEntries(fset *token.FileSet, file *ast.File, literal *ast.CompositeLit, text func(ast.Node) string) ([]mapEntry, error) {
+func mapEntries(fset *token.FileSet, file *ast.File, literal *ast.CompositeLit, text func(ast.Node) string, constant func(string) (string, bool)) ([]mapEntry, error) {
 	line := func(pos token.Pos) int { return fset.Position(pos).Line }
 	var comments []*ast.CommentGroup
 	for _, group := range file.Comments {
@@ -418,7 +454,7 @@ func mapEntries(fset *token.FileSet, file *ast.File, literal *ast.CompositeLit, 
 		if !ok {
 			return nil, fmt.Errorf("an entry is no key and value: %s", text(element))
 		}
-		key, err := stringValue(pair.Key)
+		key, err := stringValueWith(pair.Key, constant)
 		if err != nil {
 			return nil, err
 		}
@@ -475,13 +511,99 @@ func noCommentBetween(fset *token.FileSet, file *ast.File, lbrace, rbrace token.
 	return nil
 }
 
-// stringValue is the value of a string literal.
+// stringValue is the value of a string a key is written as: a literal, an `http.MethodX` constant,
+// or the two joined with `+`, which is how a key naming the method by its constant is written
+// ("GET /api/v1/whoami" as `http.MethodGet + " /api/v1/whoami"`). Any other expression is refused:
+// its value is the Go compiler's to know, and a key read wrongly would move a route's fact onto
+// another route.
 func stringValue(expression ast.Expr) (string, error) {
-	literal, ok := expression.(*ast.BasicLit)
-	if !ok || literal.Kind != token.STRING {
-		return "", fmt.Errorf("%T is no string literal", expression)
+	return stringValueWith(expression, func(name string) (string, bool) { return "", false })
+}
+
+// stringValueWith is stringValue with a package constant's value, for a key written as one
+// (`whoamiRow`, which read_classes.go declares beside its map).
+func stringValueWith(expression ast.Expr, constant func(string) (string, bool)) (string, error) {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		text, known := constant(value.Name)
+		if !known {
+			return "", fmt.Errorf("%s is no string constant this reader can resolve", value.Name)
+		}
+		return text, nil
+	case *ast.BasicLit:
+		if value.Kind != token.STRING {
+			return "", fmt.Errorf("%s is no string literal", value.Kind)
+		}
+		return strconv.Unquote(value.Value)
+	case *ast.SelectorExpr:
+		pkg, isIdent := value.X.(*ast.Ident)
+		method, known := httpMethodConstants[value.Sel.Name]
+		if !isIdent || pkg.Name != "http" || !known {
+			return "", fmt.Errorf("%s is no http.MethodX constant", text(expression))
+		}
+		return method, nil
+	case *ast.BinaryExpr:
+		if value.Op != token.ADD {
+			return "", fmt.Errorf("%s joins its parts with %s, and a key is written with +", text(expression), value.Op)
+		}
+		left, err := stringValueWith(value.X, constant)
+		if err != nil {
+			return "", err
+		}
+		right, err := stringValueWith(value.Y, constant)
+		if err != nil {
+			return "", err
+		}
+		return left + right, nil
+	default:
+		return "", fmt.Errorf("%T is no string literal, http.MethodX constant, or the two joined with +", expression)
 	}
-	return strconv.Unquote(literal.Value)
+}
+
+// stringConstants is every package-level string constant the files declare, by name: a key
+// written as one (`whoamiRow`) reads as its value.
+func stringConstants(files map[string]*ast.File) map[string]string {
+	constants := map[string]string{}
+	for _, file := range files {
+		for _, declared := range file.Decls {
+			general, isGeneral := declared.(*ast.GenDecl)
+			if !isGeneral || general.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range general.Specs {
+				value, isValue := spec.(*ast.ValueSpec)
+				if !isValue {
+					continue
+				}
+				for index, ident := range value.Names {
+					if index >= len(value.Values) {
+						continue
+					}
+					if text, err := stringValue(value.Values[index]); err == nil {
+						constants[ident.Name] = text
+					}
+				}
+			}
+		}
+	}
+	return constants
+}
+
+// httpMethodConstants is net/http's method constants by their name, so a key that names its method
+// by the constant reads as the method.
+var httpMethodConstants = map[string]string{
+	"MethodGet": http.MethodGet, "MethodHead": http.MethodHead, "MethodPost": http.MethodPost,
+	"MethodPut": http.MethodPut, "MethodPatch": http.MethodPatch, "MethodDelete": http.MethodDelete,
+	"MethodConnect": http.MethodConnect, "MethodOptions": http.MethodOptions, "MethodTrace": http.MethodTrace,
+}
+
+// text is an expression as Go prints it, for a refusal naming what it could not read.
+func text(expression ast.Expr) string {
+	var out strings.Builder
+	if err := printer.Fprint(&out, token.NewFileSet(), expression); err != nil {
+		return fmt.Sprintf("%T", expression)
+	}
+	return out.String()
 }
 
 // qualifiers adds to into every import name expression qualifies an identifier with.
@@ -607,8 +729,17 @@ func renderRoute(route *oldRoute, imports map[string]string) ([]byte, error) {
 		}
 		field(route.scopes.comments, "OAuthScopes", value)
 	}
-	if route.readScope {
-		field(nil, "ReadScope", "true")
+	switch {
+	case route.read.value != "":
+		value, err := typedLiteral("readEntry", route.read.value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", readClassesName, err)
+		}
+		field(route.read.comments, "Read", value)
+	case route.readScope:
+		// A branch made before #4557, whose read is a name in readScopeRoutes and not an entry:
+		// the route it named is a read that writes nothing, which is what the list meant.
+		field(nil, "Read", "readEntry{Writes: readWritesNothing}")
 	}
 	if route.shape.value != "" {
 		value, err := typedLiteral("routeShape", route.shape.value)

@@ -10,5 +10,6 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Read an agent's conversation's file or image and its versions by slug.",
 	Handler:     (*server).getArtifact,
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: artifactRead{}},
 })

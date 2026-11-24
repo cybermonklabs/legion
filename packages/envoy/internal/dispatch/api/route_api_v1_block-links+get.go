@@ -12,5 +12,6 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Links from blocks of one document to blocks of another: ?from=<document ref>&to=<document ref>; both block nodes, the edge kind, and when and in which version the source wrote each, newest first.",
 	Handler:     (*server).getBlockLinks,
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
 })

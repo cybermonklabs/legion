@@ -13,5 +13,6 @@ var _ = declareRoute(routeDecl{
 	// The read goes through loadAsk or loadAskOwner, whose missing row is writeHandlerError's
 	// NOT_FOUND.
 	ID:    &idRoute{Kind: "ask", NotFound: "NOT_FOUND"},
+	Read:  readEntry{Writes: readWritesNothing, WriteNote: "The ask's anchor block is read through the document service. " + docsCompactionNote},
 	Shape: routeShape{Status: http.StatusOK, Response: askRead{}},
 })

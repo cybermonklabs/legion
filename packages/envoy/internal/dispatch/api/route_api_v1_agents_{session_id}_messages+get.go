@@ -13,5 +13,6 @@ var _ = declareRoute(routeDecl{
 	Description: "A session's targeted messages, newest first.",
 	Handler:     (*server).listAgentMessages,
 	OAuthScopes: routeScopeSet{model.ScopePerson},
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: []messageRead{}},
 })

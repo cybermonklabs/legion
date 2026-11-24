@@ -10,5 +10,6 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "List an issue's documents and files.",
 	Handler:     (*server).listArtifacts,
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: []artifactRead{}},
 })

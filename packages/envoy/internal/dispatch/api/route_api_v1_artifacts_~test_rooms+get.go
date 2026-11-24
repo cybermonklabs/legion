@@ -11,5 +11,7 @@ var _ = declareRoute(routeDecl{
 	Description: "Test hook: list the documents this process holds a room of.",
 	Handler:     (*server).listResidentRooms,
 	TestHook:    true,
-	Shape:       routeShape{Status: http.StatusOK, Response: residentRooms{}},
+	// The test hooks' GET rows, which read this process's memory.
+	Read:  readEntry{Writes: readWritesNothing},
+	Shape: routeShape{Status: http.StatusOK, Response: residentRooms{}},
 })

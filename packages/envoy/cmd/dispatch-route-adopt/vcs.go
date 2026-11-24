@@ -99,41 +99,66 @@ func prefixed(names []string) []string {
 	return paths
 }
 
-// routesNotAdopted names every route the branch adds, changes or removes whose file the tree does
-// not yet hold as the branch leaves it. A file holding conflict markers counts as adopted: this
-// step wrote them, and the person resolves them. Empty means the branch's routes are all in their
-// files, or gone where the branch removed them, which is what "the step has run" means.
-func routesNotAdopted(dir string, baseFiles, branchFiles map[string][]byte) ([]string, error) {
-	var missing []string
+// routesNotAdopted names every route the branch adds, changes or removes that this step has not
+// touched yet, which is what "the step has not run on this merge" means. The question is not
+// whether a route's file holds the branch's text: a person may have resolved a conflict this step
+// left, writing text that is neither side's, and a second run would take routes_table.go and
+// routes_shapes.go from the new side again and throw away what they carried into them by hand.
+//
+// So a route counts only where the file still stands as the merge left it: the new side's text,
+// or absent where the new side has none. Every other state is a run's own work or a person's --
+// the branch's text this step wrote, the conflict markers it wrote, or a hand resolution -- and
+// none of them is a route waiting to be written.
+func routesNotAdopted(dir string, baseFiles, branchFiles map[string][]byte, newSide tree) ([]string, error) {
+	// untouched reports whether name stands as the merge left it, and what the merge left.
+	untouched := func(name string) (bool, error) {
+		ours, err := newSide.read(name)
+		onNewSide := err == nil
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+		current, err := os.ReadFile(filepath.Join(dir, name))
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return !onNewSide, nil
+		case err != nil:
+			return false, err
+		}
+		return onNewSide && bytes.Equal(current, ours), nil
+	}
+	var pending []string
 	for _, name := range slices.Sorted(maps.Keys(baseFiles)) {
 		if _, inBranch := branchFiles[name]; inBranch {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			missing = append(missing, name) // the branch removed the route and the file is still there
-		} else if !errors.Is(err, os.ErrNotExist) {
+		// The branch removed the route: the step removes its file, so it is pending while the
+		// file still stands as the merge left it.
+		stands, err := untouched(name)
+		if err != nil {
 			return nil, err
+		}
+		if stands {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				pending = append(pending, name)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(branchFiles)) {
-		branchContent := branchFiles[name]
-		if baseContent, inBase := baseFiles[name]; inBase && bytes.Equal(baseContent, branchContent) {
+		if baseContent, inBase := baseFiles[name]; inBase && bytes.Equal(baseContent, branchFiles[name]) {
 			continue
 		}
-		current, err := os.ReadFile(filepath.Join(dir, name))
+		stands, err := untouched(name)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				missing = append(missing, name)
-				continue
-			}
 			return nil, err
 		}
-		if !bytes.Equal(current, branchContent) && !hasConflictMarkers(current) {
-			missing = append(missing, name)
+		if stands {
+			pending = append(pending, name)
 		}
 	}
-	slices.Sort(missing)
-	return slices.Compact(missing), nil
+	slices.Sort(pending)
+	return slices.Compact(pending), nil
 }
 
 // recordConflict writes one path into git's index as a conflict: the merge base at stage 1, the

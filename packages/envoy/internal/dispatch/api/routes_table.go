@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -223,8 +224,9 @@ type routeDecl struct {
 	// names a service and no person hold neither.
 	//
 	// The scope `read` a read-only token holds is never one of these: a scope here is one the
-	// caller must hold, and no person holds that one. The routes such a token may call are the
-	// ones that state ReadScope, which its own gate reads (refuseReadOnlyToken).
+	// caller must hold, and no person holds that one. The routes such a credential may call are
+	// the GET routes whose declarations class them as reads (Read), which its own gate reads
+	// (refuseReadOnlyToken).
 	//
 	// A route that takes an id written short needs no scope of its own for it: the prefix layer
 	// (resolveIDPrefixes, ID) runs inside this gate - register wraps the gate around it, so a
@@ -235,24 +237,19 @@ type routeDecl struct {
 	// a whole id needs none with a prefix.
 	OAuthScopes routeScopeSet
 
-	// ReadScope is a route a read-only token may call: a token the secrets broker minted from a
-	// read entry, which holds the scope read alone and names a service and a session and no
-	// person and no project (model.Credential.ReadOnly). Every other route, and GET /ws/live
-	// beside them, answers such a token 403 READ_ONLY_TOKEN before anything else the route does
-	// (refuseReadOnlyToken), so a route added later stays closed to it until it states this.
+	// Read is the read class of a GET route: what it writes when it serves a request, and the
+	// note that says so (readEntry, read_classes.go). A route a read-only credential may call is
+	// one whose class is readWritesNothing; every other route, and GET /ws/live beside them,
+	// answers such a caller 403 READ_ONLY_TOKEN before anything else the route does
+	// (refuseReadOnlyToken), so a route added later is closed to it until someone has read the
+	// handler and classed it here.
 	//
-	// A route states it only when, for such a caller, it writes nothing but the row that records
-	// its DPoP proof as spent (store.DPoPProofs) and caches Dispatch rebuilds from what it
-	// already holds: the display trees a read with Dispatch-Trees: 1 stores
-	// (displayTreeReader.storeOf) and the stored listener roster (route_roster).
-	// TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches holds each such route to that.
-	//
-	// It is no value of OAuthScopes: a scope there is one the caller must hold, and no person
-	// holds read, so this says what a credential that holds read alone may still call rather
-	// than what a route requires. For the same reason the route index (GET /api/v1), the OpenAPI
-	// document and the reference generated from it do not carry it. Only a GET route may state
-	// it, and register refuses to mount a table where another does (readRoutesNotGET).
-	ReadScope bool
+	// Every GET route states a class, and no other route states one: a write is not a read
+	// whatever its handler does, and register refuses to mount a table that breaks either rule
+	// (readClassRefusals). The class is not a scope, so the route index (GET /api/v1), the
+	// OpenAPI document and the reference generated from it do not carry it, and only the
+	// read-only gate reads it.
+	Read readEntry
 
 	// Shape is what the route takes and answers, in the Go types the OpenAPI document is
 	// reflected out of (routeShape, routes_shapes.go). Every route states one, which
@@ -274,34 +271,34 @@ func declareRoute(route routeDecl) routeDecl {
 	return route
 }
 
-// readRoutesNotGET names, sorted, every route of routes that states ReadScope and is not a GET
-// route. register refuses to mount a table that holds one: a POST, PUT, PATCH or DELETE route is
-// a write, which a read-only token is minted never to make.
-func readRoutesNotGET(routes []apiRoute) []string {
+// readClassRefusals names, sorted, every way the table's declarations fail to class their reads,
+// each line naming its route: a GET route stating no class, one whose Writes is no class at all, a
+// GET that writes (readWritesState) stating no WriteNote to name what it writes, and a route that
+// is not a GET stating a class, which would open a write to a credential minted only to read.
+// register refuses to mount a table this names anything for, so a GET route added later is served
+// to no read-only credential until someone has read its handler and classed it.
+//
+// There is no "a class naming no route" case, which the map beside the table needed: a class is a
+// field of the route's own declaration, so it cannot name a route that is not there.
+func readClassRefusals(routes []apiRoute) []string {
 	var refused []string
 	for _, route := range routes {
-		if route.ReadScope && route.Method != http.MethodGet {
-			refused = append(refused, route.Method+" "+route.Pattern)
+		name, entry := route.Method+" "+route.Pattern, route.Read
+		switch {
+		case route.Method != http.MethodGet:
+			if entry.Writes != readWritesUnset {
+				refused = append(refused, name+": a route that is not a GET states a read class, and a write is no read")
+			}
+		case entry.Writes == readWritesUnset:
+			refused = append(refused, name+": a GET route stating no read class")
+		case entry.Writes != readWritesNothing && entry.Writes != readWritesState:
+			refused = append(refused, name+": its read class is "+strconv.Itoa(int(entry.Writes))+", which is neither readWritesNothing nor readWritesState")
+		case entry.Writes == readWritesState && strings.TrimSpace(entry.WriteNote) == "":
+			refused = append(refused, name+": a GET that writes (readWritesState) stating no WriteNote naming what it writes")
 		}
 	}
 	sort.Strings(refused)
 	return refused
-}
-
-// readOnlyRefusalText is what every route a read-only token may not call answers it
-// (refuseReadOnlyToken): the routes that do state ReadScope, in the order routes() answers them,
-// which is by pattern and then method. The declarations have no written order of their own, since
-// each route is a file, so this is the order GET /api/v1 and the OpenAPI document list routes in
-// too. No client reads the message: it is prose for the person holding the token.
-func readOnlyRefusalText(routes []apiRoute) string {
-	var listed []string
-	for _, route := range routes {
-		if route.ReadScope {
-			listed = append(listed, route.Method+" "+route.Pattern)
-		}
-	}
-	return "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
-		strings.Join(listed, ", ") + "): nothing ran"
 }
 
 // apiRoute is one mounted route: its declaration, read through it by promotion, with its handler

@@ -12,5 +12,6 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: searchDescription(searchDeclaresFour),
 	Handler:     (*server).search,
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchRouteQuery{}},
 })

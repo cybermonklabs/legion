@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authPublic,
 	Description: "The typed document block schema as JSON.",
 	Handler:     (*server).getBlockSchema,
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape: routeShape{
 		Status:             http.StatusOK,
 		Opaque:             "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",

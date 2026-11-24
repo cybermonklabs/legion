@@ -33,13 +33,15 @@ package api
 //     account's), which names its person and writes wherever Dispatch's own rules let it
 //     (brokerTokenActor). The fourth is the `named` token of an account entry that names no
 //     person either (`<service account>==`), which names the account as its service and writes
-//     the same way, recorded under that account. The fifth is a read-only token, which carries
-//     `project_scope` `none` and the scope `read` alone, names a service and no person, and
-//     never reaches this check: the read-only gate register puts outside it answers that token
-//     403 READ_ONLY_TOKEN on every route the read list does not name, every write among them
-//     (refuseReadOnlyToken, routeDecl.ReadScope). That is the rule and not a transitional measure:
-//     every caller that exists today writes exactly what it wrote before, which is what lets
-//     this deploy before anything presents a broker token.
+//     the same way, recorded under that account. The fifth is the read entry's token, which
+//     carries `project_scope` `none` and the scope `read` alone and names a service and no
+//     person. It never reaches this check, and nor does any other read-only credential (a token
+//     narrowed to reading, which may name the project it reads as, or an account it would have
+//     written as): the read-only gate register puts outside it answers every such credential 403
+//     READ_ONLY_TOKEN on every route outside the read class, every write among them
+//     (refuseReadOnlyToken, readClasses). That is the rule and not a transitional measure: every
+//     caller that exists today writes exactly what it wrote before, which is what lets this
+//     deploy before anything presents a broker token.
 //
 // For a credential that does name a project, the check fails closed: only a target that
 // resolves to that credential's own project reaches the handler. A target that resolves to
@@ -385,7 +387,7 @@ func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers, belongsTo str
 // A row that declares OAuth scopes passes whatever session the credential proved, because those
 // rows are the person's own writes into someone else's conversation:
 // `POST /api/v1/agents/{session_id}/messages` and `PUT /api/v1/me/agents/{session_id}/state`
-// need the `person` scope (their OAuthScopes), and a person writing to a session is by design writing
+// need the `person` scope (its route's OAuthScopes), and a person writing to a session is by design writing
 // into a session that is not theirs. Without this a person's own broker-issued credential could
 // only ever address the session it was issued for, which is nobody's conversation but its own.
 // The row decides it, not the request: gateRouteScopes stands ahead of this wrapper and has
@@ -443,10 +445,11 @@ func addressesOneSession(route apiRoute) bool {
 // project scope the broker answered, `named` and nothing else, so a scope this check does not
 // know is refused as a machine's is.
 //
-// A read-only token names a service and no person too, but it is no such caller: it reads only
-// what the read list names, and signing a person in is no remedy for it. It never reaches this
-// check, since the read-only gate register puts outside it has already answered it 403
-// READ_ONLY_TOKEN (refuseReadOnlyToken).
+// A read-only token may name a service and no person too, an account entry's narrowed to
+// reading among them, but it is no such caller: it may only read, and signing a person in is no
+// remedy for it. It never reaches this check, since the read-only gate register puts outside it
+// has already answered it 403 READ_ONLY_TOKEN, as it answers a read-only token on every write
+// (refuseReadOnlyToken), and signInRequired answers it false.
 //
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at
@@ -469,16 +472,18 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 }
 
 // signInRequired is the one decision writeNeedsASignedInPerson refuses a write on and whoami
-// answers as sign_in_required: whether r presents a broker-issued token that resolved and names a
-// service and no person, and is no account entry's (actsAsItsAccount), which is a machine nobody
-// has signed in on, and the service that token names. Every other caller answers false: a
-// credential that is no broker token, one that did not resolve (its refusal is written further
-// in), one that names a person, and an account entry's token naming no person, whose writes are
-// recorded under its account. A read-only token would answer true, and reaches neither caller:
-// the read-only gate answers it first on every route but the read list's.
+// answers as sign_in_required: whether r presents a broker-issued token that resolved, may write,
+// and names a service and no person, and is no account entry's (actsAsItsAccount), which is a
+// machine nobody has signed in on, and the service that token names. Every other caller answers
+// false: a credential that is no broker token, one that did not resolve (its refusal is written
+// further in), one that names a person, an account entry's token naming no person, whose writes
+// are recorded under its account, and a read-only token, whatever it names. A read-only token
+// writes nothing whoever signs in: the read-only gate answers its every write 403
+// READ_ONLY_TOKEN before writeNeedsASignedInPerson runs, and whoami tells it read among its
+// scopes rather than that a person must sign in.
 func (s *server) signInRequired(r *http.Request) (string, bool) {
 	actor, resolved := s.brokerCredentialActor(r)
-	if !resolved || actor.Owner != nil || actor.Service == nil || actsAsItsAccount(actor) {
+	if !resolved || actor.Owner != nil || actor.Service == nil || actsAsItsAccount(actor) || (actor.Credential != nil && actor.Credential.ReadOnly) {
 		return "", false
 	}
 	return *actor.Service, true
@@ -491,13 +496,14 @@ func actsAsItsAccount(actor model.Actor) bool {
 	return actor.Credential != nil && actor.Credential.ProjectScope == ciphertoken.ProjectScopeNamed
 }
 
-// undecidableWrites names every mutating row the project check cannot decide: one whose
-// declaration states no WriteClass, and one classed scopeProject whose address names no object
-// to resolve. Every other class is decided: scopeDeployment and scopeProjectInBody by the class
+// undecidableWrites names every mutating route the project check cannot decide: one whose
+// declaration states no class, and one classed scopeProject whose address names no object to
+// resolve. Every other class is decided: scopeDeployment and scopeProjectInBody by the class
 // itself, scopeSession by withinSessionScope and the handlers behind it, and scopeNoWrite by
-// writing nothing at all.
-// TestEveryMutatingRouteIsClassed walks the table through it, and register refuses to mount a
-// table it names anything in, so a row added later cannot be left undecided.
+// writing nothing at all. TestEveryMutatingRouteIsClassed walks the table through it, and
+// register refuses to mount a table it names anything in, so a route added later cannot be left
+// undecided. The other direction the map beside the table needed, a class naming no route, cannot
+// happen now: a class is a field of the route's own declaration.
 func (s *server) undecidableWrites(routes []apiRoute) []string {
 	var undecidable []string
 	for _, route := range routes {
@@ -512,7 +518,7 @@ func (s *server) undecidableWrites(routes []apiRoute) []string {
 				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object whose project can be resolved")
 			}
 		default:
-			undecidable = append(undecidable, name+": no write class (its declaration's WriteClass)")
+			undecidable = append(undecidable, name+": no write class (routeDecl.WriteClass)")
 		}
 	}
 	return undecidable

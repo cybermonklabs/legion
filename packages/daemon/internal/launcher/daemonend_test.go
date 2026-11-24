@@ -466,7 +466,7 @@ func TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce(t *t
 		})
 		return
 	}
-	out, code := runChild(t, "^TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce$", "silent-to-the-end", 20*time.Second)
+	out, code := runChild(t, "^TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce$", "silent-to-the-end", testwait.Remaining(t))
 	_, after, _ := strings.Cut(out, "the stray dials from ")
 	stray, _, _ := strings.Cut(after, "\n")
 	stray = strings.TrimSpace(stray)

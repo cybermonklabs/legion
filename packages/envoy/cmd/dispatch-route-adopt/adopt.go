@@ -144,7 +144,7 @@ func adopt(repo gitRepo) (*adoptReport, error) {
 	// may resolve them before running this, and then the branch's routes are in no file yet. The
 	// run is needless only where every route the branch added or changed is already in the tree
 	// as the branch states it, or in conflict with main's.
-	missing, err := routesNotAdopted(filepath.Join(repo.root, apiDir), baseFiles, branchFiles)
+	missing, err := routesNotAdopted(filepath.Join(repo.root, apiDir), baseFiles, branchFiles, gitTree{repo, newRev})
 	if err != nil {
 		return nil, err
 	}

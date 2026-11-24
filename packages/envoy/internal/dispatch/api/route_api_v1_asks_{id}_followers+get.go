@@ -11,5 +11,6 @@ var _ = declareRoute(routeDecl{
 	Description: "List the sessions an ask's answer and replies reach.",
 	Handler:     (*server).listAskFollowers,
 	ID:          &idRoute{Kind: "ask", NotFound: "NOT_FOUND"},
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: askFollowersRead{}},
 })

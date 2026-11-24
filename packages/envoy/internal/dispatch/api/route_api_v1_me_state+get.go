@@ -13,5 +13,6 @@ var _ = declareRoute(routeDecl{
 	Description: "The caller's per-issue read state.",
 	Handler:     (*server).getUserState,
 	OAuthScopes: routeScopeSet{model.ScopePerson},
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: userState{}},
 })

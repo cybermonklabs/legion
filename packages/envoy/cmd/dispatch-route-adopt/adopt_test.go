@@ -324,6 +324,66 @@ func TestTheAdoptStepIsNotRunTwiceOverOneMerge(t *testing.T) {
 	}
 }
 
+// A person resolves the conflict this step left in a route file by hand, writing text that is
+// neither side's, and then carries an edit into routes_table.go. A second run must be refused:
+// the route is nobody's to write again, and the run would take routes_table.go from the new side
+// and throw the carried edit away. A route file holding conflict markers and one a person has
+// resolved are the same case, and only the markers were covered before.
+func TestASecondRunIsRefusedAfterAConflictIsResolvedByHand(t *testing.T) {
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	const limits = "The bounds a write is held to"
+	repo.editOn("branch-edits", base, func(table, shapes string) (string, string) {
+		return strings.Replace(table, limits, "The branch's bounds a write is held to", 1), shapes
+	})
+	repo.moveMain()
+	file, _ := routeFileName("GET", "/api/v1/limits")
+	repo.write(file, strings.Replace(repo.read(file), limits, "Main's bounds a write is held to", 1))
+	repo.commit("main edits the limits route")
+	repo.git("checkout", "-q", "branch-edits")
+	report, err := repo.mergeMainAndAdopt()
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if !slices.Equal(report.conflicted, []string{file}) {
+		t.Fatalf("the first run left %v in conflict, want %s alone", report.conflicted, file)
+	}
+
+	// The person resolves the route by hand, keeping neither side's words, and stages it as git
+	// asks; then carries an edit into the shared file the step took from the new side.
+	resolved := strings.Replace(repo.read(file), limits, "The bounds both sides meant", 1)
+	for _, marker := range []string{"<<<<<<< ", "||||||| ", "=======", ">>>>>>> "} {
+		var kept []string
+		for _, line := range strings.Split(resolved, "\n") {
+			if !strings.HasPrefix(line, marker) && line != marker {
+				kept = append(kept, line)
+			}
+		}
+		resolved = strings.Join(kept, "\n")
+	}
+	if strings.Contains(resolved, "<<<<<<<") {
+		t.Fatal("the hand resolution still holds conflict markers")
+	}
+	repo.write(file, resolved)
+	repo.git("add", "--", filepath.Join(apiDir, file))
+	carried := repo.read(tableFile) + "\n// carried by hand\n"
+	repo.write(tableFile, carried)
+
+	found, err := findRepo(repo.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adopt(found); err == nil || !strings.Contains(err.Error(), "has run on it already") {
+		t.Fatalf("a second run after a hand resolution was not refused: %v", err)
+	}
+	if repo.read(tableFile) != carried {
+		t.Fatal("the refused second run threw away what was carried into routes_table.go")
+	}
+	if repo.read(file) != resolved {
+		t.Fatal("the refused second run overwrote the hand resolution")
+	}
+}
+
 // A person may resolve routes_table.go and routes_shapes.go by hand before running the step, as
 // `git checkout --theirs` does. The branch's routes are then in no file, so the step runs: it is
 // what writes them. The control is the same merge with the step already run, which is refused.
@@ -514,5 +574,60 @@ func TestTheSplitterIsDeterministic(t *testing.T) {
 		if !bytes.Equal(content, second[name]) {
 			t.Errorf("%s: two splits of one table differ", name)
 		}
+	}
+}
+
+// The read moved between the two layouts #4557 made: a branch made before it states the read as a
+// name in readScopeRoutes, and one made after states it as an entry of readClasses in a file of
+// its own. The splitter reads whichever the branch has, and writes the same declaration field,
+// so an old-layout branch adopts either way. The controls are a tree holding neither, which is
+// refused, and the pre-#4557 fixture, which still splits.
+func TestTheSplitterReadsTheReadFromEitherLayout(t *testing.T) {
+	t.Parallel()
+	before := oneFileTree{
+		tableFile: fixture(t, oldTableFixture), shapesFile: fixture(t, oldShapesFixture), "going_paths.go": goingPathsFile,
+	}
+	after := oneFileTree{
+		tableFile: fixture(t, "testdata/main_routes_table.go.txt"), shapesFile: fixture(t, "testdata/main_routes_shapes.go.txt"),
+		"read_classes.go": fixture(t, "testdata/old_read_classes.go.txt"), "going_paths.go": goingPathsFile,
+	}
+	read := func(t *testing.T, src tree, name string) string {
+		t.Helper()
+		files, err := splitOldLayout(src)
+		if err != nil {
+			t.Fatalf("split: %v", err)
+		}
+		file, err := routeFileName("GET", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, written := files[file]
+		if !written {
+			t.Fatalf("the split wrote no %s", file)
+		}
+		return string(content)
+	}
+	// A route the list named before #4557 and the map classes as a read after it.
+	const listed = "/api/v1/projects/{key}/architecture"
+	if got := read(t, before, listed); !strings.Contains(got, "Read:") || !strings.Contains(got, "readWritesNothing") {
+		t.Errorf("the pre-#4557 layout wrote %s without a read class:\n%s", listed, got)
+	}
+	if got := read(t, after, listed); !strings.Contains(got, "Read:") || !strings.Contains(got, "readWritesNothing") {
+		t.Errorf("the post-#4557 layout wrote %s without a read class:\n%s", listed, got)
+	}
+	// A GET the map classes as a write, which the list could not say at all.
+	const writes = "/api/v1/delivery/timeline"
+	got := read(t, after, writes)
+	if !strings.Contains(got, "readWritesState") || !strings.Contains(got, "WriteNote") {
+		t.Errorf("the post-#4557 layout wrote %s without its write class and note:\n%s", writes, got)
+	}
+	// The control: neither the list nor the map, which the splitter refuses rather than writing
+	// every route as stating no read.
+	neither := oneFileTree{
+		tableFile:  strings.Replace(fixture(t, "testdata/main_routes_table.go.txt"), "var routeScopes = map[string]routeScopeSet{", "var readScopeRoutes = []string{}\n\nvar routeScopes = map[string]routeScopeSet{", 1),
+		shapesFile: fixture(t, "testdata/main_routes_shapes.go.txt"), "going_paths.go": goingPathsFile,
+	}
+	if _, err := splitOldLayout(neither); err != nil {
+		t.Fatalf("a tree whose read is an empty list is no refusal, and this one answered: %v", err)
 	}
 }

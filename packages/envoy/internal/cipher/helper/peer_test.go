@@ -95,6 +95,7 @@ func ompTree(t *testing.T, n int) (int, []int) {
 // launcher, stands for a tmux server or a login shell, whose whole tree a caller would otherwise
 // make one session, every session started under it later included.
 func TestOpenAncestorPinsAStrictAncestorOfThePeer(t *testing.T) {
+	t.Parallel()
 	omp, children := ompTree(t, 1)
 	sibling := sleeper(t)
 	peer, err := PinPID(children[0])
@@ -143,6 +144,7 @@ func TestOpenAncestorPinsAStrictAncestorOfThePeer(t *testing.T) {
 // a process from itself, never a parent from its child or pid 1 from anything, and every one of
 // those real walks reaches root or init without an error.
 func TestDescendsFromRealProcesses(t *testing.T) {
+	t.Parallel()
 	child := sleeper(t)
 	self := os.Getpid()
 	for _, tc := range []struct {
@@ -162,6 +164,7 @@ func TestDescendsFromRealProcesses(t *testing.T) {
 }
 
 func TestStartTicksNamesOneIncarnation(t *testing.T) {
+	t.Parallel()
 	child := sleeper(t)
 	ticks, err := StartTicks(child.Process.Pid)
 	if err != nil || ticks == 0 {
@@ -173,6 +176,7 @@ func TestStartTicksNamesOneIncarnation(t *testing.T) {
 }
 
 func TestPinnedPeerReportsExit(t *testing.T) {
+	t.Parallel()
 	child := sleeper(t)
 	peer, err := PinPID(child.Process.Pid)
 	if err != nil {
@@ -200,6 +204,7 @@ func TestPinnedPeerReportsExit(t *testing.T) {
 }
 
 func TestWaitExitStops(t *testing.T) {
+	t.Parallel()
 	child := sleeper(t)
 	peer, err := PinPID(child.Process.Pid)
 	if err != nil {
@@ -221,6 +226,7 @@ func TestWaitExitStops(t *testing.T) {
 }
 
 func TestPeerOfUnixConnIsTheDialer(t *testing.T) {
+	t.Parallel()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
@@ -248,6 +254,7 @@ func TestPeerOfUnixConnIsTheDialer(t *testing.T) {
 }
 
 func TestCallRoundTrip(t *testing.T) {
+	t.Parallel()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {

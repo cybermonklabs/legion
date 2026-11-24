@@ -11,5 +11,6 @@ var _ = declareRoute(routeDecl{
 	Description: "Read one message with its deliveries and replies.",
 	Handler:     (*server).getMessage,
 	ID:          &idRoute{Kind: "message", WithinIssue: true, NotFound: "NOT_FOUND"},
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: messageRead{}},
 })

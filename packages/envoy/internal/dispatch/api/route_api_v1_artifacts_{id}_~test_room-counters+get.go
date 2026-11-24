@@ -14,5 +14,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getRoomCounters,
 	TestHook:    true,
 	ID:          &idRoute{Reason: "a test hook's document id, naming a live room rather than a stored document"},
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: docs.RoomCounters{}},
 })

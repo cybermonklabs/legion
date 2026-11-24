@@ -10,5 +10,6 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Resolve ?ref=<KEY | owner/repo#n> to an issue key.",
 	Handler:     (*server).resolveIssue,
+	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: issueRefResolved{}, Params: issueResolveQuery{}},
 })
