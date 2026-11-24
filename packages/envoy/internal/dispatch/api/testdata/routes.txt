@@ -106,6 +106,7 @@ GET /api/v1/issues/{key}/events any
 GET /api/v1/issues/{key}/handoffs any
 POST /api/v1/issues/{key}/handoffs/{phase} bearer
 GET /api/v1/issues/{key}/handoffs/{phase}/latest any
+GET /api/v1/issues/{key}/legion any
 GET /api/v1/issues/{key}/messages any
 POST /api/v1/issues/{key}/messages any
 GET /api/v1/issues/{key}/messages/{id} any
