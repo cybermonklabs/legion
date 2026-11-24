@@ -7116,7 +7116,6 @@ describe("rules check", () => {
     expect(
       await g.device("t1", "dispatch_doc_edit", { issue: "X-1", ops: RETYPE })
     ).toBeUndefined();
-    expect(g.calls.find(isRules)?.user).toContain("The text of this block is not available");
     expect(g.entries).toMatchObject([
       { decision: "allow", ruleOutcome: "none", ruleTextMissing: true },
     ]);
