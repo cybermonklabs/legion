@@ -3792,6 +3792,12 @@
         "base": "0e525790638b98f4b81a05f95037ef9b10f0c782",
         "files": ["packages/envoy/loadtest/cloudsqlcpu_token_url_test.go"],
         "capture": "loadtest.cloudsql-token-url/unparsed"
+      },
+      {
+        "row": "repocache-entry-info-ref",
+        "base": "02891325d2312c7c9c3cb759f8627548268833a1",
+        "files": ["packages/daemon/internal/repocache/entry_info_test.go"],
+        "capture": "repocache.entry-info/ref"
       }
     ],
     "boundary_fields": {
@@ -11588,8 +11594,8 @@
       "capture": "api.plan-route-words/steps-grammar",
       "mutation": {
         "file": "packages/daemon/internal/plan/plan.go",
-        "preimage": "\"the %s word of steps is neither a role nor a role:key, where each matches %s\", ordinal(i+1), TaskIDGrammar)",
-        "replacement": "\"the %s word %q of steps is neither a role nor a role:key, where each matches %s\", ordinal(i+1), word, TaskIDGrammar)"
+        "preimage": "\"the %s word of steps is neither a role nor a role:key, where each matches %s\", Ordinal(i+1), TaskIDGrammar)",
+        "replacement": "\"the %s word %q of steps is neither a role nor a role:key, where each matches %s\", Ordinal(i+1), word, TaskIDGrammar)"
       }
     },
     {
@@ -13923,6 +13929,34 @@
       "test": "TestATokenURLThatDoesNotParsePrintsNoneOfIt/unparsed",
       "production": "loadtest cloudsqlMetadataToken: a -token-url that url.Parse refuses fails cloudsql-cpu in fixed words, never http.NewRequest's error, which quotes the URL whole, its user information and query included",
       "capture": "loadtest.cloudsql-token-url/unparsed"
+    },
+    {
+      "id": "repocache-entry-info-ref",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/repocache",
+      "test": "TestASnapshotThatCannotReachAnEntryNamesNoPathOfTheClone/ref",
+      "production": "repocache walk: an entry the walk cannot stat (fs.DirEntry.Info) fails with the operation and the system's reason (unpathed), never the clone's path, which under refs/ is a branch the answering party of the cache's fetch named",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/repocache.cache).walk",
+      "capture": "repocache.entry-info/ref",
+      "mutation": {
+        "file": "packages/daemon/internal/repocache/server.go",
+        "preimage": "info, err := entry.Info()\n\t\tif err != nil {\n\t\t\treturn unpathed(err)",
+        "replacement": "info, err := entry.Info()\n\t\tif err != nil {\n\t\t\treturn err"
+      }
+    },
+    {
+      "id": "repocache-entry-info-pack",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/repocache",
+      "test": "TestASnapshotThatCannotReachAnEntryNamesNoPathOfTheClone/pack",
+      "production": "repocache snapshotOnce: a pack the snapshot cannot open fails with the operation and the system's reason (unpathed), never the clone's path; a pack's own name is git's, so this is the guard that keeps the two file calls of one walk reading alike",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/repocache.cache).snapshotOnce",
+      "capture": "repocache.entry-info/pack",
+      "mutation": {
+        "file": "packages/daemon/internal/repocache/server.go",
+        "preimage": "os.Open(path); err != nil {\n\t\t\t\treturn unpathed(err)",
+        "replacement": "os.Open(path); err != nil {\n\t\t\t\treturn err"
+      }
     }
   ],
   "bun": [
