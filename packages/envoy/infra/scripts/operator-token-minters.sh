@@ -289,7 +289,9 @@
 # the pool as the other rights are: for each mutating or validating webhook whose namespaceSelector
 # can match a guarded namespace (read against kubernetes.io/metadata.name alone, which no one can
 # change), or whose rules can match a cluster-scoped object, which the API server applies no
-# namespaceSelector to (a resource the discovery does not list as namespaced counts as one), in
+# namespaceSelector to (a rule's resource counts as cluster-scoped when it is `*`, when
+# `api-resources --namespaced=false` lists it as cluster-scoped in a group the rule names, or when
+# the namespaced discovery lists it in none of them), in
 # the namespace of the Service it calls every way to run or enter a pod that a guarded
 # namespace is asked (RIGHTS_TABLE's namespaced rows, jobs, cronjobs and replicationcontrollers,
 # exec, attach and ephemeral containers included, and create, update and patch of each custom
@@ -310,7 +312,8 @@
 # which install them, are asked. Backup for GKE installed on a cluster (a CRD of gkebackup.gke.io) is
 # UNKNOWN: a restore, chosen in Google Cloud by a holder of its restore rights, recreates a backup's
 # workloads and RBAC there. A refused list of webhook configurations, CRDs, admission policies or
-# allowlists, and a parameter kind the discovery does not resolve, is UNKNOWN.
+# allowlists, a cluster-scoped discovery that could not be read whole, and a parameter kind the
+# discovery does not resolve, is UNKNOWN.
 #
 # Cluster settings outside RBAC. Legacy ABAC authorizes requests by its own policies beside RBAC, and
 # the identity service for GKE takes users and groups from an outside identity provider, so no

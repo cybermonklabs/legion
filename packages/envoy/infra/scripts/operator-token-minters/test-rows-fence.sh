@@ -521,14 +521,16 @@ fence_right() {
 }
 if row fp; then
   # Two principals, the first allowed and the second refused both rights: an exec without targets,
-  # and a port forward that becomes envoy-broker.
+  # and a port forward that becomes envoy-broker. The answer is one SubjectAccessReview document per
+  # review, as kubectl create prints them and as review reads them (jq -s).
   jq -n -c --argjson r1 "$(fence_right create exec)" --argjson r2 "$(fence_right create portforward '["dispatch:envoy-broker"]')" '[$r1, $r2]' \
     >"$temporary_dir/fp-rights.json"
   jq -n -c '[{principal: "p1", user: "u1", groups: []}, {principal: "p2", user: "u2", groups: []}]' >"$temporary_dir/fp-principals.json"
-  jq -n --slurpfile r "$temporary_dir/fp-rights.json" '{kind: "List", items: [("u1", "u2") as $u | $r[0][]
-    | {spec: {user: $u, groups: [], resourceAttributes: {verb, group, resource, subresource: .sub, namespace: .ns, name}},
-       status: {allowed: ($u == "u1")}}]}' >"$temporary_dir/fp-answer.json"
-  got="$(jq -r --slurpfile principals "$temporary_dir/fp-principals.json" --slurpfile rights "$temporary_dir/fp-rights.json" \
+  jq -n -c --slurpfile r "$temporary_dir/fp-rights.json" '("u1", "u2") as $u | $r[0][]
+    | {apiVersion: "authorization.k8s.io/v1", kind: "SubjectAccessReview",
+       spec: {user: $u, groups: [], resourceAttributes: {verb, group, resource, subresource: .sub, namespace: .ns, name}},
+       status: {allowed: ($u == "u1")}}' >"$temporary_dir/fp-answer.json"
+  got="$(jq -r -s --slurpfile principals "$temporary_dir/fp-principals.json" --slurpfile rights "$temporary_dir/fp-rights.json" \
     --argjson fence "$fence_with_residual" -L "$(dirname "$check")/operator-token-minters" -f "$(dirname "$check")/operator-token-minters/review-answer.jq" \
     "$temporary_dir/fp-answer.json" | awk -F'\x1f' '{ print $1 "|" $3 "|" $6 "|" $7 }' | sort)"
   want="$(printf '%s\n' "p1|allowed|broker-pod-connect|residual" "p1|allowed|broker-pod-connect|" "p2|refused||" "p2|refused||" | sort)"

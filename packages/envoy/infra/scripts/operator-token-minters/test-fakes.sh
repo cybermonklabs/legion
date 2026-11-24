@@ -224,10 +224,10 @@ if [ -e "$dir/token-secret-data" ]; then
 fi
 # shaped_answer NAME: when the world holds garbage-NAME, empty-NAME or object-NAME, answers the call
 # with exit 0 but not as the List or object kubectl writes: an error page, an empty body or `{}`, as
-# a proxy between kubectl and the API server can (rows cu and cy). jq reads an empty body as no value
-# and `{}` as an object whose .items[]? is nothing, so a program over either prints nothing or an
-# empty list and exits 0; only a check of the answer's shape tells them from an empty list. Each
-# branch it serves calls it first, so its command is matched once.
+# a proxy between kubectl and the API server can (row cu). jq reads an empty body as no value and
+# `{}` as an object whose .items[]? is nothing, so a program over either prints nothing or an empty
+# list and exits 0; only a check of the answer's shape tells them from an empty list. Each branch it
+# serves calls it first, so its command is matched once.
 shaped_answer() {
   [ ! -e "$dir/garbage-$1" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
   [ ! -e "$dir/empty-$1" ] || exit 0
@@ -237,11 +237,22 @@ case "${args[*]}" in
   "create -f - -o json")
     shaped_answer reviews
     [ ! -e "$dir/refuse-sar" ] || forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
-    # A world marked review-answers-reversed answers a List of reviews in the reverse of the order
-    # it was asked in: the check matches each answer to its question by what the answer echoes, so
-    # no finding's text may hang on that order (row ct).
+    # kubectl create, given a List, creates each object on its own and prints one JSON document per
+    # object it made, never a List (kubectl 1.35.9's create.go), so this answers so. Each call is
+    # counted in review-calls: the first is the step's reviews, each later one a follow_becomes round.
+    # A world marked
+    #   review-answers-reversed answers the reviews in the reverse of the order asked (row ct);
+    #   review-follow-refused answers every review of a follow round refused, the witness's too, and
+    #   review-follow-nostatus answers a follow round's reviews with no status (row cy);
+    #   review-witness-copied answers the witness's reviews with copies of the first other review,
+    #   and review-repeated answers the last review with a copy of the first, keeping the count (row cy).
+    calls=$(( $(cat "$dir/review-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$calls" >"$dir/review-calls"
+    mark() { [ -e "$dir/$1" ] && echo on || echo off; }
     jq --slurpfile grants "$dir/grants.json" --arg masters "$([ -e "$dir/no-masters" ] && echo off || echo on)" \
-      --arg reversed "$([ -e "$dir/review-answers-reversed" ] && echo on || echo off)" '
+      --arg reversed "$(mark review-answers-reversed)" --arg copied "$(mark review-witness-copied)" \
+      --arg repeated "$(mark review-repeated)" --argjson call "$calls" \
+      --arg follow_refused "$(mark review-follow-refused)" --arg follow_nostatus "$(mark review-follow-nostatus)" '
       def answer:
         .spec as $s | ($s.resourceAttributes // {}) as $a
         | ($s.user // "") as $user | ($s.groups // []) as $groups
@@ -259,7 +270,14 @@ case "${args[*]}" in
         | . + {status: (if $master then {allowed: true, reason: "RBAC: allowed by ClusterRoleBinding \"cluster-admin\" of ClusterRole \"cluster-admin\" to Group \"system:masters\""}
                         elif ($by | length) > 0 then {allowed: true, reason: "RBAC: allowed by \($by[0])"}
                         else {allowed: false} end)};
-      if .kind == "List" then .items |= map(answer) | (if $reversed == "on" then .items |= reverse else . end) else answer end'
+      def witness: (.spec.user // "") == "" and (.spec.groups // []) == ["system:masters"];
+      [.items[] | answer]
+      | (if $reversed == "on" then reverse else . end)
+      | (if $copied == "on" then (map(select(witness | not)) | first) as $other | map(if witness then $other else . end) else . end)
+      | (if $repeated == "on" then .[-1] = .[0] else . end)
+      | (if $call > 1 and $follow_refused == "on" then map(.status = {allowed: false}) else . end)
+      | (if $call > 1 and $follow_nostatus == "on" then map(del(.status)) else . end)
+      | .[]'
     ;;
   "get serviceaccounts --all-namespaces -o json")
     shaped_answer serviceaccounts

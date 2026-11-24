@@ -60,7 +60,7 @@ else
   # An empty list passes the header check: kubectl prints "No resources found in <namespace>
   # namespace." to stderr alone (kubectl's get.go), so the list's file is empty and holds no name.
   : >"$WORK/token-secrets.tsv"
-  jq -r '.items[]? | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
+  jq -r '.items[] | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
     | .metadata.namespace as $ns | (.secrets // [])[] | [$ns, .name] | @tsv' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}" >>"$WORK/token-secrets.tsv"
   for guarded_ns in $(printf '%s\n' "${GUARDED[@]%%/*}" | sort -u); do
     if ! kubectl --kubeconfig "$KUBE" get secrets -n "$guarded_ns" --field-selector type=kubernetes.io/service-account-token \
