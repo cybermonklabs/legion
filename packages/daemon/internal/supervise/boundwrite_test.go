@@ -36,7 +36,7 @@ func (s *boundSeeingStore) PutClaim(ctx context.Context, c Claim) error {
 // bounds: the wait in the store's pool queue (defaultClaimAcquire) and the write once the pool has
 // handed it a connection (Timeouts.ClaimWrite). The daemon's BoundWrite (store.BoundAfterAcquire)
 // counts the write from its connection, so a wave of claim writes on a pool of a few connections no
-// longer cuts the last of them for the queue ahead (DefaultClaimWrite). With no BoundWrite the
+// longer cuts the last of them for the queue ahead (defaultClaimWrite). With no BoundWrite the
 // machine bounds the whole write by the claim-write bound, as it always did. Here a spawn writes
 // the claim launching. Every other bounded call of a decision goes through the same helper
 // (Machine.bounded), the one place either bound is read.

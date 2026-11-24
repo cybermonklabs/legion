@@ -25,9 +25,7 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +42,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -255,22 +254,20 @@ func refusing(behind supervise.Store, token claim.Token, err error) *claimWriteF
 
 // blocked is the fault of a database that has stopped answering: the write goes, through the
 // store's own transaction (store.Transact) on a pool built as the daemon builds its own
-// (store.PoolConfig), to a listener this test opens and never accepts from, so the kernel takes
-// the connection and no server ever answers the startup message. The write returns only when
+// (store.PoolConfig), to a proxy silenced before the pool's first dial (testdb.Outage), which
+// holds the connection and never answers the startup message. The write returns only when
 // something ends its wait, which is the whole point — what ends it is Timeouts.ClaimWrite, through
 // the bound the machine derives for the write (Deps.BoundWrite, store.BoundAfterAcquire): the pool
 // dials for the write under that bound, not under the wait in its queue.
 //
 // pgxpool dials nothing when it is built, so the pool is built at once and the write's
-// transaction is where the wait begins.
+// transaction is where the wait begins. The proxy dials no server, so the address it proxies is
+// one nothing serves.
 func blocked(t *testing.T, behind supervise.Store, token claim.Token) *claimWriteFault {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for the database that never answers: %v", err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	config, err := store.PoolConfig(fmt.Sprintf("postgres://legion@%s/legion?sslmode=disable", listener.Addr().String()))
+	outage := testdb.Outage(t, "postgres://legion@127.0.0.1:1/legion?sslmode=disable")
+	outage.Silence()
+	config, err := store.PoolConfig(outage.DSN)
 	if err != nil {
 		t.Fatalf("configure a pool on the database that never answers: %v", err)
 	}

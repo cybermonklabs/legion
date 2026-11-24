@@ -5,12 +5,13 @@ body: |-
     claim at once through one pool of max(4, CPUs) connections, so on a loaded node the last writes
     of a large wave spent their whole bound queued behind the others and were cut, and each such
     launch waited for the next probe, 30 s later, to be tried again. The wait in the pool's queue
-    has a bound of its own, 30 s; the dial of a new connection, its BEGIN and its statements stay
-    under the 5 s, so a database that stops answering still holds a claim's machine for about 5 s
-    per write. The pool's dial and health ping are bounded at 5 s too (connect_timeout,
-    pool_ping_timeout), unless the DSN names a shorter value. The boot's replay of the stored
-    claims' ready and failed facts counts each of its budgets the same way, so a boot whose pool is
-    busy with the restored claims' live failures no longer fails its replay for the wait.
+    has a bound of its own, 30 s; a dial the write waits for, its BEGIN and its statements stay
+    under the 5 s, so a database that stops answering holds a claim's machine for up to about 10 s
+    per write (a dial that ends just short of 5 s, then a BEGIN never answered). A write handed a
+    pooled connection the server closed while it sat idle, as after a database restart, begins on
+    another connection. The boot's replay of the stored claims' ready and failed facts counts each
+    of its budgets the same way, so a boot whose pool is busy with the restored claims' live
+    failures no longer fails its replay for the wait.
 time: 2026-11-23T16:26:35Z
 custom:
     Issue: INFRA-1075

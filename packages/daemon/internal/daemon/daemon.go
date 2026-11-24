@@ -68,11 +68,9 @@ const (
 	// can clear, GitHub's transient trouble and the cluster's within retries of their own
 	// (storeOpenRetry, appMintRetry, imageProbeRetry); the work after each has a budget anew.
 	bootTimeout = 30 * time.Second
-	// storeOpenAttempt bounds one attempt to open the store (storeOpenRetry). store.PoolConfig
-	// bounds the dial of a connection at a claim write's 5 s (connect_timeout), but an attempt
-	// also reads the schema version and migrates on the connection, and nothing else bounds a
-	// statement there, so without this bound a database that answers the dial and then nothing
-	// else would hold the attempt for as long as it stayed silent.
+	// storeOpenAttempt bounds one attempt to open the store (storeOpenRetry). With no
+	// connect_timeout in the DSN, pgxpool bounds a connection it opens at two minutes, so without
+	// this bound a connection the database takes and never answers would hold the attempt that long.
 	storeOpenAttempt = 10 * time.Second
 	// catchUpAttemptBound bounds one attempt of the boot's catch-up of the roots that run or wait on
 	// a person. Each root has bootTimeout of its own and the roots finished survive a retry, so this
@@ -1823,7 +1821,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Worker: store.ForConcurrentWorker,
 		// A claim write's bound counts from its connection: a boot relaunches every unfinished
 		// claim at once through the one pool, and a bound that counted the queue for it cut the
-		// last writes for the writes ahead of them (supervise.DefaultClaimWrite).
+		// last writes for the writes ahead of them (supervise.Deps.BoundWrite).
 		BoundWrite: store.BoundAfterAcquire,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,

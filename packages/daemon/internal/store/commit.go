@@ -75,19 +75,23 @@ type afterAcquire struct{ acquire, write time.Duration }
 
 // BoundAfterAcquire is ctx with every transaction TransactWith opens under it bounded by its own
 // time rather than by its wait for a connection: the transaction waits at most acquire in the
-// pool's queue for a connection, and from the moment it holds one its BEGIN and everything after
-// it end write later, its commit's settle aside (CommitSettleBound). The bound is a value of ctx,
-// so it reaches every transaction opened under ctx, a join included; the read of a lost commit's
-// outcome clears it (readOutcome), since that read's own deadline is its hard end. ctx itself is
-// bounded by all three together, so a call that opens no transaction through TransactWith is
-// bounded too.
+// daemon's pool's queue for a connection, and from the moment the pool hands it one its BEGIN and
+// everything after it end write later, its commit's settle aside (CommitSettleBound); Pool.BeginTx
+// applies both. The bound is a value of ctx, so it reaches every transaction opened under ctx, a
+// join included; the read of a lost commit's outcome clears it (readOutcome), since that read's
+// own deadline is its hard end. ctx itself is bounded by all three together, so a call that opens
+// no transaction through TransactWith is bounded too.
 //
-// Only the queue is acquire's: a connection the pool must dial is dialled under the pool's
-// connect_timeout and a pooled one is checked by its BEGIN, both no longer than a claim write's
-// bound (PoolConfig), so a database that has stopped answering holds a bounded transaction for
-// about write, not acquire. A deadline counted from before the wait was the queue's bound as well
-// as the write's: a wave of transactions on a pool of a few connections cut the last of them for
-// the writes ahead of it, however quickly each would have run (supervise.Deps.BoundWrite).
+// Only the queue is acquire's. A connection the pool dials for the transaction is dialled under
+// write as well (PoolConfig's BeforeConnect); a pooled one is not pinged, its BEGIN is the check,
+// and a BEGIN that meets a connection the server closed is tried again on another (Pool.BeginTx).
+// So a database that stops answering holds a bounded transaction for up to about twice write,
+// never for acquire: twice in the one case of a dial that succeeds just short of write followed by
+// a BEGIN the database never answers, which runs its own write from the hand-out, and once write
+// in every other. That is the bound a claim write's machine is held by in an outage
+// (supervise.Deps.BoundWrite). A deadline counted from before the wait was the queue's bound as
+// well as the write's: a wave of transactions on a pool of a few connections cut the last of them
+// for the writes ahead of it, however quickly each would have run.
 func BoundAfterAcquire(ctx context.Context, acquire, write time.Duration) (context.Context, context.CancelFunc) {
 	bounded, cancel := context.WithTimeout(ctx, acquire+write+CommitSettleBound)
 	return context.WithValue(bounded, afterAcquireKey{}, &afterAcquire{acquire: acquire, write: write}), cancel
@@ -115,8 +119,8 @@ func (b *afterAcquire) writing(ctx context.Context) (context.Context, context.Ca
 	return context.WithTimeout(ctx, b.write)
 }
 
-// writingFrom is ctx under b's write bound counted from handedOut, the moment the pool handed the
-// transaction its connection, or ctx itself for no bound.
+// writingFrom is ctx under b's write bound counted from handedOut, the moment the pool first
+// handed the transaction a connection, or ctx itself for no bound.
 func (b *afterAcquire) writingFrom(ctx context.Context, handedOut time.Time) (context.Context, context.CancelFunc) {
 	if b == nil {
 		return ctx, func() {}
@@ -133,21 +137,9 @@ func (b *afterAcquire) acquiring(ctx context.Context) (context.Context, context.
 	return context.WithTimeout(ctx, b.acquire)
 }
 
-// beginning is the context TransactWith begins its transaction on. The daemon's pool bounds the
-// two steps of its begin itself (Pool.BeginTx), the wait in its queue by the acquire bound and the
-// BEGIN by the write bound counted from the hand-out, so it is given ctx. A pool that hands out no
-// connection apart from its transaction, a test's pgx pool or a wrapper of the daemon's pool,
-// begins under the acquire bound and runs under the write bound from there (running).
-func (b *afterAcquire) beginning(ctx context.Context, pool TxPool) (context.Context, context.CancelFunc) {
-	if _, own := pool.(*Pool); own {
-		return ctx, func() {}
-	}
-	return b.acquiring(ctx)
-}
-
 // running is the context a begun transaction runs on: ctx under b's write bound, counted from the
-// moment the daemon's pool handed tx its connection (storeTx.handedOut), or from now for a
-// transaction of another pool; ctx itself for no bound.
+// moment the daemon's pool handed tx its first connection (storeTx.handedOut), or from now for a
+// transaction of another pool, which records none; ctx itself for no bound.
 func (b *afterAcquire) running(ctx context.Context, tx pgx.Tx) (context.Context, context.CancelFunc) {
 	if own, ok := tx.(*storeTx); ok && !own.handedOut.IsZero() {
 		return b.writingFrom(ctx, own.handedOut)
@@ -155,10 +147,11 @@ func (b *afterAcquire) running(ctx context.Context, tx pgx.Tx) (context.Context,
 	return b.writing(ctx)
 }
 
-// notBegun is the error of a begin under b whose wait ran on waited: errAcquireBound for a wait
-// that ended at the acquire bound in the pool's queue while ctx still ran, err itself otherwise.
-func (b *afterAcquire) notBegun(ctx, waited context.Context, err error) error {
-	if b != nil && waited != ctx && ctx.Err() == nil && waited.Err() != nil {
+// notBegun is the error of a begin under b that the pool's queue ended (Pool.BeginTx):
+// errAcquireBound when acquiring, the wait under b's acquire bound, ended while ctx still ran,
+// err itself otherwise.
+func (b *afterAcquire) notBegun(ctx, acquiring context.Context, err error) error {
+	if b != nil && ctx.Err() == nil && acquiring.Err() != nil {
 		return fmt.Errorf("%w (%s): %w", errAcquireBound, b.acquire, err)
 	}
 	return err
@@ -278,11 +271,12 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     transaction's body then does with its error; one that succeeds releases it. Either
 //     statement that fails fails the whole transaction (below). Under a bound (BoundAfterAcquire)
 //     the join's write bound runs from the join, since the open transaction holds its connection.
-//   - The transaction begins, through the pool's BeginTx, the boundary's one begin. Under a bound
+//   - The transaction begins through the pool's BeginTx, the boundary's one begin. Under a bound
 //     the daemon's pool ends the wait in its queue at the acquire bound (errAcquireBound) and runs
-//     the BEGIN, and the transaction after it, under the write bound counted from the moment it
-//     handed out the connection (Pool.BeginTx); another pool begins under the acquire bound
-//     (beginning) and its transaction runs under the write bound from there (running).
+//     the BEGIN under the write bound counted from the moment it first handed out a connection
+//     (Pool.BeginTx), and the transaction runs under that same deadline (running); a transaction
+//     of another pool, which records no hand-out, runs under the write bound counted from its
+//     begin.
 //   - A rollback is deferred as soon as the transaction begins, so a panic in write, or any
 //     return below, gives the connection back to the pool and clears the caller's hold mark. It
 //     runs on the commit's context, below, so a rollback after the caller's cancel still reaches
@@ -320,11 +314,9 @@ func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write
 		defer stop()
 		return open.join(joining, pool, options, write)
 	}
-	beginning, stopBeginning := bound.beginning(ctx, pool)
-	tx, err := pool.BeginTx(beginning, options)
-	stopBeginning()
+	tx, err := pool.BeginTx(ctx, options)
 	if err != nil {
-		return bound.notBegun(ctx, beginning, err)
+		return err
 	}
 	ctx, stopBound := bound.running(ctx, tx)
 	defer stopBound()

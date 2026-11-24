@@ -30,7 +30,7 @@ import (
 func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 	t.Helper()
 	listener, upstream, through := listenProxy(t, dsn, "the delayed Postgres proxy")
-	proxy := &delayedProxy{listener: listener, upstream: upstream, delay: delay, conns: map[net.Conn]struct{}{}}
+	proxy := &delayedProxy{listener: listener, upstream: upstream, delay: delay}
 	proxy.wg.Add(1)
 	go proxy.serve()
 	t.Cleanup(proxy.close)
@@ -39,8 +39,8 @@ func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 
 // listenProxy is a listener on 127.0.0.1 for a proxy to the server pgconn.ParseConfig reads from
 // dsn, that server's address, which the proxy dials, and dsn rewritten by rewriteDSN to reach the
-// listener. proxy names the proxy in the refusal of a listen that fails. Delayed and CommitFaults
-// take their URLs from it.
+// listener. proxy names the proxy in the refusal of a listen that fails. Delayed, Outage and
+// CommitFaults take their URLs from it.
 func listenProxy(t testing.TB, dsn, proxy string) (net.Listener, string, string) {
 	t.Helper()
 	const named = "the database URL to proxy"
@@ -61,17 +61,13 @@ func listenProxy(t testing.TB, dsn, proxy string) (net.Listener, string, string)
 	return listener, net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port))), through
 }
 
-// delayedProxy is Delayed's proxy: conns are the client and server connections open through it,
-// closed with it.
+// delayedProxy is Delayed's proxy, closed with the client and server connections open through it.
 type delayedProxy struct {
 	listener net.Listener
 	upstream string
 	delay    time.Duration
-
-	mu     sync.Mutex
-	closed bool
-	conns  map[net.Conn]struct{}
-	wg     sync.WaitGroup
+	connSet
+	wg sync.WaitGroup
 }
 
 func (p *delayedProxy) serve() {
@@ -138,37 +134,56 @@ func (p *delayedProxy) relayDelayed(client, server net.Conn) {
 	}
 }
 
-// track records a pair of connections, and closes them instead when the proxy is already closed.
-func (p *delayedProxy) track(client, server net.Conn) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
-		_ = client.Close()
-		_ = server.Close()
+// connSet is the connections open through a proxy, closed when the proxy closes. A connection a
+// proxy accepts after that is closed at once rather than tracked.
+type connSet struct {
+	mu     sync.Mutex
+	closed bool
+	conns  map[net.Conn]struct{}
+}
+
+// track records conns, and closes them instead when the proxy is already closed.
+func (s *connSet) track(conns ...net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
 		return false
 	}
-	p.conns[client], p.conns[server] = struct{}{}, struct{}{}
+	if s.conns == nil {
+		s.conns = map[net.Conn]struct{}{}
+	}
+	for _, conn := range conns {
+		s.conns[conn] = struct{}{}
+	}
 	return true
 }
 
-// untrack closes a pair of connections, once either direction ends.
-func (p *delayedProxy) untrack(client, server net.Conn) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.conns, client)
-	delete(p.conns, server)
-	_ = client.Close()
-	_ = server.Close()
+// untrack closes conns, a pair once either direction ends.
+func (s *connSet) untrack(conns ...net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, conn := range conns {
+		delete(s.conns, conn)
+		_ = conn.Close()
+	}
+}
+
+// closeAll closes listener and every connection open through the proxy, and marks it closed.
+func (s *connSet) closeAll(listener net.Listener) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	_ = listener.Close()
+	for conn := range s.conns {
+		_ = conn.Close()
+	}
+	clear(s.conns)
 }
 
 func (p *delayedProxy) close() {
-	p.mu.Lock()
-	p.closed = true
-	_ = p.listener.Close()
-	for conn := range p.conns {
-		_ = conn.Close()
-	}
-	clear(p.conns)
-	p.mu.Unlock()
+	p.closeAll(p.listener)
 	p.wg.Wait()
 }

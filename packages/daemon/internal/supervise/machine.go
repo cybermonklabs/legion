@@ -926,10 +926,10 @@ type Timeouts struct {
 	// connection's own patience: every other event for the claim queues behind the decision in
 	// flight, and a machine whose lock is held through an outage decides nothing at all. Through
 	// the daemon's store (Deps.BoundWrite) it counts from the moment the pool hands the write a
-	// connection, its BEGIN included, and the dial of a new connection is bounded by it too
-	// (store.PoolConfig); the wait in the pool's queue before that is defaultClaimAcquire's. No
-	// setting names it, because it answers a question about the write rather than about a
-	// deployment, and only tests set it. Zero takes DefaultClaimWrite.
+	// connection, and a dial the write waits for runs under it too (store.BoundAfterAcquire); the
+	// wait in the pool's queue before that is defaultClaimAcquire's. No setting names it, because
+	// it answers a question about the write rather than about a deployment, and only tests set it.
+	// Zero takes defaultClaimWrite.
 	ClaimWrite time.Duration
 }
 
@@ -1147,7 +1147,7 @@ type Deps struct {
 	// PauseStopped is the stop transaction (decision 6): the claim write a suspension a project
 	// pause asked for (RequestSuspend.Pause) ends in, in place of the plain write, together with
 	// the pause's records, in one store transaction under the claim-write deadline
-	// (Timeouts.ClaimWrite, DefaultClaimWrite), which the machine applies to the context it hands.
+	// (Timeouts.ClaimWrite, defaultClaimWrite), which the machine applies to the context it hands.
 	//
 	// c is the claim as the plain write would write it, normalized (NormalizeClaim). Where
 	// c.Pending is nil the plain write is the claim alone (Store.PutClaim); where it is not, the
@@ -1229,17 +1229,15 @@ func (d Deps) check() error {
 	return nil
 }
 
-// DefaultClaimWrite is the claim-write bound a Deps that names none takes, which in production is
+// defaultClaimWrite is the claim-write bound a Deps that names none takes, which in production is
 // every one of them. Five seconds is chosen for what such a write is: one claim row, and at most
 // one delivery row beside it, written to a Postgres on this cluster, which a healthy database
 // answers in single-digit milliseconds. Five seconds is therefore hundreds of times a healthy
 // write — so no write that was going to land is ever cut short by it — and still a small fraction
-// of any outage worth the name. A database that stops answering holds the machine's lock for
-// about this long per bounded call: the write's dial, its BEGIN and its statements all run under
-// it (store.BoundAfterAcquire, store.PoolConfig). The write it cuts short is not lost: a bare
-// context deadline is a write the server never answered, which writeOwed owes, so the claim write
-// is marked and made again at the claim's next decision (owes, repair). The store bounds a
-// connection's dial and health ping by it as well (store.PoolConfig).
+// of any outage worth the name. A database that stops answering holds the machine's lock for up to
+// about twice this per bounded call, the bound store.BoundAfterAcquire states. The write it cuts
+// short is not lost: a bare context deadline is a write the server never answered, which writeOwed
+// owes, so the claim write is marked and made again at the claim's next decision (owes, repair).
 //
 // It counts the write and not the wait in the pool's queue (Deps.BoundWrite). Counted from before
 // that wait, it was the queue's bound too: a boot relaunches every unfinished claim at once, each
@@ -1248,10 +1246,10 @@ func (d Deps) check() error {
 // writes passed five seconds with almost all of their time in that wait (internal/daemon's
 // TestWithNoPacingTheBootWaveGoesOutInOneTick, and a measurement of its writes: acquire about 90%
 // of each write's time). Each such launch was cut, owed, and tried again only at the next probe.
-const DefaultClaimWrite = 5 * time.Second
+const defaultClaimWrite = 5 * time.Second
 
 // defaultClaimAcquire bounds a bounded write's wait in the store's pool queue (Deps.BoundWrite),
-// before DefaultClaimWrite's count begins. It covers the queue alone: every connection the pool has
+// before defaultClaimWrite's count begins. It covers the queue alone: every connection the pool has
 // handed out comes back within its holder's own bound, so the queue drains while the database
 // answers nothing, and thirty seconds is a queue six writes deep per connection, against healthy
 // writes of milliseconds, so no write that would land waits it out. It ends a wait for a pool
@@ -1260,11 +1258,11 @@ const DefaultClaimWrite = 5 * time.Second
 // another value of it.
 const defaultClaimAcquire = 30 * time.Second
 
-// claimWrite is Deps.Timeouts.ClaimWrite, or DefaultClaimWrite when it names none. It is a
+// claimWrite is Deps.Timeouts.ClaimWrite, or defaultClaimWrite when it names none. It is a
 // fallback rather than a check, so a Deps built without it still writes under the deadline.
 func (d Deps) claimWrite() time.Duration {
 	if d.Timeouts.ClaimWrite <= 0 {
-		return DefaultClaimWrite
+		return defaultClaimWrite
 	}
 	return d.Timeouts.ClaimWrite
 }
