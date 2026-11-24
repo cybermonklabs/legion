@@ -440,15 +440,7 @@ func (w *walker) parseErrorKept(call *ast.CallExpr, above []ast.Node) string {
 		return ""
 	}
 	obj := w.info.ObjectOf(id)
-	var body ast.Node
-	for j := len(above) - 1; j >= 0 && body == nil; j-- {
-		switch fn := above[j].(type) {
-		case *ast.FuncDecl:
-			body = fn.Body
-		case *ast.FuncLit:
-			body = fn.Body
-		}
-	}
+	body := enclosingBody(above)
 	if obj == nil || body == nil {
 		return "whose error cannot be followed"
 	}

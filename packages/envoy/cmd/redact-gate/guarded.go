@@ -148,6 +148,20 @@ func collectStores(files []*ast.File, info *types.Info) (map[types.Object][]toke
 	return stores, inits
 }
 
+// enclosingBody is the body of the innermost function among parents, a declaration or a literal,
+// or nil.
+func enclosingBody(parents []ast.Node) *ast.BlockStmt {
+	for i := len(parents) - 1; i >= 0; i-- {
+		switch fn := parents[i].(type) {
+		case *ast.FuncDecl:
+			return fn.Body
+		case *ast.FuncLit:
+			return fn.Body
+		}
+	}
+	return nil
+}
+
 // packageGuarded is the package P that the guard of guardedPackageRead's condition 2 holds the
 // type of call's receiver to, or "" and why there is none.
 func (w *walker) packageGuarded(call *ast.CallExpr, parents []ast.Node) (string, string) {
@@ -160,15 +174,7 @@ func (w *walker) packageGuarded(call *ast.CallExpr, parents []ast.Node) (string,
 	if id != nil {
 		value, _ = w.info.Uses[id].(*types.Var)
 	}
-	var body *ast.BlockStmt
-	for i := len(parents) - 1; i >= 0 && body == nil; i-- {
-		switch fn := parents[i].(type) {
-		case *ast.FuncDecl:
-			body = fn.Body
-		case *ast.FuncLit:
-			body = fn.Body
-		}
-	}
+	body := enclosingBody(parents)
 	if value == nil || body == nil || value.Pos() < body.Pos() || value.Pos() > body.End() {
 		return "", "its receiver is no variable of the function it is called in"
 	}
@@ -474,15 +480,7 @@ func (w *walker) resultReceiver(call *ast.CallExpr, parents []ast.Node) string {
 	if result == nil || len(w.stores[result]) != 1 {
 		return "the variable that holds its result is not stored to once"
 	}
-	var body ast.Node
-	for i := len(parents) - 1; i >= 0 && body == nil; i-- {
-		switch fn := parents[i].(type) {
-		case *ast.FuncDecl:
-			body = fn.Body
-		case *ast.FuncLit:
-			body = fn.Body
-		}
-	}
+	body := enclosingBody(parents)
 	if body == nil {
 		return "its result is held outside a function"
 	}

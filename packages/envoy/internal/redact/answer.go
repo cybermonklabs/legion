@@ -350,8 +350,7 @@ func refusal(v reflect.Value, json, made bool, seen map[walked]bool) string {
 // plainText is how Decode names a value of t that encoding/json fills with the answer's text as it
 // came, or "": a byte slice, json.RawMessage among them; a byte array, which it fills from a JSON
 // array of numbers that can spell the same text, and which fmt prints as text; or an interface
-// value. It is one rule for the destination itself (whole) and for each member Decode's walk
-// reads (refusal).
+// value.
 func plainText(t reflect.Type) string {
 	switch {
 	case t.Kind() == reflect.Interface:

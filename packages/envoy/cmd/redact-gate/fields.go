@@ -115,7 +115,6 @@ func (g *gate) fieldCensus(c *census, dir, path string, fset *token.FileSet, fil
 		})
 	}
 	listed := 0
-	// By name, so every run lists the same findings in the same order.
 	for _, name := range slices.Sorted(maps.Keys(scope)) {
 		fd := decls[name]
 		j := &fieldJudge{info: info, rule: set(cfg.Rule), parses: set(cfg.Parses), scope: scope, isBox: isBox, defs: localDefinitions(fd, info)}

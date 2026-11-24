@@ -214,7 +214,6 @@ func (res result) late() lateRun {
 // skippedRun is a run that skipped the row's test or a subtest of it (go test's skip action, a
 // Bun testcase's <skipped>): UNKNOWN, neither a pass nor a failure, since what was skipped
 // checked nothing. A row's test that needs a test database skips without its URL.
-// check-redact-remote-text.sh refuses a skipped row the same way.
 type skippedRun struct{ tests []string }
 
 func (s skippedRun) Error() string {
@@ -226,6 +225,7 @@ var (
 	assertLine  = regexp.MustCompile(`REDACT-ASSERT ([^\s:]+)`)
 	blindLine   = regexp.MustCompile(`blind: [^\n]*`)
 	loggedLine  = regexp.MustCompile(`^\s+\S+\.go:\d+: `) // a line t.Log, t.Error or t.Skip printed
+	testLogLine = regexp.MustCompile(`_test\.go:\d+: `)
 )
 
 // marked reports whether the output captured under k holds a marker.
@@ -414,7 +414,7 @@ func (g *gate) runTest(copyDir string, r *row) result {
 				tests = append(tests, e.Test)
 			}
 			output[e.Test].WriteString(e.Output)
-			if regexp.MustCompile(`_test\.go:\d+: `).MatchString(e.Output) && !strings.Contains(e.Output, "REDACT-") && res.note == "" {
+			if testLogLine.MatchString(e.Output) && !strings.Contains(e.Output, "REDACT-") && res.note == "" {
 				res.note = strings.TrimSpace(e.Output)
 			}
 			if loggedLine.MatchString(e.Output) && !strings.Contains(e.Output, "REDACT-") {
