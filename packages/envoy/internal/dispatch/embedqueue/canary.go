@@ -40,7 +40,6 @@ const embedCanary = "dispatch embedqueue confirmation canary"
 // confirmation is local to this one row and its own fresh canary call, never reasoning about any
 // other row's result in the same batch or bisection.
 func confirmSoloFailure(ctx context.Context, deps Deps, group []pendingRow, rowErr error, renewal *claimRenewal) bisectResult {
-	renewal.renew(ctx)
 	reserveBackgroundTokens(ctx, deps, []string{embedCanary}, renewal)
 	_, canaryErr := deps.embedDocuments(ctx, []string{embedCanary}, renewal)
 	if canaryErr != nil {

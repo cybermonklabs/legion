@@ -30,9 +30,8 @@ func TestACallThatCouldOutliveItsClaimRenewsItFirst(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				deps := tc.deps(silentEmbedder{})
-				renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "slow", text: "slow"}})
 				started := time.Now()
-				renewal.last = started.Add(-59 * time.Second)
+				renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "slow", text: "slow"}}, started.Add(-59*time.Second))
 				claimed := []time.Time{renewal.last}
 				renewal.extend = func(context.Context, []pendingRow) error {
 					claimed = append(claimed, time.Now())
@@ -76,7 +75,7 @@ func TestABedrockCallPastTheBoundEndsWithTheDeadline(t *testing.T) {
 	defer close(release)
 	client := bedrockClientFor(server)
 	deps := Deps{Embedder: client}.Paced()
-	renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "bedrock", text: "bedrock"}})
+	renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "bedrock", text: "bedrock"}}, time.Now())
 	renewal.extend = func(context.Context, []pendingRow) error { return nil }
 	claimedAt := renewal.last
 

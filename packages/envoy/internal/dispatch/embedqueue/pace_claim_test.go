@@ -52,7 +52,7 @@ func TestAWrappedEmbedderIsStillPaced(t *testing.T) {
 			wrapper := &passThrough{Embedder: inner}
 			return Deps{Embedder: wrapper}.Paced(), wrapper
 		}, 2},
-		{"put around the pace after Paced", func(inner embed.Embedder) (Deps, *passThrough) {
+		{"put around Embedder after Paced", func(inner embed.Embedder) (Deps, *passThrough) {
 			deps := Deps{Embedder: inner}.Paced()
 			wrapper := &passThrough{Embedder: deps.Embedder}
 			deps.Embedder = wrapper
@@ -102,9 +102,8 @@ func requireRenewedThroughTheSlowestWait(t *testing.T, deps Deps, late time.Dura
 	for deps.pace.Interval() < retry.MaxDelay {
 		deps.pace.BackOff()
 	}
-	renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "pace", text: "second"}})
 	started := time.Now()
-	renewal.last = started.Add(-late)
+	renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "pace", text: "second"}}, started.Add(-late))
 	claimed := []time.Time{renewal.last}
 	renewal.extend = func(context.Context, []pendingRow) error {
 		claimed = append(claimed, time.Now())

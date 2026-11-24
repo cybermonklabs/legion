@@ -62,14 +62,14 @@ const (
 	batchPause = 200 * time.Millisecond
 )
 
-// renewClaimInterval is how often a claimRenewal re-extends its claim on every row it still
-// protects - between bisection's own embed attempts, and during a wait longer than this, a
-// reservation's on the token budget (reserveTokens) or the pace's before an Embed call
-// (embedDocuments) - comfortably inside claimWindow so a renewal always lands before the claim it
-// is refreshing could lapse. A call that could outlive the claim renews it sooner
-// (renewBeforeCall). A var, not a const alongside claimWindow above, so a test can shrink it well
-// below claimWindow's own 2 minutes and observe a renewal firing in milliseconds rather than
-// needing to wait out the real interval.
+// renewClaimInterval is the longest a claimRenewal goes without re-extending its claim on every
+// row it still protects (claimRenewal.renew) - during a wait longer than this, a reservation's on
+// the token budget (reserveTokens) or the pace's before an Embed call (embedDocuments) -
+// comfortably inside claimWindow so a renewal always lands before the claim it is refreshing could
+// lapse. A call that could outlive the claim renews it sooner (claimRenewal.renew's need). A var,
+// not a const alongside claimWindow above, so a test can shrink it well below claimWindow's own 2
+// minutes and observe a renewal firing in milliseconds rather than needing to wait out the real
+// interval.
 var renewClaimInterval = claimWindow / 2
 
 // Deps are the durable state and embedding dependencies for the queue.
@@ -102,14 +102,15 @@ type Deps struct {
 	pace *embed.RateLimitedEmbedder
 }
 
-// Paced returns d with its embedder paced: Embedder becomes an embed.RateLimitedEmbedder around
-// it, each of whose calls the queue bounds (boundedCall), which d keeps as its pace (Deps.pace).
-// A wrapper of the embedder (metrics, tracing) goes in Embedder before Paced, so it sits inside
-// the pace and sees every call. A nil Embedder stays nil, so Run still starts nothing for it.
+// Paced returns d with its embedder paced: d keeps an embed.RateLimitedEmbedder around Embedder,
+// each of whose calls the queue bounds (boundedCall), as its pace (Deps.pace), which every Embed
+// call the queue makes goes through (embedDocuments). Embedder stays as given: the queue reads
+// only its Identity and Limits, which the pace answers the same. A wrapper of the embedder
+// (metrics, tracing) goes in Embedder before Paced, so it sits inside the pace and sees every
+// call. A nil Embedder stays nil, so Run still starts nothing for it.
 func (d Deps) Paced() Deps {
 	if d.Embedder != nil {
 		d.pace = embed.NewRateLimitedEmbedder(boundedCall{d.Embedder})
-		d.Embedder = d.pace
 	}
 	return d
 }
@@ -146,17 +147,17 @@ func (p *proof) answered() <-chan struct{} {
 // reservation's wait does (waitOutDebt): unrenewed, the claim would lapse mid-wait, and another
 // process's scan would claim the rows and embed them again. The wait is the pace's in full, so the
 // pace holds. Right before the call goes out - before the pace when it has no wait, and at the
-// end of the wait when it has one - the claim is renewed if the call, run to callBound, could
-// otherwise end with it too old (renewBeforeCall). A nil renewal (a call that holds no claim)
-// waits without renewing.
+// end of the wait when it has one - the claim is renewed if it is due, or if the call, run to
+// callBound, could otherwise end with it too old (renew, needing callBound plus callSlack). A nil
+// renewal (a call that holds no claim) waits without renewing.
 func (d Deps) embedDocuments(ctx context.Context, texts []string, renewal *claimRenewal) ([][]float32, error) {
 	var vectors [][]float32
 	var err error
-	renewal.renewBeforeCall(ctx)
+	renewal.renew(ctx, callBound+callSlack)
 	if d.pace != nil {
 		vectors, err = d.pace.EmbedAfter(ctx, texts, embed.InputDocument, func(ctx context.Context, wait time.Duration) bool {
 			waitOutDebt(ctx, wait, renewal)
-			renewal.renewBeforeCall(ctx)
+			renewal.renew(ctx, callBound+callSlack)
 			return ctx.Err() == nil
 		})
 	} else {
@@ -388,6 +389,7 @@ func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocke
 	if active, _, err := deps.embedderActive(ctx); err != nil || !active {
 		return 0, 0, false, false, err
 	}
+	claimed := time.Now() // before the scan's statement claims the rows (newClaimRenewal)
 	rows, settled, err := scanPending(ctx, deps)
 	if err != nil {
 		return 0, 0, false, false, err
@@ -403,7 +405,7 @@ func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocke
 	// known to be needed: a single reservation for a full batch of maximum-length documents can
 	// itself wait close to claimWindow (chunkForBudget's and reserveTokens' own doc comments), so
 	// a renewer must be in scope for every embed attempt this call makes.
-	renewal := newClaimRenewal(deps, rows)
+	renewal := newClaimRenewal(deps, rows, claimed)
 	result := embedRows(ctx, deps, rows, renewal)
 	if result.err != nil {
 		return 0, 0, false, false, result.err
@@ -472,7 +474,6 @@ func embedRows(ctx context.Context, deps Deps, rows []pendingRow, renewal *claim
 		for i, row := range group.rows {
 			texts[i] = row.text
 		}
-		renewal.renew(ctx)
 		reserveTokens(ctx, deps, group.tokens, limits.BackgroundTokensPerMinute, renewal)
 		vectors, err := deps.embedDocuments(ctx, texts, renewal)
 		if err != nil {

@@ -599,10 +599,9 @@ func TestClaimRenewalExtendsNextAttemptAtPastClaimWindow(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "RNWL", "RNWL-1", "A title")
 	ctx := context.Background()
-	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "RNWL-1", contentHash: contentHashOf(t, database, "issue", "RNWL-1")}})
-	renewal.last = time.Now().Add(-renewClaimInterval - time.Second)
+	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "RNWL-1", contentHash: contentHashOf(t, database, "issue", "RNWL-1")}}, time.Now().Add(-renewClaimInterval-time.Second))
 	before := time.Now()
-	renewal.renew(ctx)
+	renewal.renew(ctx, 0)
 	var nextAttempt time.Time
 	if err := database.Pool.QueryRow(ctx,
 		`select next_attempt_at from embeddings where kind = 'issue' and id = 'RNWL-1'`,
@@ -656,7 +655,7 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 	ctx := context.Background()
 	const interval = 300 * time.Millisecond
 	shortenForTest(t, &renewClaimInterval, interval)
-	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "LONG-1", contentHash: contentHashOf(t, database, "issue", "LONG-1")}})
+	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "LONG-1", contentHash: contentHashOf(t, database, "issue", "LONG-1")}}, time.Now())
 
 	before := time.Now()
 	waitOutDebt(ctx, 4*interval, renewal)
@@ -704,11 +703,10 @@ func TestClaimRenewalResolveStopsRenewingACommittedRow(t *testing.T) {
 	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{
 		{kind: "issue", id: "RSLV-1", contentHash: contentHashOf(t, database, "issue", "RSLV-1")},
 		{kind: "issue", id: "RSLV-2", contentHash: contentHashOf(t, database, "issue", "RSLV-2")},
-	})
+	}, time.Now().Add(-renewClaimInterval-time.Second))
 	renewal.resolve([]pendingRow{{kind: "issue", id: "RSLV-1"}})
-	renewal.last = time.Now().Add(-renewClaimInterval - time.Second)
 	before := time.Now()
-	renewal.renew(ctx)
+	renewal.renew(ctx, 0)
 
 	var rslv1Next, rslv2Next time.Time
 	if err := database.Pool.QueryRow(ctx,

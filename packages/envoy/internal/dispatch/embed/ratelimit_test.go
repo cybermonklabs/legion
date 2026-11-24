@@ -261,7 +261,8 @@ func TestRateLimitedEmbedderNeverGatesAnUnwrappedSiblingCall(t *testing.T) {
 	ctx := context.Background()
 	started := time.Now()
 	// The "live search" stand-in: the same inner embedder, called directly, bypassing the limiter
-	// entirely - exactly how cmd/dispatch wires api.Deps.Embedder versus embedqueue.Deps.Embedder.
+	// entirely - exactly how cmd/dispatch wires api.Deps.Embedder versus embedqueue's pace
+	// (embedqueue.Deps.Paced).
 	if _, err := inner.Embed(ctx, []string{"x"}, InputQuery); err != nil {
 		t.Fatalf("unwrapped Embed: %v", err)
 	}

@@ -308,10 +308,10 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 	return id
 }
 
-// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live
-// query embedding priority over background work: cmd/dispatch paces embedqueue's own Embedder
-// (embedqueue.Deps.Paced, an embed.RateLimitedEmbedder) and never wraps the one api.Deps holds, so
-// a live search request's own query embedding is never paced or blocked by that limiter, however
+// TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority over
+// background work: cmd/dispatch paces every call embedqueue makes (embedqueue.Deps.Paced keeps an
+// embed.RateLimitedEmbedder as the queue's pace) and never wraps the client api.Deps holds, so a
+// live search request's own query embedding is never paced or blocked by that limiter, however
 // deep into backoff it currently is. This drives that exact scenario with one shared fake embedder
 // whose errFor discriminates by InputType, matching how the two callers actually differ in
 // production (embedqueue always calls with InputDocument, search's embedQuery always calls with
