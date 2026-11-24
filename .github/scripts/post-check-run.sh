@@ -45,6 +45,8 @@
 #   GH_RETRY_SECONDS   optional: a refused post is retried twice on gh-read.sh's one ladder, this
 #                      many seconds and then twice as many apart (10 by default; the tests set 0),
 #                      then fails the step (gh-read.sh says how it waits out a spent API budget).
+#   GITHUB_SERVER_URL  optional, as Actions sets it (https://github.com when unset): the server
+#                      whose check-run URL the post's answer must be for this script to print it.
 #
 # Run from anywhere: HEAD_SHA=... CHECK_NAME=... CONCLUSION=... TITLE=... SUMMARY_FILE=...
 #   DETAILS_URL=... EXTERNAL_ID=... .github/scripts/post-check-run.sh
@@ -85,8 +87,21 @@ jq -n --arg name "$CHECK_NAME" --arg sha "$HEAD_SHA" --arg conclusion "$CONCLUSI
   '{name: $name, head_sha: $sha, status: "completed", conclusion: $conclusion, details_url: $url,
     external_id: $external_id,
     output: {title: $title, summary: ($summary | .[0:65000])}}' >"$body"
+# Whatever answers gh's call in GitHub's place holds gh's token and writes this answer, so the URL
+# it names is printed only when it is a check run of this repository on this server,
+# <server>/<owner>/<repo>/runs/<digits>, which is what GitHub answers. Any other answer is kept in
+# a file of its own, which outlives this script (RUNNER_TEMP's on a runner, until the job ends),
+# and the line names that file in its stead; the post stands either way.
 if posted=$(gh_read gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input "$body" --jq '.html_url'); then
-  echo "posted $CHECK_NAME ($CONCLUSION) on $HEAD_SHA: $posted"
+  run=${posted#"${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_REPOSITORY/runs/"}
+  if [ "$run" != "$posted" ] && [[ $run =~ ^[0-9]+$ ]]; then
+    echo "posted $CHECK_NAME ($CONCLUSION) on $HEAD_SHA: $posted"
+  elif kept=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/post-check-run-answer.XXXXXX") &&
+    printf '%s\n' "$posted" > "$kept"; then
+    echo "posted $CHECK_NAME ($CONCLUSION) on $HEAD_SHA; GitHub's answer named no check run of $GITHUB_REPOSITORY, so it is not printed: it is kept in $kept"
+  else
+    echo "posted $CHECK_NAME ($CONCLUSION) on $HEAD_SHA; GitHub's answer named no check run of $GITHUB_REPOSITORY, so it is not printed, and it could not be kept"
+  fi
   exit 0
 fi
 echo "::error::GitHub refused the $CHECK_NAME check run on $HEAD_SHA at every attempt gh-read.sh made"

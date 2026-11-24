@@ -86,6 +86,9 @@ case "\$*" in
     done
     cp "\$body" "$work/posted.\$n.json"
     if [ -e "$work/post-fails" ]; then echo "HTTP 403" >&2; exit 1; fi
+    # A post-answer file is what answers the post in GitHub's place: the rows about the URL a
+    # post prints write it.
+    if [ -e "$work/post-answer" ]; then cat "$work/post-answer"; exit 0; fi
     echo "https://github.com/o/r/runs/\$n" ;;
   *) echo "unexpected gh \$*" >&2; exit 2 ;;
 esac
@@ -114,7 +117,7 @@ selects='{"result": "success", "outputs": {"typecheck": "true", "envoy_client": 
 jobs() {
   local pair n=0
   rm -f "$work"/posted.*.json "$work/post-fails" "$work/jobs" "$work/check-runs" "$work"/annotations.* \
-    "$work/calls" "$work/tips"
+    "$work/calls" "$work/tips" "$work/post-answer"
   echo base123 > "$work/tip"
   for pair in "$@"; do
     jq -nc --arg name "${pair%%=*}" --arg status "${pair#*=}" \
@@ -184,6 +187,40 @@ verdict() {
 
 posted() { find "$work" -maxdepth 1 -name 'posted.*.json' | wc -l | tr -d ' '; }
 field() { jq -r "$1" "$work/posted.0.json"; }
+
+# The marker the rows on gh's words put in what a stand-in answers or says. Whatever answers gh's
+# calls in GitHub's place holds gh's token and writes those words, so no run of eight of its
+# characters (redacttest.Piece's run) may be in what a script prints, posts or leaves for its
+# caller to print. Each such row runs with RUNNER_TEMP in this file's work directory, where the
+# scripts keep an answer they do not print.
+marker=not-a-secret-token
+mkdir "$work/temp"
+# prints_no_marker <text>: true when the text holds no run of eight characters of the marker.
+prints_no_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    if [[ $1 == *"${marker:at:8}"* ]]; then
+      echo false
+      return
+    fi
+  done
+  echo true
+}
+# kept_in <text>: the file the first "kept in <file>" of the text names, without the `)`, `;`, `,`
+# or `.` that ends the words naming it.
+kept_in() { sed -n 's/.*kept in \([^ );,]*\).*/\1/p' <<<"$1" | sed -n '1s/\.$//;1p'; }
+# kept_marker <text>: true when the file the text names as keeping an answer holds the marker.
+kept_marker() {
+  local kept
+  kept=$(kept_in "$1")
+  if [ -n "$kept" ] && [ -f "$kept" ] && grep -qF -- "$marker" "$kept"; then echo true; else echo false; fi
+}
+# shown <text>: prints the text a row's script printed, each line under a `printed:` prefix, so the
+# log shows what reached the output whichever way the row's checks go.
+shown() {
+  local line
+  while IFS= read -r line; do printf '    printed: %s\n' "$line"; done <<<"$1"
+}
 
 echo "case: a merge_group run whose reporting job failed posts without waiting"
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
@@ -478,6 +515,43 @@ set -e
 check "exits 0" "$(is "$status" 0)"
 check "posts one check run" "$(is "$(posted)" 1)"
 check "carrying that external_id" "$(is "$(field .external_id)" pr-title:41)"
+
+echo "case: post-check-run.sh prints the URL of the posted check run only when it is one of this repository's"
+# Whatever answers the post in GitHub's place holds gh's token and writes the answer, and the
+# script printed the answer's html_url whole. Each answer below holds the marker: in the run's
+# number, in the host, and as the whole answer. The post stands, so the step passes.
+# run_post: the post above, as ci.yaml's lint job calls it, with RUNNER_TEMP this file's own.
+run_post() {
+  : > "$work/summary.md"
+  set +e
+  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_SERVER_URL=https://github.com \
+    GH_RETRY_SECONDS=0 RUNNER_TEMP="$work/temp" HEAD_SHA=abc123 CHECK_NAME=pr-title CONCLUSION=success \
+    TITLE='the title is conventional' SUMMARY_FILE="$work/summary.md" \
+    DETAILS_URL=https://github.com/o/r/actions/runs/41 EXTERNAL_ID=pr-title:41 \
+    "$script_dir/post-check-run.sh" 2>&1)
+  status=$?
+  set -e
+}
+n=0
+for answer in "https://github.com/o/r/runs/$marker" "https://$marker.example/o/r/runs/1" "$marker"; do
+  n=$((n + 1))
+  jobs
+  printf '%s\n' "$answer" > "$work/post-answer"
+  run_post
+  shown "$out"
+  check "answer $n: the stand-in gh is the one called, and the post stands (control)" \
+    "$(is "$status $(posted) $(calls 'POST repos/o/r/check-runs')" '0 1 1')"
+  check "answer $n, twin: the stand-in's answer holds the marker" \
+    "$(is "$(grep -cF -- "$marker" "$work/post-answer")" 1)"
+  check "answer $n: prints no run of the marker the answer holds" "$(prints_no_marker "$out")"
+  check "answer $n: says the answer named no check run of o/r, and names the file that keeps it" \
+    "$(contains "$out" "^posted pr-title (success) on abc123; GitHub's answer named no check run of o/r, so it is not printed: it is kept in $work/temp/post-check-run-answer\.")"
+  check "answer $n: the kept answer holds the marker, where the operator finds it" "$(kept_marker "$out")"
+done
+jobs
+run_post
+check "GitHub's own answer, a check run of o/r, is printed whole (control)" \
+  "$(contains "$out" '^posted pr-title (success) on abc123: https://github.com/o/r/runs/0$')"
 
 # The hold reads refs with `git ls-remote`, so a stand-in git answers it: each line of the
 # remote file is one read's answer, `<main's tip> <the group branch's sha>` (`-` for a ref the
