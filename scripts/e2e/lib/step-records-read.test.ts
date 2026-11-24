@@ -12,7 +12,7 @@ import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 // prints a warning on stderr where a case gives one, as the real command prints its
 // `dispatch: <warning>` lines before its answer. The step answers below are the lines `dispatch
 // steps` prints (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one run per
-// line, each ending in its set model and the models that answered it. The plan answers are what
+// line. Each line ends in its set model and the models that answered it. The plan answers are what
 // `dispatch plans` (dispatch-commands/plans.ts) prints of typed finished issues, rendered by that
 // command itself, so a plan line the command prints and the script cannot read fails here.
 const script = join(import.meta.dir, "..", "step-records-read.sh");
@@ -21,8 +21,8 @@ const dir = temporaryDirectory("step-records-read-test");
 const project = "INFRA";
 const key = "INFRA-42";
 const defaultSteps = ["planner", "implementer", "tester", "reviewer", "acceptance:owner"];
-// counted is how `dispatch steps` ends the line of a run whose calls were all on its set model:
-// that model, then its calls and their share.
+// counted ends the line of a run whose calls were all on its set model. It names that model, then
+// its calls and their share.
 const counted = "set anthropic/claude-opus-5 answered anthropic/claude-opus-5=3(100%)";
 const run = (step: string) =>
   `default ${step} legion-infra-infra-42-${step.split(" ")[2]} anthropic/claude-opus-5 2026-11-20T09:00:00Z 2026-11-20T09:40:00Z passed ${counted}`;

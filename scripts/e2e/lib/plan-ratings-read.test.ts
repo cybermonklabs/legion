@@ -98,7 +98,7 @@ function finished(
 // A whole answer: an issue its owner planned in two tasks, rated once; an issue rated twice whose
 // second reason holds a quotation mark and a line break; the issue rated once; an issue its owner
 // planned in one task, unrated; and an issue Legion never ran, or ran before the release that
-// records each step, which lists no plan, no rating, no time and no record to count.
+// records each step, which lists no plan, no rating and no time.
 const answer: ProjectPlans = {
   project,
   issues: [

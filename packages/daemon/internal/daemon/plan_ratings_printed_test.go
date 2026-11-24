@@ -259,10 +259,10 @@ func TestThePrintedReadHoldsEachIssueToItsPlan(t *testing.T) {
 // newer issue, rated, with one failed step and records more than an hour apart, prints before an
 // older one with no rating. Each issue has a step and a merge that name an agent. So each prints
 // one record on its set model and one unknown (standInCounts). Each control changes one thing of
-// the printed text and wants the error that names it. The controls swap the two lines, print the
-// rated issue with no rating and the unrated one with a rating, and print the time past its
-// minutes. They print the failed step as none, the step off its set model, and the counts as a
-// Dispatch before them prints them.
+// the printed text and wants the error that names it. The controls swap the two lines. They print
+// the rated issue with no rating, the unrated one with a rating, and the time past its minutes.
+// They print the failed step as none, the step off its set model, and the counts as a Dispatch
+// before them prints them.
 func TestThePrintedReadHoldsTwoIssuesToTheirOrderRatingsTimesFailedStepsAndCounts(t *testing.T) {
 	t.Parallel()
 	records := func(started, ended string) stepRecordsRead {
