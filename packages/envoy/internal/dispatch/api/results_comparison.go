@@ -318,6 +318,11 @@ func (c *comparisonReader) branchBases(ctx context.Context, check model.CheckBlo
 		return noBases(c.nothingReason(ctx, check.IssueKey))
 	}
 	for _, repo := range linked.repos {
+		if !slices.ContainsFunc(check.Results, func(result model.CheckResult) bool {
+			return result.CommitRepo != nil && *result.CommitRepo == repo
+		}) {
+			continue
+		}
 		compared.linked = append(compared.linked, c.linkedBranchBases(ctx, check, repo).bases...)
 	}
 	return compared
