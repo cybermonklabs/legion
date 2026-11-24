@@ -143,6 +143,15 @@ def failed(path: str, command: str, result, holds: str, problems: list, scratch:
                                 f"are unknown: {output[:500]}"))
 
 
+def listed_paths(text: str) -> list:
+    """The paths tsc's --listFilesOnly printed, one to a line. Where the repository root holds a
+    newline, as a test's fixture repository under a TMPDIR holding one does, splitting at each
+    newline would cut every path inside it in two, so the root is set aside as a NUL, which no path
+    holds, while the text is split, and put back in each line after."""
+    root = str(REPO)
+    return [line.replace("\0", root) for line in text.replace(root, "\0").splitlines()]
+
+
 def program_files(project: str, problems: list) -> list | None:
     """Every file of the project's tsc program that is inside the repository and outside
     node_modules, repository-relative. None when the command fails."""
@@ -151,7 +160,7 @@ def program_files(project: str, problems: list) -> list | None:
     if result.returncode != 0:
         failed(project, " ".join(command), result, "program holds", problems)
         return None
-    return kept(result.stdout.splitlines())
+    return kept(listed_paths(result.stdout))
 
 
 def bundle_files(entry: str, problems: list) -> list | None:
@@ -173,6 +182,10 @@ def bundle_files(entry: str, problems: list) -> list | None:
         try:
             inputs = list(json.loads((Path(scratch) / "meta.json").read_text())["inputs"])
         except (OSError, ValueError, KeyError, TypeError) as exc:
+            if isinstance(exc, OSError) and exc.filename:
+                # The name scrubbed before Python quotes it: a name holding ' is quoted with ", so
+                # quoting the raw name would make the refusal's text depend on TMPDIR.
+                exc = type(exc)(exc.errno, exc.strerror, scrubbed(exc.filename, scratch))
             problems.append(error(entry, f"`{shown}` exited 0 and left no metafile whose `inputs` this check "
                                          f"can read ({type(exc).__name__}: {scrubbed(str(exc), scratch)}), so "
                                          f"the files its bundle loads are unknown"))
