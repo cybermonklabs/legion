@@ -677,37 +677,46 @@ func podTokenSource(ctx context.Context, timeout time.Duration, scopes ...string
 }
 
 // impersonationClient is the IAM Credentials client the impersonation calls generateAccessToken
-// with. Without a writer token it is signed with the pod's own credentials (Application Default
-// Credentials, cloud-platform). With a writer token, one federated source exchanges the token
-// file's contents at the security token service for a federated token, which signs each call,
-// and the pod's own credentials sign nothing; the federated source reads the file again at each
-// exchange. Each request, on either path, is bounded by endpoints.timeout() (googleCallTimeout).
-// The library calls its constant IAM Credentials endpoint and ignores option.WithEndpoint, so the
-// client is the only way to give each call its credential. Its requests go out through a
-// RefusalClient beneath the credential's transport, so each refused request's bearer is recorded
-// in the source's scope and the boundary reads impersonate's text with it redacted. Neither the
-// IAM Credentials client nor the exchange's client follows a redirect (redirects.Refused):
-// neither service answers one a call must follow, and a followed one would carry the bearer,
-// which oauth2.Transport sets on every request it sends, or the subject token, whose form a 307
-// sends again, to whatever host its Location names. A 3xx is the library's refusal by its status.
-// endpoints.iam is the transport beneath (nil is http.DefaultTransport), and endpoints.stsURL the
-// exchange's token URL ("" is STSTokenURL).
+// with: one client, whatever signs its calls (iamSource), each of its requests bounded by
+// endpoints.timeout() (googleCallTimeout). The library calls its constant IAM Credentials
+// endpoint and ignores option.WithEndpoint, so the client is the only way to give each call its
+// credential. Its requests go out through a RefusalClient beneath the credential's transport, so
+// each refused request's bearer is recorded in the source's scope and the boundary reads
+// impersonate's text with it redacted. It follows no redirect (redirects.Refused): the service
+// answers none a call must follow, and a followed one would carry the bearer, which
+// oauth2.Transport sets on every request it sends, to whatever host its Location names. A 3xx is
+// the library's refusal by its status. endpoints.iam is the transport beneath (nil is
+// http.DefaultTransport).
 func impersonationClient(ctx context.Context, signer Signer, endpoints googleEndpoints) (*http.Client, error) {
+	source, err := iamSource(ctx, signer, endpoints)
+	if err != nil {
+		return nil, err
+	}
+	signed := &oauth2.Transport{
+		Source: oauth2call.TokenSource(source),
+		Base:   oauth2call.RefusalClient(&http.Client{Transport: endpoints.iam}).Transport,
+	}
+	return oauth2call.RefusalClient(redirects.Refused(&http.Client{Timeout: endpoints.timeout(), Transport: signed})), nil
+}
+
+// iamSource is the source that signs each IAM Credentials call, its token reused while it lives.
+// Without a writer token it is the pod's own credentials (Application Default Credentials,
+// cloud-platform). With a writer token, one federated source exchanges the token file's contents
+// at the security token service for a federated token, refreshed writerTokenEarlyRefresh before
+// it expires, and the pod's own credentials sign nothing; the federated source reads the file
+// again at each exchange. The exchange takes its HTTP client from the context
+// (oauth2.HTTPClient), as the metadata endpoint's does, so the bound and the record reach it
+// there; it follows no redirect either, since a 307 would send the exchange's form, with the
+// subject token in it, again. endpoints.stsURL is the exchange's token URL ("" is STSTokenURL).
+func iamSource(ctx context.Context, signer Signer, endpoints googleEndpoints) (oauth2.TokenSource, error) {
 	if signer.WriterAudience == "" {
 		source, err := podTokenSource(ctx, endpoints.timeout(), cloudPlatformScope)
 		if err != nil {
 			return nil, fmt.Errorf("read the pod's own credentials: %w", err)
 		}
-		// oauth2.NewClient takes the context client's Timeout and redirect rule, so the bound and
-		// the refusal hold each call.
-		return oauth2call.RefusalClient(oauth2.NewClient(
-			context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(redirects.Refused(&http.Client{Timeout: endpoints.timeout(), Transport: endpoints.iam}))),
-			oauth2call.TokenSource(source),
-		)), nil
+		return oauth2.ReuseTokenSource(nil, oauth2call.TokenSource(source)), nil
 	}
 	s := oauth2call.Scope[oauth2.TokenSource](ctx)
-	// The exchange takes its HTTP client from the context (oauth2.HTTPClient), as the metadata
-	// endpoint's does, so the bound and the record reach it there.
 	exchange := context.WithValue(s.Context(), oauth2.HTTPClient, s.Client(redirects.Refused(&http.Client{Timeout: endpoints.timeout()})))
 	federated, err := oauth2call.Call(s.Read(externalaccount.NewTokenSource(exchange, externalaccount.Config{
 		Audience:         signer.WriterAudience,
@@ -719,9 +728,5 @@ func impersonationClient(ctx context.Context, signer Signer, endpoints googleEnd
 	if err != nil {
 		return nil, fmt.Errorf("exchange the writer token: %w", err)
 	}
-	signed := &oauth2.Transport{
-		Source: oauth2call.TokenSource(oauth2.ReuseTokenSourceWithExpiry(nil, oauth2call.TokenSource(federated), writerTokenEarlyRefresh)),
-		Base:   oauth2call.RefusalClient(&http.Client{Transport: endpoints.iam}).Transport,
-	}
-	return oauth2call.RefusalClient(redirects.Refused(&http.Client{Timeout: endpoints.timeout(), Transport: signed})), nil
+	return oauth2.ReuseTokenSourceWithExpiry(nil, oauth2call.TokenSource(federated), writerTokenEarlyRefresh), nil
 }
