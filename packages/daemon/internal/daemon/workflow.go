@@ -576,12 +576,17 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits
 // GitHub's answer and the App (limitOutcome). Any other failure stops the boot with a refusal that
 // names the App. A key GitHub takes is the whole proof: an App with no installation boots, and one
 // WARN line names it, since a project works in each repository both role Apps reach and an
-// operator may install an App after the daemon is up. The owners each read answers are recorded
-// as the boot's read of that App's installations (appauth.Installed.RecordProof) once both are
-// proved, so every launch's addressing names its App's own owners from the first launch on
-// (plan.appOwners). That read is kept apart from a bundle's: the drift check never compares a pod
-// against it (appauth.GitHubDirs), since no mint has run at boot to say which of those owners a
-// bundle leaves out. Nothing of the boot mints a token for an owner.
+// operator may install an App after the daemon is up; an App installed on an account is named on
+// an INFO line with each owner its read answered as a message may print it
+// (githubrest.ShownLogin), in the read's order: discovery takes any login GitHub lists, one that
+// echoes the App's JWT the read carried among them, and such a name prints as githubrest.NotALogin,
+// so the operator still sees an entry is there. The owners each read answers are recorded as they
+// came as the boot's read of that App's installations
+// (appauth.Installed.RecordProof) once both are proved, so every launch's addressing names its
+// App's own owners from the first launch on (plan.appOwners). That read is kept apart from a
+// bundle's: the drift check never compares a pod against it (appauth.GitHubDirs), since no mint
+// has run at boot to say which of those owners a bundle leaves out. Nothing of the boot mints a
+// token for an owner.
 func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installed *appauth.Installed, waits *startWaits, log *slog.Logger) error {
 	const call = "GitHub App key proof"
 	owners := make(map[appauth.AppRole][]string, len(appauth.Roles))
@@ -608,7 +613,11 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 				"app", string(role))
 			continue
 		}
-		log.Info("legion workflow proved a GitHub App's key", "app", string(role), "installedOn", owners[role])
+		shown := make([]string, 0, len(owners[role]))
+		for _, owner := range owners[role] {
+			shown = append(shown, githubrest.ShownLogin(owner))
+		}
+		log.Info("legion workflow proved a GitHub App's key", "app", string(role), "installedOn", shown)
 	}
 	return nil
 }
