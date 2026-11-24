@@ -9,6 +9,7 @@ import {
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { remoteText, remoteTexts } from "@legion/test-fixtures/remote-text-matcher";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -604,10 +605,10 @@ describe("DispatchClient", () => {
     ).rejects.toEqual(
       expect.objectContaining({
         name: "DispatchServiceError",
-        code: "TARGET_AMBIGUOUS",
+        code: remoteText("TARGET_AMBIGUOUS"),
         status: 409,
         message: "quote is ambiguous",
-        candidates,
+        candidates: remoteTexts(candidates),
       })
     );
   });
@@ -651,10 +652,10 @@ describe("DispatchClient", () => {
     ).rejects.toEqual(
       expect.objectContaining({
         name: "DispatchServiceError",
-        code: "PRECONDITION_FAILED",
+        code: remoteText("PRECONDITION_FAILED"),
         status: 409,
-        current,
-        mismatches,
+        current: remoteTexts(current),
+        mismatches: remoteTexts(mismatches),
       })
     );
   });
@@ -722,7 +723,7 @@ describe("DispatchClient", () => {
     expect(badGateway).toEqual(
       expect.objectContaining({
         name: "DispatchServiceError",
-        code: "HTTP_502",
+        code: remoteText("HTTP_502"),
         status: 502,
         answer,
         transient: true,
@@ -746,7 +747,9 @@ describe("DispatchClient", () => {
     expect(notFound.message).toBe(
       `${request}404 Not Found with a body that is not Dispatch's error JSON ("404 Not Found")${sameAgain}`
     );
-    expect(notFound).toEqual(expect.objectContaining({ code: "HTTP_404", transient: false }));
+    expect(notFound).toEqual(
+      expect.objectContaining({ code: remoteText("HTTP_404"), transient: false })
+    );
   });
 
   // F5 (the review of 81d860a8f7): a read behind a redirect is told where the redirect pointed,
@@ -1322,11 +1325,15 @@ describe("DispatchClient", () => {
     );
 
     await expect(client.getIssue("DSP-1")).rejects.toEqual(
-      expect.objectContaining({ code: "ISSUE_CLOSED", status: 409, message: "issue is closed" })
+      expect.objectContaining({
+        code: remoteText("ISSUE_CLOSED"),
+        status: 409,
+        message: "issue is closed",
+      })
     );
     await expect(client.getIssue("DSP-1")).rejects.toEqual(
       expect.objectContaining({
-        code: "HTTP_404",
+        code: remoteText("HTTP_404"),
         status: 404,
         message: "no route for GET /api/v1/issues/DSP-1",
       })
@@ -1536,7 +1543,7 @@ test("createProject surfaces PROJECT_EXISTS as the refusal's code", async () => 
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl);
 
   await expect(client.createProject({ key: "CORE", name: "Core", actor })).rejects.toMatchObject({
-    code: "PROJECT_EXISTS",
+    code: remoteText("PROJECT_EXISTS"),
     status: 409,
     fromDispatch: true,
   });
@@ -1648,7 +1655,7 @@ describe("listArchitectureSources against a server older than the list route", (
     );
 
     await expect(client.listArchitectureSources("CORE")).rejects.toMatchObject({
-      code: "NOT_FOUND",
+      code: remoteText("NOT_FOUND"),
       status: 404,
       message: "not found",
     });
@@ -1665,7 +1672,7 @@ describe("listArchitectureSources against a server older than the list route", (
     );
 
     await expect(client.listArchitectureSources("CORE")).rejects.toMatchObject({
-      code: "NOT_FOUND",
+      code: remoteText("NOT_FOUND"),
       status: 404,
       message: "not found",
     });
@@ -1729,7 +1736,7 @@ describe("syncArchitectureSources against a server older than the every-source s
     );
 
     await expect(client.syncArchitectureSources("CORE")).rejects.toMatchObject({
-      code: "SOURCE_NOT_FOUND",
+      code: remoteText("SOURCE_NOT_FOUND"),
       status: 404,
       message: "no architecture source configured",
     });
@@ -1746,7 +1753,7 @@ describe("syncArchitectureSources against a server older than the every-source s
     );
 
     await expect(client.syncArchitectureSources("CORE")).rejects.toMatchObject({
-      code: "NOT_FOUND",
+      code: remoteText("NOT_FOUND"),
       status: 404,
       message: "not found",
     });
@@ -1813,7 +1820,7 @@ describe("a request a Dispatch process answers with no route", () => {
     const error = await client.listProjects().catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(DispatchNoRouteError);
     expect(error).toMatchObject({
-      code: "NOT_FOUND",
+      code: remoteText("NOT_FOUND"),
       status: 404,
       message: NO_ROUTE_ROLLING_RELEASE_MESSAGE,
     });
@@ -1966,7 +1973,7 @@ describe("a broker token Dispatch says is not live", () => {
 
       await expect(call(client)).rejects.toMatchObject({
         status: 401,
-        code: "BROKER_TOKEN_NOT_ACTIVE",
+        code: remoteText("BROKER_TOKEN_NOT_ACTIVE"),
         message: "the secrets broker does not hold this access token as live",
       });
       expect(stales).toHaveLength(1);
@@ -1989,7 +1996,7 @@ describe("a broker token Dispatch says is not live", () => {
 
     await expect(client.listAllIssues({})).rejects.toMatchObject({
       status: 401,
-      code: "BROKER_TOKEN_PROOF_INVALID",
+      code: remoteText("BROKER_TOKEN_PROOF_INVALID"),
     });
     expect(stales).toEqual([]);
     expect(requests).toHaveLength(1);
@@ -2005,7 +2012,7 @@ describe("a broker token Dispatch says is not live", () => {
 
     await expect(client.listAllIssues({})).rejects.toMatchObject({
       status: 401,
-      code: "BROKER_TOKEN_NOT_ACTIVE",
+      code: remoteText("BROKER_TOKEN_NOT_ACTIVE"),
     });
     expect(requests).toHaveLength(1);
   });

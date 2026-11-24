@@ -80,7 +80,9 @@ const PROJECT_TOPIC_REFUSALS = ["topic_not_in_project", "repository_not_in_proje
  * whose wire forms (`expandSubscriptionTopics`, which the client sends) include a topic the 403's
  * `refused` lists, the session's own agent subject never among them. Undefined for any other
  * failure, a 403 for any other reason included, and for a refusal that names none of `topics` but
- * that subject.
+ * that subject. The reason and the refused topics are the listener's words, so each is compared
+ * through its box (`RemoteText.equals`), and what this answers is the client's own: the reason it
+ * names and the session's topics.
  */
 function projectRefusedTopics(
   error: unknown,
@@ -88,13 +90,13 @@ function projectRefusedTopics(
   ownAgentSubject: string
 ): { readonly reason: string; readonly topics: string[] } | undefined {
   if (!(error instanceof EnvoyApiError) || error.details.status !== 403) return undefined;
-  const reason = PROJECT_TOPIC_REFUSALS.find((refusal) => refusal === error.reason);
+  const reason = PROJECT_TOPIC_REFUSALS.find((refusal) => error.reason?.equals(refusal) === true);
   if (reason === undefined) return undefined;
-  const refused = new Set(error.refused ?? []);
+  const refused = error.refused ?? [];
   const named = topics.filter(
     (topic) =>
       topic !== ownAgentSubject &&
-      expandSubscriptionTopics([topic]).some((form) => refused.has(form))
+      expandSubscriptionTopics([topic]).some((form) => refused.some((said) => said.equals(form)))
   );
   return named.length === 0 ? undefined : { reason, topics: named };
 }

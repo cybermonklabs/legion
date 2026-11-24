@@ -34,6 +34,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
+import { remoteText, remoteTexts } from "@legion/test-fixtures/remote-text-matcher";
 import type { RequestCredential } from "../bearer";
 import {
   DispatchClient,
@@ -1113,7 +1114,12 @@ test.each([
   expect(error).toBeInstanceOf(DispatchServiceError);
   expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
   expect(error).toEqual(
-    expect.objectContaining({ code: answer.code, status: answer.status, fromDispatch: true })
+    expect.objectContaining({
+      // Every kind this table names carries a code; one that names none matches no box.
+      code: remoteText(answer.code ?? "(the kind names no code)"),
+      status: answer.status,
+      fromDispatch: true,
+    })
   );
 });
 
@@ -1125,14 +1131,14 @@ test("after a gateway page, the callers' stored refusals keep what their callers
     kind("502 page"),
     kind("409 handler POSSIBLE_DUPLICATE fresh exact echo for the issue candidate list"),
   ]);
-  expect((duplicate.error as DispatchServiceError).candidates).toEqual(duplicates);
+  expect((duplicate.error as DispatchServiceError).candidates).toEqual(remoteTexts(duplicates));
   const ambiguous = await drive([
     kind("502 page"),
     kind("409 handler TARGET_AMBIGUOUS fresh exact echo for docEdit candidates"),
   ]);
-  expect((ambiguous.error as DispatchServiceError).candidates).toEqual([
-    { from: 1, to: 2, context: "same" },
-  ]);
+  expect((ambiguous.error as DispatchServiceError).candidates).toEqual(
+    remoteTexts([{ from: 1, to: 2, context: "same" }])
+  );
   const reply = await drive([
     kind("502 page"),
     kind("400 handler CAP_EXCEEDED fresh exact echo for the typed-input fallback reply"),
@@ -1145,7 +1151,11 @@ test("after a gateway page, the callers' stored refusals keep what their callers
   );
   const reused = await drive([kind("502 page"), kind("422 KEY_REUSED exact echo")]);
   expect(reused.error).toEqual(
-    expect.objectContaining({ code: IDEMPOTENCY_KEY_REUSED, status: 422, fromDispatch: true })
+    expect.objectContaining({
+      code: remoteText(IDEMPOTENCY_KEY_REUSED),
+      status: 422,
+      fromDispatch: true,
+    })
   );
 });
 

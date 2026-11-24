@@ -14,6 +14,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_PATTERN,
 } from "@legion/contracts";
+import { remoteText, remoteTexts } from "@legion/test-fixtures/remote-text-matcher";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -404,10 +405,10 @@ describe("DispatchClient's writes", () => {
     ).rejects.toEqual(
       expect.objectContaining({
         name: "DispatchServiceError",
-        code: "TARGET_AMBIGUOUS",
+        code: remoteText("TARGET_AMBIGUOUS"),
         status: 409,
         message: "quote is ambiguous",
-        candidates,
+        candidates: remoteTexts(candidates),
       })
     );
   });
@@ -465,7 +466,7 @@ describe("DispatchClient's writes", () => {
       sent[0]?.headers["Idempotency-Key"] as string
     );
     expect((error as DispatchWriteUnsettledError).last).toEqual(
-      expect.objectContaining({ code: "BROKER_UNAVAILABLE", status: 503 })
+      expect.objectContaining({ code: remoteText("BROKER_UNAVAILABLE"), status: 503 })
     );
   });
 
@@ -563,7 +564,7 @@ describe("DispatchClient's writes", () => {
     expect(sent).toHaveLength(3);
     expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
     expect((error as DispatchWriteUnsettledError).last).toEqual(
-      expect.objectContaining({ code: "RATE_LIMITED", status: 429 })
+      expect.objectContaining({ code: remoteText("RATE_LIMITED"), status: 429 })
     );
   });
 
@@ -1082,7 +1083,9 @@ describe("DispatchClient's writes", () => {
     expect(sent).toHaveLength(2);
     expect(error).toBeInstanceOf(DispatchServiceError);
     expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
-    expect(error).toEqual(expect.objectContaining({ status: 403, code: "ACTOR_SESSION_MISMATCH" }));
+    expect(error).toEqual(
+      expect.objectContaining({ status: 403, code: remoteText("ACTOR_SESSION_MISMATCH") })
+    );
   });
 
   // A second 401 BROKER_TOKEN_NOT_ACTIVE, after the client presented afresh and sent again, is

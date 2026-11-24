@@ -12,7 +12,9 @@ import { createEnvoyClient } from "../transport";
 // scrub of the secrets this process holds (`@legion/contracts/held-secrets`). A server at the wrong
 // URL, Dispatch's, the listener's or the broker's, can echo what it was sent inside a refusal the
 // client prints as guidance; the echo, whole or a run of 10 or more of its characters, prints as
-// `<withheld>` (#4140, the scrub).
+// `<withheld>` (#4140, the scrub). Dispatch's and the listener's refusals hold their words with
+// the tokens their request carried (`RemoteText`), so the client redacts such an echo itself, as
+// `[redacted]`, before the scrub sees the line.
 const secret = (prefix: string) => `${prefix}${randomBytes(24).toString("base64url")}`;
 const echoes = (held: string) =>
   [
@@ -38,7 +40,7 @@ describe("a server that echoes what it was sent", () => {
       () => "",
       (error: unknown) => messageFor(error)
     );
-    expect(line).toContain("<withheld>");
+    expect(line).toContain("[redacted]");
     expect(line).not.toContain(shown);
   });
 
@@ -47,9 +49,9 @@ describe("a server that echoes what it was sent", () => {
   )("the listener's refusal echoing the bearer (%s) prints none of it", async (part) => {
     const token = secret("env_");
     const shown = part === "whole" ? token : token.slice(4, 18);
-    // The listener's own refusal, its error JSON, whose text the message prints as the listener
-    // wrote it; a body that is not its error JSON is named through the excerpt, which redacts the
-    // bearer before the scrub sees it (transport.test.ts).
+    // The listener's own refusal, its error JSON, whose words the message prints as the rule
+    // reads them with the bearer redacted; a body that is not its error JSON is named through the
+    // excerpt, which redacts the bearer too (transport.test.ts).
     const fetchImpl = (async () =>
       Response.json(
         { error: `no session holds ${shown}` },
@@ -65,7 +67,7 @@ describe("a server that echoes what it was sent", () => {
       () => "",
       (error: unknown) => messageFor(error)
     );
-    expect(line).toContain("<withheld>");
+    expect(line).toContain("[redacted]");
     expect(line).not.toContain(shown);
   });
 

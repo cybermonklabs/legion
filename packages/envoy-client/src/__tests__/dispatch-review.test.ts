@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { NO_ROUTE_ROLLING_RELEASE_MESSAGE } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
@@ -331,7 +332,7 @@ describe("dispatch review", () => {
 
     expect(error).toBeInstanceOf(DispatchServiceError);
     expect(error).not.toBeInstanceOf(ToolInputError);
-    expect(error).toMatchObject({ code: "NOT_FOUND", status: 404 });
+    expect(error).toMatchObject({ code: remoteText("NOT_FOUND"), status: 404 });
     const printed = messageFor(error);
     expect(printed).toBe(
       `NOT_FOUND: Dispatch at ${base} answered no route for POST /api/v1/artifacts/artifact-spec/versions/3/reviews each time the review was sent, and an answer of no route records no review. This build is older than that route. No other review route was asked: the review route an older build serves takes no version, and it would record the review at a version that build chooses, which may not be version 3. The no-route answer does not name the build; GET ${base}/healthz names the commit of the build that answers it, when that build was stamped with one.`

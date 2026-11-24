@@ -427,6 +427,34 @@ test("a notice no session held the architect role for is published again by the 
   expect(entries.at(-1)).toMatchObject({ count: 3, reported: true });
 });
 
+// The reason is read from the 404's body whatever else it names, as it always was: a later
+// listener's body that names a holder state this client does not know is still the answer this
+// sender's retry exists for, not a failure to warn about.
+test("a 404 naming the reason beside a holder state this client does not know is still no holder", async () => {
+  const { reminder, timers, entries, published, warned } = rig({
+    publish: async () => {
+      throw new EnvoyApiError({
+        method: "POST",
+        url: "http://listener.test/v1/messages/publish",
+        status: 404,
+        responseBody: JSON.stringify({
+          error: "role architect holder ses_x lapsed",
+          reason: "holder_lapsed",
+          holder: "ses_x",
+          holder_state: "retired",
+        }),
+      });
+    },
+  });
+
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(1);
+  expect(warned).toEqual([]);
+  expect(entries.at(-1)).toMatchObject({ count: 2, reported: false });
+});
+
 // No turn starts on a reminder that never reached the worker, so no settle would arm the next
 // one: the runner uncounts it and arms the next itself, and the reminding goes on.
 test("a reminder the host failed to deliver is not counted, and the next is armed", async () => {

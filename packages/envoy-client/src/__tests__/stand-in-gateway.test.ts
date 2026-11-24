@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
 import { bearerCredential } from "../bearer";
 import { DispatchClient, DispatchGatewayError } from "../dispatch-http";
 import { parseStandInArguments, standInAnswer } from "../stand-in-gateway";
@@ -51,7 +52,7 @@ describe("standInAnswer", () => {
       );
 
       expect(error).toBeInstanceOf(DispatchGatewayError);
-      expect(error).toEqual(expect.objectContaining({ status: 504, code: "HTTP_504" }));
+      expect(error).toEqual(expect.objectContaining({ status: 504, code: remoteText("HTTP_504") }));
     }
   });
 });

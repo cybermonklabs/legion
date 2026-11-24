@@ -15,6 +15,7 @@ import { RETRY_FIRST_WAIT_MS } from "@legion/cipher-client/token-client";
 import { isFinalRefusal, TradeRetryingError } from "@legion/cipher-client/token-errors";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { brokerCredential, forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
@@ -214,7 +215,7 @@ test("membership_held marks no credential stale", async () => {
   for (let call = 0; call < 2; call++) {
     await expect(client.listAllIssues({})).rejects.toMatchObject({
       status: 401,
-      code: "MEMBERSHIP_HELD",
+      code: remoteText("MEMBERSHIP_HELD"),
     });
   }
   expect(stale, "401 MEMBERSHIP_HELD marked the broker credential stale").not.toHaveBeenCalled();
