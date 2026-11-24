@@ -40,8 +40,8 @@ fi
 # conclusion is still null while this step runs, so it selects itself out.
 #
 # `skipped` is left out too, and not because a skip is uninteresting: on the
-# pull-request lane the alone and multiprocess jobs are skipped by their own
-# `if: inputs.lane == 'full'`, so naming them here would report the lane working as
+# pull-request lane the alone and multiprocess jobs are skipped by their own `if:`,
+# which admits only the full lane, so naming them here would report the lane working as
 # designed as a leg that did not succeed. A skip that is not by design is caught where
 # it matters instead: reading one fails this job when a leg the lane owed a blob report
 # did not upload one, and the verdict step fails on an upstream result that is neither

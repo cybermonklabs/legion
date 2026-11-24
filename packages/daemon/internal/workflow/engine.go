@@ -75,8 +75,9 @@ type Config struct {
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role
 	// DefaultSteps are the project's default steps (config.Project.RunsByDefault): the steps of
-	// the one task default of an issue whose owner gives no plan, and of a task whose block names
-	// neither steps nor a sub-owner. Nil takes the steps of a project that names none.
+	// the one task default of an issue whose owner gives no plan or whose experiment's group takes
+	// none, and of a task whose block names neither steps nor a sub-owner. Nil takes the steps of
+	// a project that names none.
 	DefaultSteps []plan.Step
 	Clock        func() time.Time
 	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
@@ -146,7 +147,9 @@ type Config struct {
 	// the memory experiment, whose unit is the tree and which is therefore drawn where a tree is
 	// opened and never here, so a project that declares no experiment of its own has this engine
 	// draw nothing. ExperimentSource is the random source a `random` mode is drawn with: nil is
-	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
+	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own. It is the one
+	// source of the daemon's draws: admission draws the trees and issues it records with it too
+	// (Engine.ExperimentSource).
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
@@ -206,6 +209,11 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 }
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
+
+// ExperimentSource is the random source every `random` experiment is drawn with
+// (Config.ExperimentSource): this engine's draw of each child it records, and admission's of each
+// tree and issue it records, which reads it here rather than holding a second one.
+func (e *Engine) ExperimentSource() func(uint64) (uint64, error) { return e.cfg.ExperimentSource }
 
 // byReviewApp says whether login is the review App's bot (Config.ReviewAppLogin). With no login
 // configured, it is no one's.

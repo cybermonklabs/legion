@@ -45,8 +45,8 @@ func (s Step) String() string {
 	return s.Role + ":" + s.Key
 }
 
-// DefaultTask is the id of the one task of an issue whose owner gives no plan, which runs the
-// project's default steps.
+// DefaultTask is the id of the one task of an issue whose owner gives no plan, or whose
+// experiment's group takes none, which runs the project's default steps.
 const DefaultTask = "default"
 
 // Task is one `plan_task` block of a plan, as FromBlocks reads it.

@@ -265,13 +265,14 @@ func formattingDocument() string {
 	return "# Formatting\n\n**_" + formattingRun + "_**\n\nAlpha beta gamma.\n\n- Delta epsilon\n- Zeta eta\n\n```\ncode stays plain\n```\n\nTheta iota kappa.\n"
 }
 
-// newFormattingRoom is a service whose settlement waits an hour, with renders watched from before
-// the formatting document is seeded, its room loaded, and its replica started and caught up by one
-// browser edit.
+// newFormattingRoom is a service whose settlement waits an hour and whose rooms stay resident for
+// the test's run (holdRoomsResident), with renders watched from before the formatting document is
+// seeded, its room loaded, and its replica started and caught up by one browser edit.
 func newFormattingRoom(t *testing.T) (*Service, string, *renderShadow, *crdt.Doc, *renderedReplica) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	seedServiceText(t, service, artifactID, formattingDocument())
 	editAsConnectedPeer(t, service, artifactID, 1, reuseAlice, replaceRun("Alpha beta", "Alpha beta beta"))

@@ -159,6 +159,14 @@ itself, whose tests import its sources by relative path.
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
   `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
 
+- A row whose verdict rests on a connection's backpressure bounds what the connection may hold
+  itself. On loopback the connection's buffers are the kernel's, and the TCP receive buffer grows to
+  `net.ipv4.tcp_rmem`'s maximum: 4 MiB in a gVisor pod, 6 MiB on a Kubernetes node's Linux 6.12 and
+  32 MiB by Linux 7.0's default, which CI's runner has. At 32 MiB a paused server let the
+  connection take a whole 24 MiB upload, so the client saw no progress and cut it off.
+  `socketDispatch` in `packages/envoy-client/src/__tests__/dispatch-keyed-writes.test.ts` reads a
+  body only 1 MiB past what its server took.
+
 - A suite that needs a program this host may not have skips with that program's name. Call
   `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
   `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs
@@ -220,6 +228,42 @@ itself, whose tests import its sources by relative path.
   unrecorded, where a parse that throws out of `Bun.serve`'s `fetch` fails whichever test is
   running. A request with a JSON object body, an empty body or no body is recorded and answered as
   the case's own answer decides.
+
+## A Bun test waits for its fact, and its command sets its one guard
+
+- Wait for a fact through `@legion/test-fixtures/wait` (`until`, `settled`), and give the wait no
+  duration. Each wait ends at its row's deadline: the newest mark of the row-deadline preload plus
+  the command's `--timeout`, less a margin, so that the wait's own failure prints before Bun's
+  timeout ends the row (`packages/test-fixtures/src/wait.ts`). A probe that throws ends the wait at
+  once, so a probe that reads a report which makes its fact impossible throws. A wait under
+  `jest.useFakeTimers()` refuses to start, because those timers hold `performance.now()` and every
+  timer still until the test advances them. Outside `bun test`, a Bun driver takes its deadline
+  from `LEGION_PROOF_DEADLINE_MS`, epoch milliseconds its script sets, and with neither a wait
+  refuses to start.
+
+- A command whose rows wait through it loads the row-deadline preload,
+  `--preload @legion/test-fixtures/row-deadline`, as `packages/test-fixtures`' own `test` script
+  does. The preload marks the start of each row, the end of each row's body, the end of each row
+  and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in
+  a `beforeAll` or in a row's first `afterEach`. Without it a wait counts from its own start, and
+  its failure says so. A hook that no mark directly precedes counts from an earlier mark, so its
+  waits end earlier than its own clock would allow, never later
+  (`packages/test-fixtures/src/row-deadline.ts`). So a row's second `afterEach` counts from the mark
+  before its first, and the time the first took is gone from it.
+
+- A command sets one guard, its `--timeout`. A row or a hook sets no timeout of its own, neither a
+  third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads
+  the command's guard and not a row's. The exceptions are a row of `packages/dispatch/e2e/__tests__`
+  that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through
+  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one
+  measured download or one measured process run with no shared wait in it: such a hook or row
+  takes a guard of its own, at least twice its slowest reading on a machine that runs the suite
+  (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's
+  guards are written, gives that number with the readings and their runs. A file whose rows need a
+  much larger guard than the rest runs in a second `bun test` command of the same script, with its
+  own `--timeout` and the same preload. Tests written before this rule still set guards of their
+  own (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's
+  guard as it is carried to the shared wait.
 
 ## A test that looks for a process it started
 
@@ -476,9 +520,10 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
-`daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
-detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
+`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
+under the race detector, once per run, in the `daemon-go-race` job's step "Test the concurrent
+packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`), beside the
+`daemon-go` job; `daemon-go`'s plain step ("Test the Go daemon") leaves it out,
 and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
@@ -522,7 +567,7 @@ The rule covers the cleanup's argument as well as its closure, so an argument th
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
-It is one of the ten slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
+It is a slow suite: a pull request runs it only with the label `full-ci` (or `lane:envoy_go_race_docs`), and the merge queue runs it on the tree the change lands as, which is where its result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
@@ -623,6 +668,23 @@ that left it, because nothing in this process can close another client's connect
 The daemon's own production clients are named too: `natsauth.Connect` takes the name as a
 parameter rather than an option, so no call site can leave one empty, and an operator reading
 `/connz` on the Envoy NATS sees which process holds each connection.
+
+## A test that deletes a KV watcher's consumer
+
+A KV watcher reads its bucket through an ordered consumer nats.go creates and keeps in memory, and a test that deletes that consumer, to stand for one the server lost, has a state that does not last.
+nats.go puts a new consumer in its place once the lost one's idle heartbeats have been missing for a whole check: 5 s heartbeats, checked every 10 s, so nominally 5 to 20 s after the delete (nats.go v1.55.0 `js.go`, `orderedHeartbeatsInterval`, `hbcThresh`, `activityCheck`, `resetOrderedConsumer`); those are timers, so a loaded machine moves them later, never earlier.
+A check that reads "the consumer is gone" some time after the delete therefore passes on a quick machine and fails on a loaded one: `TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain` once required the WARN a watcher's end writes for a consumer it finds gone, and failed when the listener's shutdown took 18 s to reach that end, which then deleted nats.go's replacement with nothing to warn of.
+While the replacement's create is in flight, after the server made it and before the client read the answer, nats.go has not yet named it to the subscription, so a stop in that moment deletes nothing (`js.go` `deleteConsumer`); nats.go deletes the new consumer once the answer comes and it finds the subscription closed (`resetOrderedConsumer`), but in a goroutine nothing waits for, so a connection closed first leaves it for the server to remove once its interest is gone.
+A replacement the server lists may still be in that moment in the client.
+
+So such a test holds the state it means to test, rather than racing nats.go to it.
+To test code that meets the consumer gone, delete it with `testnats.HoldConsumerLost` (`packages/envoy/internal/testnats/ordered_loss.go`): it sends the client, until the test ends, the idle heartbeat the server would, carrying the consumer's own sequences, so nats.go reads the subscription as alive and replaces nothing, however long the code under test takes; the client must have taken every message the consumer delivered, since a heartbeat naming one it has not taken reads as a gap (`js.go` `checkForSequenceMismatch`), and the bucket must take no write meanwhile.
+`TestADrainEndsTheKVWatchersBeforeTheConnection` and the `consumers already gone` row of `TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain` do; with a plain delete and a 25 s stall before the end, the first failed 2 of 2, and with the hold it passed 2 of 2.
+The heartbeats are the test's own timers, so a stall of a process past a whole check can still let nats.go replace the consumer. `ConsumerHold.Replaced` says whether it did, from the server's record of the creates (it follows `$JS.API.CONSUMER.CREATE.<stream>.>` from before the delete, so a stall loses none), and a test requires the loss's own outcome only where it did not, and only for that consumer. A create counts only where it is the lost consumer's own replacement: nats.go makes that one from the lost one's configuration, by start sequence at the sequence after the last it was delivered, with the same filter, so another consumer made on the stream by start sequence does not count.
+To test code that meets nats.go's replacement, wait until the server lists it (it starts at the lost one's next sequence, `DeliverByStartSequencePolicy`; `awaitReplacedConsumer` in `packages/envoy/cmd/listener/drain_watchers_test.go`), and do not require the bucket empty afterwards, since the replacement may have been in flight.
+Either way, read what the code says it did (`kvwatch.Watcher.End` logs `<name> watcher ended` once every stop it made has returned, whatever it found).
+A NATS that falls silent for a few seconds loses the client's connection, and the code then meets none of the consumers the test arranged: a drain finds the connection reconnecting, or a reconnect makes every watcher again first. Read which from a record independent of the code under test: the bus's `envoy nats disconnected` and `envoy nats reconnected` lines, in order (`mainConnection` in the same file). Still lost at the drain (a disconnect with its error after the last reconnect), require only what the code says of a lost connection. A disconnect with no error is a close, which leaves a lost connection lost: nats.go reports one whenever the connection has a socket, and a reconnect to a frozen server has one, since the kernel still accepts the dial. Made again before the drain, require what any run requires, the end of each watcher and the buckets empty, and drop only the outcomes of the arrangement the reconnect replaced: a test that reads any earlier disconnect as "lost" lets a real leak after a reconnect pass.
+A count of what is left reads a listing that reports its own failure (jetstream's `ListConsumers` or `ConsumerNames` and their `Err`), never nats.go's older listing, whose channel closes on a failed request as on an empty stream.
 
 ## A test that reads `GET /api/v1/references?since=` reads again
 
