@@ -566,6 +566,56 @@ func TestAStartFailureTimeBeforeTheReadyIsReadAsNone(t *testing.T) {
 	}
 }
 
+// A daemon of the release before 20261124073512 rewrites a claim's two causes and names none of
+// the columns that date them (that release's upsertClaim), so after a rollback and a roll-forward
+// a row can hold a cause beside the time this release gave the cause before it. A cause that
+// release wrote with text other than the cause the time dates reads back with no time. One it
+// wrote with the same text, a death or a start failure with no ready between, reads back with the
+// older time, which no read can tell from its own (dispatch://INFRA-5645).
+func TestACauseAnEarlierReleaseWroteIsReadWithNoTime(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	c.State = supervise.StateLaunching
+	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3)
+	c.LastStartFailure, c.LastStartFailureAt = "the launcher refused the start: the pod was not ready", at(5)
+	if got := putAndRead(t, store, c); !got.LastDeathAt.Equal(at(3)) || !got.LastStartFailureAt.Equal(at(5)) {
+		t.Fatalf("the claim read back its death at %v and its start failure at %v, want %v and %v",
+			got.LastDeathAt, got.LastStartFailureAt, at(3), at(5))
+	}
+	// earlierWrite is that release's write of the two causes: their text, and neither column
+	// this release dates them with.
+	earlierWrite := func(death, startFailure string) supervise.Claim {
+		t.Helper()
+		if _, err := store.Pool().Exec(ctx, `update claims set last_death_cause = $1, last_start_failure = $2 where token = $3`,
+			death, startFailure, string(c.Token)); err != nil {
+			t.Fatalf("write the two causes as the earlier release does: %v", err)
+		}
+		return onlyClaim(t, store)
+	}
+
+	got := earlierWrite(c.LastDeathCause, c.LastStartFailure)
+	if got.LastDeathCause != c.LastDeathCause || !got.LastDeathAt.Equal(at(3)) {
+		t.Errorf("the death the earlier release wrote again with the same text read back as %q at %v, want %q at the older time %v",
+			got.LastDeathCause, got.LastDeathAt, c.LastDeathCause, at(3))
+	}
+	if got.LastStartFailure != c.LastStartFailure || !got.LastStartFailureAt.Equal(at(5)) {
+		t.Errorf("the start failure the earlier release wrote again with the same text read back as %q at %v, want %q at the older time %v",
+			got.LastStartFailure, got.LastStartFailureAt, c.LastStartFailure, at(5))
+	}
+
+	const death, startFailure = "gone: pod legion-legion-209 (uid 0b1e44a7) ended: Evicted", "init container workspace-init failed: exit 1"
+	got = earlierWrite(death, startFailure)
+	if got.LastDeathCause != death || !got.LastDeathAt.IsZero() {
+		t.Errorf("the death the earlier release wrote with other text read back as %q at %v, want %q with no time: %v dates the death before it",
+			got.LastDeathCause, got.LastDeathAt, death, at(3))
+	}
+	if got.LastStartFailure != startFailure || !got.LastStartFailureAt.IsZero() {
+		t.Errorf("the start failure the earlier release wrote with other text read back as %q at %v, want %q with no time: %v dates the failure before it",
+			got.LastStartFailure, got.LastStartFailureAt, startFailure, at(5))
+	}
+}
+
 // putAndRead writes c and reads it back as the only claim.
 func putAndRead(t *testing.T, store *Store, c supervise.Claim) supervise.Claim {
 	t.Helper()
