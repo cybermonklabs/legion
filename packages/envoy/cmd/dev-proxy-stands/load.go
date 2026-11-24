@@ -179,7 +179,10 @@ func (o *loadOptions) say(stdout io.Writer, result map[string]any) {
 // connect opens one tunnel to the bound host through the proxy and answers the connection the
 // CONNECT left behind. The answer is read with the CONNECT it answers (http.ReadResponse's req),
 // its Proxy-Authorization among it, so a print of a refusal's words redacts the credential the
-// CONNECT carried (redact.Carried), as ask's answer does its bearer.
+// CONNECT carried (redact.Carried), as ask's answer does its bearer. http.ReadResponse's error
+// quotes a status line or a header line it could not read, which whatever answers in the proxy's
+// place can write that credential into, so it prints as the bound host's address allows
+// (redact.Cause): a transport failure's own text, or its class.
 func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	// url.Parse's error quotes the whole URL, the grant's proxy password with it, so the error names
 	// the flag the URL came from instead.
@@ -192,8 +195,9 @@ func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 		return nil, err
 	}
 	target := o.host + ":443"
+	bound := "https://" + target
 	request := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n"
-	sent, err := http.NewRequest(http.MethodConnect, "https://"+target, nil)
+	sent, err := http.NewRequest(http.MethodConnect, bound, nil)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -213,7 +217,7 @@ func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	answer, err := http.ReadResponse(bufio.NewReader(conn), sent)
 	if err != nil {
 		conn.Close()
-		return nil, err
+		return nil, redact.Cause(err, bound)
 	}
 	if answer.StatusCode != http.StatusOK {
 		refused, _ := redact.ReadAnswer(answer, 300)
@@ -240,10 +244,13 @@ func (o *loadOptions) speak(timeout time.Duration) (net.Conn, *bufio.Reader, err
 
 // ask writes one HTTP/1.1 request on an open connection and reads its answer, which carries the
 // request it answers (http.ReadResponse's req), its bearer among it, so a print of the answer's
-// words redacts what the request carried (redact.Carried).
+// words redacts what the request carried (redact.Carried). A line of the answer
+// http.ReadResponse could not read prints as connect's does (redact.Cause), since its error
+// quotes the line, which can echo the bearer.
 func (o *loadOptions) ask(conn net.Conn, reader *bufio.Reader, method, path string, body []byte, extra string) (*http.Response, error) {
 	request := method + " " + path + " HTTP/1.1\r\nHost: " + o.host + "\r\n"
-	sent, err := http.NewRequest(method, "https://"+o.host+path, nil)
+	address := "https://" + o.host + path
+	sent, err := http.NewRequest(method, address, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +263,11 @@ func (o *loadOptions) ask(conn net.Conn, reader *bufio.Reader, method, path stri
 	if _, err := conn.Write(append([]byte(request), body...)); err != nil {
 		return nil, err
 	}
-	return http.ReadResponse(reader, sent)
+	answer, err := http.ReadResponse(reader, sent)
+	if err != nil {
+		return nil, redact.Cause(err, address)
+	}
+	return answer, nil
 }
 
 // one call: a connection of its own, a request on it and the whole answer read.

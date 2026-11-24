@@ -197,7 +197,11 @@ func call(ctx context.Context, method, url string, headers map[string]string, bo
 	// The request carries a Proof header, so a redirect answered for the broker is refused.
 	answer, err := redirects.Refused(http.DefaultClient).Do(request)
 	if err != nil {
-		return err
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// which it reads before any redirect policy), and those can echo the proof or a token this
+		// call carried, so it prints as the broker's address allows (redact.Cause): a transport
+		// failure's own text, or its class.
+		return redact.Cause(err, url)
 	}
 	defer func() { _ = answer.Body.Close() }()
 	read, err := redact.ReadAnswer(answer, 1<<20)
