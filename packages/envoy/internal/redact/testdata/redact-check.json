@@ -271,6 +271,22 @@
         "test": "print-going.chatWireErrorBody"
       },
       {
+        "holder": "github.com/sjawhar/envoy/internal/mcpbridge.reply",
+        "test": "print-mcpbridge.reply"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/mcpbridge.session",
+        "test": "print-mcpbridge.session"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/mcpbridge.ManagedServer",
+        "test": "print-mcpbridge.ManagedServer"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer",
+        "test": "print-mcpbridge.HTTPServer"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answerMessage struct{Message redact.RemoteText \"json:\\\"message\\\"\"}",
         "test": "print-githubapp.answerMessage"
       },
@@ -2108,6 +2124,163 @@
         "capture": "mcpbridge.endpoint-url/unreachable"
       },
       {
+        "row": "mcpbridge-rpc-message-http",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.rpc-message/http"
+      },
+      {
+        "row": "mcpbridge-rpc-message-stdio",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.rpc-message/stdio"
+      },
+      {
+        "row": "mcpbridge-child-stderr",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.child-stderr"
+      },
+      {
+        "row": "mcpbridge-read-error-stdio",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.read-error/stdio"
+      },
+      {
+        "row": "mcpbridge-render-topic",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.render-topic"
+      },
+      {
+        "row": "mcpbridge-stream-error-endpoint",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/stream_error_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.stream-error/endpoint"
+      },
+      {
+        "row": "mcpbridge-stream-error-loop",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/stream_error_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.stream-error/loop"
+      },
+      {
+        "row": "mcpbridge-notification-unmatched",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/bridge_words_test.go",
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.notification/unmatched"
+      },
+      {
+        "row": "mcpbridge-notification-read-failed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/bridge_words_test.go",
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.notification/read-failed"
+      },
+      {
+        "row": "mcpbridge-notification-published",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/bridge_words_test.go",
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.notification/published"
+      },
+      {
+        "row": "mcpbridge-notification-publish-refused",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/bridge_words_test.go",
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.notification/publish-refused"
+      },
+      {
+        "row": "mcpbridge-echo-rpc",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/bridge_words_test.go",
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.echo/rpc"
+      },
+      {
+        "row": "mcpbridge-echo-uri",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/bridge_words_test.go",
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.echo/uri"
+      },
+      {
+        "row": "mcpbridge-echo-topic",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/mcpbridge/bridge_words_test.go",
+          "packages/envoy/internal/mcpbridge/remote_words_test.go",
+          "packages/envoy/internal/mcpbridge/http_server_test.go",
+          "packages/envoy/internal/mcpbridge/mock_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "mcpbridge.echo/topic"
+      },
+      {
         "row": "dispatch-plan-block-range-not-printed",
         "base": "bdc06e05d9d400ab032554c271f4d056371523ce",
         "files": ["packages/daemon/internal/dispatch/plan_block_words_test.go"],
@@ -2558,6 +2731,11 @@
           "file": "packages/envoy/internal/dispatch/auth/callback.go",
           "function": "github.com/sjawhar/envoy/internal/dispatch/auth.ParseCallback",
           "why": "the OAuth callback's own query, which the person's browser sends to Dispatch: it answers no request Dispatch sent, so there is no request record to read, and the rule reads the words"
+        },
+        {
+          "file": "packages/envoy/internal/mcpbridge/server.go",
+          "function": "github.com/sjawhar/envoy/internal/mcpbridge.childWords",
+          "why": "a managed MCP server's child's standard output, a JSON-RPC error's message or a notification's URI: the child answers no request the bridge sent over HTTP, so there is no request record to read, and the rule reads the words"
         },
         {
           "file": "packages/envoy/oauth2call/oauth2calltest/oauth2calltest.go",
@@ -7042,6 +7220,181 @@
       }
     },
     {
+      "id": "mcpbridge-rpc-message-http",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnRPCErrorPrintsTheServersWordsAsTheRuleReadsThem/http",
+      "production": "mcpbridge session.call: an HTTP server's JSON-RPC error names its message as the rule reads it, held as the server's words with the record of the stream's request (HTTPServer.Words, redact.StreamedWords)"
+    },
+    {
+      "id": "mcpbridge-rpc-message-stdio",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnRPCErrorPrintsTheServersWordsAsTheRuleReadsThem/stdio",
+      "production": "mcpbridge session.call: a managed child's JSON-RPC error names its message as the rule reads it, held as the server's words (childWords)"
+    },
+    {
+      "id": "mcpbridge-child-stderr",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAChildsStandardErrorPrintsAsTheRuleReadsIt",
+      "production": "mcpbridge ManagedServer.Start, logStderr: each line a managed child writes on its standard error is logged as the rule reads it (redact.Field)",
+      "function": "github.com/sjawhar/envoy/internal/mcpbridge.logStderr",
+      "capture": "mcpbridge.child-stderr",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/server.go",
+        "preimage": "redact.Field(string(line))",
+        "replacement": "string(line)"
+      }
+    },
+    {
+      "id": "mcpbridge-read-error-stdio",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAManagedServersReadErrorNamesTheReadAlone",
+      "production": "mcpbridge ManagedServer.readLoop: the read error of a child's standard output is logged as the read and the system's reason (readFailure, redact.File), never its own text"
+    },
+    {
+      "id": "mcpbridge-render-topic",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestRenderTopicNamesTheURIAsTheRuleReadsIt",
+      "production": "mcpbridge ServerConfig.RenderTopic: a URI the pattern does not match is named as the rule reads it (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.ServerConfig).RenderTopic",
+      "capture": "mcpbridge.render-topic",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/config.go",
+        "preimage": "redact.Field(uri)",
+        "replacement": "uri + redact.Field(\"\")"
+      }
+    },
+    {
+      "id": "mcpbridge-stream-error-endpoint",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAStreamReadErrorPrintsItsClassAlone/endpoint",
+      "production": "mcpbridge HTTPServer.Start: a read of the event stream that failed before its endpoint event, with an HTTP/2 GOAWAY whose debug data net/http quotes, prints through redact.Cause",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).Start",
+      "capture": "mcpbridge.stream-error/endpoint",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "\"read endpoint event: %w\", redact.Cause(err, s.cfg.URL)",
+        "replacement": "\"read endpoint event: %w\", err"
+      }
+    },
+    {
+      "id": "mcpbridge-stream-error-loop",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAStreamReadErrorPrintsItsClassAlone/loop",
+      "production": "mcpbridge HTTPServer.readLoop: the event stream's read error, which WaitForExit answers and the bridge logs, an HTTP/2 GOAWAY whose debug data net/http quotes among them, prints through redact.Cause",
+      "function": "(*github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer).readLoop",
+      "capture": "mcpbridge.stream-error/loop",
+      "mutation": {
+        "file": "packages/envoy/internal/mcpbridge/http_server.go",
+        "preimage": "redact.Cause(err, s.cfg.URL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "mcpbridge-notification-unmatched",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestANotificationsURIAndTopicPrintAsTheRuleReadsThem/unmatched",
+      "production": "mcpbridge Bridge.handleNotification: a URI the pattern does not match is logged through the server's Words"
+    },
+    {
+      "id": "mcpbridge-notification-read-failed",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestANotificationsURIAndTopicPrintAsTheRuleReadsThem/read-failed",
+      "production": "mcpbridge Bridge.handleNotification: a refused read logs the URI through the server's Words and the refusal's message as the session holds it"
+    },
+    {
+      "id": "mcpbridge-notification-published",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestANotificationsURIAndTopicPrintAsTheRuleReadsThem/published",
+      "production": "mcpbridge Bridge.handleNotification: the topic an event was published on, rendered from the URI's captures, is logged through the server's Words"
+    },
+    {
+      "id": "mcpbridge-notification-publish-refused",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestANotificationsURIAndTopicPrintAsTheRuleReadsThem/publish-refused",
+      "production": "mcpbridge Bridge.handleNotification: a publish the bus refused, whose error quotes the topic, is logged through the server's Words"
+    },
+    {
+      "id": "mcpbridge-echo-rpc",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnHTTPServersWordsPrintWithoutTheCredentialsItsStreamCarried/rpc",
+      "production": "mcpbridge session.call: a JSON-RPC error from an HTTP server whose configured URL carries a user and password prints none of the password it echoes bare (HTTPServer.Words, redact.StreamedWords)"
+    },
+    {
+      "id": "mcpbridge-echo-uri",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnHTTPServersWordsPrintWithoutTheCredentialsItsStreamCarried/uri",
+      "production": "mcpbridge Bridge.handleNotification: a URI from an HTTP server whose configured URL carries a user and password prints none of the password it echoes bare (HTTPServer.Words)"
+    },
+    {
+      "id": "mcpbridge-echo-topic",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestAnHTTPServersWordsPrintWithoutTheCredentialsItsStreamCarried/topic",
+      "production": "mcpbridge Bridge.handleNotification: a topic rendered from a URI that echoes the configured URL's password bare prints none of it (HTTPServer.Words)"
+    },
+    {
+      "id": "mcpbridge-decode-message",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestADecodeErrorNamesTheMemberAndQuotesNoValue/message",
+      "production": "mcpbridge session.handleMessage: a message that does not decode is logged by its member and type (redact.DecodeError), never its value"
+    },
+    {
+      "id": "mcpbridge-decode-params",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestADecodeErrorNamesTheMemberAndQuotesNoValue/params",
+      "production": "mcpbridge session.handleNotification: notification parameters that do not decode are logged by their type (redact.DecodeError), never their value"
+    },
+    {
+      "id": "mcpbridge-decode-result",
+      "requirement": "r3-each-site",
+      "package": "./internal/mcpbridge",
+      "test": "TestADecodeErrorNamesTheMemberAndQuotesNoValue/result",
+      "production": "mcpbridge session.readResource: a read result that does not decode is named by its member and type (redact.DecodeError), never its value"
+    },
+    {
+      "id": "print-mcpbridge.reply",
+      "requirement": "r2-held",
+      "package": "./internal/mcpbridge",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/mcpbridge.reply",
+      "production": "github.com/sjawhar/envoy/internal/mcpbridge.reply: every printer at every placement"
+    },
+    {
+      "id": "print-mcpbridge.session",
+      "requirement": "r2-held",
+      "package": "./internal/mcpbridge",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/mcpbridge.session",
+      "production": "github.com/sjawhar/envoy/internal/mcpbridge.session: every printer at every placement"
+    },
+    {
+      "id": "print-mcpbridge.ManagedServer",
+      "requirement": "r2-held",
+      "package": "./internal/mcpbridge",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/mcpbridge.ManagedServer",
+      "production": "github.com/sjawhar/envoy/internal/mcpbridge.ManagedServer: every printer at every placement"
+    },
+    {
+      "id": "print-mcpbridge.HTTPServer",
+      "requirement": "r2-held",
+      "package": "./internal/mcpbridge",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/mcpbridge.HTTPServer",
+      "production": "github.com/sjawhar/envoy/internal/mcpbridge.HTTPServer: every printer at every placement"
+    },
+    {
       "id": "refillrig-answer-words-register",
       "requirement": "r3-each-site",
       "package": "./internal/testnats/cmd/refillrig",
@@ -11014,6 +11367,94 @@
       "site": "mcpbridge HTTPServer.Start: the server's endpoint URL printed raw, and quoted again by net/http, in a failed POST's error",
       "source": "the review of #4368 at c82c3a0d9f, finding 5",
       "guard": "mcpbridge-endpoint-url-unreachable"
+    },
+    {
+      "site": "mcpbridge session.call: a JSON-RPC error's message, held as a plain string, printed raw in its rpc error, from an HTTP server's event stream",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-rpc-message-http"
+    },
+    {
+      "site": "mcpbridge session.call: a JSON-RPC error's message, held as a plain string, printed raw in its rpc error, from a managed child's standard output",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-rpc-message-stdio"
+    },
+    {
+      "site": "mcpbridge ManagedServer.Start: the child's standard error handed to the bridge's own, with no rule read on it",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-child-stderr"
+    },
+    {
+      "site": "mcpbridge session.handleMessage: encoding/json's error for a message that does not decode, logged as it came",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-decode-message",
+      "note": "no leak at the base: encoding/json, at this module's Go, quotes no string value it fails to decode into the message's type, so the row holds the shape of what prints (redact.DecodeError)"
+    },
+    {
+      "site": "mcpbridge session.handleNotification: encoding/json's error for notification parameters that do not decode, logged as it came",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-decode-params",
+      "note": "no leak at the base: encoding/json, at this module's Go, quotes no string value it fails to decode into the parameters' type, so the row holds the shape of what prints (redact.DecodeError)"
+    },
+    {
+      "site": "mcpbridge session.readResource: encoding/json's error for a read result that does not decode, returned as it came",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-decode-result",
+      "note": "no leak at the base: encoding/json, at this module's Go, quotes no string value it fails to decode into the result's type, so the row holds the shape of what prints (redact.DecodeError)"
+    },
+    {
+      "site": "mcpbridge Bridge.handleNotification: a URI the pattern does not match, logged raw",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-notification-unmatched"
+    },
+    {
+      "site": "mcpbridge Bridge.handleNotification: the URI of a read that failed, logged raw",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-notification-read-failed"
+    },
+    {
+      "site": "mcpbridge ServerConfig.RenderTopic: a URI the pattern does not match, quoted raw in its error",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-render-topic"
+    },
+    {
+      "site": "mcpbridge Bridge.handleNotification: the topic rendered from the URI's captures, logged raw once published",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-notification-published"
+    },
+    {
+      "site": "mcpbridge ManagedServer.readLoop: the read error of the child's standard output, logged as it came",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-read-error-stdio"
+    },
+    {
+      "site": "mcpbridge HTTPServer.readLoop: the event stream's read error, which the bridge logs as the server's exit, as it came: net/http's error for an HTTP/2 GOAWAY quotes its debug data",
+      "source": "the site census of the second pull request at 17c8ec356a8, item 7",
+      "guard": "mcpbridge-stream-error-loop"
+    },
+    {
+      "site": "mcpbridge HTTPServer.Start: the event stream's read error before its endpoint event, returned as it came",
+      "source": "the class search of the second pull request's mcpbridge sites",
+      "guard": "mcpbridge-stream-error-endpoint"
+    },
+    {
+      "site": "mcpbridge Bridge.handleNotification: a refused publish's error, which quotes the topic, logged as it came",
+      "source": "the class search of the second pull request's mcpbridge sites",
+      "guard": "mcpbridge-notification-publish-refused"
+    },
+    {
+      "site": "mcpbridge: an HTTP server's words held with no record of the stream's request, so a password the configured URL carries, echoed bare, printed in an rpc error",
+      "source": "the plan of the second pull request, its mcpbridge rows",
+      "guard": "mcpbridge-echo-rpc"
+    },
+    {
+      "site": "mcpbridge: an HTTP server's words held with no record of the stream's request, so a password the configured URL carries, echoed bare, printed in a notification's URI",
+      "source": "the plan of the second pull request, its mcpbridge rows",
+      "guard": "mcpbridge-echo-uri"
+    },
+    {
+      "site": "mcpbridge: an HTTP server's words held with no record of the stream's request, so a password the configured URL carries, echoed bare, printed in a topic rendered from a URI",
+      "source": "the plan of the second pull request, its mcpbridge rows",
+      "guard": "mcpbridge-echo-topic"
     },
     {
       "site": "Answer.Decode skips a box promoted from an embedded unexported struct",
