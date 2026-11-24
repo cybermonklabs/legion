@@ -16,15 +16,22 @@ import (
 // The boot's relaunch of the launches the previous daemon did not finish: the claims its restore
 // put back to launch_uncertain with no process (supervisor.restore), each released to queued once
 // the boot's orphan reconciliation proves no predecessor runs, and launched again in the order its
-// work was owed.
+// work was owed — and, in the same order, of the deaths that daemon recorded, whose relaunches it
+// held in the same pacing (supervise.RecordedDeath).
 
 // bootRelaunch is one claim launchUnfinished relaunches: its machine, the turn reserved for it in
 // the wake pacing (the zero time for none yet), and how its release ended.
+//
+// death is whether the relaunch is of the death the claim's record charges rather than of an
+// unfinished launch: such a claim records its process, so it has no uncertain launch to release
+// and reads released from the start, and generation is the claim's generation its replay names.
 type bootRelaunch struct {
-	token   claim.Token
-	m       *supervise.Machine
-	turn    time.Time
-	release releaseOutcome
+	token      claim.Token
+	m          *supervise.Machine
+	turn       time.Time
+	release    releaseOutcome
+	death      bool
+	generation uint64
 }
 
 // releaseOutcome is how the release of one unfinished launch ended (releaseUnfinishedClaim).
@@ -68,8 +75,15 @@ func waitingLaunches(tokens []claim.Token) map[claim.Token]time.Time {
 // the queue that daemon was draining, rebuilt: reserved instead as each goroutine reached the
 // gate, its order was chance, and a claim that had waited most of an hour went back to a random
 // place behind hundreds at each restart (dispatch://INFRA-5482).
-func (s *supervision) launchUnfinished(ctx context.Context, waiting map[claim.Token]time.Time) map[claim.Token]time.Time {
-	launches := make([]*bootRelaunch, 0, len(waiting))
+//
+// deaths is the claims whose record says their process died (recordedDeaths), whose relaunches
+// were the rest of that queue: each still standing over its dead process (recordedDeath) joins
+// the turns' one order, and its relaunch is posted with its turn as the death's replay
+// (supervise.RecordedDeath.Turn). Reserved apart, ahead of the pass, each took the first turns of
+// the restart's queue, ahead of claims whose work had waited longer (dispatch://INFRA-5472). The
+// boot passes them to its first pass alone; none is ever refused, so none is retried.
+func (s *supervision) launchUnfinished(ctx context.Context, waiting map[claim.Token]time.Time, deaths ...claim.Token) map[claim.Token]time.Time {
+	launches := make([]*bootRelaunch, 0, len(waiting)+len(deaths))
 	for token, turn := range waiting {
 		if m, ok := s.supervisor.Machine(token); ok {
 			launches = append(launches, &bootRelaunch{token: token, m: m, turn: turn})
@@ -87,6 +101,11 @@ func (s *supervision) launchUnfinished(ctx context.Context, waiting map[claim.To
 	}
 	releasing.Wait()
 	launches = slices.DeleteFunc(launches, func(l *bootRelaunch) bool { return l.release == releaseSettled })
+	for _, token := range deaths {
+		if l, ok := s.recordedDeath(token); ok {
+			launches = append(launches, l)
+		}
+	}
 	s.reserveUnfinishedTurns(launches)
 	var launching sync.WaitGroup
 	refused := map[claim.Token]time.Time{}
@@ -98,10 +117,14 @@ func (s *supervision) launchUnfinished(ctx context.Context, waiting map[claim.To
 		launching.Add(1)
 		go func() {
 			defer launching.Done()
-			s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", l.token)
-			spawn := supervise.RequestSpawn{Claim: l.token, Turn: l.turn}
-			if err := l.m.Handle(store.ForConcurrentWorker(ctx), spawn); err != nil {
-				s.supervisor.decisionFailed(l.token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
+			var ev supervise.Event = supervise.RequestSpawn{Claim: l.token, Turn: l.turn}
+			if l.death {
+				ev = supervise.RecordedDeath{Claim: l.token, Generation: l.generation, Turn: l.turn}
+			} else {
+				s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", l.token)
+			}
+			if err := l.m.Handle(store.ForConcurrentWorker(ctx), ev); err != nil {
+				s.supervisor.decisionFailed(l.token, fmt.Sprintf("%T", ev), err, "supervise: launch again a launch the previous daemon held")
 			}
 		}()
 	}
@@ -126,6 +149,51 @@ func (s *supervision) releaseUnfinishedClaim(ctx context.Context, token claim.To
 		return releaseSettled
 	}
 	return releaseQueued
+}
+
+// recordedDeaths is the claims of claims, as the boot restored them, whose record says the process
+// they record died: a live claim with its death charged (supervise.Claim.DeathCharged) and a
+// locator. The daemon before this one judged each process gone and charged its death, and the
+// relaunch it raised for it lived in its memory alone, a wake the pacing parked, which the restart
+// lost (dispatch://INFRA-5472). The boot relaunches each beside its unfinished launches
+// (relaunchUnfinished), rather than when the runtime next reports the death: in a pod that lives
+// on — its roles container restarted — that report waits for the pod's launcher to reconnect, a
+// probe interval after boot, which put every such relaunch behind the whole of the boot's wave.
+func recordedDeaths(claims []supervise.Claim) []claim.Token {
+	live := supervise.LiveStates()
+	var deaths []claim.Token
+	for _, c := range claims {
+		if c.DeathCharged && c.Locator != nil && slices.Contains(live, c.State) {
+			deaths = append(deaths, c.Token)
+		}
+	}
+	return deaths
+}
+
+// recordedDeath is token's relaunch for the death its record charges, as the boot's pass takes it
+// (launchUnfinished), and false for a claim that no longer stands over that death as the machine
+// holds it now: a report of the death that came first and raised its relaunch already (a wake
+// waiting), a launch since, a report that found the process running, or a suspension held for the
+// claim, whose end the death's own report decides. The replay decides each of those nothing
+// (supervise's relaunchRecordedDeath), so the pass reserves such a claim no turn, which would be
+// left spent and put every wake behind it an interval late. A report of the death decided before
+// this read keeps the turn it reserved itself, which can run ahead of the owed order. One decided
+// after this read and before the pass reserves its turns takes a turn ahead of the pass's, so the
+// replay moves nothing and the turn the pass handed it is left spent. One decided after the pass
+// reserved parks its relaunch behind every turn the pass handed out, and the replay moves that
+// wake to the turn the pass handed it (supervise's takeEarlierTurn), leaving the report's later
+// turn spent.
+func (s *supervision) recordedDeath(token claim.Token) (*bootRelaunch, bool) {
+	m, ok := s.supervisor.Machine(token)
+	if !ok {
+		return nil, false
+	}
+	v := m.View()
+	c := v.Claim
+	if !c.DeathCharged || c.Locator == nil || !slices.Contains(supervise.LiveStates(), c.State) || c.SuspensionHeld || v.WakeWaiting != nil {
+		return nil, false
+	}
+	return &bootRelaunch{token: token, m: m, release: releaseQueued, death: true, generation: c.Generation}, true
 }
 
 // reserveUnfinishedTurns hands a turn in the wake pacing to each of launches whose launch the gate
@@ -229,7 +297,15 @@ func compareOwed(a, b time.Time) int {
 // has the bounded retry above, and only a success releases these claims to launch; once it has, a
 // sweep retries only the releases the store did not take, with the turns they were reserved
 // (launchUnfinished), since the reconciliation's proof that no predecessor runs still holds.
-func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) {
+//
+// deaths is the claims whose record says their process died (recordedDeaths). They join the first
+// pass, in one order with the unfinished launches. A recorded death needs no reconciliation, since
+// its claim records the process it replaces, so where the boot's reconciliation failed their pass
+// runs at once all the same, alone, in their own owed order. The unfinished launches cannot launch
+// before a sweep reconciles, and the sweep that does reserves their turns behind every death turn
+// still to come: on that path a death goes ahead of an unfinished launch owed before it, which is
+// the price of not holding a relaunch that needs no reconciliation behind one that may never come.
+func (s *supervision) relaunchUnfinished(tokens, deaths []claim.Token, reconciled bool) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -238,7 +314,9 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 		relaunching := store.ForConcurrentWorker(s.supervisor.ctx)
 		waiting := waitingLaunches(tokens)
 		if reconciled {
-			waiting = s.launchUnfinished(relaunching, waiting)
+			waiting = s.launchUnfinished(relaunching, waiting, deaths...)
+		} else if len(deaths) > 0 {
+			s.launchUnfinished(relaunching, nil, deaths...)
 		}
 		ticker := time.NewTicker(s.plan.orphanSweep)
 		defer ticker.Stop()

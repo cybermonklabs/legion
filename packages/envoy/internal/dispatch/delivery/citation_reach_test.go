@@ -26,6 +26,7 @@ import (
 // each path (or the body before it, where the path stands nearer the start) and the path, the
 // owner, repository and number of each path it credits, and the number of each bare reference.
 func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
+	t.Parallel()
 	const repo = "acme/widgets"
 	var bodies, paths, cut, shorterDiffers, credited, refused, failures int
 	fail := func(format string, args ...any) {
