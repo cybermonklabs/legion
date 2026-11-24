@@ -21,3 +21,21 @@ for (const row of table.rows) {
     expect(oneLine(row.text)).toBe(row.quoted);
   });
 }
+
+// A JavaScript string can hold a lone surrogate, which a Go string cannot, so the shared table has
+// none: oneLine quotes a text that holds one, high or low, at either end or before a character
+// that does not complete it, with the surrogate as U+FFFD; a pair, the first and the last pair
+// among them, prints as it is.
+test.each([
+  ["a\ud800", '"a\ufffd"'],
+  ["\udc00b", '"\ufffdb"'],
+  ["\ud800x", '"\ufffdx"'],
+  ["\ud800\ud800\udc00", '"\ufffd\u{10000}"'],
+  ["a\ud800\nb", '"a\ufffd\\nb"'],
+  ["x\ud83d\ude00", "x\ud83d\ude00"],
+  ["\ud83d\ude00 ok", "\ud83d\ude00 ok"],
+  ["\udbff\udfff", "\udbff\udfff"],
+  ["\ud7ff\ue000", "\ud7ff\ue000"],
+] as const)("oneLine of %p is %p", (text, quoted) => {
+  expect(oneLine(text)).toBe(quoted);
+});

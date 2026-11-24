@@ -17,8 +17,8 @@ import (
 // another party's bytes, which whatever answered in the server's place can have written to echo
 // the request back, credentials and all. It is opaque: its one field is unexported and points at
 // the bytes and the request's credentials through pointers and a func of their own (answer), so
-// fmt, encoding/json and slog print the status, addresses or nothing, and its five methods and
-// Holds are the only ways out of it.
+// fmt, encoding/json and slog print the status, addresses or nothing, and its five methods,
+// Holds and Unmarshal are the only ways out of it.
 //
 //   - Decode fills a typed value from the body, holding every RemoteText it decodes with the
 //     request's record (Carried) so the value's words print with the request's credentials
