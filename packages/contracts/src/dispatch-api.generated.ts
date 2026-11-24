@@ -2088,10 +2088,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the caller's personal agent tokens, each with the scopes it holds. */
+    /** @description List the caller's personal agent tokens, newest first, each with the scopes it holds: a read-only token's scopes hold read. */
     get: operations["getApiV1MeAgentTokens"];
     put?: never;
-    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. The answer is the one time the token's plaintext is shown. */
+    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A set holding read mints a read-only token, which Dispatch answers on the GET routes it classes as reads and refuses every other route, 403 READ_ONLY_TOKEN: read alone, or read beside person. A scope this deployment does not know, approve without person, or read beside approve, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED, and read needs none. The answer is the one time the token's plaintext is shown. */
     post: operations["postApiV1MeAgentTokens"];
     delete?: never;
     options?: never;
@@ -2109,11 +2109,11 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Revoke a personal agent token. */
+    /** @description Revoke a personal agent token, read-only or not; a revoked token answers 401 TOKEN_REVOKED. */
     delete: operations["deleteApiV1MeAgentTokensById"];
     options?: never;
     head?: never;
-    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. A token of another person's, or none, is 404 NOT_FOUND. */
+    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. No token changes to or from read only: a set holding read, and any set for a read-only token, is 400 TOKEN_SCOPES_INPUT, since a person makes a new token for that. A token of another person's, or none, is 404 NOT_FOUND. */
     patch: operations["patchApiV1MeAgentTokensById"];
     trace?: never;
   };
@@ -3242,7 +3242,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, an exchange entry's token naming its account among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
+    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, cut, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, an exchange entry's token naming its account and every read-only credential among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A read-only token that carries a cut is answered here, and refused 403 AS_OF_TOKEN_NOT_SERVED on every other read. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
     get: operations["getApiV1Whoami"];
     put?: never;
     post?: never;
@@ -4377,7 +4377,7 @@ export interface components {
     };
     CreateAgentTokenInput: {
       name: string;
-      scopes?: null | string[];
+      scopes?: null | ("person" | "approve" | "read")[];
     };
     CreateArtifactReviewInput: {
       reason?: null | string;
@@ -7055,7 +7055,7 @@ export interface components {
       examples: string[] | null;
     };
     UpdateAgentTokenScopesInput: {
-      scopes: null | string[];
+      scopes: null | ("person" | "approve")[];
     };
     UpdateDeliverySessionGroupInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -7133,6 +7133,7 @@ export interface components {
       token?: string;
     };
     WhoamiAgent: {
+      cut: null | string;
       /** @enum {string} */
       kind: "agent";
       owner: null | string;

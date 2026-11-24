@@ -421,21 +421,21 @@ func presentedHeaders(presented *http.Request) http.Header {
 // so its heartbeat re-checks that cookie and nothing the request carries beside it
 // (signInStillResolves). A token sent beside the cookie admitted nothing, and the broker holding
 // it live must not keep the socket open once the cookie's session has ended: not a read-only
-// token, which the read list lets read no document at all, and not a token that writes, which is
-// its session's credential and still not what opened this socket. The socket stays open while
-// the cookie resolves, with the token beside it, and closes at the first heartbeat after the
-// session's end, while the broker still holds the token live and has not once been asked about
-// it. "The first" is read off the heartbeat's own calls, its lookups of the cookie
-// (countedLogins): no lookup that started once the session had ended may find it still resolving,
-// as one served from a cache of the session's state would, and each lookup starts within a
-// heartbeat and heartbeatSlack of the return of the one before it, plus the longest stall the
-// process saw in that gap (heartbeatCalls), so a heartbeat that skips a tick, keeps an answer it
-// stored past a beat or asks on a ticker of its own slower than that fails too. The server ends the
-// socket within a heartbeat of the lookup that refused returning, by the server's own record of its
-// close, allowing the longest stall between them for the one goroutine wake there, the socket's on
-// the heartbeat's cancel (requireClosedAfterRefusal, one hop), so a product that waits before it
-// closes a refused socket fails too. The heartbeat is two seconds, more than heartbeatSlack, so
-// skipping a tick is told apart from a late tick.
+// token, which may read a document through the API's reads and never through this socket, and
+// not a token that writes, which is its session's credential and still not what opened this
+// socket. The socket stays open while the cookie resolves, with the token beside it, and closes
+// at the first heartbeat after the session's end, while the broker still holds the token live and
+// has not once been asked about it. "The first" is read off the heartbeat's own calls, its lookups
+// of the cookie (countedLogins): no lookup that started once the session had ended may find it
+// still resolving, as one served from a cache of the session's state would, and each lookup starts
+// within a heartbeat and heartbeatSlack of the return of the one before it, plus the longest stall
+// the process saw in that gap (heartbeatCalls), so a heartbeat that skips a tick, keeps an answer
+// it stored past a beat or asks on a ticker of its own slower than that fails too. The server ends
+// the socket within a heartbeat of the lookup that refused returning, by the server's own record of
+// its close, allowing the longest stall between them for the one goroutine wake there, the
+// socket's on the heartbeat's cancel (requireClosedAfterRefusal, one hop), so a product that waits
+// before it closes a refused socket fails too. The heartbeat is two seconds, more than
+// heartbeatSlack, so skipping a tick is told apart from a late tick.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
 	t.Parallel()
 	const heartbeat = 2 * time.Second
