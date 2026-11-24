@@ -58,9 +58,9 @@ func TestTheDeployRoutesRecordAndReadEachProgram(t *testing.T) {
 	older := deployBody("renderer", afterMergeC2)
 	older["deployed_at"] = first.DeployedAt.Add(-time.Minute)
 	refused := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/deploys", older, "alice")
-	if refused.Code != http.StatusConflict || !strings.Contains(refused.Body.String(), "DEPLOY_OLDER") ||
+	if refused.Code != http.StatusConflict || !strings.Contains(refused.Body.String(), "DEPLOY_NOT_NEWEST") ||
 		!strings.Contains(refused.Body.String(), first.Commit) {
-		t.Fatalf("an older deploy answered %d: %s, want DEPLOY_OLDER and the current commit", refused.Code, refused.Body)
+		t.Fatalf("an older deploy answered %d: %s, want DEPLOY_NOT_NEWEST and the current commit", refused.Code, refused.Body)
 	}
 	worker := postDeploy(t, rig.handler, deployBody("worker", afterMergeC2), http.StatusCreated)
 	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/deploys?repo=acme%2Fwidgets", nil, "alice")
@@ -143,8 +143,9 @@ func requireLiveDecision(t *testing.T, what string, got liveCheckAnswer, answer,
 	if got.PassStands.Answer != answer || got.PassStands.Reason != reason || got.PassStands.Commit != commit {
 		t.Fatalf("%s: pass_stands %+v, want %s/%s at %s", what, got.PassStands, answer, reason, commit)
 	}
-	if deploy != nil && (got.PassStands.Deploy == nil || got.PassStands.Deploy.ID != deploy.ID) {
-		t.Fatalf("%s: deploy %+v, want %+v", what, got.PassStands.Deploy, deploy)
+	if deploy != nil && (got.PassStands.Deploy == nil || got.PassStands.Deploy.Program != deploy.Program ||
+		got.PassStands.Deploy.Commit != deploy.Commit || !got.PassStands.Deploy.DeployedAt.Equal(deploy.DeployedAt)) {
+		t.Fatalf("%s: deploy %+v, want program %s at %s since %s", what, got.PassStands.Deploy, deploy.Program, deploy.Commit, deploy.DeployedAt)
 	}
 }
 
@@ -172,11 +173,11 @@ func TestACheckOfAProgramCountsOnlyResultsOfItsCurrentDeploy(t *testing.T) {
 			rig.github.carry("main", afterMergeM, afterMergeC0, afterMergeC1, afterMergeC2)
 			rig.github.hold(afterMergeM, afterMergeC1, afterMergeC2)
 			before := rig.record(t, issue, "live", "tester", "pass", afterMergeC1)
-			requireLiveDecision(t, "without a recorded deploy", readLiveCheck(t, rig.handler, issue, ""), "unknown", "deploy_unbound", "", nil)
+			requireLiveDecision(t, "without a recorded deploy", readLiveCheck(t, rig.handler, issue, ""), "unknown", "no_deploy", "", nil)
 			first := postDeploy(t, rig.handler, deployBody("renderer", afterMergeC1), http.StatusCreated)
 			read := readLiveCheck(t, rig.handler, issue, "")
-			requireLiveDecision(t, "a result predating the deploy", read, "no", "no_result", "", &first)
-			requireNotCounted(t, read, before, "before_deploy")
+			requireLiveDecision(t, "a result predating the deploy", read, "unknown", "no_result_from_deploy", "", &first)
+			requireNotCounted(t, read, before, "it was recorded before the current deploy of the program this check reads")
 			pass := rig.record(t, issue, "live", "tester", "pass", afterMergeC1)
 			requireLiveDecision(t, "a result after the deploy", readLiveCheck(t, rig.handler, issue, ""), "yes", "", afterMergeC1, &first)
 			later := deployBody("renderer", afterMergeC1)
@@ -188,8 +189,8 @@ func TestACheckOfAProgramCountsOnlyResultsOfItsCurrentDeploy(t *testing.T) {
 			requireLiveDecision(t, "the same deploy still counts its result", readLiveCheck(t, rig.handler, issue, ""), "yes", "", afterMergeC1, &first)
 			second := postDeploy(t, rig.handler, deployBody("renderer", afterMergeC2), http.StatusCreated)
 			read = readLiveCheck(t, rig.handler, issue, "")
-			requireLiveDecision(t, "a new commit excludes the old deploy", read, "no", "no_result", "", &second)
-			requireNotCounted(t, read, pass, "other_deploy")
+			requireLiveDecision(t, "a new commit excludes the old deploy", read, "unknown", "no_result_from_deploy", "", &second)
+			requireNotCounted(t, read, pass, "it names a commit that the current deploy of the program this check reads does not run")
 			rig.record(t, issue, "live", "tester", "pass", afterMergeC2)
 			requireLiveDecision(t, "the new deploy has its own result", readLiveCheck(t, rig.handler, issue, ""), "yes", "", afterMergeC2, &second)
 			historical := readLiveCheck(t, rig.handler, issue, "?at="+afterMergeC1)
@@ -199,8 +200,8 @@ func TestACheckOfAProgramCountsOnlyResultsOfItsCurrentDeploy(t *testing.T) {
 			}
 			rollback := postDeploy(t, rig.handler, deployBody("renderer", afterMergeC1), http.StatusCreated)
 			read = readLiveCheck(t, rig.handler, issue, "")
-			requireLiveDecision(t, "a rollback starts a new observation interval", read, "no", "no_result", "", &rollback)
-			requireNotCounted(t, read, pass, "before_deploy")
+			requireLiveDecision(t, "a rollback starts a new observation interval", read, "unknown", "no_result_from_deploy", "", &rollback)
+			requireNotCounted(t, read, pass, "it was recorded before the current deploy of the program this check reads")
 			rig.record(t, issue, "live", "tester", "pass", afterMergeC1)
 			requireLiveDecision(t, "the rollback has its own result", readLiveCheck(t, rig.handler, issue, ""), "yes", "", afterMergeC1, &rollback)
 		})
